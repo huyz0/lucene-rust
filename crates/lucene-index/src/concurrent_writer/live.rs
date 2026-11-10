@@ -233,9 +233,19 @@ pub(super) struct LiveColumns {
     chunk: chunk_fields::ChunkFields,
     /// The vector fields' graphs over the buffer's vectors.
     graphs: Vec<crate::index_writer::BufferGraphField>,
-    /// Vector fields kept without a graph: their format has none, or a
-    /// vector could not be added to it.
+    /// The IVF vector fields' cluster lists over the buffer's vectors.
+    lists: Vec<BufferListsField>,
+    /// Vector fields kept with neither: their format has none, no flush
+    /// wrote their clusters yet, or a vector could not be added.
     no_graph: Vec<i32>,
+}
+
+/// An IVF vector field's cluster lists over a buffer's vectors
+/// ([`lucene_codecs::buffer_lists::BufferLists`]).
+#[derive(Debug, Clone)]
+pub(super) struct BufferListsField {
+    pub(super) field_number: i32,
+    pub(super) lists: Arc<lucene_codecs::buffer_lists::BufferLists>,
 }
 
 /// Vector ordinals an inserter adds before letting a flush that waits for
@@ -282,6 +292,10 @@ impl LiveColumns {
             if self.no_graph.contains(&number) {
                 continue;
             }
+            if let Some(at) = self.lists.iter().position(|l| l.field_number == number) {
+                self.record_listed(at, doc, &v.value);
+                continue;
+            }
             let at = match self.graphs.iter().position(|g| g.field_number == number) {
                 Some(at) => at,
                 None => match cfg.buffer_graph_for(&v.field_name) {
@@ -293,7 +307,20 @@ impl LiveColumns {
                         self.graphs.len().saturating_sub(1)
                     }
                     None => {
-                        self.no_graph.push(number);
+                        match cfg.buffer_lists_for(&v.field_name) {
+                            Some(lists) => {
+                                self.lists.push(BufferListsField {
+                                    field_number: number,
+                                    lists: Arc::new(lists),
+                                });
+                                self.record_listed(
+                                    self.lists.len().saturating_sub(1),
+                                    doc,
+                                    &v.value,
+                                );
+                            }
+                            None => self.no_graph.push(number),
+                        }
                         continue;
                     }
                 },
@@ -328,9 +355,59 @@ impl LiveColumns {
         }
     }
 
-    /// The vector fields' graphs.
-    pub(super) fn graphs(&self) -> &[crate::index_writer::BufferGraphField] {
-        &self.graphs
+    /// Appends document `doc`'s vector to the cluster lists at `at`, and
+    /// starts routing when none runs.
+    fn record_listed(&mut self, at: usize, doc: i32, value: &crate::index_writer::VectorValue) {
+        let Some(field) = self.lists.get(at) else {
+            return;
+        };
+        if field.lists.push(doc, buffer_vector(value)).is_err() {
+            // Its ordinals no longer follow the documents: searches scan
+            // the field's vectors exactly.
+            let number = field.field_number;
+            field.lists.retire();
+            self.lists.remove(at);
+            self.no_graph.push(number);
+            return;
+        }
+        if field.lists.schedule() {
+            let lists = Arc::clone(&field.lists);
+            rayon::spawn(move || {
+                // A panic stops at this task: the lists stop where it left
+                // them, and the rest is scored exactly.
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    lists.assign_pending(INSERT_BATCH)
+                }));
+                if run.is_err() {
+                    lists.retire();
+                }
+            });
+        }
+    }
+
+    /// Stops the cluster lists for the buffer's flush, which does not read
+    /// them, and lets them go with the vectors they share.
+    pub(super) fn drop_lists(&mut self) {
+        for l in std::mem::take(&mut self.lists) {
+            l.lists.retire();
+        }
+    }
+
+    /// Stops the background work on the buffer's graphs and lists, whose
+    /// documents are discarded.
+    pub(super) fn retire_indexes(&mut self) {
+        self.drop_lists();
+        for g in &self.graphs {
+            g.graph.retire();
+        }
+    }
+
+    /// Takes the vector fields' graphs for the buffer's flush. Only a
+    /// buffer still in its slot is searched through its graphs; a flushing
+    /// or published one reads its vectors as segments, so the graphs, and
+    /// the vectors they share, go with the flush.
+    pub(super) fn take_graphs(&mut self) -> Vec<crate::index_writer::BufferGraphField> {
+        std::mem::take(&mut self.graphs)
     }
 
     /// Records the next document's stored fields.
@@ -461,6 +538,12 @@ impl LiveColumns {
                 self.graphs
                     .iter()
                     .map(|g| g.graph.ram_bytes())
+                    .fold(0usize, usize::saturating_add),
+            )
+            .saturating_add(
+                self.lists
+                    .iter()
+                    .map(|l| l.lists.ram_bytes())
                     .fold(0usize, usize::saturating_add),
             )
     }
@@ -953,8 +1036,21 @@ pub struct ViewBuffer {
     /// By field number, its points' bounds as of the view.
     bounds: HashMap<i32, PointBounds>,
     /// The vector fields' graphs over the buffer, each with how many of
-    /// its vectors the view holds.
+    /// its vectors the view holds. Empty once the buffer left its slot.
     pub vector_graphs: Vec<ViewGraph>,
+    /// The IVF vector fields' cluster lists over the buffer, each with how
+    /// many of its vectors the view holds. Empty once the buffer left its
+    /// slot.
+    pub vector_lists: Vec<ViewLists>,
+}
+
+/// An IVF vector field's cluster lists over a [`ViewBuffer`]'s buffer.
+#[derive(Debug, Clone)]
+pub struct ViewLists {
+    pub field_number: i32,
+    pub lists: Arc<lucene_codecs::buffer_lists::BufferLists>,
+    /// The field's vectors among the view's documents.
+    pub count: i32,
 }
 
 /// A vector field's graph over a [`ViewBuffer`]'s buffer.
@@ -1678,6 +1774,7 @@ impl ConcurrentIndexWriter<'_> {
                     stats: d.postings.live_stats_all(),
                     bounds: HashMap::new(),
                     vector_graphs: Vec::new(),
+                    vector_lists: Vec::new(),
                 })
             })
             .collect()
@@ -1959,6 +2056,16 @@ fn view_buffer(
                 field_number: g.field_number,
                 graph: Arc::clone(&g.graph),
                 count: g.graph.len(),
+            })
+            .collect(),
+        vector_lists: source
+            .columns
+            .lists
+            .iter()
+            .map(|l| ViewLists {
+                field_number: l.field_number,
+                lists: Arc::clone(&l.lists),
+                count: l.lists.len(),
             })
             .collect(),
     })

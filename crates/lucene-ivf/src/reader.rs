@@ -16,7 +16,7 @@ use crate::kmeans::NO_CLUSTER;
 use crate::routing::{Router, Routing};
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
-    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT,
+    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT, VERSION_PARTITIONS,
     VERSION_ROUTING_TREE, VERSION_VECTOR_ENCODING,
 };
 
@@ -183,6 +183,16 @@ pub const DEFAULT_PROBE_FRACTION: f32 = 0.05;
 /// without calibration.
 pub const DEFAULT_RERANK_MULTIPLE: f32 = 10.0;
 
+/// `fraction` of `clusters`, at least one.
+pub(crate) fn probes_for(fraction: f32, clusters: usize) -> usize {
+    // The calibrated fraction is a whole number of clusters over this
+    // count; the slack, relative as the `f32` fraction's rounding is,
+    // keeps that rounding from adding one.
+    let x = f64::from(fraction) * clusters as f64;
+    let n = (x - 1e-6 * x.max(1.0)).ceil();
+    (n.max(1.0) as usize).min(clusters.max(1))
+}
+
 /// The clusters one segment probes when a search spreads `nprobe` probes
 /// over segments holding `total_vectors` vectors in all: the segment's share
 /// by its `segment_vectors`, rounded up, and at least one. Clusters hold a
@@ -276,6 +286,13 @@ pub struct SearchStats {
     pub candidates: usize,
     /// Candidates whose full-precision vectors were read and scored.
     pub reranked: usize,
+    /// Posting entries of the probed clusters that the search's filter
+    /// accepts (every entry without a filter). A vector spilled into a
+    /// second cluster is an entry of each.
+    pub accepted: usize,
+    /// Probed clusters not scored because the filter accepts none of their
+    /// entries.
+    pub clusters_empty: usize,
 }
 
 /// A search's hits, best first, and the work it took.
@@ -285,6 +302,89 @@ pub struct SearchOutput {
     pub hits: Vec<ScoredDoc>,
     /// The work.
     pub stats: SearchStats,
+}
+
+/// How a grouped search ([`IvfReader::search_grouped`]) sorts documents into
+/// groups: the best document of each of the best `k` groups is returned, as
+/// a block-join search returns each parent's best child.
+pub struct Grouping<'a> {
+    /// A document's group (its parent).
+    pub group: &'a dyn Fn(i32) -> i32,
+    /// About how many documents with a vector share a group: the shortlist
+    /// of candidates is this many times the ungrouped one, so siblings that
+    /// score alike do not crowd other groups out of it. At least one.
+    pub spread: usize,
+}
+
+impl std::fmt::Debug for Grouping<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Grouping")
+            .field("spread", &self.spread)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The best `size` groups offered, each by its best candidate: a candidate
+/// replaces its group's when it scores higher, and a new group enters when
+/// it beats the worst group held, which is then dropped.
+struct GroupTop<'a> {
+    size: usize,
+    group: &'a dyn Fn(i32) -> i32,
+    /// Each held group's candidate.
+    best: std::collections::HashMap<i32, Candidate>,
+    /// The held candidates, in order.
+    ranked: std::collections::BTreeSet<Candidate>,
+}
+
+impl<'a> GroupTop<'a> {
+    fn new(size: usize, group: &'a dyn Fn(i32) -> i32) -> Self {
+        GroupTop {
+            size,
+            group,
+            best: std::collections::HashMap::new(),
+            ranked: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// The worst group's score once `size` groups are held.
+    fn floor(&self) -> Option<f32> {
+        if self.ranked.len() < self.size {
+            return None;
+        }
+        self.ranked.first().map(|c| c.score)
+    }
+
+    fn len(&self) -> usize {
+        self.ranked.len()
+    }
+
+    fn offer(&mut self, c: Candidate) {
+        let g = (self.group)(c.doc);
+        if let Some(held) = self.best.get_mut(&g) {
+            if c > *held {
+                self.ranked.remove(held);
+                self.ranked.insert(c);
+                *held = c;
+            }
+            return;
+        }
+        if self.ranked.len() >= self.size {
+            match self.ranked.first() {
+                Some(worst) if c > *worst => {}
+                _ => return,
+            }
+            if let Some(worst) = self.ranked.pop_first() {
+                self.best.remove(&(self.group)(worst.doc));
+            }
+        }
+        self.best.insert(g, c);
+        self.ranked.insert(c);
+    }
+
+    /// The groups' candidates, best first.
+    fn into_sorted(self) -> Vec<Candidate> {
+        self.ranked.into_iter().rev().collect()
+    }
 }
 
 /// One field of an IVF index.
@@ -322,6 +422,12 @@ pub struct IvfField {
     /// Each slot's document, from the doc table, kept in memory: posting
     /// entries name slots, and a filter or a hit needs the document.
     slot_docs: Vec<i32>,
+    /// Whether the field was clustered per partition
+    /// ([`crate::IvfWriter::add_partitioned_field`]).
+    partitioned: bool,
+    /// Each cluster's lowest and highest document, for a field clustered
+    /// per partition without spilled entries; empty otherwise.
+    doc_ranges: Vec<(i32, i32)>,
     postings_offset: usize,
     vectors_offset: usize,
     doc_table_offset: usize,
@@ -373,6 +479,8 @@ impl IvfField {
             primary_starts: Vec::new(),
             block_starts,
             slot_docs,
+            partitioned: false,
+            doc_ranges: Vec::new(),
             postings_offset,
             vectors_offset: 0,
             doc_table_offset: 0,
@@ -405,13 +513,7 @@ impl IvfField {
         let fraction = self
             .calibration
             .map_or(DEFAULT_PROBE_FRACTION, |c| c.probe_fraction);
-        let clusters = self.clusters();
-        // The calibrated fraction is a whole number of clusters over this
-        // count; the slack, relative as the `f32` fraction's rounding is,
-        // keeps that rounding from adding one.
-        let x = f64::from(fraction) * clusters as f64;
-        let n = (x - 1e-6 * x.max(1.0)).ceil();
-        (n.max(1.0) as usize).min(clusters.max(1))
+        probes_for(fraction, self.clusters())
     }
 
     /// The most candidates [`Rerank::Auto`] reranks for `k` hits: the
@@ -501,6 +603,13 @@ impl IvfField {
     /// spilled entries.
     pub fn entries(&self) -> usize {
         self.starts.last().copied().unwrap_or(0)
+    }
+
+    /// Each cluster's lowest and highest document, for a field clustered per
+    /// partition ([`crate::IvfWriter::add_partitioned_field`]); `None`
+    /// otherwise.
+    pub fn doc_ranges(&self) -> Option<&[(i32, i32)]> {
+        (!self.doc_ranges.is_empty()).then_some(self.doc_ranges.as_slice())
     }
 
     /// Cluster `c`'s entry count (its own vectors and those spilled into it).
@@ -810,6 +919,15 @@ fn read_field(
             tree_parents = Some(parents);
         }
     }
+    let partitioned = if version >= VERSION_PARTITIONS {
+        match input.read_byte()? {
+            0 => false,
+            1 => true,
+            b => return corrupt(format!("field {number}: partitioned flag {b}")),
+        }
+    } else {
+        false
+    };
     let (block_starts, postings_bytes) = block_layout(quantizer.as_ref(), &starts)?;
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
@@ -850,6 +968,8 @@ fn read_field(
         primary_starts,
         block_starts,
         slot_docs: Vec::new(),
+        partitioned,
+        doc_ranges: Vec::new(),
         postings_offset,
         vectors_offset,
         doc_table_offset,
@@ -877,6 +997,25 @@ fn block_layout(quantizer: &dyn Quantizer, starts: &[usize]) -> Result<(Vec<usiz
         block_starts.push(postings_bytes);
     }
     Ok((block_starts, postings_bytes))
+}
+
+/// Each cluster's lowest and highest document (its own vectors are its
+/// slots `starts[c]..starts[c + 1]`), for a field clustered per partition;
+/// empty for other fields and for spilled entries.
+// ARITH: starts are prefix sums bounded by the slot count.
+#[allow(clippy::arithmetic_side_effects)]
+fn doc_ranges(f: &IvfField) -> Vec<(i32, i32)> {
+    if !f.partitioned || f.entries() != f.count || f.slot_docs.is_empty() {
+        return Vec::new();
+    }
+    (0..f.clusters())
+        .map(|c| {
+            let docs = &f.slot_docs[f.starts[c]..f.starts[c + 1]];
+            let lo = docs.iter().copied().min().unwrap_or(0);
+            let hi = docs.iter().copied().max().unwrap_or(-1);
+            (lo, hi)
+        })
+        .collect()
 }
 
 /// Reads a field's doc table and inverts it: each slot's document. Checks
@@ -1116,6 +1255,17 @@ pub(crate) fn reach(candidates: &[Candidate]) -> Vec<f32> {
     reach
 }
 
+/// Candidates as hits, in the same order.
+fn to_hits(candidates: Vec<Candidate>) -> Vec<ScoredDoc> {
+    candidates
+        .into_iter()
+        .map(|c| ScoredDoc {
+            doc: c.doc,
+            score: c.score,
+        })
+        .collect()
+}
+
 /// The higher of two optional floors.
 fn higher(a: Option<f32>, b: Option<f32>) -> Option<f32> {
     match (a, b) {
@@ -1214,6 +1364,7 @@ impl IvfField {
         };
         let query_norm = simd::dot_f32(query, query).sqrt();
         let mut scores = Vec::new();
+        let mut docs: Vec<(u32, i32, bool)> = Vec::new();
         // Margins only for the codes kept; off for good once unknown.
         let mut bounded = bounds;
         // Not the clusters the shared floor already prunes: they are skipped
@@ -1232,11 +1383,32 @@ impl IvfField {
                     continue;
                 }
             }
-            stats.clusters_scanned += 1;
             let (offset, len) = self.block_range(c);
             let block = postings.read(offset, len)?;
             let size = self.cluster_size(c);
             let (slots, codes) = block.split_at(size * 4);
+            // Under a filter, each entry's document and verdict come first,
+            // from the slots alone: a cluster the filter accepts nothing of
+            // (most of them, for a small or clustered filter) is not scored.
+            // Without one, only the competitive entries' documents are read.
+            let accepted = match accept {
+                Some(a) => {
+                    docs.clear();
+                    for i in 0..size {
+                        let slot = le_i32(slots, i * 4) as u32;
+                        let doc = self.slot_doc(c, slot)?;
+                        docs.push((slot, doc, a(doc)));
+                    }
+                    docs.iter().filter(|d| d.2).count()
+                }
+                None => size,
+            };
+            stats.accepted += accepted;
+            if accepted == 0 {
+                stats.clusters_empty += 1;
+                continue;
+            }
+            stats.clusters_scanned += 1;
             if uses_centroid {
                 self.target(scorer.as_mut(), c);
             }
@@ -1246,13 +1418,16 @@ impl IvfField {
                 if !top.competitive(score) {
                     continue;
                 }
-                let slot = le_i32(slots, i * 4) as u32;
-                let Some(&doc) = self.slot_docs.get(slot as usize) else {
-                    return corrupt(format!("cluster {c}: slot {slot} out of range"));
+                let (slot, doc) = if accept.is_some() {
+                    let (slot, doc, ok) = docs[i];
+                    if !ok {
+                        continue;
+                    }
+                    (slot, doc)
+                } else {
+                    let slot = le_i32(slots, i * 4) as u32;
+                    (slot, self.slot_doc(c, slot)?)
                 };
-                if accept.is_some_and(|a| !a(doc)) {
-                    continue;
-                }
                 let margin = if bounded {
                     scorer.error_bound(codes, i, score)
                 } else {
@@ -1274,6 +1449,16 @@ impl IvfField {
         let candidates = top.into_order(order);
         stats.candidates = candidates.len();
         Ok(candidates)
+    }
+}
+
+impl IvfField {
+    /// The document of cluster `c`'s entry in `slot`.
+    fn slot_doc(&self, c: usize, slot: u32) -> Result<i32> {
+        match self.slot_docs.get(slot as usize) {
+            Some(&doc) => Ok(doc),
+            None => corrupt(format!("cluster {c}: slot {slot} out of range")),
+        }
     }
 }
 
@@ -1329,6 +1514,7 @@ impl IvfReader {
                 return corrupt(format!("field {} recorded twice", field.number));
             }
             field.slot_docs = slot_docs(vectors.as_ref(), &field)?;
+            field.doc_ranges = doc_ranges(&field);
             fields.push(field);
         }
         codec_util::check_footer(&mut input, meta.len())?;
@@ -1610,6 +1796,65 @@ impl IvfReader {
         accept: Option<&dyn Fn(i32) -> bool>,
         shared: Option<&SharedThreshold>,
     ) -> Result<SearchOutput> {
+        self.search_among(field, query, params, accept, None, shared, None)
+    }
+
+    /// [`IvfReader::search_with`] probing only `clusters` (their numbers,
+    /// in any order): the nearest of them by exact centroid score. A
+    /// filter whose documents lie in a few clusters' document ranges
+    /// ([`IvfField::doc_ranges`]) names those, so the probes neither route
+    /// over nor read the clusters of other documents.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfReader::search_with`].
+    pub fn search_within(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        clusters: &[usize],
+        shared: Option<&SharedThreshold>,
+    ) -> Result<SearchOutput> {
+        self.search_among(field, query, params, accept, Some(clusters), shared, None)
+    }
+
+    /// [`IvfReader::search_with`] returning the best document of each of the
+    /// best `params.k` groups `grouping` sorts the documents into (a
+    /// block-join search's best child per parent), best first, probing only
+    /// `clusters` when given (as [`IvfReader::search_within`]). The probes
+    /// are the same; the shortlist is `grouping.spread` times longer, and the
+    /// rerank keeps one document per group, stopping once no candidate left
+    /// can beat the `k`-th group. No threshold is shared: a group's score
+    /// bounds no other search's.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfReader::search`].
+    pub fn search_grouped(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        clusters: Option<&[usize]>,
+        grouping: &Grouping<'_>,
+    ) -> Result<SearchOutput> {
+        self.search_among(field, query, params, accept, clusters, None, Some(grouping))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_among(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        among: Option<&[usize]>,
+        shared: Option<&SharedThreshold>,
+        grouping: Option<&Grouping<'_>>,
+    ) -> Result<SearchOutput> {
         let f = self.field_or_err(field)?;
         let query = self.prepare_query(f, query)?;
         let mut stats = SearchStats::default();
@@ -1628,12 +1873,16 @@ impl IvfReader {
             Rerank::Bounded { cap } => (cap, true),
             Rerank::Auto => (f.auto_rerank(params.k), true),
         };
-        let probes = f.probe_order(&query, nprobe);
+        let probes = match among {
+            Some(clusters) => f.router.route_among(&f.centroids, &query, clusters, nprobe),
+            None => f.probe_order(&query, nprobe),
+        };
+        let spread = grouping.map_or(1, |g| g.spread.max(1));
         let candidates = f.scan(
             self.postings.as_ref(),
             &query,
             &probes,
-            params.k.max(rerank),
+            params.k.max(rerank).saturating_mul(spread),
             accept,
             early_stop && rerank > 0,
             shared,
@@ -1645,17 +1894,17 @@ impl IvfReader {
             },
             &mut stats,
         )?;
-        let hits = if rerank == 0 {
-            candidates
-                .into_iter()
-                .take(params.k)
-                .map(|c| ScoredDoc {
-                    doc: c.doc,
-                    score: c.score,
-                })
-                .collect()
-        } else {
-            self.rerank(f, &query, &candidates, params.k, shared, &mut stats)?
+        let hits = match (grouping, rerank) {
+            (Some(g), 0) => {
+                let mut top = GroupTop::new(params.k, g.group);
+                for c in candidates {
+                    top.offer(c);
+                }
+                to_hits(top.into_sorted())
+            }
+            (Some(g), _) => self.rerank_grouped(f, &query, &candidates, params.k, g, &mut stats)?,
+            (None, 0) => to_hits(candidates.into_iter().take(params.k).collect()),
+            (None, _) => self.rerank(f, &query, &candidates, params.k, shared, &mut stats)?,
         };
         Ok(SearchOutput { hits, stats })
     }
@@ -1731,6 +1980,53 @@ impl IvfReader {
                 score: c.score,
             })
             .collect())
+    }
+
+    /// [`IvfReader::rerank`] keeping each group's best candidate: the best
+    /// `k` groups by exact score. A candidate whose optimistic score is
+    /// below the `k`-th group's exact score can neither bring in a new group
+    /// nor raise a held one past it, so the same early stop holds.
+    // ARITH: candidate indices are below `candidates.len()`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn rerank_grouped(
+        &self,
+        f: &IvfField,
+        query: &[f32],
+        candidates: &[Candidate],
+        k: usize,
+        grouping: &Grouping<'_>,
+        stats: &mut SearchStats,
+    ) -> Result<Vec<ScoredDoc>> {
+        let mut exact = GroupTop::new(k, grouping.group);
+        let reach = reach(candidates);
+        let mut v = Vec::with_capacity(f.dimension);
+        const AHEAD: usize = 8;
+        let ahead = |c: Option<&Candidate>| {
+            if let Some(c) = c {
+                self.vectors
+                    .prefetch(f.vector_offset(c.slot as usize), f.vector_len());
+            }
+        };
+        for c in candidates.iter().take(AHEAD) {
+            ahead(Some(c));
+        }
+        for (i, c) in candidates.iter().enumerate() {
+            if let Some(floor) = exact.floor() {
+                if reach[i] < floor {
+                    break;
+                }
+                if c.score + c.bound < floor {
+                    ahead(candidates.get(i + AHEAD));
+                    continue;
+                }
+            }
+            ahead(candidates.get(i + AHEAD));
+            let score = self.exact_score(f, c.slot as usize, query, &mut v)?;
+            stats.reranked += 1;
+            exact.offer(Candidate { score, ..*c });
+        }
+        debug_assert!(exact.len() <= k);
+        Ok(to_hits(exact.into_sorted()))
     }
 
     /// The exact `k` nearest documents to `query` among those `accept` lets

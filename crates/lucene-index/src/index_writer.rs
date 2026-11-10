@@ -847,6 +847,10 @@ pub(crate) struct IndexingConfig {
     /// for the next round (see [`crate::reader_pool`]). Shared, not copied,
     /// when the configuration is.
     reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
+    /// Each IVF field's clusters from the last flush that wrote it, which
+    /// live search routes buffered vectors to. Shared, not copied, when the
+    /// configuration is.
+    ivf_clusters: std::sync::Arc<crate::ivf_vectors::ClusterSink>,
     fields: Vec<FieldInfo>,
     /// Name and number lookups into `fields`, kept in step by
     /// [`IndexingConfig::push_field`] (the only way `fields` grows).
@@ -993,6 +997,10 @@ pub(crate) struct IndexingConfig {
     /// high-compression LZ4 match finder -- see
     /// [`IndexWriter::set_merge_lz4_high_compression`].
     merge_lz4_high_compression: bool,
+    /// The fewest vectors an IVF field clusters a partition of the index
+    /// sort's first field alone with, `None` for no per-partition clusters
+    /// -- see [`IndexWriter::set_ivf_partition_clusters`].
+    ivf_partition_clusters: Option<usize>,
     /// The least source `.fdt` bytes for which a merge trains a paged zstd
     /// dictionary -- see [`IndexWriter::set_zstd_dictionary_min_bytes`].
     zstd_dictionary_min_bytes: u64,
@@ -3246,6 +3254,7 @@ impl IndexingConfig {
                 default_doc_values_format: self.default_doc_values_format,
                 default_postings_format: self.default_postings_format,
                 stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
+                ivf_partition_clusters: self.ivf_partition_clusters,
                 lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
                 zstd_dictionary_min_bytes: self.zstd_dictionary_min_bytes,
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
@@ -3466,6 +3475,47 @@ impl IndexingConfig {
             segment_writer::permute_in_place(explicit, &new_to_old);
         }
         Ok(Some(new_to_old))
+    }
+
+    /// `starts` with the writer's partition size, for IVF fields clustered
+    /// per partition.
+    pub(crate) fn ivf_partitions<'a>(
+        &self,
+        starts: Option<&'a [i32]>,
+    ) -> Option<crate::ivf_vectors::Partitions<'a>> {
+        Some(crate::ivf_vectors::Partitions {
+            starts: starts?,
+            min_vectors: self.ivf_partition_clusters?,
+        })
+    }
+
+    /// Each partition's first document in a sorted buffer, for IVF fields
+    /// clustered per partition ([`IndexWriter::set_ivf_partition_clusters`]):
+    /// where the index sort's first key changes. `None` when the setting is
+    /// off, the index is unsorted, or the buffer holds blocks or a range of
+    /// a packed buffer.
+    pub(crate) fn ivf_partition_starts(
+        &self,
+        buf: &DocumentBuffer<'_>,
+    ) -> Result<Option<Vec<i32>>> {
+        let Some(first) = self.index_sort.as_ref().and_then(|s| s.first()) else {
+            return Ok(None);
+        };
+        if self.ivf_partition_clusters.is_none() || buf.has_blocks || buf.limit.is_some() {
+            return Ok(None);
+        }
+        let keys = match buf.explicit {
+            ExplicitDocs::Fields(fields) if self.explicit => self.explicit_sort_keys(fields, first),
+            _ if self.explicit => return Ok(None),
+            _ => self.buffer_sort_keys(buf.docs, first)?,
+        };
+        let mut starts = Vec::new();
+        for (doc, key) in keys.iter().enumerate() {
+            if doc == 0 || keys.get(doc.wrapping_sub(1)) != Some(key) {
+                starts.push(i32::try_from(doc).unwrap_or(i32::MAX));
+            }
+        }
+        Ok(Some(starts))
     }
 
     /// [`Self::buffer_sort_keys`] for explicit documents: each document's
@@ -4163,11 +4213,14 @@ impl IndexingConfig {
                 .find(|(n, _)| *n == name)
                 .map_or_else(|| self.knn_vectors_format_for(name), |(_, f)| *f)
         };
+        let partition_starts = self.ivf_partition_starts(buf)?;
+        let partitions = self.ivf_partitions(partition_starts.as_deref());
         let build_vectors = || -> Result<_> {
             Ok(if self.vector_fields.is_empty() {
                 None
             } else {
                 IndexWriter::build_vectors_output(
+                    partitions,
                     buf.vectors,
                     &self.vector_fields,
                     buf.docs.len() as i32,
@@ -4175,6 +4228,7 @@ impl IndexingConfig {
                     self.knn_vectors_direct(),
                     buf.limit.is_none(),
                     buf.graphs,
+                    &self.ivf_clusters,
                     &segment_id,
                 )?
             })
@@ -6304,6 +6358,22 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().merge_lz4_high_compression = on;
     }
 
+    /// Clusters the vectors of IVF fields ([`KnnVectorsFormat::Ivf`]) per
+    /// partition of an index sorted by a partition field (the index sort's
+    /// first field), at flush and merge: each partition of at least
+    /// `min_vectors` vectors on its own, and the smaller ones between them
+    /// together; `None` (the default) clusters each field as a whole. A
+    /// search filtered to one partition then probes only its clusters: on
+    /// 8M vectors, tenants of 400k and 1.5M searched about 4x and 1.5x
+    /// faster at the same or higher recall, with `min_vectors` 20,000,
+    /// while unfiltered searches took 2.3x as long (`docs/benchmarks/ivf.md`,
+    /// "Clusters per partition"). No effect without an index sort.
+    ///
+    /// [`KnnVectorsFormat::Ivf`]: per_field_knn_vectors::KnnVectorsFormat::Ivf
+    pub fn set_ivf_partition_clusters(&mut self, min_vectors: Option<usize>) {
+        self.cfg_mut().ivf_partition_clusters = min_vectors;
+    }
+
     /// The least `.fdt` bytes, summed over a merge's sources, for which the
     /// merged segment of a paged zstd codec
     /// ([`lucene_codecs::stored_fields::Mode::ZstdPaged`]) gets a trained
@@ -6628,11 +6698,13 @@ impl<'d> IndexWriter<'d> {
                 default_doc_values_format: Default::default(),
                 default_postings_format: Default::default(),
                 merge_lz4_high_compression: false,
+                ivf_partition_clusters: None,
                 zstd_dictionary_min_bytes:
                     lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
                 knn_vectors_formats: Vec::new(),
                 codec: None,
                 reader_pool: std::sync::Arc::default(),
+                ivf_clusters: std::sync::Arc::default(),
                 merged_segment_warmer: None,
             }),
             segment_infos,
@@ -7867,6 +7939,27 @@ impl IndexingConfig {
             hnsw::DEFAULT_RAND_SEED,
         )
         .ok()
+    }
+
+    /// Cluster lists for live search over a buffer's vectors of field
+    /// `name`, routed to the clusters its last flush wrote: `None` when its
+    /// format is not IVF, its vectors are not floats, or no flush wrote it
+    /// yet.
+    pub(crate) fn buffer_lists_for(
+        &self,
+        name: &str,
+    ) -> Option<lucene_codecs::buffer_lists::BufferLists> {
+        let (number, dimension, encoding, similarity) = self.vector_field_shape(name)?;
+        if encoding != lucene_codecs::field_infos::VectorEncoding::Float32 {
+            return None;
+        }
+        self.knn_vectors_format_for(name).ivf_params()?;
+        let router = self.ivf_clusters.get(number)?;
+        Some(lucene_codecs::buffer_lists::BufferLists::new(
+            similarity,
+            usize::try_from(dimension).ok()?,
+            router,
+        ))
     }
 
     /// [`IndexWriter::add_document_with_vectors`]' checks of one document's
@@ -10942,6 +11035,7 @@ impl IndexWriter<'_> {
     /// both readers search exhaustively with exact scores.
     #[allow(clippy::too_many_arguments)]
     fn build_vectors_output(
+        partitions: Option<crate::ivf_vectors::Partitions<'_>>,
         pending_vectors: &[Vec<DocumentVector>],
         configs: &[VectorFieldConfig],
         max_doc: i32,
@@ -10949,6 +11043,7 @@ impl IndexWriter<'_> {
         direct: bool,
         indexes: bool,
         graphs: &[BufferGraphField],
+        clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         // Empty when no buffered document carries a vector (a buffer of
@@ -11057,8 +11152,10 @@ impl IndexWriter<'_> {
                 max_doc,
                 indexes,
                 graphs,
+                clusters,
                 segment_id,
                 &suffix,
+                partitions,
             )?;
             for (number, name) in &names {
                 if group.field_numbers.contains(number) {
@@ -11125,14 +11222,17 @@ impl IndexWriter<'_> {
     /// the graph when it has one (`Lucene99HnswVectorsWriter`, `.vem`/`.vex`)
     /// -- built on the raw vectors, which is what Java's quantized format
     /// hands the graph at flush too.
+    #[allow(clippy::too_many_arguments)]
     fn build_vector_group(
         flat_fields: &[FlatVectorsField],
         format: per_field_knn_vectors::KnnVectorsFormat,
         max_doc: i32,
         indexes: bool,
         graphs: &[BufferGraphField],
+        clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
+        partitions: Option<crate::ivf_vectors::Partitions<'_>>,
     ) -> Result<Vec<(&'static str, Vec<u8>)>> {
         let (vec_bytes, vemf_bytes) =
             vectors::write_flat_vectors(flat_fields, max_doc, segment_id, suffix)?;
@@ -11176,12 +11276,36 @@ impl IndexWriter<'_> {
                             dimension: usize::try_from(field.dimension).unwrap_or(0),
                             docs: &field.docs,
                             vectors: values,
+                            partitions,
                         },
                         &[],
                     )?;
                 }
             }
+            clusters.record(ivf.clusters());
             files.extend(ivf.finish().into_iter().flatten());
+        }
+
+        if indexes && format.hnsw_quantizer().is_some() {
+            let fields: Vec<crate::hnsw_quant_vectors::CodesField<'_>> = flat_fields
+                .iter()
+                .filter_map(|field| match &field.values {
+                    FieldVectorData::Float32(values) => {
+                        Some(crate::hnsw_quant_vectors::CodesField {
+                            number: field.field_number,
+                            similarity: field.similarity,
+                            dimension: usize::try_from(field.dimension).unwrap_or(0),
+                            vectors: values,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            if let Some(codes) =
+                crate::hnsw_quant_vectors::write(format, &fields, segment_id, suffix)?
+            {
+                files.extend(codes);
+            }
         }
 
         if let Some((m, beam_width)) = format.graph() {

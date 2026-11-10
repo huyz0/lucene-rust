@@ -773,9 +773,10 @@ pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 /// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
 /// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>`,
 /// `sq:<scalar encoding wire number>` or
-/// `ivf:<target_cluster_size>:<rerank encoding>` (1-bit codes) or
-/// `ivf:<target_cluster_size>:<rerank encoding>:<quantizer>`
-/// (`IVF_QUANTIZERS` wire number); `None` for anything else.
+/// `ivf:<target_cluster_size>:<rerank encoding>` (1-bit codes),
+/// `ivf:<target_cluster_size>:<rerank encoding>:<quantizer>` or
+/// `hnsw_rq:<quantizer>:<max_conn>:<beam_width>` (`IVF_QUANTIZERS` wire
+/// number); `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let parts: Vec<&str> = value.split(':').collect();
     let int = |s: &str| s.parse::<i32>().ok();
@@ -792,6 +793,9 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
         ["sq", e] => Some(KnnVectorsFormat::scalar_quantized(
             ScalarEncoding::from_wire_number(int(e)?)?,
         )),
+        ["hnsw_rq", q, m, beam] => {
+            KnnVectorsFormat::hnsw_quantized(q.parse().ok()?, int(m)?, int(beam)?).ok()
+        }
         ["ivf", size, e] => KnnVectorsFormat::ivf(size.parse().ok()?, e.parse().ok()?).ok(),
         ["ivf", size, e, q] => {
             KnnVectorsFormat::ivf_quantized(size.parse().ok()?, e.parse().ok()?, q.parse().ok()?)
@@ -938,6 +942,11 @@ fn decode_vector_schema(
             let rerank = c.u8("rerank encoding")?;
             let quantizer = c.u8("IVF quantizer")?;
             Some(KnnVectorsFormat::ivf_quantized(size, rerank, quantizer).map_err(invalid)?)
+        }
+        7 => {
+            let (m, beam) = graph(c)?;
+            let quantizer = c.u8("HNSW quantizer")?;
+            Some(KnnVectorsFormat::hnsw_quantized(quantizer, m, beam).map_err(invalid)?)
         }
         _ => return Err(decode_error("vectors format")),
     };
@@ -5264,6 +5273,8 @@ mod tests {
                 // `m` is the cluster size, the rerank encoding f16, the
                 // quantizer bbq.
                 6 => b.i32(m).u8(1).u8(0),
+                // The quantizer erq2.
+                7 => b.i32(m).i32(100).u8(4),
                 _ => b,
             };
             b.u8(0).i32(0).0
@@ -5277,6 +5288,14 @@ mod tests {
             );
         }
         assert!(decode_field(&schema(0, 6, 8)).is_err());
+        // Quantized HNSW: any field (a byte one gets the graph alone).
+        for encoding in [0, 1] {
+            assert_eq!(
+                decode_field(&schema(encoding, 7, 16)).unwrap().1,
+                Some(KnnVectorsFormat::hnsw_quantized(4, 16, 100).unwrap())
+            );
+        }
+        assert!(decode_field(&schema(0, 7, 0)).is_err());
         assert!(decode_field(&schema(0, 6, -1)).is_err());
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
@@ -5329,6 +5348,10 @@ mod tests {
             Some(KnnVectorsFormat::ivf_quantized(384, 1, 6).unwrap())
         );
         assert_eq!(
+            parse_vectors_format("hnsw_rq:11:16:100"),
+            Some(KnnVectorsFormat::hnsw_quantized(11, 16, 100).unwrap())
+        );
+        assert_eq!(
             parse_vectors_format("sq:1"),
             Some(KnnVectorsFormat::scalar_quantized(
                 ScalarEncoding::PackedNibble
@@ -5344,8 +5367,11 @@ mod tests {
             "ivf:8:0",
             "ivf:384:4",
             "ivf:384",
-            "ivf:384:1:11",
+            "ivf:384:1:12",
             "ivf:384:1:x",
+            "hnsw_rq:12:16:100",
+            "hnsw_rq:4:0:100",
+            "hnsw_rq:4:16",
         ] {
             assert_eq!(parse_vectors_format(bad), None, "{bad}");
         }
@@ -8053,10 +8079,42 @@ mod tests {
     /// top 10.
     #[test]
     fn a_view_searches_the_buffer_graph() {
+        let recall = buffer_index_knn("engine-writer-live-knn-graph", "hnsw:8:50", 300, 0, false);
+        // Uniform random 64-d vectors under M 8 and 50 candidates are hard
+        // for any graph: the flushed segment, which holds the same graph,
+        // finds about as many.
+        assert!(
+            recall.0 >= 0.8 && recall.0 >= recall.1 - 0.05,
+            "recall {recall:?}"
+        );
+    }
+
+    /// **Realtime k-NN through a buffer's IVF cluster lists.** After a
+    /// commit wrote an IVF field's clusters, the next buffer routes its
+    /// vectors to them, and a view's search probes them: exact scores,
+    /// deletes and filters honoured, recall at least the flushed segment's
+    /// at the same probes.
+    #[test]
+    fn a_view_searches_the_buffer_ivf_lists() {
+        let recall = buffer_index_knn("engine-writer-live-knn-ivf", "ivf:16:0", 2000, 32, true);
+        assert!(recall.0 >= recall.1 - 0.02, "recall {recall:?}");
+    }
+
+    /// A view's recall@10 over a buffer of 7000 vectors kept with an index
+    /// of format `format` (graph, or with `lists` IVF lists) after
+    /// `committed` committed ones, and the recall once all are flushed, at
+    /// `nprobes`.
+    fn buffer_index_knn(
+        name: &str,
+        format: &str,
+        committed: usize,
+        nprobes: i32,
+        lists: bool,
+    ) -> (f64, f64) {
         use crate::live::{
             ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_knn,
         };
-        let tmp = empty_index("engine-writer-live-knn-graph");
+        let tmp = empty_index(name);
         let h = open_with(&tmp, 256.0, OPEN_LIVE_SEARCH, i32::MAX);
         let f = setup(h);
         let spec = Blob::default()
@@ -8072,14 +8130,19 @@ mod tests {
             .i32(0)
             .i32(64)
             .u8(0)
-            .u8(0)
-            .u8(1)
-            .i32(8)
-            .i32(50)
+            .u8(0);
+        // HNSW M 8, beam 50; or IVF clusters of 16, exact rerank vectors,
+        // bbq codes.
+        let spec = if lists {
+            spec.u8(6).i32(16).u8(0).u8(0)
+        } else {
+            spec.u8(1).i32(8).i32(50)
+        };
+        let spec = spec
             .u8(0)
             .i32(1)
             .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
-            .bytes(b"hnsw:8:50")
+            .bytes(format.as_bytes())
             .0;
         register(h, &spec).unwrap();
         let word = |i: usize| if i.is_multiple_of(2) { "even" } else { "odd" };
@@ -8096,11 +8159,11 @@ mod tests {
             }
             assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
         };
-        add(0, 300);
+        add(0, committed);
         let gen = commit_settled(h);
         let reader = open_reader(&tmp, gen);
         let buffered = 7000;
-        add(300, 300 + buffered);
+        add(committed, committed + buffered);
         let b = doc(
             Blob::default()
                 .u8(OP_SOFT_UPDATE)
@@ -8112,7 +8175,7 @@ mod tests {
             &f,
             "d4000",
             &[],
-            (300 + buffered) as i64,
+            (committed + buffered) as i64,
             true,
         );
         assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
@@ -8125,14 +8188,24 @@ mod tests {
                 .buffers
                 .iter()
                 .flat_map(|b| &b.vector_graphs)
-                .all(|g| g.graph.inserted() == g.graph.len());
-            let graphs = v
+                .all(|g| g.graph.inserted() == g.graph.len())
+                && v.buffers
+                    .iter()
+                    .flat_map(|b| &b.vector_lists)
+                    .all(|l| l.lists.assigned() == l.lists.len());
+            let kept = v
                 .buffers
                 .iter()
-                .map(|b| b.vector_graphs.len())
+                .map(|b| {
+                    if lists {
+                        b.vector_lists.len()
+                    } else {
+                        b.vector_graphs.len()
+                    }
+                })
                 .sum::<usize>();
             w.writer().close_live_view(&v);
-            assert_eq!(graphs, 1, "the buffer keeps a graph of its vectors");
+            assert_eq!(kept, 1, "the buffer keeps an index of its vectors");
             if done {
                 break;
             }
@@ -8164,7 +8237,7 @@ mod tests {
                 None => request.u8(0),
                 Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
             };
-            let request = request.u8(0).i32(0).0;
+            let request = request.u8(0).i32(nprobes).0;
             let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
             // SAFETY: live request and buffers of 64.
             let rc = unsafe {
@@ -8200,7 +8273,7 @@ mod tests {
         };
         let knn =
             |target: &[f32], k: i32, filter: Option<&str>| search(reader, view, target, k, filter);
-        let total = 300 + buffered;
+        let total = committed + buffered;
         type Search<'a> = &'a dyn Fn(&[f32], i32, Option<&str>) -> Vec<(i32, f32)>;
         let recall = |knn: Search<'_>| {
             let (mut found, mut wanted) = (0usize, 0usize);
@@ -8237,19 +8310,13 @@ mod tests {
         assert_eq!(ffi_live_view_close(view), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
 
-        // Uniform random 64-d vectors under M 8 and 50 candidates are hard
-        // for any graph: the flushed segment, which holds the same graph,
-        // finds about as many.
         let all = commit_settled(h);
         let flushed = open_reader(&tmp, all);
         let after = recall(&|t: &[f32], k: i32, f: Option<&str>| search(flushed, 0, t, k, f));
-        assert!(
-            live >= 0.8 && live >= after - 0.05,
-            "recall {live}, flushed {after}"
-        );
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(flushed), 0);
         ffi_engine_writer_close(h);
         check(&tmp);
+        (live, after)
     }
 
     /// **A vector field is written in its mapping's format and searched
