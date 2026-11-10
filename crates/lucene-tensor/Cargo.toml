@@ -1,0 +1,24 @@
+[package]
+name = "lucene-tensor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+thiserror.workspace = true
+
+[dev-dependencies]
+lucene-store = { path = "../lucene-store" }
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
+criterion.workspace = true
+
+[[bench]]
+name = "max_sim"
+harness = false
+
+[lints]
+workspace = true
