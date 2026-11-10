@@ -671,12 +671,13 @@ fn version_two_fields_have_no_radii_or_calibration() {
         out
     };
     let v2 = lucene_ivf::VERSION_VECTOR_ENCODING;
-    // Radii, calibration, and the zero routing parent count.
+    // Radii, calibration, the zero routing parent count and the
+    // partitioned flag.
     let meta = rewrite(
         &files.meta,
         lucene_ivf::META_CODEC,
         v2,
-        clusters * 4 + 9 + 1,
+        clusters * 4 + 9 + 1 + 1,
     );
     let postings = rewrite(&files.postings, lucene_ivf::POSTINGS_CODEC, v2, 0);
     let vectors = rewrite(&files.vectors, lucene_ivf::VECTORS_CODEC, v2, 0);
@@ -740,10 +741,10 @@ fn corrupt_radii_and_calibration_are_rejected() {
         )
     };
     edit(&|_| {}).unwrap();
-    // The payload ends with the calibration (9 bytes) and a zero routing
-    // parent count (1).
-    let flag_at = |p: &Vec<u8>| p.len() - 10;
-    let radius_at = |p: &Vec<u8>| p.len() - 10 - clusters * 4;
+    // The payload ends with the calibration (9 bytes), a zero routing
+    // parent count (1) and the partitioned flag (1).
+    let flag_at = |p: &Vec<u8>| p.len() - 11;
+    let radius_at = |p: &Vec<u8>| p.len() - 11 - clusters * 4;
     let set_f32 = |p: &mut Vec<u8>, at: usize, x: f32| {
         p[at..at + 4].copy_from_slice(&x.to_le_bytes());
     };
@@ -760,6 +761,13 @@ fn corrupt_radii_and_calibration_are_rejected() {
         ),
         (Box::new(|p| set_f32(p, flag_at(p) + 1, 0.0)), "calibration"),
         (Box::new(|p| set_f32(p, flag_at(p) + 5, 0.5)), "calibration"),
+        (
+            Box::new(|p| {
+                let last = p.len() - 1;
+                p[last] = 2;
+            }),
+            "partitioned flag",
+        ),
         (
             Box::new(|p| {
                 let at = radius_at(p);
@@ -780,7 +788,7 @@ fn corrupt_radii_and_calibration_are_rejected() {
         let at = flag_at(p);
         p[at] = 0;
         p.truncate(at + 1);
-        p.push(0);
+        p.extend_from_slice(&[0, 0]);
     })
     .unwrap();
     assert_eq!(r.field(1).unwrap().calibration(), None);
