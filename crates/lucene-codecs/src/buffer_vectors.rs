@@ -340,7 +340,8 @@ impl BufferGraph {
     #[allow(clippy::arithmetic_side_effects)]
     pub fn ram_bytes(&self) -> usize {
         let m = usize::try_from(self.m).unwrap_or(0);
-        let per_vector = 2 * std::mem::size_of::<OnceLock<BufferVector>>() + (2 * m + 1) * 8 + 64;
+        // The level-0 list's `NeighborArray` and the node's slot: 112 bytes.
+        let per_vector = 2 * std::mem::size_of::<OnceLock<BufferVector>>() + (2 * m + 1) * 8 + 112;
         usize::try_from(self.len()).unwrap_or(0) * per_vector
     }
 
