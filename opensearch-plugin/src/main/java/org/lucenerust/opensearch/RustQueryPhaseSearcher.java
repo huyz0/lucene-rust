@@ -121,7 +121,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     public AggregationProcessor aggregationProcessor(SearchContext searchContext) {
         AggregationProcessor processor = fallback.aggregationProcessor(searchContext);
         Query query = searchContext.query();
-        return query != null && containsHybrid(query) ? new HybridAggregationProcessor(processor) : processor;
+        return query != null && containsHybrid(query)
+            ? new HybridAggregationProcessor(processor)
+            : new DeferredAggregationProcessor(processor);
     }
 
     @Override
