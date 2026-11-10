@@ -48,3 +48,59 @@ jobs:
           path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-trace.tsv
           if-no-files-found: ignore
           retention-days: 7
+
+  qualify:
+    needs: compiler
+    name: bounded ${{ matrix.profile }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - {profile: checks, arch: x64, runner: ubuntu-24.04}
+          - {profile: checks, arch: arm64, runner: ubuntu-24.04-arm}
+          - {profile: tests, arch: x64, runner: ubuntu-24.04}
+          - {profile: tests, arch: arm64, runner: ubuntu-24.04-arm}
+          - {profile: release, arch: x64, runner: ubuntu-24.04}
+          - {profile: release, arch: arm64, runner: ubuntu-24.04-arm}
+          - {profile: coverage, arch: x64, runner: ubuntu-24.04}
+    env:
+      RANGE_PROFILE: ${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Fixed qualification within the unchanged resource envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/lucene-range-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          image="$scratch.ext4"
+          test ! -e "$scratch"
+          test ! -e "$image"
+          mkdir "$scratch"
+          truncate -s 8589934592 "$image"
+          mkfs.ext4 -q -F "$image"
+          sudo mount -o loop,nodev,nosuid "$image" "$scratch"
+          trap 'sudo umount "$scratch"' EXIT
+          sudo chown "$(id -u):$(id -g)" "$scratch"
+          python3 -B scripts/range-feedback.py "$scratch"
+      - name: Retain native coverage export
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: range-qualification-${{ github.sha }}-${{ matrix.profile }}-${{ matrix.arch }}-coverage
+          path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-coverage.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Retain native query physical trace
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: range-qualification-${{ github.sha }}-${{ matrix.profile }}-${{ matrix.arch }}-trace
+          path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-trace.tsv
+          if-no-files-found: ignore
+          retention-days: 7

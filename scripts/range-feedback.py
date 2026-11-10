@@ -14,7 +14,7 @@ import sys
 import time
 
 IMAGE = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
-COMMAND = r'''
+SETUP = r'''
 set -euo pipefail
 mkdir -p /scratch/cargo /scratch/target /scratch/tmp
 cp -a /usr/local/rustup /scratch/rustup
@@ -38,7 +38,10 @@ if [ ! -f /src/Cargo.lock ]; then
   echo 'Resolved graph is not yet committed source; compilation remains unrun.'
   exit 78
 fi
-cargo check --locked -p lucene-store -p lucene-codecs --all-targets
+'''
+
+PROFILES = {
+    "component": r'''cargo check --locked -p lucene-store -p lucene-codecs --all-targets
 cargo check --locked -p lucene-search --lib
 cargo test --locked -p lucene-store --lib range_input
 cargo test --locked -p lucene-codecs --test blocktree_fixtures range_terms_postings_and_filter_match_java_with_eviction_and_faults
@@ -49,7 +52,38 @@ cargo test --locked -p lucene-search --test range_directory_queries -- --nocaptu
 cargo clippy --locked -p lucene-store -p lucene-codecs --all-targets -- -D warnings
 cargo clippy --locked -p lucene-search --lib -- -D warnings
 cargo fmt --all -- --check
-'''
+''',
+    "checks": r"""
+cargo fmt --all -- --check
+cargo fmt --manifest-path benchmarks/rust-runner/Cargo.toml -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p lucene-store --lib -- -D warnings
+RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --locked --workspace --no-deps --document-private-items
+""",
+    "tests": r"""
+cargo build --locked -p lucene-ffi
+cargo test --locked --quiet --workspace -- --test-threads=2
+cargo test --locked --quiet --workspace --doc
+""",
+    "release": r"""
+cargo build --locked --release -p lucene-ffi
+cargo test --locked --release --quiet -p lucene-search -- --test-threads=2
+cargo test --locked --release --quiet -p lucene-search --doc
+""",
+    "coverage": r"""
+rustup component add llvm-tools-preview --toolchain 1.97.1
+cargo install --locked cargo-llvm-cov --version 0.8.7 --root /scratch/cov-tools
+export PATH="/scratch/cov-tools/bin:$PATH"
+set +e
+scripts/coverage.sh --locked --workspace --quiet -- --summary-only --fail-under-lines 95 > /scratch/tmp/coverage-summary.txt
+coverage_status=$?
+set -e
+cat /scratch/tmp/coverage-summary.txt
+cargo llvm-cov report --json --skip-functions --output-path /scratch/tmp/coverage.json
+exit "$coverage_status"
+""",
+}
+
 
 
 def main():
@@ -76,11 +110,15 @@ def main():
     stat = os.statvfs(scratch)
     if stat.f_blocks * stat.f_frsize > 8 * 1024**3:
         raise SystemExit("scratch exceeds 8 GiB")
+    profile = os.environ.get("RANGE_PROFILE", "component")
+    if profile not in PROFILES:
+        raise SystemExit("unknown fixed qualification profile")
+    command = SETUP + PROFILES[profile]
     identity = os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"]
     if not re.fullmatch(r"[0-9]+-[0-9]+", identity):
         raise SystemExit("invalid job identity")
     name = "lucene-range-" + identity
-    print(json.dumps({"kind": "partial-compiler-feedback", "source": expected, "image": IMAGE,
+    print(json.dumps({"kind": "bounded-native-qualification", "profile": profile, "source": expected, "image": IMAGE,
                       "cpu": 2, "memory_bytes": 4 * 1024**3, "swap_bytes": 0, "pids": 256,
                       "scratch_filesystem_bytes": stat.f_blocks * stat.f_frsize,
                       "deadline_seconds": 1800, "stdio_limit_bytes": 2 * 1024**2}), flush=True)
@@ -94,7 +132,7 @@ def main():
             "--env", "CARGO_HOME=/scratch/cargo", "--env", "RUSTUP_HOME=/scratch/rustup", "--env", "CARGO_TARGET_DIR=/scratch/target",
             "--env", "TMPDIR=/scratch/tmp", "--env", "CARGO_BUILD_JOBS=2",
             "--env", "CARGO_INCREMENTAL=0", "--env", "CARGO_PROFILE_DEV_DEBUG=0",
-            "--env", "CARGO_PROFILE_TEST_DEBUG=0", IMAGE, "bash", "-c", COMMAND]
+            "--env", "CARGO_PROFILE_TEST_DEBUG=0", IMAGE, "bash", "-c", command]
     process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     started = time.monotonic()
     total = 0
@@ -148,6 +186,13 @@ def main():
         with destination.open("xb") as output:
             output.write(data)
         print(json.dumps({"physical_trace_sha256": hashlib.sha256(data).hexdigest(), "physical_trace_bytes": len(data)}))
+    coverage = scratch / "tmp" / "coverage.json"
+    if coverage.is_file():
+        if coverage.is_symlink() or coverage.stat().st_size > 64 * 1024**2:
+            raise SystemExit("coverage receipt exceeds artifact envelope")
+        destination = runner_temp / ("range-feedback-" + expected + "-coverage.json")
+        with destination.open("xb") as output:
+            output.write(coverage.read_bytes())
     resolved = scratch / "resolved-Cargo.lock"
     if resolved.is_file():
         import hashlib
