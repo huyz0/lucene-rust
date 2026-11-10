@@ -19,14 +19,18 @@ script serves over HTTP, and the answers are compared:
              result filters, bad parameters
   similarity a TEXT_SIMILARITY cross-encoder: scores, bytes, bad inputs
   asymmetric query/passage prefixes, missing content types, result filters
+  torchscript TorchScript models: sentence-transformers and Hugging Face text
+             embedding (every pooling mode), sparse encoding, cross-encoder
   lifecycle  delete while deployed, undeploy, delete, get after delete, tasks
 
 A stock node needs libtorch for DJL, which it downloads from publish.djl.ai
 unless --libtorch names a local libtorch directory (DJL's
-pytorch/<version>-cpu-linux-x86_64 layout, PyTorch 2.5.1).
+pytorch/<version>-cpu-linux-x86_64 layout, PyTorch 2.5.1). The plugin's node
+finds or downloads its own the same way, unless --our-libtorch names one
+(scripts/fetch-libtorch.sh fetches it), given as PYTORCH_LIBRARY_PATH.
 
-  scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--keep]
-                             [--only groups,sparse,encoding,similarity,asymmetric,models,tasks]
+  scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--our-libtorch DIR]
+                             [--keep] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
@@ -183,7 +187,10 @@ def approx(a, b):
         if a.keys() != b.keys():
             return False
         for k in a:
-            if k == "byte_buffer":
+            if k == "byte_buffer" and a.get("data_type") == "INT64":
+                if a[k] != b[k]:
+                    return False
+            elif k == "byte_buffer":
                 fa = struct.unpack(f"<{len(base64.b64decode(a[k]['array'])) // 4}f", base64.b64decode(a[k]["array"]))
                 fb = struct.unpack(f"<{len(base64.b64decode(b[k]['array'])) // 4}f", base64.b64decode(b[k]["array"]))
                 if a[k]["order"] != b[k]["order"] or not close(fa, fb):
@@ -206,8 +213,8 @@ def answer(r):
     return s, o
 
 
-def onnx_model(n, name, function, z, config=None):
-    body = {"name": f"{name}-{RUN}", "version": "1.0.0", "model_format": "ONNX", "function_name": function,
+def onnx_model(n, name, function, z, config=None, fmt="ONNX"):
+    body = {"name": f"{name}-{RUN}", "version": "1.0.0", "model_format": fmt, "function_name": function,
             "model_content_hash_value": hashlib.sha256(z).hexdigest(), "model_content_size_in_bytes": len(z),
             "url": f"http://localhost:{SERVE}/{name}.zip"}
     if config:
@@ -218,10 +225,10 @@ def onnx_model(n, name, function, z, config=None):
     return mid, [pick(t, TASK_FIELDS), pick(dt, TASK_FIELDS), pick(n.ok("GET", f"/_plugins/_ml/models/{mid}"), MODEL_FIELDS)]
 
 
-def compare_calls(c, label, ours, stock, z, function, config, calls):
+def compare_calls(c, label, ours, stock, z, function, config, calls, fmt="ONNX"):
     out = {}
     for side, n in (("ours", ours), ("stock", stock)):
-        mid, rows = onnx_model(n, label, function, z, config)
+        mid, rows = onnx_model(n, label, function, z, config, fmt)
         for _, path, body in calls:
             rows.append(answer(n.call("POST", path.replace("<id>", mid), body)))
         n.ok("POST", f"/_plugins/_ml/models/{mid}/_undeploy")
@@ -290,6 +297,50 @@ def asymmetric(c, ours, stock, z):
              ("result filter", p, {"text_docs": ["hello"], "result_filter": {"return_number": False}}),
              ("result filter wins", p, {"text_docs": ["hello"], "return_number": False, "result_filter": {}})]
     compare_calls(c, "tiny-bert-plain", ours, stock, z, "TEXT_EMBEDDING", config, calls)
+
+
+def torch_zip(name):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as f:
+        f.write(os.path.join(golden.HERE, f"{name}.pt"), f"{name}.pt")
+        f.write(os.path.join(golden.HERE, "tokenizer.json"), "tokenizer.json")
+    return buf.getvalue()
+
+
+TORCH_MODELS = ("tiny-st", "tiny-hf", "tiny-sparse-ts", "tiny-cross-ts")
+
+
+def torchscript(c, ours, stock, zips):
+    p = "/_plugins/_ml/_predict/text_embedding/<id>"
+    calls = [(f"text {i}", p, {"text_docs": [t]}) for i, t in enumerate(golden.TEXTS)]
+    calls += [("bytes", p, {"text_docs": ["hello"], "return_bytes": True}),
+              ("sentence embedding only", p, {"text_docs": ["hello"], "target_response": ["sentence_embedding"]}),
+              ("positions", p, {"text_docs": ["hello"], "target_response_positions": [0, 3]}),
+              ("no numbers", p, {"text_docs": ["hello"], "return_number": False}),
+              ("two texts", p, {"text_docs": ["hello world", "the model"]}),
+              ("model route", "/_plugins/_ml/models/<id>/_predict", {"text_docs": ["search documents"]})]
+    config = {"model_type": "bert", "embedding_dimension": 32, "framework_type": "sentence_transformers"}
+    compare_calls(c, "tiny-st", ours, stock, zips["tiny-st"], "TEXT_EMBEDDING", config, calls, "TORCH_SCRIPT")
+    for pooling, normalize in golden.CASES:
+        calls = [(f"text {i}", p, {"text_docs": [t]}) for i, t in enumerate(golden.TEXTS)]
+        calls.append(("bytes", p, {"text_docs": ["hello"], "return_bytes": True}))
+        config = {"model_type": "bert", "embedding_dimension": 32, "framework_type": "huggingface_transformers",
+                  "pooling_mode": pooling, "normalize_result": normalize}
+        compare_calls(c, f"tiny-hf-{pooling}-{normalize}", ours, stock, zips["tiny-hf"], "TEXT_EMBEDDING", config,
+                      calls, "TORCH_SCRIPT")
+    p = "/_plugins/_ml/_predict/sparse_encoding/<id>"
+    calls = [(f"text {i}", p, {"text_docs": [t]}) for i, t in enumerate(golden.TEXTS)]
+    calls += [(f"text {i} by id", p, {"text_docs": [t], "parameters": {"sparse_embedding_format": "TOKEN_ID"}})
+              for i, t in enumerate(golden.TEXTS)]
+    calls += [("target name", p, {"text_docs": ["hello"], "target_response": ["output"]}),
+              ("text embedding route", "/_plugins/_ml/_predict/text_embedding/<id>", {"text_docs": ["hello"]})]
+    compare_calls(c, "tiny-sparse-ts", ours, stock, zips["tiny-sparse-ts"], "SPARSE_ENCODING", None, calls, "TORCH_SCRIPT")
+    p = "/_plugins/_ml/_predict/text_similarity/<id>"
+    calls = [("all texts", p, {"query_text": golden.QUERY, "text_docs": golden.TEXTS}),
+             ("empty query", p, {"query_text": "", "text_docs": ["hello"]}),
+             ("model route", "/_plugins/_ml/models/<id>/_predict", {"query_text": "q", "text_docs": ["a b"]})]
+    config = {"model_type": "bert", "embedding_dimension": 1, "framework_type": "huggingface_transformers"}
+    compare_calls(c, "tiny-cross-ts", ours, stock, zips["tiny-cross-ts"], "TEXT_SIMILARITY", config, calls, "TORCH_SCRIPT")
 
 
 def groups(c, ours, stock):
@@ -418,6 +469,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stock")
     ap.add_argument("--libtorch")
+    ap.add_argument("--our-libtorch")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--only", help="comma-separated sections to run (default: all)")
     a = ap.parse_args()
@@ -430,7 +482,11 @@ def main():
     shutil.copy(zips_dir[0], docker_dir)
     image = f"lucene-rust-opensearch:{VERSION}"
     subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
-    start(OURS[0], OURS[1], image)
+    if a.our_libtorch:
+        start(OURS[0], OURS[1], image, ("PYTORCH_LIBRARY_PATH=/opt/libtorch",),
+              (f"{os.path.abspath(a.our_libtorch)}:/opt/libtorch",))
+    else:
+        start(OURS[0], OURS[1], image)
     if a.stock:
         stock = Node(a.stock)
     else:
@@ -446,6 +502,10 @@ def main():
     for name in (golden.SPARSE, golden.CROSS):
         zips[name] = golden.model_zip(name)
     zips["tiny-bert-prefixed"] = zips["tiny-bert-plain"] = zips["tiny-bert"]
+    for name in TORCH_MODELS:
+        zips[name] = torch_zip(name)
+    for pooling, normalize in golden.CASES:
+        zips[f"tiny-hf-{pooling}-{normalize}"] = zips["tiny-hf"]
     serve(zips)
     c = Check()
     try:
@@ -458,6 +518,7 @@ def main():
             "encoding": lambda: encoding(c, ours, stock, zips[golden.SPARSE]),
             "similarity": lambda: similarity(c, ours, stock, zips[golden.CROSS]),
             "asymmetric": lambda: asymmetric(c, ours, stock, zips["tiny-bert"]),
+            "torchscript": lambda: torchscript(c, ours, stock, zips),
             "models": lambda: models(c, ours, stock, zips),
             "tasks": lambda: tasks(c, ours, stock),
         }

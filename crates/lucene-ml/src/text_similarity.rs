@@ -2,19 +2,21 @@
 //! (`TextSimilarityCrossEncoderModel` with its `TextSimilarityTranslator`):
 //! the query and one document are tokenized as a pair and run together; each
 //! model output (the relevance logits) comes back without its batch axis.
+//! ONNX models are fed by input name, TorchScript ones three positional
+//! arrays.
 
 use std::path::Path;
 
 use tokenizers::Tokenizer;
 
-use crate::onnx::{self, Feed, OnnxModel, Tensor};
+use crate::onnx::{self, OnnxModel, Tensor};
+use crate::torchscript::{Engine, TorchScript, PAIR_FEEDS};
 use crate::{tokenizer, Result};
 
 /// A deployed cross-encoder.
 pub struct TextSimilarityModel {
     tokenizer: Tokenizer,
-    model: OnnxModel,
-    feeds: Vec<(String, Feed)>,
+    engine: Engine,
 }
 
 impl TextSimilarityModel {
@@ -26,18 +28,30 @@ impl TextSimilarityModel {
         let feeds = onnx::feeds_by_name(model.input_names())?;
         Ok(TextSimilarityModel {
             tokenizer,
-            model,
-            feeds,
+            engine: Engine::Onnx(model, feeds),
+        })
+    }
+
+    /// A TorchScript cross-encoder, already loaded as `module`, with the
+    /// tokenizer file `tokenizer_json`.
+    pub fn torchscript(
+        module: Box<dyn TorchScript>,
+        tokenizer_json: &[u8],
+    ) -> Result<TextSimilarityModel> {
+        Ok(TextSimilarityModel {
+            tokenizer: tokenizer::load(tokenizer_json)?,
+            engine: Engine::Torch(module, PAIR_FEEDS),
         })
     }
 
     /// The outputs for `query` against `doc`, in graph order.
     pub fn score(&self, query: &str, doc: &str) -> Result<Vec<Tensor>> {
         let encoded = tokenizer::encode_pair(&self.tokenizer, query, doc)?;
-        let outputs = self.model.run(&encoded, &self.feeds)?;
-        outputs
+        Ok(self
+            .engine
+            .unbatched(&encoded)?
             .into_iter()
-            .map(|o| onnx::unbatch(o.tensor))
-            .collect()
+            .map(|o| o.tensor)
+            .collect())
     }
 }

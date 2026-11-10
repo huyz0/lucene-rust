@@ -1,6 +1,7 @@
 //! ml-commons' `TEXT_EMBEDDING` function for ONNX models: tokenize, run,
 //! pool, normalize, the way `ONNXSentenceTransformerTextEmbeddingTranslator`
-//! does on DJL arrays.
+//! does on DJL arrays. TorchScript models ([`TorchTextEmbeddingModel`]) take
+//! one of two translators by the model's framework type.
 //!
 //! Texts run one at a time, as `TextEmbeddingModel.predict` loops over them.
 //! Padding a batch to its longest text costs more than it saves on CPU for
@@ -14,6 +15,7 @@ use tokenizers::Tokenizer;
 pub use crate::onnx::Tensor;
 use crate::onnx::{Feed, OnnxModel};
 use crate::tokenizer;
+use crate::torchscript::{self, Data, TorchOutput, TorchScript, DICT_FEEDS};
 use crate::{MlError, Result};
 
 /// `TextEmbeddingModelConfig.PoolingMode`.
@@ -126,6 +128,99 @@ impl TextEmbeddingModel {
         }
         let outputs = self.model.run(encoded, &feeds)?;
         Ok(outputs.into_iter().map(|o| o.tensor).collect())
+    }
+}
+
+/// How a TorchScript text-embedding model's outputs are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TorchReading {
+    /// `SentenceTransformerTextEmbeddingTranslator`: every output as the
+    /// model gives it.
+    SentenceTransformers,
+    /// `HuggingfaceTextEmbeddingTranslator`: the token embeddings pooled
+    /// and normalized here, as one `sentence_embedding`.
+    HuggingFace { pooling: Pooling, normalize: bool },
+}
+
+/// A deployed TorchScript text-embedding model.
+pub struct TorchTextEmbeddingModel {
+    tokenizer: Tokenizer,
+    module: Box<dyn TorchScript>,
+    reading: TorchReading,
+}
+
+/// The arrays `HuggingfaceTextEmbeddingTranslator` feeds: two positional
+/// arguments (it adds `token_type_ids` only for AWS Neuron models).
+const HUGGING_FACE_FEEDS: &[(&str, Feed)] = &[
+    ("input_ids", Feed::Ids),
+    ("attention_mask", Feed::AttentionMask),
+];
+
+impl TorchTextEmbeddingModel {
+    /// A `sentence_transformers` model, already loaded as `module`, with the
+    /// tokenizer file `tokenizer_json`: fed a dict of the token arrays, its
+    /// outputs returned as they are.
+    pub fn sentence_transformers(
+        module: Box<dyn TorchScript>,
+        tokenizer_json: &[u8],
+    ) -> Result<Self> {
+        Ok(TorchTextEmbeddingModel {
+            tokenizer: tokenizer::load(tokenizer_json)?,
+            module,
+            reading: TorchReading::SentenceTransformers,
+        })
+    }
+
+    /// A `huggingface_transformers` model: fed positional token arrays, its
+    /// token embeddings pooled by `pooling` and L2-normalized when
+    /// `normalize`.
+    pub fn hugging_face(
+        module: Box<dyn TorchScript>,
+        tokenizer_json: &[u8],
+        pooling: Pooling,
+        normalize: bool,
+    ) -> Result<Self> {
+        Ok(TorchTextEmbeddingModel {
+            tokenizer: tokenizer::load(tokenizer_json)?,
+            module,
+            reading: TorchReading::HuggingFace { pooling, normalize },
+        })
+    }
+
+    /// `text`'s outputs: every model output for a sentence-transformers
+    /// model, else the one pooled `sentence_embedding`, shaped `[1, dim]`.
+    pub fn embed(&self, text: &str) -> Result<Vec<TorchOutput>> {
+        let encoded = tokenizer::encode(&self.tokenizer, text)?;
+        let TorchReading::HuggingFace { pooling, normalize } = self.reading else {
+            return torchscript::run(self.module.as_ref(), &encoded, DICT_FEEDS);
+        };
+        let outputs = torchscript::run(self.module.as_ref(), &encoded, HUGGING_FACE_FEEDS)?;
+        let named = |name: &str| outputs.iter().position(|o| o.name == name);
+        let at = if pooling == Pooling::None {
+            named("sentence_embedding")
+                .or_else(|| named("pooler_output"))
+                .or(if outputs.len() > 1 { Some(1) } else { None })
+        } else {
+            named("last_hidden_state")
+        }
+        .unwrap_or(0);
+        let raw = outputs
+            .into_iter()
+            .nth(at)
+            .ok_or_else(|| MlError::Model("the model has no output".into()))?;
+        let raw = torchscript::float_output(raw)?.tensor;
+        let pooled = pool(raw, &encoded.attention_mask, pooling)?;
+        let pooled = if normalize {
+            normalize_first_axis(pooled)
+        } else {
+            pooled
+        };
+        Ok(vec![TorchOutput {
+            name: "sentence_embedding".into(),
+            group: 0,
+            shape: vec![1, pooled.data.len()],
+            data: Data::F32(pooled.data),
+        }])
     }
 }
 
@@ -253,6 +348,92 @@ pub fn normalize_first_axis(mut t: Tensor) -> Tensor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::torchscript::tests::{out, Fake};
+
+    /// A word-level tokenizer: `a` is 2, `b` 3, with `[CLS]` (1) first.
+    fn tokenizer_json() -> Vec<u8> {
+        br#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],
+            "normalizer":null,"pre_tokenizer":{"type":"Whitespace"},
+            "post_processor":{"type":"TemplateProcessing",
+              "single":[{"SpecialToken":{"id":"[CLS]","type_id":0}},{"Sequence":{"id":"A","type_id":0}}],
+              "pair":[{"Sequence":{"id":"A","type_id":0}},{"Sequence":{"id":"B","type_id":1}}],
+              "special_tokens":{"[CLS]":{"id":"[CLS]","ids":[1],"tokens":["[CLS]"]}}},
+            "decoder":null,
+            "model":{"type":"WordLevel","vocab":{"[UNK]":0,"[CLS]":1,"a":2,"b":3},"unk_token":"[UNK]"}}"#
+            .to_vec()
+    }
+
+    #[test]
+    fn sentence_transformers_outputs_pass_through() {
+        let outputs = vec![
+            out("input_ids", 1, &[1, 2], Data::I64(vec![1, 2])),
+            out("sentence_embedding", 1, &[1, 2], Data::F32(vec![0.5, 1.5])),
+        ];
+        let fake = Fake::new(outputs);
+        let model =
+            TorchTextEmbeddingModel::sentence_transformers(Box::new(fake), &tokenizer_json())
+                .unwrap();
+        let got = model.embed("a").unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].shape, vec![2]);
+        assert_eq!(got[1].data, Data::F32(vec![0.5, 1.5]));
+    }
+
+    #[test]
+    fn hugging_face_pools_the_token_embeddings() {
+        // Two tokens ([CLS] a), two dimensions, behind an unnamed first output.
+        let tokens = out("", 0, &[1, 2, 2], Data::F32(vec![1.0, 2.0, 3.0, 4.0]));
+        let pooled = out("pooler_output", 0, &[1, 2], Data::F32(vec![3.0, 4.0]));
+        let fake = Fake::new(vec![tokens.clone(), pooled.clone()]);
+        let mean = TorchTextEmbeddingModel::hugging_face(
+            Box::new(fake),
+            &tokenizer_json(),
+            Pooling::Mean,
+            false,
+        )
+        .unwrap();
+        let got = mean.embed("a").unwrap();
+        assert_eq!(got[0].name, "sentence_embedding");
+        assert_eq!(got[0].shape, vec![1, 2]);
+        assert_eq!(got[0].data, Data::F32(vec![2.0, 3.0]));
+
+        let none = |outputs: Vec<TorchOutput>| {
+            let model = TorchTextEmbeddingModel::hugging_face(
+                Box::new(Fake::new(outputs)),
+                &tokenizer_json(),
+                Pooling::None,
+                true,
+            )
+            .unwrap();
+            model.embed("a").unwrap().remove(0).data
+        };
+        assert_eq!(
+            none(vec![tokens.clone(), pooled]),
+            Data::F32(vec![0.6, 0.8])
+        );
+        let second = out("", 0, &[1, 2], Data::F32(vec![4.0, 3.0]));
+        assert_eq!(
+            none(vec![tokens.clone(), second]),
+            Data::F32(vec![0.8, 0.6])
+        );
+
+        let cls = TorchTextEmbeddingModel::hugging_face(
+            Box::new(Fake::new(vec![out("", 0, &[1, 2], Data::I64(vec![1, 2]))])),
+            &tokenizer_json(),
+            Pooling::Cls,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(cls.embed("a"), Err(MlError::Model(_))));
+        let empty = TorchTextEmbeddingModel::hugging_face(
+            Box::new(Fake::new(vec![])),
+            &tokenizer_json(),
+            Pooling::Cls,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(empty.embed("a"), Err(MlError::Model(_))));
+    }
 
     fn tokens() -> Tensor {
         Tensor {
