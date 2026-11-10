@@ -5,8 +5,9 @@
 # on a fresh node alone on the machine with the same heap:
 #   stock      stock OpenSearch, refresh_interval 1s
 #   plugin     the plugin's engine, refresh_interval 1s
-#   realtime   the plugin's engine with index.lucene_rust.realtime_search, refresh_interval 1s
-#   realtime-stale  realtime with index.lucene_rust.realtime_max_staleness 20ms
+#   realtime   the plugin's engine with index.lucene_rust.realtime_search, refresh_interval 1s (default staleness, 20 ms)
+#   realtime-strict  realtime with index.lucene_rust.realtime_max_staleness 0 (read after write)
+#   realtime-stale  realtime with index.lucene_rust.realtime_max_staleness $STALENESS (default 20ms)
 #   realtime-30s  the same, refresh_interval 30s
 #
 #   scripts/bench-realtime.sh [DOCS] [OUT_DIR]     # default 1000000, target/bench-realtime
@@ -63,7 +64,9 @@ bench bench-rt "opensearch-stock-min:${VERSION}" stock '{"refresh_interval": "1s
 bench bench-rt "$IMAGE" plugin '{"refresh_interval": "1s"}' -e lucene_rust.engine.default=true
 bench bench-rt "$IMAGE" realtime '{"refresh_interval": "1s", "index.lucene_rust.realtime_search": true}' \
     -e lucene_rust.engine.default=true
-bench bench-rt "$IMAGE" realtime-stale '{"refresh_interval": "1s", "index.lucene_rust.realtime_search": true, "index.lucene_rust.realtime_max_staleness": "20ms"}' \
+bench bench-rt "$IMAGE" realtime-strict '{"refresh_interval": "1s", "index.lucene_rust.realtime_search": true, "index.lucene_rust.realtime_max_staleness": "0ms"}' \
+    -e lucene_rust.engine.default=true
+bench bench-rt "$IMAGE" realtime-stale '{"refresh_interval": "1s", "index.lucene_rust.realtime_search": true, "index.lucene_rust.realtime_max_staleness": "'"${STALENESS:-20ms}"'"}' \
     -e lucene_rust.engine.default=true
 bench bench-rt "$IMAGE" realtime-30s '{"refresh_interval": "30s", "index.lucene_rust.realtime_search": true}' \
     -e lucene_rust.engine.default=true
