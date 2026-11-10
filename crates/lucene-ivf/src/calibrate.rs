@@ -135,7 +135,10 @@ pub(crate) struct Evaluation {
     pub(crate) reached: bool,
     /// The recall at that cap (the deepest cap's when none reaches it).
     pub(crate) recall: f64,
-    /// The candidates reranked per query at that cap.
+    /// The candidates reranked per query at that cap: the shallowest that
+    /// reaches the target, which ranks quantizers by their codes alone (the
+    /// recorded calibration may rerank up to `GENEROUS` times more, a slack
+    /// every candidate gets alike).
     pub(crate) reranked: f64,
     /// The cluster entries scanned per query at the calibrated nprobe.
     pub(crate) scanned: f64,

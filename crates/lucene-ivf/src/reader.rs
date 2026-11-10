@@ -561,7 +561,8 @@ impl IvfField {
         self.quantizer.as_ref()
     }
 
-    /// The quantizer, taken out of an in-memory field calibration searched.
+    /// Consumes an in-memory field built for calibration and returns its
+    /// quantizer.
     pub(crate) fn into_quantizer(self) -> Box<dyn Quantizer> {
         self.quantizer
     }

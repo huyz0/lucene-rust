@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use lucene_ivf::{
-    AutoQuantizer, FieldVectors, IvfParams, IvfReader, IvfWriter, SearchParams, Similarity,
-    AUTO_MIN_VECTORS,
+    merge_field, AutoQuantizer, FieldVectors, IvfParams, IvfReader, IvfWriter, MergeSource,
+    SearchParams, Similarity, AUTO_MIN_VECTORS,
 };
 use lucene_vector_quant::osq::OsqFactory;
 use lucene_vector_quant::rabitq::ExRabitqFactory;
@@ -40,10 +40,7 @@ fn written(n: usize, read_bytes: usize) -> (String, IvfReader, Vec<f32>) {
     let dim = 128;
     let data = dataset(n, dim, 5);
     let docs: Vec<i32> = (0..n as i32).collect();
-    let auto = AutoQuantizer::new(vec![
-        Box::new(OsqFactory::bbq()),
-        Box::new(ExRabitqFactory::new(4)),
-    ]);
+    let auto = two_candidates();
     let mut w = IvfWriter::new(&ID, "");
     w.add_field(
         &FieldVectors {
@@ -54,16 +51,34 @@ fn written(n: usize, read_bytes: usize) -> (String, IvfReader, Vec<f32>) {
             vectors: &data,
         },
         &auto,
-        &IvfParams {
-            target_cluster_size: 128,
-            calibration_recall: Some(0.9),
-            auto_rerank_read_bytes: read_bytes,
-            ..IvfParams::default()
-        },
+        &params(read_bytes),
     )
     .unwrap();
+    let reader = open(w);
+    let name = reader.field(1).unwrap().quantizer().name().to_string();
+    (name, reader, data)
+}
+
+/// BBQ first, then 4-bit Extended RaBitQ.
+fn two_candidates() -> AutoQuantizer {
+    AutoQuantizer::new(vec![
+        Box::new(OsqFactory::bbq()),
+        Box::new(ExRabitqFactory::new(4)),
+    ])
+}
+
+fn params(read_bytes: usize) -> IvfParams {
+    IvfParams {
+        target_cluster_size: 128,
+        calibration_recall: Some(0.9),
+        auto_rerank_read_bytes: read_bytes,
+        ..IvfParams::default()
+    }
+}
+
+fn open(w: IvfWriter) -> IvfReader {
     let files = w.finish();
-    let reader = IvfReader::open(
+    IvfReader::open(
         &files.meta,
         Arc::new(files.postings.clone()),
         Arc::new(files.vectors.clone()),
@@ -71,9 +86,7 @@ fn written(n: usize, read_bytes: usize) -> (String, IvfReader, Vec<f32>) {
         "",
         &QuantizerRegistry::with_builtins(),
     )
-    .unwrap();
-    let name = reader.field(1).unwrap().quantizer().name().to_string();
-    (name, reader, data)
+    .unwrap()
 }
 
 #[test]
@@ -108,4 +121,35 @@ fn the_pick_follows_the_cost_of_a_rerank() {
             .count();
     }
     assert!(found >= 90, "{found} of 100");
+}
+
+/// A merge picks again from the merged vectors, whatever its sources hold,
+/// and records the picked codes' calibration.
+#[test]
+fn a_merge_picks_again() {
+    let n = AUTO_MIN_VECTORS + 2000;
+    let (disk, a, _) = written(n, 1 << 20);
+    let (memory, b, _) = written(n, 0);
+    assert_eq!((disk.as_str(), memory.as_str()), ("erq", "osq"));
+    let map_a = |d: i32| Some(d);
+    let map_b = move |d: i32| Some(n as i32 + d);
+    let sources = [
+        MergeSource {
+            reader: &a,
+            doc_map: &map_a,
+        },
+        MergeSource {
+            reader: &b,
+            doc_map: &map_b,
+        },
+    ];
+    for (read_bytes, want) in [(1 << 20, "erq"), (0, "osq")] {
+        let mut w = IvfWriter::new(&ID, "");
+        merge_field(&mut w, 1, &sources, &two_candidates(), &params(read_bytes)).unwrap();
+        let merged = open(w);
+        let field = merged.field(1).unwrap();
+        assert_eq!(field.count(), 2 * n);
+        assert_eq!(field.quantizer().name(), want, "read bytes {read_bytes}");
+        assert!(field.calibration().is_some());
+    }
 }

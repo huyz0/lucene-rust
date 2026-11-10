@@ -497,6 +497,7 @@ def ivf_check(failures):
         ("ivf on_disk", {**ivf_mapping(), "mode": "on_disk"}),
         ("lucene_rust hnsw osq", rust_hnsw_mapping(quantizer="osq2")),
         ("lucene_rust hnsw bbq", rust_hnsw_mapping(quantizer="bbq")),
+        ("lucene_rust hnsw auto", rust_hnsw_mapping(quantizer="auto")),
         ("lucene_rust hnsw quantizer", rust_hnsw_mapping(quantizer="pq")),
         ("lucene_rust hnsw byte", {**rust_hnsw_mapping(), "data_type": "byte"}),
         ("lucene_rust hnsw on_disk", {**rust_hnsw_mapping(), "mode": "on_disk"}),

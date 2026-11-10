@@ -401,7 +401,13 @@ public record KnnFieldConfig(
                     quantizer = String.valueOf(p.getValue()).toLowerCase(Locale.ROOT);
                     if (HNSW_QUANTIZERS.contains(quantizer) == false) {
                         throw new MapperParsingException(
-                            IVF_QUANTIZERS.contains(quantizer)
+                            "auto".equals(quantizer)
+                                ? String.format(
+                                    Locale.ROOT,
+                                    "[quantizer] [auto] is for the [lucene_rust] engine's [ivf] only; its [hnsw] supports %s",
+                                    HNSW_QUANTIZERS
+                                )
+                                : IVF_QUANTIZERS.contains(quantizer)
                                 ? String.format(
                                     Locale.ROOT,
                                     "[quantizer] [%s] is Lucene's scalar quantization: use the [lucene] engine's [encoder] or [compression_level]; "

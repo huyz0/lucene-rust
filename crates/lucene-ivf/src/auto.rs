@@ -43,9 +43,8 @@ impl AutoQuantizer {
     }
 
     /// Extended RaBitQ at 2 bits first, then BBQ, OSQ at 2 bits and
-    /// Extended RaBitQ at 3 and 4: the codes that reached the best recall
-    /// or speed on some data set. Wider codes added bytes and time for no
-    /// recall over 4-bit Extended RaBitQ.
+    /// Extended RaBitQ at 3 and 4 (`docs/benchmarks/ivf.md`, "Picking the
+    /// quantizer per segment (auto)", compares them).
     pub fn with_defaults() -> Self {
         Self::new(vec![
             Box::new(ExRabitqFactory::new(2)),

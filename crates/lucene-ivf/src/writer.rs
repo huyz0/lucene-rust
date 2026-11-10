@@ -93,7 +93,9 @@ pub struct IvfParams {
     /// [`crate::DEFAULT_PROBE_FRACTION`] and
     /// [`crate::DEFAULT_RERANK_MULTIPLE`]. Calibration searches a sample of
     /// 64 of the field's own vectors, a small fraction of the clustering's
-    /// cost.
+    /// cost. A field coded by [`crate::AutoQuantizer`] still compares its
+    /// candidates at [`DEFAULT_CALIBRATION_RECALL`] when this is `None`,
+    /// and records no calibration.
     pub calibration_recall: Option<f32>,
     /// How [`crate::merge_field`] clusters a merged segment: afresh, or from
     /// the clusters of its largest source.
