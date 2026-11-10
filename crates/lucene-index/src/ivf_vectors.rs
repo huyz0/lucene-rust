@@ -17,8 +17,10 @@ use lucene_codecs::scalar_quantized_vectors::util_similarity;
 use lucene_ivf::{FieldVectors, IvfParams, IvfReader, IvfWriter, MergeSource, VectorEncoding};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Input;
+use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
-use lucene_vector_quant::QuantizerRegistry;
+use lucene_vector_quant::rabitq::ExRabitqFactory;
+use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
 type Result<T> = std::result::Result<T, lucene_ivf::Error>;
 
@@ -76,24 +78,48 @@ pub(crate) struct IvfSource<'a> {
 pub(crate) struct IvfGroupWriter {
     writer: IvfWriter,
     params: IvfParams,
+    factory: Box<dyn QuantizerFactory>,
     any: bool,
+}
+
+/// The quantizer factory of an [`IVF_QUANTIZERS`] wire number: OSQ at 1
+/// (BBQ), 2, 4 or 7 bits, or Extended RaBitQ at 2 to 8 bits; `None` for an
+/// unknown number.
+///
+/// [`IVF_QUANTIZERS`]: lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS
+pub fn quantizer_factory(quantizer: u8) -> Option<Box<dyn QuantizerFactory>> {
+    let osq = |e| Some(Box::new(OsqFactory::new(e)) as Box<dyn QuantizerFactory>);
+    match quantizer {
+        0 => osq(ScalarEncoding::SingleBitQueryNibble),
+        1 => osq(ScalarEncoding::DibitQueryNibble),
+        2 => osq(ScalarEncoding::PackedNibble),
+        3 => osq(ScalarEncoding::SevenBit),
+        // ARITH: 4..=10 maps onto 2..=8 bits.
+        #[allow(clippy::arithmetic_side_effects)]
+        4..=10 => Some(Box::new(ExRabitqFactory::new(quantizer - 2))),
+        _ => None,
+    }
 }
 
 impl IvfGroupWriter {
     /// A writer for `format`'s IVF files (`None` for another format).
     ///
     /// # Errors
-    /// A cluster size or rerank encoding [`KnnVectorsFormat::ivf`] refuses.
+    /// A cluster size, rerank encoding or quantizer
+    /// [`KnnVectorsFormat::ivf_quantized`] refuses.
     pub(crate) fn new(
         format: KnnVectorsFormat,
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
     ) -> Result<Option<Self>> {
-        let Some((target_cluster_size, rerank_encoding)) = format.ivf_params() else {
+        let Some((target_cluster_size, rerank_encoding, quantizer)) = format.ivf_params() else {
             return Ok(None);
         };
-        KnnVectorsFormat::ivf(target_cluster_size, rerank_encoding)
+        KnnVectorsFormat::ivf_quantized(target_cluster_size, rerank_encoding, quantizer)
             .map_err(|e| lucene_ivf::Error::IllegalArgument(e.0))?;
+        let factory = quantizer_factory(quantizer).ok_or_else(|| {
+            lucene_ivf::Error::IllegalArgument(format!("unknown IVF quantizer {quantizer}"))
+        })?;
         Ok(Some(IvfGroupWriter {
             writer: IvfWriter::new(segment_id, suffix),
             params: IvfParams {
@@ -106,6 +132,7 @@ impl IvfGroupWriter {
                 },
                 ..IvfParams::default()
             },
+            factory,
             any: false,
         }))
     }
@@ -157,7 +184,7 @@ impl IvfGroupWriter {
                 vectors: field.vectors,
             },
             &merge_sources,
-            &OsqFactory::bbq(),
+            self.factory.as_ref(),
             &params,
         )?;
         self.any = true;
@@ -196,4 +223,21 @@ pub fn open(
         suffix,
         &QuantizerRegistry::with_builtins(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS;
+
+    use super::quantizer_factory;
+
+    #[test]
+    fn every_ivf_quantizer_number_has_its_factory() {
+        for (number, name) in IVF_QUANTIZERS.iter().enumerate() {
+            let factory = quantizer_factory(number as u8).expect(name);
+            let want = if name.starts_with("erq") { "erq" } else { "osq" };
+            assert_eq!(factory.name(), want, "{name}");
+        }
+        assert!(quantizer_factory(IVF_QUANTIZERS.len() as u8).is_none());
+    }
 }
