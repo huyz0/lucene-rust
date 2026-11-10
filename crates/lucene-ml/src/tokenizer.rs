@@ -57,9 +57,17 @@ pub fn load(json: &[u8]) -> Result<Tokenizer> {
 
 /// Encodes one text with special tokens.
 pub fn encode(tokenizer: &Tokenizer, text: &str) -> Result<Encoded> {
-    let encoding = tokenizer
-        .encode(text, true)
-        .map_err(|e| MlError::Tokenizer(e.to_string()))?;
+    encoded(tokenizer.encode(text, true))
+}
+
+/// Encodes the pair `first`, `second` as one sequence with special tokens,
+/// as DJL's `encode(text, textPair)` does for a cross-encoder.
+pub fn encode_pair(tokenizer: &Tokenizer, first: &str, second: &str) -> Result<Encoded> {
+    encoded(tokenizer.encode((first, second), true))
+}
+
+fn encoded(encoding: tokenizers::Result<tokenizers::Encoding>) -> Result<Encoded> {
+    let encoding = encoding.map_err(|e| MlError::Tokenizer(e.to_string()))?;
     let widen = |v: &[u32]| v.iter().map(|&x| i64::from(x)).collect::<Vec<_>>();
     Ok(Encoded {
         ids: widen(encoding.get_ids()),
@@ -112,6 +120,14 @@ mod tests {
         let t = load(&word_level(long)).unwrap();
         let text = vec!["b"; 900].join(" ");
         assert_eq!(encode(&t, &text).unwrap().ids.len(), MODEL_MAX_LENGTH);
+    }
+
+    #[test]
+    fn encodes_a_pair_with_its_type_ids() {
+        let t = load(&word_level("null")).unwrap();
+        let e = encode_pair(&t, "a", "b b").unwrap();
+        assert_eq!(e.ids, vec![2, 3, 3]);
+        assert_eq!(e.type_ids, vec![0, 1, 1]);
     }
 
     #[test]

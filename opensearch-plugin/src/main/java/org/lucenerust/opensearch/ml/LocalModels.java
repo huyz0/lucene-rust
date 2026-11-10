@@ -41,6 +41,8 @@ import java.util.zip.ZipInputStream;
  */
 public final class LocalModels {
     private static final Logger LOGGER = LogManager.getLogger(LocalModels.class);
+    /** The local model functions deployed here. */
+    static final Set<String> FUNCTIONS = Set.of("TEXT_EMBEDDING", "SPARSE_ENCODING", "SPARSE_TOKENIZE", "TEXT_SIMILARITY");
 
     /** A deployed model: its handle and the model document it was deployed from. */
     record Deployed(long handle, String functionName, Map<String, Object> model) {}
@@ -114,11 +116,11 @@ public final class LocalModels {
             Map<String, Object> model = r.getSourceAsMap();
             String function = String.valueOf(model.get("algorithm"));
             String format = String.valueOf(model.get("model_format"));
-            if ("TEXT_EMBEDDING".equals(function) == false && "SPARSE_TOKENIZE".equals(function) == false) {
+            if (FUNCTIONS.contains(function) == false) {
                 throw new IllegalArgumentException("lucene-rust does not deploy " + function + " models yet");
             }
             // A sparse tokenize model has no network, only its tokenizer and idf.json, whatever its format says.
-            if ("TEXT_EMBEDDING".equals(function) && "ONNX".equals(format) == false) {
+            if ("SPARSE_TOKENIZE".equals(function) == false && "ONNX".equals(format) == false) {
                 throw new IllegalArgumentException("lucene-rust runs ONNX models; this model's format is " + format);
             }
             int chunks = ((Number) model.getOrDefault("total_chunks", 0)).intValue();
@@ -248,6 +250,16 @@ public final class LocalModels {
         if (tokenizer == null) {
             throw new IllegalArgumentException("found no tokenizer.json in the model zip");
         }
+        if ("SPARSE_ENCODING".equals(function) || "TEXT_SIMILARITY".equals(function)) {
+            loadRuntime();
+            long[] handle = new long[1];
+            int rc = NativeBridge.mlOnnxModelOpen("SPARSE_ENCODING".equals(function), onnx.toString(), Files.readAllBytes(tokenizer), handle);
+            if (rc != NativeBridge.OK) {
+                throw new IllegalArgumentException(NativeBridge.lastError());
+            }
+            put(modelId, new Deployed(handle[0], function, model));
+            return;
+        }
         Map<String, Object> config = (Map<String, Object>) model.getOrDefault("model_config", Map.of());
         String modelType = String.valueOf(config.getOrDefault("model_type", ""));
         String pooling = String.valueOf(config.getOrDefault("pooling_mode", "MEAN"));
@@ -308,28 +320,102 @@ public final class LocalModels {
 
     /** The sparse vectors of {@code texts} from sparse tokenize model {@code modelId}, deployed on this node. */
     public List<List<TokenWeight>> sparseTokenize(String modelId, List<String> texts) {
+        Deployed d = deployed(modelId);
+        ByteBuffer r = result(NativeBridge.mlSparseTokenize(d.handle(), encodeTexts(texts)));
+        List<List<TokenWeight>> result = new ArrayList<>(texts.size());
+        while (r.hasRemaining()) {
+            result.add(readWeights(r));
+        }
+        return result;
+    }
+
+    /** One model output's sparse vector: the output's name in the graph and its non-zero weights. */
+    public record SparseOutput(String name, List<TokenWeight> weights) {}
+
+    /**
+     * Per text, each output's sparse vector from sparse encoding model {@code modelId}, deployed on
+     * this node; keyed by token id ({@code byId}, the tokens are then empty) or by token.
+     */
+    public List<List<SparseOutput>> sparseEncode(String modelId, List<String> texts, boolean byId) {
+        Deployed d = deployed(modelId);
+        ByteBuffer r = result(NativeBridge.mlSparseEncode(d.handle(), encodeTexts(texts), byId));
+        List<List<SparseOutput>> result = new ArrayList<>(texts.size());
+        while (r.hasRemaining()) {
+            int n = r.getInt();
+            List<SparseOutput> outputs = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                byte[] name = new byte[r.getInt()];
+                r.get(name);
+                outputs.add(new SparseOutput(new String(name, StandardCharsets.UTF_8), readWeights(r)));
+            }
+            result.add(outputs);
+        }
+        return result;
+    }
+
+    /** Per document of {@code texts}, the output tensors of cross-encoder {@code modelId} for it against {@code query}. */
+    public List<List<Tensor>> similarity(String modelId, String query, List<String> texts) {
+        Deployed d = deployed(modelId);
+        ByteBuffer r = result(NativeBridge.mlTextSimilarity(d.handle(), query, encodeTexts(texts)));
+        List<List<Tensor>> result = new ArrayList<>(texts.size());
+        while (r.hasRemaining()) {
+            int n = r.getInt();
+            List<Tensor> outputs = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                outputs.add(readTensor(r));
+            }
+            result.add(outputs);
+        }
+        return result;
+    }
+
+    private Deployed deployed(String modelId) {
         Deployed d = models.get(modelId);
         if (d == null) {
             throw new IllegalArgumentException("Model not ready yet. Please deploy the model first.");
         }
-        byte[] out = NativeBridge.mlSparseTokenize(d.handle(), encodeTexts(texts));
+        return d;
+    }
+
+    /** A model's own prediction failed; the cause says why. */
+    static final class InferenceException extends RuntimeException {
+        InferenceException(Throwable cause) {
+            super(cause.getMessage(), cause);
+        }
+    }
+
+    /** {@code out} to read; {@code null} is the native call's failure. */
+    private static ByteBuffer result(byte[] out) {
         if (out == null) {
-            throw new IllegalStateException("Failed to inference " + d.functionName() + " model: " + modelId);
+            throw new InferenceException(new IllegalStateException(NativeBridge.lastError()));
         }
-        ByteBuffer r = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
-        List<List<TokenWeight>> result = new ArrayList<>(texts.size());
-        while (r.hasRemaining()) {
-            int n = r.getInt();
-            List<TokenWeight> weights = new ArrayList<>(n);
-            for (int i = 0; i < n; i++) {
-                int id = r.getInt();
-                byte[] token = new byte[r.getInt()];
-                r.get(token);
-                weights.add(new TokenWeight(id, new String(token, StandardCharsets.UTF_8), r.getFloat()));
-            }
-            result.add(weights);
+        return ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+    }
+
+    private static List<TokenWeight> readWeights(ByteBuffer r) {
+        int n = r.getInt();
+        List<TokenWeight> weights = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int id = r.getInt();
+            byte[] token = new byte[r.getInt()];
+            r.get(token);
+            weights.add(new TokenWeight(id, new String(token, StandardCharsets.UTF_8), r.getFloat()));
         }
-        return result;
+        return weights;
+    }
+
+    private static Tensor readTensor(ByteBuffer r) {
+        int rank = r.getInt();
+        long[] shape = new long[rank];
+        long n = 1;
+        for (int i = 0; i < rank; i++) {
+            shape[i] = Integer.toUnsignedLong(r.getInt());
+            n *= shape[i];
+        }
+        float[] data = new float[Math.toIntExact(n)];
+        r.asFloatBuffer().get(data);
+        r.position(r.position() + data.length * Float.BYTES);
+        return new Tensor(shape, data);
     }
 
     private static byte[] encodeTexts(List<String> texts) {
@@ -352,28 +438,11 @@ public final class LocalModels {
 
     /** The embeddings of {@code texts} from model {@code modelId}, deployed on this node. */
     public List<Tensor> embed(String modelId, List<String> texts) {
-        Deployed d = models.get(modelId);
-        if (d == null) {
-            throw new IllegalArgumentException("Model not ready yet. Please deploy the model first.");
-        }
-        byte[] out = NativeBridge.mlTextEmbeddingEmbed(d.handle(), encodeTexts(texts));
-        if (out == null) {
-            throw new IllegalStateException("Failed to inference " + d.functionName() + " model: " + modelId);
-        }
-        ByteBuffer r = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+        Deployed d = deployed(modelId);
+        ByteBuffer r = result(NativeBridge.mlTextEmbeddingEmbed(d.handle(), encodeTexts(texts)));
         List<Tensor> tensors = new ArrayList<>(texts.size());
         while (r.hasRemaining()) {
-            int rank = r.getInt();
-            long[] shape = new long[rank];
-            long n = 1;
-            for (int i = 0; i < rank; i++) {
-                shape[i] = Integer.toUnsignedLong(r.getInt());
-                n *= shape[i];
-            }
-            float[] data = new float[Math.toIntExact(n)];
-            r.asFloatBuffer().get(data);
-            r.position(r.position() + data.length * Float.BYTES);
-            tensors.add(new Tensor(shape, data));
+            tensors.add(readTensor(r));
         }
         return tensors;
     }
