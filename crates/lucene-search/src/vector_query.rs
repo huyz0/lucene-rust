@@ -1343,12 +1343,20 @@ fn search_leaf(
     }
 }
 
-/// Accepted entries a filtered IVF search scans per hit asked for: the probes
-/// grow until they have scanned this many of the documents the filter passes
-/// (or all of them), so the filter's nearest documents are among the
-/// candidates wherever in the field they lie. See "Filtered searches by
-/// tenant size" in `docs/benchmarks/ivf.md`.
-const IVF_ACCEPTED_PER_HIT: usize = 200;
+/// Accepted entries a filtered IVF search for 10 hits scans: the probes grow
+/// until they have scanned this many of the documents the filter passes (or
+/// all of them), so the filter's nearest documents are among the candidates
+/// wherever in the field they lie. See "Filtered searches by tenant size"
+/// in `docs/benchmarks/ivf.md`.
+const IVF_ACCEPTED_FOR_10: usize = 2000;
+
+/// [`IVF_ACCEPTED_FOR_10`] for `k` hits: it grows with the square root of
+/// `k`, as the calibrated depth of an unfiltered search does not grow with
+/// `k` at all and a filter's nearest documents spread with it.
+fn ivf_accepted_target(k: usize) -> usize {
+    let scale = (k.max(10) as f64 / 10.0).sqrt();
+    (IVF_ACCEPTED_FOR_10 as f64 * scale).ceil() as usize
+}
 
 /// The cost of scoring one raw vector exactly, in IVF code scans (with their
 /// share of routing, block reads and rerank): a filter goes to the exact scan
@@ -1361,7 +1369,7 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// documents the filter passes, best first. `None` sends the leaf to the
 /// exhaustive scan instead, when it costs less than probing: the filter
 /// passes no more vectors than the probes would have to scan for it
-/// ([`IVF_ACCEPTED_PER_HIT`]), or scoring them exactly costs less than the
+/// ([`IVF_ACCEPTED_FOR_10`]), or scoring them exactly costs less than the
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
 fn ivf_leaf_results(
@@ -1452,8 +1460,7 @@ fn ivf_leaf_results(
             // search scans would hold on average, with slack for clusters
             // below the average size.
             let expected = (base_nprobe.saturating_mul(per_cluster) as f64 * 0.75) as usize;
-            let want = k
-                .saturating_mul(IVF_ACCEPTED_PER_HIT)
+            let want = ivf_accepted_target(k)
                 .min(expected.max(k))
                 .min(((passing as f64) * entries as f64 / field.count().max(1) as f64) as usize);
             // The first try probes as many clusters as the filter's share of

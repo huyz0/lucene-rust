@@ -448,9 +448,10 @@ Before, a filtered leaf probed the calibrated depth and doubled it only
 until `k` accepted documents were in reach, and a filter passing at most
 `10 * k` documents went to an exact scan of the whole field. Now:
 
-- the probes grow until they have scanned 200 accepted vectors per hit
-  (capped by what the unfiltered search scans), starting from the depth the
-  filter's share of the field needs on average;
+- the probes grow until they have scanned 2000 accepted vectors for 10
+  hits (growing with the square root of k, capped by what the unfiltered
+  search scans), starting from the depth the filter's share of the field
+  needs on average;
 - a cluster holding no accepted vector is not scored;
 - a filter whose documents cost less to score exactly than the planned
   probes cost to scan (8 code scans per exact score) goes to the exact
