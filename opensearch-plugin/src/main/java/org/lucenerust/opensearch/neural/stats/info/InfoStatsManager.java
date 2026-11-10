@@ -385,12 +385,10 @@ public class InfoStatsManager {
         increment(stats, InfoStatName.TEXT_CHUNKING_PROCESSORS);
 
         Map<String, Object> algorithmMap = asMap(processorConfig.get("algorithm"));
-
-        Map.Entry<String, Object> algorithmEntry = algorithmMap.entrySet().iterator().next();
-        String algorithmKey = algorithmEntry.getKey();
+        String algorithmKey = algorithmMap == null || algorithmMap.isEmpty() ? null : algorithmMap.keySet().iterator().next();
 
         // If no algorithm is specified, default case is fixed length
-        if (chunkingAlgorithmIncrementers.containsKey(algorithmKey) == false) {
+        if (algorithmKey == null || chunkingAlgorithmIncrementers.containsKey(algorithmKey) == false) {
             increment(stats, InfoStatName.TEXT_CHUNKING_FIXED_TOKEN_LENGTH_PROCESSORS);
         } else {
             // Map is guaranteed to contain key in this block, so we can do direct map get

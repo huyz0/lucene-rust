@@ -9,6 +9,8 @@
 //!   --segments N  flushed segments, force-merged to one when --merge is set (default 1)
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
 //!   --dir D       where the indexes are written (default a temporary directory)
+//!   --reuse       keep each format's index under D and search it again on
+//!                 later runs with the same data and build options
 //! ```
 //!
 //! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
@@ -89,67 +91,85 @@ fn main() {
     let nq = opt("--queries")
         .map_or(1000, |s| s.parse().unwrap())
         .min(nq_all.saturating_sub(200));
+    let reuse = args.iter().any(|a| a == "--reuse");
     let root = opt("--dir").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     eprintln!("{prefix}: {n} x {dim}, {nq} queries, {segments} segments, merge {merge}");
     println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us");
     for name in formats.split(',') {
-        let path = root.join(format!("knn-formats-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
+        let path = if reuse {
+            root.join(format!("knn-formats-{name}"))
+        } else {
+            root.join(format!("knn-formats-{}-{name}", std::process::id()))
+        };
+        // The marker names what the kept index was built from; a missing
+        // marker (an interrupted build) or another build rebuilds it.
+        let marker = root.join(format!("knn-formats-{name}.built"));
+        let key = format!("{prefix} {} {segments} {merge}", args[2]);
+        let built = reuse && std::fs::read_to_string(&marker).is_ok_and(|k| k == key);
+        if !built {
+            let _ = std::fs::remove_file(&marker);
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+        }
         let dir = FsDirectory::open(&path);
         let t = Instant::now();
-        let mut w = IndexWriter::open(
-            &dir,
-            Vec::new(),
-            "Lucene104",
-            LuceneVersion {
-                major: 10,
-                minor: 5,
-                bugfix: 0,
-            },
-        )
-        .unwrap();
-        w.enable_explicit_documents().unwrap();
-        w.register_field(FieldInfo::new("id", 0)).unwrap();
-        w.register_field(FieldInfo::new("v", 0).with_vectors(
-            dim as i32,
-            VectorEncoding::Float32,
-            similarity,
-        ))
-        .unwrap();
-        w.set_knn_vectors_format_for_field("v", format(name));
-        w.set_ram_buffer_size_mb(4096.0).unwrap();
-        w.set_merge_policy(None);
-        let w = ConcurrentIndexWriter::new(w, 1).unwrap();
-        let per = n.div_ceil(segments);
-        for start in (0..n).step_by(per) {
-            let (docs, vectors): (Vec<_>, Vec<_>) = (start..(start + per).min(n))
-                .map(|i| {
-                    let mut d = ExplicitDocument::default();
-                    d.stored.push(StoredField {
-                        field_number: 0,
-                        value: FieldValue::Int(i as i32),
-                    });
-                    (
-                        d,
-                        vec![DocumentVector::float32(
-                            "v",
-                            base[i * dim..(i + 1) * dim].to_vec(),
-                        )],
-                    )
-                })
-                .unzip();
-            w.add_explicit_documents_with_vectors_in(None, docs, vectors)
-                .unwrap();
-            w.flush().unwrap();
-        }
-        w.commit().unwrap();
-        let mut w = w.into_writer().unwrap();
-        if merge {
-            w.force_merge(1).unwrap();
+        if !built {
+            let mut w = IndexWriter::open(
+                &dir,
+                Vec::new(),
+                "Lucene104",
+                LuceneVersion {
+                    major: 10,
+                    minor: 5,
+                    bugfix: 0,
+                },
+            )
+            .unwrap();
+            w.enable_explicit_documents().unwrap();
+            w.register_field(FieldInfo::new("id", 0)).unwrap();
+            w.register_field(FieldInfo::new("v", 0).with_vectors(
+                dim as i32,
+                VectorEncoding::Float32,
+                similarity,
+            ))
+            .unwrap();
+            w.set_knn_vectors_format_for_field("v", format(name));
+            w.set_ram_buffer_size_mb(4096.0).unwrap();
+            w.set_merge_policy(None);
+            let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+            let per = n.div_ceil(segments);
+            for start in (0..n).step_by(per) {
+                let (docs, vectors): (Vec<_>, Vec<_>) = (start..(start + per).min(n))
+                    .map(|i| {
+                        let mut d = ExplicitDocument::default();
+                        d.stored.push(StoredField {
+                            field_number: 0,
+                            value: FieldValue::Int(i as i32),
+                        });
+                        (
+                            d,
+                            vec![DocumentVector::float32(
+                                "v",
+                                base[i * dim..(i + 1) * dim].to_vec(),
+                            )],
+                        )
+                    })
+                    .unzip();
+                w.add_explicit_documents_with_vectors_in(None, docs, vectors)
+                    .unwrap();
+                w.flush().unwrap();
+            }
             w.commit().unwrap();
+            let mut w = w.into_writer().unwrap();
+            if merge {
+                w.force_merge(1).unwrap();
+                w.commit().unwrap();
+            }
+            w.close().unwrap();
+            if reuse {
+                std::fs::write(&marker, &key).unwrap();
+            }
         }
-        w.close().unwrap();
         let build = t.elapsed().as_secs_f64();
         let size = dir_size(&path) as f64 / 1e6;
         let reader = DirectoryReader::open(&dir).unwrap();
@@ -218,6 +238,8 @@ fn main() {
         }
         drop(opened);
         drop(reader);
-        let _ = std::fs::remove_dir_all(&path);
+        if !reuse {
+            let _ = std::fs::remove_dir_all(&path);
+        }
     }
 }

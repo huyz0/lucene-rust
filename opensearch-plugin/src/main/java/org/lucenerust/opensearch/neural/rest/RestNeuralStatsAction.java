@@ -204,7 +204,7 @@ public class RestNeuralStatsAction extends BaseRestHandler {
         // When we reach this block, we must have added at least one stat to the input, or else invalid stats will be
         // non empty. So throwing this exception here without adding all covers the empty input case.
         if (invalidStatNames.isEmpty() == false) {
-            throw new IllegalArgumentException(unrecognized(request, invalidStatNames, Sets.union(EVENT_STAT_NAMES, INFO_STAT_NAMES), STAT_PARAM));
+            throw new IllegalArgumentException(unrecognized(request, invalidStatNames, Sets.union(Sets.union(EVENT_STAT_NAMES, INFO_STAT_NAMES), METRIC_STAT_NAMES), STAT_PARAM));
         }
     }
 
