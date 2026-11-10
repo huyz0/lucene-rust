@@ -71,7 +71,7 @@ pub use reader::{
     SearchParams, SearchStats, SharedThreshold, DEFAULT_PROBE_FRACTION, DEFAULT_RERANK_MULTIPLE,
 };
 pub use routing::Routing;
-pub use writer::{FieldVectors, IvfFiles, IvfParams, IvfWriter};
+pub use writer::{FieldClusters, FieldVectors, IvfFiles, IvfParams, IvfWriter};
 
 pub use lucene_vector_quant::Similarity;
 

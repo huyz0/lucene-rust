@@ -107,8 +107,9 @@ byte the one written with realtime off. A search of the view walks the graph
 over the vectors the inserter finished (per-node locks, the published prefix
 only) and scores the rest exactly; a buffer smaller than about 400k vector
 components (4k 100-d vectors), or a filter that leaves fewer documents than
-the walk would visit, is scanned exactly. Fields with an IVF format, a
-Hamming byte format or an index sort keep no graph and are scanned exactly.
+the walk would visit, is scanned exactly. Fields with a Hamming byte format
+or an index sort keep no graph and are scanned exactly; IVF fields keep
+cluster lists (below).
 
 Why per-node locks (`crates/lucene-search/examples/realtime_knn_concurrent.rs`,
 search p50/p99 in us while one inserter runs, 1 searcher unless noted):
@@ -149,6 +150,31 @@ still running stops once the flush is done with the graph. Peak RSS of a burst
 |---|---|---|
 | 300k x 128-d (146 MiB of vectors) | 446 MiB | 497-501 MiB |
 | 80k x 768-d (234 MiB of vectors) | 416 MiB | 422-467 MiB |
+
+An IVF field (`LuceneRustIvfVectorsFormat`) keeps cluster lists over each
+buffer's vectors instead (`lucene_codecs::buffer_lists::BufferLists`): the
+clusters are the ones the field's last flush wrote (its centroids, routing
+tree, radii and default probe depth), and one background task routes each
+appended vector to its nearest centroid. A vector more than 1.5 radii from
+it goes to an outlier list. A search of the view scores exactly the lists of
+the `nprobe` clusters nearest the query (the field's default depth when the
+query names none), doubles the probes while a filter leaves fewer than `k`
+hits, and scores the outliers and the vectors not routed yet exactly. The
+flush clusters the segment as it does with realtime off, so the segment is
+byte for byte the same; a buffer before the field's first flush has no
+clusters to route to and is scanned exactly. A list entry costs about 40
+bytes a vector. Measured with the `lucene-index` example `live_ivf_search`
+(100k vectors flushed, the next 100k buffered, clusters of 128, recall@10
+against an exact scan of the buffer, one core):
+
+| Data | exact scan p50 | lists, default probes: p50, recall | routing |
+|---|---|---|---|
+| GloVe 100-d (1837 clusters) | 2707 us | 866 us, 0.979 | 18 us a vector |
+| fastText 300-d (1952 clusters) | 11443 us | 2552 us, 0.986 | 36 us a vector |
+
+Twice the default probes, the depth first planned, reached 0.998 at about
+twice the time; scored exactly, the default depth already finds more than a
+segment's quantized search of as many clusters.
 
 Chunks and tails with vectors write them flat, with no HNSW graph and no IVF
 lists (`.vem` records no graph levels, the layout of a stock segment too small
