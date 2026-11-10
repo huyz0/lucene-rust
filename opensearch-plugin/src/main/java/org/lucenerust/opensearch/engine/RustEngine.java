@@ -2148,7 +2148,13 @@ public class RustEngine extends Engine {
     /** External searchers also read the writer's buffered documents when the index asks for it (LiveSearchers). */
     @Override
     public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope) throws EngineException {
-        return LiveSearchers.supplier(documentIndexWriter, wrapper, scope, super::acquireSearcherSupplier);
+        return LiveSearchers.supplier(
+            documentIndexWriter,
+            wrapper,
+            scope,
+            super::acquireSearcherSupplier,
+            engineConfig.getThreadPool() == null ? null : engineConfig.getThreadPool().generic()
+        );
     }
 
     @Override
