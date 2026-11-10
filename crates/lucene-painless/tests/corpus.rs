@@ -355,6 +355,9 @@ fn run_corpus() {
                 }
             }
             Err(why) => {
+                if verbose {
+                    println!("--- check refused: {why}\n{src}");
+                }
                 let key: String = format!("check: {why}").chars().take(90).collect();
                 *refusals.entry(key).or_default() += 1;
             }

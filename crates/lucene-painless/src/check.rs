@@ -297,7 +297,96 @@ enum Watched {
     /// script shares it with every segment's script (`ScoreScript` copies
     /// `params` shallowly), so nothing may change it.
     Shared,
+    /// What a view call made (`keySet`, `values`, `entrySet`, `subList`
+    /// ...), or an iterator over it: Java's is a live view of its own
+    /// class, the runtime's a copy, so it may only be read.
+    View(View),
+    /// An entry of an `entrySet` view: Java's writes through to its map.
+    Entry,
 }
+
+/// Which view a [`Watched::View`] is: the reference casts Java's passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    /// A `Set` (`keySet`, a sorted set's sub-set).
+    Set,
+    /// `entrySet`: a `Set` of live entries.
+    Entries,
+    /// A `Collection` only (`values`).
+    Collection,
+    /// A `List` (`subList`).
+    List,
+    /// A `Map` (a sorted map's sub-map).
+    Map,
+}
+
+/// The calls whose result Java keeps as a live view of the receiver.
+fn view_of(name: &str) -> Option<View> {
+    Some(match name {
+        "keySet" | "navigableKeySet" | "descendingKeySet" | "headSet" | "tailSet" | "subSet"
+        | "descendingSet" => View::Set,
+        "entrySet" => View::Entries,
+        "values" => View::Collection,
+        "subList" => View::List,
+        "headMap" | "tailMap" | "subMap" | "descendingMap" => View::Map,
+        _ => return None,
+    })
+}
+
+/// Whether Java's view passes a reference cast to `class`.
+fn view_casts(view: View, class: &str) -> bool {
+    match class {
+        "java.lang.Object" | "org.opensearch.painless.lookup.def" => true,
+        "java.lang.Iterable" | "java.util.Collection" => view != View::Map,
+        "java.util.Set" => matches!(view, View::Set | View::Entries),
+        "java.util.List" => view == View::List,
+        "java.util.Map" => view == View::Map,
+        _ => false,
+    }
+}
+
+/// The calls that read a view (or its iterator) without changing it or its
+/// backing collection and without exposing the view's own class or
+/// identity.
+const VIEW_READS: &[&str] = &[
+    "get",
+    "getOrDefault",
+    "containsKey",
+    "containsValue",
+    "contains",
+    "containsAll",
+    "size",
+    "isEmpty",
+    "indexOf",
+    "lastIndexOf",
+    "toString",
+    "iterator",
+    "hasNext",
+    "next",
+    "first",
+    "last",
+    "firstKey",
+    "lastKey",
+];
+
+/// The calls that keep an argument inside the receiver: a view handed to
+/// one escapes the check's flows.
+const STORES: &[&str] = &[
+    "add",
+    "addFirst",
+    "addLast",
+    "offer",
+    "push",
+    "put",
+    "putIfAbsent",
+    "set",
+    "replace",
+    "merge",
+    "compute",
+    "computeIfAbsent",
+    "computeIfPresent",
+    "setValue",
+];
 
 /// The calls that read a collection without changing it.
 const READS: &[&str] = &[
@@ -535,6 +624,32 @@ fn propagate(
             {
                 (*dst, Some(Watched::Shared))
             }
+            // A for-each loop over a shared collection or a view.
+            Op::Api {
+                dst,
+                tag: Tag::ForEach(n),
+                args,
+                ..
+            } => match (*n, args.first().and_then(|&a| w[a as usize])) {
+                (_, Some(Watched::Shared)) => (*dst, Some(Watched::Shared)),
+                ("iterator", Some(Watched::View(v))) => (*dst, Some(Watched::View(v))),
+                ("next", Some(Watched::View(View::Entries))) => (*dst, Some(Watched::Entry)),
+                _ => return,
+            },
+            // A view, an iterator over one, and an entry set's entries.
+            Op::Native {
+                dst,
+                tag: Tag::Call(n),
+                args,
+                ..
+            } => match (&**n, args.first().and_then(|&a| w[a as usize])) {
+                ("iterator", Some(Watched::View(v))) => (*dst, Some(Watched::View(v))),
+                ("next", Some(Watched::View(View::Entries))) => (*dst, Some(Watched::Entry)),
+                (n, _) => match view_of(n) {
+                    Some(v) => (*dst, Some(Watched::View(v))),
+                    None => return,
+                },
+            },
             _ => return,
         };
         changed |= merge(&mut fl.watched[func][d as usize], from);
@@ -571,6 +686,28 @@ fn uses(func: usize, ops: &[Op], served: &Served<'_>, fl: &Flows) -> Result<(), 
             let ok = match (kind, op) {
                 // Hand-offs the flows follow.
                 (_, Op::Move(..) | Op::Local { .. } | Op::Return(Some(_))) => true,
+                (
+                    Watched::View(v),
+                    Op::Cast {
+                        cast: CastOp::Check(class),
+                        ..
+                    },
+                ) => view_casts(v, class),
+                (
+                    Watched::Entry,
+                    Op::Cast {
+                        cast: CastOp::Check(class),
+                        ..
+                    },
+                ) => matches!(
+                    &**class,
+                    "java.util.Map$Entry"
+                        | "java.lang.Object"
+                        | "org.opensearch.painless.lookup.def"
+                ),
+                (Watched::View(_) | Watched::Entry, Op::Cast { .. } | Op::InstanceOf { .. }) => {
+                    false
+                }
                 (_, Op::Cast { cast, .. }) if passes_on(cast) => true,
                 // Identity tests read no member.
                 (_, Op::InstanceOf { .. } | Op::IfNull { .. }) => true,
@@ -633,6 +770,52 @@ fn uses(func: usize, ops: &[Op], served: &Served<'_>, fl: &Flows) -> Result<(), 
                     },
                 ) => &**class == "java.lang.Math",
                 (
+                    Watched::View(_),
+                    Op::Native {
+                        tag: Tag::Call(n), ..
+                    },
+                ) => {
+                    if i == 0 {
+                        VIEW_READS.contains(&&**n)
+                    } else {
+                        !STORES.contains(&&**n)
+                    }
+                }
+                (
+                    Watched::Entry,
+                    Op::Native {
+                        tag: Tag::Call(n), ..
+                    },
+                ) => {
+                    if i == 0 {
+                        matches!(&**n, "getKey" | "getValue" | "toString")
+                    } else {
+                        !STORES.contains(&&**n)
+                    }
+                }
+                (
+                    Watched::Shared | Watched::View(_),
+                    Op::Api {
+                        tag: Tag::ForEach(_),
+                        ..
+                    },
+                ) => true,
+                (
+                    Watched::View(_) | Watched::Entry,
+                    Op::Api {
+                        tag: Tag::Static { class, .. },
+                        ..
+                    },
+                ) => &**class != "java.util.Collections",
+                (
+                    Watched::View(_) | Watched::Entry,
+                    Op::Arith { .. }
+                    | Op::Cmp { .. }
+                    | Op::Concat { .. }
+                    | Op::If { .. }
+                    | Op::BreakUnless(_),
+                ) => true,
+                (
                     Watched::Shared,
                     Op::Arith { .. }
                     | Op::DefArith { .. }
@@ -652,6 +835,9 @@ fn uses(func: usize, ops: &[Op], served: &Served<'_>, fl: &Flows) -> Result<(), 
                     Watched::Params => "params changed, handed on or read by a computed key".into(),
                     Watched::Foreign => "a value the native runtime cannot serve (_source)".into(),
                     Watched::Shared => "a params collection changed or handed on".into(),
+                    Watched::View(_) | Watched::Entry => {
+                        "a collection view (keySet, values, entrySet, subList) changed, cast or handed on".into()
+                    }
                 });
             }
         }
