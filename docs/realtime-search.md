@@ -124,6 +124,15 @@ realtime_knn_concurrent -- /tmp/data/glove100 --buffer 50000 --rate 2000
 --searchers 2 --seconds 10` (the example's doc lists its modes and data). For comparison, scanning 100k buffered
 GloVe vectors exactly took 1480 us.
 
+End to end (`lucene-ffi` `live_knn_tail_timing`, release, 128-d random
+vectors, 20k committed and 100k buffered, k 10 over 100 candidates): a k-NN
+search of the view takes 521 us p50 (796 us with the view's first reader
+build), against 414 us once the same documents are flushed. The flush and
+commit of the 100k buffered vectors takes 1.3 s, as the graph is already
+built. A burst of adds outruns the inserter (about 3k 128-d vectors a second
+with M 16 and beam 100): the vectors it has not reached are scanned exactly
+until it catches up.
+
 Chunks and tails with vectors write them flat, with no HNSW graph and no IVF
 lists (`.vem` records no graph levels, the layout of a stock segment too small
 for a graph, which Java's `Lucene99HnswVectorsReader` and the plugin's IVF

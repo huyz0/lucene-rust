@@ -408,13 +408,20 @@ fn top_hits(
         None => None,
     };
     let mut opened = Vec::with_capacity(segments.len()); // alloc-ok: one per segment
-    for seg in segments {
+    for (i, seg) in segments.iter().enumerate() {
         let Some(reader) = seg.reader else {
             return Err(Error::MissingSegmentReader(format!(
                 "KNN query on {field:?}"
             )));
         };
-        opened.push((reader, open_leaf(reader, field)?));
+        // A buffer's segments are searched through its graph: their own
+        // vector readers are not opened.
+        let vectors = if nested.is_none() && buffered(i) {
+            None
+        } else {
+            open_leaf(reader, field)?
+        };
+        opened.push((reader, vectors));
     }
     let mut knn = Vec::with_capacity(segments.len()); // alloc-ok: one per segment
                                                       // The segment each `knn` entry is, and (nested) its parent bit set.
