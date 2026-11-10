@@ -15,6 +15,7 @@ pub mod lock;
 pub mod lock_wrappers;
 pub mod nrt_caching_directory;
 pub mod rate_limiter;
+pub mod range_input;
 
 pub use byte_buffers_directory::ByteBuffersDirectory;
 pub use data_input::{DataInput, SliceInput};

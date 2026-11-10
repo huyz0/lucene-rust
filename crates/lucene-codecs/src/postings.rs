@@ -780,6 +780,39 @@ pub struct DocInput<'a> {
     format: PostingsFormat,
 }
 
+/// Bounded modern postings read from the same immutable file as its term
+/// metadata. This prototype materializes one encoded term window, never the
+/// complete `.doc` file. Terms exceeding the finite window fail explicitly.
+pub struct RangeDocInput { input: lucene_store::range_input::RangeInput }
+impl RangeDocInput {
+    pub fn open(input: lucene_store::range_input::RangeInput, id: &[u8; ID_LENGTH], suffix: &str) -> Result<Self> {
+        let mut prefix = [0u8; 512];
+        let count = input.len().min(prefix.len());
+        input.read_exact_at(0, &mut prefix[..count])?;
+        let format = PostingsFormat::of_header(&prefix[..count]).unwrap_or_default();
+        if format != PostingsFormat::Lucene104 { return Err(Error::Unsupported("range postings require Lucene104")); }
+        let (codec, start, current) = postings_header(format, "Doc");
+        codec_util::check_index_header(&mut SliceInput::new(&prefix[..count]), &codec, start, current, id, suffix)?;
+        let mut footer = [0u8; codec_util::FOOTER_LENGTH];
+        let at = input.len().checked_sub(footer.len()).ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        input.read_exact_at(at, &mut footer)?;
+        codec_util::retrieve_checksum(&footer)?;
+        Ok(Self { input })
+    }
+    pub fn read_postings(&self, mut meta: TermMetadata, doc_freq: i32, options: IndexOptions, payloads: bool, flags: PostingsFlags) -> Result<Postings> {
+        if !(2..=4096).contains(&doc_freq) { return Err(Error::Unsupported("range postings docFreq exceeds prototype envelope")); }
+        let at = usize::try_from(meta.doc_start_fp).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let data_end = self.input.len().checked_sub(codec_util::FOOTER_LENGTH).ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let length = data_end.checked_sub(at).ok_or(lucene_store::Error::Eof { offset: at })?.min(64 * 1024);
+        // Fixed stack window, irrespective of file length. Reads and decoding
+        // are fallible. An oversized encoded term cannot silently fall back.
+        let mut window = [0u8; 64 * 1024];
+        self.input.read_exact_at(at, &mut window[..length])?;
+        meta.doc_start_fp = 0;
+        DocInput::validated(&window[..length]).read_postings_with_flags(meta, doc_freq, options, payloads, flags)
+    }
+}
+
 /// `(codec name, VERSION_START, VERSION_CURRENT)` of one of a format's
 /// postings files: `kind` is `Doc`, `Pos` or `Pay`.
 fn postings_header(format: PostingsFormat, kind: &str) -> (String, i32, i32) {
