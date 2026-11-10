@@ -41,6 +41,9 @@ pub(crate) struct Request {
     pub(crate) k: usize,
     candidates: usize,
     pub(crate) filter: Option<lucene_search::query::Clause>,
+    /// Where the filter's encoding sits in the request (empty without one):
+    /// two requests with the same bytes there filter alike.
+    pub(crate) filter_bytes: std::ops::Range<usize>,
     /// A nested field's parent filter and `expand_nested_docs`.
     pub(crate) nested: Option<(Arc<dyn BitSetProducer>, bool)>,
     nprobes: usize,
@@ -66,9 +69,13 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
     let k = positive(c.i32()?, "k must be at least 1")?;
     let candidates = positive(c.i32()?, "candidates must be at least 1")?;
     let mut nodes = 0usize;
-    let filter = match c.u8()? {
-        0 => None,
-        1 => Some(crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)?),
+    let (filter, filter_bytes) = match c.u8()? {
+        0 => (None, 0..0),
+        1 => {
+            let start = blob.len() - c.remaining();
+            let node = crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)?;
+            (Some(node), start..blob.len() - c.remaining())
+        }
         _ => return Err(invalid("filter flag (expected 0..=1)")),
     };
     let nested = match c.u8()? {
@@ -94,6 +101,7 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         k,
         candidates,
         filter,
+        filter_bytes,
         nested,
         nprobes,
     })
@@ -151,6 +159,7 @@ pub(crate) fn search(
         candidates,
         filter,
         nested,
+        filter_bytes: _,
         nprobes,
     } = request;
     let mut opened = h.reader.open_segments().map_err(|e| {

@@ -7462,10 +7462,147 @@ mod tests {
         assert_eq!(sci.codec_name, KNN_CODEC);
     }
 
+    /// Realtime k-NN per view, timed: the first query on a view builds its
+    /// reader (the tail written), the second reuses it. `DIM`, `COMMITTED`,
+    /// `BUFFERED` (cut into chunks first), `STEP` (documents added before
+    /// each view), `ROUNDS`; `VEC=0` indexes the same documents without
+    /// vectors.
+    #[test]
+    #[ignore = "timing; run with --release --ignored --nocapture"]
+    fn live_knn_tail_timing() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_knn,
+        };
+        let env = |k: &str, d: usize| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let (dim, committed, buffered, step, rounds) = (
+            env("DIM", 128),
+            env("COMMITTED", 20000),
+            env("BUFFERED", 20000),
+            env("STEP", 100),
+            env("ROUNDS", 50),
+        );
+        let with_vec = env("VEC", 1) == 1;
+        let tmp = empty_index("engine-writer-live-knn-timing");
+        let h = open_with(&tmp, 1024.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let spec = Blob::default()
+            .bytes(b"v")
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(dim as i32)
+            .u8(0)
+            .u8(0)
+            .u8(1)
+            .i32(16)
+            .i32(100)
+            .u8(0)
+            .i32(1)
+            .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+            .bytes(b"hnsw:16:100")
+            .0;
+        register(h, &spec).unwrap();
+        let vecf = |i: usize| -> Vec<f32> {
+            let mut s = (i as u64 + 1).wrapping_mul(0x9e3779b97f4a7c15);
+            (0..dim)
+                .map(|_| {
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    (s >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+                })
+                .collect()
+        };
+        let add = |from: usize, to: usize| {
+            let mut b = Blob::default().u8(OP_ADD).i32((to - from) as i32);
+            for i in from..to {
+                b = doc(b, &f, &format!("d{i}"), &["w"], i as i64, false);
+            }
+            for i in from..to {
+                if with_vec {
+                    b = b.i32(1).bytes(b"v").u8(0).i32(dim as i32);
+                    for x in vecf(i) {
+                        b = b.f32(x);
+                    }
+                } else {
+                    b = b.i32(0);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        for s in (0..committed).step_by(1000) {
+            add(s, (s + 1000).min(committed));
+        }
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        for s in (committed..committed + buffered).step_by(1000) {
+            add(s, (s + 1000).min(committed + buffered));
+        }
+        crate::live::warm_for_tests(&lookup(h).unwrap(), 1000);
+        let mut next = committed + buffered;
+        let target = vecf(7);
+        let mut request = Blob::default()
+            .bytes(b"v")
+            .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+            .i32(dim as i32);
+        for &x in &target {
+            request = request.f32(x);
+        }
+        let request = request.i32(10).i32(100).u8(0).u8(0).i32(0).0;
+        let (mut first, mut second) = (Vec::new(), Vec::new());
+        for _ in 0..rounds {
+            add(next, next + step);
+            next += step;
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0);
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            for out in [&mut first, &mut second] {
+                let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
+                let t = std::time::Instant::now();
+                // SAFETY: live request and buffers of 64.
+                let rc = unsafe {
+                    ffi_live_view_knn(
+                        reader,
+                        view,
+                        request.as_ptr(),
+                        request.len(),
+                        docs.as_mut_ptr(),
+                        scores.as_mut_ptr(),
+                        64,
+                        &mut n,
+                    )
+                };
+                out.push(t.elapsed().as_secs_f64() * 1e6);
+                assert_eq!(rc, 0, "{}", crate::error::last_error());
+            }
+            assert_eq!(ffi_live_view_close(view), 0);
+        }
+        let p50 = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        println!("dim {dim} committed {committed} buffered {buffered} step {step}: first (view build + knn) p50 {:.0} us, second (knn only) p50 {:.0} us", p50(&mut first), p50(&mut second));
+    }
+
     /// **Realtime k-NN.** With live search on, a view's buffered vectors are
     /// found natively beside the reader's ([`crate::live::ffi_live_view_knn`]):
     /// the exact top `k` of every vector, a filter applied to the buffers
-    /// too, and a buffered document deleted since hidden. A chunk of the
+    /// too, and documents deleted since (buffered or committed) hidden. A chunk of the
     /// buffer, as the warmer cuts them, keeps its vectors without a graph,
     /// which the flush builds.
     #[test]
@@ -7521,21 +7658,24 @@ mod tests {
         // it, and a tail of the rest.
         crate::live::warm_for_tests(&lookup(h).unwrap(), 1000);
         add(2400, 2430);
-        let b = doc(
-            Blob::default()
-                .u8(OP_SOFT_UPDATE)
-                .bytes(b"_id")
-                .bytes(b"d2410")
-                .bytes(b"__soft_deletes")
-                .i64(1)
-                .i32(1),
-            &f,
-            "d2410",
-            &[],
-            2430,
-            true,
-        );
-        assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        // Deleted since: a buffered document and a committed one.
+        for (seq, id) in [(2430, "d2410"), (2431, "d5")] {
+            let b = doc(
+                Blob::default()
+                    .u8(OP_SOFT_UPDATE)
+                    .bytes(b"_id")
+                    .bytes(id.as_bytes())
+                    .bytes(b"__soft_deletes")
+                    .i64(1)
+                    .i32(1),
+                &f,
+                id,
+                &[],
+                seq,
+                true,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        }
 
         let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
         // SAFETY: live out-pointers.
@@ -7588,19 +7728,23 @@ mod tests {
         ] {
             for filter in [None, Some("even")] {
                 let mut want: Vec<(usize, f32)> = (0..2430)
-                    .filter(|&i| i != 2410)
+                    .filter(|&i| i != 2410 && i != 5)
                     .filter(|&i| filter.is_none_or(|w| w == word(i)))
                     .map(|i| (i, knn_score(&target, &knn_vector(i))))
                     .collect();
                 want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
                 let got = knn(&target, 10, filter);
                 assert_eq!(got.len(), 10);
-                for ((doc, score), (i, exact)) in got.iter().zip(&want) {
+                for (j, ((doc, score), (i, exact))) in got.iter().zip(&want).enumerate() {
                     assert!(
                         (score - exact).abs() < 1e-6,
                         "{target:?} {filter:?}: {score} vs {exact}"
                     );
-                    let _ = (doc, i);
+                    // Where no other document ties it, the very document.
+                    let tied = |o: Option<&(usize, f32)>| o.is_some_and(|o| o.1 == *exact);
+                    if !tied(want.get(j + 1)) && !tied(j.checked_sub(1).and_then(|p| want.get(p))) {
+                        assert_eq!(*doc as usize, *i, "{target:?} {filter:?} hit {j}");
+                    }
                 }
                 // Exact hits beyond the committed graph's own misses: every
                 // buffered document in the exact top 10 is found.
@@ -7610,7 +7754,7 @@ mod tests {
                         "{target:?} {filter:?}: d{i}"
                     );
                 }
-                assert!(got.iter().all(|&(d, _)| d != 2410));
+                assert!(got.iter().all(|&(d, _)| d != 2410 && d != 5));
             }
         }
         // The whole buffer as the target's neighbours: a buffered vector
@@ -7671,7 +7815,24 @@ mod tests {
         let all = commit_settled(h);
         ffi_engine_writer_close(h);
         check(&tmp);
-        let _ = all;
+        let flushed = open_reader(&tmp, all);
+        let fh = crate::jvm_reader::lookup(flushed, "test").unwrap();
+        let mut with_vectors = 0;
+        for seg in fh.reader.segment_readers() {
+            let Some(info) = seg.field_infos().fields.iter().find(|i| i.name == "v") else {
+                continue;
+            };
+            let (_, graph) = seg.knn_vectors_for(info.number).unwrap().unwrap();
+            assert!(
+                graph.unwrap().graph(info.number).unwrap().is_some(),
+                "a flushed segment of {} documents without its graph",
+                seg.max_doc
+            );
+            with_vectors += 1;
+        }
+        assert!(with_vectors >= 2, "{with_vectors} segments with vectors");
+        drop(fh);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(flushed), 0);
     }
 
     /// **A vector field is written in its mapping's format and searched

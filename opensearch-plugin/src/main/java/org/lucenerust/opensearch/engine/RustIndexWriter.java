@@ -1077,8 +1077,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     /**
      * The registered fields as Lucene field infos, for the leaf of buffered documents: the schema
-     * every segment writes, so the leaf agrees with the segments' field infos. Null when a field
-     * carries vectors, whose encoding the registry does not keep.
+     * every segment writes, so the leaf agrees with the segments' field infos.
      */
     org.apache.lucene.index.FieldInfos liveFieldInfos() {
         synchronized (liveLock) {
@@ -1095,9 +1094,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
         List<org.apache.lucene.index.FieldInfo> list = new ArrayList<>();
         for (FieldRegistry.Entry e : registry.entries()) {
             FieldSchema f = e.schema();
-            if (f.vectorDimension != 0) {
-                return null;
-            }
             list.add(
                 new org.apache.lucene.index.FieldInfo(
                     f.name,
@@ -1113,9 +1109,9 @@ final class RustIndexWriter implements DocumentIndexWriter {
                     f.pointDimensionCount,
                     f.pointIndexDimensionCount,
                     f.pointNumBytes,
-                    0,
-                    org.apache.lucene.index.VectorEncoding.FLOAT32,
-                    org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN,
+                    f.vectorDimension,
+                    f.vectorEncoding,
+                    f.vectorSimilarity,
                     f.softDeletes,
                     false
                 )

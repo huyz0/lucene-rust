@@ -39,6 +39,8 @@ use lucene_util::simd::dot_f32;
 
 type R<T> = std::result::Result<T, lucene_codecs::vectors::Error>;
 
+/// One option's search: a query's top hits as (buffer ordinal, score).
+type Search<'a> = dyn FnMut(&[f32]) -> Vec<(u32, f32)> + 'a;
 fn read_bin(path: &str) -> (usize, usize, Vec<f32>) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
@@ -424,7 +426,7 @@ fn main() {
             q8.encode(v, &mut codes);
             t_int8 += t.elapsed().as_secs_f64();
             added += 1;
-            if do_hnsw && added % chunk == 0 {
+            if do_hnsw && added.is_multiple_of(chunk) {
                 let start = added - chunk;
                 let t = Instant::now();
                 let g = HnswGraphBuilder::new(
@@ -451,31 +453,30 @@ fn main() {
             .map(|i| exact(bufn, dim, &queries[i * dim..(i + 1) * dim], k))
             .collect();
         let per = |s: f64| s * 1e6 / n as f64;
-        let mut run =
-            |name: &str, add_us: f64, extra: f64, f: &mut dyn FnMut(&[f32]) -> Vec<(u32, f32)>| {
-                let mut lat = Vec::with_capacity(nq);
-                let mut rec = 0.0;
-                let mut rec_m = 0.0;
-                for i in 0..nq {
-                    let q = &queries[i * dim..(i + 1) * dim];
-                    let t = Instant::now();
-                    let got = f(q);
-                    lat.push(t.elapsed().as_secs_f64() * 1e6);
-                    rec += recall(&got, &truths[i]);
-                    rec_m += recall(&merged(i, &got), &merged(i, &truths[i]));
-                }
-                let mean = lat.iter().sum::<f64>() / lat.len() as f64;
-                println!(
-                    "{dim},{n},{name},{:.4},{:.4},{:.1},{:.1},{:.1},{:.2},{:.0}",
-                    rec / nq as f64,
-                    rec_m / nq as f64,
-                    pct(lat.clone(), 0.5),
-                    pct(lat, 0.99),
-                    mean,
-                    add_us,
-                    extra
-                );
-            };
+        let run = |name: &str, add_us: f64, extra: f64, f: &mut Search<'_>| {
+            let mut lat = Vec::with_capacity(nq);
+            let mut rec = 0.0;
+            let mut rec_m = 0.0;
+            for i in 0..nq {
+                let q = &queries[i * dim..(i + 1) * dim];
+                let t = Instant::now();
+                let got = f(q);
+                lat.push(t.elapsed().as_secs_f64() * 1e6);
+                rec += recall(&got, &truths[i]);
+                rec_m += recall(&merged(i, &got), &merged(i, &truths[i]));
+            }
+            let mean = lat.iter().sum::<f64>() / lat.len() as f64;
+            println!(
+                "{dim},{n},{name},{:.4},{:.4},{:.1},{:.1},{:.1},{:.2},{:.0}",
+                rec / nq as f64,
+                rec_m / nq as f64,
+                pct(lat.clone(), 0.5),
+                pct(lat, 0.99),
+                mean,
+                add_us,
+                extra
+            );
+        };
         run("exact", 0.0, 0.0, &mut |q| exact(bufn, dim, q, k));
         run("int8", per(t_int8), dim as f64, &mut |q| {
             int8_search(&codes[..n * dim], bufn, dim, &q8, q, k)

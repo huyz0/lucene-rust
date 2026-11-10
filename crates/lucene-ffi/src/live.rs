@@ -1255,7 +1255,13 @@ pub unsafe extern "C" fn ffi_live_view_knn(
             match lucene_search::live_segment::whole_request(&refs) {
                 Some(r) => {
                     let points = lucene_search::live_segment::reads_points(&refs);
-                    let key = format!("knn-filter:{clause:?}").into_bytes();
+                    // Keyed by the filter's own encoding, which names a
+                    // filter exactly. The view's request budget is shared
+                    // with the query phase: a view searched with many
+                    // distinct filters leaves later requests the reader of
+                    // every term.
+                    let mut key = b"knn-filter:".to_vec();
+                    key.extend_from_slice(&blob[knn.filter_bytes.clone()]);
                     (Some((r, points)), Some(key))
                 }
                 None => (None, None),
