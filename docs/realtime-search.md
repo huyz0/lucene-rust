@@ -158,8 +158,11 @@ tree, radii and default probe depth), and one background task routes each
 appended vector to its nearest centroid. A vector more than 1.5 radii from
 it goes to an outlier list. A search of the view scores exactly the lists of
 the `nprobe` clusters nearest the query (the field's default depth when the
-query names none), doubles the probes while a filter leaves fewer than `k`
-hits, and scores the outliers and the vectors not routed yet exactly. The
+query names none), and scores the outliers and the vectors not routed yet
+exactly. A filter follows a segment's filtered IVF plan: one that passes no
+more vectors than the accepted target (2000 for 10 hits) is scored exactly,
+and otherwise the probes grow until they have scored that many accepted
+vectors. The
 flush clusters the segment as it does with realtime off, so the segment is
 byte for byte the same; a buffer before the field's first flush has no
 clusters to route to and is scanned exactly. A list entry costs about 40
