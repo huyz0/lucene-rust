@@ -329,6 +329,11 @@ pub struct IvfField {
     /// Each slot's document, from the doc table, kept in memory: posting
     /// entries name slots, and a filter or a hit needs the document.
     slot_docs: Vec<i32>,
+    /// Each cluster's lowest and highest document, when the clusters hold
+    /// narrow document ranges ([`crate::IvfWriter::add_partitioned_field`]): their
+    /// ranges span on average at most 1/[`RANGED_SPAN`] of the field's
+    /// documents. Empty otherwise, and with spilled entries.
+    doc_ranges: Vec<(i32, i32)>,
     postings_offset: usize,
     vectors_offset: usize,
     doc_table_offset: usize,
@@ -380,6 +385,7 @@ impl IvfField {
             primary_starts: Vec::new(),
             block_starts,
             slot_docs,
+            doc_ranges: Vec::new(),
             postings_offset,
             vectors_offset: 0,
             doc_table_offset: 0,
@@ -508,6 +514,13 @@ impl IvfField {
     /// spilled entries.
     pub fn entries(&self) -> usize {
         self.starts.last().copied().unwrap_or(0)
+    }
+
+    /// Each cluster's lowest and highest document, when its clusters hold
+    /// narrow document ranges (see [`crate::IvfWriter::add_partitioned_field`]);
+    /// `None` otherwise.
+    pub fn doc_ranges(&self) -> Option<&[(i32, i32)]> {
+        (!self.doc_ranges.is_empty()).then_some(self.doc_ranges.as_slice())
     }
 
     /// Cluster `c`'s entry count (its own vectors and those spilled into it).
@@ -857,6 +870,7 @@ fn read_field(
         primary_starts,
         block_starts,
         slot_docs: Vec::new(),
+        doc_ranges: Vec::new(),
         postings_offset,
         vectors_offset,
         doc_table_offset,
@@ -884,6 +898,38 @@ fn block_layout(quantizer: &dyn Quantizer, starts: &[usize]) -> Result<(Vec<usiz
         block_starts.push(postings_bytes);
     }
     Ok((block_starts, postings_bytes))
+}
+
+/// How much narrower than the field's own document span its clusters'
+/// ranges must be on average for a filtered search to prune clusters by
+/// range.
+pub const RANGED_SPAN: usize = 2;
+
+/// Each cluster's lowest and highest document (its own vectors are its
+/// slots `starts[c]..starts[c + 1]`), when the ranges are narrow; empty
+/// for spilled entries or wide ranges.
+// ARITH: starts are prefix sums bounded by the slot count.
+#[allow(clippy::arithmetic_side_effects)]
+fn doc_ranges(f: &IvfField) -> Vec<(i32, i32)> {
+    if f.entries() != f.count || f.slot_docs.is_empty() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::with_capacity(f.clusters());
+    let mut span = 0usize;
+    for c in 0..f.clusters() {
+        let docs = &f.slot_docs[f.starts[c]..f.starts[c + 1]];
+        let lo = docs.iter().copied().min().unwrap_or(0);
+        let hi = docs.iter().copied().max().unwrap_or(-1);
+        span = span.saturating_add(usize::try_from(i64::from(hi) - i64::from(lo) + 1).unwrap_or(0));
+        ranges.push((lo, hi));
+    }
+    let first = f.slot_docs.iter().copied().min().unwrap_or(0);
+    let last = f.slot_docs.iter().copied().max().unwrap_or(0);
+    let own = usize::try_from(i64::from(last) - i64::from(first) + 1).unwrap_or(usize::MAX);
+    if span.saturating_mul(RANGED_SPAN) > own.saturating_mul(f.clusters()) {
+        return Vec::new();
+    }
+    ranges
 }
 
 /// Reads a field's doc table and inverts it: each slot's document. Checks
@@ -1371,6 +1417,7 @@ impl IvfReader {
                 return corrupt(format!("field {} recorded twice", field.number));
             }
             field.slot_docs = slot_docs(vectors.as_ref(), &field)?;
+            field.doc_ranges = doc_ranges(&field);
             fields.push(field);
         }
         codec_util::check_footer(&mut input, meta.len())?;
@@ -1652,6 +1699,39 @@ impl IvfReader {
         accept: Option<&dyn Fn(i32) -> bool>,
         shared: Option<&SharedThreshold>,
     ) -> Result<SearchOutput> {
+        self.search_among(field, query, params, accept, None, shared)
+    }
+
+    /// [`IvfReader::search_with`] probing only `clusters` (their numbers,
+    /// in any order): the nearest of them by exact centroid score. A
+    /// filter whose documents lie in a few clusters' document ranges
+    /// ([`IvfField::doc_ranges`]) names those, so the probes neither route
+    /// over nor read the clusters of other documents.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfReader::search_with`].
+    pub fn search_within(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        clusters: &[usize],
+        shared: Option<&SharedThreshold>,
+    ) -> Result<SearchOutput> {
+        self.search_among(field, query, params, accept, Some(clusters), shared)
+    }
+
+    fn search_among(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        among: Option<&[usize]>,
+        shared: Option<&SharedThreshold>,
+    ) -> Result<SearchOutput> {
         let f = self.field_or_err(field)?;
         let query = self.prepare_query(f, query)?;
         let mut stats = SearchStats::default();
@@ -1670,7 +1750,10 @@ impl IvfReader {
             Rerank::Bounded { cap } => (cap, true),
             Rerank::Auto => (f.auto_rerank(params.k), true),
         };
-        let probes = f.probe_order(&query, nprobe);
+        let probes = match among {
+            Some(clusters) => f.router.route_among(&f.centroids, &query, clusters, nprobe),
+            None => f.probe_order(&query, nprobe),
+        };
         let candidates = f.scan(
             self.postings.as_ref(),
             &query,

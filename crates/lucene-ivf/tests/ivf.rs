@@ -558,6 +558,7 @@ fn clustering_params_are_honoured() {
             calibration_recall: None,
             merge_clustering: MergeClustering::Recluster,
             routing_tree_min: usize::MAX,
+            partition_min_vectors: 20_000,
         },
     )
     .unwrap();

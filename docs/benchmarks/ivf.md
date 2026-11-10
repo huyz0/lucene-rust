@@ -536,3 +536,63 @@ graph or clusters built per tenant inside a segment), GloVe:
 A per-tenant structure is 4-30x faster, but no better on recall: it has
 the same approximation as any index of that size, while the filtered
 shared index falls back to exact scores for small tenants.
+
+### Mixed tenant sizes at 8M vectors
+
+`cargo run --release -p lucene-search --example knn_tenants -- <glove prefix>
+<cache prefix> [--format ivf-f16|hnsw] [--ef L] [--partition-clusters]`
+builds 8M vectors (GloVe-100 plus per-dimension jitter, normalized, cosine)
+in four segments of 2M, each sorted by tenant: tenants of 1.5M, 400k, 40k,
+4k, 300 and 30 documents (each class random or one region of the space,
+queried from anywhere or from inside the region). IVF searches ask for 10
+candidates, HNSW (m 16, beam 100) for 100. Recall@10 / mean ms, 100 queries
+per tenant, on a 4-core box:
+
+| tenant | IVF before | IVF filtered | IVF clusters per partition | HNSW |
+|---|---|---|---|---|
+| none (unfiltered) | 0.978 / 13.4 | 0.971 / 9.4 | 0.982 / 21.4 | 0.831 / 2.2 |
+| random1500000-any | 0.953 / 16.9 | 0.952 / 17.6 | 0.985 / 12.0 | 0.921 / 26.1 |
+| region1500000-any | 0.945 / 17.1 | 0.947 / 15.9 | 0.975 / 9.9 | 0.858 / 17.6 |
+| region1500000-local | 0.997 / 16.2 | 0.995 / 14.6 | 0.996 / 10.0 | 0.951 / 6.3 |
+| random400000-any | 0.945 / 12.2 | 0.955 / 15.5 | 0.972 / 4.1 | 0.963 / 48.1 |
+| region400000-any | 0.910 / 12.7 | 0.948 / 15.0 | 0.941 / 3.6 | 0.912 / 37.5 |
+| region400000-local | 0.979 / 13.7 | 0.979 / 12.9 | 0.969 / 3.8 | 0.963 / 7.4 |
+| random40000-any | 0.875 / 9.5 | 1.000 / 2.9 | 1.000 / 2.8 | 1.000 / 11.4 |
+| region40000-any | 0.720 / 24.9 | 1.000 / 2.6 | 1.000 / 2.7 | 0.999 / 11.2 |
+| region40000-local | 0.988 / 11.6 | 1.000 / 2.6 | 1.000 / 2.7 | 0.998 / 4.9 |
+| random4000-any | 0.934 / 39.1 | 1.000 / 0.42 | 1.000 / 0.38 | 1.000 / 7.4 |
+| random300-any | 1.000 / 25.5 | 1.000 / 0.16 | 1.000 / 0.11 | 1.000 / 0.18 |
+| random30-any | 1.000 / 49.9 | 1.000 / 0.13 | 1.000 / 0.09 | 1.000 / 0.26 |
+
+("IVF before" asked for 100 candidates; at 10 its unfiltered search is
+about 9 ms too.)
+
+- The filtered rules hold at this scale for every tenant of 40k documents
+  and fewer: 1.0 recall, where the old doubling gave 0.72-0.93 and up to
+  50 ms.
+- Tenants of 5-20% of the index stay at 0.95 recall but cost more than an
+  unfiltered search: most of each probed cluster belongs to other tenants.
+- HNSW at this size reaches 0.83 unfiltered at beam 100, and 0.86-0.96 on
+  the large tenants at 6-48 ms: its filtered walk visits many rejected
+  nodes before Lucene's visit limit sends it to an exact scan.
+- Index sizes: IVF 5.2 GB (f16 rerank vectors beside the raw ones), HNSW
+  3.7 GB. Builds: IVF 387 s, IVF per partition 120 s, HNSW 3834 s
+  (graphs built single-threaded at flush).
+
+### Clusters per partition
+
+`IndexWriter::set_ivf_partition_clusters(Some(min_vectors))` clusters each
+partition of the index sort's first field on its own at flush and merge
+(partitions under `min_vectors` together with their neighbours, here
+20,000). The files keep their format; a reader finds the clusters' document
+ranges narrow (on average at most half the segment) and a filtered search
+probes only the clusters whose range holds a document it passes, with the
+calibrated share of them. A partition of at most 16 times the accepted
+target is scored exactly.
+
+- Large tenants search 1.5-4.2x faster with recall up to 0.97-0.985 (the
+  400k region queried from far away stays at 0.94).
+- Unfiltered searches take 2.3x longer (21 ms against 9.4 ms): a query's
+  nearest documents spread over every partition's clusters. The setting
+  fits indexes that are always searched within one tenant.
+- Builds are 3x faster: k-means runs on each partition alone.

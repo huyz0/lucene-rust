@@ -1372,6 +1372,53 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// ([`IVF_ACCEPTED_FOR_10`]), or scoring them exactly costs less than the
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
+/// A filter on a partition of a field clustered per partition is scored
+/// exactly when it passes at most this many times the accepted target: a
+/// partition's few clusters are probed nearly all, with quantization error,
+/// where its documents' exact scores cost little more (`docs/benchmarks/ivf.md`,
+/// "Clusters per partition").
+const IVF_PARTITION_EXACT_RATIO: usize = 16;
+
+/// Most runs of set bits a filter may have for a filtered IVF search to
+/// prune clusters by document range: a partition's documents are one run
+/// per segment of an index sorted by the partition field.
+const IVF_FILTER_RUNS: usize = 256;
+
+/// The clusters whose document range (`ranges`, lowest and highest
+/// document) holds a document `filter` passes, or `None` when the filter
+/// has more than [`IVF_FILTER_RUNS`] runs of documents.
+fn clusters_holding(ranges: &[(i32, i32)], filter: &FixedBitSet) -> Option<Vec<usize>> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(lo) = filter.next_set_bit(from) {
+        if runs.len() == IVF_FILTER_RUNS {
+            return None;
+        }
+        let hi = filter.next_clear_bit(lo).unwrap_or(filter.len());
+        runs.push((lo, hi));
+        from = hi;
+        if from >= filter.len() {
+            break;
+        }
+    }
+    Some(
+        ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, &(lo, hi))| {
+                let (Ok(lo), Ok(hi)) = (usize::try_from(lo), usize::try_from(hi)) else {
+                    return false;
+                };
+                // The first run ending after `lo` holds a document of the
+                // range when it starts at or below `hi`.
+                let i = runs.partition_point(|r| r.1 <= lo);
+                runs.get(i).is_some_and(|r| r.0 <= hi)
+            })
+            .map(|(c, _)| c)
+            .collect(),
+    )
+}
+
 fn ivf_leaf_results(
     reader: &lucene_ivf::IvfReader,
     input: &VectorsInput<'_>,
@@ -1451,39 +1498,92 @@ fn ivf_leaf_results(
                 }
                 n
             };
-            // Entries, as the probes count them: a spilled vector is in two
-            // clusters.
-            let entries = field.entries().max(1);
-            let per_cluster = entries.div_ceil(clusters).max(1);
-            let share = passing as f64 / field.count().max(1) as f64;
-            // Never more than the filter's share of what the unfiltered
-            // search scans would hold on average, with slack for clusters
-            // below the average size.
-            let expected = (base_nprobe.saturating_mul(per_cluster) as f64 * 0.75) as usize;
+            if passing <= ivf_accepted_target(k) {
+                return Ok(None);
+            }
+            // A field clustered per partition (an index sorted by a
+            // partition field) probes only the clusters whose document range
+            // holds a document the filter passes, as an index of those
+            // documents alone would.
+            let among = field
+                .doc_ranges()
+                .and_then(|ranges| clusters_holding(ranges, filter));
+            // The clusters searched and their entries, as the probes count
+            // them: a spilled vector is in two clusters.
+            let (space_clusters, space_entries) = match &among {
+                Some(cs) => (
+                    cs.len(),
+                    cs.iter().map(|&c| field.cluster_size(c)).sum::<usize>(),
+                ),
+                None => (clusters, field.entries()),
+            };
+            let space_clusters = space_clusters.max(1);
+            let space_entries = space_entries.max(1);
+            let per_cluster = space_entries.div_ceil(space_clusters).max(1);
+            // The calibrated (or asked) depth, as a share of the clusters
+            // searched.
+            let base = if among.is_some() {
+                let fraction = base_nprobe as f64 / clusters as f64;
+                ((fraction * space_clusters as f64).ceil() as usize).clamp(1, space_clusters)
+            } else {
+                base_nprobe
+            };
+            let entries_per_vector = field.entries().max(1) as f64 / field.count().max(1) as f64;
+            let share = (passing as f64 * entries_per_vector / space_entries as f64).min(1.0);
+            // Across the whole field, never more than the filter's share of
+            // what the unfiltered search scans would hold on average, with
+            // slack for clusters below the average size. A partition's own
+            // clusters hold mostly its documents, so it needs no such cap.
+            let cap = match &among {
+                Some(_) => usize::MAX,
+                None => ((base.saturating_mul(per_cluster) as f64 * 0.75) as usize).max(k),
+            };
             let want = ivf_accepted_target(k)
-                .min(expected.max(k))
-                .min(((passing as f64) * entries as f64 / field.count().max(1) as f64) as usize);
+                .min(cap)
+                .min((passing as f64 * entries_per_vector) as usize);
             // The first try probes as many clusters as the filter's share of
-            // the field needs on average, at least the calibrated (or
-            // asked) depth; the probes double while the accepted entries
-            // they held fall short, as they do where the filter's documents
-            // lie far from the query.
+            // the searched clusters needs on average, at least the
+            // calibrated (or asked) depth; the probes double while the
+            // accepted entries they held fall short, as they do where the
+            // filter's documents lie far from the query.
             let need = (want as f64 / (per_cluster as f64 * share.max(f64::MIN_POSITIVE))).ceil();
-            let mut nprobe = base_nprobe.max(need.min(clusters as f64) as usize);
+            let mut nprobe = base.max(need.min(space_clusters as f64) as usize);
             let planned = nprobe.saturating_mul(per_cluster);
-            if passing <= want || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
+            let exact_below = match &among {
+                Some(_) => want.saturating_mul(IVF_PARTITION_EXACT_RATIO),
+                None => want,
+            };
+            if passing <= exact_below || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
                 return Ok(None);
             }
             loop {
-                let out = search(lucene_ivf::Probes::Fixed(nprobe))?;
-                if out.stats.accepted >= want || nprobe >= clusters {
+                let probes = lucene_ivf::Probes::Fixed(nprobe);
+                let out = match &among {
+                    Some(cs) => {
+                        let params = lucene_ivf::SearchParams {
+                            k,
+                            nprobe: probes,
+                            rerank: lucene_ivf::Rerank::Auto,
+                        };
+                        reader.search_within(
+                            resolved.field_number,
+                            target,
+                            &params,
+                            filtered,
+                            cs,
+                            None,
+                        )?
+                    }
+                    None => search(probes)?,
+                };
+                if out.stats.accepted >= want || nprobe >= space_clusters {
                     break (out.hits, false);
                 }
                 if plan.extras.timed_out() {
                     let short = out.hits.len() < k;
                     break (out.hits, short);
                 }
-                nprobe = nprobe.saturating_mul(2).min(clusters);
+                nprobe = nprobe.saturating_mul(2).min(space_clusters);
             }
         }
     };

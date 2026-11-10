@@ -115,3 +115,79 @@ fn spilled_vectors_count_once_per_cluster_they_are_in() {
         .unwrap();
     assert_eq!(out.stats.accepted, n);
 }
+
+#[test]
+fn clusters_of_partitions_hold_one_partition_each_and_prune_by_range() {
+    let (dim, n) = (16, 4000);
+    let data = dataset(n, dim);
+    let docs: Vec<i32> = (0..n as i32).collect();
+    let mut w = IvfWriter::new(&ID, "");
+    let params = IvfParams {
+        target_cluster_size: 100,
+        partition_min_vectors: 500,
+        ..IvfParams::default()
+    };
+    let field = FieldVectors {
+        number: 1,
+        similarity: Similarity::Euclidean,
+        dimension: dim,
+        docs: &docs,
+        vectors: &data,
+    };
+    // Partitions of 1000, 1000, 980, 20 and 1000 documents: the small one
+    // is a run of its own between two large ones.
+    w.add_partitioned_field(
+        &field,
+        &[0, 1000, 2000, 2980, 3000],
+        &OsqFactory::bbq(),
+        &params,
+    )
+    .unwrap();
+    let files = w.finish();
+    let r = IvfReader::open(
+        &files.meta,
+        Arc::new(files.postings.clone()),
+        Arc::new(files.vectors.clone()),
+        &ID,
+        "",
+        &QuantizerRegistry::with_builtins(),
+    )
+    .unwrap();
+    let f = r.field(1).unwrap();
+    let ranges = f.doc_ranges().expect("narrow ranges");
+    assert_eq!(ranges.len(), f.clusters());
+    for &(lo, hi) in ranges {
+        assert_eq!(
+            lo / 1000,
+            hi / 1000,
+            "cluster spans partitions: {lo}..={hi}"
+        );
+    }
+    // A filter on docs 1000..2000: only that run's clusters are probed.
+    let among: Vec<usize> = (0..f.clusters())
+        .filter(|&c| ranges[c].0 >= 1000 && ranges[c].1 < 2000)
+        .collect();
+    assert!(!among.is_empty() && among.len() < f.clusters());
+    let run: &dyn Fn(i32) -> bool = &|d| (1000..2000).contains(&d);
+    let q = &data[1500 * dim..1501 * dim];
+    let p = SearchParams::new(10, among.len(), 50);
+    let out = r.search_within(1, q, &p, Some(run), &among, None).unwrap();
+    assert_eq!(out.stats.clusters_scanned, among.len());
+    assert_eq!(out.stats.accepted, 1000);
+    assert_eq!(out.hits.len(), 10);
+    assert!(out.hits.iter().all(|h| run(h.doc)));
+    // Probing them all finds what a search of every cluster finds.
+    let all = r
+        .search_with(
+            1,
+            q,
+            &SearchParams::new(10, f.clusters(), 50),
+            Some(run),
+            None,
+        )
+        .unwrap();
+    assert_eq!(out.hits, all.hits);
+    // Clustered as one, the field's ranges are wide: none are kept.
+    let r = open(&data, dim, None);
+    assert!(r.field(1).unwrap().doc_ranges().is_none());
+}

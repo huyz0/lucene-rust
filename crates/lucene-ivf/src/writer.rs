@@ -99,6 +99,11 @@ pub struct IvfParams {
     /// Store a centroid routing tree ([`crate::routing`]) from this many
     /// clusters on; `usize::MAX` stores none.
     pub routing_tree_min: usize,
+    /// The fewest vectors a partition of
+    /// [`IvfWriter::add_partitioned_field`] is clustered alone with; smaller
+    /// partitions are clustered together with their neighbours, in runs of
+    /// at least this many vectors.
+    pub partition_min_vectors: usize,
 }
 
 impl Default for IvfParams {
@@ -112,6 +117,7 @@ impl Default for IvfParams {
             calibration_recall: Some(DEFAULT_CALIBRATION_RECALL),
             merge_clustering: MergeClustering::default(),
             routing_tree_min: routing::TREE_MIN_CLUSTERS,
+            partition_min_vectors: 20_000,
         }
     }
 }
@@ -162,6 +168,49 @@ fn prepared_vectors(field: &FieldVectors<'_>) -> Vec<f32> {
         });
     }
     out
+}
+
+/// The lengths of the runs of `docs` (ascending) to cluster on their own:
+/// one per partition (`starts` holds each partition's first document,
+/// ascending) of at least `min` vectors, and the partitions between them
+/// together, in runs of at least `min` (the last of them may be shorter).
+// ARITH: run lengths are bounded by `docs.len()`.
+#[allow(clippy::arithmetic_side_effects)]
+fn partition_runs(docs: &[i32], starts: &[i32], min: usize) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut pooled = 0usize;
+    let mut at = 0usize;
+    let mut bounds = starts
+        .iter()
+        .skip_while(|&&s| docs.first().is_some_and(|&d| s <= d));
+    while at < docs.len() {
+        let end = match bounds.next() {
+            Some(&next) => at + docs[at..].partition_point(|&d| d < next),
+            None => docs.len(),
+        };
+        let len = end - at;
+        at = end;
+        if len == 0 {
+            continue;
+        }
+        if len >= min {
+            if pooled > 0 {
+                runs.push(pooled);
+                pooled = 0;
+            }
+            runs.push(len);
+        } else {
+            pooled += len;
+            if pooled >= min {
+                runs.push(pooled);
+                pooled = 0;
+            }
+        }
+    }
+    if pooled > 0 {
+        runs.push(pooled);
+    }
+    runs
 }
 
 /// Whether a field's vectors are unit length and clustered spherically.
@@ -296,6 +345,43 @@ impl IvfWriter {
             kmeans::cluster(
                 vectors,
                 field.dimension,
+                params.target_cluster_size,
+                &params.kmeans,
+                metric,
+            )
+        })
+    }
+
+    /// Like [`IvfWriter::add_field`], for a field whose documents are
+    /// grouped into partitions, `partition_starts` holding each partition's
+    /// first document, ascending (an index sorted by a partition field):
+    /// each partition of at least [`IvfParams::partition_min_vectors`]
+    /// vectors is clustered on its own, and the smaller ones between them
+    /// together, so every cluster holds the documents of one narrow range
+    /// ([`crate::IvfField::doc_ranges`]). A search filtered to a partition
+    /// then probes only its clusters, as an index of its documents alone
+    /// would.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfWriter::add_field`].
+    pub fn add_partitioned_field(
+        &mut self,
+        field: &FieldVectors<'_>,
+        partition_starts: &[i32],
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
+        let runs = partition_runs(
+            field.docs,
+            partition_starts,
+            params.partition_min_vectors.max(1),
+        );
+        self.add_clustered(field, factory, params, &mut |vectors, metric| {
+            kmeans::cluster_runs(
+                vectors,
+                field.dimension,
+                &runs,
                 params.target_cluster_size,
                 &params.kmeans,
                 metric,
@@ -647,6 +733,22 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
     use lucene_vector_quant::osq::OsqFactory;
+
+    #[test]
+    fn small_partitions_are_pooled_between_large_ones() {
+        let docs: Vec<i32> = (0..100).collect();
+        // Partitions of 40, 5, 5, 5, 30, 3, 3 and 9 documents.
+        let starts = [0, 40, 45, 50, 55, 85, 88, 91];
+        assert_eq!(partition_runs(&docs, &starts, 10), vec![40, 10, 5, 30, 15]);
+        assert_eq!(
+            partition_runs(&docs, &starts, 1),
+            vec![40, 5, 5, 5, 30, 3, 3, 9]
+        );
+        assert_eq!(partition_runs(&docs, &[], 10), vec![100]);
+        // Partitions without vectors are skipped.
+        let sparse = [0, 1, 2, 50, 51, 52];
+        assert_eq!(partition_runs(&sparse, &[0, 10, 20, 50], 2), vec![3, 3]);
+    }
 
     #[test]
     fn rejects_bad_fields() {
