@@ -4,8 +4,10 @@
 //!
 //! ```text
 //! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]
-//!   --formats L   comma list of hnsw, hnsw-int7, ivf, ivf-f16 and ivf-<quantizer>
-//!                 (f16 rerank, any `IVF_QUANTIZERS` name: ivf-erq4, ivf-osq2, ...)
+//!   --formats L   comma list of hnsw, hnsw-int7, hnsw-sq1/sq2/sq4 (Lucene104
+//!                 scalar quantized HNSW), hnsw-<quantizer> (the graph walked on
+//!                 any `IVF_QUANTIZERS` codes: hnsw-erq2, hnsw-rabitq, ...), ivf,
+//!                 ivf-f16 and ivf-<quantizer> (f16 rerank, ivf-erq4, ivf-osq2, ...)
 //!                 (default hnsw, hnsw-int7, ivf, ivf-f16)
 //!   --queries N   measured queries (default 1000), after 200 warm-up ones
 //!   --segments N  flushed segments, force-merged to one when --merge is set (default 1)
@@ -53,8 +55,27 @@ fn format(name: &str) -> KnnVectorsFormat {
         "hnsw-int7" => {
             KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SevenBit, 16, 100).unwrap()
         }
+        "hnsw-sq1" => {
+            KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SingleBitQueryNibble, 16, 100)
+                .unwrap()
+        }
+        "hnsw-sq2" => {
+            KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::DibitQueryNibble, 16, 100)
+                .unwrap()
+        }
+        "hnsw-sq4" => {
+            KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::PackedNibble, 16, 100).unwrap()
+        }
         "ivf" => KnnVectorsFormat::ivf(384, 0).unwrap(),
         "ivf-f16" => KnnVectorsFormat::ivf(384, 1).unwrap(),
+        other if other.starts_with("hnsw-") => {
+            // `hnsw-<quantizer>`: the graph walked on the named codes.
+            let quantizer = IVF_QUANTIZERS
+                .iter()
+                .position(|&n| Some(n) == other.strip_prefix("hnsw-"))
+                .unwrap_or_else(|| panic!("unknown format {other}"));
+            KnnVectorsFormat::hnsw_quantized(quantizer as u8, 16, 100).unwrap()
+        }
         other => {
             // `ivf-<quantizer>`: f16 rerank vectors, the named cluster codes.
             let quantizer = other
