@@ -461,3 +461,34 @@ Unavailable counters are reported explicitly. This covers the diagnostic gap
 when deadline removal prevents the guest shell's EXIT trap. An earlier
 uncommitted target-partition draft was preserved as local evidence and was
 never executed or published; it is superseded by this simpler timing revision.
+
+
+### Production archive admission diagnostic
+
+Coverage job `129821930804` at `5478d56b` failed after134.819seconds at the
+producer's unexpected-nonobject-member refusal. Its old exception omitted the
+member identity and no archive inventory was exported; that historical identity
+is unknown. The existing exact `lib.rmeta` allowance was already present.
+No production denominator, runtime export or coverage pass was produced.
+
+A diagnostic-only source checkpoint retains bounded native archive inventories
+and runs the same pinned production-library build on a genuine hosted guest.
+It deliberately ends the component cell with exit78 after the probe, before
+component qualification or any full matrix. Probe output is not a denominator
+or coverage result. Unknown-member admission remains unchanged until actual
+producer bytes establish their shape. Subsequent normal producer failures also
+retain their archive inventory and include the rejected member identity.
+
+
+ARM release job `129821930834` at `5478d56b` separately failed after748.789s
+with compiler SIGKILL, cgroup `oom=1`, `oom_kill=1` and peak4GiB. This is an
+observed memory refusal, unlike the two deadline failures with missing counters.
+The prospective heavy-profile revision declares8GiB for tests/release/coverage;
+component/checks/provenance remain4GiB. Fresh-host admission records physical
+MemTotal/MemAvailable and every enclosing unified cgroup limit/current usage.
+Effective available memory must cover the declared guest plus2GiB host reserve,
+so heavy profiles require at least10GiB available. Insufficient/unknown capacity
+refuses before loop allocation or native work. CPU2, zero swap, PID256, scratch
+20GiB, output2MiB, exact test scopes/floors and declared deadlines remain. Guest
+checks and receipts bind the actual memory cap; this prospective capacity
+change supplies no qualification until observed on fresh standard hosted VMs.

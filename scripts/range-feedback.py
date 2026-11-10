@@ -14,6 +14,7 @@ import sys
 import time
 
 SCRATCH_BYTES = 20 * 1024**3
+HEAVY_PROFILES = {"tests", "release", "coverage"}
 IMAGE = "rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97"
 SETUP = r'''
 set -euo pipefail
@@ -21,13 +22,13 @@ trap 'result=$?; set +e; printf "RANGE_EXIT status=%s memory_events\n" "$result"
 mkdir -p /scratch/cargo /scratch/target /scratch/tmp
 cp -a /usr/local/rustup /scratch/rustup
 rustup component add rustfmt clippy --toolchain 1.97.1
-[ "$(cat /sys/fs/cgroup/memory.max)" = 4294967296 ]
+[ "$(cat /sys/fs/cgroup/memory.max)" = "$EXPECTED_MEMORY_BYTES" ]
 [ "$(cat /sys/fs/cgroup/memory.swap.max)" = 0 ]
 [ "$(cat /sys/fs/cgroup/pids.max)" = 256 ]
 read -r quota period </sys/fs/cgroup/cpu.max
 [ "$quota" = "$((2 * period))" ]
 [ "$(git -c safe.directory=/src rev-parse HEAD)" = "$EXPECTED_SOURCE" ]
-printf 'RANGE_FEEDBACK source=%s cpu=%s/%s memory=4294967296 swap=0 pids=256\n' "$EXPECTED_SOURCE" "$quota" "$period"
+printf 'RANGE_FEEDBACK source=%s cpu=%s/%s memory=%s swap=0 pids=256\n' "$EXPECTED_SOURCE" "$quota" "$period" "$EXPECTED_MEMORY_BYTES"
 rustc --version --verbose
 cargo --version
 if [ ! -f /src/Cargo.lock ]; then
@@ -43,7 +44,11 @@ fi
 '''
 
 PROFILES = {
-    "component": r'''cargo check --locked -p lucene-store -p lucene-codecs --all-targets
+    "component": r'''rustup component add llvm-tools-preview --toolchain 1.97.1
+python3 -B scripts/range-production-coverage.py --archive-probe
+echo 'Diagnostic archive probe complete; full component qualification intentionally not run.'
+exit 78
+cargo check --locked -p lucene-store -p lucene-codecs --all-targets
 cargo check --locked -p lucene-search --lib
 cargo test --locked -p lucene-store --lib range_input
 cargo test --locked -p lucene-codecs --test blocktree_fixtures range_terms_postings_and_filter_match_java_with_eviction_and_faults
@@ -173,23 +178,25 @@ def main():
         raise SystemExit("unknown fixed qualification profile")
     # Ordinary/release cells exceeded the original 30-minute bound. Keep
     # their commands; coverage shares the prospective longer timing limit.
-    deadline = 5400 if profile in {"tests", "release", "coverage"} else 1800
+    deadline = 5400 if profile in HEAVY_PROFILES else 1800
+    memory_bytes = (8 if profile in HEAVY_PROFILES else 4) * 1024**3
     command = SETUP + PROFILES[profile]
     identity = os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"]
     if not re.fullmatch(r"[0-9]+-[0-9]+", identity):
         raise SystemExit("invalid job identity")
     name = "lucene-range-" + identity
     print(json.dumps({"kind": "bounded-native-qualification", "profile": profile, "source": expected, "image": IMAGE,
-                      "cpu": 2, "memory_bytes": 4 * 1024**3, "swap_bytes": 0, "pids": 256,
+                      "cpu": 2, "memory_bytes": memory_bytes, "swap_bytes": 0, "pids": 256,
                       "scratch_filesystem_bytes": stat.f_blocks * stat.f_frsize, "scratch_limit_bytes": SCRATCH_BYTES,
                       "deadline_seconds": deadline, "stdio_limit_bytes": 2 * 1024**2}), flush=True)
     argv = ["docker", "run", "--rm", "--name", name, "--label", "lucene.range.job=" + identity,
-            "--label", "lucene.range.source=" + expected, "--cpus=2", "--memory=4g", "--memory-swap=4g",
+            "--label", "lucene.range.source=" + expected, "--cpus=2", "--memory=" + str(memory_bytes), "--memory-swap=" + str(memory_bytes),
             "--pids-limit=256", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--user", f"{os.getuid()}:{os.getgid()}", "--workdir=/src",
             "--mount", f"type=bind,src={source},dst=/src,readonly",
             "--mount", f"type=bind,src={scratch},dst=/scratch",
-            "--env", "EXPECTED_SOURCE=" + expected, "--env", "RUSTUP_TOOLCHAIN=1.97.1",
+            "--env", "EXPECTED_SOURCE=" + expected, "--env", "EXPECTED_MEMORY_BYTES=" + str(memory_bytes),
+            "--env", "RUSTUP_TOOLCHAIN=1.97.1",
             "--env", "CARGO_HOME=/scratch/cargo", "--env", "RUSTUP_HOME=/scratch/rustup", "--env", "CARGO_TARGET_DIR=/scratch/target",
             "--env", "TMPDIR=/scratch/tmp", "--env", "CARGO_BUILD_JOBS=2",
             "--env", "CARGO_INCREMENTAL=0", "--env", "CARGO_PROFILE_DEV_DEBUG=0",
@@ -281,6 +288,13 @@ def main():
             destination = runner_temp / ("range-feedback-" + expected + "-" + suffix + ".json")
             with destination.open("xb") as output:
                 output.write(artifact.read_bytes())
+    archive = scratch / "tmp" / "production-archive-inventory.json"
+    if archive.is_file():
+        if archive.is_symlink() or archive.stat().st_size > 4 * 1024**2:
+            raise SystemExit("production archive receipt exceeds envelope")
+        destination = runner_temp / ("range-feedback-" + expected + "-production-archive.json")
+        with destination.open("xb") as output:
+            output.write(archive.read_bytes())
     provenance = scratch / "tmp" / "provenance-receipt.json"
     if provenance.is_file():
         if provenance.is_symlink() or provenance.stat().st_size > 1024**2:
