@@ -6369,6 +6369,12 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().ivf_partition_clusters = min_vectors;
     }
 
+    /// The least vectors a partition needs to be clustered on its own; see
+    /// [`IndexWriter::set_ivf_partition_clusters`].
+    pub fn ivf_partition_clusters(&self) -> Option<usize> {
+        self.cfg.ivf_partition_clusters
+    }
+
     /// The least `.fdt` bytes, summed over a merge's sources, for which the
     /// merged segment of a paged zstd codec
     /// ([`lucene_codecs::stored_fields::Mode::ZstdPaged`]) gets a trained

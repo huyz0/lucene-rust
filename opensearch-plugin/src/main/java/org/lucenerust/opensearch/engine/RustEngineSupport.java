@@ -185,6 +185,24 @@ public final class RustEngineSupport {
     }
 
     /**
+     * The least vectors a partition of a sorted index needs for its IVF clusters to be its own: at
+     * flush and merge, each partition of the index sort's first field (a tenant id, say) with at
+     * least this many vectors in the segment is clustered on its own, and the smaller ones are
+     * clustered together, so a k-NN search filtered to one partition probes only the clusters that
+     * hold it. On 8M vectors at 20000, tenants of 400k and 1.5M vectors searched about 4x and 1.5x
+     * faster at the same or higher recall, while unfiltered searches took 2.3x as long. {@code
+     * 0} (the default) clusters each field as a whole, like stock; no effect without an index sort or
+     * on fields other than {@code method: ivf}. Segments read like any other IVF segment.
+     */
+    public static final Setting<Integer> IVF_PARTITION_CLUSTERS = Setting.intSetting(
+        "index.lucene_rust.knn.ivf_partition_clusters",
+        0,
+        0,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
      * The field whose value is a document's partition, as a partitioned table's partition key: every
      * segment of the shard holds the documents of one partition (a keyword's value, or a numeric's or
      * date's), and merges never mix partitions, so each partition's documents stay together on disk.
@@ -517,6 +535,10 @@ public final class RustEngineSupport {
         try {
             writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
             refreshMergePolicy(writer, config);
+            int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
+            if (ivfPartitionClusters > 0) {
+                writer.setIvfPartitionClusters(ivfPartitionClusters);
+            }
             writer.setMergeOnFlush(Math.max(wait, 0), wait > 0 && indexSettings.getMergeOnFlushPolicy().isPresent());
             refreshMergeScheduler(writer, config);
             // NativeLuceneIndexWriterFactory: merged segments are warmed (pre-copied to replicas) on

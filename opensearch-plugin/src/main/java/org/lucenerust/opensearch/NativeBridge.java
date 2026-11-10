@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 103;
+    public static final int EXPECTED_ABI_VERSION = 106;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -341,6 +341,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_MERGE_ON_FLUSH = bind(
             "ffi_engine_writer_set_merge_on_flush",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE)
+        );
+        static final MethodHandle WRITER_SET_IVF_PARTITION_CLUSTERS = bind(
+            "ffi_engine_writer_set_ivf_partition_clusters",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
         );
         static final MethodHandle WRITER_SET_BP_REORDER = bind(
             "ffi_engine_writer_set_bp_reorder",
@@ -2509,6 +2513,18 @@ public final class NativeBridge {
      * segments they publish ({@code 0} turns them off), picked by {@code MergeOnFlushMergePolicy} when
      * {@code mergeOnFlushPolicy}.
      */
+    /**
+     * IVF fields' vectors clustered per partition of the index sort's first field: each partition of
+     * at least {@code minVectors} vectors on its own, the smaller ones pooled; {@code 0} turns it off.
+     */
+    public static int writerSetIvfPartitionClusters(long handle, long minVectors) {
+        try {
+            return (int) H.WRITER_SET_IVF_PARTITION_CLUSTERS.invokeExact(handle, minVectors);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     public static int writerSetMergeOnFlush(long handle, long waitMillis, boolean mergeOnFlushPolicy) {
         try {
             return (int) H.WRITER_SET_MERGE_ON_FLUSH.invokeExact(handle, waitMillis, (byte) (mergeOnFlushPolicy ? 1 : 0));
