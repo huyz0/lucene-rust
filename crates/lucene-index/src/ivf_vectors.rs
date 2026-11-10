@@ -20,6 +20,7 @@ use lucene_store::directory::Input;
 use lucene_util::quantization::ScalarEncoding;
 use lucene_vector_quant::osq::OsqFactory;
 use lucene_vector_quant::rabitq::ExRabitqFactory;
+use lucene_vector_quant::rotation::RotatedFactory;
 use lucene_vector_quant::{QuantizerFactory, QuantizerRegistry};
 
 type Result<T> = std::result::Result<T, lucene_ivf::Error>;
@@ -83,8 +84,8 @@ pub(crate) struct IvfGroupWriter {
 }
 
 /// The quantizer factory of an [`IVF_QUANTIZERS`] wire number: OSQ at 1
-/// (BBQ), 2, 4 or 7 bits, or Extended RaBitQ at 2 to 8 bits; `None` for an
-/// unknown number.
+/// (BBQ), 2, 4 or 7 bits, Extended RaBitQ at 2 to 8 bits, or 1-bit RaBitQ
+/// (BBQ after a random rotation); `None` for an unknown number.
 ///
 /// [`IVF_QUANTIZERS`]: lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS
 pub fn quantizer_factory(quantizer: u8) -> Option<Box<dyn QuantizerFactory>> {
@@ -97,6 +98,7 @@ pub fn quantizer_factory(quantizer: u8) -> Option<Box<dyn QuantizerFactory>> {
         // ARITH: 4..=10 maps onto 2..=8 bits.
         #[allow(clippy::arithmetic_side_effects)]
         4..=10 => Some(Box::new(ExRabitqFactory::new(quantizer - 2))),
+        11 => Some(Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq())))),
         _ => None,
     }
 }
@@ -235,7 +237,13 @@ mod tests {
     fn every_ivf_quantizer_number_has_its_factory() {
         for (number, name) in IVF_QUANTIZERS.iter().enumerate() {
             let factory = quantizer_factory(number as u8).expect(name);
-            let want = if name.starts_with("erq") { "erq" } else { "osq" };
+            let want = if name.starts_with("erq") {
+                "erq"
+            } else if *name == "rabitq" {
+                "rot-osq"
+            } else {
+                "osq"
+            };
             assert_eq!(factory.name(), want, "{name}");
         }
         assert!(quantizer_factory(IVF_QUANTIZERS.len() as u8).is_none());

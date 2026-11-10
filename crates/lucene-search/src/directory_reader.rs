@@ -333,6 +333,8 @@ struct CodecFiles {
     ivf: Option<IvfFiles>,
     /// A `Lucene104(Hnsw)ScalarQuantizedVectorsFormat` instance's codes.
     scalar_quantized: Option<ScalarQuantizedFiles>,
+    /// A `LuceneRustHnswQuantizedVectorsFormat` instance's codes.
+    hnsw_codes: Option<HnswCodesFiles>,
     /// The vectors instance's flat reader, detached from its file: opened
     /// (header, footer, metadata) on first use, then shared by every read.
     flat_reader: OnceLock<lucene_codecs::vectors::FlatVectorsReader<'static>>,
@@ -363,6 +365,15 @@ impl std::fmt::Debug for LazyDocValues {
             .field("fields", &self.built.len())
             .finish()
     }
+}
+
+/// A quantized HNSW instance's `.vqm` and `.vqd`, and the reader over
+/// them, opened on first search and shared by every search after it.
+#[derive(Debug)]
+struct HnswCodesFiles {
+    meta: Arc<Input>,
+    data: Arc<Input>,
+    reader: OnceLock<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
 }
 
 /// An IVF index's `.ivm`, `.ivp` and `.ivv`, and the reader over them,
@@ -1159,6 +1170,7 @@ impl SegmentReader {
                     graph_meta: None,
                     ivf: None,
                     scalar_quantized: None,
+                    hnsw_codes: None,
                     flat_reader: OnceLock::new(),
                     graph_reader: OnceLock::new(),
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
@@ -1227,6 +1239,20 @@ impl SegmentReader {
                     }
                     _ => None,
                 };
+                let hnsw_codes = match (open(".vqm")?, open(".vqd")?) {
+                    (Some(meta), Some(data)) => Some(HnswCodesFiles {
+                        meta,
+                        data,
+                        reader: OnceLock::new(),
+                    }),
+                    (None, None) => None,
+                    _ => {
+                        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                            "segment {segment_name}: quantized HNSW codes without both of \
+                             their .vqm and .vqd files"
+                        ))))
+                    }
+                };
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
@@ -1234,6 +1260,7 @@ impl SegmentReader {
                     graph_meta: open(".vem")?,
                     ivf,
                     scalar_quantized,
+                    hnsw_codes,
                     flat_reader: OnceLock::new(),
                     graph_reader: OnceLock::new(),
                     suffix,
@@ -1652,6 +1679,46 @@ impl SegmentReader {
                         &f.suffix,
                     )?);
                     ivf.reader.get_or_init(|| opened).clone()
+                }
+            };
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The quantized HNSW codes of the instance field `field_number` was
+    /// written with (`LuceneRustHnswQuantizedVectorsFormat`), opened once per
+    /// segment; `None` when that instance has none or holds no codes for the
+    /// field (a byte field).
+    ///
+    /// # Errors
+    /// Code files that do not decode.
+    pub fn hnsw_codes_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>> {
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(codes) = &f.hnsw_codes else {
+                continue;
+            };
+            let reader = match codes.reader.get() {
+                Some(reader) => reader.clone(),
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = Arc::new(lucene_index::hnsw_quant_vectors::HnswCodesReader::open(
+                        &codes.meta,
+                        codes.data.clone(),
+                        &self.segment_id,
+                        &f.suffix,
+                    )?);
+                    codes.reader.get_or_init(|| opened).clone()
                 }
             };
             if reader.field(field_number).is_some() {
