@@ -26,10 +26,13 @@ import java.util.Map;
  * rescores to.
  *
  * <p>The {@code lucene_rust} engine is this node's own, opt-in: {@code method: ivf} is an IVF index
- * with 1-bit (BBQ) codes beside the raw vectors ({@code LuceneRustIvfVectorsFormat}), no training
- * step; {@code parameters.target_cluster_size} (16 to 65536, default 384) sizes its clusters and
- * {@code parameters.rerank_encoding} ({@code float}, {@code half_float} by default, {@code bfloat16}
- * or {@code int8}) stores the copy it reranks from. Float fields only, in an index on the Rust
+ * with quantized codes beside the raw vectors ({@code LuceneRustIvfVectorsFormat}), no training
+ * step; {@code parameters.target_cluster_size} (16 to 65536, default 384) sizes its clusters,
+ * {@code parameters.quantizer} ({@link #IVF_QUANTIZERS}: 1-bit {@code bbq} by default, {@code
+ * osq2}/{@code osq4}/{@code osq7} for Lucene's optimized scalar quantization at 2, 4 or 7 bits,
+ * {@code erq2} to {@code erq8} for Extended RaBitQ at 2 to 8 bits) codes the clusters and {@code
+ * parameters.rerank_encoding} ({@code float}, {@code half_float} by default, {@code bfloat16} or
+ * {@code int8}) stores the copy it reranks from. Float fields only, in an index on the Rust
  * engine ({@code index.lucene_rust.engine}), which builds the index. A stock node does not know the
  * engine, so it refuses the mapping rather than reading the field another way.
  *
@@ -39,6 +42,7 @@ import java.util.Map;
  * @param encoding a {@link VectorsFormatSpec} scalar encoding wire number, {@code -1} for full precision
  * @param clusterSize an IVF field's target cluster size, {@code 0} for an HNSW one
  * @param rerankEncoding an IVF field's rerank encoding wire number ({@link #RERANK_ENCODINGS})
+ * @param quantizer an IVF field's quantizer wire number ({@link #IVF_QUANTIZERS})
  */
 public record KnnFieldConfig(
     int dimension,
@@ -53,7 +57,8 @@ public record KnnFieldConfig(
     String mode,
     String compression,
     int clusterSize,
-    int rerankEncoding
+    int rerankEncoding,
+    int quantizer
 ) {
     public static final String FAISS = "faiss";
     public static final String LUCENE = "lucene";
@@ -62,6 +67,20 @@ public record KnnFieldConfig(
     public static final int DEFAULT_CLUSTER_SIZE = 384;
     /** {@code LuceneRustIvfVectorsFormat}'s rerank encodings, by wire number. */
     public static final List<String> RERANK_ENCODINGS = List.of("float", "half_float", "bfloat16", "int8");
+    /** {@code LuceneRustIvfVectorsFormat}'s quantizers, by wire number ({@code per_field_knn_vectors.rs}'s {@code IVF_QUANTIZERS}). */
+    public static final List<String> IVF_QUANTIZERS = List.of(
+        "bbq",
+        "osq2",
+        "osq4",
+        "osq7",
+        "erq2",
+        "erq3",
+        "erq4",
+        "erq5",
+        "erq6",
+        "erq7",
+        "erq8"
+    );
     static final int MIN_CLUSTER_SIZE = 16;
     static final int MAX_CLUSTER_SIZE = 65_536;
     public static final int MAX_DIMENSION = 16_000;
@@ -89,7 +108,7 @@ public record KnnFieldConfig(
     /** The format the Rust writer builds the field with. */
     public VectorsFormatSpec format() {
         if (ivf()) {
-            return VectorsFormatSpec.ivf(clusterSize, rerankEncoding);
+            return VectorsFormatSpec.ivf(clusterSize, rerankEncoding, quantizer);
         }
         if (binary) {
             return VectorsFormatSpec.hnswHamming(m, efConstruction);
@@ -252,7 +271,7 @@ public record KnnFieldConfig(
             if ("16x".equals(level)) {
                 throw new MapperParsingException("Compression level [16x] for [data_type] [half_float] is not supported by this node");
             }
-            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level, 0, 0);
+            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level, 0, 0, 0);
         }
 
         if (level != null) {
@@ -273,7 +292,7 @@ public record KnnFieldConfig(
         if (encoding >= 0 && encodingType == VectorEncoding.BYTE) {
             throw new MapperParsingException("Quantization is only supported for [data_type] [float]");
         }
-        return new KnnFieldConfig(dimension, encodingType, binary, false, spaceType, engine, m, efConstruction, encoding, resolvedMode, level, 0, 0);
+        return new KnnFieldConfig(dimension, encodingType, binary, false, spaceType, engine, m, efConstruction, encoding, resolvedMode, level, 0, 0, 0);
     }
 
     /** A {@code lucene_rust} engine mapping: {@code method: ivf} over float vectors. */
@@ -300,6 +319,7 @@ public record KnnFieldConfig(
         }
         int clusterSize = DEFAULT_CLUSTER_SIZE;
         int rerank = 1;
+        int quantizer = 0;
         for (Map.Entry<String, Object> p : params.entrySet()) {
             switch (p.getKey()) {
                 case "target_cluster_size" -> {
@@ -319,14 +339,17 @@ public record KnnFieldConfig(
                     }
                 }
                 case "quantizer" -> {
-                    if ("bbq".equals(String.valueOf(p.getValue()).toLowerCase(Locale.ROOT)) == false) {
-                        throw new MapperParsingException(String.format(Locale.ROOT, "Invalid [quantizer]: %s; supported: [bbq]", p.getValue()));
+                    quantizer = IVF_QUANTIZERS.indexOf(String.valueOf(p.getValue()).toLowerCase(Locale.ROOT));
+                    if (quantizer < 0) {
+                        throw new MapperParsingException(
+                            String.format(Locale.ROOT, "Invalid [quantizer]: %s; supported: %s", p.getValue(), IVF_QUANTIZERS)
+                        );
                     }
                 }
                 default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for ivf: %s", p.getKey()));
             }
         }
-        return new KnnFieldConfig(dimension, encodingType, false, false, spaceType, LUCENE_RUST, 0, 0, -1, null, null, clusterSize, rerank);
+        return new KnnFieldConfig(dimension, encodingType, false, false, spaceType, LUCENE_RUST, 0, 0, -1, null, null, clusterSize, rerank, quantizer);
     }
 
     /** The encoder's scalar encoding, {@code -1} for full precision. */
