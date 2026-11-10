@@ -63,16 +63,46 @@ struct ViewHandle {
     plans: Vec<Vec<Planned>>,
     /// What [`ffi_engine_writer_live_view_open`] gave the caller.
     blob: Vec<u8>,
-    /// The commit generation it was opened for, and when.
+    /// The commit generation it was opened for, and when: a later view of
+    /// the same documents and deletes moves it on ([`ViewHandle::renew`]).
     commit: Option<i64>,
-    opened: std::time::Instant,
+    opened: Mutex<std::time::Instant>,
     /// The reader handle [`ffi_live_view_reader`] made over a reader and
     /// this view's buffers, closed with the view.
     whole: Mutex<Whole>,
     /// The buffers as the last plain requests read them ([`prepare_plain`]),
-    /// by [`request_key`], newest last: a view never changes, so neither
-    /// does what a request reads of it.
+    /// by [`request_key`], newest last: the view's documents never change,
+    /// so neither does what a request reads of them (the deletes a
+    /// `rollback` makes are those of the request's first read).
     prepared: Mutex<Vec<(Vec<u8>, Arc<Prepared>)>>,
+}
+
+impl ViewHandle {
+    fn opened(&self) -> std::time::Instant {
+        *self
+            .opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether `other`, a view of the same commit opened later, holds the
+    /// same documents and deletes: it then reads as this one does.
+    fn reads_as(&self, other: &ViewHandle) -> bool {
+        self.commit == other.commit
+            && self.blob == other.blob
+            && self.view.commit_deletes == other.view.commit_deletes
+    }
+
+    /// Takes the time `other` (which [`Self::reads_as`] this view) opened
+    /// at: this view then holds every write before it.
+    fn renew(&self, other: &ViewHandle) {
+        let at = other.opened();
+        let mut opened = self
+            .opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *opened = (*opened).max(at);
+    }
 }
 
 impl Drop for ViewHandle {
@@ -302,7 +332,7 @@ impl Warmer {
             .shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if shared.as_ref().is_some_and(|h| h.opened.elapsed() > max) {
+        if shared.as_ref().is_some_and(|h| h.opened().elapsed() > max) {
             let old = shared.take();
             drop(shared);
             drop(old);
@@ -355,9 +385,9 @@ impl Warmer {
         // not shared: searches would read writes they had seen go missing.
         let newer = shared.as_ref().is_none_or(|s| match (s.commit, h.commit) {
             (Some(a), Some(b)) if a != b => b > a,
-            _ => h.opened >= s.opened,
+            _ => h.opened() >= s.opened(),
         });
-        let old = if fresh.is_some_and(|f| h.opened < f) || !newer {
+        let old = if fresh.is_some_and(|f| h.opened() < f) || !newer {
             None
         } else {
             shared.replace(Arc::clone(h))
@@ -400,7 +430,7 @@ impl Warmer {
         let Some(h) = shared else {
             return true;
         };
-        if h.commit != commit || h.opened.elapsed() >= max / 2 {
+        if h.commit != commit || h.opened().elapsed() >= max / 2 {
             return true;
         }
         let now = w.writer().live_slot_buffers();
@@ -430,6 +460,14 @@ impl Warmer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.unshare();
+    }
+
+    /// The view searches share now, whatever its age.
+    fn shared_handle(&self) -> Option<Arc<ViewHandle>> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The buffers the shared view reads.
@@ -608,7 +646,48 @@ fn searched_lean(w: &Arc<EngineWriter>) {
     }
 }
 
+/// Makes the reads of `warmer`'s recent requests of `h`, before any search
+/// shares it: the searches then build nothing of the buffers. It stops
+/// once a quarter of the staleness bound went, so the view is shared well
+/// within it.
+fn prepare_ahead_of(warmer: &Warmer, h: &Arc<ViewHandle>) {
+    let budget = warmer
+        .max_staleness()
+        .map_or(std::time::Duration::ZERO, |m| m / 4);
+    let in_budget = || h.opened().elapsed() < budget;
+    for blob in warmer.recent_plain() {
+        if !in_budget() {
+            return;
+        }
+        let _ = prepare_plain_blob(h, &blob);
+    }
+    // A reader handle closed meanwhile is refused.
+    for r in warmer
+        .recent_readers()
+        .into_iter()
+        .filter(|r| r.commit == h.commit)
+    {
+        if !in_budget() {
+            return;
+        }
+        let _ = view_reader_of(
+            r.handle,
+            h,
+            Some(&r.query),
+            r.tree.as_deref(),
+            r.extra.as_deref(),
+        );
+    }
+}
+
+thread_local! {
+    /// Whether this thread is the warmer's: what it makes ahead is no
+    /// search, so it does not keep the warmer running.
+    static WARMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
+    WARMING.with(|w| w.set(true));
     // Its work is the searches' made ahead: a search waiting for a core
     // goes first.
     crate::engine_writer::yield_to_searches();
@@ -645,27 +724,15 @@ fn warm_loop(weak: &std::sync::Weak<EngineWriter>) {
                     // running.
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         if let Ok(h) = open_view(&w, commit, true) {
-                            // The last requests' reads of it are made here,
-                            // before any search shares it: the searches
-                            // then build nothing of the buffers.
-                            for blob in warmer.recent_plain() {
-                                let _ = prepare_plain_blob(&h, &blob);
+                            match warmer.shared_handle() {
+                                // Nothing written since: the shared view, and
+                                // what was made of it, serve on.
+                                Some(s) if s.reads_as(&h) => s.renew(&h),
+                                _ => {
+                                    prepare_ahead_of(warmer, &h);
+                                    warmer.share_view(&h);
+                                }
                             }
-                            // A reader handle closed meanwhile is refused.
-                            for r in warmer
-                                .recent_readers()
-                                .into_iter()
-                                .filter(|r| r.commit == h.commit)
-                            {
-                                let _ = view_reader_of(
-                                    r.handle,
-                                    &h,
-                                    Some(&r.query),
-                                    r.tree.as_deref(),
-                                    r.extra.as_deref(),
-                                );
-                            }
-                            warmer.share_view(&h);
                         }
                     }));
                 }
@@ -753,6 +820,12 @@ fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bo
             "warming the buffers panicked".into(),
         ))
     })
+}
+
+/// Whether `w`'s warming thread runs.
+#[cfg(test)]
+pub(crate) fn warmer_running(w: &EngineWriter) -> bool {
+    w.live_warmer().running()
 }
 
 /// How many plain requests' reads view `view` keeps.
@@ -1254,7 +1327,7 @@ fn open_view(
         plans,
         blob,
         commit,
-        opened,
+        opened: Mutex::new(opened),
         whole: Mutex::new(Whole::default()),
         prepared: Mutex::new(Vec::new()),
     });
@@ -1532,7 +1605,7 @@ fn build_view_reader(
     // view wait for the slowest of them.
     let w: &EngineWriter = &v.writer;
     let postings = request.is_none();
-    if !postings {
+    if !postings && !WARMING.with(std::cell::Cell::get) {
         searched_lean(&v.writer);
     }
     let mut phases = phases::Timer::start();
@@ -2672,7 +2745,8 @@ fn prepare_plain(
             .zip(overlaid(parts, prefix, cached, Some(&buffer), Some(key))?)
         {
             // The snapshot's deletes: every document of a buffer
-            // `delete_all` or `rollback` dropped since the view opened.
+            // `delete_all` or `rollback` dropped since the view opened, as
+            // of this read, which the view keeps.
             let lo = buffer.deleted.partition_point(|&d| d < p.start);
             let hi = buffer.deleted.partition_point(|&d| d < p.end);
             let deleted: Vec<i32> = buffer

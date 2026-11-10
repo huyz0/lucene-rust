@@ -5697,6 +5697,79 @@ mod tests {
         assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
+    /// Under a staleness bound the warmer makes the repeated requests'
+    /// reads of each view it shares, and rests once searches stop, writes
+    /// going on: what it makes ahead is no search.
+    #[test]
+    fn the_warmer_rests_once_searches_stop() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_engine_writer_set_live_staleness,
+            ffi_live_view_close, ffi_live_view_reader,
+        };
+        let tmp = empty_index("engine-writer-live-warmer-rests");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let add = |i: usize| {
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &["alpha", if i.is_multiple_of(2) { "beta" } else { "gamma" }],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        (0..10).for_each(add);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 20), 0);
+        let beta = crate::jvm_reader::tests::term_blob("body", "beta");
+        for round in 0..6usize {
+            add(10 + round);
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            assert!(search_live(reader, view, &beta).is_some());
+            let mut lean = 0u64;
+            // SAFETY: live slices and out-pointer.
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    beta.as_ptr(),
+                    beta.len(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut lean,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            assert_eq!(ffi_live_view_close(view), 0);
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        // Writes go on, searches do not: each view the warmer opens is new,
+        // and what it makes of them keeps it running no longer.
+        let ew = lookup(h).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut i = 100;
+        while crate::live::warmer_running(&ew) && std::time::Instant::now() < deadline {
+            add(i);
+            i += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!crate::live::warmer_running(&ew), "the warmer rests");
+        drop(ew);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
     /// Under a staleness bound a view opened within it is shared, without
     /// the writes since; without one each view holds every write before it.
     #[test]
