@@ -624,3 +624,43 @@ default), with `index.sort.field` set to the partition field.
   nearest documents spread over every partition's clusters. The setting
   fits indexes that are always searched within one tenant.
 - Builds are 3x faster: k-means runs on each partition alone.
+
+## Nested fields: the best child per parent
+
+A nested search (`knn_top_hits_nested_with`, the plugin's nested `knn`)
+returns the best child of each of the best `k` parents. On an IVF field it
+used to score every child exactly; now it probes the clusters as a flat
+search does, with the shortlist widened by the children per parent (at most
+64 times) so siblings do not crowd other parents out, a rerank that keeps
+one child per parent and stops once no candidate can beat the `k`-th
+parent; while fewer than `k` parents are found, the probes deepen and the
+shortlist widens (so a parent with thousands of alike children cannot
+crowd the rest out), up to an exhaustive search. A filter keeps the flat
+search's rules (above); in a segment where some documents have no vector
+(the parents), a filter passing more than 4096 live documents is counted
+at 4096 points spread over the segment, since walking all of a filter
+passing half the segment cost more (1.7 ms) than probing.
+
+GloVe-100, 390k vectors grouped into parents of 1-8 consecutive rows, one
+segment, `ivf-f16`, 200 queries, recall of the exact best 10 parents.
+`local` rows are ordered by nearest of 4096 sampled centres, so a parent's
+children are alike, as a document's chunks are; `random` rows are not.
+Data: `/mnt/project-files/perf/ivf-nested/` (`conv.py` makes the files).
+
+```
+cargo run --release -p lucene-search --example knn_nested -- /tmp/data/glove100 --order local --nprobes 0,32,128
+cargo run --release -p lucene-search --example knn_nested -- /tmp/data/glove100 --order local --filter half
+cargo run --release -p lucene-search --example knn_nested -- /tmp/data/glove100 --format hnsw --ef 100,200
+```
+
+| parents | children | filter | before (exact) | IVF calibrated | IVF 32 probes | HNSW ef 200 |
+|---|---|---|---|---|---|---|
+| 86866 local | 1-8 | none | 1.000 / 16236 | 0.981 / 487 | 0.930 / 352 | 0.947 / 518 |
+| 86866 random | 1-8 | none | | 0.982 / 454 | 0.917 / 267 | |
+| 86866 local | 1-8 | half the children | 1.000 / 10289 | 0.977 / 1257 | 0.908 / 907 | 0.934 / 1214 (ef 100) |
+| 86866 random | 1-8 | half the children | | 0.984 / 1173 | 0.905 / 880 | |
+| 23750 local | 1-32 | none | | 0.984 / 1090 | 0.930 / 596 | |
+| 390000 local | 1 | none | | 0.957 / 261 | | |
+
+Recall @10 / mean µs. About 700 µs of every filtered row is building the
+filter's bit set, the same for HNSW.
