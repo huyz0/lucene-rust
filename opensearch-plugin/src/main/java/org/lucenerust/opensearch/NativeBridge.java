@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 96;
+    public static final int EXPECTED_ABI_VERSION = 97;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -383,6 +383,24 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle ZSTD_DICTIONARY_CLOSE = bind("ffi_zstd_dictionary_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ML_RUNTIME_INIT = bind("ffi_ml_runtime_init", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT));
+        static final MethodHandle ML_TEXT_EMBEDDING_OPEN = bind(
+            "ffi_ml_text_embedding_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle ML_TEXT_EMBEDDING_EMBED = bind(
+            "ffi_ml_text_embedding_embed_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_TOKENIZE_OPEN = bind(
+            "ffi_ml_sparse_tokenize_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_TOKENIZE = bind(
+            "ffi_ml_sparse_tokenize_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle ZSTD_PAGED_DECOMPRESS = bind(
             "ffi_zstd_paged_decompress",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
@@ -1705,6 +1723,125 @@ public final class NativeBridge {
     public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
     /** The Rust engine's paged zstd stored fields ({@code index.lucene_rust.stored_fields.paged_zstd}). */
     public static final int STORED_FIELDS_ZSTD_PAGED = 4;
+
+    // ---- ml-commons local models (ml.rs). ----
+
+    /**
+     * Loads the ONNX Runtime library at {@code path}, with {@code threads} intra-op threads shared by
+     * every model (0: one per core). Later calls keep the first library.
+     */
+    public static int mlRuntimeInit(String path, int threads) {
+        byte[] p = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.ML_RUNTIME_INIT.invokeExact(s.bytes(p), (long) p.length, threads);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens the ONNX text-embedding model at {@code modelPath} with the {@code tokenizer.json} bytes,
+     * ml-commons' {@code model_type} and {@code pooling_mode}, and whether results are normalized;
+     * its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlTextEmbeddingOpen(
+        String modelPath,
+        byte[] tokenizer,
+        String modelType,
+        String pooling,
+        boolean normalize,
+        long[] outHandle
+    ) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] type = modelType.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] mode = pooling.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_TEXT_EMBEDDING_OPEN.invokeExact(
+                s.bytes(model),
+                (long) model.length,
+                s.bytes(tokenizer),
+                (long) tokenizer.length,
+                s.bytes(type),
+                (long) type.length,
+                s.bytes(mode),
+                (long) mode.length,
+                (byte) (normalize ? 1 : 0),
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Embeds {@code texts} (each a little-endian {@code u32} byte length then UTF-8) with model {@code
+     * handle}: per text a {@code u32} rank, the dimensions, then the {@code f32} values, all little
+     * endian. {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlTextEmbeddingEmbed(long handle, byte[] texts) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_TEXT_EMBEDDING_EMBED.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a sparse tokenize model from its {@code tokenizer.json} bytes and its {@code idf.json}
+     * bytes ({@code null} when it has none); its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlSparseTokenizeOpen(byte[] tokenizer, byte[] idf, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            MemorySegment idfBytes = idf == null ? MemorySegment.NULL : s.bytes(idf);
+            long idfLength = idf == null ? 0L : idf.length;
+            int rc = (int) H.ML_SPARSE_TOKENIZE_OPEN.invokeExact(s.bytes(tokenizer), (long) tokenizer.length, idfBytes, idfLength, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The token weights of {@code texts} (encoded as for {@link #mlTextEmbeddingEmbed}) from sparse
+     * tokenize model {@code handle}: per text a {@code u32} count, then per token its {@code u32} id,
+     * {@code u32} byte length, UTF-8 token and {@code f32} weight, all little endian. {@code null} on
+     * failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlSparseTokenize(long handle, byte[] texts) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_SPARSE_TOKENIZE.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #mlTextEmbeddingOpen} or {@link #mlSparseTokenizeOpen}. */
+    public static int mlModelClose(long handle) {
+        try {
+            return (int) H.ML_MODEL_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
 
     // ---- Paged zstd stored fields (zstd_dictionary.rs). ----
 

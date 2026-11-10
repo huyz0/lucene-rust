@@ -1,0 +1,92 @@
+{
+  "_meta": {
+    "schema_version": 5
+  },
+  "properties": {
+    "create_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "error": {
+      "type": "text"
+    },
+    "function_name": {
+      "type": "keyword"
+    },
+    "input_type": {
+      "type": "keyword"
+    },
+    "is_async": {
+      "type": "boolean"
+    },
+    "last_update_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "model_id": {
+      "type": "keyword"
+    },
+    "output_index": {
+      "type": "keyword"
+    },
+    "progress": {
+      "type": "float"
+    },
+    "remote_job": {
+      "type": "flat_object"
+    },
+    "response": {
+      "type": "flat_object"
+    },
+    "state": {
+      "type": "keyword"
+    },
+    "task_type": {
+      "type": "keyword"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    },
+    "user": {
+      "properties": {
+        "backend_roles": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "custom_attribute_names": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "name": {
+          "fields": {
+            "keyword": {
+              "ignore_above": 256,
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        },
+        "roles": {
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          },
+          "type": "text"
+        }
+      },
+      "type": "nested"
+    },
+    "worker_node": {
+      "type": "keyword"
+    }
+  }
+}
