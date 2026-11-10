@@ -2,7 +2,7 @@
 //! `Boolean`, `Character` (instance and static methods).
 
 use crate::api::{bool_arg, double_arg, int_arg, long_arg, npe, str_arg};
-use crate::compare::{self, sign};
+use crate::compare::{self, ordering_int};
 use crate::number::{self, parse_double, parse_long_radix};
 use crate::types::{as_f64, as_i64, convert, prim_of, Prim};
 use crate::value::{char_string, Value};
@@ -52,7 +52,7 @@ pub fn call(
                 _ => args[0].clone(),
             };
             match compare::compare_to(recv, &arg) {
-                Ok(o) => Value::Int(sign(o)),
+                Ok(o) => Value::Int(ordering_int(o)),
                 Err(e) => return Some(Err(e)),
             }
         }
@@ -162,9 +162,11 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         ("Integer", "toOctalString", 1) => {
             |_vm, a| Ok(Value::string(format!("{:o}", int_arg(&a[0])? as u32)))
         }
-        ("Integer", "compare", 2) => {
-            |_vm, a| Ok(Value::Int(sign(int_arg(&a[0])?.cmp(&int_arg(&a[1])?))))
-        }
+        ("Integer", "compare", 2) => |_vm, a| {
+            Ok(Value::Int(ordering_int(
+                int_arg(&a[0])?.cmp(&int_arg(&a[1])?),
+            )))
+        },
         ("Integer", "max", 2) => |_vm, a| Ok(Value::Int(int_arg(&a[0])?.max(int_arg(&a[1])?))),
         ("Integer", "min", 2) => |_vm, a| Ok(Value::Int(int_arg(&a[0])?.min(int_arg(&a[1])?))),
         ("Integer", "sum", 2) => {
@@ -210,7 +212,7 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
             |_vm, a| Ok(Value::string((int_arg(&a[0])? as u32).to_string()))
         }
         ("Integer", "compareUnsigned", 2) => |_vm, a| {
-            Ok(Value::Int(sign(
+            Ok(Value::Int(ordering_int(
                 (int_arg(&a[0])? as u32).cmp(&(int_arg(&a[1])? as u32)),
             )))
         },
@@ -273,9 +275,11 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         ("Long", "toBinaryString", 1) => {
             |_vm, a| Ok(Value::string(format!("{:b}", long_arg(&a[0])? as u64)))
         }
-        ("Long", "compare", 2) => {
-            |_vm, a| Ok(Value::Int(sign(long_arg(&a[0])?.cmp(&long_arg(&a[1])?))))
-        }
+        ("Long", "compare", 2) => |_vm, a| {
+            Ok(Value::Int(ordering_int(
+                long_arg(&a[0])?.cmp(&long_arg(&a[1])?),
+            )))
+        },
         ("Long", "max", 2) => |_vm, a| Ok(Value::Long(long_arg(&a[0])?.max(long_arg(&a[1])?))),
         ("Long", "min", 2) => |_vm, a| Ok(Value::Long(long_arg(&a[0])?.min(long_arg(&a[1])?))),
         ("Long", "sum", 2) => {
@@ -350,7 +354,7 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
             )))
         },
         ("Double", "compare", 2) | ("Float", "compare", 2) => |_vm, a| {
-            Ok(Value::Int(sign(compare::double_compare(
+            Ok(Value::Int(ordering_int(compare::double_compare(
                 double_arg(&a[0])?,
                 double_arg(&a[1])?,
             ))))
@@ -419,9 +423,11 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
             v => Ok(Value::Bool(bool_arg(v)?)),
         },
         ("Boolean", "toString", 1) => |_vm, a| Ok(Value::string(bool_arg(&a[0])?.to_string())),
-        ("Boolean", "compare", 2) => {
-            |_vm, a| Ok(Value::Int(sign(bool_arg(&a[0])?.cmp(&bool_arg(&a[1])?))))
-        }
+        ("Boolean", "compare", 2) => |_vm, a| {
+            Ok(Value::Int(ordering_int(
+                bool_arg(&a[0])?.cmp(&bool_arg(&a[1])?),
+            )))
+        },
         ("Boolean", "logicalAnd", 2) => {
             |_vm, a| Ok(Value::Bool(bool_arg(&a[0])? && bool_arg(&a[1])?))
         }

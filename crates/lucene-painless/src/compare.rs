@@ -58,11 +58,8 @@ pub fn compare_to(a: &Value, b: &Value) -> Result<Ordering, Throw> {
     })
 }
 
-/// A sign as `compareTo` returns it.
-pub fn sign(o: Ordering) -> i32 {
-    match o {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
+/// A sign as `compareTo` returns it (`Ordering`'s discriminants are Java's
+/// `-1`, `0`, `1`).
+pub fn ordering_int(o: Ordering) -> i32 {
+    o as i32
 }

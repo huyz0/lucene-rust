@@ -59,31 +59,32 @@ fn char_at(s: &str, i: i32) -> Result<u16, Throw> {
         .ok_or_else(|| sioobe(format!("Index {i} out of bounds for length {}", u.len())))
 }
 
-/// `indexOf` in UTF-16 units from `from`.
-fn index_of(s: &str, needle: &str, from: i32) -> i32 {
+/// `indexOf` in UTF-16 units from `from`: the first match, if any.
+fn index_of(s: &str, needle: &str, from: i32) -> Option<usize> {
     let (h, n) = (utf16(s), utf16(needle));
     let from = from.max(0) as usize;
     if n.is_empty() {
-        return from.min(h.len()) as i32;
+        return Some(from.min(h.len()));
     }
     if n.len() > h.len() {
-        return -1;
+        return None;
     }
-    (from..=h.len() - n.len())
-        .find(|&i| h[i..i + n.len()] == n[..])
-        .map_or(-1, |i| i as i32)
+    (from..=h.len() - n.len()).find(|&i| h[i..i + n.len()] == n[..])
 }
 
-fn last_index_of(s: &str, needle: &str, from: i32) -> i32 {
+/// `lastIndexOf` in UTF-16 units, searching back from `from`.
+fn last_index_of(s: &str, needle: &str, from: i32) -> Option<usize> {
     let (h, n) = (utf16(s), utf16(needle));
     if n.len() > h.len() || from < 0 {
-        return -1;
+        return None;
     }
     let start = (from as usize).min(h.len() - n.len());
-    (0..=start)
-        .rev()
-        .find(|&i| h[i..i + n.len()] == n[..])
-        .map_or(-1, |i| i as i32)
+    (0..=start).rev().find(|&i| h[i..i + n.len()] == n[..])
+}
+
+/// Java's `indexOf` result: the position, or `-1` for "not found".
+fn java_index(found: Option<usize>) -> Value {
+    Value::Int(found.map_or(-1, |i| i as i32))
 }
 
 fn java_trim(s: &str) -> &str {
@@ -108,11 +109,11 @@ pub fn call(vm: &mut Vm, s: &Rc<str>, name: &str, args: &[Value]) -> Option<Resu
             ("substring", 2) | ("subSequence", 2) => {
                 Value::string(substring(s, int_arg(&args[0])?, int_arg(&args[1])?)?)
             }
-            ("indexOf", 1) => Value::Int(index_of(s, &str_arg(&args[0])?, 0)),
-            ("indexOf", 2) => Value::Int(index_of(s, &str_arg(&args[0])?, int_arg(&args[1])?)),
-            ("lastIndexOf", 1) => Value::Int(last_index_of(s, &str_arg(&args[0])?, i32::MAX)),
+            ("indexOf", 1) => java_index(index_of(s, &str_arg(&args[0])?, 0)),
+            ("indexOf", 2) => java_index(index_of(s, &str_arg(&args[0])?, int_arg(&args[1])?)),
+            ("lastIndexOf", 1) => java_index(last_index_of(s, &str_arg(&args[0])?, i32::MAX)),
             ("lastIndexOf", 2) => {
-                Value::Int(last_index_of(s, &str_arg(&args[0])?, int_arg(&args[1])?))
+                java_index(last_index_of(s, &str_arg(&args[0])?, int_arg(&args[1])?))
             }
             ("contains", 1) => Value::Bool(s.contains(&*str_arg(&args[0])?)),
             ("startsWith", 1) => Value::Bool(s.starts_with(&*str_arg(&args[0])?)),

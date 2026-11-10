@@ -109,7 +109,7 @@ pub fn remove_object(_vm: &mut Vm, v: &Value, x: &Value) -> Result<Value, Throw>
     }))
 }
 
-fn size(v: &Value) -> usize {
+fn element_count(v: &Value) -> usize {
     match v {
         Value::List(l) => l.borrow().items.len(),
         Value::Set(s) => s.borrow().map.len(),
@@ -151,8 +151,8 @@ pub fn new_list(items: Vec<Value>) -> Value {
 pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Option<Result<Value, Throw>> {
     Some((|| -> Result<Value, Throw> {
         Ok(match (name, args.len()) {
-            ("size", 0) => Value::Int(size(recv) as i32),
-            ("isEmpty", 0) => Value::Bool(size(recv) == 0),
+            ("size", 0) => Value::Int(element_count(recv) as i32),
+            ("isEmpty", 0) => Value::Bool(element_count(recv) == 0),
             ("add", 1) => Value::Bool(add(recv, args[0].clone())?),
             ("contains", 1) => Value::Bool(contains(recv, &args[0])?),
             ("clear", 0) => {

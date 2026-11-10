@@ -31,23 +31,25 @@ impl Composed {
         match self {
             Composed::Reversed(c) => {
                 let o = cmp(vm, c.as_ref(), &args[1], &args[0])?;
-                Ok(Value::Int(compare::sign(o)))
+                Ok(Value::Int(compare::ordering_int(o)))
             }
-            Composed::NaturalOrder => Ok(Value::Int(compare::sign(compare::compare_to(
+            Composed::NaturalOrder => Ok(Value::Int(compare::ordering_int(compare::compare_to(
                 &args[0], &args[1],
             )?))),
             Composed::ThenComparing(a, b) => {
                 let o = cmp(vm, Some(a), &args[0], &args[1])?;
                 if o != Ordering::Equal {
-                    return Ok(Value::Int(compare::sign(o)));
+                    return Ok(Value::Int(compare::ordering_int(o)));
                 }
                 let o = cmp(vm, Some(b), &args[0], &args[1])?;
-                Ok(Value::Int(compare::sign(o)))
+                Ok(Value::Int(compare::ordering_int(o)))
             }
             Composed::Comparing(key) => {
                 let ka = invoke(vm, key, &args[0..1])?;
                 let kb = invoke(vm, key, &args[1..2])?;
-                Ok(Value::Int(compare::sign(compare::compare_to(&ka, &kb)?)))
+                Ok(Value::Int(compare::ordering_int(compare::compare_to(
+                    &ka, &kb,
+                )?)))
             }
             Composed::AndThen(f, g) => {
                 let r = invoke(vm, f, args)?;
