@@ -107,3 +107,26 @@ HNSW settings: disk and lean L 160, W 32 (W 8 in memory); stock ef 160.
   records a page; at half the file cached (GloVe 128 MiB) 28% of expanded
   nodes still miss. A block-shuffling order (Starling, SIGMOD 2024) could
   raise hits per page.
+
+## Memory as a share of the index, and blob-store requests
+
+Budgets given as a share of each index's own bytes (`--budgets 50%,10%,2%`),
+at recall@10 near 0.95 (GloVe; stock BBQ HNSW tops out at 0.93). Latency is
+CPU plus 100 us a round trip; `gets` is runs of contiguous missed pages, the
+ranged GETs a blob store would serve.
+
+| GloVe index | RAM floor | 50% | 10% | 2% | GETs, KiB a query at 10% |
+|---|---|---|---|---|---|
+| ivf nprobe 128, rerank 300 (0.955) | 0.4% | 0.52 ms | 0.59 ms | 0.87 ms | 272, 1489 |
+| disk L 480, W 32 (0.953) | 6.2% | 7.6 ms | 8.4 ms | does not fit | 936, 3744 |
+| lean L 480, W 32 (0.953) | 0.3% | 7.3 ms | 8.3 ms | 8.4 ms | 897, 3587 |
+| stock-bbq-pinned ef 640 (0.928) | 17% | 2.6 ms | does not fit | does not fit | - |
+| stock-f32 ef 320 (0.953) | 1% | 53 ms | 80 ms | 98 ms | 4461, 19268 |
+
+In memory IVF takes 0.37 ms and the HNSW variants about 2 ms here. IVF stays
+within 0.25 ms of in memory down to 5% of its files; below a query's working
+set (about 2 MB) the prefetched pages are evicted before they are read
+(f16 rerank at 1.8 MiB: 122 round trips). Most of IVF's GETs are rerank
+vectors, one page a candidate; the cluster scans are one GET a probe.
+fastText-300 behaves the same way (IVF 0.88 ms at 2%, disk HNSW 5.1 ms at
+5%).
