@@ -18,7 +18,8 @@
 //!   weighs a text's tokens without a network.
 //! - [`text_similarity`] (`TEXT_SIMILARITY`) scores a query against a
 //!   document with a cross-encoder.
-//! - [`onnx`] is the session the model functions share.
+//! - [`onnx`] is the session the model functions share; [`torchscript`] is
+//!   how they run TorchScript models, over a runtime the caller provides.
 
 pub mod onnx;
 pub mod runtime;
@@ -27,12 +28,14 @@ pub mod sparse_tokenize;
 pub mod text_embedding;
 pub mod text_similarity;
 pub mod tokenizer;
+pub mod torchscript;
 
 /// A failure loading or running a model.
 #[derive(Debug, thiserror::Error)]
 pub enum MlError {
-    /// The ONNX Runtime library could not be loaded, or was not loaded yet.
-    #[error("onnx runtime: {0}")]
+    /// A runtime library (ONNX Runtime, libtorch) could not be loaded, or
+    /// was not loaded yet.
+    #[error("runtime: {0}")]
     Runtime(String),
     /// The tokenizer file could not be parsed, or a text could not be encoded.
     #[error("tokenizer: {0}")]
