@@ -664,25 +664,61 @@ final class ExtendedEncoder {
                 return "script_score_params";
             }
             ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(q, "scriptBuilder");
+            byte[] kinds = new byte[compiled.docFields().size()];
+            // The doc values a field's name reads: an alias's are its target's.
+            String[] names = new String[kinds.length];
+            for (int i = 0; i < kinds.length; i++) {
+                MappedFieldType ft = types.apply(compiled.docFields().get(i));
+                kinds[i] = PainlessScore.fieldKind(ft);
+                names[i] = ft == null ? compiled.docFields().get(i) : ft.name();
+            }
+            // The whole script checked before anything runs: one the native runtime would not run
+            // exactly as Painless does stays in Java, never tried natively first.
+            boolean needsScore = factory.needs_score();
+            String refused = PainlessScore.check(compiled, needsScore, params, kinds, () -> {
+                ByteArrayOutputStream checked = new ByteArrayOutputStream();
+                painlessSpec(checked, needsScore, compiled, params, "", 0, 0, names, kinds);
+                return checked.toByteArray();
+            });
+            if (refused != null) {
+                return "script_score_painless";
+            }
             out.write(NODE_PAINLESS_SCORE);
             String reason = child.node((Query) field(q, "subQuery"));
             if (reason != null) {
                 return reason;
             }
-            out.write(factory.needs_score() ? 1 : 0);
-            writeBytes(out, compiled.ir());
-            writeBytes(out, params);
             String index = (String) field(q, "indexName");
-            writeString(out, index == null ? "" : index);
-            writeInt(out, (int) field(q, "shardId"));
-            writeInt(out, compiled.docFields().size());
-            for (String f : compiled.docFields()) {
-                writeString(out, f);
-                out.write(PainlessScore.fieldKind(types.apply(f)));
-            }
+            int run = PainlessScore.run(factory);
+            painlessSpec(out, factory.needs_score(), compiled, params, index == null ? "" : index, (int) field(q, "shardId"), run, names, kinds);
             return null;
         }
         return "script_score_painless";
+    }
+
+    /** A painless score node's fields after its sub-query, as {@code jvm_painless_score.rs} reads them. */
+    private static void painlessSpec(
+        ByteArrayOutputStream out,
+        boolean needsScore,
+        PainlessIr.Compiled compiled,
+        byte[] params,
+        String index,
+        int shard,
+        int run,
+        String[] names,
+        byte[] kinds
+    ) {
+        out.write(needsScore ? 1 : 0);
+        writeBytes(out, compiled.ir());
+        writeBytes(out, params);
+        writeString(out, index);
+        writeInt(out, shard);
+        writeInt(out, run);
+        writeInt(out, kinds.length);
+        for (int i = 0; i < kinds.length; i++) {
+            writeString(out, names[i]);
+            out.write(kinds[i]);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------

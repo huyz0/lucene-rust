@@ -121,10 +121,7 @@ fn truthy(v: &Value) -> Result<bool, Throw> {
     match v {
         Value::Bool(b) => Ok(*b),
         Value::Null => Err(npe()),
-        o => Err(Throw::class_cast(format!(
-            "class {} cannot be cast to class java.lang.Boolean",
-            o.class_name()
-        ))),
+        o => Err(Throw::cast_failure(&o.class_name(), "java.lang.Boolean")),
     }
 }
 
