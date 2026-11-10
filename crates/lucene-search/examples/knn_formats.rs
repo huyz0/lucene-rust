@@ -4,10 +4,7 @@
 //!
 //! ```text
 //! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]
-//!   --formats L   comma list of hnsw, hnsw-int7, ivf, ivf-f16 (default all);
-//!                 an HNSW format takes `-m<M>-efc<EF>` graph options
-//!                 (default `hnsw-m16-efc100`)
-//!   --ef L        HNSW search beam widths (default 100)
+//!   --formats L   comma list of hnsw, hnsw-int7, ivf, ivf-f16 (default all)
 //!   --queries N   measured queries (default 1000), after 200 warm-up ones
 //!   --segments N  flushed segments, force-merged to one when --merge is set (default 1)
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
@@ -48,18 +45,10 @@ fn read_bin<T: Copy>(path: &str, decode: fn([u8; 4]) -> T) -> (usize, usize, Vec
 }
 
 fn format(name: &str) -> KnnVectorsFormat {
-    // `hnsw-m32-efc200`: the graph's max connections and construction beam.
-    let (base, m, efc) = match name.split_once("-m") {
-        Some((base, rest)) if base.starts_with("hnsw") => {
-            let (m, efc) = rest.split_once("-efc").expect("-m<M>-efc<EF>");
-            (base, m.parse().unwrap(), efc.parse().unwrap())
-        }
-        _ => (name, 16, 100),
-    };
-    match base {
-        "hnsw" => KnnVectorsFormat::hnsw(m, efc).unwrap(),
+    match name {
+        "hnsw" => KnnVectorsFormat::hnsw(16, 100).unwrap(),
         "hnsw-int7" => {
-            KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SevenBit, m, efc).unwrap()
+            KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::SevenBit, 16, 100).unwrap()
         }
         "ivf" => KnnVectorsFormat::ivf(384, 0).unwrap(),
         "ivf-f16" => KnnVectorsFormat::ivf(384, 1).unwrap(),
@@ -91,10 +80,6 @@ fn main() {
     let formats = opt("--formats").unwrap_or_else(|| "hnsw,hnsw-int7,ivf,ivf-f16".into());
     let segments: usize = opt("--segments").map_or(1, |s| s.parse().unwrap());
     let merge = args.iter().any(|a| a == "--merge");
-    let efs: Vec<usize> = opt("--ef").map_or_else(
-        || vec![100],
-        |s| s.split(',').map(|v| v.parse().unwrap()).collect(),
-    );
     let nprobes: Vec<usize> = opt("--nprobes")
         .unwrap_or_else(|| "0".into())
         .split(',')
@@ -202,13 +187,14 @@ fn main() {
                 }
             }
         }
-        // IVF sweeps its probes and sizes its own rerank; HNSW sweeps its beam.
-        let settings: Vec<(usize, usize)> = if name.starts_with("ivf") {
-            nprobes.iter().map(|&p| (p, K)).collect()
+        let probe_list: &[usize] = if name.starts_with("ivf") {
+            &nprobes
         } else {
-            efs.iter().map(|&ef| (0, ef.max(K))).collect()
+            &[0]
         };
-        for &(nprobe, candidates) in &settings {
+        // HNSW widens its beam to 100 candidates; IVF sizes its own rerank.
+        let candidates = if name.starts_with("ivf") { K } else { 100 };
+        for &nprobe in probe_list {
             let search = |q: usize| {
                 knn_top_hits_with(
                     &segs,
@@ -242,7 +228,7 @@ fn main() {
             let setting = if name.starts_with("ivf") {
                 format!("nprobes={nprobe}")
             } else {
-                format!("ef={candidates}")
+                "ef=100".into()
             };
             println!(
                 "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0}",
