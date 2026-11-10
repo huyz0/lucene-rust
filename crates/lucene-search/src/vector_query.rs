@@ -1498,6 +1498,11 @@ fn ivf_leaf_results(
                 }
                 n
             };
+            // A filter passing no more documents than the accepted target
+            // is scored exactly: probing would scan at least as many.
+            if passing <= ivf_accepted_target(k) {
+                return Ok(None);
+            }
             // A field clustered per partition (an index sorted by a
             // partition field) probes only the clusters whose document range
             // holds a document the filter passes, as an index of those
