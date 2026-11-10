@@ -3061,6 +3061,8 @@ fn merge_segments_mapped_inner(
     }
 
     let merged_vectors = merge_vectors(
+        dir,
+        merged_segment_name,
         sources,
         &per_source_maps,
         &doc_id_maps,
@@ -3122,6 +3124,7 @@ fn merge_segments_mapped_inner(
     files.push(fnm_name);
 
     if let Some(vector_files) = merged_vectors {
+        files.extend(vector_files.written_early.iter().cloned());
         for (suffix, group_files) in &vector_files.groups {
             for (ext, bytes) in group_files {
                 let name = crate::index_writer::segment_file_name(merged_segment_name, suffix, ext);
@@ -4757,6 +4760,10 @@ struct MergedVectorFiles {
     /// Every field written: `(number, (format name, suffix number))`, no
     /// pair for a direct `knnVectorsFormat()` (no per-field attributes).
     written: Vec<(i32, Option<(&'static str, u32)>)>,
+    /// Files the merge already wrote to the directory (each group's `.vec`,
+    /// written before its graph is built so it is read from the file rather
+    /// than held in memory).
+    written_early: Vec<String>,
 }
 
 /// Merges KNN vectors across `sources` -- the port of `SegmentMerger`'s
@@ -4791,7 +4798,10 @@ struct MergedVectorFiles {
 /// There is deliberately **no bulk-copy fast path** and no `MatchingReaders`
 /// consultation: the merged ordinal space is new, so Lucene re-writes the
 /// data file on every merge too.
+#[allow(clippy::too_many_arguments)]
 fn merge_vectors(
+    dir: &dyn Directory,
+    merged_segment_name: &str,
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     doc_id_maps: &[Vec<i32>],
@@ -4869,6 +4879,7 @@ fn merge_vectors(
     let mut out = MergedVectorFiles {
         groups: Vec::with_capacity(groups.len()),
         written: Vec::new(),
+        written_early: Vec::new(),
     };
     for group in &groups {
         let suffix = group.codec_suffix();
@@ -4878,6 +4889,8 @@ fn merge_vectors(
             .filter_map(|n| plan_by_number.get(n).copied())
             .collect();
         let files = merge_vector_group(
+            dir,
+            merged_segment_name,
             sources,
             doc_id_maps,
             &group_plan,
@@ -4892,6 +4905,8 @@ fn merge_vectors(
                 (!group.direct).then_some((group.format.name(), group.suffix)),
             ));
         }
+        let (files, vec_name) = files;
+        out.written_early.push(vec_name);
         out.groups.push((suffix, files));
     }
     Ok(Some(out))
@@ -4903,7 +4918,7 @@ type GroupFiles = Vec<(&'static str, Vec<u8>)>;
 /// One source's centroid (when visible), every vector it holds for a field,
 /// and whether it has deletions -- a [`scalar_quantized_vectors::QuantizedMergeSource`]'s
 /// owned parts.
-type OwnedQuantizedSource<'a> = (Option<&'a [f32]>, Vec<f32>, bool);
+type OwnedQuantizedSource<'a> = (Option<&'a [f32]>, std::borrow::Cow<'a, [f32]>, bool);
 
 /// One source's contribution to one merged vector field, resolved once and
 /// reused by both halves of [`merge_vector_group`] so the flat merge and the
@@ -4929,6 +4944,8 @@ struct FieldSource {
 /// Returns the instance's files by extension.
 #[allow(clippy::too_many_arguments)]
 fn merge_vector_group(
+    dir: &dyn Directory,
+    merged_segment_name: &str,
     sources: &[MergeSource],
     doc_id_maps: &[Vec<i32>],
     plan: &[&(&FieldInfo, Vec<FieldSource>)],
@@ -4936,7 +4953,7 @@ fn merge_vector_group(
     merged_max_doc: i32,
     merged_segment_id: &[u8; ID_LENGTH],
     suffix: &str,
-) -> Result<GroupFiles> {
+) -> Result<(GroupFiles, String)> {
     let mut flat_writer =
         vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, suffix);
     for (merged_field, field_sources) in plan.iter().map(|p| (&p.0, &p.1)) {
@@ -4970,12 +4987,19 @@ fn merge_vector_group(
         })?;
     }
     let (vec_bytes, vemf_bytes) = flat_writer.finish();
+    // The merged vectors go to their file now and everything built over them
+    // reads that file: the merge holds no in-memory copy of every vector.
+    let vec_name = crate::index_writer::segment_file_name(merged_segment_name, suffix, "vec");
+    write_file(dir, &vec_name, &vec_bytes)?;
+    drop(vec_bytes);
+    let vec_input = dir.open(&vec_name)?;
+    let vec_bytes: &[u8] = &vec_input;
 
     // Reopen exactly the bytes just written and build everything else over
     // *those*, so the graph's ordinals, the codes' ordinals and the flat
     // store's ordinals are the same fact rather than three derivations of it.
     let mut flat =
-        vectors::FlatVectorsReader::open(&vemf_bytes, &vec_bytes, merged_segment_id, suffix)?;
+        vectors::FlatVectorsReader::open(&vemf_bytes, vec_bytes, merged_segment_id, suffix)?;
     flat.resolve_similarities(|number| {
         plan.iter()
             .find(|p| p.0.number == number)
@@ -5003,11 +5027,10 @@ fn merge_vector_group(
                     .vectors
                     .expect("only sources with a flat reader are planned")
                     .group_of(fs.original_field_number);
-                let values = group.flat.float_vector_values(fs.original_field_number)?;
-                let mut all = Vec::new();
-                for ord in 0..values.size() {
-                    all.extend(values.vector(ord)?);
-                }
+                let all = group
+                    .flat
+                    .float_vector_values(fs.original_field_number)?
+                    .all_vectors()?;
                 owned.push((
                     group
                         .flat_quantized
@@ -5028,11 +5051,10 @@ fn merge_vector_group(
                 .collect();
             let values = flat.float_vector_values(merged_field.number)?;
             let mut docs = Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
-            let mut merged = Vec::new();
             for ord in 0..values.size() {
                 docs.push(values.ord_to_doc(ord)?);
-                merged.extend(values.vector(ord)?);
             }
+            let merged = values.all_vectors()?;
             writer.merge_field(
                 merged_field.number,
                 merged_field.vector_similarity_function,
@@ -5089,11 +5111,10 @@ fn merge_vector_group(
                 .collect();
             let values = flat.float_vector_values(merged_field.number)?;
             let mut docs = Vec::with_capacity(usize::try_from(values.size()).unwrap_or(0));
-            let mut merged = Vec::new();
             for ord in 0..values.size() {
                 docs.push(values.ord_to_doc(ord)?);
-                merged.extend(values.vector(ord)?);
             }
+            let merged = values.all_vectors()?;
             ivf.add(
                 &crate::ivf_vectors::IvfField {
                     number: merged_field.number,
@@ -5176,10 +5197,7 @@ fn merge_vector_group(
                             let qv = reader.quantized_vector_values(merged_field.number)?;
                             let similarity = merged_field.vector_similarity_function;
                             let query_side = if qv.encoding().is_asymmetric() {
-                                let mut raw = Vec::new();
-                                for ord in 0..values.size() {
-                                    raw.extend(values.vector(ord)?);
-                                }
+                                let raw = values.all_vectors()?;
                                 Some(scalar_quantized_vectors::binarized_query_data(
                                     &qv, similarity, &raw,
                                 )?)
@@ -5261,8 +5279,7 @@ fn merge_vector_group(
         files.push(("vem", vem_bytes));
     }
     files.insert(0, ("vemf", vemf_bytes));
-    files.insert(0, ("vec", vec_bytes));
-    Ok(files)
+    Ok((files, vec_name))
 }
 
 /// One source field's ordinal -> its own doc id, materialised from the flat

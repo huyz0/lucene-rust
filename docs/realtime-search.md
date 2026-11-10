@@ -79,6 +79,13 @@ until it is published and no view reads it that way, then as its published
 segment (files pinned against merges) until the commit holding it is
 released.
 
+On the Java side, a search over the buffers reads a new reader, so anything
+OpenSearch caches per reader (global ordinals, for one) is built again for it.
+The plugin's aggregation processor therefore builds the aggregators of a
+search whose aggregations the native pass plans only when Lucene collects
+them (a fallback); a natively answered `terms` aggregation never builds the
+global ordinals OpenSearch's aggregator would (about 1 ms per search at 1M).
+
 ## Measured search-side costs
 
 1M-doc bench, indexing and closed-loop searchers together on a saturated
