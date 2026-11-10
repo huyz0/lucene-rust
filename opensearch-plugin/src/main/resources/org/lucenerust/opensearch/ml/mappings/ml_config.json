@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "schema_version": 5
+  },
+  "properties": {
+    "config_type": {
+      "type": "keyword"
+    },
+    "create_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "last_updated_time": {
+      "format": "strict_date_time||epoch_millis",
+      "type": "date"
+    },
+    "master_key": {
+      "type": "keyword"
+    },
+    "ml_configuration": {
+      "type": "flat_object"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    }
+  }
+}
