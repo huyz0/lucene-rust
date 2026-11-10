@@ -127,7 +127,9 @@ fn every_cluster_probed_finds_the_exact_best_child_of_each_group() {
                     nprobe: Probes::Fixed(clusters),
                     rerank,
                 };
-                let out = r.search_grouped(1, &q, &params, None, &grouping).unwrap();
+                let out = r
+                    .search_grouped(1, &q, &params, None, None, &grouping)
+                    .unwrap();
                 let got: Vec<(i32, f32)> = out.hits.iter().map(|h| (h.doc, h.score)).collect();
                 assert_eq!(got, exact(&data, &groups, &q, k, |_| true), "{rerank:?}");
             }
@@ -136,7 +138,7 @@ fn every_cluster_probed_finds_the_exact_best_child_of_each_group() {
             let accept: &dyn Fn(i32) -> bool = &odd;
             let params = SearchParams::new(k, clusters, n);
             let out = r
-                .search_grouped(1, &q, &params, Some(accept), &grouping)
+                .search_grouped(1, &q, &params, Some(accept), None, &grouping)
                 .unwrap();
             let got: Vec<(i32, f32)> = out.hits.iter().map(|h| (h.doc, h.score)).collect();
             assert_eq!(got, exact(&data, &groups, &q, k, odd));
@@ -158,7 +160,9 @@ fn estimates_and_calibrated_probes_still_keep_one_child_per_group() {
         SearchParams::auto(10),
         SearchParams::new(0, 4, 40),
     ] {
-        let out = r.search_grouped(1, q, &params, None, &grouping).unwrap();
+        let out = r
+            .search_grouped(1, q, &params, None, None, &grouping)
+            .unwrap();
         let distinct: BTreeSet<i32> = out.hits.iter().map(|h| group(h.doc)).collect();
         assert_eq!(distinct.len(), out.hits.len());
         assert_eq!(out.hits.len(), params.k);

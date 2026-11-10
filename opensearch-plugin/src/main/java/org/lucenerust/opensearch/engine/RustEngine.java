@@ -357,6 +357,9 @@ public class RustEngine extends Engine {
             this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker);
             this.internalReaderManager.addListener(lastRefreshedCheckpointListener);
             internalReaderManager.addListener(documentIndexWriter);
+            if (documentIndexWriter instanceof RustIndexWriter rustWriter) {
+                this.externalReaderManager.addListener(rustWriter.externalRefreshListener());
+            }
             maxSeqNoOfUpdatesOrDeletes = new AtomicLong(
                 SequenceNumbers.max(localCheckpointTracker.getMaxSeqNo(), translogManager.getMaxSeqNo())
             );

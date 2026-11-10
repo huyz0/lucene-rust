@@ -1397,6 +1397,53 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// ([`IVF_ACCEPTED_FOR_10`]), or scoring them exactly costs less than the
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
+/// A filter on a partition of a field clustered per partition is scored
+/// exactly when it passes at most this many times the accepted target: a
+/// partition's few clusters are probed nearly all, with quantization error,
+/// where its documents' exact scores cost little more (`docs/benchmarks/ivf.md`,
+/// "Clusters per partition").
+const IVF_PARTITION_EXACT_RATIO: usize = 16;
+
+/// Most runs of set bits a filter may have for a filtered IVF search to
+/// prune clusters by document range: a partition's documents are one run
+/// per segment of an index sorted by the partition field.
+const IVF_FILTER_RUNS: usize = 256;
+
+/// The clusters whose document range (`ranges`, lowest and highest
+/// document) holds a document `filter` passes, or `None` when the filter
+/// has more than [`IVF_FILTER_RUNS`] runs of documents.
+fn clusters_holding(ranges: &[(i32, i32)], filter: &FixedBitSet) -> Option<Vec<usize>> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(lo) = filter.next_set_bit(from) {
+        if runs.len() == IVF_FILTER_RUNS {
+            return None;
+        }
+        let hi = filter.next_clear_bit(lo).unwrap_or(filter.len());
+        runs.push((lo, hi));
+        from = hi;
+        if from >= filter.len() {
+            break;
+        }
+    }
+    Some(
+        ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, &(lo, hi))| {
+                let (Ok(lo), Ok(hi)) = (usize::try_from(lo), usize::try_from(hi)) else {
+                    return false;
+                };
+                // The first run ending after `lo` holds a document of the
+                // range when it starts at or below `hi`.
+                let i = runs.partition_point(|r| r.1 <= lo);
+                runs.get(i).is_some_and(|r| r.0 <= hi)
+            })
+            .map(|(c, _)| c)
+            .collect(),
+    )
+}
+
 fn ivf_leaf_results(
     reader: &lucene_ivf::IvfReader,
     input: &VectorsInput<'_>,
@@ -1445,20 +1492,25 @@ fn ivf_leaf_results(
     };
     let restricted = input.live_docs.is_some() || input.filter.is_some();
     let filtered: Option<&dyn Fn(i32) -> bool> = restricted.then_some(&accept);
-    let search = |nprobe: lucene_ivf::Probes| {
+    // A search of every cluster, or (`among`) of those clusters only.
+    let search = |nprobe: lucene_ivf::Probes, among: Option<&[usize]>| {
         let params = lucene_ivf::SearchParams {
             k,
             nprobe,
             rerank: lucene_ivf::Rerank::Auto,
         };
+        let field = resolved.field_number;
         if grouped {
             let g = lucene_ivf::Grouping {
                 group: &group,
                 spread: spread.get(),
             };
-            reader.search_grouped(resolved.field_number, target, &params, filtered, &g)
+            reader.search_grouped(field, target, &params, filtered, among, &g)
         } else {
-            reader.search_with(resolved.field_number, target, &params, filtered, None)
+            match among {
+                Some(cs) => reader.search_within(field, target, &params, filtered, cs, None),
+                None => reader.search_with(field, target, &params, filtered, None),
+            }
         }
     };
     // Grouped, `k` counts parents: while fewer than `k` (of those live) are
@@ -1467,8 +1519,10 @@ fn ivf_leaf_results(
     // every cluster's every child is a candidate, an exhaustive search.
     let short = |found: usize| grouped && found < k.min(reachable);
     // Whether a short round can still find more.
-    let spent =
-        |nprobe: usize, found: usize| nprobe >= clusters && (!short(found) || shortlist_full());
+    // Whether a short round over `limit` clusters can still find more.
+    let spent = |nprobe: usize, limit: usize, found: usize| {
+        nprobe >= limit && (!short(found) || shortlist_full())
+    };
     let widen = |found: usize| {
         if short(found) {
             spread.set(spread.get().saturating_mul(2));
@@ -1488,13 +1542,13 @@ fn ivf_leaf_results(
                 } else {
                     lucene_ivf::Probes::Fixed(nprobe)
                 };
-                let out = search(probes)?;
+                let out = search(probes, None)?;
                 let enough = if grouped {
                     !short(out.hits.len())
                 } else {
                     !restricted || out.hits.len() >= k.min(live)
                 };
-                if enough || spent(nprobe, out.hits.len()) {
+                if enough || spent(nprobe, clusters, out.hits.len()) {
                     break (out.hits, false);
                 }
                 if plan.extras.timed_out() {
@@ -1556,40 +1610,74 @@ fn ivf_leaf_results(
                     ((live_passing as f64) * n as f64 / seen.max(1) as f64) as usize
                 }
             };
-            // Entries, as the probes count them: a spilled vector is in two
-            // clusters.
-            let entries = field.entries().max(1);
-            let per_cluster = entries.div_ceil(clusters).max(1);
-            let share = passing as f64 / field.count().max(1) as f64;
-            // Never more than the filter's share of what the unfiltered
-            // search scans would hold on average, with slack for clusters
-            // below the average size.
-            let expected = (base_nprobe.saturating_mul(per_cluster) as f64 * 0.75) as usize;
+            // A field clustered per partition (an index sorted by a
+            // partition field) probes only the clusters whose document range
+            // holds a document the filter passes, as an index of those
+            // documents alone would.
+            let among = field
+                .doc_ranges()
+                .and_then(|ranges| clusters_holding(ranges, filter));
+            // The clusters searched and their entries, as the probes count
+            // them: a spilled vector is in two clusters.
+            let (space_clusters, space_entries) = match &among {
+                Some(cs) => (
+                    cs.len(),
+                    cs.iter().map(|&c| field.cluster_size(c)).sum::<usize>(),
+                ),
+                None => (clusters, field.entries()),
+            };
+            let space_clusters = space_clusters.max(1);
+            let space_entries = space_entries.max(1);
+            let per_cluster = space_entries.div_ceil(space_clusters).max(1);
+            // The calibrated (or asked) depth, as a share of the clusters
+            // searched.
+            let base = if among.is_some() {
+                let fraction = base_nprobe as f64 / clusters as f64;
+                ((fraction * space_clusters as f64).ceil() as usize).clamp(1, space_clusters)
+            } else {
+                base_nprobe
+            };
+            let entries_per_vector = field.entries().max(1) as f64 / field.count().max(1) as f64;
+            let share = (passing as f64 * entries_per_vector / space_entries as f64).min(1.0);
+            // Across the whole field, never more than the filter's share of
+            // what the unfiltered search scans would hold on average, with
+            // slack for clusters below the average size. A partition's own
+            // clusters hold mostly its documents, so it needs no such cap.
+            let cap = match &among {
+                Some(_) => usize::MAX,
+                None => ((base.saturating_mul(per_cluster) as f64 * 0.75) as usize).max(k),
+            };
             let want = ivf_accepted_target(k)
-                .min(expected.max(k))
-                .min(((passing as f64) * entries as f64 / field.count().max(1) as f64) as usize);
+                .min(cap)
+                .min((passing as f64 * entries_per_vector) as usize);
             // The first try probes as many clusters as the filter's share of
-            // the field needs on average, at least the calibrated (or
-            // asked) depth; the probes double while the accepted entries
-            // they held fall short, as they do where the filter's documents
-            // lie far from the query.
+            // the searched clusters needs on average, at least the
+            // calibrated (or asked) depth; the probes double while the
+            // accepted entries they held fall short, as they do where the
+            // filter's documents lie far from the query.
             let need = (want as f64 / (per_cluster as f64 * share.max(f64::MIN_POSITIVE))).ceil();
-            let mut nprobe = base_nprobe.max(need.min(clusters as f64) as usize);
+            let mut nprobe = base.max(need.min(space_clusters as f64) as usize);
             let planned = nprobe.saturating_mul(per_cluster);
-            if passing <= want || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
+            let exact_below = match &among {
+                Some(_) => want.saturating_mul(IVF_PARTITION_EXACT_RATIO),
+                None => want,
+            };
+            if passing <= exact_below || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
                 return Ok(None);
             }
             loop {
-                let out = search(lucene_ivf::Probes::Fixed(nprobe))?;
+                let out = search(lucene_ivf::Probes::Fixed(nprobe), among.as_deref())?;
                 let found = out.hits.len();
-                if (out.stats.accepted >= want && !short(found)) || spent(nprobe, found) {
+                if (out.stats.accepted >= want && !short(found))
+                    || spent(nprobe, space_clusters, found)
+                {
                     break (out.hits, false);
                 }
                 if plan.extras.timed_out() {
                     break (out.hits, found < k);
                 }
                 widen(found);
-                nprobe = nprobe.saturating_mul(2).min(clusters);
+                nprobe = nprobe.saturating_mul(2).min(space_clusters);
             }
         }
     };

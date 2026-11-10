@@ -16,7 +16,7 @@ use crate::kmeans::NO_CLUSTER;
 use crate::routing::{Router, Routing};
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
-    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT,
+    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT, VERSION_PARTITIONS,
     VERSION_ROUTING_TREE, VERSION_VECTOR_ENCODING,
 };
 
@@ -412,6 +412,12 @@ pub struct IvfField {
     /// Each slot's document, from the doc table, kept in memory: posting
     /// entries name slots, and a filter or a hit needs the document.
     slot_docs: Vec<i32>,
+    /// Whether the field was clustered per partition
+    /// ([`crate::IvfWriter::add_partitioned_field`]).
+    partitioned: bool,
+    /// Each cluster's lowest and highest document, for a field clustered
+    /// per partition without spilled entries; empty otherwise.
+    doc_ranges: Vec<(i32, i32)>,
     postings_offset: usize,
     vectors_offset: usize,
     doc_table_offset: usize,
@@ -463,6 +469,8 @@ impl IvfField {
             primary_starts: Vec::new(),
             block_starts,
             slot_docs,
+            partitioned: false,
+            doc_ranges: Vec::new(),
             postings_offset,
             vectors_offset: 0,
             doc_table_offset: 0,
@@ -591,6 +599,13 @@ impl IvfField {
     /// spilled entries.
     pub fn entries(&self) -> usize {
         self.starts.last().copied().unwrap_or(0)
+    }
+
+    /// Each cluster's lowest and highest document, for a field clustered per
+    /// partition ([`crate::IvfWriter::add_partitioned_field`]); `None`
+    /// otherwise.
+    pub fn doc_ranges(&self) -> Option<&[(i32, i32)]> {
+        (!self.doc_ranges.is_empty()).then_some(self.doc_ranges.as_slice())
     }
 
     /// Cluster `c`'s entry count (its own vectors and those spilled into it).
@@ -900,6 +915,15 @@ fn read_field(
             tree_parents = Some(parents);
         }
     }
+    let partitioned = if version >= VERSION_PARTITIONS {
+        match input.read_byte()? {
+            0 => false,
+            1 => true,
+            b => return corrupt(format!("field {number}: partitioned flag {b}")),
+        }
+    } else {
+        false
+    };
     let (block_starts, postings_bytes) = block_layout(quantizer.as_ref(), &starts)?;
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
@@ -940,6 +964,8 @@ fn read_field(
         primary_starts,
         block_starts,
         slot_docs: Vec::new(),
+        partitioned,
+        doc_ranges: Vec::new(),
         postings_offset,
         vectors_offset,
         doc_table_offset,
@@ -967,6 +993,25 @@ fn block_layout(quantizer: &dyn Quantizer, starts: &[usize]) -> Result<(Vec<usiz
         block_starts.push(postings_bytes);
     }
     Ok((block_starts, postings_bytes))
+}
+
+/// Each cluster's lowest and highest document (its own vectors are its
+/// slots `starts[c]..starts[c + 1]`), for a field clustered per partition;
+/// empty for other fields and for spilled entries.
+// ARITH: starts are prefix sums bounded by the slot count.
+#[allow(clippy::arithmetic_side_effects)]
+fn doc_ranges(f: &IvfField) -> Vec<(i32, i32)> {
+    if !f.partitioned || f.entries() != f.count || f.slot_docs.is_empty() {
+        return Vec::new();
+    }
+    (0..f.clusters())
+        .map(|c| {
+            let docs = &f.slot_docs[f.starts[c]..f.starts[c + 1]];
+            let lo = docs.iter().copied().min().unwrap_or(0);
+            let hi = docs.iter().copied().max().unwrap_or(-1);
+            (lo, hi)
+        })
+        .collect()
 }
 
 /// Reads a field's doc table and inverts it: each slot's document. Checks
@@ -1465,6 +1510,7 @@ impl IvfReader {
                 return corrupt(format!("field {} recorded twice", field.number));
             }
             field.slot_docs = slot_docs(vectors.as_ref(), &field)?;
+            field.doc_ranges = doc_ranges(&field);
             fields.push(field);
         }
         codec_util::check_footer(&mut input, meta.len())?;
@@ -1746,12 +1792,34 @@ impl IvfReader {
         accept: Option<&dyn Fn(i32) -> bool>,
         shared: Option<&SharedThreshold>,
     ) -> Result<SearchOutput> {
-        self.search_impl(field, query, params, accept, shared, None)
+        self.search_among(field, query, params, accept, None, shared, None)
+    }
+
+    /// [`IvfReader::search_with`] probing only `clusters` (their numbers,
+    /// in any order): the nearest of them by exact centroid score. A
+    /// filter whose documents lie in a few clusters' document ranges
+    /// ([`IvfField::doc_ranges`]) names those, so the probes neither route
+    /// over nor read the clusters of other documents.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfReader::search_with`].
+    pub fn search_within(
+        &self,
+        field: i32,
+        query: &[f32],
+        params: &SearchParams,
+        accept: Option<&dyn Fn(i32) -> bool>,
+        clusters: &[usize],
+        shared: Option<&SharedThreshold>,
+    ) -> Result<SearchOutput> {
+        self.search_among(field, query, params, accept, Some(clusters), shared, None)
     }
 
     /// [`IvfReader::search_with`] returning the best document of each of the
     /// best `params.k` groups `grouping` sorts the documents into (a
-    /// block-join search's best child per parent), best first. The probes
+    /// block-join search's best child per parent), best first, probing only
+    /// `clusters` when given (as [`IvfReader::search_within`]). The probes
     /// are the same; the shortlist is `grouping.spread` times longer, and the
     /// rerank keeps one document per group, stopping once no candidate left
     /// can beat the `k`-th group. No threshold is shared: a group's score
@@ -1766,17 +1834,20 @@ impl IvfReader {
         query: &[f32],
         params: &SearchParams,
         accept: Option<&dyn Fn(i32) -> bool>,
+        clusters: Option<&[usize]>,
         grouping: &Grouping<'_>,
     ) -> Result<SearchOutput> {
-        self.search_impl(field, query, params, accept, None, Some(grouping))
+        self.search_among(field, query, params, accept, clusters, None, Some(grouping))
     }
 
-    fn search_impl(
+    #[allow(clippy::too_many_arguments)]
+    fn search_among(
         &self,
         field: i32,
         query: &[f32],
         params: &SearchParams,
         accept: Option<&dyn Fn(i32) -> bool>,
+        among: Option<&[usize]>,
         shared: Option<&SharedThreshold>,
         grouping: Option<&Grouping<'_>>,
     ) -> Result<SearchOutput> {
@@ -1798,7 +1869,10 @@ impl IvfReader {
             Rerank::Bounded { cap } => (cap, true),
             Rerank::Auto => (f.auto_rerank(params.k), true),
         };
-        let probes = f.probe_order(&query, nprobe);
+        let probes = match among {
+            Some(clusters) => f.router.route_among(&f.centroids, &query, clusters, nprobe),
+            None => f.probe_order(&query, nprobe),
+        };
         let spread = grouping.map_or(1, |g| g.spread.max(1));
         let candidates = f.scan(
             self.postings.as_ref(),

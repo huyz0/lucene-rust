@@ -30,7 +30,8 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              probing every cluster, stock's hits too.
   ivf        the plugin's own opt-in `lucene_rust` engine (`method: ivf`, no
              stock counterpart, so stock must refuse the mapping): every
-             hit scores its exact score (f32 and half-float rerank vectors);
+             hit scores its exact score (f32 and half-float rerank vectors,
+             1-bit, 2-bit OSQ and 4-bit Extended RaBitQ codes);
              probing every cluster, filtered or not, finds nearly all of the
              exhaustive scan's top 10 (its rerank is still approximate), a
              filter few documents pass returns exactly the scan's hits, all
@@ -381,7 +382,9 @@ def ivf_mapping(**params):
 def ivf_check(failures):
     """The `lucene_rust` engine's IVF fields on the plugin node (see the module doc)."""
     checked = 0
-    for index, params in (("ivf_f32", {"rerank_encoding": "float"}), ("ivf_f16", {"rerank_encoding": "half_float"})):
+    for index, params in (("ivf_f32", {"rerank_encoding": "float"}), ("ivf_f16", {"rerank_encoding": "half_float"}),
+                          ("ivf_osq2", {"rerank_encoding": "float", "quantizer": "osq2"}),
+                          ("ivf_erq4", {"quantizer": "erq4"})):
         rng = random.Random(f"{SEED}-{index}")
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
                 for i in range(DOCS)]
@@ -397,6 +400,8 @@ def ivf_check(failures):
         persisted = req(OURS[1], "GET", f"/{index}/_mapping")[index]["mappings"]["properties"]["emb"]
         if persisted.get("method", {}).get("engine") != "lucene_rust" or persisted["method"].get("name") != "ivf":
             failures.append(f"{index}: persisted as {persisted}")
+        if "quantizer" in params and persisted["method"].get("parameters", {}).get("quantizer") != params["quantizer"]:
+            failures.append(f"{index}: quantizer persisted as {persisted}")
         per = DOCS // SEGMENTS
         for s in range(SEGMENTS):
             lines = []
@@ -471,6 +476,8 @@ def ivf_check(failures):
         ("ivf small clusters", ivf_mapping(target_cluster_size=8)),
         ("ivf rerank", ivf_mapping(rerank_encoding="int4")),
         ("ivf quantizer", ivf_mapping(quantizer="pq")),
+        ("ivf 1-bit erq", ivf_mapping(quantizer="erq1")),
+        ("ivf 8-bit osq", ivf_mapping(quantizer="osq8")),
         ("ivf unknown parameter", ivf_mapping(nlist=4)),
         ("ivf on_disk", {**ivf_mapping(), "mode": "on_disk"}),
         ("lucene_rust hnsw", {"type": "knn_vector", "dimension": DIM,

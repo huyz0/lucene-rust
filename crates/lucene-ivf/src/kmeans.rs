@@ -564,6 +564,52 @@ pub fn cluster(
     compact(centroids, assignments, dim, k)
 }
 
+/// [`cluster`] applied to each run of consecutive vectors on its own
+/// (`runs` gives their lengths, summing to the vector count): every
+/// cluster holds vectors of one run only. The clusters of each run follow
+/// those of the runs before it.
+///
+/// # Panics
+///
+/// As [`cluster`], and when `runs` does not sum to the vector count.
+// ARITH: run lengths sum to the vector count, so offsets stay in `data`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn cluster_runs(
+    data: &[f32],
+    dim: usize,
+    runs: &[usize],
+    target_size: usize,
+    params: &KMeansParams,
+    metric: Metric,
+) -> Clustering {
+    assert!(dim > 0, "dimension must be positive");
+    assert_eq!(
+        runs.iter().sum::<usize>() * dim,
+        data.len(),
+        "runs cover the vectors"
+    );
+    let mut out = Clustering {
+        centroids: Vec::new(),
+        assignments: Vec::with_capacity(data.len() / dim),
+    };
+    let mut from = 0;
+    for &len in runs {
+        let run = cluster(
+            &data[from * dim..(from + len) * dim],
+            dim,
+            target_size,
+            params,
+            metric,
+        );
+        let base = (out.centroids.len() / dim) as u32;
+        out.assignments
+            .extend(run.assignments.iter().map(|&a| a + base));
+        out.centroids.extend_from_slice(&run.centroids);
+        from += len;
+    }
+    out
+}
+
 /// Clusters larger than this many times the target size are split by
 /// [`reuse`].
 pub const REUSE_SPLIT_FACTOR: usize = 2;
