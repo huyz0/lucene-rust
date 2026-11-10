@@ -67,6 +67,12 @@ cargo fmt --all -- --check
 cargo fmt --manifest-path benchmarks/rust-runner/Cargo.toml -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked -p lucene-store --lib -- -D warnings
+python3 -B scripts/check-arith-allows.py
+python3 -B scripts/check-port-invariants.py
+python3 -B scripts/check-parity.py
+cargo fetch --locked
+python3 -B scripts/check-licences.py
+python3 -B scripts/check-vendored-licences.py
 RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --locked --workspace --no-deps --document-private-items
 """,
     "tests": r"""
@@ -83,6 +89,7 @@ cargo test --locked --release --quiet -p lucene-search --doc
 rustup component add llvm-tools-preview --toolchain 1.97.1
 cargo install --locked cargo-llvm-cov --version 0.8.7 --root /scratch/cov-tools
 export PATH="/scratch/cov-tools/bin:$PATH"
+python3 -B scripts/range-production-coverage.py
 set +e
 scripts/coverage.sh --locked --workspace --quiet -- --summary-only --fail-under-lines 95 > /scratch/tmp/coverage-summary.txt
 coverage_status=$?
@@ -209,6 +216,14 @@ def main():
         destination = runner_temp / ("range-feedback-" + expected + "-coverage.json")
         with destination.open("xb") as output:
             output.write(coverage.read_bytes())
+    for suffix, limit in (("production-coverage", 64 * 1024**2), ("production-coverage-inventory", 4 * 1024**2)):
+        artifact = scratch / "tmp" / (suffix + ".json")
+        if artifact.is_file():
+            if artifact.is_symlink() or artifact.stat().st_size > limit:
+                raise SystemExit("production coverage artifact exceeds envelope")
+            destination = runner_temp / ("range-feedback-" + expected + "-" + suffix + ".json")
+            with destination.open("xb") as output:
+                output.write(artifact.read_bytes())
     resolved = scratch / "resolved-Cargo.lock"
     if resolved.is_file():
         import hashlib
