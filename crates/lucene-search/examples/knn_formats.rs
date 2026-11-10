@@ -8,6 +8,7 @@
 //!   --queries N   measured queries (default 1000), after 200 warm-up ones
 //!   --segments N  flushed segments, force-merged to one when --merge is set (default 1)
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
+//!   --ef L        HNSW candidate counts to sweep (default 100)
 //!   --dir D       where the indexes are written (default a temporary directory)
 //!   --reuse       keep each format's index under D and search it again on
 //!                 later runs with the same data and build options
@@ -82,6 +83,11 @@ fn main() {
     let merge = args.iter().any(|a| a == "--merge");
     let nprobes: Vec<usize> = opt("--nprobes")
         .unwrap_or_else(|| "0".into())
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let efs: Vec<usize> = opt("--ef")
+        .unwrap_or_else(|| "100".into())
         .split(',')
         .map(|s| s.parse().unwrap())
         .collect();
@@ -187,14 +193,13 @@ fn main() {
                 }
             }
         }
-        let probe_list: &[usize] = if name.starts_with("ivf") {
-            &nprobes
+        // IVF sweeps probes and sizes its own rerank; HNSW sweeps its beam.
+        let settings: Vec<(usize, usize)> = if name.starts_with("ivf") {
+            nprobes.iter().map(|&p| (p, K)).collect()
         } else {
-            &[0]
+            efs.iter().map(|&ef| (0, ef)).collect()
         };
-        // HNSW widens its beam to 100 candidates; IVF sizes its own rerank.
-        let candidates = if name.starts_with("ivf") { K } else { 100 };
-        for &nprobe in probe_list {
+        for &(nprobe, candidates) in &settings {
             let search = |q: usize| {
                 knn_top_hits_with(
                     &segs,
@@ -228,7 +233,7 @@ fn main() {
             let setting = if name.starts_with("ivf") {
                 format!("nprobes={nprobe}")
             } else {
-                "ef=100".into()
+                format!("ef={candidates}")
             };
             println!(
                 "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0}",
