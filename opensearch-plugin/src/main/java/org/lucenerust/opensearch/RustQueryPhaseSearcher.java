@@ -146,16 +146,22 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /**
-     * The exception a native search that ran a Painless script fails with ({@link
-     * PainlessScore#failure}), counted as a script error when the script raised it; {@code counted}
-     * when the failure was already counted as a native error.
+     * Whether the native search failed because a Painless script of this request threw (or
+     * scored invalidly): the search then fails as the script does in Java, never re-run there.
+     * Any other native failure falls back to Lucene as before.
+     */
+    private static boolean scriptFailed() {
+        return PainlessScore.ran() && PainlessScore.scriptFailed(NativeBridge.lastError());
+    }
+
+    /**
+     * The exception a script's failure ({@link #scriptFailed}) raises ({@link
+     * PainlessScore#failure}); {@code counted} when the failure was already counted as a native
+     * error.
      */
     private RuntimeException scriptFailure(IndexReader reader, boolean counted) {
-        String error = NativeBridge.lastError();
-        if (PainlessScore.scriptFailed(error)) {
-            stats.scriptError(counted);
-        }
-        return PainlessScore.failure(error, reader);
+        stats.scriptError(counted);
+        return PainlessScore.failure(NativeBridge.lastError(), reader);
     }
 
     private boolean searchHybridOrLucene(
@@ -173,7 +179,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             stats.nativeTime(System.nanoTime() - nativeStart);
             return false;
         }
-        if ("native_error".equals(why) && PainlessScore.ran()) {
+        if ("native_error".equals(why) && scriptFailed()) {
             throw scriptFailure(searcher.getIndexReader(), false);
         }
         stats.fallback(why);
@@ -397,7 +403,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // A native search that ran a Painless script fails as the script did: running it again in
         // Java would run the script twice.
-        if ("native_error".equals(reason) && PainlessScore.ran()) {
+        if ("native_error".equals(reason) && scriptFailed()) {
             throw scriptFailure(searcher.getIndexReader(), true);
         }
         stats.fallback(reason);
@@ -590,7 +596,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int rc = NativeBridge.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
             stats.nativeError();
-            if (PainlessScore.ran()) {
+            if (scriptFailed()) {
                 throw scriptFailure(ctx.searcher().getIndexReader(), true);
             }
             logger.warn("lucene-rust: live search failed ({}), searching the reader alone: {}", rc, NativeBridge.lastError());

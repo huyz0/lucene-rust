@@ -16,13 +16,20 @@ methods the context serves. A refused script runs in Java (fallback `script_scor
 answer is cached per script, params and field kinds (`PainlessScore.CHECKED`), so a refused
 script costs one check, not one per request. Regular expressions run natively only where Rust's
 `regex` matches `java.util.regex` exactly (`api/regex.rs::translate`); others (`$`, `\b`,
-back-references, lookaround, inline flags, possessive quantifiers, other flags) are refused.
+back-references, lookaround, inline flags, possessive quantifiers, other flags) are refused. The check
+also refuses a change to a collection view (`keySet`, `values`, `entrySet` and its entries,
+`subList`, sorted sub-views: live views in Java, copies natively), a cast of one other than to
+its interface, and a method reference the runtime has no target for. Past a document's values,
+`doc[...]` reads `ScriptDocValues`'s reused array as Java does (stale values, empty keyword
+slots, `ArrayIndexOutOfBoundsException` past its grown length).
 
 **Never re-run.** A script that passed the check and then throws natively fails the search as it
 fails in Java: the same `ScriptException` (class, message, `script_stack`, position) or, for a
 negative or NaN score, `ScriptScoreQuery`'s `IllegalArgumentException`. The search is not run
 again in Java (`RustQueryPhaseSearcher.scriptFailure`); the stats count it as `script_errors`,
-not `native_errors`. Tested by `jvm_painless_score.rs::scripts_score_as_opensearch_does` (each
+not `native_errors`. A gap the check let through (the runtime's own `Unsupported`) is the
+plugin's failure, not the script's: like any other internal native failure it falls back to
+Lucene, which runs the script again (score scripts are pure, so only time is lost). Tested by `jvm_painless_score.rs::scripts_score_as_opensearch_does` (each
 fixture outcome, offsets included), `tests/corpus.rs` (every corpus script the check passes
 throws exactly what Painless throws) and `e2e/verify_opensearch.py::script_errors` (stock and
 native error responses equal, no fallback). Known gap: three corpus scripts whose Painless error

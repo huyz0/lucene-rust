@@ -690,7 +690,7 @@ impl Fx<'_> {
                     dst: it,
                     f: api::iter::iterator,
                     args: Box::new([src]),
-                    tag: Tag::None,
+                    tag: Tag::ForEach("iterator"),
                 });
                 let v = fx.declare(var);
                 let cast = cast.as_ref().and_then(cast_op);
@@ -700,7 +700,7 @@ impl Fx<'_> {
                         dst: c,
                         f: api::iter::has_next,
                         args: Box::new([it]),
-                        tag: Tag::None,
+                        tag: Tag::ForEach("hasNext"),
                     });
                     fx.emit(Op::BreakUnless(c));
                     Ok(())
@@ -711,7 +711,7 @@ impl Fx<'_> {
                         dst: v,
                         f: api::iter::next,
                         args: Box::new([it]),
-                        tag: Tag::None,
+                        tag: Tag::ForEach("next"),
                     });
                     if let Some(c) = cast {
                         fx.emit(Op::Cast {
@@ -1482,15 +1482,31 @@ impl Fx<'_> {
                 return Ok(Target::Local(f));
             }
         }
+        // A reference the runtime cannot call is refused here, not when called.
+        let arity = r.delegate_params.len();
         Ok(match r.invoke_type {
-            6 => Target::Static(
-                Rc::from(r.delegate_class.as_str()),
-                Rc::from(r.delegate_method.as_str()),
-            ),
+            6 => {
+                if api::static_method(&r.delegate_class, &r.delegate_method, arity).is_none() {
+                    return Err(unsupported(format!(
+                        "static method {}.{}/{arity}",
+                        r.delegate_class, r.delegate_method
+                    )));
+                }
+                Target::Static(
+                    Rc::from(r.delegate_class.as_str()),
+                    Rc::from(r.delegate_method.as_str()),
+                )
+            }
             8 => {
                 if r.delegate_class.starts_with('[') {
                     Target::NewArray(Rc::from(array_component(&r.delegate_class).as_str()))
                 } else {
+                    if api::constructor(&r.delegate_class, arity).is_none() {
+                        return Err(unsupported(format!(
+                            "constructor {}/{arity}",
+                            r.delegate_class
+                        )));
+                    }
                     Target::Ctor(Rc::from(r.delegate_class.as_str()))
                 }
             }
@@ -1518,10 +1534,18 @@ impl Fx<'_> {
             return Ok(Target::Local(f));
         }
         let _ = captures;
-        Ok(Target::ByName(
-            Rc::from(api::resolve_class(ty).as_str()),
-            Rc::from(call),
-        ))
+        // Its arity is the interface's, known only when called: a reference
+        // the runtime has no static method or constructor of that name for
+        // is refused here.
+        let class = api::resolve_class(ty);
+        let served = (0..=8).any(|n| {
+            api::static_method(&class, call, n).is_some()
+                || (call == "new" && api::constructor(&class, n).is_some())
+        });
+        if !served {
+            return Err(unsupported(format!("reference {class}::{call}")));
+        }
+        Ok(Target::ByName(Rc::from(class.as_str()), Rc::from(call)))
     }
 
     fn member(&mut self, ty: &str, member: &Member, args: &[Node]) -> Result<()> {

@@ -287,6 +287,8 @@ pub enum Tag {
     BraceLoad,
     /// A negative index from the end, on a `def` receiver.
     FlipIndex,
+    /// A for-each loop's own iteration: `iterator()`, `hasNext()`, `next()`.
+    ForEach(&'static str),
 }
 
 /// What [`Op::Doc`] reads of a field in the current document.

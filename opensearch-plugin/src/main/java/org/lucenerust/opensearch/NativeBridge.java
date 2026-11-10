@@ -738,6 +738,11 @@ public final class NativeBridge {
         return status;
     }
 
+    /** Clears this thread's last error, so that a later one is a later call's. */
+    public static void clearLastError() {
+        fail(OK, "");
+    }
+
     private static int nullArgument(String what) {
         return fail(INVALID_ARGUMENT, what + " is null");
     }

@@ -103,11 +103,19 @@ impl DocKind {
 pub struct DocValues {
     pub kind: DocKind,
     pub items: Vec<Value>,
+    /// What the view's reused values array holds past the document's
+    /// values: earlier documents' values, or never written slots.
+    pub stale: Vec<Value>,
 }
 
 impl DocValues {
     pub fn value(kind: DocKind, items: Vec<Value>) -> Value {
-        Value::object(DocValues { kind, items })
+        Self::with_stale(kind, items, Vec::new())
+    }
+
+    /// A view whose values array also holds `stale` after `items`.
+    pub fn with_stale(kind: DocKind, items: Vec<Value>, stale: Vec<Value>) -> Value {
+        Value::object(DocValues { kind, items, stale })
     }
 
     fn get(&self, index: &Value) -> Result<Value, Throw> {
@@ -115,14 +123,23 @@ impl DocValues {
         if self.items.is_empty() {
             return Err(Throw::new("java.lang.IllegalStateException", NO_VALUE));
         }
-        match usize::try_from(i).ok().and_then(|i| self.items.get(i)) {
+        // Java reads its reused array past the document's values: a stale
+        // value of an earlier document, or an index error.
+        let n = self.items.len();
+        match usize::try_from(i)
+            .ok()
+            .and_then(|x| match x.checked_sub(n) {
+                None => self.items.get(x),
+                Some(past) => self.stale.get(past),
+            }) {
             Some(v) => Ok(v.clone()),
-            // Java reads its reused array past the document's values: a
-            // stale value of an earlier document, or an index error.
-            None => Err(crate::compile::missing(format!(
-                "doc values index {i} of {}",
-                self.items.len()
-            ))),
+            None => Err(Throw::new(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "Index {i} out of bounds for length {}",
+                    n + self.stale.len()
+                ),
+            )),
         }
     }
 
@@ -286,9 +303,21 @@ mod tests {
         assert_eq!(err.message().as_deref(), Some(NO_VALUE));
         let add = vm_call(&n, "add", &[Value::Long(1)]).unwrap_err();
         assert_eq!(add.class(), "java.lang.UnsupportedOperationException");
+        // Past the values array: Java's index error.
+        let past = vm_call(&n, "get", &[Value::Int(5)]).unwrap_err();
+        assert_eq!(past.class(), "java.lang.ArrayIndexOutOfBoundsException");
         assert_eq!(
-            vm_call(&n, "get", &[Value::Int(5)]).unwrap_err().class(),
-            api::UNSUPPORTED
+            past.message().as_deref(),
+            Some("Index 5 out of bounds for length 2")
+        );
+        // Within it, a stale slot of an earlier document.
+        let stale =
+            DocValues::with_stale(DocKind::Longs, vec![Value::Long(1)], vec![Value::Long(9)]);
+        assert_eq!(
+            vm_call(&stale, "get", &[Value::Int(1)])
+                .unwrap()
+                .java_to_string(),
+            "9"
         );
     }
 }

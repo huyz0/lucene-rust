@@ -185,6 +185,7 @@ public final class PainlessScore {
     /** Starts a request on this thread: no score script sent yet. */
     public static void beginRequest() {
         RUNS.get().clear();
+        NativeBridge.clearLastError();
     }
 
     /** Ends the request on this thread. */
