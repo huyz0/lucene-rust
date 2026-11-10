@@ -205,6 +205,13 @@ public class ScoreCorpus {
             // params changed through a second variable.
             "params.weights.add(1); return params.weights.size()",
             "def p = params; def q = p; p['w'] = 5; return q.w",
+            // Past a document's values: ScriptDocValues's reused array (a stale value, a never
+            // written slot, or an index error).
+            "doc['vals'].size() == 0 ? 0 : doc['vals'][1] + doc['vals'].get(2)",
+            "doc['tag'][2].length() + 1",
+            "doc['flag'][3] ? 2 : 1",
+            // Refused: a map's key set changed (Java's is a live view).
+            "Map m = ['a': 1, 'b': 2]; m.keySet().remove('a'); return m.size()",
         };
         for (String s : scripts) {
             c.add(new Case(s, p, 0, 1f));

@@ -105,7 +105,10 @@ impl FieldKind {
 
 #[derive(Debug, Clone)]
 struct FieldSpec {
+    /// The name the script reads the field by.
     name: String,
+    /// The name its doc values are under: an alias's target.
+    read: String,
     kind: FieldKind,
 }
 
@@ -172,6 +175,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
     let mut fields = Vec::with_capacity(n.min(c.remaining())); // alloc-ok: bounded by the blob
     for _ in 0..n {
         let name = string(c)?;
+        let read = string(c)?;
         let kind = match c.u8()? {
             0 => FieldKind::Long,
             1 => FieldKind::Double,
@@ -187,7 +191,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
                 )))
             }
         };
-        fields.push(FieldSpec { name, kind });
+        fields.push(FieldSpec { name, read, kind });
     }
     Ok(Spec {
         script,
@@ -218,6 +222,11 @@ pub(crate) fn check(blob: &[u8]) -> std::result::Result<Option<String>, FfiStatu
 /// it as Painless's `ScriptException` around the exception `class` (with
 /// `message`, `None` for none), at source offset `offset`.
 fn script_error(script_id: i32, offset: i32, t: &Throw) -> Error {
+    // A gap of the runtime the check let through is the plugin's failure,
+    // not the script's: never shown as the script's exception.
+    if t.class() == lucene_painless::api::UNSUPPORTED {
+        return runtime_failure(t);
+    }
     let message = match t.message() {
         Some(m) => format!("1{m}"),
         None => "0".to_string(),
@@ -377,15 +386,60 @@ enum Opened<'c> {
     Set(Box<dyn SortedSetDocValues + 'c>),
 }
 
+/// A keyword slot `ScriptDocValues.Strings` grew but no document wrote:
+/// an empty `BytesRefBuilder`.
+const EMPTY_ORD: i64 = -1;
+
+/// `ArrayUtil.oversize(min, bytes_per_element)` on a 64-bit JVM.
+fn oversize(min: usize, bytes_per_element: usize) -> usize {
+    if min == 0 {
+        return 0;
+    }
+    let size = min + (min >> 3).max(3);
+    match bytes_per_element {
+        4 => (size + 1) & !1,
+        2 => (size + 3) & !3,
+        1 => (size + 7) & !7,
+        _ => size,
+    }
+}
+
+/// `ScriptDocValues`'s `resize(n)`: `values` grown to hold `n`, the way
+/// each view's array grows (`Strings` holds object references, compressed
+/// on a heap under 32 GB).
+fn resize(items: &mut Vec<i64>, n: usize, kind: FieldKind) {
+    if n > items.len() {
+        let (bytes, fill) = match kind {
+            FieldKind::Boolean => (1, 0),
+            FieldKind::Keyword => (4, EMPTY_ORD),
+            _ => (8, 0),
+        };
+        items.resize(oversize(n, bytes), fill);
+    }
+}
+
+/// `ArrayIndexOutOfBoundsException` for `index` into an array of `len`.
+fn out_of_bounds(index: i32, len: usize) -> Throw {
+    Throw::new(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {index} out of bounds for length {len}"),
+    )
+}
+
 /// Most keyword values a segment keeps as strings by ordinal.
 const MAX_CACHED_TERMS: usize = 4096;
 
 /// A field's values in the document last read.
 struct Current {
     doc: i32,
-    /// Numbers by their bits: a long, a double, or 0 and 1; a keyword's
-    /// ordinals.
+    /// `ScriptDocValues`'s values array, which it reuses from document to
+    /// document and grows as `ArrayUtil.grow` does: the document's values
+    /// first, then whatever earlier documents left (a keyword's never
+    /// written slots, [`EMPTY_ORD`], read as ""). Numbers by their bits: a
+    /// long, a double, or 0 and 1; a keyword's ordinals.
     items: Vec<i64>,
+    /// How many of `items` are the document's.
+    count: usize,
     /// The `ScriptDocValues` view made of them, once asked for.
     view: Option<Value>,
 }
@@ -475,24 +529,27 @@ impl ScoreEnv<'_> {
         let kind = spec.kind;
         if self.opened[i].is_none() {
             self.opened[i] = Some(match kind {
-                FieldKind::Keyword => Opened::Set(get_sorted_set(self.reader, &spec.name)?),
-                _ => Opened::Numeric(get_sorted_numeric(self.reader, &spec.name)?),
+                FieldKind::Keyword => Opened::Set(get_sorted_set(self.reader, &spec.read)?),
+                _ => Opened::Numeric(get_sorted_numeric(self.reader, &spec.read)?),
             });
         }
         let doc = self.doc;
         let cur = &mut self.current[i];
-        cur.items.clear();
+        cur.count = 0;
         cur.view = None;
         match self.opened[i].as_mut() {
             Some(Opened::Numeric(dv)) => {
                 if dv.advance_exact(doc)? {
+                    let n = dv.doc_value_count() as usize;
+                    resize(&mut cur.items, n, kind);
                     if let Some(vs) = dv.take_values() {
-                        cur.items.extend_from_slice(vs);
+                        cur.items[..n].copy_from_slice(&vs[..n]);
                     } else {
-                        for _ in 0..dv.doc_value_count() {
-                            cur.items.push(dv.next_value()?);
+                        for slot in &mut cur.items[..n] {
+                            *slot = dv.next_value()?;
                         }
                     }
+                    cur.count = n;
                     let decode: fn(i64) -> i64 = match kind {
                         FieldKind::Long => |v| v,
                         FieldKind::Double => |v| sortable_long_to_double(v).to_bits() as i64,
@@ -506,7 +563,7 @@ impl ScoreEnv<'_> {
                         _ => |v| i64::from(v == 1),
                     };
                     if kind != FieldKind::Long {
-                        for v in &mut cur.items {
+                        for v in &mut cur.items[..n] {
                             *v = decode(*v);
                         }
                     }
@@ -514,9 +571,12 @@ impl ScoreEnv<'_> {
             }
             Some(Opened::Set(dv)) => {
                 if dv.advance_exact(doc)? {
-                    for _ in 0..dv.doc_value_count() {
-                        cur.items.push(dv.next_ord()?);
+                    let n = dv.doc_value_count() as usize;
+                    resize(&mut cur.items, n, kind);
+                    for slot in &mut cur.items[..n] {
+                        *slot = dv.next_ord()?;
                     }
+                    cur.count = n;
                 }
             }
             None => unreachable!("opened above"),
@@ -541,19 +601,20 @@ impl ScoreEnv<'_> {
     /// Value `index` of field `i` as `ScriptDocValues.get` reads it.
     fn item(&mut self, i: usize, index: i32) -> std::result::Result<i64, Throw> {
         let cur = self.load(i)?;
-        if cur.items.is_empty() {
+        if cur.count == 0 {
             return Err(no_value());
         }
+        // Past the document's values Java reads its reused array.
         match usize::try_from(index).ok().and_then(|x| cur.items.get(x)) {
             Some(v) => Ok(*v),
-            None => Err(missing(format!(
-                "doc values index {index} of {}",
-                cur.items.len()
-            ))),
+            None => Err(out_of_bounds(index, cur.items.len())),
         }
     }
 
     fn term(&mut self, i: usize, ord: i64) -> std::result::Result<Value, Throw> {
+        if ord == EMPTY_ORD {
+            return Ok(Value::str(""));
+        }
         if let Some(v) = self.terms[i].get(&ord) {
             return Ok(v.clone());
         }
@@ -589,10 +650,16 @@ impl ScoreEnv<'_> {
         if let Some(v) = &self.load(i)?.view {
             return Ok(v.clone());
         }
-        let n = self.current[i].items.len();
+        let (n, len) = (self.current[i].count, self.current[i].items.len());
         let mut items = Vec::with_capacity(n); // alloc-ok: the document's values, already read
-        for x in 0..n {
-            items.push(self.boxed_item(i, x as i32)?);
+        let mut stale = Vec::new();
+        for x in 0..len {
+            let v = self.boxed_item(i, x as i32)?;
+            if x < n {
+                items.push(v);
+            } else {
+                stale.push(v);
+            }
         }
         let doc_kind = match kind {
             FieldKind::Long => DocKind::Longs,
@@ -600,7 +667,7 @@ impl ScoreEnv<'_> {
             FieldKind::Keyword => DocKind::Strings,
             _ => DocKind::Doubles,
         };
-        let v = DocValues::value(doc_kind, items);
+        let v = DocValues::with_stale(doc_kind, items, stale);
         self.current[i].view = Some(v.clone());
         Ok(v)
     }
@@ -631,7 +698,7 @@ impl ScoreEnv<'_> {
                     self.columns[i] = col;
                     return Err(e);
                 }
-                col.counts.push(self.current[i].items.len() as u64);
+                col.counts.push(self.current[i].count as u64);
                 col.firsts.push(0);
             }
             self.doc = doc;
@@ -642,8 +709,8 @@ impl ScoreEnv<'_> {
         }
         let reader = self.reader;
         let direct = self.direct[i].get_or_insert_with(|| {
-            direct_sorted_numeric_singleton(reader, &spec.name)
-                .or_else(|| direct_numeric(reader, &spec.name))
+            direct_sorted_numeric_singleton(reader, &spec.read)
+                .or_else(|| direct_numeric(reader, &spec.read))
         });
         let col = &mut self.columns[i];
         if let Some(dv) = direct {
@@ -668,7 +735,7 @@ impl ScoreEnv<'_> {
         if self.opened[i].is_none() {
             self.opened[i] = Some(Opened::Numeric(get_sorted_numeric(
                 self.reader,
-                &spec.name,
+                &spec.read,
             )?));
         }
         let Some(Opened::Numeric(dv)) = self.opened[i].as_mut() else {
@@ -701,7 +768,7 @@ impl ScoreEnv<'_> {
 
     fn count(&mut self, i: usize) -> std::result::Result<i32, Throw> {
         self.kind(i)?;
-        Ok(self.load(i)?.items.len() as i32)
+        Ok(self.load(i)?.count as i32)
     }
 }
 
@@ -771,7 +838,7 @@ impl Env for ScoreEnv<'_> {
     }
 
     fn doc_count(&mut self, field: usize) -> std::result::Result<i32, Throw> {
-        Ok(self.load(field)?.items.len() as i32)
+        Ok(self.load(field)?.count as i32)
     }
 
     fn score(&mut self) -> std::result::Result<f64, Throw> {
@@ -980,6 +1047,7 @@ impl DoubleValuesSource for PainlessScoreSource {
                 .map(|_| Current {
                     doc: -1,
                     items: Vec::new(),
+                    count: 0,
                     view: None,
                 })
                 .collect(),
@@ -1129,7 +1197,7 @@ mod tests {
                 spec = spec.i32(fields);
                 for _ in 0..fields {
                     let name = r.str();
-                    spec = spec.str(&name).u8(r.u8());
+                    spec = spec.str(&name).str(&name).u8(r.u8());
                 }
                 let mut b = Blob::tree();
                 if boost != 1.0 {
@@ -1181,6 +1249,8 @@ mod tests {
         "params.weights.add(1); return params.weights.size()",
         // `params` changed through a second variable.
         "def p = params; def q = p; p['w'] = 5; return q.w",
+        // A live view (`keySet`) changed.
+        "Map m = ['a': 1, 'b': 2]; m.keySet().remove('a'); return m.size()",
     ];
 
     /// Every script the check passes runs as OpenSearch's does: the same
@@ -1391,6 +1461,7 @@ mod bench {
                     };
                     FieldSpec {
                         name: name.to_string(),
+                        read: name.to_string(),
                         kind,
                     }
                 })

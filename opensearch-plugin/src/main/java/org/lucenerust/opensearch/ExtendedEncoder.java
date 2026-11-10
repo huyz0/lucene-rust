@@ -716,6 +716,8 @@ final class ExtendedEncoder {
         writeInt(out, run);
         writeInt(out, kinds.length);
         for (int i = 0; i < kinds.length; i++) {
+            // The name the script reads it by, then the one its doc values are under.
+            writeString(out, compiled.docFields().get(i));
             writeString(out, names[i]);
             out.write(kinds[i]);
         }
