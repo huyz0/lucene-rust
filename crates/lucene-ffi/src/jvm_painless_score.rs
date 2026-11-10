@@ -650,7 +650,13 @@ impl ScoreEnv<'_> {
         if let Some(v) = &self.load(i)?.view {
             return Ok(v.clone());
         }
-        let (n, len) = (self.current[i].count, self.current[i].items.len());
+        let n = self.current[i].count;
+        // With no values Java throws before reading its array: no stale slots.
+        let len = if n == 0 {
+            0
+        } else {
+            self.current[i].items.len()
+        };
         let mut items = Vec::with_capacity(n); // alloc-ok: the document's values, already read
         let mut stale = Vec::new();
         for x in 0..len {

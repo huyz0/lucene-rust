@@ -212,6 +212,8 @@ public class ScoreCorpus {
             "doc['flag'][3] ? 2 : 1",
             // Refused: a map's key set changed (Java's is a live view).
             "Map m = ['a': 1, 'b': 2]; m.keySet().remove('a'); return m.size()",
+            // A field some documents lack, iterated: no values, so nothing to read.
+            "double s = 1; for (def v : doc['price']) { s += v; } return s;",
         };
         for (String s : scripts) {
             c.add(new Case(s, p, 0, 1f));
