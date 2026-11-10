@@ -689,7 +689,7 @@ final class ExtendedEncoder {
                 return reason;
             }
             String index = (String) field(q, "indexName");
-            int run = PainlessScore.run(factory);
+            int run = PainlessScore.run(factory, index, (int) field(q, "shardId"), (org.opensearch.Version) field(q, "indexVersion"));
             painlessSpec(out, factory.needs_score(), compiled, params, index == null ? "" : index, (int) field(q, "shardId"), run, names, kinds);
             return null;
         }
