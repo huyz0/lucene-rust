@@ -200,12 +200,12 @@ public final class PainlessScore {
         return runs.size() - 1;
     }
 
-    /** Whether this request sent a score script to the native runtime. */
     /** Whether {@code error} is a script's own exception or invalid score, not an internal failure. */
     public static boolean scriptFailed(String error) {
         return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR));
     }
 
+    /** Whether this request sent a score script to the native runtime. */
     public static boolean ran() {
         return RUNS.get().isEmpty() == false;
     }
