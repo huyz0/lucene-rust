@@ -1,0 +1,117 @@
+# Fallible range-input prototype
+
+This is an uncompiled source checkpoint based on public lucene-rust revision
+`46e280bc2a208544fb36ecd95932e89cd8bc5618`. It is not a qualified engine,
+remote DirectoryReader, completed M02.03 task, or benchmark result. Existing
+materialized entry points remain available. No dependency, feature, toolchain,
+Cargo lock, CI, hsearch contract, or hsearch pin is changed.
+
+## Implemented source
+
+`lucene-store::range_input` defines an immutable/version-bound `ReadAt` source
+and fallible `RangeInput`. Clone and slice cursors are independent. Cache and
+physical-request budgets are shared across them. Every source destination is
+initialized. A failed or short response is never installed in cache; failed
+cursor reads do not advance. Caller buffers may be partially changed on error
+and cannot be interpreted as complete results. Cache eviction occurs before a
+miss allocation. No dereference, conversion or destructor dispatches remote I/O.
+The source contract requires version-pinned responses and a caller-enforced
+I/O deadline; the generic primitive does not invent provider identity or retry.
+
+The input envelope accepts blocks of 1 byte through 1 MiB, at most 256 blocks
+and 16 MiB cache storage, at most 1,000,000 physical attempts and at most 1 GiB
+charged response capacity. These are prototype bounds, not calibrated defaults.
+`RangeUsage.transferred_bytes` charges the requested response capacity before
+I/O, including errors and short replies; it is conservative budget accounting,
+not a measurement that those bytes arrived on the wire. Caller transport traces
+must separately report actual response bytes and elapsed time. Each source has
+its own envelope; the eventual directory owner must also bound their sum.
+
+`MetadataMaterializer` admits at most 128 files, 1 MiB each and 16 MiB total
+reserved scratch in a fresh, exclusively owned directory. It streams through a
+4 KiB initialized buffer, fully closes the file, then uses the existing mmap
+backend with zero heap-read threshold. File creation is exclusive. No fallback
+reads a complete file into a Vec. Failed transfers and creation attempts remain
+charged and cannot overwrite/reuse a name. The caller retains scratch until all
+maps die and owns explicit cleanup. The source input counts physical reads;
+materializer usage counts reserved scratch. No durability claim follows from
+flush or from memory mapping. Trusted scratch ownership must exclude external
+mutation, truncation, namespace replacement and reparse-path substitution.
+
+The codec additions are deliberately additive:
+
+- Modern block-tree `.tim` headers, footers and term blocks use explicit range
+  cursors. Existing term navigation, metadata decoding, lowercase-ASCII and LZ4
+  decoding execute on those bytes. Materialized `.tim` retains its slice fast
+  path. Range block regions are capped at 64 KiB and frame depth at 64. `.tip`
+  and `.tmd` remain admitted resident metadata, each capped at 1 MiB, with at
+  most 128 field-info entries. Legacy FST range opening refuses explicitly.
+- `RangeDocInput` validates modern Lucene104 framing and decodes a bounded
+  encoded term window with the existing postings decoder. At most 4,096 docs
+  and 64 KiB encoded bytes per term are admitted. Larger/incomplete encodings
+  fail; this is not a range-native lazy postings cursor. Singleton postings
+  remain pulsed into the term dictionary. Read amplification is observable:
+  the window may include bytes after the selected term.
+- `numeric_value_range` supports dense, empty and bounded sparse presence,
+  constant/table/GCD values and varying-bit-width blocks. Sparse IndexedDISI
+  regions are capped at 64 KiB. Packed values use at most eight requested bytes
+  through `direct_reader::get_range`. Varying-block jump/header/value reads are
+  explicit. Existing numeric decoding entry points remain unchanged.
+- `StoredFieldsReader::document_range` uses admitted parsed `.fdm` and resident
+  `.fdx` metadata and reads only the selected encoded `.fdt` chunk. Encoded and
+  inflated chunks are capped at 1 MiB, with at most 1,024 stored fields. The
+  existing header, compression and value parsers execute on the chunk. A reader
+  rebound to an empty `.fdt` demonstrates that resident data is not consulted.
+  Metadata and the source must belong to the same immutable file version.
+
+## Source inventory and remaining integration
+
+Touched production formats/helpers are `range_input`, existing DataInput,
+blocktree term frames and compression dispatch, Lucene104 postings decoding,
+DirectReader packed values, numeric doc values/IndexedDISI/varying block
+addressing, and stored-fields chunk header/compression/document parsing.
+No new unsafe or dependency is introduced. The pre-existing mmap implementation
+and Apache-2.0 LICENSE remain unchanged. Java wire formats are unchanged.
+
+The original `Directory::open`, `Input` and `DirectoryReader` still expose and
+retain whole-file inputs. Existing term/filter/sort/projection query executors
+have not yet been wired to these new codec inputs. This source checkpoint does
+not substitute helper comparisons for real selected query execution.
+
+The next port must bind a finite immutable file inventory to `SegmentReader`
+and `DirectoryReader`, route the existing selected query executors through
+fallible readers and retain the materialized baseline for the same corpus.
+It must account for `.si`, `segments_N`, `.fnm`, `.tip`, `.tmd`, `.dvm`, `.fdm`,
+`.fdx`, `.tim`, `.doc`, `.dvd`, `.fdt`, suffix groups and per-field dispatch.
+`.pos`/`.pay`, norms `.nvm`/`.nvd`, live docs `.liv`, points `.kdm`/`.kdi`/`.kdd`,
+skip data `.dvs`, updated doc-value files, and compound `.cfe`/`.cfs` members
+must be enumerated whenever the selected corpus/reader opens them. Unused
+formats can be explicitly outside that corpus; touched formats cannot be
+silently skipped. Compound input requires checked offset/length translation,
+not materializing the data archive. Vectors remain unadvertised.
+
+Remaining interfaces include range-native lazy postings and doc-value iterator
+integration, resident metadata lifetime/admission ownership, shared aggregate
+budgets, actual source identity/context/deadline plumbing and query error
+propagation. Existing formats/functions are not presumed safe for arbitrary
+corrupt remote metadata merely because these data reads are bounded.
+
+## Authored tests and unrun validation
+
+Source tests exercise independent/nested slices, cross-block reads, cache
+exhaustion/eviction, shared concurrent budgets, short/overlong/error responses,
+metadata initialization/exclusive creation and retained failed reservations.
+Additional comparisons reuse the committed Java-written GenBlockTree,
+GenDocValues, GenDocValuesVaryingBpv and GenStoredFields files/manifests. They
+assert native term statistics/postings/frequencies, floor-block navigation,
+numeric values across block boundaries and stored values, with a 32-byte cache
+and explicit source faults. Fixtures and independent expected values are not
+rewritten. These are unrun component tests, not remote-query qualification.
+
+No Cargo, rustc, rustfmt, JVM, native test, Docker, WSL, workload, benchmark,
+coverage or CI command has run for this source. Compiler feedback may require
+repairs. Actual selected term/filter/doc-value/stored-field queries over a
+working set larger than cache, physical trace/byte/scratch accounting, injected
+range errors, both native targets/profiles and required coverage/review remain
+pending. Upstream's 95% per-file bar is retained; hsearch's separate task gates
+are not waived. No speed, memory, format fidelity or runtime pass is claimed.

@@ -106,6 +106,7 @@ use std::sync::{Arc, Mutex};
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
+use lucene_store::range_input::RangeInput;
 
 use crate::automaton::{ByteDfa, CompiledDfa, DfaWalker, LazyDfa, TermAutomaton, Verdict, DEAD};
 use crate::field_infos::{FieldInfos, IndexOptions};
@@ -615,12 +616,12 @@ impl Frame {
     /// stats and postings metadata are *not* decoded here -- that is
     /// [`Frame::decode_meta_data`]'s job, run only up to the term actually
     /// landed on.
-    fn load_block(&mut self, tim: &[u8]) -> Result<()> {
+    fn load_block(&mut self, tim: &(impl TermsRead + ?Sized)) -> Result<()> {
         if self.next_ent != -1 {
             // Already loaded.
             return Ok(());
         }
-        let mut r = SliceInput::new(tim);
+        let mut r = tim.cursor();
         r.seek(self.fp)?;
 
         let code = r.read_vint()?;
@@ -646,6 +647,7 @@ impl Frame {
                 r.remaining()
             ))));
         }
+        r.check_region(num_suffix_bytes)?;
         fit_buf(
             &mut self.suffix_bytes,
             num_suffix_bytes,
@@ -660,7 +662,7 @@ impl Frame {
             1 => decompress_lowercase_ascii(&mut r, suffixes)?,
             // `CompressionAlgorithm.LZ4.read`.
             2 => {
-                crate::lz4::decompress_slice(&mut r, num_suffix_bytes, suffixes, 0)?;
+                r.decompress(num_suffix_bytes, suffixes)?;
             }
             _ => {
                 // `code_l & 0x03` is masked to 2 bits, so `3` is the only
@@ -701,6 +703,7 @@ impl Frame {
                 self.ent_count
             ))));
         }
+        r.check_region(num_suffix_length_bytes)?;
         fit_buf(
             &mut self.suffix_length_bytes,
             num_suffix_length_bytes,
@@ -717,6 +720,7 @@ impl Frame {
         self.suffix_lengths_pos = 0;
 
         let num_stat_bytes = read_region_len(&mut r, "terms block stats")?;
+        r.check_region(num_stat_bytes)?;
         fit_buf(&mut self.stat_bytes, num_stat_bytes, "terms block stats")?;
         self.stat_bytes_len = num_stat_bytes;
         r.read_bytes(&mut self.stat_bytes[..num_stat_bytes])?;
@@ -730,6 +734,7 @@ impl Frame {
         self.last_sub_fp = -1;
 
         let num_meta_bytes = read_region_len(&mut r, "terms block metadata")?;
+        r.check_region(num_meta_bytes)?;
         fit_buf(&mut self.meta_bytes, num_meta_bytes, "terms block metadata")?;
         self.meta_bytes_len = num_meta_bytes;
         r.read_bytes(&mut self.meta_bytes[..num_meta_bytes])?;
@@ -742,7 +747,7 @@ impl Frame {
     }
 
     /// `SegmentTermsEnumFrame.loadNextFloorBlock`.
-    fn load_next_floor_block(&mut self, tim: &[u8]) -> Result<()> {
+    fn load_next_floor_block(&mut self, tim: &(impl TermsRead + ?Sized)) -> Result<()> {
         self.fp = self.fp_end;
         self.next_ent = -1;
         self.load_block(tim)
@@ -911,7 +916,7 @@ impl Frame {
     // `next_ent + 1` cannot overflow. `term_block_ord` counts *terms* within
     // the same block, so it is bounded by `ent_count <= i32::MAX < u32::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
-    fn next_non_leaf(&mut self, tim: &[u8], term: &mut TermBuf) -> Result<bool> {
+    fn next_non_leaf(&mut self, tim: &(impl TermsRead + ?Sized), term: &mut TermBuf) -> Result<bool> {
         loop {
             if self.next_ent == self.ent_count as i32 {
                 self.load_next_floor_block(tim)?;
@@ -1009,7 +1014,7 @@ impl Frame {
     }
 
     /// `SegmentTermsEnumFrame.next`.
-    fn next(&mut self, tim: &[u8], term: &mut TermBuf) -> Result<bool> {
+    fn next(&mut self, tim: &(impl TermsRead + ?Sized), term: &mut TermBuf) -> Result<bool> {
         if self.is_leaf_block {
             self.next_leaf(term)?;
             Ok(false)
@@ -1549,8 +1554,8 @@ struct SegmentTermsEnum<'a> {
 
 impl<'a> SegmentTermsEnum<'a> {
     #[inline]
-    fn tim(&self) -> &'a [u8] {
-        self.field.tim.as_ref().as_ref()
+    fn tim(&self) -> &'a TermsFile {
+        &self.field.tim
     }
 
     /// The field's own trie: its `[indexStart, indexEnd)` region of `.tip`.
@@ -1591,7 +1596,10 @@ impl<'a> SegmentTermsEnum<'a> {
     }
 
     /// `SegmentTermsEnum.getFrame(ord)`.
-    fn ensure_frame(&mut self, ord: usize) {
+    fn ensure_frame(&mut self, ord: usize) -> Result<()> {
+        if matches!(self.field.tim, TermsFile::Range(_)) && ord >= 64 {
+            return Err(lucene_store::Error::IllegalArgument("range terms frame limit".into()).into());
+        }
         while self.st.stack.len() <= ord {
             let n = self.st.stack.len();
             self.st.stack.push(Frame {
@@ -1600,6 +1608,7 @@ impl<'a> SegmentTermsEnum<'a> {
                 ..Frame::default()
             });
         }
+        Ok(())
     }
 
     /// `SegmentTermsEnum.pushFrame(node, length)` -- or, for a retired FST
@@ -1608,7 +1617,7 @@ impl<'a> SegmentTermsEnum<'a> {
     /// output the arcs to `node` assembled.
     fn push_frame_node(&mut self, node: &IndexNode, length: usize) -> Result<()> {
         let ord = self.next_ord()?;
-        self.ensure_frame(ord);
+        self.ensure_frame(ord)?;
         let index = self.index();
         let field = self.field;
         let f = &mut self.st.stack[ord];
@@ -1648,7 +1657,7 @@ impl<'a> SegmentTermsEnum<'a> {
     /// pointer (Java's `pushFrame(null, fp, length)`).
     fn push_frame_fp(&mut self, fp: usize, length: usize) -> Result<()> {
         let ord = self.next_ord()?;
-        self.ensure_frame(ord);
+        self.ensure_frame(ord)?;
         let index = self.index();
         let keep = ord as i64 <= i64::from(self.st.target_before_current_length);
         let f = &mut self.st.stack[ord];
@@ -1684,7 +1693,7 @@ impl<'a> SegmentTermsEnum<'a> {
             )));
         }
         let ord = self.next_ord()?;
-        self.ensure_frame(ord);
+        self.ensure_frame(ord)?;
         {
             let f = &mut self.st.stack[ord];
             f.is_floor = false;
@@ -2507,6 +2516,78 @@ impl<'a> TermsEnum<'a> {
 /// or per term. Measured: no change to `blocktree_open`'s seek cases.
 pub type SharedBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
+// Read operations remain explicit and fallible on the range path. Resident
+// callers keep borrowed slices and the existing optimized decompressor.
+#[derive(Clone)]
+enum TermsFile { Resident(SharedBytes), Range(RangeInput) }
+enum TermsCursor<'a> { Resident(SliceInput<'a>), Range(RangeInput) }
+trait TermsRead { fn cursor(&self) -> TermsCursor<'_>; }
+impl<T: AsRef<[u8]> + ?Sized> TermsRead for T {
+    fn cursor(&self) -> TermsCursor<'_> { TermsCursor::Resident(SliceInput::new(self.as_ref())) }
+}
+impl TermsRead for TermsFile {
+    fn cursor(&self) -> TermsCursor<'_> {
+        match self {
+            Self::Resident(bytes) => TermsCursor::Resident(SliceInput::new(bytes.as_ref().as_ref())),
+            Self::Range(input) => { let mut input = input.clone(); input.seek(0).expect("zero is in bounds"); TermsCursor::Range(input) }
+        }
+    }
+}
+impl TermsFile {
+    fn len(&self) -> usize { match self { Self::Resident(b) => b.as_ref().as_ref().len(), Self::Range(r) => r.len() } }
+    fn header(&self, id: &[u8; ID_LENGTH], suffix: &str) -> Result<codec_util::IndexHeader> {
+        match self {
+            Self::Resident(bytes) => Ok(codec_util::check_index_header(&mut SliceInput::new(bytes.as_ref().as_ref()), TERMS_CODEC_NAME, VERSION_START, VERSION_CURRENT, id, suffix)?),
+            Self::Range(input) => {
+                // Fixed stack storage, not a file-sized heap allocation. Codec
+                // names and suffixes are bounded by the existing header format.
+                let mut prefix = [0u8; 512];
+                let count = input.len().min(prefix.len());
+                input.read_exact_at(0, &mut prefix[..count])?;
+                Ok(codec_util::check_index_header(&mut SliceInput::new(&prefix[..count]), TERMS_CODEC_NAME, VERSION_START, VERSION_CURRENT, id, suffix)?)
+            }
+        }
+    }
+    fn checksum(&self, length: usize) -> Result<u64> {
+        match self {
+            Self::Resident(bytes) => Ok(codec_util::retrieve_checksum_with_expected_length(bytes.as_ref().as_ref(), length)?),
+            Self::Range(input) => {
+                if length != input.len() || length < codec_util::FOOTER_LENGTH {
+                    return Err(lucene_store::Error::Corrupted("terms file length mismatch".into()).into());
+                }
+                let mut footer = [0u8; codec_util::FOOTER_LENGTH];
+                let at = length.checked_sub(footer.len()).ok_or_else(|| lucene_store::Error::Corrupted("terms footer bounds".into()))?;
+                input.read_exact_at(at, &mut footer)?;
+                Ok(codec_util::retrieve_checksum(&footer)?)
+            }
+        }
+    }
+}
+impl TermsCursor<'_> {
+    fn check_region(&self, length: usize) -> Result<()> {
+        if matches!(self, Self::Range(_)) && length > 64 * 1024 {
+            return Err(lucene_store::Error::IllegalArgument("range terms region limit".into()).into());
+        }
+        Ok(())
+    }
+    fn seek(&mut self, at: usize) -> lucene_store::Result<()> { match self { Self::Resident(r) => r.seek(at), Self::Range(r) => r.seek(at) } }
+    fn position(&self) -> usize { match self { Self::Resident(r) => r.position(), Self::Range(r) => r.position() } }
+    fn decompress(&mut self, length: usize, out: &mut [u8]) -> lucene_store::Result<usize> {
+        match self {
+            Self::Resident(r) => crate::lz4::decompress_slice(r, length, out, 0),
+            Self::Range(r) => crate::lz4::decompress(r, length, out, 0),
+        }
+    }
+}
+impl DataInput for TermsCursor<'_> {
+    fn read_byte(&mut self) -> lucene_store::Result<u8> { match self { Self::Resident(r) => r.read_byte(), Self::Range(r) => r.read_byte() } }
+    fn read_bytes(&mut self, out: &mut [u8]) -> lucene_store::Result<()> { match self { Self::Resident(r) => r.read_bytes(out), Self::Range(r) => r.read_bytes(out) } }
+    fn remaining(&self) -> usize { match self { Self::Resident(r) => r.remaining(), Self::Range(r) => r.remaining() } }
+    fn peek_u32_le(&mut self) -> lucene_store::Result<u32> { match self { Self::Resident(r) => r.peek_u32_le(), Self::Range(r) => r.peek_u32_le() } }
+    fn skip(&mut self, n: usize) -> lucene_store::Result<()> { match self { Self::Resident(r) => r.skip(n), Self::Range(r) => r.skip(n) } }
+}
+
+
 /// A field's trie: `[start, end)` of `bytes`, rooted at `root_fp`.
 #[derive(Clone)]
 struct TrieSlice {
@@ -2634,7 +2715,7 @@ pub struct FieldTerms {
     /// differs, so the dictionary has to know which one it is decoding.
     postings_format: postings::PostingsFormat,
     /// The whole segment's `.tim`, shared by every field.
-    tim: SharedBytes,
+    tim: TermsFile,
     /// The field's terms index, read in place from `.tip`: a trie, or a
     /// retired format's FST.
     index: TermsIndex,
@@ -2675,7 +2756,7 @@ impl std::fmt::Debug for FieldTerms {
             .field("max_term", &self.max_term)
             .field("index_options", &self.index_options)
             .field("has_payloads", &self.has_payloads)
-            .field("tim_len", &self.tim.as_ref().as_ref().len())
+            .field("tim_len", &self.tim.len())
             .field("index", &self.index)
             .finish_non_exhaustive()
     }
@@ -2693,7 +2774,7 @@ impl Clone for FieldTerms {
             index_options: self.index_options,
             has_payloads: self.has_payloads,
             postings_format: self.postings_format,
-            tim: Arc::clone(&self.tim),
+            tim: self.tim.clone(),
             index: self.index.clone(),
             scratch: ScratchPool::default(),
             ngram: self.ngram.clone(),
@@ -3194,6 +3275,15 @@ impl FieldTerms {
         )?))
     }
 
+    /// Native term dictionary and postings decoding through explicit range
+    /// reads. Singletons remain pulsed; no absent term is reported on I/O error.
+    pub fn range_postings(&self, term: &[u8], doc: &postings::RangeDocInput, flags: postings::PostingsFlags) -> Result<Option<Postings>> {
+        let Some((stats, meta)) = self.term_state(term)? else { return Ok(None); };
+        if stats.doc_freq == 1 { return Ok(Some(postings::singleton_postings(meta, stats.total_term_freq)?)); }
+        if self.postings_format != postings::PostingsFormat::Lucene104 { return Err(Error::Postings(postings::Error::Unsupported("range postings require Lucene104"))); }
+        Ok(Some(doc.read_postings(meta, stats.doc_freq, self.index_options, self.has_payloads, flags)?))
+    }
+
     /// `seekExact(term)` followed by opening a [`postings::LazyDocsCursor`]:
     /// the decode-on-demand sibling of [`Self::postings`] (see that method
     /// and `crate::postings`'s module doc for the shared scope/validation).
@@ -3567,7 +3657,7 @@ impl FieldTerms {
             index_options: field_info.index_options,
             has_payloads: field_info.store_payloads,
             postings_format,
-            tim,
+            tim: TermsFile::Resident(tim),
             index: TermsIndex::Fst(Arc::new(index)),
             scratch: ScratchPool::default(),
             ngram: std::sync::OnceLock::new(),
@@ -4277,7 +4367,7 @@ impl<'a, A: TermAutomaton> DfaIntersect<'a, A> {
 
     fn seek_live_floor_unbudgeted(&mut self, ord: usize, from: u32) -> Result<bool> {
         let index = self.field.index.trie_bytes();
-        let tim: &[u8] = self.field.tim.as_ref().as_ref();
+        let tim = &self.field.tim;
         let s = self.states[ord];
         let f = &mut self.st.stack[ord];
         if !f.is_floor {
@@ -5124,7 +5214,7 @@ fn child_position(slice: &[u8], node: &TrieNode, target_label: u8) -> Result<i32
     }
 }
 
-fn read_region_len(r: &mut SliceInput, what: &str) -> Result<usize> {
+fn read_region_len(r: &mut impl DataInput, what: &str) -> Result<usize> {
     let len = r.read_vint()?;
     if len < 0 {
         return Err(Error::Store(lucene_store::Error::Corrupted(format!(
@@ -5156,7 +5246,7 @@ fn read_region_len(r: &mut SliceInput, what: &str) -> Result<usize> {
 // rejection means the accumulator enters every iteration with
 // `i < out.len() <= isize::MAX`, and one iteration adds at most 255.
 #[allow(clippy::arithmetic_side_effects)]
-pub(crate) fn decompress_lowercase_ascii(r: &mut SliceInput, out: &mut [u8]) -> Result<()> {
+pub(crate) fn decompress_lowercase_ascii(r: &mut impl DataInput, out: &mut [u8]) -> Result<()> {
     let len = out.len();
     let saved = len >> 2;
     let compressed_len = len - saved;
@@ -5335,17 +5425,33 @@ pub fn open_shared(
             max_doc,
         );
     }
-    let tim_bytes: &[u8] = tim.as_ref().as_ref();
+    open_terms_file(TermsFile::Resident(tim), tip, tmd, field_infos, segment_id, segment_suffix, max_doc)
+}
+
+/// Open modern block-tree terms with a fallible `.tim` source. The `.tip`
+/// trie and `.tmd` metadata are still explicitly materialized inputs; this is
+/// not a claim that the complete segment reader is range-native. Old FST
+/// formats require the existing materialized constructor.
+pub fn open_range_terms(
+    tim: RangeInput, tip: SharedBytes, tmd: &[u8], field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH], segment_suffix: &str, max_doc: i32,
+) -> Result<BlockTreeFields> {
+    if tmd.len() > 1024 * 1024 || tip.as_ref().as_ref().len() > 1024 * 1024 || field_infos.fields.len() > 128 {
+        return Err(lucene_store::Error::IllegalArgument("range terms metadata envelope".into()).into());
+    }
+    if postings_terms_codec(tmd, segment_id, segment_suffix).as_deref()
+        == Some(crate::backward_codecs::blocktree::POSTINGS_TERMS_CODEC) {
+        return Err(lucene_store::Error::IllegalArgument("range terms require modern block-tree format".into()).into());
+    }
+    open_terms_file(TermsFile::Range(tim), tip, tmd, field_infos, segment_id, segment_suffix, max_doc)
+}
+
+fn open_terms_file(
+    tim: TermsFile, tip: SharedBytes, tmd: &[u8], field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH], segment_suffix: &str, max_doc: i32,
+) -> Result<BlockTreeFields> {
     let tip_bytes: &[u8] = tip.as_ref().as_ref();
-    let mut tim_input = SliceInput::new(tim_bytes);
-    let tim_header = codec_util::check_index_header(
-        &mut tim_input,
-        TERMS_CODEC_NAME,
-        VERSION_START,
-        VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    )?;
+    let tim_header = tim.header(segment_id, segment_suffix)?;
 
     let mut tip_input = SliceInput::new(tip_bytes);
     codec_util::check_index_header(
@@ -5482,7 +5588,7 @@ pub fn open_shared(
                 index_options: field_info.index_options,
                 has_payloads: field_info.store_payloads,
                 postings_format,
-                tim: Arc::clone(&tim),
+                tim: tim.clone(),
                 index: TermsIndex::InPlace(TrieSlice {
                     bytes: Arc::clone(&tip),
                     start: index_start,
@@ -5512,7 +5618,7 @@ pub fn open_shared(
         ))));
     }
     codec_util::retrieve_checksum_with_expected_length(tip_bytes, index_length as usize)?;
-    codec_util::retrieve_checksum_with_expected_length(tim_bytes, terms_length as usize)?;
+    tim.checksum(terms_length as usize)?;
 
     Ok(BlockTreeFields { fields })
 }
