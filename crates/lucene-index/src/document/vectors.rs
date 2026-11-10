@@ -125,7 +125,7 @@ impl IndexableField for KnnFloatVectorField {
         &self.field_type
     }
     fn vector_value(&self) -> Option<VectorValue> {
-        Some(VectorValue::Float32(self.vector.clone()))
+        Some(VectorValue::Float32(self.vector.clone().into()))
     }
     fn token_stream(&self, _analyzer: &Analyzer) -> Result<Option<FieldTokens>> {
         Ok(None)
@@ -186,7 +186,7 @@ impl IndexableField for KnnByteVectorField {
         &self.field_type
     }
     fn vector_value(&self) -> Option<VectorValue> {
-        Some(VectorValue::Byte(self.vector.clone()))
+        Some(VectorValue::Byte(self.vector.clone().into()))
     }
     fn token_stream(&self, _analyzer: &Analyzer) -> Result<Option<FieldTokens>> {
         Ok(None)
@@ -203,7 +203,10 @@ mod tests {
             .unwrap();
         assert_eq!(f.field_type().vector_dimension(), 2);
         assert_eq!(f.vector(), &[1.0, 2.0]);
-        assert_eq!(f.vector_value(), Some(VectorValue::Float32(vec![1.0, 2.0])));
+        assert_eq!(
+            f.vector_value(),
+            Some(VectorValue::Float32(vec![1.0, 2.0].into()))
+        );
         assert_eq!(f.name(), "v");
         assert!(f.token_stream(&Analyzer::keyword()).unwrap().is_none());
         assert!(KnnFloatVectorField::new("v", vec![], VectorSimilarityFunction::Cosine).is_err());
@@ -215,7 +218,10 @@ mod tests {
             .unwrap();
         assert_eq!(b.field_type().vector_encoding(), VectorEncoding::Byte);
         assert_eq!(b.vector(), &[1, 255]);
-        assert_eq!(b.vector_value(), Some(VectorValue::Byte(vec![1, 255])));
+        assert_eq!(
+            b.vector_value(),
+            Some(VectorValue::Byte(vec![1, 255].into()))
+        );
         assert_eq!(b.name(), "b");
         assert!(b.token_stream(&Analyzer::keyword()).unwrap().is_none());
         let t = KnnByteVectorField::with_type("b", vec![1], b.field_type().clone()).unwrap();
