@@ -15,8 +15,8 @@
 //! `expand: u8` (`expand_nested_docs`) follow, and last `nprobes: i32`: the
 //! clusters probed in each segment whose field has an IVF index
 //! (`LuceneRustIvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
-//! depth each segment calibrated. A nested search scans an IVF field's
-//! vectors exactly, so it ignores `nprobes`.
+//! depth each segment calibrated, for a nested search too (more when fewer
+//! than `k` parents are in reach).
 //!
 //! A nested search keeps the best child of each of the best `k` parents; an
 //! expanded one returns every scored child of those parents, which can be
@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use lucene_search::join::BitSetProducer;
-use lucene_search::knn_search::{knn_top_hits_buffered, knn_top_hits_nested};
+use lucene_search::knn_search::{knn_top_hits_buffered, knn_top_hits_nested_with};
 use lucene_search::multi_segment::OpenSegment;
 
 use crate::clauses::map_search_error;
@@ -196,7 +196,7 @@ pub(crate) fn search(
             *nprobes,
             buffers,
         ),
-        Some((parents, expand)) => knn_top_hits_nested(
+        Some((parents, expand)) => knn_top_hits_nested_with(
             &segments,
             field,
             target,
@@ -205,6 +205,7 @@ pub(crate) fn search(
             filter.as_ref(),
             &**parents,
             *expand,
+            *nprobes,
         ),
     }
     .map_err(map_search_error)

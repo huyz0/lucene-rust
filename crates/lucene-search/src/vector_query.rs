@@ -164,9 +164,9 @@ pub enum GraphReader<'d> {
         codes: lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'d>,
     },
     /// `LuceneRustIvfVectorsFormat`: a float query probes the field's
-    /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]);
-    /// a byte field, a diversifying search and a selective filter scan the
-    /// raw vectors exhaustively.
+    /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]),
+    /// keeping the best child per parent for a diversifying search; a byte
+    /// field and a selective filter scan the raw vectors exhaustively.
     Ivf(std::sync::Arc<lucene_ivf::IvfReader>),
 }
 
@@ -1254,14 +1254,29 @@ fn search_leaf(
     )?;
     match target {
         Target::Float(t) => {
-            if let (Some(GraphReader::Ivf(reader)), None) = (&input.hnsw, diversify) {
-                return match ivf_leaf_results(reader, input, resolved, t, plan)? {
-                    Some(found) => Ok(found),
-                    None => Ok((
-                        exact_float_leaf(input, resolved, t, plan.collector_k.max(1))?,
-                        false,
-                    )),
-                };
+            if let Some(GraphReader::Ivf(reader)) = &input.hnsw {
+                match diversify {
+                    None => {
+                        return match ivf_leaf_results(reader, input, resolved, t, plan, None)? {
+                            Some(found) => Ok(found),
+                            None => Ok((
+                                exact_float_leaf(input, resolved, t, plan.collector_k.max(1))?,
+                                false,
+                            )),
+                        };
+                    }
+                    // A leaf without parents has no results.
+                    Some(None) => return Ok((LeafHits::default(), false)),
+                    // Probing for the best child per parent; a filter too
+                    // selective for probing takes the exhaustive walk below.
+                    Some(Some(parents)) => {
+                        if let Some(found) =
+                            ivf_leaf_results(reader, input, resolved, t, plan, Some(parents))?
+                        {
+                            return Ok(found);
+                        }
+                    }
+                }
             }
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
@@ -1343,12 +1358,22 @@ fn search_leaf(
     }
 }
 
+/// The most a nested field's shortlist widens for the children each parent
+/// holds: past it, parents with very many children may crowd the shortlist,
+/// and the probes deepen instead until `k` parents are found.
+const IVF_MAX_GROUP_SPREAD: usize = 64;
+
 /// Accepted entries a filtered IVF search scans per hit asked for: the probes
 /// grow until they have scanned this many of the documents the filter passes
 /// (or all of them), so the filter's nearest documents are among the
 /// candidates wherever in the field they lie. See "Filtered searches by
 /// tenant size" in `docs/benchmarks/ivf.md`.
 const IVF_ACCEPTED_PER_HIT: usize = 200;
+
+/// The filtered documents with a vector a filtered IVF search counts, in a
+/// segment where some documents have none, before it estimates the rest
+/// from the share counted so far.
+const IVF_PASSING_SAMPLE: usize = 4096;
 
 /// The cost of scoring one raw vector exactly, in IVF code scans (with their
 /// share of routing, block reads and rerank): a filter goes to the exact scan
@@ -1370,12 +1395,28 @@ fn ivf_leaf_results(
     resolved: &ResolvedField,
     target: &[f32],
     plan: &LeafPlan,
+    parents: Option<&FixedBitSet>,
 ) -> Result<Option<(LeafHits, bool)>> {
     let Some(field) = reader.field(resolved.field_number) else {
         return Ok(None);
     };
     let k = plan.collector_k.max(1);
     let clusters = field.clusters().max(1);
+    // A nested field's children grouped by parent (the next parent bit at
+    // or after the child, as `DiversifyingNearestChildrenKnnCollector`
+    // finds it), the shortlist widened by the children per parent.
+    let group = |doc: i32| -> i32 {
+        parents
+            .and_then(|p| usize::try_from(doc).ok().and_then(|d| p.next_set_bit(d)))
+            .map_or(i32::MAX, |p| i32::try_from(p).unwrap_or(i32::MAX))
+    };
+    let grouping = parents.map(|p| lucene_ivf::Grouping {
+        group: &group,
+        spread: field
+            .count()
+            .div_ceil(p.cardinality().max(1))
+            .clamp(1, IVF_MAX_GROUP_SPREAD),
+    });
     let base_nprobe = match plan.extras.ivf_nprobes {
         0 => field.auto_nprobe(),
         n => n,
@@ -1393,8 +1434,14 @@ fn ivf_leaf_results(
             nprobe,
             rerank: lucene_ivf::Rerank::Auto,
         };
-        reader.search_with(resolved.field_number, target, &params, filtered, None)
+        match &grouping {
+            Some(g) => reader.search_grouped(resolved.field_number, target, &params, filtered, g),
+            None => reader.search_with(resolved.field_number, target, &params, filtered, None),
+        }
     };
+    // Grouped, `k` counts parents: probing deepens until `k` of them are in
+    // reach, however many children each holds.
+    let short = |found: usize| grouping.is_some() && found < k;
     let (found, partial) = match input.filter {
         // Without a filter, deletions only: the calibrated (or asked) depth,
         // doubled while fewer than `k` live documents are in reach.
@@ -1410,7 +1457,12 @@ fn ivf_leaf_results(
                     lucene_ivf::Probes::Fixed(nprobe)
                 };
                 let out = search(probes)?;
-                if !restricted || out.hits.len() >= k.min(live) || nprobe >= clusters {
+                let enough = if grouping.is_some() {
+                    !short(out.hits.len())
+                } else {
+                    !restricted || out.hits.len() >= k.min(live)
+                };
+                if enough || nprobe >= clusters {
                     break (out.hits, false);
                 }
                 if plan.extras.timed_out() {
@@ -1421,27 +1473,45 @@ fn ivf_leaf_results(
         }
         Some(filter) => {
             // The live documents the filter passes that have a vector here.
+            let live_passing = match input.live_docs {
+                Some(live) => FixedBitSet::intersection_count(filter, live),
+                None => filter.cardinality(),
+            };
             let passing = if field.count() >= input.max_doc as usize {
-                match input.live_docs {
-                    Some(live) => FixedBitSet::intersection_count(filter, live),
-                    None => filter.cardinality(),
-                }
+                live_passing
             } else {
+                // Some documents have no vector (a nested field's parents):
+                // the filter's documents are walked until
+                // [`IVF_PASSING_SAMPLE`] of them have one, a count exact for
+                // a small filter and, for a large one, a share of its
+                // documents that have a vector, which every rule below
+                // takes well enough. Walking all of a filter passing half a
+                // large segment costs more than probing for it.
                 let values = input.flat.float_vector_values(resolved.field_number)?;
                 let mut ords = values.doc_to_ord()?;
-                let mut n = 0usize;
+                let (mut n, mut seen) = (0usize, 0usize);
                 let mut from = 0usize;
+                let mut done = true;
                 while let Some(bit) = filter.next_set_bit(from) {
+                    if n >= IVF_PASSING_SAMPLE {
+                        done = false;
+                        break;
+                    }
                     from = bit.saturating_add(1);
                     // A set bit is below `max_doc`, an `i32`.
                     let doc = i32::try_from(bit).unwrap_or(i32::MAX);
-                    if input.live_docs.is_none_or(|l| l.get_doc(doc))
-                        && ords.ordinal(doc)?.is_some()
-                    {
-                        n = n.saturating_add(1);
+                    if input.live_docs.is_none_or(|l| l.get_doc(doc)) {
+                        seen = seen.saturating_add(1);
+                        if ords.ordinal(doc)?.is_some() {
+                            n = n.saturating_add(1);
+                        }
                     }
                 }
-                n
+                if done {
+                    n
+                } else {
+                    ((live_passing as f64) * n as f64 / seen.max(1) as f64) as usize
+                }
             };
             // Entries, as the probes count them: a spilled vector is in two
             // clusters.
@@ -1469,7 +1539,7 @@ fn ivf_leaf_results(
             }
             loop {
                 let out = search(lucene_ivf::Probes::Fixed(nprobe))?;
-                if out.stats.accepted >= want || nprobe >= clusters {
+                if (out.stats.accepted >= want && !short(out.hits.len())) || nprobe >= clusters {
                     break (out.hits, false);
                 }
                 if plan.extras.timed_out() {
