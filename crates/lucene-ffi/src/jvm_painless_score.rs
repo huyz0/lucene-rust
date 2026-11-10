@@ -218,10 +218,20 @@ pub(crate) fn check(blob: &[u8]) -> std::result::Result<Option<String>, FfiStatu
     Ok(spec.check().err().map(|r| r.0))
 }
 
+/// Where a script threw: the segment, the document and the score it ran
+/// with.
+#[derive(Clone, Copy)]
+struct At {
+    leaf: usize,
+    doc: i32,
+    score: f32,
+}
+
 /// The error a script's exception fails the search with: the plugin raises
-/// it as Painless's `ScriptException` around the exception `class` (with
-/// `message`, `None` for none), at source offset `offset`.
-fn script_error(script_id: i32, offset: i32, t: &Throw) -> Error {
+/// Painless's own `ScriptException` for the document `at` names, or else
+/// one around the exception `class` (with `message`, `None` for none), at
+/// source offset `offset`.
+fn script_error(script_id: i32, at: At, offset: i32, t: &Throw) -> Error {
     // A gap of the runtime the check let through is the plugin's failure,
     // not the script's: never shown as the script's exception.
     if t.class() == lucene_painless::api::UNSUPPORTED {
@@ -232,7 +242,10 @@ fn script_error(script_id: i32, offset: i32, t: &Throw) -> Error {
         None => "0".to_string(),
     };
     Error::IllegalArgument(format!(
-        "{SCRIPT_ERROR}{script_id}\u{1}{offset}\u{1}{}\u{1}{message}",
+        "{SCRIPT_ERROR}{script_id}\u{1}{}\u{1}{}\u{1}{}\u{1}{offset}\u{1}{}\u{1}{message}",
+        at.leaf,
+        at.doc,
+        at.score.to_bits(),
         t.class()
     ))
 }
@@ -448,6 +461,8 @@ struct Current {
 struct ScoreEnv<'c> {
     source: Arc<Spec>,
     reader: &'c lucene_search::directory_reader::SegmentReader,
+    /// The segment's number in the reader.
+    leaf: usize,
     /// Per field of `source.fields`: its doc values once read.
     opened: Vec<Option<Opened<'c>>>,
     /// Per field: its values in the document last read.
@@ -885,11 +900,16 @@ impl ScriptScores<'_> {
     /// The score of the current document (`env.doc`, `env.score`).
     fn run(&mut self) -> Result<f32> {
         let id = self.env.source.script_id;
+        let at = At {
+            leaf: self.env.leaf,
+            doc: self.env.doc,
+            score: self.env.score as f32,
+        };
         let r = match &mut self.typed {
             Some((t, regs)) => match t.run_double(&mut self.env, regs) {
                 Ok(Ok(v)) => return checked(v as f32, self.env.doc),
                 Ok(Err(v)) => Ok(v),
-                Err(e) => Err(script_error(id, t.thrown_at(regs), &e)),
+                Err(e) => Err(script_error(id, at, t.thrown_at(regs), &e)),
             },
             None => {
                 let mut vm = Vm::new(self.prog.clone(), &mut self.env);
@@ -899,7 +919,7 @@ impl ScriptScores<'_> {
                 let loc = vm.loc;
                 self.bindings = std::mem::take(&mut vm.bindings);
                 self.pool = std::mem::take(&mut vm.pool);
-                r.map_err(|e| script_error(id, loc, &e))
+                r.map_err(|e| script_error(id, at, loc, &e))
             }
         };
         let r = r?;
@@ -955,8 +975,13 @@ impl ScriptScores<'_> {
         for (k, o) in out[..upto].iter_mut().enumerate() {
             *o = f64::from(checked(*o as f32, docs[k])?);
         }
-        if let Some((_, e, offset)) = failed {
-            return Err(script_error(env.source.script_id, offset, &e));
+        if let Some((k, e, offset)) = failed {
+            let at = At {
+                leaf: env.leaf,
+                doc: docs[k],
+                score: env.batch_scores[k],
+            };
+            return Err(script_error(env.source.script_id, at, offset, &e));
         }
         has[..docs.len()].fill(true);
         Ok(())
@@ -1048,6 +1073,7 @@ impl DoubleValuesSource for PainlessScoreSource {
         let env = ScoreEnv {
             index: Value::str(&source.index),
             reader,
+            leaf,
             opened: (0..n).map(|_| None).collect(),
             current: (0..n)
                 .map(|_| Current {
@@ -1312,8 +1338,11 @@ mod tests {
                         Some(m) => format!("1{m}"),
                         None => "0".to_string(),
                     };
-                    let want = format!("{SCRIPT_ERROR}0\u{1}{offset}\u{1}{class}\u{1}{message}");
-                    (!e.ends_with(&want)).then(|| format!("{e:?}, want {want:?}"))
+                    // Then the segment, document and score it threw at.
+                    let script = format!("{SCRIPT_ERROR}0\u{1}0\u{1}");
+                    let want = format!("\u{1}{offset}\u{1}{class}\u{1}{message}");
+                    (!e.contains(&script) || !e.ends_with(&want))
+                        .then(|| format!("{e:?}, want {script:?}..{want:?}"))
                 }
                 (Outcome::Refused(message), Err(_)) => {
                     let want = format!("{SCORE_ERROR}{message}");

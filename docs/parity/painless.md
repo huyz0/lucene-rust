@@ -27,14 +27,19 @@ slots, `ArrayIndexOutOfBoundsException` past its grown length).
 fails in Java: the same `ScriptException` (class, message, `script_stack`, position) or, for a
 negative or NaN score, `ScriptScoreQuery`'s `IllegalArgumentException`. The search is not run
 again in Java (`RustQueryPhaseSearcher.scriptFailure`); the stats count it as `script_errors`,
-not `native_errors`. A gap the check let through (the runtime's own `Unsupported`) is the
+not `native_errors`. The exception itself is Painless's: the native error names the segment,
+document and score the script threw at, and the plugin runs the script once more in Java on that
+one document (`PainlessScore.failure`), so the message (a helpful `NullPointerException`'s local
+names included) and the Java frames in `script_stack` (`LeafDocLookup.get`,
+`ScriptDocValues$Longs.get`, ...) are the JVM's own. That run has no effect beyond its result:
+the check passes only scripts whose sole effect is their score. A gap the check let through (the runtime's own `Unsupported`) is the
 plugin's failure, not the script's: like any other internal native failure it falls back to
 Lucene, which runs the script again (score scripts are pure, so only time is lost). Tested by `jvm_painless_score.rs::scripts_score_as_opensearch_does` (each
 fixture outcome, offsets included), `tests/corpus.rs` (every corpus script the check passes
 throws exactly what Painless throws) and `e2e/verify_opensearch.py::script_errors` (stock and
 native error responses equal, no fallback). Known gap: three corpus scripts whose Painless error
 is a JVM `WrongMethodTypeException` (a `def` brace access with a string key on a list or array)
-throw a different message natively.
+throw a different message natively; in the plugin the search still fails with Painless's own.
 
 | Java | Rust | Status |
 |---|---|---|
