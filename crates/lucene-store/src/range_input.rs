@@ -245,6 +245,33 @@ impl RangeInput {
         Ok(())
     }
 }
+impl RangeInput {
+    /// Codec footer integrity without materializing the file.
+    pub fn check_integrity(&self) -> Result<()> {
+        let mut footer = [0u8; crate::codec_util::FOOTER_LENGTH];
+        let at = self.len().checked_sub(footer.len()).ok_or_else(overflow)?;
+        self.read_exact_at(at, &mut footer)?;
+        let expected = crate::codec_util::retrieve_checksum(&footer)?;
+        let end = self.len().checked_sub(8).ok_or_else(overflow)?;
+        let mut hasher = crc32fast::Hasher::new();
+        let mut chunk = [0u8; 4096];
+        let mut offset = 0usize;
+        while offset < end {
+            let count = end
+                .checked_sub(offset)
+                .ok_or_else(overflow)?
+                .min(chunk.len());
+            self.read_exact_at(offset, &mut chunk[..count])?;
+            hasher.update(&chunk[..count]);
+            offset = offset.checked_add(count).ok_or_else(overflow)?;
+        }
+        if u64::from(hasher.finalize()) != expected {
+            return Err(Error::Corrupted("range checksum mismatch".into()));
+        }
+        Ok(())
+    }
+}
+
 impl DataInput for RangeInput {
     fn read_byte(&mut self) -> Result<u8> {
         let mut out = [0];
@@ -362,6 +389,120 @@ impl MetadataMaterializer {
         // for small metadata files. No newly introduced unsafe is necessary.
         crate::MmapDirectory::with_read_threshold(&self.root, 0).open(name)
     }
+}
+
+/// Read-only immutable inventory for the native range reader prototype.
+/// Data files cannot escape into the materialized open API. Other touched
+/// files are streamed under MetadataMaterializer's finite charged policy.
+pub struct RangeDirectory {
+    files: std::collections::BTreeMap<String, RangeInput>,
+    metadata: MetadataMaterializer,
+    resident: Mutex<std::collections::BTreeMap<String, Arc<crate::Input>>>,
+}
+impl RangeDirectory {
+    pub fn new(scratch: &std::path::Path, files: Vec<(String, RangeInput)>) -> Result<Self> {
+        if files.len() > 128 {
+            return Err(Error::IllegalArgument("range inventory file limit".into()));
+        }
+        let mut inventory = std::collections::BTreeMap::new();
+        let mut total = 0usize;
+        for (name, input) in files {
+            if name.is_empty()
+                || name.len() > 128
+                || matches!(name.as_str(), "." | "..")
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            {
+                return Err(Error::IllegalArgument(
+                    "invalid range inventory name".into(),
+                ));
+            }
+            total = total.checked_add(input.len()).ok_or_else(overflow)?;
+            if total > 128 * 1024 * 1024 || inventory.insert(name, input).is_some() {
+                return Err(Error::IllegalArgument(
+                    "range inventory byte/identity limit".into(),
+                ));
+            }
+        }
+        Ok(Self {
+            files: inventory,
+            metadata: MetadataMaterializer::new(scratch)?,
+            resident: Mutex::new(std::collections::BTreeMap::new()),
+        })
+    }
+    pub fn metadata_usage(&self) -> Result<MetadataUsage> {
+        self.metadata.usage()
+    }
+    fn data_file(name: &str) -> bool {
+        [".tim", ".doc", ".dvd", ".fdt", ".cfs"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
+    }
+    fn source(&self, name: &str) -> Result<&RangeInput> {
+        self.files.get(name).ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "range file absent",
+            ))
+        })
+    }
+}
+impl crate::Directory for RangeDirectory {
+    fn list_all(&self) -> Result<Vec<String>> {
+        Ok(self.files.keys().cloned().collect())
+    }
+    fn open(&self, name: &str) -> Result<crate::Input> {
+        if Self::data_file(name) {
+            return Err(Error::IllegalArgument(
+                "range data cannot be materialized by Directory::open".into(),
+            ));
+        }
+        let source = self.source(name)?;
+        let mut resident = self.resident.lock().map_err(|_| poisoned())?;
+        if !resident.contains_key(name) {
+            resident.insert(
+                name.to_owned(),
+                Arc::new(self.metadata.materialize(name, source)?),
+            );
+        }
+        let bytes = resident.get(name).ok_or_else(overflow)?;
+        crate::Input::slice_of(bytes, 0, bytes.len())
+    }
+    fn open_range(&self, name: &str) -> Result<Option<RangeInput>> {
+        if Self::data_file(name) {
+            Ok(Some(self.source(name)?.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+    fn is_range_directory(&self) -> bool {
+        true
+    }
+    fn file_length(&self, name: &str) -> Result<u64> {
+        Ok(self.source(name)?.len() as u64)
+    }
+    fn create_output(&self, _name: &str) -> Result<crate::FsIndexOutput> {
+        Err(read_only())
+    }
+    fn sync(&self, _names: &[String]) -> Result<()> {
+        Err(read_only())
+    }
+    fn rename(&self, _source: &str, _dest: &str) -> Result<()> {
+        Err(read_only())
+    }
+    fn delete_file(&self, _name: &str) -> Result<()> {
+        Err(read_only())
+    }
+    fn sync_meta_data(&self) -> Result<()> {
+        Err(read_only())
+    }
+    fn obtain_lock(&self, _name: &str) -> Result<Box<dyn crate::Lock>> {
+        Err(read_only())
+    }
+}
+fn read_only() -> Error {
+    Error::IllegalArgument("immutable range directory".into())
 }
 
 #[cfg(test)]

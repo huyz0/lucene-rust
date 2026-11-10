@@ -40,3 +40,11 @@ jobs:
           path: ${{ runner.temp }}/range-feedback-${{ github.sha }}.lock
           if-no-files-found: ignore
           retention-days: 7
+      - name: Retain the finite native query physical trace
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: range-feedback-${{ github.sha }}-physical-trace
+          path: ${{ runner.temp }}/range-feedback-${{ github.sha }}-trace.tsv
+          if-no-files-found: ignore
+          retention-days: 7

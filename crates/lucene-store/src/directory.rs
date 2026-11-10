@@ -192,6 +192,18 @@ pub trait Directory: Send + Sync {
     /// Reads a whole file's bytes (`Directory.openInput`).
     fn open(&self, name: &str) -> Result<Input>;
 
+    /// Explicit immutable data input, when this directory supplies a range
+    /// backend. None retains the existing materialized read path. A backend
+    /// must never return None and silently heap-materialize a remote data file.
+    fn open_range(&self, _name: &str) -> Result<Option<crate::range_input::RangeInput>> {
+        Ok(None)
+    }
+
+    /// Whether this is the bounded, immutable range prototype directory.
+    fn is_range_directory(&self) -> bool {
+        false
+    }
+
     /// Port of `Directory.fileLength(name)`. The default reads the file,
     /// which is correct for any implementation; the real ones override it.
     fn file_length(&self, name: &str) -> Result<u64> {

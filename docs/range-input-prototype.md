@@ -209,3 +209,45 @@ Clippy with warnings denied. Pinned formatting then rejected two whitespace/
 module-order differences; both reported changes are applied without lowering
 checks. The direct stored-range constructor is a subsequent source increment
 and needs its own fresh feedback.
+
+## Native reader/query integration increment
+
+The source now integrates RangeDirectory with existing SegmentReader and
+DirectoryReader construction. Existing native DocInput/LazyDocsCursor query
+interfaces use bounded decoded postings for range-backed terms; resident
+cursors keep their original behavior. This range prototype eagerly decodes a
+bounded term window and conservatively disables impacts pruning; it does not
+claim lazy remote postings performance. Numeric sort comparators receive typed
+resident/range doc-value inputs. Legacy byte-slice views remain materialized-
+only, and do not expose empty range data as a real column. Stored projection
+uses the original native visitor and range chunk decoder. Range integrity
+streams CRC checks without whole-file heap buffers. Materialized APIs retain
+their original path.
+
+The immutable RangeDirectory admits at most 128 files/128 MiB logical source,
+uses the existing charged 16 MiB metadata materializer, and refuses data-file
+materialization through Directory.open. Selected range segments are bounded
+non-compound, single-modern-postings-group, non-vector segments with at most
+4,096 documents and single-valued numeric doc values without update generations.
+Other representations refuse explicitly at admission. These prototype limits
+are not measured production defaults or universal codec-support claims.
+
+The new native-written 384-document corpus has full-block plus tail term
+postings, floor-block unique terms, an actual deletion/live-docs file, sparse
+numeric ranks and 512-byte stored payloads. Its real DirectoryReader and
+IndexSearcher term/filter/numeric-sort/stored-projection queries check independent
+expected IDs/ranks/values. Range caches are 512 bytes per file and the accessed
+working set must exceed capacity. Errors and short responses are injected after
+query preparation for each .tim/.doc/.dvd/.fdt family and must propagate as
+query/projection failures. A separate full streaming disk baseline uses mmap,
+with separately counted actual transfer and scratch bytes. The finite complete
+file/offset/request/response/outcome trace is retained through a standard Actions
+artifact; its capacity/byte exhaustion fails rather than truncating success.
+This source increment and test are not yet observed passes.
+
+Touched reader paths are commit segments_N, .si, .fnm, .tip/.tmd/.tim, .doc,
+.dvm/.dvd, .fdm/.fdx/.fdt and .liv. The selected corpus has no vectors, compound,
+points, term vectors, norms or additional postings/doc-value suffix groups.
+Their absence must be observed from its real inventory, not assumed. The
+upstream patch plan retains those additional representations and iterators;
+no current-main compatibility or runtime/provider/fleet claim follows.

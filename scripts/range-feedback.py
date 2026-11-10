@@ -39,12 +39,15 @@ if [ ! -f /src/Cargo.lock ]; then
   exit 78
 fi
 cargo check --locked -p lucene-store -p lucene-codecs --all-targets
+cargo check --locked -p lucene-search --lib
 cargo test --locked -p lucene-store --lib range_input
 cargo test --locked -p lucene-codecs --test blocktree_fixtures range_terms_postings_and_filter_match_java_with_eviction_and_faults
 cargo test --locked -p lucene-codecs --test doc_values_fixtures numeric_range_values_match_java_and_transport_errors_propagate
 cargo test --locked -p lucene-codecs --test doc_values_varying_bpv_fixtures varying_width_range_block_boundaries_match_java
 cargo test --locked -p lucene-codecs --test stored_fields_fixtures range_stored_chunks_match_java_without_resident_fdt_and_refuse_faults
+cargo test --locked -p lucene-search --test range_directory_queries -- --nocapture
 cargo clippy --locked -p lucene-store -p lucene-codecs --all-targets -- -D warnings
+cargo clippy --locked -p lucene-search --lib -- -D warnings
 cargo fmt --all -- --check
 '''
 
@@ -135,6 +138,16 @@ def main():
             process.terminate()
             process.wait(timeout=15)
         process.stdout.close()
+    trace = scratch / "tmp" / "range-query-physical-trace.tsv"
+    if trace.is_file():
+        import hashlib
+        if trace.stat().st_size > 1024**2 or trace.is_symlink():
+            raise SystemExit("range trace exceeds artifact envelope")
+        data = trace.read_bytes()
+        destination = runner_temp / ("range-feedback-" + expected + "-trace.tsv")
+        with destination.open("xb") as output:
+            output.write(data)
+        print(json.dumps({"physical_trace_sha256": hashlib.sha256(data).hexdigest(), "physical_trace_bytes": len(data)}))
     resolved = scratch / "resolved-Cargo.lock"
     if resolved.is_file():
         import hashlib

@@ -777,12 +777,14 @@ impl PostingsFlags {
 /// everything this slice doesn't support (positions, skip data, impacts).
 pub struct DocInput<'a> {
     buf: &'a [u8],
+    range: Option<RangeDocInput>,
     format: PostingsFormat,
 }
 
 /// Bounded modern postings read from the same immutable file as its term
 /// metadata. This prototype materializes one encoded term window, never the
 /// complete `.doc` file. Terms exceeding the finite window fail explicitly.
+#[derive(Clone)]
 pub struct RangeDocInput {
     input: lucene_store::range_input::RangeInput,
 }
@@ -898,6 +900,7 @@ impl<'a> DocInput<'a> {
     pub fn validated(buf: &'a [u8]) -> Self {
         DocInput {
             buf,
+            range: None,
             format: PostingsFormat::of_header(buf).unwrap_or_default(),
         }
     }
@@ -906,7 +909,25 @@ impl<'a> DocInput<'a> {
     /// for whichever [`PostingsFormat`] the header names.
     pub fn open(doc: &'a [u8], segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Result<Self> {
         let format = open_postings_file(doc, "Doc", segment_id, segment_suffix)?;
-        Ok(DocInput { buf: doc, format })
+        Ok(DocInput {
+            buf: doc,
+            range: None,
+            format,
+        })
+    }
+
+    /// Open the selected modern range path. Encoded term windows and decoded
+    /// postings are bounded; native query cursors retain no whole-file buffer.
+    pub fn open_range(
+        input: lucene_store::range_input::RangeInput,
+        id: &[u8; ID_LENGTH],
+        suffix: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            buf: &[],
+            format: PostingsFormat::Lucene104,
+            range: Some(RangeDocInput::open(input, id, suffix)?),
+        })
     }
 
     /// The postings format that wrote this `.doc`.
@@ -980,6 +1001,10 @@ impl<'a> DocInput<'a> {
         flags: PostingsFlags,
         out: &mut Postings,
     ) -> Result<()> {
+        if let Some(range) = &self.range {
+            *out = range.read_postings(meta, doc_freq, index_options, has_payloads, flags)?;
+            return Ok(());
+        }
         let needs_freq = flags.needs_freq();
         if self.format != PostingsFormat::Lucene104 {
             let mut p = crate::backward_codecs::postings::read_postings(
@@ -1284,6 +1309,22 @@ impl<'a> DocInput<'a> {
         doc_freq: i32,
         index_options: IndexOptions,
     ) -> Result<Option<i32>> {
+        if let Some(range) = &self.range {
+            if doc_freq <= 1 || doc_freq >= self.format.block_size() as i32 {
+                return Ok(None);
+            }
+            return Ok(range
+                .read_postings(
+                    meta,
+                    doc_freq,
+                    index_options,
+                    false,
+                    PostingsFlags::DocsOnly,
+                )?
+                .docs
+                .first()
+                .copied());
+        }
         let trailing = matches!(
             self.format,
             PostingsFormat::Lucene90 | PostingsFormat::Lucene99
@@ -1361,7 +1402,9 @@ impl<'a> DocInput<'a> {
             None
         };
         let mut r = SliceInput::new(self.buf);
-        r.seek(meta.doc_start_fp as usize)?;
+        if self.range.is_none() {
+            r.seek(meta.doc_start_fp as usize)?;
+        }
 
         // Mirror `Lucene104PostingsReader.BlockPostingsEnum.reset`'s level-1
         // setup (`Lucene104PostingsReader.java:559-568`): below
@@ -1405,6 +1448,12 @@ impl<'a> DocInput<'a> {
         has_payloads: bool,
         flags: PostingsFlags,
     ) -> Result<()> {
+        if self.range.is_some() {
+            *cursor =
+                self.lazy_cursor_with_flags(meta, doc_freq, index_options, has_payloads, flags)?;
+            return Ok(());
+        }
+        cursor.range_postings = None;
         if doc_freq <= 1 {
             return Err(Error::Unsupported(
                 "docFreq <= 1: use singleton_postings instead (no .doc bytes are written)",
@@ -1482,8 +1531,28 @@ impl<'a> DocInput<'a> {
             level1_last_doc_id,
         } = self.cursor_prelude(meta, doc_freq, index_options, has_payloads)?;
 
+        let range_postings = if let Some(range) = &self.range {
+            if doc_freq > 1 {
+                Some(RangeCursor {
+                    postings: range.read_postings(
+                        meta,
+                        doc_freq,
+                        index_options,
+                        has_payloads,
+                        flags,
+                    )?,
+                    idx: 0,
+                    started: false,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         Ok(LazyDocsCursor {
             r,
+            range_postings,
             index_has_freq: index_options != IndexOptions::Docs,
             needs_freq: flags.needs_freq(),
             needs_impacts: flags.needs_impacts(),
@@ -3069,7 +3138,7 @@ pub fn read_occurrences_for_doc(
         return Ok(Some(all.swap_remove(i)));
     }
     let mut cursor = doc.lazy_cursor(meta, doc_freq, index_options, has_payloads)?;
-    cursor.track_positions();
+    cursor.track_positions()?;
     if cursor.advance(doc_id)? != doc_id {
         return Ok(None);
     }
@@ -4541,6 +4610,7 @@ fn or_shifted_bits(dst: &mut [u64], src: &[u64], lo: usize, hi: usize, off: i64)
 #[derive(Debug)]
 pub struct LazyDocsCursor<'a> {
     r: SliceInput<'a>,
+    range_postings: Option<RangeCursor>,
     index_has_freq: bool,
     /// `needsFreq`: whether the consumer asked for frequencies
     /// ([`PostingsFlags`]). When false the frequency block of every refilled
@@ -4763,6 +4833,31 @@ struct PendingBlock {
     body_end: usize,
 }
 
+#[derive(Debug)]
+struct RangeCursor {
+    postings: Postings,
+    idx: usize,
+    started: bool,
+}
+impl RangeCursor {
+    fn advance(&mut self, target: i32) -> i32 {
+        let mut cursor = PostingsCursor {
+            postings: &self.postings,
+            idx: self.idx,
+            started: self.started,
+        };
+        let doc = cursor.advance(target);
+        self.idx = cursor.idx;
+        self.started = cursor.started;
+        doc
+    }
+    fn freq(&self) -> Option<i32> {
+        self.started
+            .then(|| self.postings.freqs.get(self.idx).copied())
+            .flatten()
+    }
+}
+
 impl<'a> LazyDocsCursor<'a> {
     /// The current doc ID (see the `doc_id` field's doc comment for the
     /// three-state contract).
@@ -4780,9 +4875,13 @@ impl<'a> LazyDocsCursor<'a> {
     /// `debug_assert`: turned on later, the blocks already crossed never added
     /// their skip deltas and the origins would be silently wrong. Its two
     /// callers set it immediately after construction.
-    pub(crate) fn track_positions(&mut self) {
+    pub(crate) fn track_positions(&mut self) -> Result<()> {
+        if self.range_postings.is_some() {
+            return Err(Error::Unsupported("range positions are not advertised"));
+        }
         debug_assert_eq!(self.doc_id, -1, "track_positions after the cursor moved");
         self.needs_pos = true;
+        Ok(())
     }
 
     /// Whether the field was indexed with frequencies (`indexHasFreq`):
@@ -4795,6 +4894,9 @@ impl<'a> LazyDocsCursor<'a> {
     /// The current doc's frequency, or `None` before the first
     /// `next_doc()`/`advance()` call or once exhausted.
     pub fn freq(&self) -> Option<i32> {
+        if let Some(range) = &self.range_postings {
+            return range.freq();
+        }
         if self.doc_id != -1 && self.doc_id != NO_MORE_DOCS {
             Some(self.block_freqs[self.block_pos])
         } else {
@@ -4914,6 +5016,9 @@ impl<'a> LazyDocsCursor<'a> {
     /// `ReqExclBulkScorer` over a nearly dense excluded term then jumps each
     /// run once instead of stepping through it a document at a time.
     pub fn doc_id_run_end(&self) -> i32 {
+        if self.range_postings.is_some() {
+            return self.doc_id.saturating_add(1);
+        }
         // Only a `Lucene104` block is ever kept as bits (`refill`).
         const DENSE_WORDS: usize = (BLOCK_SIZE as usize) / 64;
         let doc = self.doc_id;
@@ -5057,6 +5162,9 @@ impl<'a> LazyDocsCursor<'a> {
     /// needsRefilling)`), and `advance` here already carried the same guard.
     #[inline]
     pub fn next_doc(&mut self) -> Result<i32> {
+        if self.range_postings.is_some() {
+            return self.advance(self.doc_id.saturating_add(1));
+        }
         if self.doc_id == NO_MORE_DOCS {
             return Ok(NO_MORE_DOCS);
         }
@@ -5154,6 +5262,16 @@ impl<'a> LazyDocsCursor<'a> {
         docs: &mut Vec<i32>,
         freqs: &mut Vec<i32>,
     ) -> Result<()> {
+        if self.range_postings.is_some() {
+            docs.clear();
+            freqs.clear();
+            while self.doc_id >= 0 && self.doc_id < up_to && docs.len() < max {
+                docs.push(self.doc_id);
+                freqs.push(self.freq().unwrap_or(1));
+                self.next_doc()?;
+            }
+            return Ok(());
+        }
         docs.clear();
         freqs.clear();
         if self.pending.is_some() {
@@ -5207,6 +5325,10 @@ impl<'a> LazyDocsCursor<'a> {
     /// block, crossing into later blocks, the end) is [`Self::advance_slow`].
     #[inline]
     pub fn advance(&mut self, target: i32) -> Result<i32> {
+        if let Some(range) = &mut self.range_postings {
+            self.doc_id = range.advance(target);
+            return Ok(self.doc_id);
+        }
         self.bits_stepped = false;
         let (pos, len) = (self.block_pos, self.block_len);
         // A cursor on a kept bit set, with the target inside the block the
@@ -5294,6 +5416,9 @@ impl<'a> LazyDocsCursor<'a> {
     /// it, a pending block): use [`Self::advance`].
     #[inline]
     pub fn advance_exact_in_bits(&mut self, target: i32) -> Option<bool> {
+        if self.range_postings.is_some() {
+            return None;
+        }
         let (base, n) = self.bits?;
         if !(target > self.doc_id
             && target <= self.prev_doc_id
@@ -5341,6 +5466,25 @@ impl<'a> LazyDocsCursor<'a> {
     /// words.len()`; a document outside the window (only a corrupt block has
     /// one) is dropped rather than written out of bounds.
     pub fn into_window(&mut self, base: i32, end: i32, words: &mut [u64]) -> Result<i32> {
+        if self.range_postings.is_some() {
+            let mut doc = self.advance(base)?;
+            while doc < end {
+                let bit = usize::try_from(
+                    doc.checked_sub(base)
+                        .ok_or(Error::Unsupported("invalid range bit window"))?,
+                )
+                .map_err(|_| Error::Unsupported("invalid range bit window"))?;
+                let word = words
+                    .get_mut(bit >> 6)
+                    .ok_or(Error::Unsupported("range bit window capacity"))?;
+                *word |= 1u64
+                    .checked_shl((bit & 63) as u32)
+                    .ok_or(Error::Unsupported("range bit shift"))?;
+                doc = self.next_doc()?;
+            }
+            return Ok(doc);
+        }
+
         let mut doc = self.doc_id;
         while doc < end {
             if let (Some((bbase, n)), None, false) = (self.bits, self.pending, self.needs_freq) {
@@ -5613,6 +5757,9 @@ impl<'a> LazyDocsCursor<'a> {
     /// contract Lucene's `ImpactsEnum` has, and it is what lets a caller walk
     /// blocks on impacts alone.
     pub fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        if self.range_postings.is_some() {
+            return Ok(NO_MORE_DOCS);
+        }
         // Already positioned on a block that covers `target`, decoded or not.
         if target <= self.level0_last_doc_id {
             return Ok(self.level0_last_doc_id);
@@ -6298,7 +6445,7 @@ impl<'a> PositionsCursor<'a> {
         has_payloads: bool,
     ) -> Result<Self> {
         let mut docs = docs;
-        docs.track_positions();
+        docs.track_positions()?;
         let bs = pos.format.block_size() as i64;
         // `total_term_freq % BLOCK_SIZE`, which is in `0..256`.
         let tail_count = total_term_freq.rem_euclid(bs) as usize;

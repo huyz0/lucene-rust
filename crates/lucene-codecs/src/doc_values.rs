@@ -1088,6 +1088,34 @@ fn slice_at(data: &[u8], start: i64, end: i64) -> Result<&[u8]> {
         .ok_or_else(|| lucene_store::Error::Eof { offset: 0 }.into())
 }
 
+/// Header/footer framing of an immutable range data file, without a full-file
+/// buffer. Full integrity is separately available on RangeInput.
+pub fn check_range_data_header_footer(
+    input: &lucene_store::range_input::RangeInput,
+    id: &[u8; ID_LENGTH],
+    suffix: &str,
+) -> Result<i32> {
+    let mut prefix = [0u8; 512];
+    let count = prefix.len().min(input.len());
+    input.read_exact_at(0, &mut prefix[..count])?;
+    let mut footer = [0u8; codec_util::FOOTER_LENGTH];
+    let at = input
+        .len()
+        .checked_sub(footer.len())
+        .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+    input.read_exact_at(at, &mut footer)?;
+    codec_util::retrieve_checksum(&footer)?;
+    let header = codec_util::check_index_header(
+        &mut SliceInput::new(&prefix[..count]),
+        DATA_META_CODEC,
+        VERSION_START,
+        VERSION_CURRENT,
+        id,
+        suffix,
+    )?;
+    Ok(header.version)
+}
+
 /// Reads the numeric doc-values value for `doc`, handling all three
 /// docs-with-a-value shapes (empty/dense/sparse) and all three per-value
 /// encodings (constant/table/GCD-delta). `data` is the whole `.dvd` file's
@@ -1261,6 +1289,7 @@ pub fn numeric_value_range(
 #[derive(Debug, Clone)]
 pub struct NumericReader<'a> {
     data: &'a [u8],
+    range: Option<lucene_store::range_input::RangeInput>,
     entry: &'a NumericEntry,
     /// Forward-only cursor over the docs-with-field region of a sparse field;
     /// `None` for a dense or empty one, and `None` when the region's byte range
@@ -1450,6 +1479,7 @@ impl<'a> NumericReader<'a> {
         };
         Self {
             data,
+            range: None,
             entry,
             docs,
             block: None,
@@ -1493,8 +1523,18 @@ impl<'a> NumericReader<'a> {
         self.entry
     }
 
+    /// Numeric cursor over an immutable range source; no whole-file slice.
+    pub fn new_range(data: lucene_store::range_input::RangeInput, entry: &'a NumericEntry) -> Self {
+        let mut reader = Self::new(&[], entry);
+        reader.range = Some(data);
+        reader
+    }
+
     #[inline(always)]
     pub fn value(&mut self, doc: i32) -> Result<Option<i64>> {
+        if let Some(range) = &self.range {
+            return numeric_value_range(range, self.entry, doc);
+        }
         if let Some(v) = self.fast.as_ref().and_then(|f| f.get(doc)) {
             return Ok(Some(v));
         }

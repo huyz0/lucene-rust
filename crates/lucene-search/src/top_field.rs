@@ -3274,9 +3274,10 @@ fn open_leaf<'a>(
                     .find(|i| i.name == f.field);
                 let (column, with_value) = match info {
                     None => (Column::Absent, WithValue::None),
-                    Some(info) => match reader.doc_values_for_field(info.number) {
+                    Some(info) => match reader.doc_values_input_for_field(info.number) {
                         None => (Column::Absent, WithValue::None),
-                        Some((meta, data)) => {
+                        Some((meta, source)) => {
+                            let data = source.resident().unwrap_or(&[]);
                             if let Some(e) = meta
                                 .sorted_numeric_entry(info.number)
                                 .filter(|e| e.addresses.is_none())
@@ -3284,8 +3285,12 @@ fn open_leaf<'a>(
                                 // One value per document: `DocValues.singleton`
                                 // over the numeric column, as Lucene reads it.
                                 (
-                                    Column::Single(NumericReader::new(data, &e.numeric)),
-                                    WithValue::of(data, &e.numeric),
+                                    Column::Single(reader.numeric_values(&e.numeric, data)),
+                                    if reader.has_range_doc_values() {
+                                        WithValue::All
+                                    } else {
+                                        WithValue::of(data, &e.numeric)
+                                    },
                                 )
                             } else if let Some(e) = meta.sorted_numeric_entry(info.number) {
                                 (
@@ -3299,8 +3304,12 @@ fn open_leaf<'a>(
                                 )
                             } else if let Some(e) = meta.numeric_entry(info.number) {
                                 (
-                                    Column::Single(NumericReader::new(data, e)),
-                                    WithValue::of(data, e),
+                                    Column::Single(reader.numeric_values(e, data)),
+                                    if reader.has_range_doc_values() {
+                                        WithValue::All
+                                    } else {
+                                        WithValue::of(data, e)
+                                    },
                                 )
                             } else if meta.binary_entry(info.number).is_some()
                                 || meta.sorted_entry(info.number).is_some()

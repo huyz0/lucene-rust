@@ -77,6 +77,7 @@ use lucene_index::segment_info::{self, SegmentInfo};
 use lucene_index::segment_infos::{self, SegmentInfos};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::{Directory, Input};
+use lucene_store::range_input::RangeInput;
 use lucene_util::fixed_bit_set::FixedBitSet;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -137,6 +138,21 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// [`SegmentReader`]'s decoded sparse doc-values documents, by the data's
 /// address and the set's offset in it.
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
+
+/// Explicit doc-values byte capability. A range source is never represented
+/// by an empty resident slice or mistaken for an absent column.
+pub enum DocValuesInput<'a> {
+    Resident(&'a [u8]),
+    Range(RangeInput),
+}
+impl<'a> DocValuesInput<'a> {
+    pub fn resident(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::Resident(bytes) => Some(bytes),
+            Self::Range(_) => None,
+        }
+    }
+}
 
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
@@ -219,6 +235,9 @@ pub struct SegmentReader {
     /// that opening it did. A refcount bump is what that comment always
     /// described.
     doc_buf: Option<Arc<Input>>,
+    range_doc: Option<RangeInput>,
+    range_dv: Option<RangeInput>,
+    range_files: Vec<RangeInput>,
     /// Original `.tim`, `.tip`, `.doc`, `.pos` and `.pay` files for each
     /// postings format, shared for [`Self::check_integrity`]. Multi-format
     /// iteration buffers concatenate files and have no whole-buffer checksum.
@@ -411,6 +430,19 @@ impl SegmentReader {
         // into one archive -- see `open_segment_file`'s doc comment for how
         // every sub-file lookup below transparently reads from it instead of
         // `dir.open`-ing a loose file that wouldn't exist on disk.
+        if dir.is_range_directory()
+            && (si.is_compound_file
+                || si.doc_count > 4096
+                || si
+                    .files
+                    .iter()
+                    .any(|f| f.ends_with(".vec") || f.ends_with(".vex")))
+        {
+            return Err(lucene_store::Error::IllegalArgument(
+                "range profile requires a bounded non-compound non-vector segment".into(),
+            )
+            .into());
+        }
         let compound = if si.is_compound_file {
             Some(CompoundArchive::open(dir, &segment_name, &segment_id)?)
         } else {
@@ -444,6 +476,10 @@ impl SegmentReader {
         );
         per_field_postings::validate_routed_groups(&field_infos.fields, &postings_names)
             .map_err(|message| Error::Store(lucene_store::Error::Corrupted(message)))?;
+        let range_tim = segment_range(dir, compound.as_ref(), &si.files, ".tim")?;
+        let range_doc = segment_range(dir, compound.as_ref(), &si.files, ".doc")?;
+        let mut range_files: Vec<RangeInput> =
+            range_tim.iter().chain(range_doc.iter()).cloned().collect();
         let tim_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tim")?;
         let tip_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tip")?;
         let tmd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tmd")?;
@@ -462,6 +498,12 @@ impl SegmentReader {
                 per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(s))
             });
 
+        if dir.is_range_directory() && multi_format {
+            return Err(lucene_store::Error::IllegalArgument(
+                "range profile requires a single modern postings group".into(),
+            )
+            .into());
+        }
         let (fields, segment_suffix, doc_buf, pos_buf, pay_buf, postings_files) = if multi_format {
             open_per_field_postings(
                 dir,
@@ -504,15 +546,27 @@ impl SegmentReader {
             // reader -- more than the copy alone, because the copy also
             // first-touched 4.7 MB of the mapping that the lazy dictionary now
             // never faults in.
-            let fields = blocktree::open_shared(
-                tim_bytes.clone().unwrap() as blocktree::SharedBytes,
-                tip_bytes.clone().unwrap() as blocktree::SharedBytes,
-                tmd_bytes.as_ref().unwrap(),
-                &field_infos,
-                &segment_id,
-                &segment_suffix,
-                si.doc_count,
-            )?;
+            let fields = if let Some(input) = range_tim.clone() {
+                blocktree::open_range_terms(
+                    input,
+                    tip_bytes.clone().unwrap() as blocktree::SharedBytes,
+                    tmd_bytes.as_ref().unwrap(),
+                    &field_infos,
+                    &segment_id,
+                    &segment_suffix,
+                    si.doc_count,
+                )?
+            } else {
+                blocktree::open_shared(
+                    tim_bytes.clone().unwrap() as blocktree::SharedBytes,
+                    tip_bytes.clone().unwrap() as blocktree::SharedBytes,
+                    tmd_bytes.as_ref().unwrap(),
+                    &field_infos,
+                    &segment_id,
+                    &segment_suffix,
+                    si.doc_count,
+                )?
+            };
 
             let doc_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".doc")?;
             let pos_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pos")?;
@@ -527,6 +581,7 @@ impl SegmentReader {
             ]
             .into_iter()
             .flatten()
+            .filter(|input| !input.is_empty())
             .collect();
             (
                 Arc::new(fields),
@@ -577,6 +632,8 @@ impl SegmentReader {
         // tests in `index_writer.rs`), but a real Lucene-written segment
         // (e.g. `fixtures/data/compound_index/`) gives doc values their own
         // codec suffix (`Lucene90_<n>`), independent of the postings suffix.
+        let range_stored = segment_range(dir, compound.as_ref(), &si.files, ".fdt")?;
+        range_files.extend(range_stored.iter().cloned());
         let stored = match (
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdt")?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdx")?,
@@ -587,6 +644,7 @@ impl SegmentReader {
                     .expect("an opened .fdt has an entry");
                 Some(Arc::new(StoredFiles {
                     fdt,
+                    range: range_stored.clone(),
                     fdx,
                     fdm,
                     suffix: codec_suffix_of(&name, &segment_name, ".fdt"),
@@ -619,6 +677,8 @@ impl SegmentReader {
             _ => ext.to_string(),
         };
         let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvm"))?;
+        let range_dv = segment_range(dir, compound.as_ref(), &si.files, &dv_ext(".dvd"))?;
+        range_files.extend(range_dv.iter().cloned());
         let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvd"))?;
         let mut dvs = Vec::new();
         let mut base_dv_suffix = None;
@@ -633,8 +693,27 @@ impl SegmentReader {
                 // digit as a bogus suffix (`_0.dvm` -> strip leading `_` ->
                 // `0.dvm` -> suffix `"0"`, wrong).
                 let dv_suffix = codec_suffix_of(&dvm_file_name, &segment_name, ".dvm");
-                let (_, meta) =
+                let (meta_version, meta) =
                     doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
+                if let Some(input) = &range_dv {
+                    if doc_values::check_range_data_header_footer(input, &segment_id, &dv_suffix)?
+                        != meta_version
+                    {
+                        return Err(lucene_store::Error::Corrupted(
+                            "range doc-values version mismatch".into(),
+                        )
+                        .into());
+                    }
+                    if !meta.binary.is_empty()
+                        || !meta.sorted.is_empty()
+                        || !meta.sorted_set.is_empty()
+                        || meta.sorted_numeric.iter().any(|e| e.addresses.is_some())
+                        || dv_suffixes.len() > 1
+                        || commit.doc_values_gen != -1
+                    {
+                        return Err(lucene_store::Error::IllegalArgument("range profile requires single-valued numeric doc values without updates".into()).into());
+                    }
+                }
                 let meta = Arc::new(meta);
                 if let Some(bytes) =
                     open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvs"))?
@@ -912,6 +991,9 @@ impl SegmentReader {
             segment_suffix,
             fields,
             doc_buf,
+            range_doc,
+            range_dv,
+            range_files,
             postings_files,
             pos_buf,
             pay_buf,
@@ -1140,6 +1222,9 @@ impl SegmentReader {
     /// # Errors
     /// The first file whose footer or checksum does not verify.
     pub fn check_integrity(&self) -> crate::Result<()> {
+        for input in &self.range_files {
+            input.check_integrity()?;
+        }
         if let Some(core) = &self.simpletext {
             return core.check_integrity();
         }
@@ -1152,6 +1237,13 @@ impl SegmentReader {
         ]
         .into_iter()
         .flatten()
+        .filter(|input| {
+            !(self.range_dv.is_some()
+                && self
+                    .dv_data
+                    .as_ref()
+                    .is_some_and(|dv| std::ptr::eq(*input, dv)))
+        })
         // A foreign dictionary's optional file it never wrote (MockRandom's
         // unchosen terms index) stands in empty: there is nothing to check.
         .chain(self.postings_files.iter().filter(|f| !f.is_empty()))
@@ -1159,7 +1251,10 @@ impl SegmentReader {
             files.push(f);
         }
         if let Some(s) = self.stored.as_deref() {
-            files.extend([&**s.fdt, &**s.fdx]);
+            if s.range.is_none() {
+                files.push(&s.fdt);
+            }
+            files.push(&s.fdx);
         }
         // `Lucene90DocValuesProducer.checkIntegrity` checksums the skip
         // index too.
@@ -1200,10 +1295,18 @@ impl SegmentReader {
     )> {
         use std::sync::atomic::Ordering;
         let validated = self.postings_validated.load(Ordering::Acquire);
-        let doc_in = match &self.doc_buf {
-            Some(buf) if validated => Some(DocInput::validated(buf)),
-            Some(buf) => Some(DocInput::open(buf, &self.segment_id, &self.segment_suffix)?),
-            None => None,
+        let doc_in = if let Some(input) = &self.range_doc {
+            Some(DocInput::open_range(
+                input.clone(),
+                &self.segment_id,
+                &self.segment_suffix,
+            )?)
+        } else {
+            match &self.doc_buf {
+                Some(buf) if validated => Some(DocInput::validated(buf)),
+                Some(buf) => Some(DocInput::open(buf, &self.segment_id, &self.segment_suffix)?),
+                None => None,
+            }
         };
         let pos_in = match &self.pos_buf {
             Some(buf) if validated => Some(PosInput::validated(buf)),
@@ -1275,17 +1378,34 @@ impl SegmentReader {
         let meta = match f.meta.get() {
             Some(m) => m,
             None => {
-                let opened = lucene_codecs::stored_fields::open(
-                    &f.fdt,
-                    &f.fdx,
-                    &f.fdm,
-                    &self.segment_id,
-                    &f.suffix,
-                )?;
-                f.meta.get_or_init(|| opened.rebind(&[], &[]))
+                if let Some(input) = &f.range {
+                    let opened = lucene_codecs::stored_fields::open_range(
+                        input.clone(),
+                        &f.fdx,
+                        &f.fdm,
+                        &self.segment_id,
+                        &f.suffix,
+                    )?;
+                    let _ = f.meta.set(opened.metadata());
+                    f.meta.get().expect("stored metadata installed")
+                } else {
+                    let opened = lucene_codecs::stored_fields::open(
+                        &f.fdt,
+                        &f.fdx,
+                        &f.fdm,
+                        &self.segment_id,
+                        &f.suffix,
+                    )?;
+                    f.meta.get_or_init(|| opened.rebind(&[], &[]))
+                }
             }
         };
-        meta.rebind(&f.fdt, &f.fdx).visit_document(doc, visitor)?;
+        if let Some(input) = &f.range {
+            meta.rebind(&[], &f.fdx)
+                .visit_document_range(input, doc, visitor)?;
+        } else {
+            meta.rebind(&f.fdt, &f.fdx).visit_document(doc, visitor)?;
+        }
         Ok(true)
     }
 
@@ -1365,6 +1485,9 @@ impl SegmentReader {
 
     /// The segment's `.dvd`, or `None` if it has no doc-values files at all.
     pub fn doc_values_data(&self) -> Option<&[u8]> {
+        if self.range_dv.is_some() {
+            return None;
+        }
         if let Some(core) = &self.simpletext {
             return core.search.built_doc_values().map(|form| &*form.data);
         }
@@ -1382,6 +1505,9 @@ impl SegmentReader {
     /// keeps working for un-updated fields rather than silently reading a
     /// column that has been superseded for one field and not another.
     pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
+        if self.range_dv.is_some() {
+            return None;
+        }
         if let Some(core) = &self.simpletext {
             return core
                 .search
@@ -1399,6 +1525,38 @@ impl SegmentReader {
             (Some(meta), Some(data)) => Some((meta, &***data)),
             _ => None,
         }
+    }
+
+    /// Source-aware counterpart of the materialized-only byte-slice view.
+    /// Legacy views return no resident bytes for a range reader, not a claim
+    /// that the field is absent. Query executors use this capability instead.
+    pub fn doc_values_input_for_field(
+        &self,
+        field: i32,
+    ) -> Option<(&DocValuesMeta, DocValuesInput<'_>)> {
+        if let Some(input) = &self.range_dv {
+            return Some((
+                self.dv_meta.as_deref()?,
+                DocValuesInput::Range(input.clone()),
+            ));
+        }
+        self.doc_values_for_field(field)
+            .map(|(meta, data)| (meta, DocValuesInput::Resident(data)))
+    }
+
+    /// Numeric cursor bound to this segment's actual data source.
+    pub fn numeric_values<'a>(
+        &'a self,
+        entry: &'a doc_values::NumericEntry,
+        resident: &'a [u8],
+    ) -> doc_values::NumericReader<'a> {
+        match &self.range_dv {
+            Some(input) => doc_values::NumericReader::new_range(input.clone(), entry),
+            None => doc_values::NumericReader::new(resident, entry),
+        }
+    }
+    pub fn has_range_doc_values(&self) -> bool {
+        self.range_dv.is_some()
     }
 
     /// `LeafReader.getDocValuesSkipper(field)`'s index: the field's
@@ -2190,13 +2348,32 @@ fn open_segment_file(
             let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
             Ok(Some(Arc::new(slice)))
         }
-        None => Ok(Some(Arc::new(dir.open(&name)?))),
+        None => match dir.open_range(&name)? {
+            Some(_) => Ok(Some(Arc::new(Input::Owned(Vec::new())))),
+            None => Ok(Some(Arc::new(dir.open(&name)?))),
+        },
+    }
+}
+
+fn segment_range(
+    dir: &dyn Directory,
+    compound: Option<&CompoundArchive>,
+    files: &[String],
+    ext: &str,
+) -> Result<Option<RangeInput>> {
+    if compound.is_some() {
+        return Ok(None);
+    }
+    match find_segment_file_name(files, None, ext) {
+        Some(name) => Ok(dir.open_range(&name)?),
+        None => Ok(None),
     }
 }
 
 /// A segment's stored-fields files and their codec suffix.
 struct StoredFiles {
     fdt: Arc<Input>,
+    range: Option<RangeInput>,
     fdx: Arc<Input>,
     fdm: Arc<Input>,
     suffix: String,
