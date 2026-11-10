@@ -251,3 +251,17 @@ for physical-line projection. Native summary totals remain diagnostics; they
 do not replace physical per-file/per-crate/changed-line accounting. The
 existing workspace 95% gate remains unchanged. This wiring is not a report
 that those cells ran or passed.
+
+
+Run `42791762122` at `2d091f4e` passed the extended real query test, including
+unique accessed-block accounting, wrapper capability, baseline trace and
+streaming integrity. It still failed search Clippy: optional numeric state
+boxing reduced the join column from 464 to 440 bytes but the variant remained
+over the lint's size-difference threshold. The follow-up also boxes the two
+numeric cursor variants within the join column. That adds one allocation per
+present numeric join leaf, rather than suppressing the lint or inflating every
+leaf's inline state. Existing join tests remain part of the full suite.
+New source controls cover valid-materialized compound/oversized/nonnumeric
+index refusal, directory identity/count/byte admission, immutable operations,
+metadata reuse and streaming checksum corruption/truncation. Their hosted
+results are pending at this source checkpoint.
