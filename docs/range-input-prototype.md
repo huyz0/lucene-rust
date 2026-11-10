@@ -492,3 +492,31 @@ refuses before loop allocation or native work. CPU2, zero swap, PID256, scratch
 20GiB, output2MiB, exact test scopes/floors and declared deadlines remain. Guest
 checks and receipts bind the actual memory cap; this prospective capacity
 change supplies no qualification until observed on fresh standard hosted VMs.
+
+
+### Fresh native member evidence and narrow handling
+
+Diagnostic source `c3449e4e`, run `42828317246`, ended intentionally with exit78
+after69.147seconds. Artifact `13771522050` contains approved names/headers;
+its JSON SHA256 is `b79c1e8fafec19ae707091dbaeb376dbb765f776cb4900a9108c5a863c20c893`.
+Each of the three production libraries had18members:16`.o` objects and exact
+`lib.rmeta`/`lib.rmeta-link` members. Both metadata members were native ELF64
+x86-64 objects with respective `.rmeta`/`.rmeta-link`, null, `.note.gnu.property`,
+`.symtab`, `.strtab` and `.shstrtab` sections. This fresh observation does not
+reconstruct the old failure's lost member identity.
+
+The normal producer now extracts and inventories every member, including both
+metadata wrappers, and obtains native file/section headers. Every admitted
+object carrying `__llvm_covmap` or `__llvm_covfun` enters the same unfiltered
+empty-profile export, regardless of its metadata filename. An unmapped metadata
+wrapper must match that observed metadata-only section shape and contain no
+executable section. Unknown non-`.o` names, unknown coverage sections, malformed
+headers and unexpected metadata payloads refuse; no generic nonobject skip is
+introduced. Native header output remains bounded1MiB/member; only approved
+header diagnostics, names and existing source/object hashes are exported, never
+raw archive members or byte prefixes. The original full component command is
+restored; the diagnostic-only prefix/exit78 is removed. Ten Python admission
+controls cover the observed wrappers, mapped metadata inclusion and meaningful
+refusals. The source-bound production denominator and physical per-file95 /
+aggregate-per-crate-changed90 floors remain unchanged. Final-source native
+matrix, actual production coverage and independent review are still required.

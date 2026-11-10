@@ -51,6 +51,57 @@ def record(path):
     return {"path": str(path), "bytes": length, "sha256": digest.hexdigest()}
 
 
+def classify_member(member, headers):
+    """Classify pinned native ELF sections, never discard maps by suffix.
+
+    Rust1.97.1's observed metadata members are ELF wrappers too. Unmapped
+    wrappers must have exactly the fresh probe's metadata-only section shape.
+    """
+    metadata = {"lib.rmeta": ".rmeta", "lib.rmeta-link": ".rmeta-link"}
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", member) or member.startswith("-"):
+        raise ValueError("invalid production archive member")
+    if not member.endswith(".o") and member not in metadata:
+        raise ValueError("unexpected nonobject archive member: " + member)
+    if len(headers.encode()) > 1024**2:
+        raise ValueError("native section header byte limit")
+    formats = re.findall(r"file format ([A-Za-z0-9_-]+)\s*$", headers, re.MULTILINE)
+    if formats != ["elf64-x86-64"] or headers.count("Sections:\n") != 1:
+        raise ValueError("unexpected native production object format")
+    rows = headers.split("Sections:\n", 1)[1].splitlines()
+    if not rows or rows[0].split() != ["Idx", "Name", "Size", "VMA", "Type"]:
+        raise ValueError("unexpected native section table")
+    names, executable = [], False
+    for row in rows[1:]:
+        if not row.strip():
+            continue
+        fields = row.split()
+        if len(fields) == 3:
+            index, size, address = fields
+            name, kinds = "", []
+        elif 4 <= len(fields) <= 6:
+            index, name, size, address, *kinds = fields
+        else:
+            raise ValueError("unexpected native section row")
+        if (not index.isdecimal() or int(index) != len(names)
+                or not re.fullmatch(r"[0-9a-fA-F]{8,16}", size)
+                or not re.fullmatch(r"[0-9a-fA-F]{16}", address)):
+            raise ValueError("invalid native section coordinate")
+        names.append(name)
+        executable |= any("TEXT" in kind for kind in kinds)
+    if not names or names[0] != "":
+        raise ValueError("missing native null section")
+    sections = set(names)
+    maps = {"__llvm_covmap", "__llvm_covfun"}
+    if any(name.startswith("__llvm_cov") and name not in maps for name in sections):
+        raise ValueError("unknown native coverage section")
+    has_map = bool(sections & maps)
+    if member in metadata and not has_map:
+        expected = {"", ".note.gnu.property", metadata[member], ".symtab", ".strtab", ".shstrtab"}
+        if sections != expected or len(names) != len(expected) or executable:
+            raise ValueError("unexpected unmapped metadata object sections")
+    return has_map, "metadata" if member in metadata else "code-object"
+
+
 def main():
     source = os.environ.get("EXPECTED_SOURCE", "")
     if sys.platform != "linux" or Path.cwd() != Path("/src") or not re.fullmatch(r"[0-9a-f]{40}", source):
@@ -141,18 +192,26 @@ def main():
         for member in members:
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", member) or member.startswith("-"):
                 raise ValueError("invalid production archive member")
-            if not member.endswith(".o"):
-                if member != "lib.rmeta":
-                    raise ValueError("unexpected nonobject archive member: " + package + ":" + member)
-                continue
             if len(objects) >= 10000:
                 raise ValueError("production object count exhausted")
             obj = root / (str(len(objects)) + ".o")
             output([str(llvm / "llvm-ar"), "p", str(artifact), member], obj, 512 * 1024**2)
             sections = root / (str(len(objects)) + "-sections.txt")
-            output([str(llvm / "llvm-objdump"), "--section-headers", str(obj)], sections, 1024**2)
-            has_map = any(token in sections.read_text() for token in ("__llvm_covmap", "__llvm_covfun"))
-            objects.append({**record(obj), "package": package, "member": member, "has_map": has_map})
+            output([str(llvm / "llvm-objdump"), "--file-headers", "--section-headers", str(obj)], sections, 1024**2)
+            headers = sections.read_text()
+            try:
+                has_map, kind = classify_member(member, headers)
+            except ValueError as error:
+                archive_receipts[-1]["rejected_member"] = {"member": member, "headers": headers}
+                diagnostic = (json.dumps({"source": source, "mode": "production-export",
+                                          "archives": archive_receipts}, sort_keys=True) + "\n").encode()
+                if len(diagnostic) > 4 * 1024**2:
+                    raise ValueError("production archive receipt byte limit") from error
+                (SCRATCH / "tmp" / "production-archive-inventory.json").write_bytes(diagnostic)
+                raise ValueError(package + ":" + member + ": " + str(error)) from error
+            objects.append({**record(obj), "package": package, "member": member,
+                            "native_kind": kind, "has_map": has_map,
+                            "metadata_headers": headers if kind == "metadata" else None})
             if has_map:
                 mapped.append(str(obj))
     if probe:

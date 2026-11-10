@@ -44,11 +44,7 @@ fi
 '''
 
 PROFILES = {
-    "component": r'''rustup component add llvm-tools-preview --toolchain 1.97.1
-python3 -B scripts/range-production-coverage.py --archive-probe
-echo 'Diagnostic archive probe complete; full component qualification intentionally not run.'
-exit 78
-cargo check --locked -p lucene-store -p lucene-codecs --all-targets
+    "component": r'''cargo check --locked -p lucene-store -p lucene-codecs --all-targets
 cargo check --locked -p lucene-search --lib
 cargo test --locked -p lucene-store --lib range_input
 cargo test --locked -p lucene-codecs --test blocktree_fixtures range_terms_postings_and_filter_match_java_with_eviction_and_faults
@@ -77,6 +73,7 @@ cargo clippy --locked -p lucene-store --lib -- -D warnings
 python3 -B scripts/check-arith-allows.py
 python3 -B scripts/check-port-invariants.py
 python3 -B scripts/check-parity.py
+python3 -B scripts/test-range-production-coverage.py
 cargo fetch --locked
 python3 -B scripts/check-licences.py
 python3 -B scripts/check-vendored-licences.py
@@ -99,6 +96,7 @@ python3 -B scripts/range-provenance.py
 rustup component add llvm-tools-preview --toolchain 1.97.1
 cargo install --locked cargo-llvm-cov --version 0.8.7 --root /scratch/cov-tools
 export PATH="/scratch/cov-tools/bin:$PATH"
+python3 -B scripts/test-range-production-coverage.py
 python3 -B scripts/range-production-coverage.py
 set +e
 scripts/coverage.sh --locked --workspace --quiet -- --summary-only --fail-under-lines 95 > /scratch/tmp/coverage-summary.txt
