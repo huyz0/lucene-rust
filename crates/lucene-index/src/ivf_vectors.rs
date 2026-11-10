@@ -38,6 +38,19 @@ pub(crate) struct IvfField<'a> {
     pub dimension: usize,
     pub docs: &'a [i32],
     pub vectors: &'a [f32],
+    /// The segment's partitions, when the writer clusters each on its own
+    /// ([`crate::index_writer::IndexWriter::set_ivf_partition_clusters`]).
+    pub partitions: Option<Partitions<'a>>,
+}
+
+/// A segment's documents grouped by partition, for IVF fields clustered per
+/// partition.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Partitions<'a> {
+    /// Each partition's first document, ascending.
+    pub starts: &'a [i32],
+    /// [`IvfParams::partition_min_vectors`].
+    pub min_vectors: usize,
 }
 
 /// A source segment's IVF files, opened by a merge that writes the field
@@ -174,19 +187,33 @@ impl IvfGroupWriter {
                 doc_map: map.as_ref(),
             })
             .collect();
-        lucene_ivf::merge_field_with_vectors(
-            &mut self.writer,
-            &FieldVectors {
-                number: field.number,
-                similarity: util_similarity(field.similarity),
-                dimension: field.dimension,
-                docs: field.docs,
-                vectors: field.vectors,
-            },
-            &merge_sources,
-            self.factory.as_ref(),
-            &params,
-        )?;
+        let vectors = FieldVectors {
+            number: field.number,
+            similarity: util_similarity(field.similarity),
+            dimension: field.dimension,
+            docs: field.docs,
+            vectors: field.vectors,
+        };
+        // Partitions are clustered afresh: a source's clusters mix the
+        // partitions a merge brings together.
+        match field.partitions {
+            Some(partitions) => self.writer.add_partitioned_field(
+                &vectors,
+                partitions.starts,
+                self.factory.as_ref(),
+                &IvfParams {
+                    partition_min_vectors: partitions.min_vectors,
+                    ..params
+                },
+            )?,
+            None => lucene_ivf::merge_field_with_vectors(
+                &mut self.writer,
+                &vectors,
+                &merge_sources,
+                self.factory.as_ref(),
+                &params,
+            )?,
+        }
         self.any = true;
         Ok(())
     }
