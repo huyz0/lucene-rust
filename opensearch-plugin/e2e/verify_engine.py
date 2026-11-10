@@ -468,7 +468,7 @@ def realtime():
             "price": {"histogram": {"field": "price", "interval": 100}},
             "when": {"date_histogram": {"field": "d", "calendar_interval": "month"}}}
     # Aggregations the native pass answers alone: their aggregators are built only when Lucene
-    # collects them (a script query, which runs on Lucene).
+    # collects them (a script query, which runs on Lucene, over the buffered documents too).
     flat_aggs = {"tags": {"terms": {"field": "tag", "size": 20}}, "n": {"stats": {"field": "n"}},
                  "top": {"max": {"field": "price"}}}
     on_lucene = {"bool": {"filter": [{"script": {"script": "doc['n'].size() > 0 && doc['n'].value % 3 == 0"}}]}}
@@ -532,11 +532,26 @@ def realtime():
             check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: native aggregation total {q}")
             check(json.dumps(a["aggregations"], sort_keys=True) == json.dumps(b["aggregations"], sort_keys=True),
                   f"{where}: native aggregations {q}: {json.dumps(a['aggregations'])[:300]} vs {json.dumps(b['aggregations'])[:300]}")
-        # On Lucene the aggregators are built as it collects: they count what it matched.
-        body = {"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": flat_aggs}
-        a = must("POST", f"/{rt}/_search?request_cache=false", body)
-        check(a["aggregations"]["n"]["count"] == a["hits"]["total"]["value"],
-              f"{where}: aggregations on Lucene count its hits: {a['aggregations']['n']} vs {a['hits']['total']}")
+        # Searches Lucene answers (a script query, a highlight, versions) read the buffered
+        # documents too, and the documents updated since the commit once.
+        by_n = [{"n": "desc"}, {"@timestamp": "asc"}]
+        fox = {"match": {"body": "fox"}}
+        for body in [{"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": flat_aggs},
+                     {"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": aggs},
+                     {"query": on_lucene, "size": 100, "track_total_hits": True, "sort": by_n},
+                     {"query": fox, "size": 100, "track_total_hits": True, "version": True, "sort": by_n},
+                     {"query": fox, "size": 20, "track_total_hits": True, "sort": by_n,
+                      "highlight": {"fields": {"body": {}}}}]:
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            what = f"{where}: on Lucene {json.dumps(body)[:120]}"
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"],
+                  f"{what}: total {a['hits']['total']} vs {b['hits']['total']}")
+            check(json.dumps(a.get("aggregations"), sort_keys=True) == json.dumps(b.get("aggregations"), sort_keys=True),
+                  f"{what}: aggregations {json.dumps(a.get('aggregations'))[:300]} vs {json.dumps(b.get('aggregations'))[:300]}")
+            ha = [(h["_id"], h.get("sort"), h.get("_version"), h.get("highlight")) for h in a["hits"]["hits"]]
+            hb = [(h["_id"], h.get("sort"), h.get("_version"), h.get("highlight")) for h in b["hits"]["hits"]]
+            check(ha == hb, f"{what}: hits {ha[:2]} vs {hb[:2]}")
         # A sorted match_all that counts at most the default hits is one OpenSearch approximates
         # over the points, which buffered documents do not have yet.
         cases = [({"match": {"body": "fox"}}, s, True) for s in sorts]

@@ -52,6 +52,7 @@ use crate::jvm_reader::{boolean_of, decode_request, lookup};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
 use lucene_index::concurrent_writer::{FieldTotals, LeanSegment, LiveRequest, ViewBuffer};
+use lucene_index::segment_infos::SegmentCommitInfo;
 use lucene_search::directory_reader::SegmentReader;
 
 /// An open view and the writer it reads.
@@ -681,6 +682,8 @@ pub(crate) struct Chunk {
     /// Whether `reader` holds the documents' postings.
     postings: bool,
     reader: SegmentReader,
+    /// Where `reader`'s files are, for a JVM reader of them ([`ffi_live_view_lucene`]).
+    files: ChunkFiles,
     /// Without postings, `reader` with the terms of the last requests
     /// ([`request_key`]) overlaid, newest last: the documents and their
     /// statistics never change, so neither does a request's overlay.
@@ -1447,6 +1450,157 @@ fn build_view_reader(
     ))
 }
 
+/// What a search Lucene answers reads the view's buffers through, into
+/// `*out_ptr`/`*out_len`: the deletes since the commit of the reader at
+/// `handle` (the view's base), and each leaf of the view as a segment with
+/// its postings, for the JVM to open.
+///
+/// Little-endian: `segments: i32`, then per segment of the reader its
+/// live documents as of the view (`words: i32`, `-1` when none were
+/// deleted since the commit, then that many `i64`); then `leaves: i32`, and
+/// per leaf `kind: u8` (`0` a segment in memory, `1` the segment its buffer
+/// was flushed as, in the index's directory), the segment's name (`i32`
+/// length, UTF-8), its 16-byte id, its codec's name (as the name), the leaf's first document in it
+/// (`i32`), and with kind `0` its files (`count: i32`, each a name as above,
+/// `len: i64` and the bytes). A leaf of a flushed buffer may be a part of
+/// that segment, which also holds documents added after the view.
+///
+/// A buffer taken for a flush since the view opened is waited for up to
+/// `wait_ms` to publish; [`FfiStatus::InvalidArgument`] when it has not.
+///
+/// # Safety
+/// `out_ptr`/`out_len` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_live_view_lucene(
+    handle: u64,
+    view_id: u64,
+    wait_ms: i64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
+        let v = view(view_id)?;
+        let h = lookup(handle, "ffi_live_view_lucene: unknown or closed reader")?;
+        let w: &EngineWriter = &v.writer;
+        let wait = std::time::Duration::from_millis(u64::try_from(wait_ms).unwrap_or(0));
+        let deadline = std::time::Instant::now()
+            .checked_add(wait)
+            .unwrap_or_else(std::time::Instant::now);
+        let mut leaves: Vec<(ChunkFiles, i32)> = Vec::new();
+        for (b, plan) in v.view.buffers.iter().zip(&v.plans) {
+            match buffer_segment_files(w, b, plan, true, false, None) {
+                Ok(parts) => leaves.extend(parts.into_iter().map(|(_, _, files)| (files, 0))),
+                Err(lucene_index::index_writer::Error::LiveSearch(_)) => {
+                    // Taken for a flush since the view opened: its documents
+                    // are read from the segment it is flushed as.
+                    let sci = loop {
+                        if let Some(sci) = w.writer().live_published_segment(b.id) {
+                            break sci;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            set_last_error(format!(
+                                "live view: buffer {} is still being flushed",
+                                b.id
+                            ));
+                            return Err(FfiStatus::InvalidArgument);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    };
+                    leaves.extend(
+                        plan.iter()
+                            .map(|p| (ChunkFiles::Published(sci.clone()), p.start)),
+                    );
+                }
+                Err(e) => return Err(live_error(e)),
+            }
+        }
+        let masks = if v.view.commit_deletes.is_empty() {
+            None
+        } else {
+            let opened = h.reader.open_segments().map_err(|e| {
+                set_last_error(format!("opening segment postings: {e}"));
+                FfiStatus::Decode
+            })?;
+            let segments = opened.as_open_segments();
+            commit_masks(&v.view.commit_deletes, &h, &segments)?
+        };
+        let mut out = Vec::new();
+        let segments = h.reader.segment_readers().len();
+        put_len(&mut out, segments)?;
+        for i in 0..segments {
+            match masks
+                .as_ref()
+                .and_then(|m| m.get(i))
+                .and_then(Option::as_ref)
+            {
+                Some(mask) => {
+                    put_len(&mut out, mask.words().len())?;
+                    mask.words()
+                        .iter()
+                        .for_each(|w| out.extend_from_slice(&w.to_le_bytes()));
+                }
+                None => out.extend_from_slice(&(-1i32).to_le_bytes()),
+            }
+        }
+        put_len(&mut out, leaves.len())?;
+        for (files, offset) in &leaves {
+            let (kind, sci, dir) = match files {
+                ChunkFiles::Memory(dir, sci) => (0u8, sci, Some(dir)),
+                ChunkFiles::Published(sci) => (1u8, sci, None),
+                ChunkFiles::None => {
+                    set_last_error("live view: a buffered chunk without postings");
+                    return Err(FfiStatus::Decode);
+                }
+            };
+            out.push(kind);
+            put_bytes(&mut out, sci.segment_name.as_bytes())?;
+            out.extend_from_slice(&sci.segment_id);
+            put_bytes(&mut out, sci.codec_name.as_bytes())?;
+            out.extend_from_slice(&offset.to_le_bytes());
+            if let Some(dir) = dir {
+                let names = lucene_store::Directory::list_all(&**dir).map_err(|e| {
+                    set_last_error(format!("live view: listing a chunk's files: {e}"));
+                    FfiStatus::Decode
+                })?;
+                put_len(&mut out, names.len())?;
+                for name in names {
+                    let input = lucene_store::Directory::open(&**dir, &name).map_err(|e| {
+                        set_last_error(format!("live view: reading {name}: {e}"));
+                        FfiStatus::Decode
+                    })?;
+                    put_bytes(&mut out, name.as_bytes())?;
+                    out.extend_from_slice(
+                        &u64::try_from(input.len()).unwrap_or(u64::MAX).to_le_bytes(),
+                    );
+                    out.extend_from_slice(&input);
+                }
+            }
+        }
+        // SAFETY: caller contract.
+        unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// Appends `n` as the `i32` the blobs count with.
+fn put_len(out: &mut Vec<u8>, n: usize) -> Result<(), FfiStatus> {
+    let n = i32::try_from(n).map_err(|_| {
+        set_last_error("live view: more than i32::MAX entries");
+        FfiStatus::Decode
+    })?;
+    out.extend_from_slice(&n.to_le_bytes());
+    Ok(())
+}
+
+/// Appends `bytes` after their `i32` length.
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), FfiStatus> {
+    put_len(out, bytes.len())?;
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
 /// Whether [`buffer_segments`] writes nothing for buffer `b`: it is one
 /// published segment, or every chunk `plan` names is in [`Chunks`].
 fn writes_nothing(w: &EngineWriter, b: &ViewBuffer, plan: &[Planned], postings: bool) -> bool {
@@ -1463,6 +1617,17 @@ fn writes_nothing(w: &EngineWriter, b: &ViewBuffer, plan: &[Planned], postings: 
     })
 }
 
+/// Where a chunk's segment files are, for a JVM reader of them.
+#[derive(Clone)]
+enum ChunkFiles {
+    /// Written into memory for the views.
+    Memory(Arc<lucene_store::ByteBuffersDirectory>, SegmentCommitInfo),
+    /// The segment the buffer was flushed as, in the writer's directory.
+    Published(SegmentCommitInfo),
+    /// None of its own: a chunk without postings, read from columns.
+    None,
+}
+
 /// Buffer `b`'s chunks as segments, in `plan`'s order, each with whether
 /// it lacks its postings: the segment it was published as when it is one
 /// chunk (and published), else each chunk's from [`Chunks`], written (with
@@ -1475,12 +1640,25 @@ fn buffer_segments(
     warm: bool,
     lean_tail: Option<bool>,
 ) -> lucene_index::index_writer::Result<Vec<(SegmentReader, bool)>> {
+    buffer_segment_files(w, b, plan, postings, warm, lean_tail)
+        .map(|parts| parts.into_iter().map(|(r, lean, _)| (r, lean)).collect())
+}
+
+/// [`buffer_segments`], each segment with where its files are.
+fn buffer_segment_files(
+    w: &EngineWriter,
+    b: &ViewBuffer,
+    plan: &[Planned],
+    postings: bool,
+    warm: bool,
+    lean_tail: Option<bool>,
+) -> lucene_index::index_writer::Result<Vec<(SegmentReader, bool, ChunkFiles)>> {
     let writer = w.writer();
     if let [only] = plan {
         if only.start == 0 {
             if let Some(sci) = writer.live_published_segment(b.id) {
                 let r = SegmentReader::open_one(writer.directory(), &sci).map_err(open_error)?;
-                return Ok(vec![(r, false)]);
+                return Ok(vec![(r, false, ChunkFiles::Published(sci))]);
             }
         }
     }
@@ -1496,7 +1674,7 @@ fn buffer_segments(
                     Arc::clone(c),
                 );
             }
-            out.push((c.reader.clone(), !c.postings));
+            out.push((c.reader.clone(), !c.postings, c.files.clone()));
             continue;
         }
         // The last chunk of a search without postings, which a later view
@@ -1523,11 +1701,13 @@ fn buffer_segments(
                 .cloned()
         });
         if let Some(c) = cached {
-            out.push((c.reader.clone(), !c.postings));
+            out.push((c.reader.clone(), !c.postings, c.files.clone()));
             continue;
         }
-        let dir = lucene_store::ByteBuffersDirectory::new();
-        let name = format!("_live{}_{}", p.start, p.end);
+        let dir = Arc::new(lucene_store::ByteBuffersDirectory::new());
+        // A name the JVM reads as Lucene names segments (`_[a-z0-9]+`): a
+        // second `_` would start a suffix there.
+        let name = format!("_live{}x{}", p.start, p.end);
         let starts: Vec<i32> = plan.iter().map(|p| p.end).collect();
         let range = p.start..p.end;
         let (sci, lazy) = match lean {
@@ -1537,13 +1717,13 @@ fn buffer_segments(
                 range_counts(p),
                 &starts,
                 points,
-                &dir,
+                &*dir,
                 &name,
             )? {
                 LeanSegment::Parts(parts, lazy) => {
                     let reader =
                         SegmentReader::from_lean_parts(name, *parts, lazy).map_err(open_error)?;
-                    out.push((reader, true));
+                    out.push((reader, true, ChunkFiles::None));
                     continue;
                 }
                 LeanSegment::Written(sci, lazy) => (sci, lazy),
@@ -1555,17 +1735,22 @@ fn buffer_segments(
                     range_counts(p),
                     &starts,
                     postings,
-                    &dir,
+                    &*dir,
                     &name,
                 )?,
                 None,
             ),
         };
-        let reader = SegmentReader::open_one(&dir, &sci).map_err(open_error)?;
+        let reader = SegmentReader::open_one(&*dir, &sci).map_err(open_error)?;
         if let Some(lazy) = lazy {
-            out.push((reader.with_lazy_doc_values(lazy), true));
+            out.push((reader.with_lazy_doc_values(lazy), true, ChunkFiles::None));
             continue;
         }
+        let files = if postings {
+            ChunkFiles::Memory(dir, sci)
+        } else {
+            ChunkFiles::None
+        };
         if b.in_slot && lean.is_none() {
             let chunk = Arc::new(Chunk {
                 start: p.start,
@@ -1573,11 +1758,12 @@ fn buffer_segments(
                 totals: Arc::clone(&p.end_totals),
                 postings,
                 reader: reader.clone(),
+                files: files.clone(),
                 overlays: Mutex::default(),
             });
             keep_chunk(w.live_chunks().entry((b.id, postings)).or_default(), chunk);
         }
-        out.push((reader, !postings));
+        out.push((reader, !postings, files));
     }
     Ok(out)
 }
