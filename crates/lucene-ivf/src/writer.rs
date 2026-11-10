@@ -22,7 +22,9 @@
 //!   f32 probe fraction, f32 rerank multiple (`Calibration`),
 //!   from VERSION_ROUTING_TREE: vint routing parent count (0 for none:
 //!   fields below `routing::TREE_MIN_CLUSTERS` clusters), and when not 0,
-//!   each cluster's parent (cluster count x vint, every parent used)
+//!   each cluster's parent (cluster count x vint, every parent used),
+//!   from VERSION_PARTITIONS: byte partitioned (1 when each cluster holds
+//!   documents of one partition run, `IvfWriter::add_partitioned_field`)
 //! Footer
 //! ```
 //!
@@ -55,7 +57,7 @@ use lucene_vector_quant::QuantizerFactory;
 use crate::calibrate::{self, DEFAULT_CALIBRATION_RECALL};
 use crate::kmeans::{self, KMeansParams, SplitMix64};
 use crate::merge::MergeClustering;
-use crate::reader::IvfField;
+use crate::reader::{IvfField, DEFAULT_PROBE_FRACTION};
 use crate::routing;
 use crate::{
     similarity_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
@@ -99,6 +101,11 @@ pub struct IvfParams {
     /// Store a centroid routing tree ([`crate::routing`]) from this many
     /// clusters on; `usize::MAX` stores none.
     pub routing_tree_min: usize,
+    /// The fewest vectors a partition of
+    /// [`IvfWriter::add_partitioned_field`] is clustered alone with; smaller
+    /// partitions are clustered together with their neighbours, in runs of
+    /// at least this many vectors.
+    pub partition_min_vectors: usize,
 }
 
 impl Default for IvfParams {
@@ -112,6 +119,7 @@ impl Default for IvfParams {
             calibration_recall: Some(DEFAULT_CALIBRATION_RECALL),
             merge_clustering: MergeClustering::default(),
             routing_tree_min: routing::TREE_MIN_CLUSTERS,
+            partition_min_vectors: 20_000,
         }
     }
 }
@@ -142,11 +150,65 @@ pub struct IvfFiles {
     pub vectors: Vec<u8>,
 }
 
+/// A written field's clusters, as its reader routes with them: what an
+/// indexing buffer routes its vectors to before they are flushed.
+#[derive(Debug, Clone)]
+pub struct FieldClusters {
+    pub number: i32,
+    pub similarity: Similarity,
+    pub dimension: usize,
+    /// `clusters * dimension` floats, as stored.
+    pub centroids: Vec<f32>,
+    /// Each centroid's parent in the routing tree stored with the field.
+    pub tree_parents: Option<Vec<u32>>,
+    /// Per cluster, the largest distance from its centroid of an entry's
+    /// vector (unit-normalized for `Cosine`).
+    pub radii: Vec<f32>,
+    /// The share of the clusters a search probes by default.
+    pub probe_fraction: f32,
+}
+
+impl FieldClusters {
+    /// How many clusters there are.
+    pub fn len(&self) -> usize {
+        self.centroids
+            .len()
+            .checked_div(self.dimension)
+            .unwrap_or(0)
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The router the field's reader builds ([`Routing::Auto`]).
+    ///
+    /// [`Routing::Auto`]: crate::Routing::Auto
+    pub fn router(&self) -> routing::Router {
+        routing::Router::new(
+            &self.centroids,
+            self.dimension,
+            self.similarity,
+            crate::Routing::Auto,
+            self.tree_parents.as_deref(),
+        )
+    }
+
+    /// The probes a search makes by default: [`IvfField::auto_nprobe`].
+    ///
+    /// [`IvfField::auto_nprobe`]: crate::IvfField::auto_nprobe
+    pub fn nprobe(&self) -> usize {
+        crate::reader::probes_for(self.probe_fraction, self.len())
+    }
+}
+
 /// Writes the IVF files of one segment, field by field.
 #[derive(Debug)]
 pub struct IvfWriter {
     fields: Vec<u8>,
     field_numbers: Vec<i32>,
+    clusters: Vec<FieldClusters>,
     postings: Vec<u8>,
     vectors: Vec<u8>,
     meta: Vec<u8>,
@@ -162,6 +224,50 @@ fn prepared_vectors(field: &FieldVectors<'_>) -> Vec<f32> {
         });
     }
     out
+}
+
+/// The lengths of the runs of `docs` (ascending) to cluster on their own:
+/// one per partition (`starts` holds each partition's first document,
+/// ascending) of at least `min` vectors, and the partitions between them
+/// together, in runs of at least `min` except where a large partition or
+/// the end cuts one short.
+// ARITH: run lengths are bounded by `docs.len()`.
+#[allow(clippy::arithmetic_side_effects)]
+fn partition_runs(docs: &[i32], starts: &[i32], min: usize) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut pooled = 0usize;
+    let mut at = 0usize;
+    let mut bounds = starts
+        .iter()
+        .skip_while(|&&s| docs.first().is_some_and(|&d| s <= d));
+    while at < docs.len() {
+        let end = match bounds.next() {
+            Some(&next) => at + docs[at..].partition_point(|&d| d < next),
+            None => docs.len(),
+        };
+        let len = end - at;
+        at = end;
+        if len == 0 {
+            continue;
+        }
+        if len >= min {
+            if pooled > 0 {
+                runs.push(pooled);
+                pooled = 0;
+            }
+            runs.push(len);
+        } else {
+            pooled += len;
+            if pooled >= min {
+                runs.push(pooled);
+                pooled = 0;
+            }
+        }
+    }
+    if pooled > 0 {
+        runs.push(pooled);
+    }
+    runs
 }
 
 /// Whether a field's vectors are unit length and clustered spherically.
@@ -240,6 +346,7 @@ impl IvfWriter {
         IvfWriter {
             fields: Vec::new(),
             field_numbers: Vec::new(),
+            clusters: Vec::new(),
             postings,
             vectors,
             meta,
@@ -292,10 +399,47 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
-        self.add_clustered(field, factory, params, &mut |vectors, metric| {
+        self.add_clustered(field, factory, params, false, &mut |vectors, metric| {
             kmeans::cluster(
                 vectors,
                 field.dimension,
+                params.target_cluster_size,
+                &params.kmeans,
+                metric,
+            )
+        })
+    }
+
+    /// Like [`IvfWriter::add_field`], for a field whose documents are
+    /// grouped into partitions, `partition_starts` holding each partition's
+    /// first document, ascending (an index sorted by a partition field):
+    /// each partition of at least [`IvfParams::partition_min_vectors`]
+    /// vectors is clustered on its own, and the smaller ones between them
+    /// together, so every cluster holds the documents of one narrow range
+    /// ([`crate::IvfField::doc_ranges`]). A search filtered to a partition
+    /// then probes only its clusters, as an index of its documents alone
+    /// would.
+    ///
+    /// # Errors
+    ///
+    /// As [`IvfWriter::add_field`].
+    pub fn add_partitioned_field(
+        &mut self,
+        field: &FieldVectors<'_>,
+        partition_starts: &[i32],
+        factory: &dyn QuantizerFactory,
+        params: &IvfParams,
+    ) -> Result<()> {
+        let runs = partition_runs(
+            field.docs,
+            partition_starts,
+            params.partition_min_vectors.max(1),
+        );
+        self.add_clustered(field, factory, params, true, &mut |vectors, metric| {
+            kmeans::cluster_runs(
+                vectors,
+                field.dimension,
+                &runs,
                 params.target_cluster_size,
                 &params.kmeans,
                 metric,
@@ -327,7 +471,9 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
-        self.add_clustered(field, factory, params, &mut |_, _| clustering.clone())
+        self.add_clustered(field, factory, params, false, &mut |_, _| {
+            clustering.clone()
+        })
     }
 
     /// Checks `field`, clusters its prepared vectors (unit-normalized for
@@ -341,6 +487,7 @@ impl IvfWriter {
         field: &FieldVectors<'_>,
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
+        partitioned: bool,
         clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
     ) -> Result<()> {
         if params
@@ -621,8 +768,23 @@ impl IvfWriter {
             }
             None => write_count(m, 0)?,
         }
+        m.write_byte(u8::from(partitioned));
         self.field_numbers.push(field.number);
+        self.clusters.push(FieldClusters {
+            number: field.number,
+            similarity: field.similarity,
+            dimension: dim,
+            centroids: clustering.centroids.clone(),
+            tree_parents: tree,
+            radii,
+            probe_fraction: calibration.map_or(DEFAULT_PROBE_FRACTION, |c| c.probe_fraction),
+        });
         Ok(())
+    }
+
+    /// The clusters of the fields written so far, in order.
+    pub fn clusters(&self) -> &[FieldClusters] {
+        &self.clusters
     }
 
     /// The finished files.
@@ -647,6 +809,22 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
     use lucene_vector_quant::osq::OsqFactory;
+
+    #[test]
+    fn small_partitions_are_pooled_between_large_ones() {
+        let docs: Vec<i32> = (0..100).collect();
+        // Partitions of 40, 5, 5, 5, 30, 3, 3 and 9 documents.
+        let starts = [0, 40, 45, 50, 55, 85, 88, 91];
+        assert_eq!(partition_runs(&docs, &starts, 10), vec![40, 10, 5, 30, 15]);
+        assert_eq!(
+            partition_runs(&docs, &starts, 1),
+            vec![40, 5, 5, 5, 30, 3, 3, 9]
+        );
+        assert_eq!(partition_runs(&docs, &[], 10), vec![100]);
+        // Partitions without vectors are skipped.
+        let sparse = [0, 1, 2, 50, 51, 52];
+        assert_eq!(partition_runs(&sparse, &[0, 10, 20, 50], 2), vec![3, 3]);
+    }
 
     #[test]
     fn rejects_bad_fields() {

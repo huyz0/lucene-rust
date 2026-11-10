@@ -32,6 +32,10 @@ name = "fts_kernels"
 harness = false
 
 [[bench]]
+name = "vector_kernels"
+harness = false
+
+[[bench]]
 name = "util_core"
 harness = false
 

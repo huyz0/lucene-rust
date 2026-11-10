@@ -1,0 +1,38 @@
+# Criterion micro-benchmarks of one lucene-util bench target on a hosted
+# runner, by hand only (runner minutes are limited): the way to measure the
+# aarch64 NEON kernels, which no development machine here runs. Each row
+# beside its `_scalar` specification row is the A/B; hosted runners are
+# noisy, so read a few-percent difference as none.
+name: kernel-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: 'lucene-util bench target'
+        default: 'vector_kernels'
+      runner:
+        description: 'Runner label'
+        default: 'ubuntu-24.04-arm'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: kernel-bench
+      - name: CPU
+        run: lscpu | head -20
+      - name: Bench
+        env:
+          BENCH: ${{ inputs.bench }}
+        run: |
+          cargo bench -p lucene-util --bench "$BENCH" -- --warm-up-time 1 --measurement-time 3 \
+            2>&1 | tee bench.txt
+          grep -B1 'time:' bench.txt | grep -v '^--' >> "$GITHUB_STEP_SUMMARY"
