@@ -4156,6 +4156,7 @@ impl IndexingConfig {
                     buf.docs.len() as i32,
                     &vector_format_for,
                     self.knn_vectors_direct(),
+                    buf.limit.is_none(),
                     &segment_id,
                 )?
             })
@@ -10857,12 +10858,19 @@ impl IndexWriter<'_> {
     /// never claims vectors its files do not hold.
     ///
     /// Returns `None` when no field has any vector, so no files are written.
+    ///
+    /// Without `indexes` (a realtime chunk of a buffer, read by searches
+    /// until the buffer flushes) no graph or IVF clusters are built: every
+    /// `.vem` records `numLevels = 0`, Lucene's tiny-segment case, which
+    /// both readers search exhaustively with exact scores.
+    #[allow(clippy::too_many_arguments)]
     fn build_vectors_output(
         pending_vectors: &[Vec<DocumentVector>],
         configs: &[VectorFieldConfig],
         max_doc: i32,
         format_for: &dyn Fn(&str) -> per_field_knn_vectors::KnnVectorsFormat,
         direct: bool,
+        indexes: bool,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         // Empty when no buffered document carries a vector (a buffer of
@@ -10965,8 +10973,14 @@ impl IndexWriter<'_> {
                         .and_then(Option::take)
                 })
                 .collect();
-            let files =
-                Self::build_vector_group(&fields, group.format, max_doc, segment_id, &suffix)?;
+            let files = Self::build_vector_group(
+                &fields,
+                group.format,
+                max_doc,
+                indexes,
+                segment_id,
+                &suffix,
+            )?;
             for (number, name) in &names {
                 if group.field_numbers.contains(number) {
                     output.written.push(WrittenVectorField {
@@ -10993,6 +11007,7 @@ impl IndexWriter<'_> {
         flat_fields: &[FlatVectorsField],
         format: per_field_knn_vectors::KnnVectorsFormat,
         max_doc: i32,
+        indexes: bool,
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
     ) -> Result<Vec<(&'static str, Vec<u8>)>> {
@@ -11023,8 +11038,12 @@ impl IndexWriter<'_> {
             files.push(("vemq", vemq));
         }
 
-        if let Some(mut ivf) = crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
-        {
+        let ivf = if indexes {
+            crate::ivf_vectors::IvfGroupWriter::new(format, segment_id, suffix)?
+        } else {
+            None
+        };
+        if let Some(mut ivf) = ivf {
             for field in flat_fields {
                 if let FieldVectorData::Float32(values) = &field.values {
                     ivf.add(
@@ -11067,7 +11086,7 @@ impl IndexWriter<'_> {
                     // `Lucene99HnswVectorsWriter.shouldCreateGraph`: a segment
                     // too small for a graph to beat an exhaustive scan gets
                     // none, and its `.vem` records `numLevels = 0`.
-                    if !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
+                    if !indexes || !hnsw::should_create_graph(hnsw::HNSW_GRAPH_THRESHOLD, count) {
                         return Ok(None);
                     }
                     let graph = match field.values.encoding() {
