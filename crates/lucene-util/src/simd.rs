@@ -8,7 +8,10 @@
 //!
 //! Each kernel has an AVX2 path, compiled in when the build targets a CPU with
 //! AVX2 (this workspace's `.cargo/config.toml` builds Linux x86_64 for
-//! `x86-64-v3`), and a scalar path for every other target. The unsafe code is
+//! `x86-64-v3`); the float similarity kernels, the IVF query setup and the
+//! fast scan also have an aarch64 NEON path (NEON is that target's
+//! baseline), and a few take AVX-512 when [`crate::cpu`] finds it at run
+//! time. Every other target runs the scalar path. The unsafe code is
 //! confined to this module -- `lucene-util` is one of the three crates
 //! AGENTS.md invariant 4 allows it in -- and each `unsafe` block states the
 //! bounds it relies on; the public functions take fixed-size arrays or check
@@ -245,7 +248,8 @@ unsafe fn find_next_geq_avx2(buf: &[i32], target: i32) -> usize {
 // one more 8-element step into the first accumulator, then a scalar tail.
 // Every product is a fused multiply-add. The AVX2 path and the scalar
 // specification share that layout *and* the order the lanes are folded in, so
-// they agree bit for bit and the tests can demand exact equality.
+// they agree bit for bit and the tests can demand exact equality. The NEON
+// kernels keep the same layout, so the same holds on aarch64.
 //
 // Explicit intrinsics rather than an autovectorized loop: a `[f32; 32]`
 // accumulator array written lane by lane is what the scalar spec below is,
@@ -349,10 +353,19 @@ pub fn residual_stats(query: &[f32], centroid: &[f32]) -> ResidualStats {
         // are `n` long and the kernel reads whole 8-lane chunks below `n`.
         unsafe { residual_stats_avx2(query, centroid) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { residual_stats_neon(query, centroid) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     residual_stats_scalar(query, centroid)
 }
@@ -467,10 +480,19 @@ pub fn quantize_residual(
         // below `n`.
         unsafe { quantize_residual_avx2(query, centroid, interval, step_inv, step, out) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; all three slices
+        // are `n` long and the kernel touches whole 8-lane chunks below `n`.
+        unsafe { quantize_residual_neon(query, centroid, interval, step_inv, step, out) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     quantize_residual_scalar(query, centroid, interval, step_inv, step, out)
 }
@@ -612,7 +634,16 @@ pub fn nibble_luts(query: &[u8], out: &mut [u8]) {
         // checked above and the kernel touches whole groups inside them.
         unsafe { nibble_luts_avx2(query, out) }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the lengths are
+        // checked above and the kernel touches whole groups inside them.
+        unsafe { nibble_luts_neon(query, out) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx2"),
+        target_arch = "aarch64"
+    )))]
     nibble_luts_scalar(query, out);
 }
 
@@ -716,10 +747,19 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
         // reads only whole 8-lane chunks inside both slices.
         unsafe { dot_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { dot_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     dot_f32_scalar(a, b)
 }
@@ -768,10 +808,19 @@ pub fn square_distance_f32(a: &[f32], b: &[f32]) -> f32 {
         // SAFETY: as for `dot_f32`.
         unsafe { square_distance_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { square_distance_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     square_distance_f32_scalar(a, b)
 }
@@ -824,10 +873,19 @@ pub fn cosine_parts_f32(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
         // SAFETY: as for `dot_f32`.
         unsafe { cosine_parts_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { cosine_parts_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     cosine_parts_f32_scalar(a, b)
 }
@@ -851,10 +909,19 @@ pub fn dot_and_norm_f32(a: &[f32], b: &[f32]) -> (f32, f32) {
         // SAFETY: as for `dot_f32`.
         unsafe { dot_and_norm_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { dot_and_norm_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     {
         let (s, _, n2) = cosine_parts_f32_scalar(a, b);
@@ -1083,6 +1150,336 @@ fn spill2(acc: &[std::arch::x86_64::__m256; 2]) -> [f32; 16] {
         out[8 * k..8 * k + 8].copy_from_slice(&lanes);
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// aarch64 NEON versions of the float kernels and the per-probe query setup.
+// They keep the AVX2 kernels' lane layout -- 32 dot/L2 lanes as eight 4-lane
+// registers, 16 per cosine sum as four, 8 residual lanes as two -- so the
+// float kernels agree bit for bit with their scalar specifications, as the
+// AVX2 ones do. `vfmaq_f32(c, a, b)` is the fused `a * b + c`; the `nm`
+// min/max return the non-NaN operand, as `f32::min`/`max` do.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn spill_neon<const R: usize, const L: usize>(
+    acc: &[std::arch::aarch64::float32x4_t; R],
+) -> [f32; L] {
+    const { assert!(L == 4 * R) };
+    let mut out = [0.0f32; L];
+    for (k, v) in acc.iter().enumerate() {
+        // SAFETY: `L == 4 * R` (asserted above at compile time), so the four lanes at `4k` are inside `out`.
+        unsafe { std::arch::aarch64::vst1q_f32(out.as_mut_ptr().add(4 * k), *v) };
+    }
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: offsets stay below `n`, as each loop guard checks.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut acc = [vdupq_n_f32(0.0); 8];
+    let mut i = 0;
+    // SAFETY (every load below): the loop guards keep `i + 4 * k + 4 <= n`,
+    // and `n` is at most either slice's length.
+    while i + 32 <= n {
+        for (k, slot) in acc.iter_mut().enumerate() {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, x, y);
+        }
+        i += 32;
+    }
+    while i + 8 <= n {
+        for (k, slot) in acc[..2].iter_mut().enumerate() {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, x, y);
+        }
+        i += 8;
+    }
+    let mut sum = fold32(&spill_neon::<8, 32>(&acc));
+    while i < n {
+        sum = a[i].mul_add(b[i], sum);
+        i += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: as in `dot_f32_neon`.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn square_distance_f32_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut acc = [vdupq_n_f32(0.0); 8];
+    let mut i = 0;
+    // SAFETY (every load below): as in `dot_f32_neon`.
+    while i + 32 <= n {
+        for (k, slot) in acc.iter_mut().enumerate() {
+            let d =
+                unsafe { vsubq_f32(vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, d, d);
+        }
+        i += 32;
+    }
+    while i + 8 <= n {
+        for (k, slot) in acc[..2].iter_mut().enumerate() {
+            let d =
+                unsafe { vsubq_f32(vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, d, d);
+        }
+        i += 8;
+    }
+    let mut sum = fold32(&spill_neon::<8, 32>(&acc));
+    while i < n {
+        let d = a[i] - b[i];
+        sum = d.mul_add(d, sum);
+        i += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: as in `dot_f32_neon`.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn cosine_parts_f32_neon(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let (mut s, mut n1, mut n2) = (
+        [vdupq_n_f32(0.0); 4],
+        [vdupq_n_f32(0.0); 4],
+        [vdupq_n_f32(0.0); 4],
+    );
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..4 {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            s[k] = vfmaq_f32(s[k], x, y);
+            n1[k] = vfmaq_f32(n1[k], x, x);
+            n2[k] = vfmaq_f32(n2[k], y, y);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm1, mut norm2) = (
+        fold16(&spill_neon::<4, 16>(&s)),
+        fold16(&spill_neon::<4, 16>(&n1)),
+        fold16(&spill_neon::<4, 16>(&n2)),
+    );
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm1 = x.mul_add(x, norm1);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm1, norm2)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: as in `dot_f32_neon`.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn dot_and_norm_f32_neon(a: &[f32], b: &[f32]) -> (f32, f32) {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let (mut s, mut n2) = ([vdupq_n_f32(0.0); 4], [vdupq_n_f32(0.0); 4]);
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..4 {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            s[k] = vfmaq_f32(s[k], x, y);
+            n2[k] = vfmaq_f32(n2[k], y, y);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm2) = (
+        fold16(&spill_neon::<4, 16>(&s)),
+        fold16(&spill_neon::<4, 16>(&n2)),
+    );
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm2)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: `i` steps by 8 up to `whole <= n`, the slices' length.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn residual_stats_neon(query: &[f32], centroid: &[f32]) -> ResidualStats {
+    use std::arch::aarch64::*;
+    let n = query.len();
+    let whole = n - n % 8;
+    let (pq, pc) = (query.as_ptr(), centroid.as_ptr());
+    // Lanes 0-3 in register 0, 4-7 in register 1; the f64 sums in pairs.
+    let mut sum = [vdupq_n_f64(0.0); 4];
+    let mut sq = [vdupq_n_f64(0.0); 4];
+    let mut lo = [vdupq_n_f32(f32::MAX); 2];
+    let mut hi = [vdupq_n_f32(-f32::MAX); 2];
+    let mut rc = [vdupq_n_f32(0.0); 2];
+    let mut i = 0;
+    while i < whole {
+        for h in 0..2 {
+            // SAFETY: `i + 4 * h + 4 <= whole <= n`, the length of both slices.
+            let (q, c) = unsafe { (vld1q_f32(pq.add(i + 4 * h)), vld1q_f32(pc.add(i + 4 * h))) };
+            let r = vsubq_f32(q, c);
+            let (r0, r1) = (vcvt_f64_f32(vget_low_f32(r)), vcvt_high_f64_f32(r));
+            sum[2 * h] = vaddq_f64(sum[2 * h], r0);
+            sum[2 * h + 1] = vaddq_f64(sum[2 * h + 1], r1);
+            sq[2 * h] = vfmaq_f64(sq[2 * h], r0, r0);
+            sq[2 * h + 1] = vfmaq_f64(sq[2 * h + 1], r1, r1);
+            lo[h] = vminnmq_f32(lo[h], r);
+            hi[h] = vmaxnmq_f32(hi[h], r);
+            rc[h] = vfmaq_f32(rc[h], r, c);
+        }
+        i += 8;
+    }
+    let spill_d = |v: &[float64x2_t; 4]| {
+        let mut out = [0f64; 8];
+        for (k, x) in v.iter().enumerate() {
+            // SAFETY: two lanes at `2k < 8`.
+            unsafe { vst1q_f64(out.as_mut_ptr().add(2 * k), *x) };
+        }
+        out
+    };
+    let (sum, sq) = (spill_d(&sum), spill_d(&sq));
+    let (lo, hi, rc) = (
+        spill_neon::<2, 8>(&lo),
+        spill_neon::<2, 8>(&hi),
+        spill_neon::<2, 8>(&rc),
+    );
+    let tail = residual_stats_scalar(&query[whole..], &centroid[whole..]);
+    ResidualStats {
+        sum: sum.iter().sum::<f64>() + tail.sum,
+        sum_sq: sq.iter().sum::<f64>() + tail.sum_sq,
+        min: lo.iter().fold(tail.min, |m, &x| m.min(x)),
+        max: hi.iter().fold(tail.max, |m, &x| m.max(x)),
+        dot_centroid: rc.iter().sum::<f32>() + tail.dot_centroid,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: `i` steps by 8 up to `whole <= n`, the slices' length; the level
+// sums wrap.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn quantize_residual_neon(
+    query: &[f32],
+    centroid: &[f32],
+    interval: [f32; 2],
+    step_inv: f32,
+    step: f32,
+    out: &mut [u8],
+) -> (i32, f32) {
+    use std::arch::aarch64::*;
+    let n = query.len();
+    let whole = n - n % 8;
+    let (pq, pc, po) = (query.as_ptr(), centroid.as_ptr(), out.as_mut_ptr());
+    let [lower, upper] = interval;
+    let (a, b) = (vdupq_n_f32(lower), vdupq_n_f32(upper));
+    let (inv, st, half) = (vdupq_n_f32(step_inv), vdupq_n_f32(step), vdupq_n_f32(0.5));
+    let (zero, top) = (vdupq_n_f32(0.0), vdupq_n_f32(255.0));
+    let mut err = [vdupq_n_f32(0.0); 2];
+    let mut sum = [vdupq_n_s32(0); 2];
+    let mut i = 0;
+    while i < whole {
+        let mut li = [vdupq_n_s32(0); 2];
+        for h in 0..2 {
+            // SAFETY: `i + 4 * h + 4 <= whole <= n`, the length of all three slices.
+            let (q, c) = unsafe { (vld1q_f32(pq.add(i + 4 * h)), vld1q_f32(pc.add(i + 4 * h))) };
+            let r = vsubq_f32(q, c);
+            // `max` then `min` as the scalar path, so a NaN residual becomes
+            // `lower`; a NaN level becomes 0.
+            let x = vminnmq_f32(vmaxnmq_f32(r, a), b);
+            let level = vrndmq_f32(vfmaq_f32(half, vsubq_f32(x, a), inv));
+            let level = vminnmq_f32(vmaxnmq_f32(level, zero), top);
+            let e = vsubq_f32(r, vfmaq_f32(a, level, st));
+            err[h] = vfmaq_f32(err[h], e, e);
+            li[h] = vcvtq_s32_f32(level);
+            sum[h] = vaddq_s32(sum[h], li[h]);
+        }
+        // Levels are in 0..=255: narrow 32 to 16 to 8 bits.
+        let w = vcombine_u16(
+            vmovn_u32(vreinterpretq_u32_s32(li[0])),
+            vmovn_u32(vreinterpretq_u32_s32(li[1])),
+        );
+        // SAFETY: as above, the 8 bytes at `i` are inside `out`.
+        unsafe { vst1_u8(po.add(i), vmovn_u16(w)) };
+        i += 8;
+    }
+    let mut lanes = [0i32; 8];
+    // SAFETY: four lanes each at 0 and 4 of an 8-lane array.
+    unsafe {
+        vst1q_s32(lanes.as_mut_ptr(), sum[0]);
+        vst1q_s32(lanes.as_mut_ptr().add(4), sum[1]);
+    }
+    let err = spill_neon::<2, 8>(&err);
+    let (tail_sum, tail_err) = quantize_residual_scalar(
+        &query[whole..],
+        &centroid[whole..],
+        interval,
+        step_inv,
+        step,
+        &mut out[whole..],
+    );
+    (
+        lanes.iter().fold(tail_sum, |s, &x| s.wrapping_add(x)),
+        err.iter().sum::<f32>() + tail_err,
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: offsets `4g` and `16g` are inside `query` and `out`, whose lengths
+// the caller checked.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn nibble_luts_neon(query: &[u8], out: &mut [u8]) {
+    use std::arch::aarch64::*;
+    /// All ones in entry `v` when bit `k` of `v` is set.
+    const fn mask(k: usize) -> [u8; 16] {
+        let mut x = [0u8; 16];
+        let mut v = 0;
+        while v < 16 {
+            if v >> k & 1 == 1 {
+                x[v] = 0xff;
+            }
+            v += 1;
+        }
+        x
+    }
+    const MASK: [[u8; 16]; 4] = [mask(0), mask(1), mask(2), mask(3)];
+    // SAFETY: the constants are 16 bytes each.
+    let m = unsafe {
+        [
+            vld1q_u8(MASK[0].as_ptr()),
+            vld1q_u8(MASK[1].as_ptr()),
+            vld1q_u8(MASK[2].as_ptr()),
+            vld1q_u8(MASK[3].as_ptr()),
+        ]
+    };
+    let po = out.as_mut_ptr();
+    for (g, q) in query.chunks_exact(4).enumerate() {
+        let mut lut = vandq_u8(vdupq_n_u8(q[0]), m[0]);
+        for k in 1..4 {
+            lut = vaddq_u8(lut, vandq_u8(vdupq_n_u8(q[k]), m[k]));
+        }
+        // SAFETY: group `g`'s 16 table bytes are at `16g` of `out`.
+        unsafe { vst1q_u8(po.add(16 * g), lut) };
+    }
 }
 
 /// `dst[i] |= src[i]` over the common prefix -- `FixedBitSet.or`'s loop, which
@@ -2234,6 +2631,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn residual_kernels_skip_nan_like_the_scalar_specification() {
+        let mut q: Vec<f32> = (0..19).map(|i| i as f32 * 0.25 - 2.0).collect();
+        q[3] = f32::NAN;
+        q[12] = f32::NAN;
+        let c = vec![0.1f32; q.len()];
+        let (fast, spec) = (residual_stats(&q, &c), residual_stats_scalar(&q, &c));
+        assert_eq!((fast.min, fast.max), (spec.min, spec.max));
+        let (mut fo, mut so) = (vec![9u8; q.len()], vec![9u8; q.len()]);
+        let (fl, fe) = quantize_residual(&q, &c, [-1.0, 1.0], 7.5, 1.0 / 7.5, &mut fo);
+        let (sl, se) = quantize_residual_scalar(&q, &c, [-1.0, 1.0], 7.5, 1.0 / 7.5, &mut so);
+        assert_eq!((fo[3], fo[12]), (0, 0));
+        assert_eq!((fo, fl), (so, sl));
+        assert!(fe.is_nan() && se.is_nan());
     }
 
     fn xorshift(s: &mut u64) -> u64 {
