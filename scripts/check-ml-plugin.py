@@ -15,6 +15,10 @@ script serves over HTTP, and the answers are compared:
              vectors (relative 2e-5) or the same error status; target_response
   sparse     a SPARSE_TOKENIZE model (fixtures/ml tokenizer + an idf.json):
              the token weights by token and by token id
+  encoding   a SPARSE_ENCODING ONNX model: token weights by token and by id,
+             result filters, bad parameters
+  similarity a TEXT_SIMILARITY cross-encoder: scores, bytes, bad inputs
+  asymmetric query/passage prefixes, missing content types, result filters
   lifecycle  delete while deployed, undeploy, delete, get after delete, tasks
 
 A stock node needs libtorch for DJL, which it downloads from publish.djl.ai
@@ -22,12 +26,13 @@ unless --libtorch names a local libtorch directory (DJL's
 pytorch/<version>-cpu-linux-x86_64 layout, PyTorch 2.5.1).
 
   scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--keep]
+                             [--only groups,sparse,encoding,similarity,asymmetric,models,tasks]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import argparse, glob, hashlib, http.server, importlib.util, io, json, os, shutil, subprocess, sys, threading, time, zipfile
-import urllib.error, urllib.request
+import argparse, base64, glob, hashlib, http.server, importlib.util, io, json, os, shutil, subprocess, sys, threading, time, zipfile
+import struct, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = "3.9.0"
@@ -172,6 +177,112 @@ def close(a, b):
     return all(abs(x - y) <= TOLERANCE * max(1.0, abs(y)) for x, y in zip(a, b))
 
 
+def approx(a, b):
+    """Equal, floats within TOLERANCE, byte buffers compared as their little-endian floats."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        if a.keys() != b.keys():
+            return False
+        for k in a:
+            if k == "byte_buffer":
+                fa = struct.unpack(f"<{len(base64.b64decode(a[k]['array'])) // 4}f", base64.b64decode(a[k]["array"]))
+                fb = struct.unpack(f"<{len(base64.b64decode(b[k]['array'])) // 4}f", base64.b64decode(b[k]["array"]))
+                if a[k]["order"] != b[k]["order"] or not close(fa, fb):
+                    return False
+            elif not approx(a[k], b[k]):
+                return False
+        return True
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(approx(x, y) for x, y in zip(a, b))
+    if isinstance(a, float) or isinstance(b, float):
+        return isinstance(a, (int, float)) and isinstance(b, (int, float)) and close([a], [b])
+    return a == b
+
+
+def answer(r):
+    """A call's status with its result, or with its error's type and reason."""
+    s, o = r
+    if s != 200 and isinstance(o, dict) and "error" in o:
+        return s, o["error"].get("type"), o["error"].get("reason")
+    return s, o
+
+
+def onnx_model(n, name, function, z, config=None):
+    body = {"name": f"{name}-{RUN}", "version": "1.0.0", "model_format": "ONNX", "function_name": function,
+            "model_content_hash_value": hashlib.sha256(z).hexdigest(), "model_content_size_in_bytes": len(z),
+            "url": f"http://localhost:{SERVE}/{name}.zip"}
+    if config:
+        body["model_config"] = config
+    t = n.task(n.ok("POST", "/_plugins/_ml/models/_register", body)["task_id"])
+    mid = t["model_id"]
+    dt = n.task(n.ok("POST", f"/_plugins/_ml/models/{mid}/_deploy")["task_id"])
+    return mid, [pick(t, TASK_FIELDS), pick(dt, TASK_FIELDS), pick(n.ok("GET", f"/_plugins/_ml/models/{mid}"), MODEL_FIELDS)]
+
+
+def compare_calls(c, label, ours, stock, z, function, config, calls):
+    out = {}
+    for side, n in (("ours", ours), ("stock", stock)):
+        mid, rows = onnx_model(n, label, function, z, config)
+        for _, path, body in calls:
+            rows.append(answer(n.call("POST", path.replace("<id>", mid), body)))
+        n.ok("POST", f"/_plugins/_ml/models/{mid}/_undeploy")
+        n.call("DELETE", f"/_plugins/_ml/models/{mid}")
+        out[side] = [r if not isinstance(r, tuple) else tuple(x.replace(mid, "<id>") if isinstance(x, str) else x for x in r)
+                     for r in rows]
+    for i, what in enumerate(["register task", "deploy task", "model"] + [w for w, _, _ in calls]):
+        a, b = out["ours"][i], out["stock"][i]
+        c.true(f"{label} {what}", approx(a, b), f"ours {json.dumps(a)[:400]} stock {json.dumps(b)[:400]}")
+
+
+def encoding(c, ours, stock, z):
+    p = "/_plugins/_ml/_predict/sparse_encoding/<id>"
+    calls = [(f"text {i}", p, {"text_docs": [t]}) for i, t in enumerate(golden.TEXTS)]
+    calls += [(f"text {i} by id", p, {"text_docs": [t], "parameters": {"sparse_embedding_format": "TOKEN_ID"}})
+              for i, t in enumerate(golden.TEXTS)]
+    calls += [
+        ("two texts", p, {"text_docs": ["hello world", "the model"]}),
+        ("lower-case format", p, {"text_docs": ["hello"], "parameters": {"sparse_embedding_format": "token_id"}}),
+        ("bad format", p, {"text_docs": ["hello"], "parameters": {"sparse_embedding_format": "BYTES"}}),
+        ("content type", p, {"text_docs": ["hello"], "parameters": {"content_type": "query"}}),
+        ("target position", p, {"text_docs": ["hello"], "target_response_positions": [0]}),
+        ("target name", p, {"text_docs": ["hello"], "target_response": ["output"]}),
+        ("no texts", p, {}),
+        ("model route", "/_plugins/_ml/models/<id>/_predict", {"text_docs": ["search documents"]}),
+    ]
+    compare_calls(c, "tiny-sparse", ours, stock, z, "SPARSE_ENCODING", None, calls)
+
+
+def similarity(c, ours, stock, z):
+    p = "/_plugins/_ml/_predict/text_similarity/<id>"
+    calls = [("all texts", p, {"query_text": golden.QUERY, "text_docs": golden.TEXTS}),
+             ("empty query", p, {"query_text": "", "text_docs": ["hello"]}),
+             ("no query", p, {"text_docs": ["hello"]}),
+             ("no docs", p, {"query_text": "q", "text_docs": []}),
+             ("filters ignored", p, {"query_text": "q", "text_docs": ["a"], "return_number": False, "target_response": ["x"]}),
+             ("model route", "/_plugins/_ml/models/<id>/_predict", {"query_text": "q", "text_docs": ["a b"]})]
+    config = {"model_type": "bert", "embedding_dimension": 1, "framework_type": "huggingface_transformers"}
+    compare_calls(c, "tiny-cross-encoder", ours, stock, z, "TEXT_SIMILARITY", config, calls)
+
+
+def asymmetric(c, ours, stock, z):
+    p = "/_plugins/_ml/_predict/text_embedding/<id>"
+    config = {"model_type": "bert", "embedding_dimension": 32, "framework_type": "sentence_transformers",
+              "pooling_mode": "mean", "normalize_result": True}
+    prefixed = dict(config, query_prefix="query: ", passage_prefix="passage: ")
+    calls = [("no content type", p, {"text_docs": ["hello"]}),
+             ("query", p, {"text_docs": ["hello", "world"], "parameters": {"content_type": "query"}}),
+             ("passage", p, {"text_docs": ["hello"], "parameters": {"content_type": "PASSAGE"}}),
+             ("no type in parameters", p, {"text_docs": ["hello"], "parameters": {}}),
+             ("bad type", p, {"text_docs": ["hello"], "parameters": {"content_type": "doc"}})]
+    compare_calls(c, "tiny-bert-prefixed", ours, stock, z, "TEXT_EMBEDDING", prefixed, calls)
+    calls = [("parameters without prefixes", p, {"text_docs": ["hello"], "parameters": {"content_type": "query"}}),
+             ("no numbers", p, {"text_docs": ["hello"], "return_number": False}),
+             ("bytes", p, {"text_docs": ["hello"], "return_bytes": True}),
+             ("target position", p, {"text_docs": ["hello"], "target_response_positions": [0]}),
+             ("target position missing", p, {"text_docs": ["hello"], "target_response_positions": [3]}),
+             ("target other", p, {"text_docs": ["hello"], "target_response": ["other"]})]
+    compare_calls(c, "tiny-bert-plain", ours, stock, z, "TEXT_EMBEDDING", config, calls)
+
+
 def groups(c, ours, stock):
     rs = {}
     for label, n in (("ours", ours), ("stock", stock)):
@@ -299,6 +410,7 @@ def main():
     ap.add_argument("--stock")
     ap.add_argument("--libtorch")
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--only", help="comma-separated sections to run (default: all)")
     a = ap.parse_args()
     zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips_dir:
@@ -322,16 +434,26 @@ def main():
     ours = Node(f"http://localhost:{OURS[1]}")
     zips = {name: golden.model_zip(name) for name, _ in golden.MODELS}
     zips["sparse"] = sparse_zip()
+    for name in (golden.SPARSE, golden.CROSS):
+        zips[name] = golden.model_zip(name)
+    zips["tiny-bert-prefixed"] = zips["tiny-bert-plain"] = zips["tiny-bert"]
     serve(zips)
     c = Check()
     try:
         for n in (ours, stock):
             wait(n)
             n.ok("PUT", "/_cluster/settings", SETTINGS)
-        groups(c, ours, stock)
-        sparse(c, ours, stock, zips["sparse"])
-        models(c, ours, stock, zips)
-        tasks(c, ours, stock)
+        sections = {
+            "groups": lambda: groups(c, ours, stock),
+            "sparse": lambda: sparse(c, ours, stock, zips["sparse"]),
+            "encoding": lambda: encoding(c, ours, stock, zips[golden.SPARSE]),
+            "similarity": lambda: similarity(c, ours, stock, zips[golden.CROSS]),
+            "asymmetric": lambda: asymmetric(c, ours, stock, zips["tiny-bert"]),
+            "models": lambda: models(c, ours, stock, zips),
+            "tasks": lambda: tasks(c, ours, stock),
+        }
+        for name in (a.only.split(",") if a.only else sections):
+            sections[name]()
     finally:
         if not a.keep:
             subprocess.run(["docker", "rm", "-f", OURS[0]] + ([] if a.stock else [STOCK[0]]), capture_output=True)

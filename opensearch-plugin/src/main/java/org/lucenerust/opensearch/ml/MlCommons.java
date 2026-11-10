@@ -775,6 +775,9 @@ public final class MlCommons {
         if (docs == null && body.get("parameters") instanceof Map<?, ?> p) {
             docs = ((Map<String, Object>) p).get("texts");
         }
+        if (docs == null || docs instanceof List<?> l && l.isEmpty()) {
+            throw new IllegalArgumentException("Empty text docs");
+        }
         if (docs instanceof List<?> list) {
             List<String> texts = new ArrayList<>(list.size());
             for (Object o : list) {
@@ -786,12 +789,39 @@ public final class MlCommons {
     }
 
     /**
+     * {@code TextSimilarityMLInput}: the query and the documents of a {@code text_similarity}
+     * predict input.
+     */
+    @SuppressWarnings("unchecked")
+    static Map.Entry<String, List<String>> similarityInput(Map<String, Object> body) {
+        List<String> docs = new ArrayList<>();
+        if (body.get("text_docs") instanceof List<?> list) {
+            for (Object o : list) {
+                docs.add(String.valueOf(o));
+            }
+        }
+        if (docs.isEmpty()) {
+            throw new IllegalArgumentException("No text documents were provided");
+        }
+        Object query = body.get("query_text");
+        if (query == null) {
+            throw new IllegalArgumentException("No query text was provided");
+        }
+        return Map.entry(String.valueOf(query), docs);
+    }
+
+    /**
      * {@code POST _plugins/_ml/_predict/<algorithm>/<model_id>} and {@code models/<id>/_predict}: run
      * where the model is deployed, here if possible.
      */
     public void predict(String algorithm, String modelId, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
         try {
-            List<String> texts = textDocs(body);
+            String function = algorithm != null ? algorithm.toUpperCase(Locale.ROOT) : local.function(modelId);
+            if ("TEXT_SIMILARITY".equals(function)) {
+                similarityInput(body);
+            } else {
+                textDocs(body);
+            }
             if (local.isDeployed(modelId)) {
                 threadPool.executor(PREDICT_THREAD_POOL).execute(() -> {
                     try {
@@ -816,7 +846,7 @@ public final class MlCommons {
                     }
                     MlNodes.NodeResponse n = r.getNodes().get(0);
                     if (n.error != null) {
-                        throw n.badRequest ? new IllegalArgumentException(n.error) : new IllegalStateException(n.error);
+                        throw n.badRequest ? new IllegalArgumentException(n.error) : new MLException(n.error);
                     }
                     listener.onResponse(parse(n.payload));
                 }, listener::onFailure));
@@ -831,12 +861,6 @@ public final class MlCommons {
         } catch (Exception e) {
             listener.onFailure(e);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<String> targetResponse(Map<String, Object> body) {
-        Object t = body.get("target_response");
-        return t instanceof List<?> l ? (List<String>) l : List.of();
     }
 
     @SuppressWarnings("unchecked")
@@ -855,39 +879,175 @@ public final class MlCommons {
 
     /** Runs {@code body}'s prediction with {@code modelId}, deployed on this node. */
     private Map<String, Object> predictLocal(String modelId, Map<String, Object> body) {
-        List<String> texts = textDocs(body);
-        if ("SPARSE_TOKENIZE".equals(local.function(modelId))) {
-            return sparseTokenize(modelId, texts, body);
+        String function = local.function(modelId);
+        if ("TEXT_SIMILARITY".equals(function)) {
+            return similarity(modelId, similarityInput(body));
         }
-        return embedLocal(modelId, texts, targetResponse(body));
+        List<String> texts = textDocs(body);
+        Map<String, String> params = embeddingParameters(body);
+        try {
+            return switch (function == null ? "" : function) {
+                case "SPARSE_TOKENIZE" -> sparseTokenize(modelId, texts, params);
+                case "SPARSE_ENCODING" -> sparseEncode(modelId, texts, params, body);
+                default -> embedLocal(modelId, prefixed(modelId, texts, params), body);
+            };
+        } catch (LocalModels.InferenceException e) {
+            // The model's own predict failed: stock wraps every such failure the same way.
+            throw new MLException("Failed to inference " + function + " model: " + modelId, e.getCause());
+        }
+    }
+
+    /**
+     * {@code AsymmetricTextEmbeddingParameters} of a text-docs input: {@code content_type} and {@code
+     * sparse_embedding_format}, each upper-cased and checked; {@code null} when the input has no
+     * {@code parameters}.
+     */
+    private static Map<String, String> embeddingParameters(Map<String, Object> body) {
+        if (body.get("parameters") instanceof Map<?, ?> p) {
+            Map<String, String> out = new LinkedHashMap<>();
+            Object contentType = p.get("content_type");
+            if (contentType != null) {
+                out.put("content_type", constant(contentType, List.of("QUERY", "PASSAGE"), "AsymmetricTextEmbeddingParameters.EmbeddingContentType"));
+            }
+            Object format = p.get("sparse_embedding_format");
+            if (format != null) {
+                out.put("sparse_embedding_format", constant(format, List.of("WORD", "TOKEN_ID"), "SparseEmbeddingFormat"));
+            }
+            return out;
+        }
+        return null;
+    }
+
+    /** {@code Enum.valueOf} of an upper-cased name, with the JDK's message for an unknown one. */
+    private static String constant(Object value, List<String> names, String enumClass) {
+        String name = String.valueOf(value).toUpperCase(Locale.ROOT);
+        if (names.contains(name) == false) {
+            throw new IllegalArgumentException("No enum constant org.opensearch.ml.common.input.parameter.textembedding." + enumClass + "." + name);
+        }
+        return name;
+    }
+
+    /**
+     * {@code TextEmbeddingModel.isAsymmetricModel} and {@code addPrefixesToData}: a model registered
+     * with a {@code query_prefix} or {@code passage_prefix} needs the content type, and its texts get
+     * the prefix of that type.
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> prefixed(String modelId, List<String> texts, Map<String, String> params) {
+        Map<String, Object> model = local.model(modelId);
+        Map<String, Object> config = model != null && model.get("model_config") instanceof Map<?, ?> c ? (Map<String, Object>) c : Map.of();
+        Object queryPrefix = config.get("query_prefix");
+        Object passagePrefix = config.get("passage_prefix");
+        if (params == null) {
+            if (queryPrefix != null || passagePrefix != null) {
+                throw new LocalModels.InferenceException(
+                    new IllegalArgumentException(
+                        "The embedding model chosen is asymmetric. To use it, you must declare whether the input is of type `QUERY` or of type `PASSAGE`."
+                    )
+                );
+            }
+            return texts;
+        }
+        if (queryPrefix == null && passagePrefix == null) {
+            throw new LocalModels.InferenceException(
+                new IllegalArgumentException(
+                    "When passing AsymmetricTextEmbeddingParameters, the model requires to be "
+                        + "registered with at least one of `query_prefix` or `passage_prefix`."
+                )
+            );
+        }
+        Object prefix = "PASSAGE".equals(params.get("content_type")) ? passagePrefix : queryPrefix;
+        if (prefix == null) {
+            return texts;
+        }
+        List<String> out = new ArrayList<>(texts.size());
+        for (String t : texts) {
+            out.add(prefix + t);
+        }
+        return out;
+    }
+
+    /**
+     * {@code ModelTensors.filter}: with {@code target_response} or {@code target_response_positions}
+     * only the tensors they name (by name or position) stay; {@code return_number: false} drops each
+     * tensor's {@code data}, and {@code byte_buffer} stays only with {@code return_bytes: true}.
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Object> filter(List<Map<String, Object>> tensors, Map<String, Object> body) {
+        boolean returnBytes = Boolean.parseBoolean(String.valueOf(body.getOrDefault("return_bytes", false)));
+        boolean returnNumber = Boolean.parseBoolean(String.valueOf(body.getOrDefault("return_number", true)));
+        List<Object> names = body.get("target_response") instanceof List<?> l ? (List<Object>) l : List.of();
+        List<Object> positions = body.get("target_response_positions") instanceof List<?> l ? (List<Object>) l : List.of();
+        List<Object> out = new ArrayList<>(tensors.size());
+        for (int i = 0; i < tensors.size(); i++) {
+            Map<String, Object> t = tensors.get(i);
+            boolean all = names.isEmpty() && positions.isEmpty();
+            boolean named = t.get("name") != null && names.stream().anyMatch(n -> String.valueOf(n).equals(t.get("name")));
+            int at = i;
+            boolean placed = positions.stream().anyMatch(p -> p instanceof Number n && n.intValue() == at);
+            if (all || named || placed) {
+                if (returnBytes == false) {
+                    t.remove("byte_buffer");
+                }
+                if (returnNumber == false) {
+                    t.remove("data");
+                }
+                out.add(t);
+            }
+        }
+        return out;
     }
 
     /**
      * {@code SparseTokenizerModel.predict}: per text one tensor whose {@code dataAsMap} holds the token
      * weights, keyed by token, or by token id with {@code parameters.sparse_embedding_format: TOKEN_ID}.
      */
-    private Map<String, Object> sparseTokenize(String modelId, List<String> texts, Map<String, Object> body) {
-        boolean byId = body.get("parameters") instanceof Map<?, ?> p
-            && "TOKEN_ID".equalsIgnoreCase(String.valueOf(p.get("sparse_embedding_format")));
-        List<List<LocalModels.TokenWeight>> vectors;
-        try {
-            vectors = local.sparseTokenize(modelId, texts);
-        } catch (IllegalStateException e) {
-            throw new OpenSearchStatusException(e.getMessage(), RestStatus.INTERNAL_SERVER_ERROR);
-        }
-        List<Object> results = new ArrayList<>(vectors.size());
-        for (List<LocalModels.TokenWeight> weights : vectors) {
-            Map<String, Object> map = new LinkedHashMap<>();
-            for (LocalModels.TokenWeight w : weights) {
-                map.put(byId ? Integer.toUnsignedString(w.id()) : w.token(), w.weight());
-            }
-            results.add(Map.of("output", List.of(Map.of("dataAsMap", Map.of("response", List.of(map))))));
+    private Map<String, Object> sparseTokenize(String modelId, List<String> texts, Map<String, String> params) {
+        boolean byId = params != null && "TOKEN_ID".equals(params.get("sparse_embedding_format"));
+        List<Object> results = new ArrayList<>(texts.size());
+        for (List<LocalModels.TokenWeight> weights : local.sparseTokenize(modelId, texts)) {
+            results.add(Map.of("output", List.of(Map.of("dataAsMap", Map.of("response", List.of(weightMap(weights, byId)))))));
         }
         return Map.of("inference_results", results);
     }
 
+    private static Map<String, Object> weightMap(List<LocalModels.TokenWeight> weights, boolean byId) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (LocalModels.TokenWeight w : weights) {
+            map.put(byId ? Integer.toUnsignedString(w.id()) : w.token(), w.weight());
+        }
+        return map;
+    }
+
+    /**
+     * {@code TextEmbeddingSparseEncodingModel} with its {@code SparseEncodingTranslator}: per text, each
+     * model output's non-zero weights as a {@code dataAsMap} tensor (ONNX outputs carry no tensor name
+     * there), keyed as for {@link #sparseTokenize}, then filtered as text embeddings are.
+     */
+    private Map<String, Object> sparseEncode(String modelId, List<String> texts, Map<String, String> params, Map<String, Object> body) {
+        boolean byId = params != null && "TOKEN_ID".equals(params.get("sparse_embedding_format"));
+        List<Object> results = new ArrayList<>(texts.size());
+        for (String text : texts) {
+            List<Map<String, Object>> tensors = new ArrayList<>();
+            for (List<LocalModels.SparseOutput> outputs : local.sparseEncode(modelId, List.of(text), byId)) {
+                for (LocalModels.SparseOutput o : outputs) {
+                    Map<String, Object> tensor = new LinkedHashMap<>();
+                    tensor.put("dataAsMap", Map.of("response", List.of(weightMap(o.weights(), byId))));
+                    tensors.add(tensor);
+                }
+            }
+            results.add(outputs(filter(tensors, body)));
+        }
+        return Map.of("inference_results", results);
+    }
+
+    /** One {@code ModelTensors}: its {@code output} list, left out when the filter kept nothing. */
+    private static Map<String, Object> outputs(List<Object> tensors) {
+        return tensors.isEmpty() ? Map.of() : Map.of("output", tensors);
+    }
+
     /** {@code ModelTensorOutput} for {@code texts}, one {@code inference_results} entry per text. */
-    private Map<String, Object> embedLocal(String modelId, List<String> texts, List<String> targets) {
+    private Map<String, Object> embedLocal(String modelId, List<String> texts, Map<String, Object> body) {
         for (String t : texts) {
             if (t == null) {
                 throw new IllegalArgumentException("input data set should not be null");
@@ -895,26 +1055,54 @@ public final class MlCommons {
         }
         List<Object> results = new ArrayList<>(texts.size());
         for (String text : texts) {
-            List<LocalModels.Tensor> tensors;
-            try {
-                tensors = local.embed(modelId, List.of(text));
-            } catch (IllegalStateException e) {
-                throw new OpenSearchStatusException(e.getMessage(), RestStatus.INTERNAL_SERVER_ERROR);
+            List<Map<String, Object>> tensors = new ArrayList<>();
+            for (LocalModels.Tensor t : local.embed(modelId, List.of(text))) {
+                Map<String, Object> tensor = tensorMap("sentence_embedding", t);
+                tensors.add(tensor);
             }
-            List<Object> output = new ArrayList<>();
-            for (LocalModels.Tensor t : tensors) {
-                if (targets.isEmpty() == false && targets.contains("sentence_embedding") == false) {
-                    continue;
-                }
-                Map<String, Object> tensor = new LinkedHashMap<>();
-                tensor.put("name", "sentence_embedding");
-                tensor.put("data_type", "FLOAT32");
-                tensor.put("shape", Arrays.stream(t.shape()).boxed().toList());
-                List<Float> data = new ArrayList<>(t.data().length);
+            results.add(outputs(filter(tensors, body)));
+        }
+        return Map.of("inference_results", results);
+    }
+
+    private static Map<String, Object> tensorMap(String name, LocalModels.Tensor t) {
+        Map<String, Object> tensor = new LinkedHashMap<>();
+        tensor.put("name", name);
+        tensor.put("data_type", "FLOAT32");
+        tensor.put("shape", Arrays.stream(t.shape()).boxed().toList());
+        List<Float> data = new ArrayList<>(t.data().length);
+        for (float f : t.data()) {
+            data.add(f);
+        }
+        tensor.put("data", data);
+        return tensor;
+    }
+
+    /**
+     * {@code TextSimilarityCrossEncoderModel} with its {@code TextSimilarityTranslator}: per document a
+     * {@code similarity} tensor of the model's output, with its bytes (little endian, as the native
+     * array gives them); this function applies no result filter.
+     */
+    private Map<String, Object> similarity(String modelId, Map.Entry<String, List<String>> input) {
+        List<List<LocalModels.Tensor>> scores;
+        try {
+            scores = local.similarity(modelId, input.getKey(), input.getValue());
+        } catch (LocalModels.InferenceException e) {
+            throw new MLException("Failed to inference TEXT_SIMILARITY model: " + modelId, e.getCause());
+        }
+        List<Object> results = new ArrayList<>(scores.size());
+        for (List<LocalModels.Tensor> outputs : scores) {
+            List<Object> output = new ArrayList<>(outputs.size());
+            for (LocalModels.Tensor t : outputs) {
+                Map<String, Object> tensor = tensorMap("similarity", t);
+                java.nio.ByteBuffer bytes = java.nio.ByteBuffer.allocate(t.data().length * Float.BYTES).order(java.nio.ByteOrder.LITTLE_ENDIAN);
                 for (float f : t.data()) {
-                    data.add(f);
+                    bytes.putFloat(f);
                 }
-                tensor.put("data", data);
+                Map<String, Object> buffer = new LinkedHashMap<>();
+                buffer.put("array", Base64.getEncoder().encodeToString(bytes.array()));
+                buffer.put("order", "LITTLE_ENDIAN");
+                tensor.put("byte_buffer", buffer);
                 output.add(tensor);
             }
             results.add(Map.of("output", output));
@@ -923,9 +1111,22 @@ public final class MlCommons {
     }
 
     /** The embeddings of {@code texts}, for the neural query, processors and semantic field. */
-    @SuppressWarnings("unchecked")
     public void inferenceSentences(String modelId, List<String> texts, ActionListener<List<List<Float>>> listener) {
-        predict("text_embedding", modelId, Map.of("text_docs", texts), ActionListener.wrap(r -> {
+        inferenceSentences(modelId, null, texts, listener);
+    }
+
+    /**
+     * The embeddings of {@code texts} as {@code contentType} ({@code QUERY} or {@code PASSAGE}, for a
+     * model registered with prefixes; {@code null} for one without).
+     */
+    @SuppressWarnings("unchecked")
+    public void inferenceSentences(String modelId, String contentType, List<String> texts, ActionListener<List<List<Float>>> listener) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("text_docs", texts);
+        if (contentType != null) {
+            body.put("parameters", Map.of("content_type", contentType));
+        }
+        predict("text_embedding", modelId, body, ActionListener.wrap(r -> {
             List<List<Float>> vectors = new ArrayList<>(texts.size());
             for (Object result : (List<Object>) r.get("inference_results")) {
                 for (Object tensor : (List<Object>) ((Map<String, Object>) result).get("output")) {
@@ -958,6 +1159,23 @@ public final class MlCommons {
                 }
             }
             listener.onResponse(maps);
+        }, listener::onFailure));
+    }
+
+    /**
+     * The relevance score of each of {@code docs} against {@code query} from a cross-encoder, for the
+     * rerank processor, as {@code MLCommonsClientAccessor.inferenceSimilarity} returns them.
+     */
+    @SuppressWarnings("unchecked")
+    public void inferenceSimilarity(String modelId, String query, List<String> docs, ActionListener<List<Float>> listener) {
+        predict("text_similarity", modelId, Map.of("query_text", query, "text_docs", docs), ActionListener.wrap(r -> {
+            List<Float> scores = new ArrayList<>(docs.size());
+            for (Object result : (List<Object>) r.get("inference_results")) {
+                List<Object> output = (List<Object>) ((Map<String, Object>) result).get("output");
+                List<Object> data = (List<Object>) ((Map<String, Object>) output.get(0)).get("data");
+                scores.add(((Number) data.get(0)).floatValue());
+            }
+            listener.onResponse(scores);
         }, listener::onFailure));
     }
 
