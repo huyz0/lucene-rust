@@ -220,6 +220,24 @@ fn refuses_a_missing_model_and_a_wrong_input_set() {
 }
 
 #[test]
+fn sparse_encoding_refuses_an_output_per_token() {
+    if !runtime_loaded() {
+        return;
+    }
+    let tokenizer = std::fs::read(fixtures().join("tokenizer.json")).unwrap();
+    // tiny-bert's output is [tokens, dim] per text, not one weight per token id.
+    let model = SparseEncodingModel::load(&fixtures().join("tiny-bert.onnx"), &tokenizer).unwrap();
+    assert!(matches!(
+        model.encode("hello", false),
+        Err(MlError::Model(_))
+    ));
+    assert!(matches!(
+        TextSimilarityModel::load(&fixtures().join("absent.onnx"), &tokenizer),
+        Err(MlError::Model(_))
+    ));
+}
+
+#[test]
 fn a_second_init_keeps_the_first_runtime() {
     if !runtime_loaded() {
         return;
