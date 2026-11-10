@@ -2509,11 +2509,6 @@ public final class NativeBridge {
     }
 
     /**
-     * Merge-on-commit/refresh: commits and refreshes wait up to {@code waitMillis} for the merges of the
-     * segments they publish ({@code 0} turns them off), picked by {@code MergeOnFlushMergePolicy} when
-     * {@code mergeOnFlushPolicy}.
-     */
-    /**
      * IVF fields' vectors clustered per partition of the index sort's first field: each partition of
      * at least {@code minVectors} vectors on its own, the smaller ones pooled; {@code 0} turns it off.
      */
@@ -2525,6 +2520,11 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Merge-on-commit/refresh: commits and refreshes wait up to {@code waitMillis} for the merges of the
+     * segments they publish ({@code 0} turns them off), picked by {@code MergeOnFlushMergePolicy} when
+     * {@code mergeOnFlushPolicy}.
+     */
     public static int writerSetMergeOnFlush(long handle, long waitMillis, boolean mergeOnFlushPolicy) {
         try {
             return (int) H.WRITER_SET_MERGE_ON_FLUSH.invokeExact(handle, waitMillis, (byte) (mergeOnFlushPolicy ? 1 : 0));

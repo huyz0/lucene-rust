@@ -191,8 +191,9 @@ public final class RustEngineSupport {
      * clustered together, so a k-NN search filtered to one partition probes only the clusters that
      * hold it. On 8M vectors at 20000, tenants of 400k and 1.5M vectors searched about 4x and 1.5x
      * faster at the same or higher recall, while unfiltered searches took 2.3x as long. {@code
-     * 0} (the default) clusters each field as a whole, like stock; no effect without an index sort or
-     * on fields other than {@code method: ivf}. Segments read like any other IVF segment.
+     * 0} (the default) clusters each field as a whole, like stock; no effect without an index sort, on
+     * fields other than {@code method: ivf}, or on segments holding nested documents (whose blocks
+     * keep whole-field clusters). Segments read like any other IVF segment.
      */
     public static final Setting<Integer> IVF_PARTITION_CLUSTERS = Setting.intSetting(
         "index.lucene_rust.knn.ivf_partition_clusters",
@@ -361,6 +362,11 @@ public final class RustEngineSupport {
         }
         if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
             return unsupportedSort(settings.getSettings());
+        }
+        // Partitions are the index sort's first field; the setting is final, so a missing sort is
+        // refused rather than left to do nothing.
+        if (indexSorted == false && IVF_PARTITION_CLUSTERS.get(settings.getSettings()) > 0) {
+            return IVF_PARTITION_CLUSTERS.getKey() + " needs index.sort.field: partitions are the index sort's first field";
         }
         // The codec then gives _id a FuzzyFilterPostingsFormat (a bloom filter beside the terms),
         // which the Rust writer does not lay out.

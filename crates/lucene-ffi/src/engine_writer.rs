@@ -2525,7 +2525,7 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
 /// each partition of at least `min_vectors` vectors on its own, the smaller
 /// ones pooled, so a search filtered to one partition probes only its
 /// clusters. `0` (the default) clusters each field as a whole; no effect
-/// without an index sort.
+/// without an index sort, or on a flush holding nested document blocks.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_set_ivf_partition_clusters(
     handle: u64,
@@ -3934,6 +3934,10 @@ mod tests {
         assert_eq!(ffi_engine_writer_set_ivf_partition_clusters(h, 0), 0);
         assert_eq!(get(), None);
         ffi_engine_writer_close(h);
+        assert_eq!(
+            ffi_engine_writer_set_ivf_partition_clusters(h, 20_000),
+            FfiStatus::InvalidHandle as i32
+        );
     }
 
     /// The engine keeps the commits it has always written: merge-on-commit
