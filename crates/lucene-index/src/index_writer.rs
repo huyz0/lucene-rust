@@ -300,11 +300,6 @@ pub enum Error {
         found: String,
         segment: String,
     },
-    /// A merged segment's `.si` names an index-sort field this writer's own
-    /// field list does not have -- the index was written by a differently
-    /// configured writer.
-    #[error("index sort field {0:?} is not in this writer's field list")]
-    UnknownSortField(String),
     /// A source segment declares an index sort in its `.si` but carries no
     /// NUMERIC doc-values column for one of its tiers, so there is nothing to
     /// re-derive its order from. `set_index_sort` makes the column mandatory,
@@ -6374,6 +6369,12 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().ivf_partition_clusters = min_vectors;
     }
 
+    /// The least vectors a partition needs to be clustered on its own; see
+    /// [`IndexWriter::set_ivf_partition_clusters`].
+    pub fn ivf_partition_clusters(&self) -> Option<usize> {
+        self.cfg.ivf_partition_clusters
+    }
+
     /// The least `.fdt` bytes, summed over a merge's sources, for which the
     /// merged segment of a paged zstd codec
     /// ([`lucene_codecs::stored_fields::Mode::ZstdPaged`]) gets a trained
@@ -12284,11 +12285,16 @@ impl IndexWriter<'_> {
         max_doc: i32,
     ) -> Result<Vec<Option<i64>>> {
         let field_name = sort.field.as_str();
-        let field_number = fields
+        // A source none of whose documents has the field (OpenSearch's
+        // delete tombstones, say) sorts every document as missing, as
+        // Java's empty `DocValues.getNumeric` does.
+        let Some(field_number) = fields
             .iter()
             .find(|f| f.name == field_name)
             .map(|f| f.number)
-            .ok_or_else(|| Error::UnknownSortField(field_name.to_string()))?;
+        else {
+            return Ok(vec![None; usize::try_from(max_doc).unwrap_or(0)]);
+        };
         let at = columns
             .per_field
             .iter()
@@ -12334,8 +12340,8 @@ impl IndexWriter<'_> {
     /// [`Self::read_sort_keys`] for a byte-keyed sort tier: each document's
     /// bytes out of the source's current SORTED / SORTED_SET (through the
     /// tier's selector) / BINARY column, to be ranked across every source
-    /// by [`crate::index_sorter::rank_terms`]. A missing column is the same
-    /// error as for a numeric tier.
+    /// by [`crate::index_sorter::rank_terms`]. A source without the field
+    /// and a missing column are as for a numeric tier.
     fn read_sort_terms(
         columns: &SourceDocValueColumns,
         fields: &[FieldInfo],
@@ -12343,11 +12349,13 @@ impl IndexWriter<'_> {
         max_doc: i32,
     ) -> Result<Vec<Option<Vec<u8>>>> {
         let field_name = sort.field.as_str();
-        let field_number = fields
+        let Some(field_number) = fields
             .iter()
             .find(|f| f.name == field_name)
             .map(|f| f.number)
-            .ok_or_else(|| Error::UnknownSortField(field_name.to_string()))?;
+        else {
+            return Ok(vec![None; usize::try_from(max_doc).unwrap_or(0)]);
+        };
         let missing = || Error::MergeSortColumnMissing(field_name.to_string());
         let at = columns
             .per_field
@@ -22561,6 +22569,28 @@ pub(crate) mod tests {
     /// than degrade -- and this port could never merge that segment again,
     /// because `read_sort_keys` would return `MergeSortColumnMissing` out of
     /// every subsequent `commit`.
+    /// A merge source none of whose documents has the sort field -- its
+    /// `.fnm` does not list it, as for a segment of delete tombstones only
+    /// -- sorts every document as missing instead of failing the merge.
+    #[test]
+    fn a_source_without_the_sort_field_sorts_as_missing() {
+        let columns = SourceDocValueColumns {
+            columns: Vec::new(),
+            per_field: Vec::new(),
+        };
+        let numeric = sort_field("rank", false, SortMissingValue::Last);
+        assert_eq!(
+            IndexWriter::read_sort_keys(&columns, &[], &numeric, 3).unwrap(),
+            vec![None; 3]
+        );
+        let mut terms = numeric.clone();
+        terms.kind = segment_info::IndexSortKind::String(segment_info::StringMissingValue::Last);
+        assert_eq!(
+            IndexWriter::read_sort_terms(&columns, &[], &terms, 2).unwrap(),
+            vec![None; 2]
+        );
+    }
+
     #[test]
     fn a_sort_tier_no_merged_document_has_a_value_for_is_still_written() {
         let tmp = tempdir("sorted-merge-empty-tier");
