@@ -1869,6 +1869,9 @@ impl SegmentReader {
                 files.push(i);
             }
         }
+        for codes in self.vectors.iter().filter_map(|c| c.hnsw_codes.as_ref()) {
+            files.extend([&**codes.meta, &**codes.data]);
+        }
         for g in &self.dv_generations {
             files.push(&g.data);
         }

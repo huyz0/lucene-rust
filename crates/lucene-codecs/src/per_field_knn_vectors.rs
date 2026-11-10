@@ -94,6 +94,9 @@ pub enum KnnVectorsFormat {
     /// [`IVF_QUANTIZERS`]`[quantizer]` code of every vector (`.vqm`/`.vqd`),
     /// which a search walks the graph on before reranking its candidates on
     /// the raw vectors. Float fields only; a byte field gets the graph alone.
+    /// Any quantizer is valid here; the OpenSearch mapping offers `rabitq` and
+    /// `erq2`-`erq8`, since Lucene's OSQ on HNSW is already the `lucene`
+    /// engine's scalar-quantized format.
     HnswQuantized {
         quantizer: u8,
         max_conn: i32,

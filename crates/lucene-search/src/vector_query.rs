@@ -1367,6 +1367,11 @@ fn search_leaf(
             ) = (&input.hnsw, diversify, &graph)
             {
                 if let Some(field) = codes.field(resolved.field_number) {
+                    field.check_matches(
+                        values.dimension(),
+                        values.similarity(),
+                        usize::try_from(values.size()).unwrap_or(0),
+                    )?;
                     // The graph is walked on the codes, the collected
                     // candidates are rescored on the float vectors, and an
                     // exhaustive search scores the float vectors directly

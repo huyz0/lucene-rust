@@ -185,6 +185,8 @@ pub(crate) fn write(
 #[derive(Debug)]
 pub struct CodesFieldReader {
     pub number: i32,
+    similarity: lucene_vector_quant::Similarity,
+    dimension: usize,
     quantizer: Box<dyn Quantizer>,
     /// The centroid as the quantizer scores against it
     /// ([`Quantizer::prepare_centroid`]).
@@ -208,6 +210,30 @@ impl CodesFieldReader {
     /// Bytes of one code.
     pub fn code_len(&self) -> usize {
         self.code_len
+    }
+
+    /// Checks the codes against the field's raw vectors: the same
+    /// dimension, similarity and vector count.
+    ///
+    /// # Errors
+    /// [`lucene_store::Error::Corrupted`] on any mismatch.
+    pub fn check_matches(
+        &self,
+        dimension: usize,
+        similarity: VectorSimilarityFunction,
+        count: usize,
+    ) -> Result<()> {
+        if self.dimension != dimension
+            || self.similarity != util_similarity(similarity)
+            || self.count != count
+        {
+            return corrupt(format!(
+                "field {}: {} codes of dimension {} ({:?}) for {count} vectors of dimension \
+                 {dimension} ({similarity:?})",
+                self.number, self.count, self.dimension, self.similarity
+            ));
+        }
+        Ok(())
     }
 
     /// `query` prepared against the field's codes.
@@ -324,6 +350,8 @@ impl HnswCodesReader {
             let prepared = quantizer.prepare_centroid(&center).unwrap_or(center);
             fields.push(CodesFieldReader {
                 number,
+                similarity,
+                dimension,
                 quantizer,
                 prepared,
                 count: vectors,

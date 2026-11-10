@@ -45,6 +45,39 @@ fn noise(seed: u64) -> impl FnMut() -> f32 {
     }
 }
 
+/// The field's similarity, and whether some documents have no vector.
+#[derive(Clone, Copy)]
+struct Case {
+    similarity: VectorSimilarityFunction,
+    /// Every fifth document has no vector, so ordinals and doc ids differ.
+    sparse: bool,
+}
+
+const L2: Case = Case {
+    similarity: VectorSimilarityFunction::Euclidean,
+    sparse: false,
+};
+
+impl Case {
+    fn has_vector(self, id: usize) -> bool {
+        !(self.sparse && id % 5 == 3)
+    }
+
+    /// [`vector`], unit length for dot product (which requires it).
+    fn vector(self, id: usize) -> Vec<f32> {
+        let mut v = vector(id);
+        if self.similarity == VectorSimilarityFunction::DotProduct {
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+        }
+        v
+    }
+
+    fn score(self, a: &[f32], b: &[f32]) -> f32 {
+        self.similarity.score(a, b)
+    }
+}
+
 /// Points around 20 centres.
 fn vector(id: usize) -> Vec<f32> {
     let mut centre = noise((id % 20) as u64 + 1_000_000);
@@ -54,7 +87,7 @@ fn vector(id: usize) -> Vec<f32> {
 
 /// `id` stored, the `parity` term (`even`/`odd`) and the `rare` term
 /// (`yes` for one document in 64).
-fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
+fn doc(case: Case, id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
     let mut d = ExplicitDocument::default();
     d.stored.push(StoredField {
         field_number: 0,
@@ -86,10 +119,15 @@ fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
             norm: None,
         });
     }
-    (d, vec![DocumentVector::float32("v", vector(id))])
+    let vectors = if case.has_vector(id) {
+        vec![DocumentVector::float32("v", case.vector(id))]
+    } else {
+        Vec::new()
+    };
+    (d, vectors)
 }
 
-fn writer(dir: &FsDirectory, format: KnnVectorsFormat) -> IndexWriter<'_> {
+fn writer(dir: &FsDirectory, format: KnnVectorsFormat, case: Case) -> IndexWriter<'_> {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     w.register_field(FieldInfo::new("id", 0)).unwrap();
@@ -104,7 +142,7 @@ fn writer(dir: &FsDirectory, format: KnnVectorsFormat) -> IndexWriter<'_> {
     w.register_field(FieldInfo::new("v", 0).with_vectors(
         DIM as i32,
         VectorEncoding::Float32,
-        VectorSimilarityFunction::Euclidean,
+        case.similarity,
     ))
     .unwrap();
     w.set_knn_vectors_format_for_field("v", format);
@@ -114,9 +152,14 @@ fn writer(dir: &FsDirectory, format: KnnVectorsFormat) -> IndexWriter<'_> {
 }
 
 fn build(dir: &FsDirectory, format: KnnVectorsFormat) {
-    let w = ConcurrentIndexWriter::new(writer(dir, format), 1).unwrap();
+    build_case(dir, format, L2);
+}
+
+fn build_case(dir: &FsDirectory, format: KnnVectorsFormat, case: Case) {
+    let w = ConcurrentIndexWriter::new(writer(dir, format, case), 1).unwrap();
     for start in (0..DOCS).step_by(PER_SEGMENT) {
-        let (docs, vectors): (Vec<_>, Vec<_>) = (start..start + PER_SEGMENT).map(doc).unzip();
+        let (docs, vectors): (Vec<_>, Vec<_>) =
+            (start..start + PER_SEGMENT).map(|id| doc(case, id)).unzip();
         w.add_explicit_documents_with_vectors_in(None, docs, vectors)
             .unwrap();
         w.flush().unwrap();
@@ -125,14 +168,10 @@ fn build(dir: &FsDirectory, format: KnnVectorsFormat) {
     w.into_writer().unwrap().close().unwrap();
 }
 
-fn score(a: &[f32], b: &[f32]) -> f32 {
-    VectorSimilarityFunction::Euclidean.score(a, b)
-}
-
-fn exact_top(target: &[f32], k: usize, keep: impl Fn(usize) -> bool) -> Vec<usize> {
+fn exact_top(case: Case, target: &[f32], k: usize, keep: impl Fn(usize) -> bool) -> Vec<usize> {
     let mut all: Vec<(usize, f32)> = (0..DOCS)
-        .filter(|&id| keep(id))
-        .map(|id| (id, score(target, &vector(id))))
+        .filter(|&id| keep(id) && case.has_vector(id))
+        .map(|id| (id, case.score(target, &case.vector(id))))
         .collect();
     all.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     all.into_iter().take(k).map(|(id, _)| id).collect()
@@ -147,13 +186,23 @@ fn recall(
     keep: impl Fn(usize) -> bool,
     id_of: impl Fn(i32) -> usize,
 ) -> f64 {
+    recall_case(dir, L2, filter, keep, id_of)
+}
+
+fn recall_case(
+    dir: &FsDirectory,
+    case: Case,
+    filter: Option<&Clause>,
+    keep: impl Fn(usize) -> bool,
+    id_of: impl Fn(i32) -> usize,
+) -> f64 {
     let reader = DirectoryReader::open(dir).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let queries = 30;
     let mut found = 0;
     for q in 0..queries {
-        let target = vector(1_000_000 + q);
+        let target = case.vector(1_000_000 + q);
         let hits = knn_top_hits(
             &segments,
             "v",
@@ -166,10 +215,14 @@ fn recall(
         assert_eq!(hits.len(), K);
         for h in &hits {
             let id = id_of(h.doc_id);
-            assert!(keep(id), "doc {id} should not match");
-            assert_eq!(h.score, score(&target, &vector(id)), "doc {id} score");
+            assert!(keep(id) && case.has_vector(id), "doc {id} should not match");
+            assert_eq!(
+                h.score,
+                case.score(&target, &case.vector(id)),
+                "doc {id} score"
+            );
         }
-        let want = exact_top(&target, K, &keep);
+        let want = exact_top(case, &target, K, &keep);
         found += hits
             .iter()
             .filter(|h| want.contains(&id_of(h.doc_id)))
@@ -292,7 +345,7 @@ fn a_merge_encodes_the_merged_vectors() {
     let tmp = TempDir::new("knn-hnswq-merge");
     let dir = FsDirectory::open(&tmp);
     build(&dir, quantized("erq4"));
-    let mut w = writer(&dir, quantized("erq4"));
+    let mut w = writer(&dir, quantized("erq4"), L2);
     w.delete_documents_by_term(&[Term {
         field: "rare".into(),
         bytes: b"yes".to_vec(),
@@ -333,4 +386,87 @@ fn bad_parameters_are_refused() {
     assert!(KnnVectorsFormat::hnsw_quantized(IVF_QUANTIZERS.len() as u8, 16, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_quantized(4, 0, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_quantized(4, 16, 0).is_err());
+}
+
+#[test]
+fn every_similarity_and_sparse_fields_return_exact_scores() {
+    for (similarity, sparse) in [
+        (VectorSimilarityFunction::Cosine, false),
+        (VectorSimilarityFunction::DotProduct, false),
+        (VectorSimilarityFunction::MaximumInnerProduct, false),
+        (VectorSimilarityFunction::Euclidean, true),
+        (VectorSimilarityFunction::Cosine, true),
+    ] {
+        let case = Case { similarity, sparse };
+        for name in ["rabitq", "erq2"] {
+            let tmp = TempDir::new(&format!("knn-hnswq-{similarity:?}-{sparse}-{name}"));
+            let dir = FsDirectory::open(&tmp);
+            build_case(&dir, quantized(name), case);
+            let r = recall_case(&dir, case, None, |_| true, |d| d as usize);
+            assert!(
+                r >= 0.9,
+                "{similarity:?} sparse {sparse} {name}: recall {r}"
+            );
+            let even = Clause::Term(TermQuery::new("parity", b"even".to_vec()));
+            let r = recall_case(
+                &dir,
+                case,
+                Some(&even),
+                |id| id.is_multiple_of(2),
+                |d| d as usize,
+            );
+            assert!(
+                r >= 0.9,
+                "{similarity:?} sparse {sparse} {name}: filtered recall {r}"
+            );
+        }
+    }
+}
+
+/// `check_integrity` checksums the codes: a flipped byte inside `.vqd` fails
+/// it, and codes whose count disagrees with the raw vectors fail a search.
+#[test]
+fn damaged_codes_are_reported() {
+    let tmp = TempDir::new("knn-hnswq-damaged");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir, quantized("erq2"));
+    let vqd = files_with(&tmp, "vqd").remove(0);
+    let mut bytes = std::fs::read(&vqd).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0x40;
+    std::fs::write(&vqd, &bytes).unwrap();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert!(reader
+        .segment_readers()
+        .iter()
+        .any(|seg| seg.check_integrity().is_err()));
+}
+
+#[test]
+fn codes_that_disagree_with_the_vectors_are_refused() {
+    let tmp = TempDir::new("knn-hnswq-mismatch");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir, quantized("erq2"));
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let seg = &reader.segment_readers()[0];
+    let number = seg
+        .field_infos()
+        .fields
+        .iter()
+        .find(|f| f.name == "v")
+        .unwrap()
+        .number;
+    let codes = seg.hnsw_codes_for(number).unwrap().unwrap();
+    let field = codes.field(number).unwrap();
+    let euclidean = VectorSimilarityFunction::Euclidean;
+    field.check_matches(DIM, euclidean, PER_SEGMENT).unwrap();
+    assert!(field
+        .check_matches(DIM + 1, euclidean, PER_SEGMENT)
+        .is_err());
+    assert!(field
+        .check_matches(DIM, VectorSimilarityFunction::Cosine, PER_SEGMENT)
+        .is_err());
+    assert!(field
+        .check_matches(DIM, euclidean, PER_SEGMENT - 1)
+        .is_err());
 }
