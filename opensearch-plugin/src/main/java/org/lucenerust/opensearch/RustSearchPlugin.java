@@ -615,6 +615,7 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
+        org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
             MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);

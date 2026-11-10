@@ -40,6 +40,8 @@ lucene-ml = { path = "../lucene-ml" }
 # libtorch and the TorchScript shim (`ml_torch.rs`), opened at run time.
 libloading = "0.8"
 lucene-util = { path = "../lucene-util" }
+# Painless scripts run natively (`jvm_painless_score.rs`).
+lucene-painless = { path = "../lucene-painless" }
 lucene-analysis = { path = "../lucene-analysis" }
 # ICU's Thai dictionary word iterator, which `ThaiTokenizer` (the `thai`
 # tokenizer and analyzer) segments with (lucene_analysis::lang::th), and
