@@ -80,10 +80,11 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
         super(in);
         fieldName = in.readString();
         int n = in.readVInt();
-        queryVectors = new float[n][];
+        float[][] v = new float[n][];
         for (int i = 0; i < n; i++) {
-            queryVectors[i] = in.readFloatArray();
+            v[i] = in.readFloatArray();
         }
+        queryVectors = checked(v);
         filter = in.readOptionalNamedWriteable(QueryBuilder.class);
     }
 
@@ -119,7 +120,10 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 current = parser.currentName();
-            } else if (QUERY_VECTORS_FIELD.match(current, parser.getDeprecationHandler()) && token == XContentParser.Token.START_ARRAY) {
+            } else if (QUERY_VECTORS_FIELD.match(current, parser.getDeprecationHandler())) {
+                if (token != XContentParser.Token.START_ARRAY) {
+                    throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] [query_vectors] must be an array of arrays of numbers");
+                }
                 b.queryVectors = vectors(parser);
             } else if (FILTER_FIELD.match(current, parser.getDeprecationHandler()) && token == XContentParser.Token.START_OBJECT) {
                 b.filter = parseInnerQueryBuilder(parser);

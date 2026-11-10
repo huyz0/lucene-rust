@@ -214,7 +214,9 @@ def main():
                     if sum(1 for _, sc in got if sc > 0) < min(10, len(got)):
                         failures.append(f"{what}: only {sum(1 for _, sc in got if sc > 0)} hits reranked")
                     for k, (i, sc) in enumerate(got):
-                        if i not in matched or (sc != 0.0 and not close(sc, want.get(i, 0.0))) or (k and sc > got[k - 1][1]):
+                        # With every match in the window, a 0 is only right where MaxSim is not positive.
+                        inside = len(matched) <= 30 or sc != 0.0
+                        if i not in matched or (inside and not close(sc, max(want.get(i, 0.0), 0.0))) or (k and sc > got[k - 1][1]):
                             failures.append(f"{what}: hit {k} {i} scored {sc}, expected {want.get(i, 0.0)}")
                             break
                     cases += 3

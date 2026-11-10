@@ -63,7 +63,7 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
             () -> MultiVectorEncoding.FLOAT16.getName(),
             (n, c, o) -> MultiVectorEncoding.of(XContentMapValues.nodeStringValue(o, null)).getName(),
             m -> ft(m).encoding.getName()
-        );
+        ).alwaysSerialize();
         final Parameter<Map<String, String>> meta = Parameter.metaParam();
 
         Builder(String name) {
