@@ -523,6 +523,7 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.PAGED_ZSTD_STORED_FIELDS,
             RustEngineSupport.STORE_MODE,
             RustEngineSupport.PARTITION_FIELD,
+            RustEngineSupport.IVF_PARTITION_CLUSTERS,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,

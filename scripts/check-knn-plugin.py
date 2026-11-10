@@ -388,16 +388,21 @@ def ivf_mapping(**params):
 def ivf_check(failures):
     """The `lucene_rust` engine's IVF fields on the plugin node (see the module doc)."""
     checked = 0
-    for index, params in (("ivf_f32", {"rerank_encoding": "float"}), ("ivf_f16", {"rerank_encoding": "half_float"}),
-                          ("ivf_osq2", {"rerank_encoding": "float", "quantizer": "osq2"}),
-                          ("ivf_erq4", {"quantizer": "erq4"})):
+    # ivf_tenants: sorted by tenant, each tenant's vectors clustered on their own.
+    tenants = {"index.sort.field": "tenant", "index.lucene_rust.knn.ivf_partition_clusters": 50}
+    for index, params, extra in (("ivf_f32", {"rerank_encoding": "float"}, {}),
+                                 ("ivf_f16", {"rerank_encoding": "half_float"}, {}),
+                                 ("ivf_osq2", {"rerank_encoding": "float", "quantizer": "osq2"}, {}),
+                                 ("ivf_erq4", {"quantizer": "erq4"}, {}),
+                                 ("ivf_tenants", {"rerank_encoding": "float"}, tenants)):
         rng = random.Random(f"{SEED}-{index}")
-        docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
-                for i in range(DOCS)]
+        docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "tenant": i % 3,
+                 "emb": vector(rng, False)} for i in range(DOCS)]
         settings = {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
                     "number_of_replicas": 0, "refresh_interval": -1,
-                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
-        mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "emb": ivf_mapping(**params)}}
+                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100, **extra}
+        mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "tenant": {"type": "integer"},
+                                  "emb": ivf_mapping(**params)}}
         r = req(STOCK[1], "PUT", f"/{index}", {"settings": {"index.knn": True}, "mappings": mapping}, ok_errors=True)
         if r.get("status", 200) != 400:
             failures.append(f"{index}: stock accepted the lucene_rust mapping: {json.dumps(r)[:200]}")
@@ -413,7 +418,7 @@ def ivf_check(failures):
             lines = []
             for d in docs[s * per:(s + 1) * per]:
                 lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
-                lines.append(json.dumps({"tag": d["tag"], "n": d["n"], "emb": d["emb"]}))
+                lines.append(json.dumps({"tag": d["tag"], "n": d["n"], "tenant": d["tenant"], "emb": d["emb"]}))
             r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
             assert not r["errors"], json.dumps(r)[:2000]
             req(OURS[1], "POST", f"/{index}/_flush")
@@ -435,6 +440,9 @@ def ivf_check(failures):
                          method_parameters={"nprobes": 1}),
                      lambda d: 100 <= d["n"] < 140, 10),
                 ]
+                if extra:
+                    cases.append(("tenant", knn(t, k=10, filter={"term": {"tenant": 1}}),
+                                  lambda d: d["tenant"] == 1, 10))
                 by_id = {d["_id"]: d["emb"] for d in live}
                 for label, query, keep_doc, k in cases:
                     got = search(OURS[1], index, {"size": 50, "query": query})
@@ -444,7 +452,7 @@ def ivf_check(failures):
                              if i not in by_id or abs(sc - score("l2", t, by_id[i])) > 1e-4 * max(1.0, sc)]
                     if wrong:
                         failures.append(f"{index} {stage} {label} query {qi}: not exact scores or deleted docs {wrong[:3]}")
-                    if label == "rare filter":
+                    if label in ("rare filter", "tenant"):
                         if not same(got, want):
                             failures.append(f"{index} {stage} {label} query {qi}: {got[:3]} vs the scan's {want[:3]}")
                     else:

@@ -342,6 +342,10 @@ public final class NativeBridge {
             "ffi_engine_writer_set_merge_on_flush",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE)
         );
+        static final MethodHandle WRITER_SET_IVF_PARTITION_CLUSTERS = bind(
+            "ffi_engine_writer_set_ivf_partition_clusters",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
         static final MethodHandle WRITER_SET_BP_REORDER = bind(
             "ffi_engine_writer_set_bp_reorder",
             FunctionDescriptor.of(
@@ -2499,6 +2503,18 @@ public final class NativeBridge {
                 (byte) (checkPendingFlush ? 1 : 0),
                 (byte) (shuffleForcedMerges ? 1 : 0)
             );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * IVF fields' vectors clustered per partition of the index sort's first field: each partition of
+     * at least {@code minVectors} vectors on its own, the smaller ones pooled; {@code 0} turns it off.
+     */
+    public static int writerSetIvfPartitionClusters(long handle, long minVectors) {
+        try {
+            return (int) H.WRITER_SET_IVF_PARTITION_CLUSTERS.invokeExact(handle, minVectors);
         } catch (Throwable t) {
             throw rethrow(t);
         }
