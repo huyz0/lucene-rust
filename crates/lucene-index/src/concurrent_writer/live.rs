@@ -393,6 +393,15 @@ impl LiveColumns {
         }
     }
 
+    /// Stops the background work on the buffer's graphs and lists, whose
+    /// documents are discarded.
+    pub(super) fn retire_indexes(&mut self) {
+        self.drop_lists();
+        for g in &self.graphs {
+            g.graph.retire();
+        }
+    }
+
     /// Takes the vector fields' graphs for the buffer's flush. Only a
     /// buffer still in its slot is searched through its graphs; a flushing
     /// or published one reads its vectors as segments, so the graphs, and

@@ -204,10 +204,14 @@ impl BufferLists {
         let mut next = self.assigned.load(Ordering::Acquire);
         let stop = next.saturating_add(batch).min(end);
         while next < stop && !self.retired.load(Ordering::Acquire) {
+            // Neither can happen to a pushed vector; a run that cannot go
+            // on stops routing rather than be scheduled again.
             let Ok(ord) = i32::try_from(next) else {
+                self.retire();
                 return;
             };
             let Ok(v) = self.column.floats(ord) else {
+                self.retire();
                 return;
             };
             let list = self
@@ -280,9 +284,15 @@ impl BufferLists {
                 let Some(list) = self.lists.get(list) else {
                     return Ok(());
                 };
-                let ords = list.read().unwrap_or_else(|e| e.into_inner());
-                // Ascending: the ordinals past the reader's count end it.
-                let end = ords.partition_point(|&o| o < routed);
+                // Copied out so the router's push into this list does not
+                // wait for the scoring. Ascending: the ordinals past the
+                // reader's count end it.
+                let ords: Vec<i32> = {
+                    let all = list.read().unwrap_or_else(|e| e.into_inner());
+                    let end = all.partition_point(|&o| o < routed);
+                    all.get(..end).unwrap_or_default().to_vec()
+                };
+                let end = ords.len();
                 let mut batch = [0i32; SCORE_BATCH];
                 let mut scores = [0f32; SCORE_BATCH];
                 for chunk in ords.get(..end).unwrap_or_default().chunks(SCORE_BATCH) {

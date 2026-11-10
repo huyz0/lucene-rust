@@ -1584,6 +1584,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             if let Some(stored) = dwpt.stored.get_mut().take() {
                 files.extend(stored.discard());
             }
+            // Background routing and insertion stop with the documents.
+            dwpt.live.retire_indexes();
             *dwpt.deref_mut() = Dwpt::default();
             self.update_ram(|c| {
                 let bytes = c.checkout_for_flush(i);

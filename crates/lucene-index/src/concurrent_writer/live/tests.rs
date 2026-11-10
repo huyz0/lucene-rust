@@ -1341,7 +1341,13 @@ fn a_view_holds_the_buffer_ivf_lists() {
     w.close_live_view(&view);
     drop(view);
     w.flush().unwrap();
-    // The flushed buffer's lists went with it.
+    // The flushed buffer's lists went with it (a routing task may still be
+    // returning).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::sync::Arc::strong_count(&lists) > 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     assert_eq!(std::sync::Arc::strong_count(&lists), 1);
+    assert!(!lists.schedule(), "retired");
     w.commit().unwrap();
 }

@@ -219,7 +219,10 @@ pub(crate) struct ClusterSink {
 }
 
 impl ClusterSink {
-    /// Keeps `clusters`, replacing their fields' earlier ones.
+    /// Keeps `clusters`, replacing their fields' earlier ones unless those
+    /// have more than twice as many clusters: flushes finish in any order,
+    /// and a small one (a refresh of a few documents) would leave later
+    /// buffers little to prune by.
     pub(crate) fn record(&self, clusters: &[lucene_ivf::FieldClusters]) {
         let mut fields = self
             .fields
@@ -228,6 +231,7 @@ impl ClusterSink {
         for c in clusters.iter().filter(|c| !c.is_empty()) {
             let router = Arc::new(BufferRouter::new(c.clone()));
             match fields.iter_mut().find(|(n, _)| *n == c.number) {
+                Some(slot) if slot.1.clusters.len() > c.len().saturating_mul(2) => {}
                 Some(slot) => slot.1 = router,
                 None => fields.push((c.number, router)),
             }
@@ -294,8 +298,20 @@ impl lucene_codecs::buffer_lists::ClusterRouter for BufferRouter {
         } else {
             v
         };
-        let c = *self.router.route(&self.clusters.centroids, v, 1).first()?;
         let dim = self.clusters.dimension;
+        let c = if self.clusters.similarity == lucene_ivf::Similarity::MaximumInnerProduct {
+            // Its clusters are Euclidean (k-means' `L2` metric, its radii
+            // L2 distances): the nearest centroid, not the best product.
+            self.clusters
+                .centroids
+                .chunks_exact(dim.max(1))
+                .map(|m| lucene_util::simd::square_distance_f32(v, m))
+                .enumerate()
+                .min_by(|a, b| a.1.total_cmp(&b.1))?
+                .0
+        } else {
+            *self.router.route(&self.clusters.centroids, v, 1).first()?
+        };
         let centroid = self
             .clusters
             .centroids
