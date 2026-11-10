@@ -165,7 +165,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // Each scored field's similarity, sent in front of the blobs when
             // one is not the default.
             SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
-            QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
+            Query encoding = query;
+            QueryEncoder.Encoded enc = ExtendedEncoder.withFieldTypes(
+                ctx.mapperService()::fieldType,
+                () -> QueryEncoder.encode(encoding, similarities, searcher.getTopReaderContext())
+            );
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
@@ -181,10 +185,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 reason = "approximate";
             }
             if (reason == null && postFilter != null) {
-                QueryEncoder.Encoded filtered = QueryEncoder.encode(
-                    postFiltered(query, postFilter),
-                    similarities,
-                    searcher.getTopReaderContext()
+                Query filteredQuery = postFiltered(query, postFilter);
+                QueryEncoder.Encoded filtered = ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> QueryEncoder.encode(filteredQuery, similarities, searcher.getTopReaderContext())
                 );
                 reason = filtered.fallbackReason();
                 hitsBlob = filtered.blob();

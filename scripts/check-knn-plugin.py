@@ -482,6 +482,11 @@ PAINLESS = [
     "10000 + innerProduct(params.q, doc['emb'])",
     "1 / (1 + l1Norm(params.q, doc['emb']))",
     "1 / (1 + lInfNorm(params.q, doc['emb']))",
+    "1.0 / (1.0 + l2Squared(params.q, doc['emb']))",
+    "return 10000000 - l2Squared(params.q, doc[\"emb\"]);",
+    "(2 * cosineSimilarity(params.q, doc['emb']) + 2f) / 4",
+    "1 / (1 + l2Squared(params['q'], doc[params.f]))",
+    "-innerProduct(params.q, doc['emb']) * -1.5e0 + 1e4",
 ]
 
 
@@ -548,9 +553,15 @@ def script_check(failures):
                 scripts = PAINLESS
             norm = sum(x * x for x in t)
             for src in scripts:
-                params = {"q": t, "norm": norm}
+                params = {"q": t, "norm": norm, "f": "emb"}
+                before = fallback_counts()
                 compare(f"painless {src} query {qi}", index,
                         script_score(bases[qi % 2], {"source": src, "params": params}), ties=spec.get("data_type") == "binary")
+                # Every shape here runs natively, but hamming, and a norm over a byte field.
+                native = "hamming" not in src and not ("params.norm" in src and spec.get("data_type") == "byte")
+                fell = fell_back(before)
+                if native and fell:
+                    failures.append(f"painless {src} on {index} fell back to Java: {fell}")
                 body = {"size": 5, "query": {"term": {"tag": "odd"}}, "sort": ["n"],
                         "script_fields": {"s": {"script": {"source": src, "params": params}}}}
                 compare(f"script_fields {src} query {qi}", index, body)
