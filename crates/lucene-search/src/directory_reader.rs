@@ -415,6 +415,12 @@ impl SegmentReader {
         doc_base: i32,
     ) -> Result<Self> {
         if commit.codec_name == "SimpleText" {
+            if dir.is_range_directory() {
+                return Err(lucene_store::Error::IllegalArgument(
+                    "range profile requires a modern binary codec".into(),
+                )
+                .into());
+            }
             return Self::open_simpletext(dir, commit, doc_base);
         }
         let segment_name = commit.segment_name.clone();
@@ -1532,7 +1538,9 @@ impl SegmentReader {
 
     /// Source-aware counterpart of the materialized-only byte-slice view.
     /// Legacy views return no resident bytes for a range reader, not a claim
-    /// that the field is absent. Query executors use this capability instead.
+    /// that the field is absent. The selected numeric-sort path uses this
+    /// capability instead; other executors need source-aware ports before
+    /// advertising range support.
     pub fn doc_values_input_for_field(
         &self,
         field: i32,
