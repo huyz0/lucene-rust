@@ -875,6 +875,16 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * {@code index.lucene_rust.knn.ivf_partition_clusters}: IVF fields clustered per partition of the
+     * index sort's first field, {@code 0} off.
+     */
+    void setIvfPartitionClusters(int minVectors) throws IOException {
+        synchronized (lock) {
+            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting ivf_partition_clusters");
+        }
+    }
+
+    /**
      * {@code IndexWriterConfig.setMaxFullFlushMergeWaitMillis}, with the merge policy wrapped in
      * {@code MergeOnFlushMergePolicy} when {@code mergeOnFlushPolicy}.
      */

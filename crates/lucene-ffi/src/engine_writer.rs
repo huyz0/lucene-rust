@@ -1069,8 +1069,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::MergeSortDisagreement { .. }
         | index_writer::Error::InvalidMergeRate(_)
         | index_writer::Error::InvalidMergeScheduler(_)
-        | index_writer::Error::AddIndexes(_)
-        | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
+        | index_writer::Error::AddIndexes(_) => FfiStatus::InvalidArgument,
         // I/O, decode and corrupt-index failures; `MergeAbortedException` is an
         // `IOException` in Java.
         index_writer::Error::Store(_)
@@ -2529,6 +2528,36 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
     })
 }
 
+/// IVF fields' vectors clustered per partition of the index sort's first
+/// field at flush and merge (`index.lucene_rust.knn.ivf_partition_clusters`):
+/// each partition of at least `min_vectors` vectors on its own, the smaller
+/// ones pooled, so a search filtered to one partition probes only its
+/// clusters. `0` (the default) clusters each field as a whole; no effect
+/// without an index sort, or on a flush holding nested document blocks.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_ivf_partition_clusters(
+    handle: u64,
+    min_vectors: i64,
+) -> i32 {
+    guard(|| {
+        let min = match usize::try_from(min_vectors) {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => {
+                set_last_error(format!(
+                    "ivf_partition_clusters must be >= 0; got {min_vectors}"
+                ));
+                return Err(FfiStatus::InvalidArgument);
+            }
+        };
+        with_writer(handle, |w| {
+            w.writer()
+                .with_writer(|iw| iw.set_ivf_partition_clusters(min));
+            Ok(())
+        })
+    })
+}
+
 /// `BPReorderingMergePolicy` around the shard's merge policy
 /// (`index.lucene_rust.bp_reorder.*`), or off when `enabled == 0`: merges of
 /// at least `max(min_merge_docs, min_merge_ratio * the biggest segment's
@@ -3888,6 +3917,35 @@ mod tests {
             assert_eq!(w.merge_policy().unwrap().max_merge_at_once, 30);
         });
         ffi_engine_writer_close(h);
+    }
+
+    /// The setting reaches the writer, `0` turns it off, and a negative
+    /// value is refused without changing it.
+    #[test]
+    fn ivf_partition_clusters_reach_the_writer() {
+        let tmp = empty_index("engine-writer-ivf-partitions");
+        let h = open(&tmp, 0);
+        let get = || {
+            lookup(h)
+                .unwrap()
+                .writer()
+                .with_writer(|w| w.ivf_partition_clusters())
+        };
+        assert_eq!(get(), None);
+        assert_eq!(ffi_engine_writer_set_ivf_partition_clusters(h, 20_000), 0);
+        assert_eq!(get(), Some(20_000));
+        assert_eq!(
+            ffi_engine_writer_set_ivf_partition_clusters(h, -1),
+            FfiStatus::InvalidArgument as i32
+        );
+        assert_eq!(get(), Some(20_000));
+        assert_eq!(ffi_engine_writer_set_ivf_partition_clusters(h, 0), 0);
+        assert_eq!(get(), None);
+        ffi_engine_writer_close(h);
+        assert_eq!(
+            ffi_engine_writer_set_ivf_partition_clusters(h, 20_000),
+            FfiStatus::InvalidHandle as i32
+        );
     }
 
     /// The engine keeps the commits it has always written: merge-on-commit
