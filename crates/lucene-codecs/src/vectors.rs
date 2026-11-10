@@ -2166,8 +2166,25 @@ impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
                 let _ = lucene_store::prefetch(ranges.get(..count).unwrap_or(&[]));
             }
         }
+        // Candidates whose cache lines are loading while one is scored: the
+        // misses overlap instead of stalling one by one. Eight measured best
+        // on GloVe-100 (the line fill buffers take about ten lines at once).
+        let ahead = 8;
+        let fetch = |values: &FloatVectorValues<'_>, n: i32| {
+            if let Ok(bytes) = values.values.bytes(n) {
+                for line in (0..bytes.len()).step_by(64) {
+                    lucene_util::simd::prefetch(bytes, line);
+                }
+            }
+        };
+        for &n in nodes.iter().take(ahead) {
+            fetch(&self.values, n);
+        }
         let mut max = f32::NEG_INFINITY;
         for (i, &node) in nodes.iter().enumerate() {
+            if let Some(&next) = nodes.get(i.saturating_add(ahead)) {
+                fetch(&self.values, next);
+            }
             scores[i] = self.score(node)?;
             max = max.max(scores[i]);
         }
