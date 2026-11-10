@@ -1060,8 +1060,7 @@ fn writer_error(e: index_writer::Error) -> FfiStatus {
         | index_writer::Error::MergeSortDisagreement { .. }
         | index_writer::Error::InvalidMergeRate(_)
         | index_writer::Error::InvalidMergeScheduler(_)
-        | index_writer::Error::AddIndexes(_)
-        | index_writer::Error::UnknownSortField(_) => FfiStatus::InvalidArgument,
+        | index_writer::Error::AddIndexes(_) => FfiStatus::InvalidArgument,
         // I/O, decode and corrupt-index failures; `MergeAbortedException` is an
         // `IOException` in Java.
         index_writer::Error::Store(_)
