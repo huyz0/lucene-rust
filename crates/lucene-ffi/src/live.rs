@@ -1520,10 +1520,72 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         };
         let id = view_reader(handle, &v, request, key)?;
         let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
-        let hits = crate::jvm_knn::search(&h, &knn)?;
+        let base = lookup(handle, "ffi_live_view_knn: unknown or closed reader")?
+            .reader
+            .segment_readers()
+            .len();
+        let buffers = if knn.nested.is_some() {
+            Vec::new()
+        } else {
+            buffer_graphs(&v, &h, base, &knn.field)
+        };
+        let hits = crate::jvm_knn::search(&h, &knn, &buffers)?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
+}
+
+/// The buffers of `v` whose vectors of `field` have a graph, as the
+/// segments of `h` (the view's reader over a reader of `base` segments)
+/// that hold them: a buffer read as chunks in its slot, each chunk one
+/// segment of exactly its documents, from the buffer's first one.
+fn buffer_graphs<'v>(
+    v: &'v ViewHandle,
+    h: &crate::registry::JvmReaderHandle,
+    base: usize,
+    field: &str,
+) -> Vec<lucene_search::knn_search::BufferedVectors<'v>> {
+    let readers = h.reader.segment_readers();
+    let mut out = Vec::new();
+    let mut at = base;
+    for (b, plan) in v.view.buffers.iter().zip(&v.plans) {
+        let range = at..at.saturating_add(plan.len());
+        at = range.end;
+        let Some(segments) = readers.get(range.clone()) else {
+            return Vec::new();
+        };
+        let whole = plan.first().is_none_or(|p| p.start == 0)
+            && plan.last().map_or(0, |p| p.end) == b.max_doc
+            && plan.windows(2).all(|w| w[0].end == w[1].start)
+            && plan
+                .iter()
+                .zip(segments)
+                .all(|(p, r)| r.max_doc == p.end.saturating_sub(p.start));
+        if !(b.in_slot && b.chunks && whole) {
+            continue;
+        }
+        let number = segments.iter().find_map(|r| {
+            r.field_infos()
+                .fields
+                .iter()
+                .find(|f| f.name == field && f.vector_dimension > 0)
+                .map(|f| f.number)
+        });
+        let Some(g) = number.and_then(|n| b.vector_graphs.iter().find(|g| g.field_number == n))
+        else {
+            continue;
+        };
+        out.push(lucene_search::knn_search::BufferedVectors {
+            graph: &g.graph,
+            count: g.count,
+            segments: range,
+        });
+    }
+    if at != readers.len() {
+        // Not the view's layout: every segment is searched on its own.
+        return Vec::new();
+    }
+    out
 }
 
 /// The reader handle of `v` over the reader at `handle` that serves
