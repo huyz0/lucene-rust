@@ -102,8 +102,12 @@ pub const VERSION_CALIBRATION: i32 = 3;
 /// A per-field centroid routing tree in `.ivm` (`routing::tree_parents`).
 /// Version 1 to 3 fields are read without one.
 pub const VERSION_ROUTING_TREE: i32 = 4;
+/// A per-field byte in `.ivm` saying whether the field was clustered per
+/// partition (`IvfWriter::add_partitioned_field`). Version 1 to 4 fields
+/// were not.
+pub const VERSION_PARTITIONS: i32 = 5;
 /// The current format version.
-pub const VERSION_CURRENT: i32 = VERSION_ROUTING_TREE;
+pub const VERSION_CURRENT: i32 = VERSION_PARTITIONS;
 
 /// Errors building or reading an IVF index.
 #[derive(Debug, thiserror::Error)]

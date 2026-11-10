@@ -609,6 +609,28 @@ impl Router {
     }
 }
 
+impl Router {
+    /// The `nprobe` clusters of `among` nearest to `q`, nearest first, by
+    /// their exact scores: a filter's few clusters need no approximation.
+    pub fn route_among(
+        &self,
+        centroids: &[f32],
+        q: &[f32],
+        among: &[usize],
+        nprobe: usize,
+    ) -> Vec<usize> {
+        let nprobe = nprobe.min(among.len());
+        let mut all: Vec<(f32, u32)> = among
+            .iter()
+            .filter(|&&c| c < self.len())
+            .map(|&c| (self.exact.score(centroids, self.dim, q, c), c as u32))
+            .collect();
+        keep_best(&mut all, nprobe);
+        all.sort_unstable_by(by_score);
+        all.into_iter().map(|(_, c)| c as usize).collect()
+    }
+}
+
 /// The `nprobe` clusters nearest to `q` by a full f32 scan, nearest first:
 /// what [`Router::route`] approximates.
 pub fn exact_route(

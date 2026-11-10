@@ -208,9 +208,10 @@ fn merged_segments_store_a_tree() {
 }
 
 /// The bytes of the field's stored tree at the end of a one-field meta
-/// payload: the parent count, then one vint per cluster (all below 128).
+/// payload: the parent count, then one vint per cluster (all below 128),
+/// then the partitioned flag.
 fn tree_tail(r: &IvfReader) -> usize {
-    1 + r.field(1).unwrap().clusters()
+    1 + r.field(1).unwrap().clusters() + 1
 }
 
 #[test]
@@ -313,7 +314,7 @@ fn corrupt_trees_are_rejected() {
     let r = edit(&|p| {
         let at = count_at(p);
         p.truncate(at);
-        p.push(0);
+        p.extend_from_slice(&[0, 0]);
     })
     .unwrap();
     assert!(!r.field(1).unwrap().has_routing_tree());

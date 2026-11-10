@@ -2492,6 +2492,19 @@ fn merge_segments_mapped_inner(
     };
     let doc_count = doc_order.len() as i32;
     let doc_id_maps = build_doc_id_maps(&per_source_max_doc, &doc_order);
+    let partition_starts = match sort_fields.and_then(|f| f.first()) {
+        Some(tier) if options.ivf_partition_clusters.is_some() => {
+            Some(partition_starts(&doc_order, tier))
+        }
+        _ => None,
+    };
+    let partitions = partition_starts
+        .as_deref()
+        .zip(options.ivf_partition_clusters)
+        .map(|(starts, min_vectors)| crate::ivf_vectors::Partitions {
+            starts,
+            min_vectors,
+        });
 
     // Doc values, norms and term vectors, all resolved through the one
     // `doc_order` -- the merged segment's physical order, whichever way it
@@ -3070,6 +3083,7 @@ fn merge_segments_mapped_inner(
         doc_count,
         options,
         &merged_segment_id,
+        partitions,
     )?;
 
     // Java: SegmentMerger.mergeTermVectors follows postings, doc values,
@@ -3291,6 +3305,28 @@ fn sorted_doc_order(
         doc_order.push((src_idx, doc_id));
     }
     doc_order
+}
+
+/// The merged position of each partition's first document: where the
+/// first sort tier's key changes along `doc_order`.
+fn partition_starts(doc_order: &[(usize, i32)], tier: &MergeSortKeySpec<'_>) -> Vec<i32> {
+    let key = |&(source, doc): &(usize, i32)| {
+        tier.per_source_keys
+            .get(source)
+            .and_then(|keys| keys.get(usize::try_from(doc).ok()?))
+            .copied()
+            .flatten()
+    };
+    let mut starts = Vec::new();
+    let mut previous = None;
+    for (new, entry) in doc_order.iter().enumerate() {
+        let k = key(entry);
+        if new == 0 || k != previous {
+            starts.push(i32::try_from(new).unwrap_or(i32::MAX));
+        }
+        previous = k;
+    }
+    starts
 }
 
 /// Multi-tier comparator for the k-way merge: folds `sort_fields` in
@@ -4513,6 +4549,10 @@ pub struct MergeOptions {
     /// high-compression LZ4 match finder
     /// ([`crate::index_writer::IndexWriter::set_merge_lz4_high_compression`]).
     pub stored_fields_lz4_high_compression: bool,
+    /// The fewest vectors IVF fields of a sorted merge cluster a partition
+    /// of the first sort field alone with, `None` for no per-partition
+    /// clusters ([`crate::index_writer::IndexWriter::set_ivf_partition_clusters`]).
+    pub ivf_partition_clusters: Option<usize>,
     /// Per source, whether its stored fields were already written that way
     /// (its `.si` records [`crate::segment_writer::LZ4_HC_ATTRIBUTE`]); a
     /// missing entry is `false`. With the option on, only these sources'
@@ -4737,6 +4777,7 @@ impl Default for MergeOptions {
             default_doc_values_format: Default::default(),
             default_postings_format: Default::default(),
             stored_fields_lz4_high_compression: false,
+            ivf_partition_clusters: None,
             lz4_high_compression_sources: Vec::new(),
             zstd_dictionary_min_bytes: stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
             knn_vectors_formats: Vec::new(),
@@ -4809,6 +4850,7 @@ fn merge_vectors(
     merged_max_doc: i32,
     options: &MergeOptions,
     merged_segment_id: &[u8; ID_LENGTH],
+    partitions: Option<crate::ivf_vectors::Partitions<'_>>,
 ) -> Result<Option<MergedVectorFiles>> {
     if sources.iter().all(|s| s.vectors.is_none()) {
         return Ok(None);
@@ -4898,6 +4940,7 @@ fn merge_vectors(
             merged_max_doc,
             merged_segment_id,
             &suffix,
+            partitions,
         )?;
         for n in &group.field_numbers {
             out.written.push((
@@ -4953,6 +4996,7 @@ fn merge_vector_group(
     merged_max_doc: i32,
     merged_segment_id: &[u8; ID_LENGTH],
     suffix: &str,
+    partitions: Option<crate::ivf_vectors::Partitions<'_>>,
 ) -> Result<(GroupFiles, String)> {
     let mut flat_writer =
         vectors::FlatVectorsWriter::new(merged_max_doc, merged_segment_id, suffix);
@@ -5122,6 +5166,7 @@ fn merge_vector_group(
                     dimension: usize::try_from(merged_field.vector_dimension).unwrap_or(0),
                     docs: &docs,
                     vectors: &merged,
+                    partitions,
                 },
                 &ivf_sources,
             )?;
