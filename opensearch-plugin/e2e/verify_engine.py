@@ -436,6 +436,68 @@ def insert_only_scoring():
         must("DELETE", f"/{idx}")
 
 
+def realtime_shared():
+    """index.lucene_rust.realtime_search with the default realtime_max_staleness: searches share
+    a view the writer opens every few milliseconds, with the reads of the requests that repeat
+    made ahead. A write is found within the bound, and after a refresh=wait_for write every search
+    reads it; the results equal a refreshed index's, repeated requests included."""
+    rt, ref = "rt_shared", "rt_shared_ref"
+    for idx in (rt, ref):
+        req("DELETE", f"/{idx}")
+    flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
+    create(rt, True, {"index.lucene_rust.realtime_search": True, "refresh_interval": "30s"}, flat)
+    create(ref, True, None, flat)
+    wait_green(f"{rt},{ref}")
+    r = random.Random(23)
+    words = ["fox", "quick", "brown", "dogs", "alpha", "beta", "gamma", "delta"]
+
+    def bulk(start, n, wait):
+        lines = []
+        for i in range(start, start + n):
+            lines += [{"index": {"_id": f"s{i % 500}"}},
+                      {"body": " ".join(r.choice(words) for _ in range(r.randint(2, 9))), "tag": f"t{r.randrange(10)}",
+                       "n": r.randrange(100000), "price": round(r.uniform(0, 1000), 2), "@timestamp": i}]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        must("POST", f"/{rt}/_bulk" + ("?refresh=wait_for" if wait else ""), body, ndjson=True)
+        must("POST", f"/{ref}/_bulk?refresh=true", body, ndjson=True)
+
+    bodies = [{"query": {"match": {"body": "fox"}}, "size": 10000, "track_total_hits": True},
+              {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"term": {"tag": "t3"}}]}},
+               "size": 10000, "track_total_hits": True},
+              {"query": {"match": {"body": "quick"}}, "size": 20, "sort": [{"price": "asc"}, {"@timestamp": "asc"}]},
+              {"query": {"match": {"body": "dogs"}}, "size": 0, "track_total_hits": True,
+               "aggs": {"tags": {"terms": {"field": "tag", "size": 20}}, "n": {"stats": {"field": "n"}}}}]
+
+    def seen(out):
+        # Hits of equal score come in segment order, which differs between the two indexes.
+        hits = [(h["_id"], h.get("sort"), round(h["_score"], 4) if h.get("_score") else None) for h in out["hits"]["hits"]]
+        if not any(s for _, s, _ in hits):
+            hits.sort(key=lambda h: (-(h[2] or 0), h[0]))
+        return out["hits"]["total"]["value"], hits, json.dumps(out.get("aggregations"), sort_keys=True)
+
+    for rnd, (start, n) in enumerate([(0, 300), (300, 200), (500, 400)]):
+        bulk(start, n, wait=True)
+        # Each request three times: the later ones read what the writer made ahead.
+        for body in bodies:
+            b = seen(must("POST", f"/{ref}/_search?request_cache=false", body))
+            for k in range(3):
+                a = seen(must("POST", f"/{rt}/_search?request_cache=false", body))
+                check(a == b, f"realtime shared view, round {rnd}, try {k}: {json.dumps(body)[:120]}: "
+                              f"{str(a)[:200]} vs {str(b)[:200]}")
+    # A write with no wait_for is found within the bound, without a refresh.
+    must("PUT", f"/{rt}/_doc/late", {"body": "zebra late", "tag": "t1", "n": 1, "@timestamp": 1})
+    t0 = time.time()
+    while time.time() - t0 < 5:
+        out = must("POST", f"/{rt}/_search?request_cache=false", {"query": {"match": {"body": "zebra"}}})
+        if out["hits"]["total"]["value"] == 1:
+            break
+        time.sleep(0.002)
+    took = (time.time() - t0) * 1000
+    check(out["hits"]["total"]["value"] == 1 and took < 1000, f"realtime shared view: a write is visible in {took:.0f} ms")
+    for idx in (rt, ref):
+        must("DELETE", f"/{idx}")
+
+
 def realtime():
     """index.lucene_rust.realtime_search: a plain scored search sees what was indexed before it,
     with no refresh, and scores it as a refreshed index scores the same documents. Aggregations
@@ -445,7 +507,7 @@ def realtime():
         req("DELETE", f"/{idx}")
     # Nested documents stay on the last refresh: no nested field here.
     flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
-    create(rt, True, {"index.lucene_rust.realtime_search": True}, flat)
+    create(rt, True, {"index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms"}, flat)
     create(ref, True, None, flat)
     wait_green(f"{rt},{ref}")
     before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
@@ -669,7 +731,7 @@ def realtime():
     # primary (the replica here is unassigned: the search must still answer from the primary).
     seg = "rt_segrep"
     req("DELETE", f"/{seg}")
-    create(seg, True, {"index.lucene_rust.realtime_search": True, "index.replication.type": "SEGMENT",
+    create(seg, True, {"index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms", "index.replication.type": "SEGMENT",
                        "number_of_replicas": 1}, flat)
     must("GET", f"/_cluster/health/{seg}?wait_for_status=yellow&timeout=60s")
     must("PUT", f"/{seg}/_doc/s1", {"body": "segrep fox", "tag": "t1"})
@@ -1016,7 +1078,7 @@ def derived_source(container):
     rt = "ds_realtime"
     req("DELETE", f"/{rt}")
     must("PUT", f"/{rt}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
-                                       "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True,
+                                       "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms",
                                        "index.derived_source.enabled": True}, "mappings": DS_MAPPING})
     req("DELETE", "/ds_rt_java")
     must("PUT", "/ds_rt_java", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
@@ -1218,6 +1280,7 @@ def main():
     compare_all("after SIGKILL", stream.ids)
     insert_only_scoring()
     realtime()
+    realtime_shared()
     bp_reorder()
     fault_containment()
     breaker()
