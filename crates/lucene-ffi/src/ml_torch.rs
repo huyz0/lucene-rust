@@ -8,6 +8,7 @@
 //! resolves is used.
 
 use std::ffi::{c_char, c_void, CStr};
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::{Mutex, OnceLock};
@@ -139,12 +140,18 @@ pub(crate) fn init(dir: &Path, shims: &[&Path], threads: u32) -> Result<()> {
     // need. Waiting passively keeps a node's throughput under load at
     // stock's while a call running alone still uses every core. libgomp reads
     // the variable when it loads, below; an operator's own choice stays.
-    // Set once, under `INIT`, before any OpenMP runs; the JVM reads its
-    // environment at startup, not through getenv.
+    // Set once, under `INIT`, before any OpenMP runs. Other threads' native
+    // code may read the environment meanwhile: glibc's setenv builds the new
+    // array before it publishes it and does not free one it did not
+    // allocate, and nothing else in the node sets variables, so a concurrent
+    // getenv sees the old array or the new one.
     if std::env::var_os("OMP_WAIT_POLICY").is_none() {
         std::env::set_var("OMP_WAIT_POLICY", "PASSIVE");
     }
-    let mut libraries = Vec::new();
+    // libtorch's libraries register ops and exit handlers as they load;
+    // unloading them is unsupported, so they stay loaded even when a later
+    // step fails, and a retry finds them already in the process.
+    let mut libraries = ManuallyDrop::new(Vec::new());
     // The system's C++ library first, when there is one: libtorch's
     // pre-C++11-ABI builds bundle a libstdc++ from GCC 4.8, which the shim,
     // built with a newer compiler, cannot run on, while the system's serves
@@ -183,13 +190,14 @@ pub(crate) fn init(dir: &Path, shims: &[&Path], threads: u32) -> Result<()> {
             Err(e) => failures.push(e.to_string()),
         }
     }
-    let shim = shim.ok_or_else(|| {
+    libraries.push(shim.ok_or_else(|| {
         MlError::Runtime(format!(
             "no TorchScript shim loads against {}: {}",
             dir.display(),
             failures.join("; ")
         ))
-    })?;
+    })?);
+    let shim = libraries.last().expect("the shim was just pushed");
     // SAFETY: each symbol is looked up under the name and C signature
     // torch/lucene_torch.cpp defines it with.
     let api = unsafe {
@@ -226,9 +234,8 @@ pub(crate) fn init(dir: &Path, shims: &[&Path], threads: u32) -> Result<()> {
         }
         api
     };
-    libraries.push(shim);
     let _ = API.set(Api {
-        _libraries: libraries,
+        _libraries: ManuallyDrop::into_inner(libraries),
         ..api
     });
     Ok(())
@@ -497,6 +504,50 @@ mod tests {
                 }
                 checked += 1;
             }
+        }
+        // The sentence-transformers trace shares tiny-bert's weights: its
+        // sentence_embedding is stock's unnormalized mean pooling.
+        let st = TorchTextEmbeddingModel::sentence_transformers(module("tiny-st.pt"), &tokenizer)
+            .unwrap();
+        let mean = expected["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| {
+                c["model"] == "tiny-bert" && c["pooling"] == "mean" && c["normalize"] == false
+            })
+            .unwrap();
+        for (text, want) in texts.iter().zip(mean["outputs"].as_array().unwrap()) {
+            let got = st.embed(text);
+            if want.get("error").is_some() {
+                assert!(got.is_err(), "{text:?}: stock refused it");
+                continue;
+            }
+            let got = got.unwrap();
+            let mut names: Vec<&str> = got.iter().map(|o| o.name.as_str()).collect();
+            names.sort_unstable();
+            assert_eq!(
+                names,
+                [
+                    "attention_mask",
+                    "input_ids",
+                    "sentence_embedding",
+                    "token_embeddings"
+                ]
+            );
+            assert!(got.iter().all(|o| o.group == 1));
+            let ids = got.iter().find(|o| o.name == "input_ids").unwrap();
+            assert_eq!(ids.data.type_name(), "INT64");
+            let embedding = got.iter().find(|o| o.name == "sentence_embedding").unwrap();
+            let Data::F32(values) = &embedding.data else {
+                panic!("not FLOAT32");
+            };
+            let want = want["data"].as_array().unwrap();
+            assert_eq!(values.len(), want.len());
+            for (g, w) in values.iter().zip(want) {
+                assert!(close(*g, w), "sentence_transformers {text:?}: {g} vs {w}");
+            }
+            checked += 1;
         }
         let sparse =
             SparseEncodingModel::torchscript(module("tiny-sparse-ts.pt"), &tokenizer).unwrap();

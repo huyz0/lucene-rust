@@ -125,6 +125,9 @@ EXPORT int32_t lucene_torch_set_threads(int32_t intra) {
   } catch (const std::exception& e) {
     last_error = e.what();
     return -1;
+  } catch (...) {
+    last_error = "unknown C++ exception";
+    return -1;
   }
 }
 
@@ -135,6 +138,9 @@ EXPORT void* lucene_torch_load(const char* path, size_t path_len) {
     return m.release();
   } catch (const std::exception& e) {
     last_error = e.what();
+    return nullptr;
+  } catch (...) {
+    last_error = "unknown C++ exception";
     return nullptr;
   }
 }
@@ -194,6 +200,9 @@ EXPORT void* lucene_torch_forward(void* module, int32_t n, const char* const* na
     return r.release();
   } catch (const std::exception& e) {
     last_error = e.what();
+    return nullptr;
+  } catch (...) {
+    last_error = "unknown C++ exception";
     return nullptr;
   }
 }

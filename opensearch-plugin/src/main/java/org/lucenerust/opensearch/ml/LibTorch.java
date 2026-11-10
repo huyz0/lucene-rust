@@ -11,6 +11,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URLConnection;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -40,7 +41,11 @@ final class LibTorch {
     private static final String NATIVE_LIB = "libtorch.so";
     private static final String DJL_SITE = "https://publish.djl.ai/pytorch/" + VERSION;
     private static final String MAVEN = "https://repo1.maven.org/maven2/ai/djl/pytorch/";
-    /** SHA-256 of DJL's Maven jars of the default flavor, the download used when DJL's own site fails. */
+    /**
+     * SHA-256 of DJL's Maven jars of the default flavor. These flavors download from Maven Central,
+     * checked against the pin, before DJL's own site; other flavors come from DJL's site unchecked,
+     * as DJL itself downloads them.
+     */
     private static final Map<String, String> MAVEN_SHA256 = Map.of(
         "cpu-precxx11-linux-x86_64",
         "5503bb5addcdf54498f53520a410bb53c15b781531c14b15b0c49bc8520db753",
@@ -48,7 +53,17 @@ final class LibTorch {
         "3722754bb5b0ae41f4fdfad00460af922f1eb3dbaea250b17152bf3711a9737b"
     );
 
+    /** How long a download may wait to connect, and between bytes. */
+    private static final int TIMEOUT_MILLIS = 60_000;
+
     private LibTorch() {}
+
+    private static InputStream open(String url) throws IOException {
+        URLConnection connection = URI.create(url).toURL().openConnection();
+        connection.setConnectTimeout(TIMEOUT_MILLIS);
+        connection.setReadTimeout(TIMEOUT_MILLIS);
+        return connection.getInputStream();
+    }
 
     /** DJL's {@code Utils.getEnvOrSystemProperty}. */
     private static String setting(String name) {
@@ -83,17 +98,18 @@ final class LibTorch {
         Files.createDirectories(cache);
         Path tmp = Files.createTempDirectory(cache, "tmp");
         try {
-            try {
+            String sha = MAVEN_SHA256.get(flavor + "-" + classifier);
+            if (sha == null) {
                 fromDjl(flavor, classifier, tmp);
-            } catch (IOException djl) {
-                String sha = MAVEN_SHA256.get(flavor + "-" + classifier);
-                if (sha == null) {
-                    throw djl;
+            } else {
+                try {
+                    fromMaven(flavor, classifier, sha, tmp);
+                } catch (IOException maven) {
+                    LOGGER.warn("lucene-rust: cannot download libtorch from Maven Central, trying {}: {}", DJL_SITE, maven.toString());
+                    IOUtils.rm(tmp);
+                    Files.createDirectories(tmp);
+                    fromDjl(flavor, classifier, tmp);
                 }
-                LOGGER.warn("lucene-rust: cannot download libtorch from {}, trying Maven Central: {}", DJL_SITE, djl.toString());
-                IOUtils.rm(tmp);
-                Files.createDirectories(tmp);
-                fromMaven(flavor, classifier, sha, tmp);
             }
             if (Files.isRegularFile(tmp.resolve(NATIVE_LIB)) == false) {
                 throw new IOException("the libtorch download for " + flavor + "/" + classifier + " has no " + NATIVE_LIB);
@@ -101,9 +117,11 @@ final class LibTorch {
             try {
                 Files.move(tmp, dir, StandardCopyOption.ATOMIC_MOVE);
             } catch (IOException raced) {
-                // Another deploy on this node finished the same download first.
+                // Another deploy on this node finished the same download first, or an interrupted
+                // download left the directory without the library, which this one replaces.
                 if (Files.isRegularFile(dir.resolve(NATIVE_LIB)) == false) {
-                    throw raced;
+                    IOUtils.rm(dir);
+                    Files.move(tmp, dir, StandardCopyOption.ATOMIC_MOVE);
                 }
             }
             return dir;
@@ -124,7 +142,7 @@ final class LibTorch {
     /** DJL's {@code LibUtils.downloadPyTorch}: the site's file index, then each gzipped library of the flavor. */
     private static void fromDjl(String flavor, String classifier, Path into) throws IOException {
         List<String> lines;
-        try (InputStream in = URI.create(DJL_SITE + "/files.txt").toURL().openStream()) {
+        try (InputStream in = open(DJL_SITE + "/files.txt")) {
             lines = new String(in.readAllBytes(), StandardCharsets.UTF_8).lines().toList();
         }
         String prefix = flavor + "/" + classifier + "/";
@@ -140,7 +158,7 @@ final class LibTorch {
                 throw new IOException("unexpected libtorch file name [" + name + "]");
             }
             LOGGER.info("lucene-rust: downloading {}/{}", DJL_SITE, line);
-            try (InputStream in = new GZIPInputStream(URI.create(DJL_SITE + "/" + line).toURL().openStream())) {
+            try (InputStream in = new GZIPInputStream(open(DJL_SITE + "/" + line))) {
                 Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             }
         }
@@ -161,7 +179,7 @@ final class LibTorch {
             throw new IllegalStateException(e);
         }
         LOGGER.info("lucene-rust: downloading {}", url);
-        try (InputStream in = new DigestInputStream(URI.create(url).toURL().openStream(), sha)) {
+        try (InputStream in = new DigestInputStream(open(url), sha)) {
             Files.copy(in, jar);
         }
         if (HexFormat.of().formatHex(sha.digest()).equals(sha256) == false) {

@@ -62,6 +62,8 @@ public final class LocalModels {
     private final Map<String, List<ActionListener<Void>>> deploying = new java.util.HashMap<>();
     private volatile boolean runtimeLoaded;
     private volatile boolean torchLoaded;
+    /** Guards loading libtorch, apart from this object so its download holds up no ONNX deploy. */
+    private final Object torchLock = new Object();
 
     LocalModels(Client client, Path cacheDir, Path runtimeLibrary) {
         this.client = client;
@@ -85,10 +87,18 @@ public final class LocalModels {
         return d == null ? null : d.model();
     }
 
-    private synchronized void loadRuntime() {
+    private void loadRuntime() {
         if (runtimeLoaded) {
             return;
         }
+        synchronized (this) {
+            if (runtimeLoaded == false) {
+                initRuntime();
+            }
+        }
+    }
+
+    private void initRuntime() {
         if (NativeBridge.mlRuntimeInit(runtimeLibrary.toString(), 0) != NativeBridge.OK) {
             throw new IllegalStateException("cannot load the ONNX Runtime library: " + NativeBridge.lastError());
         }
@@ -99,10 +109,18 @@ public final class LocalModels {
      * Loads libtorch ({@link LibTorch}, downloading it as stock does when no copy is found) and the
      * plugin's TorchScript shim, built per libtorch C++ string ABI, beside the ONNX Runtime library.
      */
-    private synchronized void loadTorch() throws IOException {
+    private void loadTorch() throws IOException {
         if (torchLoaded) {
             return;
         }
+        synchronized (torchLock) {
+            if (torchLoaded == false) {
+                initTorch();
+            }
+        }
+    }
+
+    private void initTorch() throws IOException {
         Path dir = LibTorch.resolve(cacheDir.getParent());
         byte[] shims = encodeTexts(
             List.of(

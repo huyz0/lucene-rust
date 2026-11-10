@@ -41,7 +41,7 @@ with zipfile.ZipFile(wheel) as z:
     for name in z.namelist():
         if name.startswith(prefix) and not name.endswith("/"):
             rel = os.path.normpath(name[len(prefix):])
-            if rel.startswith(".."):
+            if os.path.isabs(rel) or rel.startswith(".."):
                 sys.exit(f"unsafe path in wheel: {name}")
             target = os.path.join(out, rel)
             os.makedirs(os.path.dirname(target), exist_ok=True)
