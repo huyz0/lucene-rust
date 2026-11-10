@@ -1198,7 +1198,9 @@ impl IndexingConfig {
                 let vectors_output = if vector_configs.is_empty() {
                     None
                 } else {
+                    let partition_starts = self.ivf_partition_starts(buf)?;
                     IndexWriter::build_vectors_output(
+                        self.ivf_partitions(partition_starts.as_deref()),
                         buf.vectors,
                         &vector_configs,
                         i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
