@@ -1049,17 +1049,21 @@ public final class MlCommons {
 
     /**
      * {@code TextEmbeddingSparseEncodingModel} with its {@code SparseEncodingTranslator}: per text, each
-     * model output's non-zero weights as a {@code dataAsMap} tensor (ONNX outputs carry no tensor name
-     * there), keyed as for {@link #sparseTokenize}, then filtered as text embeddings are.
+     * model output's non-zero weights as a {@code dataAsMap} tensor (named by its dict key for a
+     * TorchScript model; ONNX outputs carry no tensor name there), keyed as for {@link #sparseTokenize}, then filtered as text embeddings are.
      */
     private Map<String, Object> sparseEncode(String modelId, List<String> texts, Map<String, String> params, Map<String, Object> body) {
         boolean byId = params != null && "TOKEN_ID".equals(params.get("sparse_embedding_format"));
+        boolean named = local.isTorchScript(modelId);
         List<Object> results = new ArrayList<>(texts.size());
         for (String text : texts) {
             List<Map<String, Object>> tensors = new ArrayList<>();
             for (List<LocalModels.SparseOutput> outputs : local.sparseEncode(modelId, List.of(text), byId)) {
                 for (LocalModels.SparseOutput o : outputs) {
                     Map<String, Object> tensor = new LinkedHashMap<>();
+                    if (named && o.name().isEmpty() == false) {
+                        tensor.put("name", o.name());
+                    }
                     tensor.put("dataAsMap", Map.of("response", List.of(weightMap(o.weights(), byId))));
                     tensors.add(tensor);
                 }
@@ -1076,6 +1080,9 @@ public final class MlCommons {
 
     /** {@code ModelTensorOutput} for {@code texts}, one {@code inference_results} entry per text. */
     private Map<String, Object> embedLocal(String modelId, List<String> texts, Map<String, Object> body) {
+        if (local.isTorchScript(modelId)) {
+            return embedTorch(modelId, texts, body);
+        }
         List<Object> results = new ArrayList<>(texts.size());
         for (String text : texts) {
             List<Map<String, Object>> tensors = new ArrayList<>();
@@ -1086,6 +1093,42 @@ public final class MlCommons {
             results.add(outputs(filter(tensors, body)));
         }
         return Map.of("inference_results", results);
+    }
+
+    /**
+     * {@link #embedLocal} for a TorchScript model: each output as its translator names and types it,
+     * with its bytes when the translator gives them.
+     */
+    private Map<String, Object> embedTorch(String modelId, List<String> texts, Map<String, Object> body) {
+        List<Object> results = new ArrayList<>(texts.size());
+        for (String text : texts) {
+            List<Map<String, Object>> tensors = new ArrayList<>();
+            for (List<LocalModels.TypedOutput> outputs : local.embedTorch(modelId, List.of(text))) {
+                for (LocalModels.TypedOutput o : outputs) {
+                    Map<String, Object> tensor = new LinkedHashMap<>();
+                    if (o.name() != null) {
+                        tensor.put("name", o.name());
+                    }
+                    tensor.put("data_type", o.dataType());
+                    tensor.put("shape", Arrays.stream(o.shape()).boxed().toList());
+                    tensor.put("data", o.data());
+                    if (o.bytes() != null) {
+                        tensor.put("byte_buffer", byteBuffer(o.bytes()));
+                    }
+                    tensors.add(tensor);
+                }
+            }
+            results.add(outputs(filter(tensors, body)));
+        }
+        return Map.of("inference_results", results);
+    }
+
+    /** {@code ModelTensor.byteBuffer} as it renders: the bytes, base64, and their order. */
+    private static Map<String, Object> byteBuffer(byte[] littleEndian) {
+        Map<String, Object> buffer = new LinkedHashMap<>();
+        buffer.put("array", Base64.getEncoder().encodeToString(littleEndian));
+        buffer.put("order", "LITTLE_ENDIAN");
+        return buffer;
     }
 
     private static Map<String, Object> tensorMap(String name, LocalModels.Tensor t) {
@@ -1122,10 +1165,7 @@ public final class MlCommons {
                 for (float f : t.data()) {
                     bytes.putFloat(f);
                 }
-                Map<String, Object> buffer = new LinkedHashMap<>();
-                buffer.put("array", Base64.getEncoder().encodeToString(bytes.array()));
-                buffer.put("order", "LITTLE_ENDIAN");
-                tensor.put("byte_buffer", buffer);
+                tensor.put("byte_buffer", byteBuffer(bytes.array()));
                 output.add(tensor);
             }
             results.add(Map.of("output", output));
@@ -1146,6 +1186,8 @@ public final class MlCommons {
     public void inferenceSentences(String modelId, String contentType, List<String> texts, ActionListener<List<List<Float>>> listener) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("text_docs", texts);
+        // MLCommonsClientAccessor's filter: a model may give more outputs than the sentence embedding.
+        body.put("target_response", List.of("sentence_embedding"));
         if (contentType != null) {
             body.put("parameters", Map.of("content_type", contentType));
         }
