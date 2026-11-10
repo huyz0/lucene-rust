@@ -275,144 +275,6 @@ fn poisoned() -> Error {
     Error::Io(std::io::Error::other("range input state poisoned"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    struct Source {
-        bytes: Vec<u8>,
-        fail: AtomicUsize,
-    }
-    impl ReadAt for Source {
-        fn len(&self) -> usize {
-            self.bytes.len()
-        }
-        fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<usize> {
-            match self.fail.load(Ordering::Relaxed) {
-                1 => return Err(std::io::Error::other("injected").into()),
-                2 => return Ok(0),
-                3 => return Ok(usize::MAX),
-                _ => {}
-            }
-            let end = offset.checked_add(dst.len()).unwrap();
-            dst.copy_from_slice(&self.bytes[offset..end]);
-            Ok(dst.len())
-        }
-    }
-    fn input() -> (Arc<Source>, RangeInput) {
-        let source = Arc::new(Source {
-            bytes: (0..128).collect(),
-            fail: AtomicUsize::new(0),
-        });
-        let input = RangeInput::new(
-            source.clone(),
-            RangeLimits {
-                block_bytes: 4,
-                cache_blocks: 2,
-                attempts: 100,
-                transferred_bytes: 400,
-            },
-        )
-        .unwrap();
-        (source, input)
-    }
-    #[test]
-    fn evictions_slices_and_clone_cursors_do_not_change_bytes() {
-        let (_, mut input) = input();
-        let mut copy = input.clone();
-        input.seek(3).unwrap();
-        let mut bytes = [0; 11];
-        input.read_bytes(&mut bytes).unwrap();
-        assert_eq!(bytes, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
-        assert_eq!(input.position(), 14);
-        assert_eq!(copy.position(), 0);
-        assert_eq!(copy.read_byte().unwrap(), 0);
-        let mut slice = input.slice(2, 20).unwrap().slice(3, 10).unwrap();
-        assert_eq!(slice.read_byte().unwrap(), 5);
-        assert!(slice.slice(9, 2).is_err());
-        assert!(slice.slice(usize::MAX, 1).is_err());
-        assert!(slice.seek(11).is_err());
-        slice.seek(10).unwrap();
-        assert!(slice.read_byte().is_err());
-        let before = input.usage().unwrap();
-        assert!(before.cache_bytes <= 8);
-        input.clear_cache().unwrap();
-        assert_eq!(input.usage().unwrap().cache_bytes, 0);
-        assert_eq!(input.usage().unwrap().attempts, before.attempts);
-    }
-    #[test]
-    fn failed_or_short_attempt_never_populates_cache_or_advances_cursor() {
-        for mode in [1, 2, 3] {
-            let (source, mut input) = input();
-            source.fail.store(mode, Ordering::Relaxed);
-            let mut out = [9; 4];
-            assert!(input.read_bytes(&mut out).is_err());
-            assert_eq!(input.position(), 0);
-            assert_eq!(out, [9; 4]);
-            assert_eq!(
-                input.usage().unwrap(),
-                RangeUsage {
-                    attempts: 1,
-                    transferred_bytes: 4,
-                    cache_bytes: 0
-                }
-            );
-            source.fail.store(0, Ordering::Relaxed);
-            input.read_bytes(&mut out).unwrap();
-            assert_eq!(out, [0, 1, 2, 3]);
-        }
-    }
-    #[test]
-    fn preflight_and_exhaustion_do_not_dispatch_extra_attempts() {
-        let (source, _) = input();
-        let mut input = RangeInput::new(
-            source.clone(),
-            RangeLimits {
-                block_bytes: 4,
-                cache_blocks: 1,
-                attempts: 1,
-                transferred_bytes: 4,
-            },
-        )
-        .unwrap();
-        assert!(input.read_exact_at(usize::MAX, &mut [0; 1]).is_err());
-        assert_eq!(input.usage().unwrap().attempts, 0);
-        assert_eq!(input.read_u32_le().unwrap(), 0x03020100);
-        assert!(input.read_byte().is_err());
-        assert_eq!(input.position(), 4);
-        assert_eq!(input.usage().unwrap().attempts, 1);
-        assert!(RangeInput::new(
-            source,
-            RangeLimits {
-                block_bytes: 0,
-                cache_blocks: 1,
-                attempts: 1,
-                transferred_bytes: 4
-            }
-        )
-        .is_err());
-    }
-    #[test]
-    fn concurrent_clones_share_cache_and_budget() {
-        let (_, input) = input();
-        let a = input.clone();
-        let b = input.clone();
-        let one = std::thread::spawn(move || {
-            let mut out = [0; 8];
-            a.read_exact_at(20, &mut out).unwrap();
-            out
-        });
-        let two = std::thread::spawn(move || {
-            let mut out = [0; 8];
-            b.read_exact_at(20, &mut out).unwrap();
-            out
-        });
-        assert_eq!(one.join().unwrap(), [20, 21, 22, 23, 24, 25, 26, 27]);
-        assert_eq!(two.join().unwrap(), [20, 21, 22, 23, 24, 25, 26, 27]);
-        assert_eq!(input.usage().unwrap().attempts, 2);
-    }
-}
-
 /// Explicit resident-metadata policy: at most 128 files, 1 MiB per file and
 /// 16 MiB total reserved scratch. The caller supplies a fresh, exclusively
 /// owned scratch directory and retains it until every returned mapping dies.
@@ -592,5 +454,143 @@ mod metadata_tests {
         drop(materializer);
         std::fs::remove_file(root.join("failed.tip")).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Source {
+        bytes: Vec<u8>,
+        fail: AtomicUsize,
+    }
+    impl ReadAt for Source {
+        fn len(&self) -> usize {
+            self.bytes.len()
+        }
+        fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<usize> {
+            match self.fail.load(Ordering::Relaxed) {
+                1 => return Err(std::io::Error::other("injected").into()),
+                2 => return Ok(0),
+                3 => return Ok(usize::MAX),
+                _ => {}
+            }
+            let end = offset.checked_add(dst.len()).unwrap();
+            dst.copy_from_slice(&self.bytes[offset..end]);
+            Ok(dst.len())
+        }
+    }
+    fn input() -> (Arc<Source>, RangeInput) {
+        let source = Arc::new(Source {
+            bytes: (0..128).collect(),
+            fail: AtomicUsize::new(0),
+        });
+        let input = RangeInput::new(
+            source.clone(),
+            RangeLimits {
+                block_bytes: 4,
+                cache_blocks: 2,
+                attempts: 100,
+                transferred_bytes: 400,
+            },
+        )
+        .unwrap();
+        (source, input)
+    }
+    #[test]
+    fn evictions_slices_and_clone_cursors_do_not_change_bytes() {
+        let (_, mut input) = input();
+        let mut copy = input.clone();
+        input.seek(3).unwrap();
+        let mut bytes = [0; 11];
+        input.read_bytes(&mut bytes).unwrap();
+        assert_eq!(bytes, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        assert_eq!(input.position(), 14);
+        assert_eq!(copy.position(), 0);
+        assert_eq!(copy.read_byte().unwrap(), 0);
+        let mut slice = input.slice(2, 20).unwrap().slice(3, 10).unwrap();
+        assert_eq!(slice.read_byte().unwrap(), 5);
+        assert!(slice.slice(9, 2).is_err());
+        assert!(slice.slice(usize::MAX, 1).is_err());
+        assert!(slice.seek(11).is_err());
+        slice.seek(10).unwrap();
+        assert!(slice.read_byte().is_err());
+        let before = input.usage().unwrap();
+        assert!(before.cache_bytes <= 8);
+        input.clear_cache().unwrap();
+        assert_eq!(input.usage().unwrap().cache_bytes, 0);
+        assert_eq!(input.usage().unwrap().attempts, before.attempts);
+    }
+    #[test]
+    fn failed_or_short_attempt_never_populates_cache_or_advances_cursor() {
+        for mode in [1, 2, 3] {
+            let (source, mut input) = input();
+            source.fail.store(mode, Ordering::Relaxed);
+            let mut out = [9; 4];
+            assert!(input.read_bytes(&mut out).is_err());
+            assert_eq!(input.position(), 0);
+            assert_eq!(out, [9; 4]);
+            assert_eq!(
+                input.usage().unwrap(),
+                RangeUsage {
+                    attempts: 1,
+                    transferred_bytes: 4,
+                    cache_bytes: 0
+                }
+            );
+            source.fail.store(0, Ordering::Relaxed);
+            input.read_bytes(&mut out).unwrap();
+            assert_eq!(out, [0, 1, 2, 3]);
+        }
+    }
+    #[test]
+    fn preflight_and_exhaustion_do_not_dispatch_extra_attempts() {
+        let (source, _) = input();
+        let mut input = RangeInput::new(
+            source.clone(),
+            RangeLimits {
+                block_bytes: 4,
+                cache_blocks: 1,
+                attempts: 1,
+                transferred_bytes: 4,
+            },
+        )
+        .unwrap();
+        assert!(input.read_exact_at(usize::MAX, &mut [0; 1]).is_err());
+        assert_eq!(input.usage().unwrap().attempts, 0);
+        assert_eq!(input.read_u32_le().unwrap(), 0x03020100);
+        assert!(input.read_byte().is_err());
+        assert_eq!(input.position(), 4);
+        assert_eq!(input.usage().unwrap().attempts, 1);
+        assert!(RangeInput::new(
+            source,
+            RangeLimits {
+                block_bytes: 0,
+                cache_blocks: 1,
+                attempts: 1,
+                transferred_bytes: 4
+            }
+        )
+        .is_err());
+    }
+    #[test]
+    fn concurrent_clones_share_cache_and_budget() {
+        let (_, input) = input();
+        let a = input.clone();
+        let b = input.clone();
+        let one = std::thread::spawn(move || {
+            let mut out = [0; 8];
+            a.read_exact_at(20, &mut out).unwrap();
+            out
+        });
+        let two = std::thread::spawn(move || {
+            let mut out = [0; 8];
+            b.read_exact_at(20, &mut out).unwrap();
+            out
+        });
+        assert_eq!(one.join().unwrap(), [20, 21, 22, 23, 24, 25, 26, 27]);
+        assert_eq!(two.join().unwrap(), [20, 21, 22, 23, 24, 25, 26, 27]);
+        assert_eq!(input.usage().unwrap().attempts, 2);
     }
 }
