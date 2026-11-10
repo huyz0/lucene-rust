@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch.engine;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.FieldInfos;
 import org.lucenerust.opensearch.LiveDirectoryReader;
 import org.lucenerust.opensearch.LiveView;
@@ -24,6 +26,7 @@ import java.util.function.Function;
  * made, so every phase numbers the buffered documents alike, and closes it with the supplier.
  */
 final class LiveSearchers {
+    private static final Logger LOGGER = LogManager.getLogger(LiveSearchers.class);
     private final RustIndexWriter writer;
     /** The reader with the view, once the first searcher opened it; null when there is none. */
     private OpenSearchDirectoryReader live;
@@ -80,11 +83,9 @@ final class LiveSearchers {
 
             @Override
             protected void doClose() {
-                try {
-                    inner.close();
-                } finally {
-                    live.close();
-                }
+                // The base searcher (and the store reference it holds) goes after the view, so a
+                // shard closing waits for the commit's reader the view may close.
+                live.close(inner::close);
             }
         };
     }
@@ -137,29 +138,47 @@ final class LiveSearchers {
     }
 
     /**
-     * Drops the supplier's reference on the view's reader. The last one closes the view, and with
-     * it, often, a commit's reader no newer search holds: that runs on {@code closer}, after the
-     * search answered, not before.
+     * Drops the supplier's reference on the view's reader, then runs {@code after}. The last
+     * reference closes the view and, often, a commit's reader no newer search holds: that runs on
+     * {@code closer}, after the search answered, not before. A searcher still out when the supplier
+     * closes drops the last reference itself, on its own thread.
      */
-    private void close() {
+    private void close(Runnable after) {
         OpenSearchDirectoryReader reader;
         synchronized (this) {
             reader = live;
             live = null;
             opened = true;
         }
-        if (reader == null) {
-            return;
-        }
-        if (closer != null) {
+        Runnable task = () -> {
             try {
-                closer.execute(() -> decRef(reader));
+                if (reader != null) {
+                    decRef(reader);
+                }
+            } finally {
+                after.run();
+            }
+        };
+        if (closer != null && reader != null) {
+            try {
+                closer.execute(() -> {
+                    try {
+                        task.run();
+                    } catch (Throwable t) {
+                        // Logged, never thrown on the pool's thread: an error there halts the node.
+                        LOGGER.warn("lucene-rust: closing a realtime search's view failed", t);
+                    }
+                });
                 return;
             } catch (RejectedExecutionException e) {
                 // The node is shutting down: closed here.
             }
         }
-        decRef(reader);
+        task.run();
+    }
+
+    private void close() {
+        close(() -> {});
     }
 
     private static void decRef(OpenSearchDirectoryReader reader) {
