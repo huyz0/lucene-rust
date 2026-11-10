@@ -65,8 +65,12 @@ fn specialize_func(f: &mut Func, facts: &Facts<'_>) {
     let mut body = std::mem::take(&mut f.body);
     s.block(&mut body);
     s.sink_conversions(&mut body);
-    // Views no read needs any more: their reads became direct.
-    s.drop_unread(&mut body);
+    // Views no op reads any more: their reads became direct.
+    let n = s.next_reg as usize;
+    let mut defs = vec![0u32; n];
+    let mut reads: Vec<Vec<Use>> = vec![Vec::new(); n];
+    scan(&body, &mut defs, &mut reads);
+    drop_unread(&mut body, &reads);
     f.body = body;
     f.regs = s.next_reg as usize;
     f.reg_types.resize(f.regs, None);
@@ -213,7 +217,7 @@ fn scan(ops: &[Op], defs: &mut [u32], reads: &mut [Vec<Use>]) {
                     scan(&c.body, defs, reads);
                 }
             }
-            Op::Return(None) | Op::Break | Op::Continue | Op::Count => {}
+            Op::Return(None) | Op::Break | Op::Continue | Op::Count | Op::At(_) => {}
         }
     }
 }
@@ -267,16 +271,23 @@ impl Spec<'_, '_> {
             if !self.single(r) {
                 return false;
             }
+            let mut others = 0;
             for u in &self.reads[r as usize] {
                 match u {
                     Use::Recv("get" | "containsKey" | "getOrDefault", _) | Use::Dot(_) => {}
-                    // A move to a variable: that variable must obey too.
-                    Use::Other => match moved_to(body, r) {
-                        Some(d) if !regs.contains(&d) => regs.push(d),
-                        Some(_) => {}
-                        None => return false,
-                    },
+                    Use::Other => others += 1,
                     _ => return false,
+                }
+            }
+            // Every other read is a move to a variable, which must obey too.
+            let mut moved = Vec::new();
+            moves_from(body, r, &mut moved);
+            if moved.len() != others {
+                return false;
+            }
+            for d in moved {
+                if !regs.contains(&d) {
+                    regs.push(d);
                 }
             }
             i += 1;
@@ -682,55 +693,43 @@ impl Spec<'_, '_> {
         let v = crate::api::map::get_value(&m.borrow(), &Value::str(name));
         Some(v)
     }
+}
 
-    /// Replaces the views of fields whose every read became direct with a
-    /// constant, so the document's values are not gathered into one.
-    fn drop_unread(&self, ops: &mut [Op]) {
-        for op in ops.iter_mut() {
-            match op {
-                Op::Doc {
-                    dst,
-                    access: DocAccess::Values,
-                    ..
-                } if self.reads[*dst as usize]
-                    .iter()
-                    .all(|u| self.direct(*dst, *u)) =>
-                {
-                    *op = Op::Const(*dst, Value::Null);
-                }
-                Op::If {
-                    then, otherwise, ..
-                }
-                | Op::IfNull {
-                    then, otherwise, ..
-                } => {
-                    self.drop_unread(then);
-                    self.drop_unread(otherwise);
-                }
-                Op::Loop { head, body, after } => {
-                    self.drop_unread(head);
-                    self.drop_unread(body);
-                    self.drop_unread(after);
-                }
-                Op::Try { body, catches } => {
-                    self.drop_unread(body);
-                    for c in catches.iter_mut() {
-                        self.drop_unread(&mut c.body);
-                    }
-                }
-                _ => {}
+/// Replaces the views of fields no op reads any more (every read became
+/// direct) with a constant, so the document's values are not gathered into
+/// one.
+fn drop_unread(ops: &mut [Op], reads: &[Vec<Use>]) {
+    for op in ops.iter_mut() {
+        match op {
+            Op::Doc {
+                dst,
+                access: DocAccess::Values,
+                ..
+            } if reads[*dst as usize].is_empty() => {
+                *op = Op::Const(*dst, Value::Null);
             }
+            Op::If {
+                then, otherwise, ..
+            }
+            | Op::IfNull {
+                then, otherwise, ..
+            } => {
+                drop_unread(then, reads);
+                drop_unread(otherwise, reads);
+            }
+            Op::Loop { head, body, after } => {
+                drop_unread(head, reads);
+                drop_unread(body, reads);
+                drop_unread(after, reads);
+            }
+            Op::Try { body, catches } => {
+                drop_unread(body, reads);
+                for c in catches.iter_mut() {
+                    drop_unread(&mut c.body, reads);
+                }
+            }
+            _ => {}
         }
-    }
-
-    /// Whether a read of a field view became a direct read.
-    fn direct(&self, _r: Reg, u: Use) -> bool {
-        matches!(
-            u,
-            Use::Recv("getValue" | "size" | "getLength", 0)
-                | Use::Recv("get", 1)
-                | Use::Dot("value" | "length")
-        )
     }
 }
 
@@ -894,29 +893,34 @@ fn collect_params(ops: &[Op], out: &mut Vec<Reg>) {
 }
 
 /// The register `src` is moved to, when its one `Other` read is a move.
-fn moved_to(ops: &[Op], src: Reg) -> Option<Reg> {
+/// Every register `src` is moved to, one entry per move.
+fn moves_from(ops: &[Op], src: Reg, out: &mut Vec<Reg>) {
     for op in ops {
-        let found = match op {
-            Op::Move(d, s) if *s == src => Some(*d),
+        match op {
+            Op::Move(d, s) if *s == src => out.push(*d),
             Op::If {
                 then, otherwise, ..
             }
             | Op::IfNull {
                 then, otherwise, ..
-            } => moved_to(then, src).or_else(|| moved_to(otherwise, src)),
-            Op::Loop { head, body, after } => moved_to(head, src)
-                .or_else(|| moved_to(body, src))
-                .or_else(|| moved_to(after, src)),
-            Op::Try { body, catches } => {
-                moved_to(body, src).or_else(|| catches.iter().find_map(|c| moved_to(&c.body, src)))
+            } => {
+                moves_from(then, src, out);
+                moves_from(otherwise, src, out);
             }
-            _ => None,
-        };
-        if found.is_some() {
-            return found;
+            Op::Loop { head, body, after } => {
+                moves_from(head, src, out);
+                moves_from(body, src, out);
+                moves_from(after, src, out);
+            }
+            Op::Try { body, catches } => {
+                moves_from(body, src, out);
+                for c in catches.iter() {
+                    moves_from(&c.body, src, out);
+                }
+            }
+            _ => {}
         }
     }
-    None
 }
 
 fn numeric(p: Prim) -> bool {

@@ -8,6 +8,7 @@ import org.apache.logging.log4j.Logger;
 import org.lucenerust.opensearch.neural.query.HybridQuery;
 import org.lucenerust.opensearch.neural.search.query.HybridAggregationProcessor;
 import org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher;
+import org.lucenerust.opensearch.painless.PainlessScore;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
@@ -134,25 +135,67 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        if (containsHybrid(query)) {
-            long nativeStart = System.nanoTime();
-            String why = searchHybrid(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
-            if (why == null) {
-                stats.nativeQuery();
-                stats.nativeTime(System.nanoTime() - nativeStart);
-                return false;
-            }
-            stats.fallback(why);
-            long luceneStart = System.nanoTime();
-            LiveDirectoryReader view = LiveDirectoryReader.find(searcher.getIndexReader());
-            if (view != null) {
-                // The sub-queries' rewrites are neural-search's own, kept as they are.
-                readByLucene(ctx, searcher, view);
-            }
-            boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
-            stats.luceneTime(System.nanoTime() - luceneStart);
-            return rescore;
+        PainlessScore.beginRequest();
+        try {
+            return containsHybrid(query)
+                ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
+                : searchPlain(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        } finally {
+            PainlessScore.endRequest();
         }
+    }
+
+    /**
+     * The exception a native search that ran a Painless script fails with ({@link
+     * PainlessScore#failure}), counted as a script error when the script raised it; {@code counted}
+     * when the failure was already counted as a native error.
+     */
+    private RuntimeException scriptFailure(IndexReader reader, boolean counted) {
+        String error = NativeBridge.lastError();
+        if (PainlessScore.scriptFailed(error)) {
+            stats.scriptError(counted);
+        }
+        return PainlessScore.failure(error, reader);
+    }
+
+    private boolean searchHybridOrLucene(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout
+    ) throws IOException {
+        long nativeStart = System.nanoTime();
+        String why = searchHybrid(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        if (why == null) {
+            stats.nativeQuery();
+            stats.nativeTime(System.nanoTime() - nativeStart);
+            return false;
+        }
+        if ("native_error".equals(why) && PainlessScore.ran()) {
+            throw scriptFailure(searcher.getIndexReader(), false);
+        }
+        stats.fallback(why);
+        long luceneStart = System.nanoTime();
+        LiveDirectoryReader view = LiveDirectoryReader.find(searcher.getIndexReader());
+        if (view != null) {
+            // The sub-queries' rewrites are neural-search's own, kept as they are.
+            readByLucene(ctx, searcher, view);
+        }
+        boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        stats.luceneTime(System.nanoTime() - luceneStart);
+        return rescore;
+    }
+
+    private boolean searchPlain(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout
+    ) throws IOException {
         long start = System.nanoTime();
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
@@ -352,6 +395,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return false;
             }
         }
+        // A native search that ran a Painless script fails as the script did: running it again in
+        // Java would run the script twice.
+        if ("native_error".equals(reason) && PainlessScore.ran()) {
+            throw scriptFailure(searcher.getIndexReader(), true);
+        }
         stats.fallback(reason);
         // Lucene's own time only: not the plugin's checks, nor a native attempt that fell back.
         long luceneStart = System.nanoTime();
@@ -542,6 +590,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int rc = NativeBridge.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
             stats.nativeError();
+            if (PainlessScore.ran()) {
+                throw scriptFailure(ctx.searcher().getIndexReader(), true);
+            }
             logger.warn("lucene-rust: live search failed ({}), searching the reader alone: {}", rc, NativeBridge.lastError());
             return false;
         }

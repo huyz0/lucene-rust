@@ -1,4 +1,4 @@
-//! The `PIR1` layout: a Painless script's IR tree as the plugin writes it
+//! The `PIR2` layout: a Painless script's IR tree as the plugin writes it
 //! (`org.lucenerust.opensearch.painless.PainlessIr`), after Painless's own
 //! front end resolved every type, cast, method and `def` site.
 //!
@@ -126,6 +126,9 @@ pub struct Reference {
 /// An IR node. Expression variants carry their Painless type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
+    /// A node Painless marks in the line table: its source offset, where
+    /// the mark sits, and the node.
+    At(i32, At, Box<Node>),
     Block(Vec<Node>),
     DeclarationBlock(Vec<Node>),
     Declaration {
@@ -447,10 +450,94 @@ pub struct Function {
     pub body: Node,
 }
 
+/// The nodes Painless marks in the class's line table, each written with
+/// its source offset after its tag.
+const LOCATED: &[u8] = &[
+    8, 9, 10, 11, 12, 33, 34, 35, 36, 37, 38, 43, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+    61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 76, 77, 78,
+];
+
+/// The located nodes whose mark follows their child's code: the cast and
+/// the stores.
+const AFTER_CHILD: &[u8] = &[38, 64, 65, 66, 67, 68, 69, 70, 75];
+
+/// The loops, marked at their loop counter's check, which starts each pass
+/// of the body.
+const LOOPS: &[u8] = &[8, 9, 10, 11, 12];
+
+/// Where a located node's mark sits in its code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum At {
+    /// Before the node's code: its children's marks follow it.
+    Before,
+    /// After its child's code, before its own operation.
+    AfterChild,
+    /// A loop's: at its loop counter's check, when the script counts.
+    Loop,
+}
+
 /// A decoded script.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Script {
     pub functions: Vec<Function>,
+    /// The classes the site table's columns stand for.
+    pub classes: ClassTable,
+    /// Every member the script resolves by name on a receiver's runtime
+    /// class, with Painless's own answer for each class.
+    pub sites: Vec<Site>,
+}
+
+/// The classes a site table has a column for, as the plugin names them:
+/// their count, and Java's `String.hashCode` of their names joined by `\n`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClassTable {
+    pub count: usize,
+    pub hash: i32,
+}
+
+impl ClassTable {
+    /// The table of `names`, in order.
+    pub fn of<'a>(names: impl Iterator<Item = &'a str>) -> ClassTable {
+        let (mut count, mut hash) = (0, 0i32);
+        for (i, n) in names.enumerate() {
+            if i > 0 {
+                hash = hash.wrapping_mul(31).wrapping_add(i32::from(b'\n'));
+            }
+            for u in n.encode_utf16() {
+                hash = hash.wrapping_mul(31).wrapping_add(i32::from(u));
+            }
+            count += 1;
+        }
+        ClassTable { count, hash }
+    }
+}
+
+/// What a [`Site`] resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SiteKind {
+    /// A method call: `name/arity`.
+    Method,
+    /// A `def` field read (`x.name`): a getter, or a public field.
+    Getter,
+    /// A `def` field write.
+    Setter,
+    /// A cast to, or an `instanceof` test against, the class `name`.
+    InstanceOf,
+}
+
+/// A member the script resolves on a receiver's runtime class.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Site {
+    pub kind: SiteKind,
+    pub name: String,
+    pub arity: usize,
+    /// The receiver's static type.
+    pub receiver: String,
+    /// Per class of [`Script::classes`]: whether the receiver's static type
+    /// admits a value of it.
+    pub admits: Vec<bool>,
+    /// Per class: whether Painless resolves the member on it.
+    pub resolves: Vec<bool>,
 }
 
 /// Deepest nesting the decoder follows; Painless's own parser refuses far
@@ -655,8 +742,25 @@ impl<'a> Reader<'a> {
         if depth > MAX_DEPTH {
             return Err(Error::Ir("too deep".into()));
         }
-        let d = depth + 1;
         let tag = self.u8()?;
+        if !LOCATED.contains(&tag) {
+            return self.tagged(tag, depth);
+        }
+        let offset = self.i32()?;
+        let at = if AFTER_CHILD.contains(&tag) {
+            At::AfterChild
+        } else if LOOPS.contains(&tag) {
+            At::Loop
+        } else {
+            At::Before
+        };
+        Ok(self
+            .tagged(tag, depth)?
+            .map(|n| Node::At(offset, at, Box::new(n))))
+    }
+
+    fn tagged(&mut self, tag: u8, depth: usize) -> Result<Option<Node>> {
+        let d = depth + 1;
         Ok(Some(match tag {
             0 => return Ok(None),
             1 => Node::Block(self.nodes(d)?),
@@ -1022,13 +1126,13 @@ pub fn decode_constant(blob: &[u8]) -> Result<Constant> {
     Ok(c)
 }
 
-/// Decodes a `PIR1` blob.
+/// Decodes a `PIR2` blob.
 ///
 /// # Errors
 /// [`Error::Ir`] on a malformed blob.
 pub fn decode(blob: &[u8]) -> Result<Script> {
     let mut r = Reader::new(blob);
-    if r.take(4)? != b"PIR1" {
+    if r.take(4)? != b"PIR2" {
         return Err(Error::Ir("magic".into()));
     }
     let n = r.len()?;
@@ -1055,8 +1159,49 @@ pub fn decode(blob: &[u8]) -> Result<Script> {
             body,
         });
     }
+    let nc = r.i32()?;
+    let nc = usize::try_from(nc)
+        .ok()
+        .filter(|&n| n <= 4096)
+        .ok_or_else(|| Error::Ir(format!("site table of {nc} classes")))?;
+    let classes = ClassTable {
+        count: nc,
+        hash: r.i32()?,
+    };
+    let ns = r.len()?;
+    let mut sites = Vec::with_capacity(ns.min(4096));
+    let bits = |r: &mut Reader<'_>| -> Result<Vec<bool>> {
+        let b = r.take(nc.div_ceil(8))?;
+        Ok((0..nc).map(|i| b[i / 8] & (1 << (i % 8)) != 0).collect())
+    };
+    for _ in 0..ns {
+        let kind = match r.u8()? {
+            0 => SiteKind::Method,
+            1 => SiteKind::Getter,
+            2 => SiteKind::Setter,
+            3 => SiteKind::InstanceOf,
+            k => return Err(Error::Ir(format!("site kind {k}"))),
+        };
+        let name = r.str()?;
+        let arity = r.len()?;
+        let receiver = r.str()?;
+        let admits = bits(&mut r)?;
+        let resolves = bits(&mut r)?;
+        sites.push(Site {
+            kind,
+            name,
+            arity,
+            receiver,
+            admits,
+            resolves,
+        });
+    }
     if !r.at_end() {
         return Err(Error::Ir("trailing bytes".into()));
     }
-    Ok(Script { functions })
+    Ok(Script {
+        functions,
+        classes,
+        sites,
+    })
 }

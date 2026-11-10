@@ -19,12 +19,14 @@ pub fn object_call(
         ("equals", 1) => Ok(Value::Bool(recv.java_equals(&args[0]))),
         ("hashCode", 0) => Ok(Value::Int(recv.java_hash())),
         ("toString", 0) => Ok(Value::string(recv.java_to_string())),
-        ("compareTo", 1) => compare::compare_to(recv, &args[0]).map(|o| {
-            Value::Int(match (recv, &args[0]) {
-                (Value::Str(a), Value::Str(b)) => crate::api::string::java_compare(a, b),
-                _ => compare::ordering_int(o),
+        ("compareTo", 1) if crate::types::instance_of(recv, "java.lang.Comparable") => {
+            compare::compare_to(recv, &args[0]).map(|o| {
+                Value::Int(match (recv, &args[0]) {
+                    (Value::Str(a), Value::Str(b)) => crate::api::string::java_compare(a, b),
+                    _ => compare::ordering_int(o),
+                })
             })
-        }),
+        }
         _ => return None,
     })
 }

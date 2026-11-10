@@ -39,6 +39,20 @@ pub fn call(
             // The argument converts to the receiver's type, as the call
             // site adapts a narrower boxed or primitive argument.
             let arg = match prim_of(&args[0]) {
+                // `Def`'s implicit conversion to the boxed parameter: a
+                // boolean and a char take only their own kind.
+                Some(q)
+                    if q != p
+                        && (matches!(p, Prim::Bool | Prim::Char)
+                            || q == Prim::Bool
+                            || !crate::def::widens(q, p)) =>
+                {
+                    return Some(Err(Throw::class_cast(format!(
+                        "cannot implicitly cast def [{}] to {}",
+                        q.name(),
+                        p.boxed()
+                    ))));
+                }
                 Some(q) if q != Prim::Bool && p != Prim::Bool && p != Prim::Char => {
                     if !crate::def::widens(q, p) {
                         return Some(Err(Throw::class_cast(format!(
@@ -64,6 +78,11 @@ pub fn call(
         ),
         _ => return None,
     }))
+}
+
+/// `FloatingDecimal.readJavaFormatString(null)`: its `in.trim()`.
+fn null_decimal() -> Throw {
+    Throw::npe("Cannot invoke \"String.trim()\" because \"in\" is null")
 }
 
 fn to_string_radix(v: i64, radix: u32) -> String {
@@ -334,9 +353,11 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         // Double / Float
         ("Double", "parseDouble", 1) | ("Double", "valueOf", 1) => |_vm, a| match &a[0] {
             Value::Str(s) => parse_double(s).map(Value::Double).ok_or_else(|| nfe(s)),
+            Value::Null => Err(null_decimal()),
             v => Ok(Value::Double(double_arg(v)?)),
         },
         ("Float", "parseFloat", 1) | ("Float", "valueOf", 1) => |_vm, a| match &a[0] {
+            Value::Null => Err(null_decimal()),
             Value::Str(s) => s
                 .trim()
                 .trim_end_matches(['f', 'F', 'd', 'D'])

@@ -14,83 +14,158 @@ use crate::object::{downcast, JObject};
 use crate::value::Value;
 use crate::vm::{ApiFn, Throw, Vm};
 
+const UNIX_LINES: i32 = 1;
 const CASE_INSENSITIVE: i32 = 2;
-const COMMENTS: i32 = 4;
-const MULTILINE: i32 = 8;
 const LITERAL: i32 = 16;
 const DOTALL: i32 = 32;
-const UNICODE_CASE: i32 = 64;
 
 #[derive(Debug)]
 pub struct JPattern {
     pub source: String,
     pub flags: i32,
     pub re: regex::Regex,
+    /// The pattern over the whole input (`matches`).
+    pub full: regex::Regex,
+    /// The pattern at the input's start (`lookingAt`).
+    pub prefix: regex::Regex,
 }
 
-/// Translates a Java pattern into `regex` syntax.
-fn translate(p: &str) -> Result<String, String> {
+/// Java's `\s`: `[ \t\n\x0B\f\r]`.
+const SPACE: &str = "\\t\\n\\x0B\\x0C\\r ";
+
+/// `c`'s other ASCII case, for a letter.
+fn other_case(c: char) -> Option<char> {
+    if c.is_ascii_lowercase() {
+        Some(c.to_ascii_uppercase())
+    } else if c.is_ascii_uppercase() {
+        Some(c.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// Translates a Java pattern into `regex` syntax that matches exactly the
+/// same strings at the same places, or says what it cannot translate so.
+/// Java's classes are ASCII (`\w`, `\d`, `\s`, POSIX `\p{...}`), its `.`
+/// stops at every line terminator, and its case-insensitivity is ASCII;
+/// what `regex` would read otherwise is spelled out, and what it has no
+/// equal for (backreferences, lookaround, `$`, `\b`, Unicode properties,
+/// inline flags) is refused.
+fn translate(p: &str, flags: i32) -> Result<String, String> {
+    let fold = flags & CASE_INSENSITIVE != 0;
     let mut out = String::with_capacity(p.len());
     let mut chars = p.chars().peekable();
-    let mut in_class = false;
+    // Nesting of character classes.
+    let mut depth = 0usize;
+    // The last literal of the current class, for a range.
+    let mut last: Option<char> = None;
     while let Some(c) = chars.next() {
+        let in_class = depth > 0;
+        let lit = |out: &mut String, ch: char| {
+            let e = regex::escape(&ch.to_string());
+            match (fold, other_case(ch)) {
+                (true, Some(o)) if in_class => {
+                    out.push(ch);
+                    out.push(o);
+                }
+                (true, Some(o)) => {
+                    out.push('[');
+                    out.push(ch);
+                    out.push(o);
+                    out.push(']');
+                }
+                _ => out.push_str(&e),
+            }
+        };
         match c {
             '\\' => {
                 let n = chars.next().ok_or("trailing backslash")?;
+                last = None;
                 match n {
-                    '1'..='9' if !in_class => return Err("backreference".into()),
+                    '0'..='9' => return Err("backreference or octal escape".into()),
                     'Q' => {
-                        let mut lit = String::new();
+                        let mut quoted = String::new();
                         loop {
                             match chars.next() {
                                 Some('\\') if chars.peek() == Some(&'E') => {
                                     chars.next();
                                     break;
                                 }
-                                Some(ch) => lit.push(ch),
+                                Some(ch) => quoted.push(ch),
                                 None => break,
                             }
                         }
-                        out.push_str(&regex::escape(&lit));
+                        for ch in quoted.chars() {
+                            lit(&mut out, ch);
+                        }
                     }
-                    'h' => out.push_str("[\\t \\x{A0}\\x{1680}\\x{180e}\\x{2000}-\\x{200a}\\x{202f}\\x{205f}\\x{3000}]"),
-                    'Z' => out.push_str("(?:\\n?\\z)"),
-                    'p' | 'P' => {
+                    'w' => out.push_str("[0-9A-Za-z_]"),
+                    'W' => out.push_str("[^0-9A-Za-z_]"),
+                    'd' => out.push_str("[0-9]"),
+                    'D' => out.push_str("[^0-9]"),
+                    's' => out.push_str(&format!("[{SPACE}]")),
+                    'S' => out.push_str(&format!("[^{SPACE}]")),
+                    'h' => out.push_str(
+                        "[\\t \\x{A0}\\x{1680}\\x{180e}\\x{2000}-\\x{200a}\\x{202f}\\x{205f}\\x{3000}]",
+                    ),
+                    'H' => out.push_str(
+                        "[^\\t \\x{A0}\\x{1680}\\x{180e}\\x{2000}-\\x{200a}\\x{202f}\\x{205f}\\x{3000}]",
+                    ),
+                    'v' => out.push_str("[\\n\\x0B\\x0C\\r\\x{85}\\x{2028}\\x{2029}]"),
+                    'V' => out.push_str("[^\\n\\x0B\\x0C\\r\\x{85}\\x{2028}\\x{2029}]"),
+                    'A' if !in_class => out.push_str("\\A"),
+                    'z' if !in_class => out.push_str("\\z"),
+                    't' | 'n' | 'r' | 'f' | 'a' => {
                         out.push('\\');
                         out.push(n);
+                    }
+                    'x' | 'u' => {
+                        out.push('\\');
+                        out.push(n);
+                    }
+                    'p' | 'P' => {
+                        let mut name = String::new();
                         if chars.peek() == Some(&'{') {
-                            let mut name = String::new();
                             for ch in chars.by_ref() {
-                                name.push(ch);
                                 if ch == '}' {
                                     break;
                                 }
+                                if ch != '{' {
+                                    name.push(ch);
+                                }
                             }
-                            let inner = name.trim_matches(['{', '}']);
-                            let mapped = match inner {
-                                "Lower" | "javaLowerCase" => "Ll",
-                                "Upper" | "javaUpperCase" => "Lu",
-                                "Alpha" => "Alphabetic",
-                                "Digit" => "Nd",
-                                "Punct" => "P",
-                                "Space" | "javaWhitespace" => "White_Space",
-                                "Alnum" => return Err("\\p{Alnum}".into()),
-                                o => o.trim_start_matches("Is").trim_start_matches("In"),
-                            };
-                            out.push('{');
-                            out.push_str(mapped);
-                            out.push('}');
+                        } else if let Some(ch) = chars.next() {
+                            name.push(ch);
                         }
+                        // The POSIX classes, US-ASCII in Java.
+                        let set = match name.as_str() {
+                            "Lower" if !fold => "a-z",
+                            "Upper" if !fold => "A-Z",
+                            "Lower" | "Upper" | "Alpha" => "a-zA-Z",
+                            "Digit" => "0-9",
+                            "Alnum" => "a-zA-Z0-9",
+                            "Punct" => "!-/:-@\\[-`{-~",
+                            "Space" => SPACE,
+                            "XDigit" => "0-9a-fA-F",
+                            "Blank" => " \\t",
+                            "ASCII" => "\\x00-\\x7F",
+                            o => return Err(format!("\\p{{{o}}}")),
+                        };
+                        out.push_str(&format!("[{}{set}]", if n == 'P' { "^" } else { "" }));
+                    }
+                    other if other.is_ascii_alphanumeric() => {
+                        return Err(format!("\\{other}"));
                     }
                     other => {
-                        out.push('\\');
-                        out.push(other);
+                        lit(&mut out, other);
+                        last = Some(other);
                     }
                 }
             }
             '[' => {
-                in_class = true;
-                out.push(c);
+                depth += 1;
+                last = None;
+                out.push('[');
                 if chars.peek() == Some(&'^') {
                     out.push(chars.next().unwrap_or('^'));
                 }
@@ -99,31 +174,68 @@ fn translate(p: &str) -> Result<String, String> {
                     out.push_str("\\]");
                 }
             }
-            ']' => {
-                in_class = false;
-                out.push(c);
+            ']' if in_class => {
+                depth -= 1;
+                last = None;
+                out.push(']');
             }
-            '(' if !in_class && chars.peek() == Some(&'?') => {
-                out.push('(');
-                out.push(chars.next().unwrap_or('?'));
-                match chars.peek() {
-                    Some('=') | Some('!') => return Err("lookahead".into()),
-                    Some('<') => {
-                        chars.next();
-                        match chars.peek() {
-                            Some('=') | Some('!') => return Err("lookbehind".into()),
-                            _ => out.push_str("P<"),
-                        }
+            '-' if in_class && last.is_some() && chars.peek().is_some_and(|&n| n != ']') => {
+                let lo = last.take().unwrap_or('-');
+                let hi = match chars.next() {
+                    Some('\\') => return Err("escaped range end".into()),
+                    Some(h) => h,
+                    None => return Err("unterminated range".into()),
+                };
+                out.push('-');
+                out.push_str(&regex::escape(&hi.to_string()));
+                if fold {
+                    let letters = |a: char, b: char| {
+                        (a.is_ascii_lowercase() && b.is_ascii_lowercase())
+                            || (a.is_ascii_uppercase() && b.is_ascii_uppercase())
+                    };
+                    let touches = (lo..=hi).any(|x| x.is_ascii_alphabetic());
+                    if letters(lo, hi) {
+                        let (a, b) = (other_case(lo).unwrap_or(lo), other_case(hi).unwrap_or(hi));
+                        out.push(a);
+                        out.push('-');
+                        out.push(b);
+                    } else if touches {
+                        return Err("case-insensitive range across cases".into());
                     }
-                    Some('>') => return Err("atomic group".into()),
-                    _ => {}
+                }
+            }
+            '&' if in_class && chars.peek() == Some(&'&') => {
+                chars.next();
+                last = None;
+                out.push_str("&&");
+            }
+            '.' if !in_class => out.push_str(if flags & DOTALL != 0 {
+                "(?s:.)"
+            } else if flags & UNIX_LINES != 0 {
+                "[^\\n]"
+            } else {
+                "[^\\n\\r\\x{85}\\x{2028}\\x{2029}]"
+            }),
+            '$' if !in_class => return Err("$".into()),
+            '^' if !in_class => out.push_str("\\A"),
+            '(' if !in_class && chars.peek() == Some(&'?') => {
+                chars.next();
+                match chars.next() {
+                    Some(':') => out.push_str("(?:"),
+                    Some('<') if chars.peek().is_some_and(|c| c.is_ascii_alphabetic()) => {
+                        out.push_str("(?P<");
+                    }
+                    _ => return Err("lookaround, atomic group or inline flags".into()),
                 }
             }
             '*' | '+' | '?' | '}' if !in_class && chars.peek() == Some(&'+') => {
-                chars.next();
                 return Err("possessive quantifier".into());
             }
-            _ => out.push(c),
+            '(' | ')' | '|' | '*' | '+' | '?' | '{' | '}' if !in_class => out.push(c),
+            ch => {
+                lit(&mut out, ch);
+                last = in_class.then_some(ch);
+            }
         }
     }
     Ok(out)
@@ -131,35 +243,30 @@ fn translate(p: &str) -> Result<String, String> {
 
 /// Compiles a regex constant (`/.../flags`).
 pub fn compile_pattern(p: &str, flags: i32) -> Result<Value, String> {
+    if flags & !(CASE_INSENSITIVE | LITERAL | DOTALL | UNIX_LINES) != 0 {
+        return Err(format!("pattern flags {flags}"));
+    }
     let body = if flags & LITERAL != 0 {
-        regex::escape(p)
+        let mut out = String::new();
+        for ch in p.chars() {
+            match (flags & CASE_INSENSITIVE != 0, other_case(ch)) {
+                (true, Some(o)) => out.push_str(&format!("[{ch}{o}]")),
+                _ => out.push_str(&regex::escape(&ch.to_string())),
+            }
+        }
+        out
     } else {
-        translate(p)?
+        translate(p, flags)?
     };
-    let mut prefix = String::new();
-    if flags & CASE_INSENSITIVE != 0 {
-        prefix.push('i');
-    }
-    if flags & MULTILINE != 0 {
-        prefix.push('m');
-    }
-    if flags & DOTALL != 0 {
-        prefix.push('s');
-    }
-    if flags & COMMENTS != 0 {
-        prefix.push('x');
-    }
-    let _ = UNICODE_CASE;
-    let full = if prefix.is_empty() {
-        body
-    } else {
-        format!("(?{prefix}){body}")
-    };
-    let re = regex::Regex::new(&full).map_err(|e| e.to_string())?;
+    let re = regex::Regex::new(&body).map_err(|e| e.to_string())?;
+    let full = regex::Regex::new(&format!("\\A(?:{body})\\z")).map_err(|e| e.to_string())?;
+    let prefix = regex::Regex::new(&format!("\\A(?:{body})")).map_err(|e| e.to_string())?;
     Ok(Value::object(JPattern {
         source: p.to_string(),
         flags,
         re,
+        full,
+        prefix,
     }))
 }
 
@@ -173,32 +280,32 @@ fn pattern_of(v: &Value) -> Result<&JPattern, Throw> {
     })
 }
 
-/// `s =~ /re/`: whether the pattern occurs in `s`.
-pub fn find_op(_vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
+/// The pattern and the input of `=~` or `==~`, either way round. Painless
+/// wraps the input for its regex limit, whose `length()` a null fails.
+fn operands(args: &[Value]) -> Result<(&JPattern, String), Throw> {
     let (p, s) = if downcast::<JPattern>(&args[1]).is_some() {
         (&args[1], &args[0])
     } else {
         (&args[0], &args[1])
     };
-    let s = s.java_to_string_checked()?;
-    Ok(Value::Bool(pattern_of(p)?.re.is_match(&s)))
+    if s.is_null() {
+        return Err(Throw::npe(
+            "Cannot invoke \"java.lang.CharSequence.length()\" because \"this.wrapped\" is null",
+        ));
+    }
+    Ok((pattern_of(p)?, s.java_to_string_checked()?))
+}
+
+/// `s =~ /re/`: whether the pattern occurs in `s`.
+pub fn find_op(_vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
+    let (p, s) = operands(args)?;
+    Ok(Value::Bool(p.re.is_match(&s)))
 }
 
 /// `s ==~ /re/`: whether the pattern matches all of `s`.
 pub fn match_op(_vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
-    let (p, s) = if downcast::<JPattern>(&args[1]).is_some() {
-        (&args[1], &args[0])
-    } else {
-        (&args[0], &args[1])
-    };
-    let s = s.java_to_string_checked()?;
-    Ok(Value::Bool(full_match(&pattern_of(p)?.re, &s).is_some()))
-}
-
-fn full_match<'a>(re: &regex::Regex, s: &'a str) -> Option<regex::Captures<'a>> {
-    // A match of the whole input: anchor the pattern.
-    let anchored = regex::Regex::new(&format!("^(?:{})$", re.as_str())).ok()?;
-    anchored.captures(s)
+    let (p, s) = operands(args)?;
+    Ok(Value::Bool(p.full.is_match(&s)))
 }
 
 trait CharSeq {
@@ -314,8 +421,12 @@ impl JMatcher {
         m
     }
 
+    fn compiled(&self) -> &JPattern {
+        downcast::<JPattern>(&self.pattern).expect("pattern")
+    }
+
     fn re(&self) -> &regex::Regex {
-        &downcast::<JPattern>(&self.pattern).expect("pattern").re
+        &self.compiled().re
     }
 
     fn group(&self, i: usize) -> Result<Value, Throw> {
@@ -360,16 +471,14 @@ impl JObject for JMatcher {
         let r = (|| -> Result<Value, Throw> {
             Ok(match (name, args.len()) {
                 ("matches", 0) => {
-                    let c = full_match(self.re(), &self.input);
+                    let c = self.compiled().full.captures(&self.input);
                     let ok = c.is_some();
                     *self.groups.borrow_mut() =
                         c.map(|c| c.iter().map(|g| g.map(|g| (g.start(), g.end()))).collect());
                     Value::Bool(ok)
                 }
                 ("lookingAt", 0) => {
-                    let anchored = regex::Regex::new(&format!("^(?:{})", self.re().as_str()))
-                        .map_err(|e| Throw::illegal_arg(e.to_string()))?;
-                    let c = anchored.captures(&self.input);
+                    let c = self.compiled().prefix.captures(&self.input);
                     let ok = c.is_some();
                     *self.groups.borrow_mut() =
                         c.map(|c| c.iter().map(|g| g.map(|g| (g.start(), g.end()))).collect());

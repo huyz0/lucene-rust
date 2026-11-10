@@ -446,6 +446,27 @@ pub fn exception_is(class: &str, target: &str) -> bool {
 
 /// Painless's canonical type name (`String`, `int[]`, `def`) of a binary
 /// name, as error messages print it.
+/// `Class.getCanonicalName()` of the class named `name` (its JVM name):
+/// `java.util.HashMap.Node`, `int[]`.
+pub fn java_canonical(name: &str) -> String {
+    if let Some(inner) = name.strip_prefix('[') {
+        let base = match inner {
+            "Z" => "boolean".to_string(),
+            "B" => "byte".into(),
+            "S" => "short".into(),
+            "C" => "char".into(),
+            "I" => "int".into(),
+            "J" => "long".into(),
+            "F" => "float".into(),
+            "D" => "double".into(),
+            o if o.starts_with('[') => java_canonical(o),
+            o => java_canonical(o.trim_start_matches('L').trim_end_matches(';')),
+        };
+        return format!("{base}[]");
+    }
+    name.replace('$', ".")
+}
+
 pub fn canonical(name: &str) -> String {
     if name == DEF {
         return "def".into();
