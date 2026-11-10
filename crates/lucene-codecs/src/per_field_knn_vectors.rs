@@ -40,6 +40,14 @@ pub const IVF_NAME: &str = "LuceneRustIvfVectorsFormat";
 /// `f32`, `f16`, `bf16` and 8-bit residuals (`lucene_ivf::VectorEncoding`).
 pub const IVF_RERANK_ENCODINGS: [&str; 4] = ["f32", "f16", "bf16", "int8"];
 
+/// [`KnnVectorsFormat::Ivf`]'s cluster code quantizers, by wire number:
+/// `bbq` (Lucene's 1-bit optimized scalar quantization with 4-bit queries),
+/// `osq2`/`osq4`/`osq7` (the same quantizer at 2, 4 and 7 bits per
+/// dimension) and `erq2` to `erq8` (Extended RaBitQ at 2 to 8 bits).
+pub const IVF_QUANTIZERS: [&str; 11] = [
+    "bbq", "osq2", "osq4", "osq7", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8",
+];
+
 /// A KNN vectors format a field can be routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KnnVectorsFormat {
@@ -68,13 +76,14 @@ pub enum KnnVectorsFormat {
     ScalarQuantized { encoding: ScalarEncoding },
     /// This engine's IVF index ([`IVF_NAME`], `lucene-ivf`): the raw vectors
     /// as every format stores them, plus clusters of about
-    /// `target_cluster_size` vectors with 1-bit codes (`.ivm`/`.ivp`) and
-    /// the rerank vectors in cluster order (`.ivv`), encoded as
-    /// [`IVF_RERANK_ENCODINGS`]`[rerank_encoding]`. Float fields only; a
-    /// byte field gets the raw vectors alone.
+    /// `target_cluster_size` vectors with [`IVF_QUANTIZERS`]`[quantizer]`
+    /// codes (`.ivm`/`.ivp`) and the rerank vectors in cluster order
+    /// (`.ivv`), encoded as [`IVF_RERANK_ENCODINGS`]`[rerank_encoding]`.
+    /// Float fields only; a byte field gets the raw vectors alone.
     Ivf {
         target_cluster_size: u32,
         rerank_encoding: u8,
+        quantizer: u8,
     },
     /// A format that wraps `format` without changing its files
     /// (`AssertingKnnVectorsFormat`'s `Asserting`): fields record `name` and
@@ -118,9 +127,19 @@ fn check_graph(max_conn: i32, beam_width: i32) -> Result<(), InvalidFormat> {
 }
 
 impl KnnVectorsFormat {
-    /// [`KnnVectorsFormat::Ivf`], checked: a cluster size of 16 to 65536
-    /// vectors and a known rerank encoding.
+    /// [`KnnVectorsFormat::Ivf`] with 1-bit (`bbq`) codes, checked as
+    /// [`Self::ivf_quantized`] checks it.
     pub fn ivf(target_cluster_size: u32, rerank_encoding: u8) -> Result<Self, InvalidFormat> {
+        Self::ivf_quantized(target_cluster_size, rerank_encoding, 0)
+    }
+
+    /// [`KnnVectorsFormat::Ivf`], checked: a cluster size of 16 to 65536
+    /// vectors, a known rerank encoding and a known quantizer.
+    pub fn ivf_quantized(
+        target_cluster_size: u32,
+        rerank_encoding: u8,
+        quantizer: u8,
+    ) -> Result<Self, InvalidFormat> {
         if !(16..=65_536).contains(&target_cluster_size) {
             return Err(InvalidFormat(format!(
                 "target_cluster_size must be between 16 and 65536; got {target_cluster_size}"
@@ -131,20 +150,25 @@ impl KnnVectorsFormat {
                 "unknown IVF rerank encoding {rerank_encoding}"
             )));
         }
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len() {
+            return Err(InvalidFormat(format!("unknown IVF quantizer {quantizer}")));
+        }
         Ok(KnnVectorsFormat::Ivf {
             target_cluster_size,
             rerank_encoding,
+            quantizer,
         })
     }
 
-    /// The IVF parameters `(target_cluster_size, rerank_encoding)`, `None`
-    /// for any other format.
-    pub fn ivf_params(&self) -> Option<(u32, u8)> {
+    /// The IVF parameters `(target_cluster_size, rerank_encoding,
+    /// quantizer)`, `None` for any other format.
+    pub fn ivf_params(&self) -> Option<(u32, u8, u8)> {
         match *self.files_format() {
             KnnVectorsFormat::Ivf {
                 target_cluster_size,
                 rerank_encoding,
-            } => Some((target_cluster_size, rerank_encoding)),
+                quantizer,
+            } => Some((target_cluster_size, rerank_encoding, quantizer)),
             _ => None,
         }
     }
@@ -327,6 +351,7 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
         KnnVectorsFormat::Ivf {
             target_cluster_size: 384,
             rerank_encoding: 1,
+            quantizer: 0,
         },
     ];
     if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {

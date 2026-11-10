@@ -2,8 +2,11 @@
 
 [Index](../parity.md). Not a Lucene module: an inverted-file (cluster-based)
 approximate nearest-neighbour index of this port's own design, for local and
-blob storage. Stock Lucene and OpenSearch cannot read its files; it is not
-wired into a codec or the OpenSearch plugin. The quantizers reuse Lucene's
+blob storage. Stock Lucene and OpenSearch cannot read its files. The codec
+writes it as `LuceneRustIvfVectorsFormat` (`lucene-index/src/ivf_vectors.rs`,
+quantizer chosen by `IVF_QUANTIZERS`: `bbq`, `osq2`/`osq4`/`osq7`,
+`erq2`-`erq8`), which the OpenSearch plugin's opt-in `lucene_rust` engine
+maps to (`method: ivf`). The quantizers reuse Lucene's
 (`OptimizedScalarQuantizer`, `ScalarQuantizer`). Benchmarks:
 `crates/lucene-ivf/examples/ivf_bench.rs`, `benchmarks/ivf/`.
 
