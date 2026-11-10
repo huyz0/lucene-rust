@@ -1483,7 +1483,8 @@ impl SegmentReader {
         self.dv_meta.as_deref()
     }
 
-    /// The segment's `.dvd`, or `None` if it has no doc-values files at all.
+    /// Resident `.dvd` bytes. Range readers return `None` even when the
+    /// column exists; use [`Self::doc_values_input_for_field`] for either source.
     pub fn doc_values_data(&self) -> Option<&[u8]> {
         if self.range_dv.is_some() {
             return None;
@@ -1495,7 +1496,9 @@ impl SegmentReader {
         self.dv_data.as_ref().map(|d| &***d)
     }
 
-    /// The `(meta, data)` pair holding **`field_number`'s current column**:
+    /// The resident `(meta, data)` pair for **`field_number`'s current column**.
+    /// Range readers have no resident view; use [`Self::doc_values_input_for_field`].
+    /// For materialized readers this is
     /// `SegmentDocValuesProducer.dvProducersByField`. A field that has taken a
     /// doc-values update is served from the generation its newest `FieldInfo`
     /// names; every other field falls through to the base `.dvm`/`.dvd`.

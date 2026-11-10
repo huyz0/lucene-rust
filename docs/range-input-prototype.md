@@ -265,3 +265,10 @@ New source controls cover valid-materialized compound/oversized/nonnumeric
 index refusal, directory identity/count/byte admission, immutable operations,
 metadata reuse and streaming checksum corruption/truncation. Their hosted
 results are pending at this source checkpoint.
+
+
+Run `42792873608` at `637b5eca` passed the nine store range controls and four
+Java-fixture controls, then the new parameterized native test helper failed to
+compile because its i32 document loop passed an i32 numeric value to the i64
+field constructor. The follow-up uses an explicit lossless conversion. No
+native-query, lint, format or matrix pass is inferred for that failed source.
