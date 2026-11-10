@@ -563,6 +563,8 @@ mod tests {
 
     /// Every kernel this CPU and build can run, not only the dispatched one.
     fn every_kernel(query: &[f32], dim: usize, blocks: Blocks<'_>, tokens: usize) -> Vec<f32> {
+        // only x86 has more than the dispatched kernel to add
+        #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
         let mut out = vec![max_sim_blocks(query, dim, blocks, tokens)];
         #[cfg(target_arch = "x86_64")]
         if crate::cpu::level() == crate::cpu::Level::Avx512 {
