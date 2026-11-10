@@ -340,3 +340,71 @@ policy. The producer does not implement a new parser, source filter or floor
 and does not declare qualification. Its actual hosted execution is pending.
 The same checks cell now includes the arithmetic, structural/parity and
 existing dependency/vendored-license checks within the unchanged envelope.
+
+
+## Repository-gate scope reconciliation
+
+At `af3a192c`, the component/benchmark job and native x64/ARM checks cells passed.
+The ordinary/release/coverage cells still need their own outcomes. This seven-
+cell matrix did not include all of `scripts/gate.sh`: the Java-reference and
+required-jar inventory checks and two gate self-controls were omitted. It must
+not be called the complete repository gate.
+
+The corrective provenance cell uses the unchanged cgroup/filesystem/deadline
+caps and exact checked-in public pins. It fetches the official Lucene10.5.2 tag's
+commit `145d89cd30c38d25e39a0a2232cf00eee208b9cf` into fresh scratch and verifies
+its clean checkout, runs `check-java-refs.py` in its declared default audited
+scope (without treating a missing tree as a pass), verifies SHA-512 for every
+one of the inventory's32 binary jars and runs every module with `--require-jar`.
+Inventory membership is Python/ZIP inspection, not Java execution. The cell
+also runs the benchmark-report self-controls and the fixture-selection self-
+controls with real Temurin21.0.9+10 tools. Its exact207,157,802-byte Linux/x64
+archive is SHA-256 pinned. Lucene jars/source are Apache-2.0; the GPL-2.0 with
+Classpath-exception JDK is only a transient test tool, never a linked/shipped
+Rust dependency. The source and checksum/license provenance are explicit in
+`scripts/range-provenance-pins.json`. No local JVM/build, shared cache, image
+build or new execution pool is introduced.
+
+The provenance cell is not a full fixture-regeneration, OpenSearch/provider or
+benchmark campaign. Committed fixture bytes/generators are unchanged. Native
+ARM lint replaces the gate's check-only cross-target lint with actual ARM
+execution; both architectures retain their ordinary/release qualification.
+The original95-percent workspace/per-file floors and separate90-percent
+production aggregate/per-crate/changed-line obligations remain. The new native
+projection test additionally compares exact stored field numbers and payload
+contents against its written input; a payload's length alone cannot qualify.
+These corrections require new-source hosted results; earlier passes are not
+silently rebound to a new tree.
+
+
+At source `af3a192c`, the x64 ordinary cell `129770150377` failed during linking
+`geo_points_fixtures` and `test_range_field_queries`: rust-lld terminated with
+SIGBUS. It did not complete the ordinary test matrix. The original retained log
+has no ending filesystem or cgroup-memory receipt, so disk exhaustion is a
+hypothesis consistent with prior repository history, not this run's measured
+cause. The next source records those exit receipts while keeping the original
+8-GiB/4-GiB/CPU/PID/deadline caps. A measured bound refusal requires bounded
+work splitting with the complete declared matrix retained, never a raised cap,
+omitted tests or an inferred ordinary-suite pass.
+
+
+### Observed storage refusal and revised declared bound
+
+ARM ordinary job `129770150391` at `af3a192c` failed while linking
+`asserting_norms_fixtures` and `uhighlight_fixtures`; its actual GNU linker
+reported `No space left on device` in the original8-GiB filesystem. No ordinary
+suite pass follows. This establishes the old storage envelope was insufficient;
+it does not retrospectively establish the separate x64 SIGBUS cause.
+
+The corrective source declares20GiB scratch and keeps every CPU/memory/swap/
+PID/deadline/stdio/test/coverage limit unchanged. Before allocation, the fresh
+GitHub host pulls the same exact image and records actual free physical bytes.
+It must have20GiB plus a4-GiB host reserve. `fallocate` physically reserves the
+job-owned loop file, and `mkfs.ext4 -E nodiscard` preserves that reservation.
+Insufficient capacity refuses before native execution; no global pruning or
+unrelated cleanup occurs. The guest still checks its real filesystem size
+against the declared upper bound and records actual CFS/memory/swap/PID caps.
+Ending filesystem bytes, sampled minimum availability, cgroup memory events
+and peak are retained for subsequent failures. The provenance cell runs first
+among the serialized qualification cells. These are grounded corrective bounds,
+not a relabeling of any failed run or relaxation of a coverage/source gate.

@@ -161,10 +161,10 @@ fn corpus_profile(root: &Path, compound: bool, docs: i32, sorted_values: bool) -
         if i % 7 != 0 {
             d.add(NumericDocValuesField::new("rank", i64::from(383 - i)));
         }
-        let payload: String = (0..512)
-            .map(|j| char::from(b'a' + ((i * 37 + j * 17 + j * j) % 26) as u8))
-            .collect();
-        d.add(Field::stored("payload", StoredValue::String(payload)));
+        d.add(Field::stored(
+            "payload",
+            StoredValue::String(payload_for(i)),
+        ));
         writer.add_fields_document(&d).unwrap();
     }
     writer.commit().unwrap();
@@ -180,6 +180,11 @@ fn corpus_profile(root: &Path, compound: bool, docs: i32, sorted_values: bool) -
         "deletions must touch real live-docs format"
     );
     names
+}
+fn payload_for(doc: i32) -> String {
+    (0..512)
+        .map(|j| char::from(b'a' + ((doc * 37 + j * 17 + j * j) % 26) as u8))
+        .collect()
 }
 fn query(filtered: bool) -> BooleanQuery {
     let q = BooleanQuery::default().with_must([TermQuery::new("body", "needle")]);
@@ -237,16 +242,22 @@ fn execute(
                 .stored_document(hit.doc)
                 .map_err(lucene_search::Error::from)?
                 .unwrap();
-            let strings: Vec<_> = document
+            let fields: BTreeMap<_, _> = document
                 .fields
                 .iter()
-                .filter_map(|f| match &f.value {
-                    FieldValue::String(s) => Some(s.as_str()),
-                    _ => None,
-                })
+                .map(|field| (field.field_number, &field.value))
                 .collect();
-            assert!(strings.contains(&format!("id{:04}", hit.doc).as_str()));
-            assert!(strings.iter().any(|s| s.len() == 512));
+            let infos = reader.segment_readers()[0].field_infos();
+            assert_eq!(document.fields.len(), 2);
+            assert_eq!(fields.len(), 2);
+            assert_eq!(
+                fields[&infos.field_by_name("id").unwrap().number],
+                &FieldValue::String(format!("id{:04}", hit.doc))
+            );
+            assert_eq!(
+                fields[&infos.field_by_name("payload").unwrap().number],
+                &FieldValue::String(payload_for(hit.doc))
+            );
         }
     }
     Ok(result
