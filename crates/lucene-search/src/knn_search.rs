@@ -204,6 +204,7 @@ struct LeafVectors<'r> {
     ivf: Option<std::sync::Arc<lucene_ivf::IvfReader>>,
     scalar_quantized:
         Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'r>>,
+    hnsw_codes: Option<std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
 }
 
 impl<'r> LeafVectors<'r> {
@@ -218,13 +219,17 @@ impl<'r> LeafVectors<'r> {
     {
         VectorsInput {
             flat: self.flat.clone(),
-            hnsw: match (&self.ivf, &self.scalar_quantized) {
-                (Some(ivf), _) => Some(GraphReader::Ivf(ivf.clone())),
-                (None, Some(codes)) => Some(GraphReader::ScalarQuantized {
+            hnsw: match (&self.ivf, &self.scalar_quantized, &self.hnsw_codes) {
+                (Some(ivf), _, _) => Some(GraphReader::Ivf(ivf.clone())),
+                (None, Some(codes), _) => Some(GraphReader::ScalarQuantized {
                     graph: self.graph.clone(),
                     codes: codes.clone(),
                 }),
-                (None, None) => self.graph.clone().map(GraphReader::from),
+                (None, None, Some(codes)) => Some(GraphReader::HnswQuantized {
+                    graph: self.graph.clone(),
+                    codes: codes.clone(),
+                }),
+                (None, None, None) => self.graph.clone().map(GraphReader::from),
             },
             field_infos: reader.field_infos(),
             live_docs,
@@ -250,11 +255,13 @@ fn open_leaf<'r>(reader: &'r SegmentReader, field: &str) -> Result<Option<LeafVe
     };
     let ivf = reader.ivf_for(info.number)?;
     let scalar_quantized = reader.scalar_quantized_for(info.number)?;
+    let hnsw_codes = reader.hnsw_codes_for(info.number)?;
     Ok(Some(LeafVectors {
         flat,
         graph,
         ivf,
         scalar_quantized,
+        hnsw_codes,
     }))
 }
 
@@ -372,6 +379,29 @@ pub fn knn_top_hits_nested(
     parents: &dyn BitSetProducer,
     expand: bool,
 ) -> Result<Vec<ScoreDoc>> {
+    knn_top_hits_nested_with(
+        segments, field, target, k, candidates, filter, parents, expand, 0,
+    )
+}
+
+/// [`knn_top_hits_nested`] probing `ivf_nprobes` clusters in each segment
+/// whose field has an IVF index (`0`: the depth each segment calibrated),
+/// more when fewer than `k` parents are in reach. Other formats ignore it.
+///
+/// # Errors
+/// As [`knn_top_hits_nested`].
+#[allow(clippy::too_many_arguments)]
+pub fn knn_top_hits_nested_with(
+    segments: &[OpenSegment<'_>],
+    field: &str,
+    target: &KnnTarget,
+    k: usize,
+    candidates: usize,
+    filter: Option<&Clause>,
+    parents: &dyn BitSetProducer,
+    expand: bool,
+    ivf_nprobes: usize,
+) -> Result<Vec<ScoreDoc>> {
     top_hits(
         segments,
         field,
@@ -380,7 +410,7 @@ pub fn knn_top_hits_nested(
         candidates,
         filter,
         Some((parents, expand)),
-        0,
+        ivf_nprobes,
         &[],
     )
 }
@@ -466,7 +496,8 @@ fn top_hits(
             vector_query::search_knn_byte_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Float(t), true) => {
-            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?;
+            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
+                .with_ivf_nprobes(ivf_nprobes);
             vector_query::search_diversifying_children_float_knn_multi_segment(&knn, &parents, &q)?
         }
         (KnnTarget::Byte(t), true) => {
