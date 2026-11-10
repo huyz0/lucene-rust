@@ -66,6 +66,7 @@ fn clause_reads_points(clause: &Clause) -> bool {
         Clause::Extended(e) => !matches!(
             &**e,
             crate::extended_query::ExtendedQuery::NumericDocValuesRange(_)
+                | crate::extended_query::ExtendedQuery::DocAndScore(_)
         ),
         _ => true,
     }
@@ -149,7 +150,10 @@ fn collect<'a>(clause: &'a Clause, fields: &mut Fields<'a>, lean: bool) -> Optio
         Clause::Extended(e) if lean => match &**e {
             crate::extended_query::ExtendedQuery::PointRange(_)
             | crate::extended_query::ExtendedQuery::PointInSet(_)
-            | crate::extended_query::ExtendedQuery::NumericDocValuesRange(_) => {}
+            | crate::extended_query::ExtendedQuery::NumericDocValuesRange(_)
+            // Hits already found (a rewritten k-NN query): doc ids and
+            // scores, no terms.
+            | crate::extended_query::ExtendedQuery::DocAndScore(_) => {}
             crate::extended_query::ExtendedQuery::IndexSortRange(q) => {
                 collect(&q.fallback, fields, lean)?;
             }

@@ -35,14 +35,17 @@ use crate::jvm_reader::{lookup, Cursor};
 use crate::raw::bytes_from_raw;
 
 /// A decoded request.
-struct Request {
+pub(crate) struct Request {
     field: String,
     target: lucene_search::knn_search::KnnTarget,
-    k: usize,
+    pub(crate) k: usize,
     candidates: usize,
-    filter: Option<lucene_search::query::Clause>,
+    pub(crate) filter: Option<lucene_search::query::Clause>,
+    /// Where the filter's encoding sits in the request (empty without one):
+    /// two requests with the same bytes there filter alike.
+    pub(crate) filter_bytes: std::ops::Range<usize>,
     /// A nested field's parent filter and `expand_nested_docs`.
-    nested: Option<(Arc<dyn BitSetProducer>, bool)>,
+    pub(crate) nested: Option<(Arc<dyn BitSetProducer>, bool)>,
     nprobes: usize,
 }
 
@@ -51,7 +54,7 @@ fn invalid(message: &str) -> FfiStatus {
     FfiStatus::InvalidArgument
 }
 
-fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
+pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
     let mut c = Cursor::new(blob);
     let field = std::str::from_utf8(c.bytes()?)
         .map_err(|_| FfiStatus::InvalidUtf8)?
@@ -66,9 +69,13 @@ fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
     let k = positive(c.i32()?, "k must be at least 1")?;
     let candidates = positive(c.i32()?, "candidates must be at least 1")?;
     let mut nodes = 0usize;
-    let filter = match c.u8()? {
-        0 => None,
-        1 => Some(crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)?),
+    let (filter, filter_bytes) = match c.u8()? {
+        0 => (None, 0..0),
+        1 => {
+            let start = blob.len() - c.remaining();
+            let node = crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)?;
+            (Some(node), start..blob.len() - c.remaining())
+        }
         _ => return Err(invalid("filter flag (expected 0..=1)")),
     };
     let nested = match c.u8()? {
@@ -94,6 +101,7 @@ fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         k,
         candidates,
         filter,
+        filter_bytes,
         nested,
         nprobes,
     })
@@ -124,85 +132,112 @@ pub unsafe extern "C" fn ffi_jvm_reader_knn(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(request, request_len)? };
-        let Request {
-            field,
-            target,
-            k,
-            candidates,
-            filter,
-            nested,
-            nprobes,
-        } = decode(blob)?;
-        if buf_len < k {
+        let request = decode(blob)?;
+        if buf_len < request.k {
             return Err(FfiStatus::BufferTooSmall);
         }
         let h = lookup(
             handle,
             "ffi_jvm_reader_knn: unknown or already-closed handle",
         )?;
-        let mut opened = h.reader.open_segments().map_err(|e| {
-            set_last_error(format!("opening segment postings: {e}"));
-            FfiStatus::Decode
-        })?;
-        if let Some(f) = &filter {
-            let probe = lucene_search::query::BooleanQuery::new().with_filter([f.clone()]);
-            if crate::jvm_reader::boolean_uses_points(&probe) {
-                opened.open_points().map_err(|e| {
-                    set_last_error(format!("opening segment points: {e}"));
-                    FfiStatus::Decode
-                })?;
-            }
-        }
-        let segments: Vec<OpenSegment<'_>> = opened
-            .as_open_segments()
-            .into_iter()
-            .zip(&h.live_docs)
-            .map(|(mut s, live)| {
-                s.live_docs = live.as_ref();
-                s
-            })
-            .collect();
-        let hits = match &nested {
-            None => knn_top_hits_with(
-                &segments,
-                &field,
-                &target,
-                k,
-                candidates,
-                filter.as_ref(),
-                nprobes,
-            ),
-            Some((parents, expand)) => knn_top_hits_nested(
-                &segments,
-                &field,
-                &target,
-                k,
-                candidates,
-                filter.as_ref(),
-                &**parents,
-                *expand,
-            ),
-        }
-        .map_err(map_search_error)?;
-        if hits.len() > buf_len {
-            // SAFETY: caller contract.
-            unsafe { *out_count = hits.len() };
-            set_last_error(format!(
-                "KNN request: {} hits do not fit {buf_len}",
-                hits.len()
-            ));
-            return Err(FfiStatus::BufferTooSmall);
-        }
-        // SAFETY: caller contract; `hits.len() <= buf_len`.
-        unsafe {
-            for (i, hit) in hits.iter().enumerate() {
-                *out_docs.add(i) = hit.doc_id;
-                *out_scores.add(i) = hit.score;
-            }
-            *out_count = hits.len();
-        }
-        Ok(())
+        let hits = search(&h, &request)?;
+        // SAFETY: caller contract.
+        unsafe { write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
+}
+
+/// `request`'s hits over the reader of `h`, its deletes skipped: global doc
+/// ids, best first.
+pub(crate) fn search(
+    h: &crate::registry::JvmReaderHandle,
+    request: &Request,
+) -> Result<Vec<lucene_search::ScoreDoc>, FfiStatus> {
+    let Request {
+        field,
+        target,
+        k,
+        candidates,
+        filter,
+        nested,
+        filter_bytes: _,
+        nprobes,
+    } = request;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if let Some(f) = filter {
+        let probe = lucene_search::query::BooleanQuery::new().with_filter([f.clone()]);
+        if crate::jvm_reader::boolean_uses_points(&probe) {
+            opened.open_points().map_err(|e| {
+                set_last_error(format!("opening segment points: {e}"));
+                FfiStatus::Decode
+            })?;
+        }
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s
+        })
+        .collect();
+    match nested {
+        None => knn_top_hits_with(
+            &segments,
+            field,
+            target,
+            *k,
+            *candidates,
+            filter.as_ref(),
+            *nprobes,
+        ),
+        Some((parents, expand)) => knn_top_hits_nested(
+            &segments,
+            field,
+            target,
+            *k,
+            *candidates,
+            filter.as_ref(),
+            &**parents,
+            *expand,
+        ),
+    }
+    .map_err(map_search_error)
+}
+
+/// Writes `hits` out as [`ffi_jvm_reader_knn`] does, or the count they
+/// need when they do not fit `buf_len`.
+///
+/// # Safety
+/// As [`ffi_jvm_reader_knn`]'s outputs.
+pub(crate) unsafe fn write_hits(
+    hits: &[lucene_search::ScoreDoc],
+    out_docs: *mut i32,
+    out_scores: *mut f32,
+    buf_len: usize,
+    out_count: *mut usize,
+) -> Result<(), FfiStatus> {
+    if hits.len() > buf_len {
+        // SAFETY: caller contract.
+        unsafe { *out_count = hits.len() };
+        set_last_error(format!(
+            "KNN request: {} hits do not fit {buf_len}",
+            hits.len()
+        ));
+        return Err(FfiStatus::BufferTooSmall);
+    }
+    // SAFETY: caller contract; `hits.len() <= buf_len`.
+    unsafe {
+        for (i, hit) in hits.iter().enumerate() {
+            *out_docs.add(i) = hit.doc_id;
+            *out_scores.add(i) = hit.score;
+        }
+        *out_count = hits.len();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
