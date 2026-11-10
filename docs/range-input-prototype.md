@@ -108,10 +108,49 @@ numeric values across block boundaries and stored values, with a 32-byte cache
 and explicit source faults. Fixtures and independent expected values are not
 rewritten. These are unrun component tests, not remote-query qualification.
 
-No Cargo, rustc, rustfmt, JVM, native test, Docker, WSL, workload, benchmark,
-coverage or CI command has run for this source. Compiler feedback may require
-repairs. Actual selected term/filter/doc-value/stored-field queries over a
+No local Cargo build, rustc, JVM, native test, Docker, WSL, workload, benchmark
+or coverage command has run. The installed stable rustfmt was used only as a
+source editor; the installed pinned formatter failed to start (Windows status
+0xC0000135). Pinned formatting and compiler qualification remain unrun.
+Compiler feedback may require repairs. Actual selected term/filter/doc-value/stored-field queries over a
 working set larger than cache, physical trace/byte/scratch accounting, injected
 range errors, both native targets/profiles and required coverage/review remain
 pending. Upstream's 95% per-file bar is retained; hsearch's separate task gates
 are not waived. No speed, memory, format fidelity or runtime pass is claimed.
+
+## Hosted feedback preparation
+
+The original exact 16-file source checkpoint is preserved as commit
+`dd4e7078b365d2107f2fb279429f5c34da425d36`, tree
+`04327d0c0d6e92b46958ee31f885f03806b4d79b`, directly parented by the pin above.
+Its canonical file manifest digest is
+`9b9513229bfbb5e592f679faa8e4f7c48d4569fa9d2b0f06a474ab8532f3b95d`.
+Later source formatting and fixed feedback wiring do not rewrite that commit.
+
+The fixed `range-input-feedback` push workflow selects only the development
+branch. It checks out the exact push SHA with persisted credentials disabled,
+and runs the fixed compiler/component commands through
+`scripts/range-feedback.py` on a separate GitHub-hosted Linux x64 runner.
+The Rust image is the exact digest already declared in pinned hsearch
+`656b790b94b87507717165cf4aa1930a7fb5d9ae:dev/images.json`:
+`rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97`.
+Its build workload has 2 CPU, 4 GiB memory, zero swap, 256 PIDs, a fresh 8 GiB
+ext4 scratch filesystem, read-only source/root filesystem, a 1,800-second
+execution deadline and 2 MiB combined retained stdio. Guest cgroup receipts and
+host filesystem/source identity are checked before compilation. Registry,
+target and temporary files share that scratch; no local/shared build pool or
+cache is used. Image provisioning and checkout are runner infrastructure, not
+claimed as compiler cgroup measurements. The outer job timeout is 40 minutes.
+Container cleanup verifies both this job's unique label and source SHA. No
+preflight or cleanup prunes unrelated Docker/host resources.
+
+The first fixed attempt performs selected production/test type checking, the
+new store and Java-fixture component controls, and pinned formatting. It is
+explicitly feedback, not the full both-architecture/dev-release/lint/doctest/
+coverage/query qualification matrix. First failures remain evidence. No run is
+claimed passed by this preparation.
+
+While this exact branch's PR is a draft, the existing broad workflow defers its
+uncapped build jobs and deliberately fails `ci-ok`. Marking the PR ready restores
+the original complete workflow. Other branches and main retain their existing
+behavior. Draft feedback therefore cannot qualify a merge or a new hsearch pin.

@@ -37,8 +37,8 @@ use std::sync::Arc;
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
-use lucene_store::range_input::RangeInput;
 use lucene_store::data_output::DataOutput;
+use lucene_store::range_input::RangeInput;
 
 use crate::compression::{self, CompressingFormat, Compression, Compressor};
 use crate::direct_monotonic;
@@ -549,7 +549,12 @@ impl<'d> StoredFieldsReader<'d> {
         self.parse_chunk_header(doc_id, input, self.fdt.len())
     }
 
-    fn parse_chunk_header<'e>(&self, doc_id: i32, mut input: SliceInput<'e>, file_len: usize) -> Result<(ChunkHeader, SliceInput<'e>)> {
+    fn parse_chunk_header<'e>(
+        &self,
+        doc_id: i32,
+        mut input: SliceInput<'e>,
+        file_len: usize,
+    ) -> Result<(ChunkHeader, SliceInput<'e>)> {
         let doc_base = input.read_vint()?;
         let token = input.read_vint()?;
         // Java's `token >>> 2`: an *unsigned* shift, so a corrupt token with
@@ -813,26 +818,73 @@ impl<'d> StoredFieldsReader<'d> {
     /// same immutable file; use an empty-fdt `rebind` after metadata admission.
     /// Both encoded and inflated chunk sizes are capped at 1 MiB.
     pub fn document_range(&self, source: &RangeInput, doc_id: i32) -> Result<Document> {
-        if doc_id < 0 || doc_id >= self.max_doc { return Err(Error::DocOutOfRange(doc_id, self.max_doc)); }
-        let expected_length = usize::try_from(self.max_pointer).ok().and_then(|n| n.checked_add(codec_util::FOOTER_LENGTH));
-        if expected_length != Some(source.len()) { return Err(lucene_store::Error::Corrupted("range stored file length mismatch".into()).into()); }
-        let block = direct_monotonic::floor_index(self.docs_region()?, &self.docs_meta, 0, self.num_chunks, doc_id as i64)?;
-        let start = usize::try_from(self.block_start_pointer(block)?).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-        let next = block.checked_add(1).ok_or(lucene_store::Error::Eof { offset: start })?;
-        let end = if next < self.num_chunks { self.block_start_pointer(next)? } else { self.max_pointer };
+        if doc_id < 0 || doc_id >= self.max_doc {
+            return Err(Error::DocOutOfRange(doc_id, self.max_doc));
+        }
+        let expected_length = usize::try_from(self.max_pointer)
+            .ok()
+            .and_then(|n| n.checked_add(codec_util::FOOTER_LENGTH));
+        if expected_length != Some(source.len()) {
+            return Err(
+                lucene_store::Error::Corrupted("range stored file length mismatch".into()).into(),
+            );
+        }
+        let block = direct_monotonic::floor_index(
+            self.docs_region()?,
+            &self.docs_meta,
+            0,
+            self.num_chunks,
+            doc_id as i64,
+        )?;
+        let start = usize::try_from(self.block_start_pointer(block)?)
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let next = block
+            .checked_add(1)
+            .ok_or(lucene_store::Error::Eof { offset: start })?;
+        let end = if next < self.num_chunks {
+            self.block_start_pointer(next)?
+        } else {
+            self.max_pointer
+        };
         let end = usize::try_from(end).map_err(|_| lucene_store::Error::Eof { offset: start })?;
-        let length = end.checked_sub(start).ok_or(lucene_store::Error::Eof { offset: start })?;
-        if length > 1024 * 1024 { return Err(lucene_store::Error::IllegalArgument("range stored chunk exceeds prototype envelope".into()).into()); }
+        let length = end
+            .checked_sub(start)
+            .ok_or(lucene_store::Error::Eof { offset: start })?;
+        if length > 1024 * 1024 {
+            return Err(lucene_store::Error::IllegalArgument(
+                "range stored chunk exceeds prototype envelope".into(),
+            )
+            .into());
+        }
         let mut encoded = vec![0u8; length];
         source.read_exact_at(start, &mut encoded)?;
-        let (header, mut input) = self.parse_chunk_header(doc_id, SliceInput::new(&encoded), encoded.len())?;
-        if header.total_length() > 1024 * 1024 { return Err(lucene_store::Error::IllegalArgument("range stored inflation exceeds prototype envelope".into()).into()); }
+        let (header, mut input) =
+            self.parse_chunk_header(doc_id, SliceInput::new(&encoded), encoded.len())?;
+        if header.total_length() > 1024 * 1024 {
+            return Err(lucene_store::Error::IllegalArgument(
+                "range stored inflation exceeds prototype envelope".into(),
+            )
+            .into());
+        }
         let index = header.index_of(doc_id);
-        let begin = usize::try_from(header.offsets[index]).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-        let next_index = index.checked_add(1).ok_or(lucene_store::Error::Eof { offset: 0 })?;
-        let end = usize::try_from(header.offsets[next_index]).map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
-        let bytes = if begin == end { Vec::new() } else { self.decompress_range(&header, &mut input, begin, end)? };
-        if header.num_stored_fields[index] > 1024 { return Err(lucene_store::Error::IllegalArgument("range stored field-count limit".into()).into()); }
+        let begin = usize::try_from(header.offsets[index])
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let next_index = index
+            .checked_add(1)
+            .ok_or(lucene_store::Error::Eof { offset: 0 })?;
+        let end = usize::try_from(header.offsets[next_index])
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let bytes = if begin == end {
+            Vec::new()
+        } else {
+            self.decompress_range(&header, &mut input, begin, end)?
+        };
+        if header.num_stored_fields[index] > 1024 {
+            return Err(lucene_store::Error::IllegalArgument(
+                "range stored field-count limit".into(),
+            )
+            .into());
+        }
         parse_document(header.num_stored_fields[index], &bytes)
     }
 

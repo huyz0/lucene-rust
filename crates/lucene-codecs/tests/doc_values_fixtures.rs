@@ -290,21 +290,34 @@ fn parses_real_sparse_variable_length_binary_dv_and_matches_lucene_values() {
 
 #[test]
 fn numeric_range_values_match_java_and_transport_errors_propagate() {
-    let m = Manifest::load(); let id = id_from_hex(m.get("id_hex"));
+    let m = Manifest::load();
+    let id = id_from_hex(m.get("id_hex"));
     let fis = load_field_infos(&m, &id);
     let meta = std::fs::read(format!("{}{}.raw", dir(), m.get("dvm_file_name"))).unwrap();
     let (_, parsed) = ndv::parse_meta(&meta, &id, &dv_suffix(&m), &fis).unwrap();
     let (source, input) = range_source::open(format!("{}{}.raw", dir(), m.get("dvd_file_name")));
     for name in ["varying", "gcd", "sparse"] {
         let entry = parsed.numeric_entry(field_number(&m, name)).unwrap();
-        for (doc, value) in m.get(&format!("field.{name}.values")).split(',').enumerate() {
-            let expected = if value == "NONE" { None } else { Some(value.parse::<i64>().unwrap()) };
+        for (doc, value) in m
+            .get(&format!("field.{name}.values"))
+            .split(',')
+            .enumerate()
+        {
+            let expected = if value == "NONE" {
+                None
+            } else {
+                Some(value.parse::<i64>().unwrap())
+            };
             input.clear_cache().unwrap();
-            assert_eq!(ndv::numeric_value_range(&input, entry, doc as i32).unwrap(), expected);
+            assert_eq!(
+                ndv::numeric_value_range(&input, entry, doc as i32).unwrap(),
+                expected
+            );
         }
     }
     assert!(input.usage().unwrap().cache_bytes <= 32);
     let entry = parsed.numeric_entry(field_number(&m, "varying")).unwrap();
-    input.clear_cache().unwrap(); range_source::fail(&source, 2);
+    input.clear_cache().unwrap();
+    range_source::fail(&source, 2);
     assert!(ndv::numeric_value_range(&input, entry, 0).is_err());
 }
