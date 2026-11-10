@@ -625,6 +625,44 @@ default), with `index.sort.field` set to the partition field.
   fits indexes that are always searched within one tenant.
 - Builds are 3x faster: k-means runs on each partition alone.
 
+### Composite partition keys
+
+An index sorted by several keys (`index.sort.field: [tenant, sub]`) keeps a
+tenant's documents in one run and, inside it, each sub-partition's
+documents in a shorter run. A conjunction's required, non-scoring clauses
+on a leading prefix of the sort keys (keyword terms; long or date ranges,
+the last key of the prefix may be a range) are matched as that one run, by
+binary searches over the keys' doc values, instead of by intersecting
+their postings or points. Clusters per partition still follow the first
+key. `knn_tenants --sort tenant|composite|time` gives every document one of
+16 sub-partitions and queries each tenant alone and with one sub-partition
+(`+sub`). IVF clusters per partition, 4 segments, mean ms of two builds,
+recall@10 in parentheses where below 1.0:
+
+| query | sort by tenant | sort by tenant, sub | sort by time (8 segments) |
+|---|---|---|---|
+| none | 10.0-10.3 (0.99) | 11.9-14.5 (0.99) | 10.8 (0.99) |
+| 1.5M tenant | 6.6-7.4 (0.98) | 7.0-7.4 (0.98) | 16.4-17.1 (0.92-0.99) |
+| 1.5M tenant + sub (94k) | 28-33 | 4.7-5.6 | 16.6-25.9 |
+| 400k tenant | 2.4-2.8 (0.96-0.98) | 2.3-2.7 (0.96-0.97) | 11.6-28.4 (0.97) |
+| 400k tenant + sub (25k) | 2.7-4.2 | 1.3-1.5 | 5.9-6.5 |
+| 40k tenant | 2.0-2.5 | 2.0-2.1 | 4.7-7.6 |
+| 40k tenant + sub (2.5k) | 0.37-0.38 | 0.22-0.41 | 1.6-1.9 |
+| 4k, 300, 30 tenant | 0.29, 0.10, 0.08 | 0.29, 0.10, 0.08 | 1.2, 0.14, 0.10 |
+
+- A filter on the second key costs 4-6x less on large tenants: the
+  sub-partition's run is a few hundred kilobytes of vectors scored exactly,
+  where the tenant-only sort intersects the sub-partition's postings across
+  the tenant and probes its clusters.
+- Tenant-only searches are unchanged within noise; the build took
+  109-117 s against 98-100 s. Unfiltered searches were 1.2-1.4x slower,
+  which this layout's always-filtered searches do not see.
+- Sorting by time alone scatters every tenant: 2-12x slower tenant
+  searches. (The time-sorted build at 4 segments ran out of memory on the
+  15 GB box; it ran with 8.)
+
+Data: `/mnt/project-files/perf/composite-partition/`.
+
 ## Nested fields: the best child per parent
 
 A nested search (`knn_top_hits_nested_with`, the plugin's nested `knn`)
