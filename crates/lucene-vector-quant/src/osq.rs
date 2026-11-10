@@ -581,13 +581,18 @@ impl OsqQueryScorer<'_> {
         let terms = self.terms();
         let nibbles = self.luts.len();
         let block_bytes = self.q.fast_scan_block_bytes();
+        let wide = nibbles >= 16 * simd::FAST_SCAN_WIDE_GROUPS;
         for (block, out) in codes
             .chunks_exact(block_bytes)
             .zip(scores.chunks_mut(FAST_SCAN_BLOCK))
         {
             let (nibble_bytes, term_bytes) = block.split_at(nibbles);
             let mut dots = [0u32; FAST_SCAN_BLOCK];
-            simd::lut16_accumulate32(&self.luts, nibble_bytes, &mut dots);
+            if wide {
+                simd::lut16_accumulate32_wide(&self.luts, nibble_bytes, &mut dots);
+            } else {
+                simd::lut16_accumulate32(&self.luts, nibble_bytes, &mut dots);
+            }
             // The four corrective terms, one array of 32 each.
             let mut t = [[0u32; FAST_SCAN_BLOCK]; 4];
             for (row, bytes) in t

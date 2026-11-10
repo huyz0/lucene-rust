@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 101;
+    public static final int EXPECTED_ABI_VERSION = 102;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -122,6 +122,10 @@ public final class NativeBridge {
         static final MethodHandle READER_KNN = bind(
             "ffi_jvm_reader_knn",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle LIVE_VIEW_KNN = bind(
+            "ffi_live_view_knn",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
@@ -989,6 +993,27 @@ public final class NativeBridge {
      * needs.
      */
     public static int readerKnn(long handle, byte[] request, int room, int[] outDocs, float[] outScores, int[] outCount) {
+        return knn(handle, 0, false, request, room, outDocs, outScores, outCount);
+    }
+
+    /**
+     * {@link #readerKnn} over the reader at {@code handle} and the writer's buffers of {@code view}
+     * ({@code ffi_live_view_knn}): doc ids numbered as {@link #liveViewReader}'s handles number them.
+     */
+    public static int liveViewKnn(long handle, long view, byte[] request, int room, int[] outDocs, float[] outScores, int[] outCount) {
+        return knn(handle, view, true, request, room, outDocs, outScores, outCount);
+    }
+
+    private static int knn(
+        long handle,
+        long view,
+        boolean live,
+        byte[] request,
+        int room,
+        int[] outDocs,
+        float[] outScores,
+        int[] outCount
+    ) {
         if (request == null) {
             return nullArgument("request");
         }
@@ -1005,7 +1030,9 @@ public final class NativeBridge {
             count.set(JAVA_LONG, 0, 0L);
             int rc;
             try {
-                rc = (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) room, count);
+                rc = live
+                    ? (int) H.LIVE_VIEW_KNN.invokeExact(handle, view, s.bytes(request), (long) request.length, docs, scores, (long) room, count)
+                    : (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) room, count);
             } catch (Throwable t) {
                 throw rethrow(t);
             }

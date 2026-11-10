@@ -303,6 +303,17 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 /// validation this port doesn't have yet. Returning 0 (a score of 0.5,
 /// "no information") keeps every heap's ordering total instead of poisoning
 /// it with NaN.
+/// [`cosine`] with `a . a` given: the same value bit for bit when
+/// `norm1` is `lucene_util::simd::cosine_parts_f32(a, _).1`.
+pub fn cosine_with_norm(a: &[f32], norm1: f32, b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
+    let (sum, norm2) = lucene_util::simd::dot_and_norm_f32(a, b);
+    if norm1 == 0.0 || norm2 == 0.0 {
+        return 0.0;
+    }
+    (sum as f64 / ((norm1 as f64) * (norm2 as f64)).sqrt()) as f32
+}
+
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
     // The three sums, two 8-lane accumulators each (Panama's `cosineBody`).
@@ -1654,8 +1665,16 @@ impl FlatVectorsWriter {
                 }
             }
             FieldVectorData::Float32(v) => {
-                for component in v {
-                    self.data.extend_from_slice(&component.to_le_bytes());
+                // Sized once and filled in place: the loop compiles to a
+                // straight copy on little-endian targets, where pushing
+                // component by component checked capacity every 4 bytes.
+                let start = self.data.len();
+                // ARITH: the components are already in memory, so their
+                // byte count (and the buffer grown by it) fits a usize.
+                #[allow(clippy::arithmetic_side_effects)]
+                self.data.resize(start + v.len() * 4, 0);
+                for (out, component) in self.data[start..].chunks_exact_mut(4).zip(v) {
+                    out.copy_from_slice(&component.to_le_bytes());
                 }
             }
             FieldVectorData::Byte(v) => self.data.extend_from_slice(v),
@@ -2110,8 +2129,12 @@ fn validate_field(field: &FlatVectorsField, max_doc: i32) -> Result<()> {
     // NaN score would be silently excluded from the bulk-score maximum that
     // gates graph expansion instead of loudly breaking.
     if let FieldVectorData::Float32(values) = &field.values {
-        if let Some((i, v)) = values.iter().enumerate().find(|(_, v)| !v.is_finite()) {
-            return Err(Error::NonFiniteValue(field.field_number, i, *v));
+        // The branch-free pass first (it vectorizes); the position only when
+        // it fails.
+        if !values.iter().fold(true, |ok, v| ok & v.is_finite()) {
+            if let Some((i, v)) = values.iter().enumerate().find(|(_, v)| !v.is_finite()) {
+                return Err(Error::NonFiniteValue(field.field_number, i, *v));
+            }
         }
     }
     Ok(())
@@ -2134,6 +2157,9 @@ pub struct FloatVectorScorer<'a> {
     values: FloatVectorValues<'a>,
     similarity: VectorSimilarityFunction,
     query: Vec<f32>,
+    /// `query . query`, for a cosine scorer: the one sum of the three that
+    /// does not depend on the candidate.
+    query_norm: f32,
     scratch: Vec<f32>,
     /// Whether the `.vec` is read by page ([`lucene_store::is_prefetchable`]):
     /// a bulk score then fetches every candidate's page in one batch before
@@ -2141,14 +2167,43 @@ pub struct FloatVectorScorer<'a> {
     paged: bool,
 }
 
+/// `query . query` as [`cosine`] sums it.
+fn query_norm(query: &[f32]) -> f32 {
+    lucene_util::simd::cosine_parts_f32(query, query).1
+}
+
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector_ref(node, &mut self.scratch)?;
-        Ok(self.similarity.score(&self.query, candidate))
+        Ok(if self.similarity == VectorSimilarityFunction::Cosine {
+            normalize_to_unit_interval(cosine_with_norm(&self.query, self.query_norm, candidate))
+        } else {
+            self.similarity.score(&self.query, candidate)
+        })
     }
 
     fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
-        if self.paged && nodes.len() > 1 {
+        if nodes.len() > 1 {
+            self.prefetch(nodes);
+        }
+        let mut max = f32::NEG_INFINITY;
+        for (i, &node) in nodes.iter().enumerate() {
+            scores[i] = self.score(node)?;
+            max = max.max(scores[i]);
+        }
+        Ok(max)
+    }
+
+    fn max_ord(&self) -> i32 {
+        self.values.size()
+    }
+
+    /// A `.vec` read by page fetches every candidate's page in one batch
+    /// rather than faulting them in one at a time; one in memory loads every
+    /// cache line of every candidate before the first is scored (see
+    /// `docs/benchmarks/hnsw.md` for the variants measured).
+    fn prefetch(&self, nodes: &[i32]) {
+        if self.paged {
             // A graph node's neighbours fit one stack batch; more go in
             // several. Only a hint: a page it misses faults in on its own.
             const BATCH: usize = 64;
@@ -2165,23 +2220,21 @@ impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
                 }
                 let _ = lucene_store::prefetch(ranges.get(..count).unwrap_or(&[]));
             }
+            return;
         }
-        let mut max = f32::NEG_INFINITY;
-        for (i, &node) in nodes.iter().enumerate() {
-            scores[i] = self.score(node)?;
-            max = max.max(scores[i]);
+        for &n in nodes {
+            if let Ok(bytes) = self.values.values.bytes(n) {
+                lucene_util::simd::prefetch_bytes(bytes);
+            }
         }
-        Ok(max)
-    }
-
-    fn max_ord(&self) -> i32 {
-        self.values.size()
     }
 }
 
 impl crate::hnsw::UpdateableVectorScorer for FloatVectorScorer<'_> {
     fn set_scoring_ordinal(&mut self, ord: i32) -> Result<()> {
-        self.values.vector_into(ord, &mut self.query)
+        self.values.vector_into(ord, &mut self.query)?;
+        self.query_norm = query_norm(&self.query);
+        Ok(())
     }
 }
 
@@ -2202,6 +2255,14 @@ impl crate::hnsw::VectorScorer for ByteVectorScorer<'_> {
 
     fn max_ord(&self) -> i32 {
         self.values.size()
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        for &n in nodes {
+            if let Ok(bytes) = self.values.vector(n) {
+                lucene_util::simd::prefetch_bytes(bytes);
+            }
+        }
     }
 }
 
@@ -2251,6 +2312,7 @@ impl<'a> FloatVectorValues<'a> {
             values: self.clone(),
             similarity: self.values.similarity,
             query: query.to_vec(),
+            query_norm: query_norm(query),
             scratch: vec![0.0; self.values.dimension],
             paged: self.is_paged(),
         })
@@ -2272,6 +2334,7 @@ impl<'a> FloatVectorValues<'a> {
             values: self.clone(),
             similarity: self.values.similarity,
             query: vec![0.0; self.values.dimension],
+            query_norm: 0.0,
             scratch: vec![0.0; self.values.dimension],
             paged: self.is_paged(),
         }

@@ -5,7 +5,7 @@
 //! Xeons), `vpopcntq` counts eight words per instruction; HotSpot's C2
 //! vectorizes `Long.bitCount` loops to it on those CPUs, so Lucene's
 //! `FixedBitSet.cardinality` and `intersectionCount` use it there. The
-//! kernels below pick it at run time, checked once per process.
+//! kernels below pick it at run time, through [`crate::cpu::avx512_popcount`].
 
 /// How the two words of a pair combine before counting.
 #[derive(Clone, Copy)]
@@ -30,8 +30,8 @@ pub(crate) fn words(words: &[u64]) -> usize {
     // Short slices stay scalar: the feature check and the vector setup cost
     // more than they save under a few cache lines.
     #[cfg(target_arch = "x86_64")]
-    if words.len() >= 32 && avx512::available() {
-        // SAFETY: `available` checked the CPU supports the target features.
+    if words.len() >= 32 && crate::cpu::avx512_popcount() {
+        // SAFETY: `avx512_popcount` checked the CPU supports the target features.
         return unsafe { avx512::words(words) };
     }
     scalar_words(words)
@@ -44,8 +44,8 @@ pub(crate) fn zip(a: &[u64], b: &[u64], op: Op) -> usize {
     let n = a.len().min(b.len());
     let (a, b) = (&a[..n], &b[..n]);
     #[cfg(target_arch = "x86_64")]
-    if n >= 32 && avx512::available() {
-        // SAFETY: `available` checked the CPU supports the target features.
+    if n >= 32 && crate::cpu::avx512_popcount() {
+        // SAFETY: `avx512_popcount` checked the CPU supports the target features.
         return unsafe { avx512::zip(a, b, op) };
     }
     scalar_zip(a, b, op)
@@ -94,13 +94,6 @@ pub(crate) fn scalar_zip(a: &[u64], b: &[u64], op: Op) -> usize {
 mod avx512 {
     use super::Op;
     use std::arch::x86_64::*;
-
-    /// Whether this CPU has AVX-512F and VPOPCNTDQ. `std` caches the CPUID
-    /// result, so this is a load and a test after the first call.
-    #[inline]
-    pub(super) fn available() -> bool {
-        is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512vpopcntdq")
-    }
 
     /// Two 8-word vectors per step into two accumulators, so consecutive
     /// `vpopcntq`s do not wait on one add chain.

@@ -86,6 +86,25 @@ search over the buffers only when their collector is first asked for; a
 natively answered `terms` aggregation never builds the global ordinals
 OpenSearch's aggregator would (about 1 ms per search at 1M).
 
+## Vector fields
+
+A k-NN query on a realtime index runs natively over the view
+(`ffi_live_view_knn`; `KnnEncoder.topHits` routes a live reader there):
+committed segments search their graphs or IVF lists as usual, and each leaf of
+buffered documents is scanned exactly, so its scores are exact and merge
+directly with the committed ones. A filter overlays only its own terms on the
+lean chunks, and the deletes since the commit mask both. A nested k-NN query
+reads the view's reader of every term.
+
+Chunks and tails with vectors write them flat, with no HNSW graph and no IVF
+lists (`.vem` records no graph levels, the layout of a stock segment too small
+for a graph, which Java's `Lucene99HnswVectorsReader` and the plugin's IVF
+format also read exactly). The flush builds the segment's graph or lists once.
+Chunks and tails with vectors are still written as segments, not lean parts:
+about 1.3 ms per view for a tail of about 2.5k 128-d vectors. Reading them in
+place from the buffer, and keeping an HNSW graph or IVF lists in the buffer
+for large ones, are the next steps.
+
 ## Searches Lucene answers
 
 To Lucene a leaf of buffered documents holds no terms or values and every

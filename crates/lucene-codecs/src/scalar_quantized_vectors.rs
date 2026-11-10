@@ -841,6 +841,16 @@ impl<'a> QuantizedVectorValues<'a> {
         Ok(self.split_record(ord)?.1)
     }
 
+    /// Starts loading `ords`' records (codes and corrective terms); see
+    /// [`crate::hnsw::VectorScorer::prefetch`].
+    pub fn prefetch(&self, ords: &[i32]) {
+        for &ord in ords {
+            if let Ok(record) = self.record(ord) {
+                lucene_util::simd::prefetch_bytes(record);
+            }
+        }
+    }
+
     /// One ordinal's codes and corrective terms, from a single lookup.
     #[inline]
     fn split_record(&self, ord: i32) -> Result<(&'a [u8], QuantizationResult)> {
@@ -1161,6 +1171,10 @@ impl crate::hnsw::VectorScorer for OwnedQuantizedQueryScorer<'_> {
     fn max_ord(&self) -> i32 {
         self.values.size
     }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        self.values.prefetch(nodes);
+    }
 }
 
 /// Whether `meta` (a `.vemq`) is this format's: `Lucene99`'s scalar
@@ -1187,6 +1201,10 @@ impl crate::hnsw::VectorScorer for QuantizedQueryScorer<'_, '_> {
 
     fn max_ord(&self) -> i32 {
         self.values.size
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        self.values.prefetch(nodes);
     }
 }
 
@@ -1298,6 +1316,10 @@ impl crate::hnsw::VectorScorer for QuantizedOrdScorer<'_, '_> {
 
     fn max_ord(&self) -> i32 {
         self.values.size
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        self.values.prefetch(nodes);
     }
 }
 

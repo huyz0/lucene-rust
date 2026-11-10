@@ -43,6 +43,11 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              script_score and script_fields: the same hits, scores and values
              as stock, and the same refusals. Scripts run in Java for now, so
              they are left out of the no-fallback count.
+  realtime   an `index.lucene_rust.realtime_search` index (HNSW, l2, never
+             refreshed): documents indexed after the last flush, an update
+             and a delete since are seen by top-k, filtered and in-bool knn
+             queries, which return the exhaustive scan's hits and scores
+             over every live document, all of them in Rust.
   errors     requests the stock plugin refuses are refused here too; faiss
              mappings, which stock accepts, are refused here.
 
@@ -499,6 +504,64 @@ def knn_score(space, target, field="emb"):
             "params": {"field": field, "query_value": target, "space_type": space}}
 
 
+def realtime_check(failures):
+    """knn over a realtime index's buffered documents on the plugin node: returns the queries compared."""
+    index, spec = "realtime_l2", EXACT["lucene_l2"]
+    rng = random.Random(f"{SEED}-{index}")
+    docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
+            for i in range(DOCS)]
+    settings = {"index.knn": True, "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True,
+                "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
+    mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "emb": field_mapping(spec)}}
+    req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+
+    def bulk(batch):
+        lines = []
+        for d in batch:
+            lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+            lines.append(json.dumps({"tag": d["tag"], "n": d["n"], "emb": d["emb"]}))
+        r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        assert not r["errors"], json.dumps(r)[:2000]
+
+    half = DOCS // 2
+    bulk(docs[:half])
+    req(OURS[1], "POST", f"/{index}/_flush")
+    # Buffered, never refreshed: a committed document updated, a buffered one deleted.
+    bulk(docs[half:])
+    docs[3] = {**docs[3], "emb": vector(rng, False)}
+    bulk([docs[3]])
+    req(OURS[1], "DELETE", f"/{index}/_doc/d{half + 5}")
+    live = [d for d in docs if d["_id"] != f"d{half + 5}"]
+    count = req(OURS[1], "POST", f"/{index}/_count", {"query": {"match_all": {}}})["count"]
+    if count != len(live):
+        failures.append(f"{index}: {count} documents counted, {len(live)} live")
+    checked, buffered = 0, 0
+    for qi in range(8):
+        t = vector(rng, False)
+        cases = [
+            ("top k", knn(t, k=10), lambda d: True),
+            ("filtered", knn(t, k=10, filter={"term": {"tag": "even"}}), lambda d: d["tag"] == "even"),
+            ("in bool", {"bool": {"must": [knn(t, k=10)], "filter": [{"range": {"n": {"gte": half // 2}}}]}},
+             None),
+        ]
+        for label, query, keep_doc in cases:
+            got = search(OURS[1], index, {"size": 10, "query": query})
+            if keep_doc is None:
+                # The knn's own top 10, then the bool's filter.
+                top = exact_top(spec, live, t, 10)
+                want = [(i, sc) for sc, i in top if int(i[1:]) >= half // 2]
+            else:
+                want = [(i, sc) for sc, i in exact_top(spec, live, t, 10, keep_doc)]
+            checked += 1
+            buffered += sum(1 for i, _ in want if int(i[1:]) >= half or i == "d3")
+            if not same(got, want):
+                failures.append(f"{index} {label} query {qi}: {got[:3]} vs the scan's {want[:3]}")
+    print(f"{index}: {checked} queries, {buffered} buffered hits expected")
+    if buffered == 0:
+        failures.append(f"{index}: no query's hits were buffered documents")
+    return checked
+
+
 def fallback_counts():
     return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("fallbacks", {})
 
@@ -754,6 +817,7 @@ def main():
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
         checked += nested_check(failures)
         checked += ivf_check(failures)
+        checked += realtime_check(failures)
         print(f"compared {checked} queries")
 
         errors = [

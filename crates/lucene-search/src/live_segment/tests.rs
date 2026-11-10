@@ -584,3 +584,24 @@ fn points_and_doc_values_clauses_read_no_buffered_terms() {
     b.filter.push(terms);
     assert!(super::whole_request(&[&Clause::Boolean(Box::new(b))]).is_none());
 }
+
+/// A k-NN query rewritten to its hits (`DocAndScoreQuery`) reads no terms
+/// and no points: a search of it, filtered by a term, asks the buffers only
+/// for that term.
+#[test]
+fn knn_hits_read_no_terms_or_points() {
+    use crate::extended_query::{DocAndScoreQuery, ExtendedQuery};
+    let hits = Clause::Extended(Box::new(ExtendedQuery::DocAndScore(DocAndScoreQuery::new(
+        vec![(3, 0.5), (40, 0.25)],
+        &[0, 32],
+    ))));
+    let mut b = BooleanQuery::new();
+    b.must.push(hits.clone());
+    b.filter.push(term("tag", "even"));
+    let b = Clause::Boolean(Box::new(b));
+    let request = super::whole_request(&[&b]).unwrap();
+    let fields: Vec<&str> = request.fields.iter().map(|f| f.field.as_str()).collect();
+    assert_eq!(fields, ["tag"]);
+    assert!(!super::reads_points(&[&hits]));
+    assert!(super::whole_request(&[&hits]).unwrap().fields.is_empty());
+}

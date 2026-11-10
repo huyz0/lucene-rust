@@ -832,6 +832,36 @@ pub fn cosine_parts_f32(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
     cosine_parts_f32_scalar(a, b)
 }
 
+/// `(a . b, b . b)`: [`cosine_parts_f32`] without `a . a`, bit for bit the
+/// same two sums. A query scored against many vectors computes its own norm
+/// once instead of once per candidate.
+#[inline]
+pub fn dot_and_norm_f32(a: &[f32], b: &[f32]) -> (f32, f32) {
+    if a.len().min(b.len()) <= SHORT_VECTOR {
+        return a.iter().zip(b).fold((0.0, 0.0), |(s, n2), (&x, &y)| {
+            (fmadd(x, y, s), fmadd(y, y, n2))
+        });
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    ))]
+    {
+        // SAFETY: as for `dot_f32`.
+        unsafe { dot_and_norm_f32_avx2(a, b) }
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    )))]
+    {
+        let (s, _, n2) = cosine_parts_f32_scalar(a, b);
+        (s, n2)
+    }
+}
+
 /// The specification [`cosine_parts_f32`] must match exactly: two 8-lane
 /// accumulators per sum over 16-element steps, then a scalar tail.
 pub fn cosine_parts_f32_scalar(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
@@ -938,6 +968,43 @@ unsafe fn square_distance_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
         i += 1;
     }
     sum
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_and_norm_f32_avx2(a: &[f32], b: &[f32]) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut s = [_mm256_setzero_ps(); 2];
+    let mut n2 = [_mm256_setzero_ps(); 2];
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..2 {
+            let (x, y) = unsafe {
+                (
+                    _mm256_loadu_ps(pa.add(i + 8 * k)),
+                    _mm256_loadu_ps(pb.add(i + 8 * k)),
+                )
+            };
+            s[k] = _mm256_fmadd_ps(x, y, s[k]);
+            n2[k] = _mm256_fmadd_ps(y, y, n2[k]);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm2) = (fold16(&spill2(&s)), fold16(&spill2(&n2)));
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm2)
 }
 
 #[cfg(all(
@@ -1102,6 +1169,42 @@ const FAST_SCAN_FLUSH: usize = 256;
 /// When `luts` and `codes` are not the same whole number of 16-byte groups.
 #[inline]
 pub fn lut16_accumulate32(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    lut16_accumulate32_at(luts, codes, out, false);
+}
+
+/// The code length, in 16-byte groups, from which
+/// [`lut16_accumulate32_wide`] is faster than [`lut16_accumulate32`]: 64
+/// groups is 256 dimensions at four per group. Measured on Sapphire Rapids,
+/// 300-dimension blocks scan 11-25% faster on AVX-512 and 100-dimension
+/// ones up to 20% faster or not at all, which end to end is no gain.
+pub const FAST_SCAN_WIDE_GROUPS: usize = 64;
+
+/// [`lut16_accumulate32`], on AVX-512 where [`crate::cpu::level`] allows it:
+/// four groups per shuffle instead of two. The sums are the same. It pays
+/// only on long codes; the AVX2 kernel is as fast on short ones (about 25
+/// groups at 100 dimensions), so the caller picks by code length.
+///
+/// # Panics
+///
+/// As [`lut16_accumulate32`].
+#[inline]
+pub fn lut16_accumulate32_wide(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    lut16_accumulate32_at(
+        luts,
+        codes,
+        out,
+        crate::cpu::level() == crate::cpu::Level::Avx512,
+    );
+}
+
+#[inline]
+#[cfg_attr(not(target_arch = "x86_64"), allow(unused_variables))]
+fn lut16_accumulate32_at(
+    luts: &[u8],
+    codes: &[u8],
+    out: &mut [u32; FAST_SCAN_BLOCK],
+    avx512: bool,
+) {
     assert!(
         luts.len() == codes.len() && luts.len().is_multiple_of(16),
         "lut16_accumulate32: {} table bytes for {} code bytes",
@@ -1112,6 +1215,13 @@ pub fn lut16_accumulate32(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_B
         .chunks(16 * FAST_SCAN_FLUSH)
         .zip(codes.chunks(16 * FAST_SCAN_FLUSH))
     {
+        #[cfg(target_arch = "x86_64")]
+        if avx512 {
+            // SAFETY: `crate::cpu::level` found AVX-512F and AVX-512BW on
+            // this CPU; bounds as for the AVX2 kernel below.
+            unsafe { lut16_accumulate32_avx512(l, c, out) };
+            continue;
+        }
         #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         {
             // SAFETY: AVX2 is enabled for this whole build; `l` and `c` are
@@ -1159,7 +1269,9 @@ unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAS
     // Each looked-up byte pair is added as one 16-bit word, whose low byte
     // is an even code's entry and high byte the next code's; a second sum
     // of the high bytes alone separates them at the end. Each 16-bit lane
-    // sums at most 128 groups of byte entries, so neither sum wraps.
+    // sums at most 128 groups of byte entries, so the high-byte sums and the
+    // separated even sums stay below 2^16; the word sums wrap, but only
+    // modulo 2^16, which the subtraction cancels.
     let (mut lo_words, mut lo_high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
     let (mut hi_words, mut hi_high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
     let mut g = 0;
@@ -1208,6 +1320,77 @@ unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAS
     // code order and widen to 32 bits.
     let lanes =
         |x: __m256i| _mm_add_epi16(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
+    let po = out.as_mut_ptr() as *mut __m256i;
+    for (half, (even, odd)) in [(lo_even, lo_high), (hi_even, hi_high)]
+        .into_iter()
+        .enumerate()
+    {
+        let (e, o) = (lanes(even), lanes(odd));
+        let first = _mm256_cvtepu16_epi32(_mm_unpacklo_epi16(e, o));
+        let second = _mm256_cvtepu16_epi32(_mm_unpackhi_epi16(e, o));
+        // SAFETY: `out` is 32 `u32`s, four whole vectors; `half` is 0 or 1.
+        unsafe {
+            let at = po.add(2 * half);
+            _mm256_storeu_si256(at, _mm256_add_epi32(_mm256_loadu_si256(at), first));
+            let at = po.add(2 * half + 1);
+            _mm256_storeu_si256(at, _mm256_add_epi32(_mm256_loadu_si256(at), second));
+        }
+    }
+}
+
+/// The AVX2 kernel (`lut16_accumulate32_avx2`) four groups at a time: lane `k` of the
+/// 512-bit table and code registers is group `g + k`, and a masked load
+/// zeroes the lanes past the last group (entry 0 of a zero table is zero).
+/// Each 16-bit lane sums at most 64 of the 256 groups, and the four lanes
+/// fold into at most 256 byte entries, so the separated sums fit in 16 bits
+/// (the word sums wrap modulo 2^16, as in the AVX2 kernel, and the
+/// subtraction cancels that).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn lut16_accumulate32_avx512(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    use std::arch::x86_64::*;
+    let groups = luts.len() / 16;
+    debug_assert!(groups <= FAST_SCAN_FLUSH);
+    let (pl, pc) = (luts.as_ptr(), codes.as_ptr());
+    let nibble = _mm512_set1_epi8(0x0f);
+    let (mut lo_words, mut lo_high) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+    let (mut hi_words, mut hi_high) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+    let mut g = 0;
+    while g < groups {
+        let left = groups - g;
+        // SAFETY (both branches): `g < groups`, and the full load reads 64
+        // bytes only when four whole groups remain; the masked load reads
+        // the `16 * left` bytes that remain and no others.
+        let (t, c) = if left >= 4 {
+            unsafe {
+                (
+                    _mm512_loadu_si512(pl.add(16 * g).cast()),
+                    _mm512_loadu_si512(pc.add(16 * g).cast()),
+                )
+            }
+        } else {
+            let mask: __mmask64 = (1u64 << (16 * left)) - 1;
+            unsafe {
+                (
+                    _mm512_maskz_loadu_epi8(mask, pl.add(16 * g).cast()),
+                    _mm512_maskz_loadu_epi8(mask, pc.add(16 * g).cast()),
+                )
+            }
+        };
+        let a = _mm512_shuffle_epi8(t, _mm512_and_si512(c, nibble));
+        let b = _mm512_shuffle_epi8(t, _mm512_and_si512(_mm512_srli_epi16(c, 4), nibble));
+        lo_words = _mm512_add_epi16(lo_words, a);
+        lo_high = _mm512_add_epi16(lo_high, _mm512_srli_epi16(a, 8));
+        hi_words = _mm512_add_epi16(hi_words, b);
+        hi_high = _mm512_add_epi16(hi_high, _mm512_srli_epi16(b, 8));
+        g += 4;
+    }
+    let lo_even = _mm512_sub_epi16(lo_words, _mm512_slli_epi16(lo_high, 8));
+    let hi_even = _mm512_sub_epi16(hi_words, _mm512_slli_epi16(hi_high, 8));
+    let lanes = |x: __m512i| {
+        let y = _mm256_add_epi16(_mm512_castsi512_si256(x), _mm512_extracti64x4_epi64(x, 1));
+        _mm_add_epi16(_mm256_castsi256_si128(y), _mm256_extracti128_si256(y, 1))
+    };
     let po = out.as_mut_ptr() as *mut __m256i;
     for (half, (even, odd)) in [(lo_even, lo_high), (hi_even, hi_high)]
         .into_iter()
@@ -1288,8 +1471,21 @@ static BYTE_BITS: [[u8; 8]; 256] = {
 /// instead worked a byte at a time -- one table load gives up to eight
 /// positions, written as a fixed-width 8-lane store (which LLVM vectorizes)
 /// whose surplus lanes the next byte overwrites. Sparse words keep the bit
-/// loop, which touches only their set bits.
+/// loop, which touches only their set bits. On AVX-512, where
+/// [`crate::cpu::level`] allows it, a word is instead compressed sixteen
+/// ids at a time (see `expand_bitset_avx512`).
 pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    if crate::cpu::level() == crate::cpu::Level::Avx512 {
+        // SAFETY: `crate::cpu::level` found AVX-512F on this CPU; the kernel
+        // bounds its own reads and writes as below.
+        return unsafe { expand_bitset_avx512(words, base, out) };
+    }
+    expand_bitset_portable(words, base, out)
+}
+
+/// [`expand_bitset`] without AVX-512: the byte-table form described there.
+fn expand_bitset_portable(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     let cap = out.len().min(256);
     // Every write below happens before its `found >= cap` test, so an empty
     // output must not reach them.
@@ -1359,6 +1555,66 @@ pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     found
 }
 
+/// [`expand_bitset`] on AVX-512, 1.25-1.75x the byte-table path on
+/// Sapphire Rapids at postings bit-set densities (1/8 to all bits set): a
+/// word with more than four bits set is four 16-bit halves, each one
+/// `vpcompressd` of the sixteen ids it covers by its bits, stored whole
+/// (the surplus lanes are overwritten by the next store or never kept).
+/// Sparse words keep the bit loop, as there.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn expand_bitset_avx512(words: &[u64], base: i32, out: &mut [i32]) -> usize {
+    use std::arch::x86_64::*;
+    let cap = out.len().min(256);
+    if cap == 0 {
+        return 0;
+    }
+    // Slack for the surplus of the last 16-lane store.
+    let mut buf = [0i32; 256 + 16];
+    let mut found = 0usize;
+    let iota = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let sixteen = _mm512_set1_epi32(16);
+    'words: for (w, &word) in words.iter().enumerate() {
+        if word == 0 {
+            continue;
+        }
+        // Wrapping, like every doc id derived from on-disk deltas.
+        let word_base = base.wrapping_add((w * 64) as i32);
+        if word.count_ones() <= 4 {
+            let mut bits = word;
+            while bits != 0 {
+                buf[found] = word_base.wrapping_add(bits.trailing_zeros() as i32);
+                found += 1;
+                if found >= cap {
+                    break 'words;
+                }
+                bits &= bits - 1;
+            }
+            continue;
+        }
+        let mut ids = _mm512_add_epi32(iota, _mm512_set1_epi32(word_base));
+        for half in 0..4 {
+            let mask = (word >> (16 * half)) as u16;
+            // SAFETY: `found < cap <= 256` here (checked below), so the
+            // 16-lane store ends by `256 + 16`, inside `buf`.
+            unsafe {
+                _mm512_storeu_si512(
+                    buf.as_mut_ptr().add(found) as *mut _,
+                    _mm512_maskz_compress_epi32(mask, ids),
+                );
+            }
+            found += mask.count_ones() as usize;
+            if found >= cap {
+                found = cap;
+                break 'words;
+            }
+            ids = _mm512_add_epi32(ids, sixteen);
+        }
+    }
+    out[..found].copy_from_slice(&buf[..found]);
+    found
+}
+
 /// The specification [`expand_bitset`] must match: one bit at a time.
 pub fn expand_bitset_scalar(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     let cap = out.len().min(256);
@@ -1395,6 +1651,23 @@ pub fn prefetch<T>(slice: &[T], i: usize) {
     }
     #[cfg(not(target_arch = "x86_64"))]
     let _ = (slice, i);
+}
+
+/// Starts loading every cache line of `bytes`, so a scan that will read it
+/// soon overlaps its misses with other work instead of stalling on each one
+/// in turn. A hint only, like [`prefetch`].
+#[inline]
+pub fn prefetch_bytes(bytes: &[u8]) {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        prefetch(bytes, i);
+        i = i.saturating_add(64);
+    }
+    // The last line, when `bytes` starts mid-line and ends past a boundary
+    // the stride stepped over.
+    if let Some(last) = bytes.len().checked_sub(1) {
+        prefetch(bytes, last);
+    }
 }
 
 /// `sum(q[i] * c[i])` over the common prefix of `q` and `c`, with `q` read
@@ -1625,6 +1898,15 @@ unsafe fn dot_u7_i8_x4_neon(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn prefetch_bytes_never_panics() {
+        let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+        prefetch_bytes(&[]);
+        prefetch_bytes(&data[..1]);
+        prefetch_bytes(&data[3..403]);
+        prefetch_bytes(&data);
+    }
+
     /// The float kernels agree with their scalar specifications bit for bit
     /// at every length around the 8/16/32-lane steps, on unequal lengths
     /// (the common prefix), and with non-finite inputs.
@@ -1650,6 +1932,12 @@ mod tests {
                 (x.0.to_bits(), x.1.to_bits(), x.2.to_bits()),
                 (y.0.to_bits(), y.1.to_bits(), y.2.to_bits()),
                 "cos {len}"
+            );
+            let d = dot_and_norm_f32(&a, &b);
+            assert_eq!(
+                (d.0.to_bits(), d.1.to_bits()),
+                (y.0.to_bits(), y.2.to_bits()),
+                "dot and norm {len}"
             );
         }
         let a = [1.0f32, f32::INFINITY, 2.0];
@@ -1764,6 +2052,17 @@ mod tests {
             let fb = expand_bitset_scalar(&words, base, &mut b);
             assert_eq!(fa, fb, "round {round}");
             assert_eq!(a[..fa], b[..fb], "round {round}");
+            // Both paths, whichever the dispatch picks on this CPU.
+            let mut c = [7i32; 256];
+            let fc = expand_bitset_portable(&words, base, &mut c);
+            assert_eq!((fc, &c[..fc]), (fb, &b[..fb]), "round {round} portable");
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx512f") {
+                let mut c = [7i32; 256];
+                // SAFETY: the CPU has AVX-512F (checked just above).
+                let fc = unsafe { expand_bitset_avx512(&words, base, &mut c) };
+                assert_eq!((fc, &c[..fc]), (fb, &b[..fb]), "round {round} avx512");
+            }
             // A partial output, as a decode that starts mid-block fills.
             let cap = (xorshift(&mut s) % 257) as usize;
             let (mut a, mut b) = ([7i32; 256], [7i32; 256]);
@@ -1771,6 +2070,20 @@ mod tests {
             let fb = expand_bitset_scalar(&words, base, &mut b[..cap]);
             assert_eq!(fa, fb, "round {round} cap {cap}");
             assert_eq!(a[..fa], b[..fb], "round {round} cap {cap}");
+            let mut c = [7i32; 256];
+            let fc = expand_bitset_portable(&words, base, &mut c[..cap]);
+            assert_eq!(
+                (fc, &c[..]),
+                (fb, &b[..]),
+                "round {round} cap {cap} portable"
+            );
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx512f") {
+                let mut c = [7i32; 256];
+                // SAFETY: the CPU has AVX-512F (checked just above).
+                let fc = unsafe { expand_bitset_avx512(&words, base, &mut c[..cap]) };
+                assert_eq!((fc, &c[..]), (fb, &b[..]), "round {round} cap {cap} avx512");
+            }
         }
         // Full words (the 64-at-once path) between sparse and dense ones, cut
         // off at every kind of output length, including inside a full word.
@@ -1804,18 +2117,47 @@ mod tests {
     }
 
     /// The fast-scan lookup matches its scalar specification for every
-    /// group count around the two-group step and the 16-bit flush.
+    /// group count around the two- and four-group steps and the 16-bit
+    /// flush, on random tables and on all-0xFF ones, the largest sums a
+    /// flush can hold. The AVX-512 kernel is checked directly where the CPU
+    /// has it, whatever `LUCENE_RUST_SIMD` says.
     #[test]
     fn lut16_accumulate32_matches_the_scalar_specification() {
+        #[cfg(target_arch = "x86_64")]
+        let avx512 = std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512bw");
+        #[cfg(not(target_arch = "x86_64"))]
+        let avx512 = false;
+        if !avx512 {
+            eprintln!("lut16_accumulate32: no AVX-512 here, its kernel is not checked");
+        }
         let mut s = 0x1234_5678_9ABC_DEF0u64;
-        for groups in (0..40).chain([255, 256, 257, 600]) {
-            let luts: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
+        let random = (0..40).chain([255, 256, 257, 600]).map(|g| (g, false));
+        for (groups, saturated) in random.chain([(64, true), (256, true), (257, true), (600, true)])
+        {
+            let luts: Vec<u8> = (0..16 * groups)
+                .map(|_| {
+                    if saturated {
+                        0xFF
+                    } else {
+                        xorshift(&mut s) as u8
+                    }
+                })
+                .collect();
             let codes: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
-            let mut fast = [7u32; FAST_SCAN_BLOCK];
             let mut spec = [7u32; FAST_SCAN_BLOCK];
-            lut16_accumulate32(&luts, &codes, &mut fast);
             lut16_accumulate32_scalar(&luts, &codes, &mut spec);
+            let mut fast = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32(&luts, &codes, &mut fast);
             assert_eq!(fast, spec, "groups {groups}");
+            let mut wide = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32_wide(&luts, &codes, &mut wide);
+            assert_eq!(wide, spec, "groups {groups}, wide");
+            if avx512 {
+                let mut forced = [7u32; FAST_SCAN_BLOCK];
+                lut16_accumulate32_at(&luts, &codes, &mut forced, true);
+                assert_eq!(forced, spec, "groups {groups}, AVX-512");
+            }
         }
     }
 
@@ -1920,6 +2262,14 @@ mod tests {
             prefix_sum_256(base, &deltas, &mut fast);
             prefix_sum_256_scalar(base, &deltas, &mut spec);
             assert_eq!(fast, spec, "round {round}");
+            // Each kernel the dispatch may pick, whichever it picks here.
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            {
+                let mut v = [0i32; 256];
+                // SAFETY: AVX2 is enabled for this whole build.
+                unsafe { prefix_sum_256_avx2(base, &deltas, &mut v) };
+                assert_eq!(v, spec, "round {round} avx2");
+            }
         }
     }
 

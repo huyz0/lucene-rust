@@ -775,6 +775,13 @@ pub(crate) fn prepare_ahead(view: u64, blob: &[u8]) {
     }
 }
 
+/// Writes the chunks [`warm`] would of `w`'s buffers whose tails hold at
+/// least `min` documents.
+#[cfg(test)]
+pub(crate) fn warm_for_tests(w: &EngineWriter, min: i32) {
+    warm_min(w, min).expect("warming the buffers");
+}
+
 /// Waits for `w`'s warming thread to end, as it does once no lean search
 /// came for [`WARM_IDLE`]; the next lean search starts it again.
 #[cfg(test)]
@@ -1373,15 +1380,88 @@ fn view_reader_of(
     tree: Option<&[u8]>,
     extra: Option<&[u8]>,
 ) -> Result<u64, FfiStatus> {
-    let mut request = match query {
+    let request = match query {
         Some(q) => overlay_request(q, tree, extra)?,
         None => None,
     };
-
-    let mut key = request
+    let key = request
         .as_ref()
         .zip(query)
         .map(|(_, q)| request_key(q, tree, extra));
+    view_reader(handle, v, request, key)
+}
+
+/// [`crate::jvm_knn::ffi_jvm_reader_knn`] over the reader at `handle` and
+/// `view_id`'s buffers, numbered as [`ffi_jvm_reader_search_live`] numbers
+/// them: the request, outputs and errors are that call's. The buffers are
+/// read through a handle of [`ffi_live_view_reader`]'s that holds only the
+/// filter's terms (every term for a nested field, whose parent filter it
+/// does not know), cached with the view; their vectors are searched
+/// exactly, as a realtime chunk keeps no graph.
+///
+/// # Safety
+/// As [`crate::jvm_knn::ffi_jvm_reader_knn`].
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_live_view_knn(
+    handle: u64,
+    view_id: u64,
+    request: *const u8,
+    request_len: usize,
+    out_docs: *mut i32,
+    out_scores: *mut f32,
+    buf_len: usize,
+    out_count: *mut usize,
+) -> i32 {
+    guard(|| {
+        if out_docs.is_null() || out_scores.is_null() || out_count.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(request, request_len)? };
+        let knn = crate::jvm_knn::decode(blob)?;
+        if buf_len < knn.k {
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        let v = view(view_id)?;
+        let (request, key) = if knn.nested.is_some() {
+            (None, None)
+        } else {
+            let all = Clause::MatchAllDocs(lucene_search::query::MatchAllDocsQuery::new(0));
+            let clause = knn.filter.as_ref().unwrap_or(&all);
+            let refs = [clause];
+            match lucene_search::live_segment::whole_request(&refs) {
+                Some(r) => {
+                    let points = lucene_search::live_segment::reads_points(&refs);
+                    // Keyed by the filter's own encoding, which names a
+                    // filter exactly. The view's request budget is shared
+                    // with the query phase: a view searched with many
+                    // distinct filters leaves later requests the reader of
+                    // every term.
+                    let mut key = b"knn-filter:".to_vec();
+                    key.extend_from_slice(&blob[knn.filter_bytes.clone()]);
+                    (Some((r, points)), Some(key))
+                }
+                None => (None, None),
+            }
+        };
+        let id = view_reader(handle, &v, request, key)?;
+        let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
+        let hits = crate::jvm_knn::search(&h, &knn)?;
+        // SAFETY: caller contract.
+        unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
+    })
+}
+
+/// The reader handle of `v` over the reader at `handle` that serves
+/// `request` (the one keyed `key`, every term without one), made when the
+/// view has none yet: see [`ffi_live_view_reader`].
+fn view_reader(
+    handle: u64,
+    v: &ViewHandle,
+    mut request: Option<(LiveRequest, bool)>,
+    mut key: Option<Vec<u8>>,
+) -> Result<u64, FfiStatus> {
     {
         let whole = v
             .whole
