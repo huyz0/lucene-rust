@@ -47,7 +47,7 @@ fn children(p: usize) -> usize {
 }
 
 fn child_vector(p: usize, c: usize) -> Vec<f32> {
-    let mut centre = noise((p % 20) as u64 + 1_000_000);
+    let mut centre = noise((p % 400) as u64 + 1_000_000);
     let mut parent = noise(p as u64 + 2_000_000);
     let mut jitter = noise((p * 16 + c) as u64);
     (0..DIM)
@@ -267,7 +267,9 @@ fn nested_ivf_probes_for_the_best_child_of_each_parent() {
     let calibrated = recall(&dir, 0, None, |_, _| true);
     assert!(calibrated >= 0.9, "calibrated recall {calibrated}");
     let one = recall(&dir, 1, None, |_, _| true);
-    assert!(one >= 0.5, "one-probe recall {one}");
+    // Fewer than every cluster: the index is what is searched, not every
+    // child.
+    assert!((0.5..1.0).contains(&one), "one-probe recall {one}");
     // A filter on the children: half of them.
     let even = Clause::Term(TermQuery::new("parity", b"even".to_vec()));
     let filtered = recall(&dir, 0, Some(&even), |_, c| c % 2 == 0);
@@ -332,5 +334,121 @@ fn a_segment_without_parents_has_no_nested_hits() {
             .filter(|h| want.iter().any(|w| w.0 == h.doc_id as usize))
             .count();
         assert!(found >= 8, "query {q}: {found}/10");
+    }
+}
+
+/// Parents of 1000 children each, the children of one parent alike: the
+/// nearest parent's children alone outnumber the first shortlist.
+const HEAVY_PARENTS: usize = 30;
+const HEAVY_CHILDREN: usize = 1000;
+
+fn heavy_vector(p: usize, c: usize) -> Vec<f32> {
+    let mut parent = noise(p as u64 + 5_000_000);
+    let mut jitter = noise((p * HEAVY_CHILDREN + c) as u64 + 6_000_000);
+    (0..DIM).map(|_| parent() * 4.0 + jitter() * 0.05).collect()
+}
+
+#[derive(Debug)]
+struct HeavyParents;
+
+impl BitSetProducer for HeavyParents {
+    fn bit_set(&self, leaf: &OpenSegment<'_>) -> lucene_search::Result<Option<Arc<FixedBitSet>>> {
+        let max_doc = leaf.reader.unwrap().max_doc as usize;
+        let mut bits = FixedBitSet::new(max_doc);
+        for d in (HEAVY_CHILDREN..max_doc).step_by(HEAVY_CHILDREN + 1) {
+            bits.set(d);
+        }
+        Ok(Some(Arc::new(bits)))
+    }
+
+    fn key(&self) -> String {
+        "heavy".into()
+    }
+}
+
+#[test]
+fn many_alike_siblings_do_not_crowd_the_other_parents_out() {
+    let tmp = TempDir::new("knn-ivf-nested-heavy");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = IndexWriter::open(
+        &dir,
+        Vec::new(),
+        "Lucene104",
+        LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        },
+    )
+    .unwrap();
+    w.enable_explicit_documents().unwrap();
+    w.register_field(FieldInfo::new("v", 0).with_vectors(
+        DIM as i32,
+        VectorEncoding::Float32,
+        VectorSimilarityFunction::Euclidean,
+    ))
+    .unwrap();
+    w.set_knn_vectors_format_for_field("v", KnnVectorsFormat::ivf(64, 0).unwrap());
+    w.set_ram_buffer_size_mb(256.0).unwrap();
+    w.set_merge_policy(None);
+    let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+    let (docs, vectors): (Vec<_>, Vec<_>) = (0..HEAVY_PARENTS)
+        .flat_map(|p| {
+            (0..=HEAVY_CHILDREN).map(move |c| {
+                let v = if c < HEAVY_CHILDREN {
+                    vec![DocumentVector::float32("v", heavy_vector(p, c))]
+                } else {
+                    Vec::new()
+                };
+                (ExplicitDocument::default(), v)
+            })
+        })
+        .unzip();
+    w.add_explicit_documents_with_vectors_in(None, docs, vectors)
+        .unwrap();
+    w.flush().unwrap();
+    w.commit().unwrap();
+    w.into_writer().unwrap().close().unwrap();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    for q in 0..5 {
+        let t = heavy_vector(q * 7, 0);
+        // Every parent's best child, best first.
+        let mut want: Vec<(usize, f32)> = (0..HEAVY_PARENTS)
+            .map(|p| {
+                let (c, s) = (0..HEAVY_CHILDREN)
+                    .map(|c| (c, score(&t, &heavy_vector(p, c))))
+                    .fold((0, f32::NEG_INFINITY), |a, b| if b.1 > a.1 { b } else { a });
+                (p * (HEAVY_CHILDREN + 1) + c, s)
+            })
+            .collect();
+        want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // `k` above the parents there are: all of them.
+        for k in [10, 50] {
+            let hits = knn_top_hits_nested_with(
+                &segments,
+                "v",
+                &KnnTarget::Float(t.clone()),
+                k,
+                k,
+                None,
+                &HeavyParents,
+                false,
+                0,
+            )
+            .unwrap();
+            let got: Vec<(usize, f32)> =
+                hits.iter().map(|h| (h.doc_id as usize, h.score)).collect();
+            let n = k.min(HEAVY_PARENTS);
+            assert_eq!(got.len(), n, "query {q} k {k}");
+            let parents: BTreeSet<usize> = got.iter().map(|h| h.0 / (HEAVY_CHILDREN + 1)).collect();
+            assert_eq!(parents.len(), n, "one child per parent");
+            let want_parents: BTreeSet<usize> = want[..n]
+                .iter()
+                .map(|h| h.0 / (HEAVY_CHILDREN + 1))
+                .collect();
+            assert_eq!(parents, want_parents, "query {q} k {k}");
+        }
     }
 }

@@ -544,10 +544,12 @@ used to score every child exactly; now it probes the clusters as a flat
 search does, with the shortlist widened by the children per parent (at most
 64 times) so siblings do not crowd other parents out, a rerank that keeps
 one child per parent and stops once no candidate can beat the `k`-th
-parent, and probes that deepen until `k` parents are in reach. A filter
-keeps the flat search's rules (above); in a segment where some documents
-have no vector (the parents), the filter's documents with one are counted
-on the first 4096 and estimated past that, since walking all of a filter
+parent; while fewer than `k` parents are found, the probes deepen and the
+shortlist widens (so a parent with thousands of alike children cannot
+crowd the rest out), up to an exhaustive search. A filter keeps the flat
+search's rules (above); in a segment where some documents have no vector
+(the parents), a filter passing more than 4096 live documents is counted
+at 4096 points spread over the segment, since walking all of a filter
 passing half the segment cost more (1.7 ms) than probing.
 
 GloVe-100, 390k vectors grouped into parents of 1-8 consecutive rows, one
