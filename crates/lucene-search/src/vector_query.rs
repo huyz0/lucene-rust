@@ -155,6 +155,14 @@ pub enum GraphReader<'d> {
     /// on the quantized codes, and each format searches its own way
     /// ([`SearchKind`]).
     Quantized(QuantizedVectorsReader<'d>),
+    /// `Lucene104HnswScalarQuantizedVectorsFormat`: the HNSW graph (`None`
+    /// for a field indexed without one) walked, and the exhaustive branch
+    /// scanned, on the scalar-quantized codes (`getRandomVectorScorer` of
+    /// `Lucene104ScalarQuantizedVectorsReader`).
+    ScalarQuantized {
+        graph: Option<HnswVectorsReader<'d>>,
+        codes: lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'d>,
+    },
     /// `LuceneRustIvfVectorsFormat`: a float query probes the field's
     /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]);
     /// a byte field, a diversifying search and a selective filter scan the
@@ -316,6 +324,10 @@ fn leaf_graph<'a, 'd>(
         Some(GraphReader::Lucene99(reader)) => {
             LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
         }
+        Some(GraphReader::ScalarQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
+            Some(reader) => lucene99_graph(reader, field_number)?,
+            None => None,
+        }),
         Some(GraphReader::Quantized(reader)) => {
             match (reader.format().search_kind(), reader.graph()) {
                 (SearchKind::Hnsw, Some(graphs)) => {
@@ -331,6 +343,27 @@ fn leaf_graph<'a, 'd>(
             }
         }
     })
+}
+
+/// A float query's scorer over a `Lucene104` scalar-quantized field's codes;
+/// `None` for any other reader, and for a field the instance holds no codes
+/// for or whose codes are empty, which Java scores on the raw vectors.
+fn scalar_quantized_scorer<'d>(
+    input: &VectorsInput<'d>,
+    resolved: &ResolvedField,
+    target: &[f32],
+) -> Result<Option<lucene_codecs::scalar_quantized_vectors::OwnedQuantizedQueryScorer<'d>>> {
+    let Some(GraphReader::ScalarQuantized { codes, .. }) = &input.hnsw else {
+        return Ok(None);
+    };
+    match codes.field(resolved.field_number) {
+        Some(entry) if entry.size > 0 => {}
+        _ => return Ok(None),
+    }
+    let values = codes.quantized_vector_values(resolved.field_number)?;
+    Ok(Some(
+        lucene_codecs::scalar_quantized_vectors::OwnedQuantizedQueryScorer::new(values, target)?,
+    ))
 }
 
 /// Turns a doc-id list -- e.g. straight out of
@@ -1079,6 +1112,24 @@ fn leaf_results<S: VectorScorer>(
             scorer, graph, accept, ord_to_doc, max_doc, plan, seed_ords, parents,
         );
     }
+    leaf_results_rescored(
+        scorer, None, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
+    )
+}
+
+/// [`leaf_results`] without diversification, with every collected hit
+/// rescored by `rescore` (and re-ranked, best first) when one is given.
+#[allow(clippy::too_many_arguments)]
+fn leaf_results_rescored<S: VectorScorer>(
+    scorer: &mut S,
+    rescore: Option<&mut dyn VectorScorer>,
+    graph: &LeafGraph<'_, '_>,
+    accept: Option<&AcceptOrds<'_>>,
+    ord_to_doc: &impl Fn(i32) -> Result<i32>,
+    max_doc: i32,
+    plan: &LeafPlan,
+    seed_ords: Option<&[i32]>,
+) -> Result<(LeafHits, bool)> {
     let size = scorer.max_ord().max(0) as usize;
     // Clamped to the field's own vector count, which the reader validated
     // against the `.vec` file's length when it opened. That clamp is what
@@ -1156,6 +1207,14 @@ fn leaf_results<S: VectorScorer>(
     // the hits' local doc ids ascending and `MappedDISI` turns each into its
     // ordinal, and ordinals ascend with doc ids by construction -- so the
     // seed list is this hit set's ordinals, ascending.
+    let mut hits = hits;
+    if let Some(rescore) = rescore {
+        for hit in &mut hits {
+            hit.1 = rescore.score(hit.0)?;
+        }
+        // Ordinals ascend with doc ids: ties keep the lower doc first.
+        hits.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    }
     let ordinals_as_docs = from_graph && graph.hits_are_ordinals();
     let mut out = Vec::with_capacity(hits.len());
     let mut ords = Vec::with_capacity(hits.len());
@@ -1227,6 +1286,22 @@ fn search_leaf(
                 );
             }
             let mut scorer = values.scorer(t)?;
+            if diversify.is_none() {
+                if let Some(mut codes) = scalar_quantized_scorer(input, resolved, t)? {
+                    // The graph is walked on the codes, then the collected
+                    // candidates are rescored on the float vectors.
+                    return leaf_results_rescored(
+                        &mut codes,
+                        Some(&mut scorer),
+                        &graph,
+                        accept.as_ref(),
+                        &ord_to_doc,
+                        input.max_doc,
+                        plan,
+                        seed_ords,
+                    );
+                }
+            }
             leaf_results(
                 &mut scorer,
                 &graph,
