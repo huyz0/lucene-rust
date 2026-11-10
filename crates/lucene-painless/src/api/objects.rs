@@ -22,7 +22,7 @@ pub fn object_call(
         ("compareTo", 1) => compare::compare_to(recv, &args[0]).map(|o| {
             Value::Int(match (recv, &args[0]) {
                 (Value::Str(a), Value::Str(b)) => crate::api::string::java_compare(a, b),
-                _ => compare::sign(o),
+                _ => compare::ordering_int(o),
             })
         }),
         _ => return None,
