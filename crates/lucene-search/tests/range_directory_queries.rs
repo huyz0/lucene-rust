@@ -159,7 +159,7 @@ fn corpus_profile(root: &Path, compound: bool, docs: i32, sorted_values: bool) -
             d.add(SortedDocValuesField::new("unsupported", b"value".to_vec()));
         }
         if i % 7 != 0 {
-            d.add(NumericDocValuesField::new("rank", 383 - i));
+            d.add(NumericDocValuesField::new("rank", i64::from(383 - i)));
         }
         let payload: String = (0..512)
             .map(|j| char::from(b'a' + ((i * 37 + j * 17 + j * j) % 26) as u8))
