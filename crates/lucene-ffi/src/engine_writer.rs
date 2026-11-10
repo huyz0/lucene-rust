@@ -5807,17 +5807,20 @@ mod tests {
         assert_eq!(ffi_engine_writer_set_live_staleness(h, 60_000), 0);
         let (a, first) = open();
         add(5);
-        // Within the bound: the first view, without the later document.
+        // Within the bound: the first view, without the later document, by
+        // the same handle, open until each open of it is closed.
         let (b, second) = open();
-        assert_ne!(a, b);
+        assert_eq!(a, b);
         assert_eq!(first, second);
         // After a wait_for release: a view holding the write.
         assert_eq!(crate::live::ffi_engine_writer_live_refresh_shared(h), 0);
         let (r, refreshed) = open();
+        assert_ne!(a, r);
         assert_ne!(first, refreshed);
         assert_eq!(ffi_live_view_close(r), 0);
         assert_eq!(ffi_live_view_close(a), 0);
         assert_eq!(ffi_live_view_close(b), 0);
+        assert_ne!(ffi_live_view_close(b), 0, "closed once per open");
         // Without one: every write before the view.
         assert_eq!(ffi_engine_writer_set_live_staleness(h, 0), 0);
         let (c, third) = open();
