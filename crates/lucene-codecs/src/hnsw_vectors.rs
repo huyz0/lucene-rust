@@ -1327,8 +1327,8 @@ impl HnswGraphView for OffHeapHnswGraph<'_> {
                 .ok()
                 .and_then(|start| self.data.get(start..))
             {
-                // A full level-0 list: a vint count and up to `2 * M`
-                // group-varint deltas, a few bytes each.
+                // A vint count and up to `2 * M` group-varint deltas,
+                // budgeted at 3 bytes each; a longer list's tail just misses.
                 let len = (self.max_conn.max(0) as usize)
                     .saturating_mul(6)
                     .min(list.len());
@@ -1693,6 +1693,30 @@ mod tests {
                 want.dedup();
                 off.neighbors_into(level, node, &mut got).unwrap();
                 assert_eq!(got, want, "level {level} node {node}");
+            }
+        }
+    }
+
+    /// The prefetch hints walk off no edge: every node, out-of-range ones,
+    /// upper levels, and a graph whose offsets point past its `.vex`.
+    #[test]
+    fn neighbor_prefetch_ignores_any_bad_target() {
+        let graph = build(300);
+        let (vex, vem) = write_hnsw_vectors(&[field(Some(&graph), 300)], &ID, "").unwrap();
+        let reader = HnswVectorsReader::open(&vem, &vex, &ID, "").unwrap();
+        let off = reader.graph(0).unwrap().unwrap();
+        for level in -1..=off.num_levels() {
+            for node in [-1, 0, 1, 150, 299, 300, i32::MAX, i32::MIN] {
+                off.prefetch_neighbors(level, node);
+                graph.prefetch_neighbors(level, node);
+            }
+        }
+        // The same graph over a `.vex` cut short: offsets now point past it.
+        let entry = reader.field(0).unwrap();
+        let cut = &vex[..entry.vector_index_offset as usize + 8];
+        if let Ok(short) = OffHeapHnswGraph::new(entry, cut, reader.version()) {
+            for node in 0..300 {
+                short.prefetch_neighbors(0, node);
             }
         }
     }

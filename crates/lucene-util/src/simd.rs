@@ -832,6 +832,36 @@ pub fn cosine_parts_f32(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
     cosine_parts_f32_scalar(a, b)
 }
 
+/// `(a . b, b . b)`: [`cosine_parts_f32`] without `a . a`, bit for bit the
+/// same two sums. A query scored against many vectors computes its own norm
+/// once instead of once per candidate.
+#[inline]
+pub fn dot_and_norm_f32(a: &[f32], b: &[f32]) -> (f32, f32) {
+    if a.len().min(b.len()) <= SHORT_VECTOR {
+        return a.iter().zip(b).fold((0.0, 0.0), |(s, n2), (&x, &y)| {
+            (fmadd(x, y, s), fmadd(y, y, n2))
+        });
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    ))]
+    {
+        // SAFETY: as for `dot_f32`.
+        unsafe { dot_and_norm_f32_avx2(a, b) }
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    )))]
+    {
+        let (s, _, n2) = cosine_parts_f32_scalar(a, b);
+        (s, n2)
+    }
+}
+
 /// The specification [`cosine_parts_f32`] must match exactly: two 8-lane
 /// accumulators per sum over 16-element steps, then a scalar tail.
 pub fn cosine_parts_f32_scalar(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
@@ -938,6 +968,43 @@ unsafe fn square_distance_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
         i += 1;
     }
     sum
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_and_norm_f32_avx2(a: &[f32], b: &[f32]) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut s = [_mm256_setzero_ps(); 2];
+    let mut n2 = [_mm256_setzero_ps(); 2];
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..2 {
+            let (x, y) = unsafe {
+                (
+                    _mm256_loadu_ps(pa.add(i + 8 * k)),
+                    _mm256_loadu_ps(pb.add(i + 8 * k)),
+                )
+            };
+            s[k] = _mm256_fmadd_ps(x, y, s[k]);
+            n2[k] = _mm256_fmadd_ps(y, y, n2[k]);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm2) = (fold16(&spill2(&s)), fold16(&spill2(&n2)));
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm2)
 }
 
 #[cfg(all(
@@ -1640,18 +1707,16 @@ unsafe fn dot_u7_i8_x4_neon(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
-    fn prefetch_bytes_is_a_hint_over_any_slice() {
+    fn prefetch_bytes_never_panics() {
         let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
         prefetch_bytes(&[]);
         prefetch_bytes(&data[..1]);
         prefetch_bytes(&data[3..403]);
         prefetch_bytes(&data);
-        // Nothing observable changes.
-        assert!(data.iter().enumerate().all(|(i, &b)| b == i as u8));
     }
-    use super::*;
 
     /// The float kernels agree with their scalar specifications bit for bit
     /// at every length around the 8/16/32-lane steps, on unequal lengths
@@ -1678,6 +1743,12 @@ mod tests {
                 (x.0.to_bits(), x.1.to_bits(), x.2.to_bits()),
                 (y.0.to_bits(), y.1.to_bits(), y.2.to_bits()),
                 "cos {len}"
+            );
+            let d = dot_and_norm_f32(&a, &b);
+            assert_eq!(
+                (d.0.to_bits(), d.1.to_bits()),
+                (y.0.to_bits(), y.2.to_bits()),
+                "dot and norm {len}"
             );
         }
         let a = [1.0f32, f32::INFINITY, 2.0];

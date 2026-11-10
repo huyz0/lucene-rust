@@ -121,8 +121,7 @@ pub trait VectorScorer {
     /// each expanded node's neighbours, scattered at random through the
     /// vector data, and the walk is bound by those memory misses rather than
     /// by the arithmetic: starting them together lets them overlap instead of
-    /// stalling one at a time (twice as fast on 390k x 100 floats). A hint
-    /// only; the default does nothing.
+    /// stalling one at a time. A hint only; the default does nothing.
     fn prefetch(&self, _nodes: &[i32]) {}
 
     /// Port of `RandomVectorScorer.bulkScore`: fills `scores` and returns the
@@ -979,9 +978,10 @@ impl HnswGraphView for OnHeapHnswGraph {
     }
 
     fn prefetch_neighbors(&self, level: i32, node: i32) {
-        // The node's list is two loads away (its levels, then the list), and
-        // a prefetch cannot follow a pointer: this loads the first, so the
-        // walk stalls once instead of twice when it gets here.
+        // The list is three dependent loads away: the node's slot here, its
+        // level array, then the neighbour ids. A prefetch cannot follow a
+        // pointer, so this reads the slot and prefetches the level array;
+        // the ids still miss when the walk gets here.
         if let Some(levels) = self.graph.get(node as usize) {
             lucene_util::simd::prefetch(levels.as_slice(), level as usize);
         }

@@ -39,6 +39,21 @@ int7 (`hnsw-int7`: walk on 7-bit codes, rescore `ef` candidates on floats):
 
 Ranges are two alternating runs of each build on the same files.
 
+fastText 989 999 x 300, L2 (`ft300`, `prepare.py ... l2`), same method, one
+run each (hnswlib built its own graph, which reaches a little more recall per
+`ef`):
+
+| ef | recall | Rust before | Rust after | hnswlib (recall) |
+|---|---|---|---|---|
+| 10 | 0.614 | 143 | 102-106 | 135 (0.608) |
+| 40 | 0.793 | 320 | 223-227 | 303-322 (0.798) |
+| 120 | 0.869 | 786 | 533-569 | 692-734 (0.883) |
+| 200 | 0.892 | 1213 | 831-833 | 1089-1152 (0.908) |
+| 400 | 0.914 | 2167 | 1360-1453 | 2049 (0.931) |
+
+At matched recall the two are level on fastText; on GloVe hnswlib is still
+~1.2x ahead (below).
+
 ## Build, one thread (s)
 
 | | Rust before | Rust after | Java Lucene 10.5 | hnswlib |
@@ -67,9 +82,38 @@ Two hints fix most of it, with no change to any file or result:
   heap: the node's level array), which loads while the current neighbours
   score. Worth ~5-10% on top of the first.
 
-Left: hnswlib is still ~1.2x faster at equal recall. It stores each node's
-level-0 links next to its vector (one region per hop instead of two) and its
-cosine is a dot product over pre-normalized vectors; both are format changes.
+## The remaining gap to hnswlib
+
+hnswlib's search loop (`searchBaseLayerST`) is the same algorithm. Counting
+its distance computations (an instrumented C++ build, `-O3 -march=native`,
+prefetch on) against ours on GloVe at `ef` 100:
+
+| | recall | distances / query | us / query | ns / distance |
+|---|---|---|---|---|
+| this port | 0.893 | 1771 | ~300 | ~170 |
+| hnswlib | 0.899 | 1640 | 229-252 | ~150 |
+
+So ~8% is the graph (hnswlib's reaches a little more recall with fewer
+distances) and ~10-15% is the cost per distance. Profiled after the change,
+a query is: waiting on vector loads ~39%, distance arithmetic ~20% (including
+Lucene's per-candidate `f64` sqrt and divide for cosine), the walk and its
+heaps ~21%, decoding `.vex` neighbour lists ~18% (offset lookup, group
+varints). What hnswlib does differently, and whether it fits Lucene's files:
+
+- One record per node (level-0 links, vector, label adjacent, links as raw
+  `u32`): one region per hop, no offset lookup or varint decode. A different
+  file format.
+- `cosine` is a dot product over vectors normalized at insert; Lucene's
+  COSINE keeps the raw vectors and sums three terms per candidate.
+  Computing the query's own norm once (done, bit-identical) left two sums
+  and measured within noise: the arithmetic is not the bottleneck.
+- A `u16` visited-tag array that is never cleared; ours clears only the
+  words it touched, which costs little.
+- AVX-512 kernels: written bit-identical to the AVX2 ones (each lane holds
+  the same partial sum), and measured no change on either set; in-cache
+  kernel timings on this VM moved 0-20% at 768-1024 dims within run-to-run
+  noise. Not adopted here.
+
 During a build, ~30% of the time is the on-heap graph's neighbour arrays (a
 chain of three loads per node, plus a copy into scratch); a flat level-0
 arena would remove two of the three.
