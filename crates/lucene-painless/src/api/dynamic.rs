@@ -44,10 +44,13 @@ pub fn call(vm: &mut Vm, recv: &Value, name: &str, args: &[Value]) -> Result<Val
 
 /// A negative index into an array or list counts from its end; a map key
 /// is left alone.
-pub fn flip_index(_vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
+pub fn flip_index(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
     let len = match &args[0] {
         Value::Array(a) => a.borrow().items.len(),
         Value::List(l) => l.borrow().items.len(),
+        Value::Object(o) if o.instance_of("java.util.List") => {
+            api::int_arg(&call(vm, &args[0], "size", &[])?)?.max(0) as usize
+        }
         _ => return Ok(args[1].clone()),
     };
     match &args[1] {
@@ -64,6 +67,9 @@ pub fn brace_load(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
         Value::List(_) => api::list::get(vm, args),
         Value::Map(m) => Ok(api::map::get_value(&m.borrow(), &args[1])),
         Value::Null => Err(npe()),
+        Value::Object(o) if o.instance_of("java.util.List") || o.instance_of("java.util.Map") => {
+            call(vm, &args[0], "get", &args[1..2])
+        }
         other => Err(Throw::illegal_arg(format!(
             "Attempting to address a non-array-like type [{}] as an array.",
             receiver_name(other)
@@ -78,6 +84,12 @@ pub fn brace_store(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
         Value::List(_) => api::list::set(vm, args).map(|_| Value::Null),
         Value::Map(_) => api::map::put(vm, &args[0], &args[1], &args[2]).map(|_| Value::Null),
         Value::Null => Err(npe()),
+        Value::Object(o) if o.instance_of("java.util.List") => {
+            call(vm, &args[0], "set", &args[1..3]).map(|_| Value::Null)
+        }
+        Value::Object(o) if o.instance_of("java.util.Map") => {
+            call(vm, &args[0], "put", &args[1..3]).map(|_| Value::Null)
+        }
         other => Err(Throw::illegal_arg(format!(
             "Attempting to address a non-array-like type [{}] as an array.",
             receiver_name(other)
@@ -86,6 +98,12 @@ pub fn brace_store(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
 }
 
 fn getter_names(name: &str) -> [String; 2] {
+    // The getters scripts read most, without formatting their names.
+    match name {
+        "value" => return ["getValue".into(), "isValue".into()],
+        "values" => return ["getValues".into(), "isValues".into()],
+        _ => {}
+    }
     let mut c = name.chars();
     let cap = match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),

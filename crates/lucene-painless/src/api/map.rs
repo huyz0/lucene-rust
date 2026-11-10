@@ -617,18 +617,9 @@ pub fn get_by_path(_vm: &mut Vm, recv: &Value, args: &[Value]) -> Result<Value, 
                         ))),
                     };
                 }
-                let kind = if matches!(cur, Value::Map(_)) {
-                    "Map"
-                } else {
-                    "List"
-                };
                 return Err(Throw::illegal_arg(format!(
                     "Container does not have [{el}], for non-terminal index [{i}] in path [{joined}]"
-                )))
-                .map_err(|t| {
-                    let _ = kind;
-                    t
-                });
+                )));
             }
         }
     }

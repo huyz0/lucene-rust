@@ -66,6 +66,10 @@ pub enum Constant {
     Str(String),
     /// A compiled regex: its pattern and `java.util.regex.Pattern` flags.
     Pattern(String, i32),
+    /// A script parameter's list (an `ArrayList`).
+    List(Vec<Constant>),
+    /// A script parameter's map (a `HashMap`), in the order Java iterated it.
+    Map(Vec<(Constant, Constant)>),
 }
 
 /// The target of an `InvokeCallMemberNode`.
@@ -474,6 +478,10 @@ impl<'a> Reader<'a> {
         Ok(s)
     }
 
+    fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
     pub(crate) fn at_end(&self) -> bool {
         self.pos == self.buf.len()
     }
@@ -526,11 +534,6 @@ impl<'a> Reader<'a> {
     pub(crate) fn str(&mut self) -> Result<String> {
         self.opt_str()?
             .ok_or_else(|| Error::Ir("null string".into()))
-    }
-
-    pub(crate) fn blob(&mut self) -> Result<&'a [u8]> {
-        let n = self.len()?;
-        self.take(n)
     }
 
     fn types(&mut self) -> Result<Vec<String>> {
@@ -600,6 +603,23 @@ impl<'a> Reader<'a> {
             8 => Constant::Double(f64::from_bits(self.i64()? as u64)),
             9 => Constant::Str(self.str()?),
             10 => Constant::Pattern(self.str()?, self.i32()?),
+            11 => {
+                let n = self.len()?;
+                let mut items = Vec::with_capacity(n.min(self.remaining()));
+                for _ in 0..n {
+                    items.push(self.constant()?);
+                }
+                Constant::List(items)
+            }
+            12 => {
+                let n = self.len()?;
+                let mut entries = Vec::with_capacity(n.min(self.remaining()));
+                for _ in 0..n {
+                    let k = self.constant()?;
+                    entries.push((k, self.constant()?));
+                }
+                Constant::Map(entries)
+            }
             t => return Err(Error::Ir(format!("constant tag {t}"))),
         })
     }
@@ -986,6 +1006,20 @@ impl<'a> Reader<'a> {
             t => return Err(Error::Ir(format!("node tag {t}"))),
         }))
     }
+}
+
+/// Decodes a constant on its own: a script's parameters, as the plugin
+/// writes them (a map constant).
+///
+/// # Errors
+/// [`Error::Ir`] on a malformed blob.
+pub fn decode_constant(blob: &[u8]) -> Result<Constant> {
+    let mut r = Reader::new(blob);
+    let c = r.constant()?;
+    if r.remaining() != 0 {
+        return Err(Error::Ir("trailing bytes after a constant".into()));
+    }
+    Ok(c)
 }
 
 /// Decodes a `PIR1` blob.

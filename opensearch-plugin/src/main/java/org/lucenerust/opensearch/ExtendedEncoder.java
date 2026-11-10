@@ -31,9 +31,12 @@ import org.opensearch.common.lucene.search.function.CombineFunction;
 import org.opensearch.common.lucene.search.function.FieldValueFactorFunction;
 import org.opensearch.common.lucene.search.function.FunctionScoreQuery;
 import org.opensearch.common.lucene.search.function.ScriptScoreQuery;
+import org.lucenerust.opensearch.painless.PainlessIr;
+import org.lucenerust.opensearch.painless.PainlessScore;
 import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
 import org.lucenerust.opensearch.knn.script.PainlessKnnScript;
 import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.script.ScoreScript;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptType;
 import org.opensearch.common.lucene.search.function.RandomScoreFunction;
@@ -95,6 +98,7 @@ final class ExtendedEncoder {
     static final byte NODE_FUNCTION_SCORE = 24;
     static final byte NODE_TO_CHILD = 41;
     static final byte NODE_KNN_SCORE = 42;
+    static final byte NODE_PAINLESS_SCORE = 43;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -613,7 +617,7 @@ final class ExtendedEncoder {
         }
         PainlessKnnScript.Compiled c = PainlessKnnScript.compile(script.getIdOrCode(), script.getParams(), FIELD_TYPES.get());
         if (c == null) {
-            return "script_score_script";
+            return painlessScore(q, script, out, child);
         }
         out.write(NODE_KNN_SCORE);
         String reason = child.node((Query) field(q, "subQuery"));
@@ -640,6 +644,45 @@ final class ExtendedEncoder {
         writeInt(out, Float.floatToRawIntBits(c.norm()));
         out.writeBytes(c.program());
         return null;
+    }
+
+    /**
+     * A Painless {@code script_score} script run by the native Painless runtime: its IR, params,
+     * and how each field it names by a constant reads in {@code doc} (node 43).
+     */
+    private static String painlessScore(ScriptScoreQuery q, Script script, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+        if (types == null || script.getOptions().keySet().stream().anyMatch(k -> k.equals(Script.CONTENT_TYPE_OPTION) == false)) {
+            return "script_score_script";
+        }
+        if (PainlessScore.score(script.getIdOrCode()) instanceof PainlessIr.Compiled compiled) {
+            byte[] params;
+            try {
+                params = PainlessIr.constant(script.getParams());
+            } catch (PainlessIr.Unsupported e) {
+                return "script_score_params";
+            }
+            ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(q, "scriptBuilder");
+            out.write(NODE_PAINLESS_SCORE);
+            String reason = child.node((Query) field(q, "subQuery"));
+            if (reason != null) {
+                return reason;
+            }
+            out.write(factory.needs_score() ? 1 : 0);
+            writeBytes(out, compiled.ir());
+            writeBytes(out, params);
+            String index = (String) field(q, "indexName");
+            writeString(out, index == null ? "" : index);
+            writeInt(out, (int) field(q, "shardId"));
+            writeInt(out, compiled.docFields().size());
+            for (String f : compiled.docFields()) {
+                writeString(out, f);
+                out.write(PainlessScore.fieldKind(types.apply(f)));
+            }
+            return null;
+        }
+        return "script_score_painless";
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -249,6 +249,40 @@ pub enum CastOp {
     Check(Rc<str>),
 }
 
+/// What a [`Op::Native`] call does, where [`crate::specialize`] can use it.
+#[derive(Debug, Clone, Default)]
+pub enum Tag {
+    #[default]
+    None,
+    /// One of the script class's own methods (`getParams`, `getDoc`).
+    Internal(Rc<str>),
+    /// An instance method by name; the receiver is the first argument.
+    Call(Rc<str>),
+    /// `receiver.name` on a `def` receiver.
+    LoadDot(Rc<str>),
+    /// A static method of a whitelisted class.
+    Static { class: Rc<str>, name: Rc<str> },
+    /// `receiver[index]` on a `def` receiver.
+    BraceLoad,
+    /// A negative index from the end, on a `def` receiver.
+    FlipIndex,
+}
+
+/// What [`Op::Doc`] reads of a field in the current document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocAccess {
+    /// The `ScriptDocValues` view itself.
+    Values,
+    /// `.value`: the first value, `IllegalStateException` without one.
+    Value,
+    /// `.size()`, `.length`: how many values.
+    Count,
+    /// `[i]`, `.get(i)`.
+    Get,
+    /// A `def` index counted from the end when negative.
+    Flip,
+}
+
 /// A `catch` clause.
 #[derive(Debug)]
 pub struct Catch {
@@ -265,12 +299,24 @@ pub enum Op {
         dst: Reg,
         f: ApiFn,
         args: Box<[Reg]>,
+        /// What the call is, for [`crate::specialize`].
+        tag: Tag,
     },
     /// A library call with captured state.
     Native {
         dst: Reg,
         f: Native,
         args: Box<[Reg]>,
+        /// What the call is, for [`crate::specialize`].
+        tag: Tag,
+    },
+    /// A document field read through [`Env::doc_at`].
+    Doc {
+        dst: Reg,
+        field: u32,
+        access: DocAccess,
+        /// `Get`'s index register.
+        index: Reg,
     },
     /// A call of one of the script's functions.
     Local {
@@ -358,8 +404,14 @@ impl std::fmt::Debug for Op {
         match self {
             Op::Const(d, v) => write!(f, "r{d} = {v:?}"),
             Op::Move(d, s) => write!(f, "r{d} = r{s}"),
-            Op::Api { dst, args, .. } => write!(f, "r{dst} = api{args:?}"),
-            Op::Native { dst, args, .. } => write!(f, "r{dst} = native{args:?}"),
+            Op::Api { dst, args, tag, .. } => write!(f, "r{dst} = api{args:?} {tag:?}"),
+            Op::Native { dst, args, tag, .. } => write!(f, "r{dst} = native{args:?} {tag:?}"),
+            Op::Doc {
+                dst,
+                field,
+                access,
+                index,
+            } => write!(f, "r{dst} = doc[{field}].{access:?}(r{index})"),
             Op::Local { dst, func, args } => write!(f, "r{dst} = fn{func}{args:?}"),
             Op::Arith { dst, op, ty, a, b } => write!(f, "r{dst} = r{a} {op:?}.{ty:?} r{b}"),
             Op::DefArith { dst, op, a, b, .. } => write!(f, "r{dst} = r{a} {op:?}.def r{b}"),
@@ -396,6 +448,8 @@ pub struct Func {
     pub name: String,
     pub arity: usize,
     pub regs: usize,
+    /// Each register's static primitive type, where it has one.
+    pub reg_types: Vec<Option<Prim>>,
     pub body: Block,
     pub max_loop_counter: i32,
 }
@@ -416,6 +470,60 @@ pub trait Env {
     /// Calls one of the script class's own methods (`getParams`, `getDoc`,
     /// `get_score`, `getCtx`).
     fn internal(&mut self, name: &str, args: &[Value]) -> Result<Value, Throw>;
+
+    /// `doc[field]`: the current document's values of `field`, a
+    /// [`crate::api::doc::DocValues`]. Not implemented by default: a
+    /// context without documents never reaches it.
+    fn doc_values(&mut self, field: &str) -> Result<Value, Throw> {
+        Err(crate::compile::missing(format!("doc[{field}]")))
+    }
+
+    /// Field `field` (by its position in the table the program was
+    /// specialised with) of the current document.
+    fn doc_at(&mut self, field: usize, access: DocAccess, index: i32) -> Result<Value, Throw> {
+        let _ = (access, index);
+        Err(crate::compile::missing(format!("doc field {field}")))
+    }
+
+    /// [`Env::doc_at`]'s `Value`/`Get` of a `Longs` field.
+    fn doc_long(&mut self, field: usize, index: i32) -> Result<i64, Throw> {
+        match self.doc_at(field, DocAccess::Get, index)? {
+            Value::Long(v) => Ok(v),
+            v => Err(crate::compile::missing(format!(
+                "doc long {}",
+                v.class_name()
+            ))),
+        }
+    }
+
+    /// [`Env::doc_at`]'s `Value`/`Get` of a `Doubles` field.
+    fn doc_double(&mut self, field: usize, index: i32) -> Result<f64, Throw> {
+        match self.doc_at(field, DocAccess::Get, index)? {
+            Value::Double(v) => Ok(v),
+            v => Err(crate::compile::missing(format!(
+                "doc double {}",
+                v.class_name()
+            ))),
+        }
+    }
+
+    /// [`Env::doc_at`]'s `Count`.
+    fn doc_count(&mut self, field: usize) -> Result<i32, Throw> {
+        crate::api::int_arg(&self.doc_at(field, DocAccess::Count, 0)?)
+    }
+
+    /// `get_score()`.
+    fn score(&mut self) -> Result<f64, Throw> {
+        match self.internal("get_score", &[])? {
+            Value::Double(v) => Ok(v),
+            v => Err(crate::compile::missing(format!("score {}", v.class_name()))),
+        }
+    }
+
+    /// `doc.containsKey(field)`: whether the index maps `field`.
+    fn doc_contains(&mut self, field: &str) -> Result<bool, Throw> {
+        Err(crate::compile::missing(format!("doc.containsKey({field})")))
+    }
 }
 
 /// An [`Env`] with only `params`.
@@ -448,6 +556,26 @@ pub struct Vm<'a> {
     depth: u32,
     /// Class binding instances by call site.
     pub bindings: Vec<Option<Value>>,
+    /// Register files of returned calls, for the next calls to reuse: a
+    /// caller running many executions keeps it across them.
+    pub pool: Vec<Vec<Value>>,
+}
+
+/// A call's arguments, copied out of the caller's registers: on the stack
+/// for the few arguments nearly every call has.
+enum Args {
+    Small([Value; 4], usize),
+    Big(Vec<Value>),
+}
+
+impl std::ops::Deref for Args {
+    type Target = [Value];
+    fn deref(&self) -> &[Value] {
+        match self {
+            Args::Small(a, n) => &a[..*n],
+            Args::Big(v) => v,
+        }
+    }
 }
 
 struct Frame {
@@ -464,6 +592,7 @@ impl<'a> Vm<'a> {
             env,
             depth: 0,
             bindings: vec![None; sites],
+            pool: Vec::new(),
         }
     }
 
@@ -480,10 +609,9 @@ impl<'a> Vm<'a> {
         }
         let prog = self.prog.clone();
         let f = &prog.funcs[func as usize];
-        let mut regs = vec![Value::Null; f.regs.max(args.len())];
-        for (r, a) in regs.iter_mut().zip(args) {
-            *r = a.clone();
-        }
+        let mut regs = self.pool.pop().unwrap_or_default();
+        regs.extend_from_slice(args);
+        regs.resize(f.regs.max(args.len()), Value::Null);
         let mut frame = Frame {
             regs,
             counter: f.max_loop_counter,
@@ -492,16 +620,29 @@ impl<'a> Vm<'a> {
         self.depth += 1;
         let r = self.run(&mut frame, &f.body);
         self.depth -= 1;
+        let mut regs = frame.regs;
+        regs.clear();
+        self.pool.push(regs);
         match r? {
             Flow::Return(v) => Ok(v),
             _ => Ok(Value::Null),
         }
     }
 
-    fn args(frame: &Frame, regs: &[Reg]) -> Vec<Value> {
-        regs.iter()
-            .map(|&r| frame.regs[r as usize].clone())
-            .collect()
+    fn args(frame: &Frame, regs: &[Reg]) -> Args {
+        if regs.len() <= 4 {
+            let a = std::array::from_fn(|i| match regs.get(i) {
+                Some(&r) => frame.regs[r as usize].clone(),
+                None => Value::Null,
+            });
+            Args::Small(a, regs.len())
+        } else {
+            Args::Big(
+                regs.iter()
+                    .map(|&r| frame.regs[r as usize].clone())
+                    .collect(),
+            )
+        }
     }
 
     fn run(&mut self, frame: &mut Frame, ops: &[Op]) -> Result<Flow, Throw> {
@@ -509,11 +650,25 @@ impl<'a> Vm<'a> {
             match op {
                 Op::Const(d, v) => frame.regs[*d as usize] = v.clone(),
                 Op::Move(d, s) => frame.regs[*d as usize] = frame.regs[*s as usize].clone(),
-                Op::Api { dst, f, args } => {
+                Op::Api { dst, f, args, .. } => {
                     let a = Self::args(frame, args);
                     frame.regs[*dst as usize] = f(self, &a)?;
                 }
-                Op::Native { dst, f, args } => {
+                Op::Doc {
+                    dst,
+                    field,
+                    access,
+                    index,
+                } => {
+                    let i = match access {
+                        DocAccess::Get | DocAccess::Flip => {
+                            crate::api::int_arg(&frame.regs[*index as usize])?
+                        }
+                        _ => 0,
+                    };
+                    frame.regs[*dst as usize] = self.env.doc_at(*field as usize, *access, i)?;
+                }
+                Op::Native { dst, f, args, .. } => {
                     let a = Self::args(frame, args);
                     frame.regs[*dst as usize] = f(self, &a)?;
                 }

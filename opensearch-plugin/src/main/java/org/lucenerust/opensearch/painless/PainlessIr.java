@@ -95,7 +95,24 @@ public final class PainlessIr {
         if (w.unsupported != null) {
             throw new Unsupported(w.unsupported);
         }
-        return new Compiled(w.out.toByteArray(), scope.docFields());
+        java.util.LinkedHashSet<String> fields = new java.util.LinkedHashSet<>(scope.docFields());
+        fields.addAll(w.fields);
+        return new Compiled(w.out.toByteArray(), List.copyOf(fields));
+    }
+
+    /**
+     * {@code value} (a script's params: maps, lists, strings, numbers, booleans and nulls) as an IR
+     * constant, the layout the native runtime reads params in.
+     *
+     * @throws Unsupported when it holds any other kind of value
+     */
+    public static byte[] constant(Object value) throws Unsupported {
+        Writer w = new Writer(Map.of());
+        w.constant(value);
+        if (w.unsupported != null) {
+            throw new Unsupported(w.unsupported);
+        }
+        return w.out.toByteArray();
     }
 
     // Node tags: the Rust decoder's `Tag`.
@@ -118,6 +135,8 @@ public final class PainlessIr {
     private static final class Writer implements IRTreeVisitor<Void> {
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
         final Map<String, Object> constants;
+        /** Fields the script reads through a function's constant argument. */
+        final List<String> fields = new java.util.ArrayList<>();
         String unsupported;
 
         Writer(Map<String, Object> constants) {
@@ -256,6 +275,20 @@ public final class PainlessIr {
                 u8(10);
                 str(p.pattern());
                 i32(p.flags());
+            } else if (v instanceof List<?> l) {
+                u8(11);
+                i32(l.size());
+                for (Object x : l) {
+                    constant(x);
+                }
+            } else if (v instanceof Map<?, ?> m) {
+                // In the map's own iteration order, which the native copy follows.
+                u8(12);
+                i32(m.size());
+                for (Map.Entry<?, ?> e : m.entrySet()) {
+                    constant(e.getKey());
+                    constant(e.getValue());
+                }
             } else {
                 fail("constant " + v.getClass().getName());
                 u8(0);
@@ -886,6 +919,13 @@ public final class PainlessIr {
                 i32(n.getClassBindingOffset());
                 types(cb.typeParameters);
                 ty(cb.returnType);
+                // randomScore(seed, field) reads the field's doc values.
+                if (cb.javaConstructor.getDeclaringClass().getName().endsWith("ScoreScriptUtils$RandomScoreField")
+                    && n.getArgumentNodes().size() == 2
+                    && n.getArgumentNodes().get(1) instanceof ConstantNode c
+                    && c.getConstant() instanceof String f) {
+                    fields.add(f);
+                }
             } else if (n.getInstanceBinding() != null) {
                 u8(4);
                 ty(n.getInstanceBinding().targetInstance.getClass());

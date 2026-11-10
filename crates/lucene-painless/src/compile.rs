@@ -13,10 +13,11 @@ use std::rc::Rc;
 
 use crate::api;
 use crate::ir::{self, Constant, Member, Node};
+use crate::jmap::{JMap, Order};
 use crate::lambda::{Lambda, Target};
 use crate::types::{self, prim, unboxed, words, Prim, DEF};
-use crate::value::Value;
-use crate::vm::{BinOp, Block, CastOp, Catch, CmpOp, Func, Op, Program, Reg, Throw, UnOp, Vm};
+use crate::value::{ListKind, MapKind, Value};
+use crate::vm::{BinOp, Block, CastOp, Catch, CmpOp, Func, Op, Program, Reg, Tag, Throw, UnOp, Vm};
 use crate::{Error, Result};
 
 /// The class Painless compiles a script into: a reference whose delegate
@@ -43,6 +44,8 @@ struct Shared {
 struct Fx<'s> {
     shared: &'s mut Shared,
     regs: u32,
+    /// Each register's static primitive type, where it has one.
+    reg_types: Vec<Option<Prim>>,
     scopes: Vec<Vec<(String, Reg)>>,
     stack: Vec<Entry>,
     ops: Vec<Op>,
@@ -72,12 +75,14 @@ pub fn compile(script: &ir::Script) -> Result<Program> {
         let mut fx = Fx {
             shared: &mut shared,
             regs: 0,
+            reg_types: Vec::new(),
             scopes: vec![Vec::new()],
             stack: Vec::new(),
             ops: Vec::new(),
         };
-        for name in &f.param_names {
+        for (name, ty) in f.param_names.iter().zip(&f.param_types) {
             let r = fx.reg();
+            fx.typed(r, ty);
             fx.scopes[0].push((name.clone(), r));
         }
         fx.stmt(&f.body)?;
@@ -85,6 +90,11 @@ pub fn compile(script: &ir::Script) -> Result<Program> {
             name: f.name.clone(),
             arity: f.param_types.len(),
             regs: fx.regs as usize,
+            reg_types: {
+                let mut t = fx.reg_types;
+                t.resize(fx.regs as usize, None);
+                t
+            },
             body: fx.ops.into_boxed_slice(),
             max_loop_counter: f.max_loop_counter,
         });
@@ -111,6 +121,17 @@ pub fn constant(c: &Constant) -> Result<Value> {
         Constant::Str(s) => Value::str(s),
         Constant::Pattern(p, flags) => crate::api::regex::compile_pattern(p, *flags)
             .map_err(|e| unsupported(format!("regex: {e}")))?,
+        Constant::List(items) => Value::list(
+            ListKind::ArrayList,
+            items.iter().map(constant).collect::<Result<_>>()?,
+        ),
+        Constant::Map(entries) => {
+            let mut m = JMap::with_capacity(Order::Hash, entries.len());
+            for (k, v) in entries {
+                m.insert(constant(k)?, constant(v)?);
+            }
+            Value::map(MapKind::HashMap, m)
+        }
     })
 }
 
@@ -241,8 +262,20 @@ impl Fx<'_> {
         self.ops.push(op);
     }
 
+    /// Records `r`'s static type `ty`, when a primitive.
+    fn typed(&mut self, r: Reg, ty: &str) {
+        if let Some(p) = prim(ty) {
+            let i = r as usize;
+            if self.reg_types.len() <= i {
+                self.reg_types.resize(i + 1, None);
+            }
+            self.reg_types[i] = Some(p);
+        }
+    }
+
     fn push(&mut self, ty: &str) -> Reg {
         let r = self.reg();
+        self.typed(r, ty);
         self.stack.push(Entry {
             reg: r,
             words: words(ty),
@@ -386,10 +419,12 @@ impl Fx<'_> {
                         self.expr(e)?;
                         let v = self.pop()?;
                         let r = self.declare(name);
+                        self.typed(r, ty);
                         self.emit(Op::Move(r, v));
                     }
                     None => {
                         let r = self.declare(name);
+                        self.typed(r, ty);
                         self.emit(Op::Const(r, default_of(ty)));
                     }
                 }
@@ -509,6 +544,7 @@ impl Fx<'_> {
                     dst: len,
                     f: api::array::length,
                     args: Box::new([arr]),
+                    tag: Tag::None,
                 });
                 let v = fx.declare(var);
                 let cast = cast.as_ref().and_then(cast_op);
@@ -533,6 +569,7 @@ impl Fx<'_> {
                         dst: v,
                         f: api::array::load,
                         args: Box::new([arr, idx]),
+                        tag: Tag::None,
                     });
                     if let Some(c) = cast {
                         fx.emit(Op::Cast {
@@ -572,6 +609,7 @@ impl Fx<'_> {
                     dst: it,
                     f: api::iter::iterator,
                     args: Box::new([src]),
+                    tag: Tag::None,
                 });
                 let v = fx.declare(var);
                 let cast = cast.as_ref().and_then(cast_op);
@@ -581,6 +619,7 @@ impl Fx<'_> {
                         dst: c,
                         f: api::iter::has_next,
                         args: Box::new([it]),
+                        tag: Tag::None,
                     });
                     fx.emit(Op::BreakUnless(c));
                     Ok(())
@@ -591,6 +630,7 @@ impl Fx<'_> {
                         dst: v,
                         f: api::iter::next,
                         args: Box::new([it]),
+                        tag: Tag::None,
                     });
                     if let Some(c) = cast {
                         fx.emit(Op::Cast {
@@ -689,6 +729,10 @@ impl Fx<'_> {
     }
 
     fn api(&mut self, ty: &str, f: crate::vm::ApiFn, args: Vec<Reg>) {
+        self.api_tagged(ty, f, args, Tag::None);
+    }
+
+    fn api_tagged(&mut self, ty: &str, f: crate::vm::ApiFn, args: Vec<Reg>, tag: Tag) {
         let dst = if ty == "void" {
             self.reg()
         } else {
@@ -698,10 +742,15 @@ impl Fx<'_> {
             dst,
             f,
             args: args.into_boxed_slice(),
+            tag,
         });
     }
 
     fn native(&mut self, ty: &str, f: crate::vm::Native, args: Vec<Reg>) {
+        self.native_tagged(ty, f, args, Tag::None);
+    }
+
+    fn native_tagged(&mut self, ty: &str, f: crate::vm::Native, args: Vec<Reg>, tag: Tag) {
         let dst = if ty == "void" {
             self.reg()
         } else {
@@ -711,6 +760,7 @@ impl Fx<'_> {
             dst,
             f,
             args: args.into_boxed_slice(),
+            tag,
         });
     }
 
@@ -956,7 +1006,17 @@ impl Fx<'_> {
             }
             Node::FlipArrayIndex { child, .. } => self.flip(child, api::array::flip_index)?,
             Node::FlipCollectionIndex { child, .. } => self.flip(child, api::list::flip_index)?,
-            Node::FlipDefIndex { child, .. } => self.flip(child, api::dynamic::flip_index)?,
+            Node::FlipDefIndex { child, .. } => {
+                self.expr(child)?;
+                let idx = self.pop()?;
+                let recv = self.top()?;
+                self.api_tagged(
+                    "int",
+                    api::dynamic::flip_index,
+                    vec![recv, idx],
+                    Tag::FlipIndex,
+                );
+            }
             Node::InvokeCall {
                 ty,
                 method,
@@ -983,12 +1043,16 @@ impl Fx<'_> {
                                 args.len()
                             ))
                         })?;
-                    self.api(ty, f, a);
+                    let tag = Tag::Static {
+                        class: Rc::from(m.target.as_str()),
+                        name: Rc::from(m.name.as_str()),
+                    };
+                    self.api_tagged(ty, f, a, tag);
                 } else {
                     let recv = self.pop()?;
                     a.insert(0, recv);
                     let f = api::method_call(m)?;
-                    self.native(ty, f, a);
+                    self.native_tagged(ty, f, a, Tag::Call(Rc::from(m.name.as_str())));
                 }
             }
             Node::InvokeCallDef { ty, name, args } => {
@@ -996,12 +1060,14 @@ impl Fx<'_> {
                 let recv = self.pop()?;
                 a.insert(0, recv);
                 let name: Rc<str> = Rc::from(name.as_str());
-                self.native(
+                let tag = Tag::Call(name.clone());
+                self.native_tagged(
                     ty,
                     Rc::new(move |vm: &mut Vm, args: &[Value]| {
                         api::dynamic::call(vm, &args[0], &name, &args[1..])
                     }),
                     a,
+                    tag,
                 );
             }
             Node::InvokeCallMember { ty, member, args } => self.member(ty, member, args)?,
@@ -1057,6 +1123,7 @@ impl Fx<'_> {
                         dst,
                         f,
                         args: a.into_boxed_slice(),
+                        tag: Tag::None,
                     });
                 } else {
                     let f = api::constructor(class, args.len()).ok_or_else(|| {
@@ -1066,6 +1133,7 @@ impl Fx<'_> {
                         dst,
                         f,
                         args: a.into_boxed_slice(),
+                        tag: Tag::None,
                     });
                 }
             }
@@ -1075,7 +1143,7 @@ impl Fx<'_> {
             }
             Node::LoadBraceDef { ty, .. } => {
                 let a = self.pop_n(2)?;
-                self.api(ty, api::dynamic::brace_load, a);
+                self.api_tagged(ty, api::dynamic::brace_load, a, Tag::BraceLoad);
             }
             Node::LoadDotArrayLength { ty } => {
                 let a = self.pop_n(1)?;
@@ -1084,12 +1152,14 @@ impl Fx<'_> {
             Node::LoadDotDef { ty, name } => {
                 let a = self.pop_n(1)?;
                 let name: Rc<str> = Rc::from(name.as_str());
-                self.native(
+                let tag = Tag::LoadDot(name.clone());
+                self.native_tagged(
                     ty,
                     Rc::new(move |vm: &mut Vm, args: &[Value]| {
                         api::dynamic::load_dot(vm, &args[0], &name)
                     }),
                     a,
+                    tag,
                 );
             }
             Node::LoadDot { ty, field } => {
@@ -1124,7 +1194,7 @@ impl Fx<'_> {
                 };
                 let a = self.pop_n(n)?;
                 let f = api::method_call(g)?;
-                self.native(ty, f, a);
+                self.native_tagged(ty, f, a, Tag::Call(Rc::from(g.name.as_str())));
             }
             Node::StoreBrace { child, .. } => {
                 self.expr(child)?;
@@ -1349,10 +1419,12 @@ impl Fx<'_> {
             } => {
                 let a = self.exprs(args)?;
                 let name: Rc<str> = Rc::from(name.as_str());
-                self.native(
+                let tag = Tag::Internal(name.clone());
+                self.native_tagged(
                     ty,
                     Rc::new(move |vm: &mut Vm, args: &[Value]| vm.env.internal(&name, args)),
                     a,
+                    tag,
                 );
             }
             Member::Local { name, params, .. } => {

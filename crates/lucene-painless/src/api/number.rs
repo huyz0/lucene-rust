@@ -436,9 +436,9 @@ pub fn static_lookup(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         }
         // Character
         ("Character", "isDigit", 1) => |_vm, a| {
-            Ok(Value::Bool(code_point(&a[0])?.is_some_and(|c| {
-                c.is_numeric() && c.to_digit(10).is_some() || c.is_ascii_digit()
-            })))
+            Ok(Value::Bool(
+                code_point(&a[0])?.is_some_and(|c| c.is_ascii_digit()),
+            ))
         },
         ("Character", "isLetter", 1) => |_vm, a| {
             Ok(Value::Bool(

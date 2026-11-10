@@ -5,7 +5,7 @@ use lucene_util::strict_math as sm;
 
 use crate::api::{double_arg, int_arg};
 use crate::value::Value;
-use crate::vm::{ApiFn, Throw, Vm};
+use crate::vm::ApiFn;
 
 /// `Math.max`: NaN wins, `0.0 > -0.0`.
 pub fn java_max(a: f64, b: f64) -> f64 {
@@ -54,10 +54,6 @@ pub fn rint(x: f64) -> f64 {
     x.round_ties_even()
 }
 
-fn d1(f: fn(f64) -> f64) -> impl Fn(&[Value]) -> Result<Value, Throw> {
-    move |a| Ok(Value::Double(f(double_arg(&a[0])?)))
-}
-
 fn signum(x: f64) -> f64 {
     if x == 0.0 || x.is_nan() {
         x
@@ -96,69 +92,95 @@ fn next_down(x: f64) -> f64 {
     -next_up(-x)
 }
 
+macro_rules! methods {
+    ($($u:literal => $uf:expr,)* ; $($b:literal => $bf:expr,)*) => {
+        /// The `double -> double` methods, for callers that run them unboxed.
+        pub fn unary(name: &str) -> Option<fn(f64) -> f64> {
+            Some(match name {
+                $($u => $uf,)*
+                _ => return None,
+            })
+        }
+
+        /// The `(double, double) -> double` methods.
+        pub fn binary(name: &str) -> Option<fn(f64, f64) -> f64> {
+            Some(match name {
+                $($b => $bf,)*
+                _ => return None,
+            })
+        }
+
+        fn double_method(name: &str, arity: usize) -> Option<ApiFn> {
+            Some(match (name, arity) {
+                $(($u, 1) => |_vm, a| Ok(Value::Double(($uf)(double_arg(&a[0])?))),)*
+                $(($b, 2) => |_vm, a| {
+                    Ok(Value::Double(($bf)(double_arg(&a[0])?, double_arg(&a[1])?)))
+                },)*
+                _ => return None,
+            })
+        }
+    };
+}
+
+methods!(
+    "abs" => f64::abs,
+    "acos" => sm::acos,
+    "asin" => sm::asin,
+    "atan" => sm::atan,
+    "cbrt" => f64::cbrt,
+    "ceil" => f64::ceil,
+    "cos" => sm::cos,
+    "cosh" => sm::cosh,
+    "exp" => sm::exp,
+    "expm1" => sm::expm1,
+    "floor" => f64::floor,
+    "log" => sm::log,
+    "log10" => sm::log10,
+    "log1p" => f64::ln_1p,
+    "nextDown" => next_down,
+    "nextUp" => next_up,
+    "rint" => rint,
+    "signum" => signum,
+    "sin" => sm::sin,
+    "sinh" => sm::sinh,
+    "sqrt" => f64::sqrt,
+    "tan" => sm::tan,
+    "tanh" => sm::tanh,
+    "toDegrees" => |x: f64| x * (180.0 / std::f64::consts::PI),
+    "toRadians" => |x: f64| x * (std::f64::consts::PI / 180.0),
+    "ulp" => ulp,
+    ;
+    "atan2" => sm::atan2,
+    "copySign" => f64::copysign,
+    "hypot" => sm::hypot,
+    "IEEEremainder" => |x: f64, y: f64| x - (x / y).round_ties_even() * y,
+    "max" => java_max,
+    "min" => java_min,
+    "nextAfter" => next_after,
+    "pow" => sm::pow,
+);
+
+fn next_after(x: f64, y: f64) -> f64 {
+    if y > x {
+        next_up(x)
+    } else if y < x {
+        next_down(x)
+    } else {
+        y
+    }
+}
+
 pub fn lookup(name: &str, arity: usize) -> Option<ApiFn> {
-    macro_rules! one {
-        ($f:expr) => {
-            |_vm: &mut Vm, a: &[Value]| -> Result<Value, Throw> {
-                Ok(Value::Double(($f)(double_arg(&a[0])?)))
-            }
-        };
+    if let Some(f) = double_method(name, arity) {
+        return Some(f);
     }
-    macro_rules! two {
-        ($f:expr) => {
-            |_vm: &mut Vm, a: &[Value]| -> Result<Value, Throw> {
-                Ok(Value::Double(($f)(double_arg(&a[0])?, double_arg(&a[1])?)))
-            }
-        };
-    }
-    let _ = d1;
     Some(match (name, arity) {
-        ("abs", 1) => one!(f64::abs),
-        ("acos", 1) => one!(sm::acos),
-        ("asin", 1) => one!(sm::asin),
-        ("atan", 1) => one!(sm::atan),
-        ("atan2", 2) => two!(sm::atan2),
-        ("cbrt", 1) => one!(f64::cbrt),
-        ("ceil", 1) => one!(f64::ceil),
-        ("copySign", 2) => two!(f64::copysign),
-        ("cos", 1) => one!(sm::cos),
-        ("cosh", 1) => one!(sm::cosh),
-        ("exp", 1) => one!(sm::exp),
-        ("expm1", 1) => one!(sm::expm1),
-        ("floor", 1) => one!(f64::floor),
-        ("hypot", 2) => two!(sm::hypot),
-        ("IEEEremainder", 2) => two!(|x: f64, y: f64| x - (x / y).round_ties_even() * y),
-        ("log", 1) => one!(sm::log),
-        ("log10", 1) => one!(sm::log10),
-        ("log1p", 1) => one!(f64::ln_1p),
-        ("max", 2) => two!(java_max),
-        ("min", 2) => two!(java_min),
-        ("nextAfter", 2) => two!(|x: f64, y: f64| if y > x {
-            next_up(x)
-        } else if y < x {
-            next_down(x)
-        } else {
-            y
-        }),
-        ("nextDown", 1) => one!(next_down),
-        ("nextUp", 1) => one!(next_up),
-        ("pow", 2) => two!(sm::pow),
-        ("rint", 1) => one!(rint),
         ("round", 1) => |_vm, a| Ok(Value::Long(round(double_arg(&a[0])?))),
         ("scalb", 2) => |_vm, a| {
             Ok(Value::Double(
                 double_arg(&a[0])? * 2f64.powi(int_arg(&a[1])?),
             ))
         },
-        ("signum", 1) => one!(signum),
-        ("sin", 1) => one!(sm::sin),
-        ("sinh", 1) => one!(sm::sinh),
-        ("sqrt", 1) => one!(f64::sqrt),
-        ("tan", 1) => one!(sm::tan),
-        ("tanh", 1) => one!(sm::tanh),
-        ("toDegrees", 1) => one!(|x: f64| x * (180.0 / std::f64::consts::PI)),
-        ("toRadians", 1) => one!(|x: f64| x * (std::f64::consts::PI / 180.0)),
-        ("ulp", 1) => one!(ulp),
         ("random", 0) => |_vm, _a| Ok(Value::Double(0.5)),
         _ => return None,
     })
