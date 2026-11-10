@@ -84,8 +84,8 @@ pub fn copy_by_score(
 ) {
     assert_eq!(src_docs.len(), src_scores.len());
     let len = src_docs.len();
-    docs.clear();
-    scores.clear();
+    // Every slot up to the kept count is written before the truncation, so
+    // only growth needs filling.
     docs.resize(len, 0);
     scores.resize(len, 0.0);
     #[cfg(target_arch = "x86_64")]
@@ -112,8 +112,8 @@ pub fn copy_by_score_scalar(
 ) {
     assert_eq!(src_docs.len(), src_scores.len());
     let len = src_docs.len();
-    docs.clear();
-    scores.clear();
+    // Every slot up to the kept count is written before the truncation, so
+    // only growth needs filling.
     docs.resize(len, 0);
     scores.resize(len, 0.0);
     let n = copy_scalar(src_docs, src_scores, min, docs, scores);
@@ -267,7 +267,14 @@ mod tests {
     #[test]
     fn copy_matches_the_scalar_specification() {
         for len in (0..40).chain([63, 64, 65, 255, 256, 257, 1000]) {
-            for (seed, min) in [(1, 0.0), (2, 0.5), (3, 0.95), (4, -1.0), (5, f64::INFINITY)] {
+            for (seed, min) in [
+                (1, 0.0),
+                (2, 0.5),
+                (3, 0.95),
+                (4, -1.0),
+                (5, f64::INFINITY),
+                (6, f64::NAN),
+            ] {
                 let (sd, ss) = case(len, seed + len as u64);
                 let (mut a, mut b, mut c, mut d) = (vec![9], vec![9.0], vec![7], vec![7.0]);
                 copy_by_score(&sd, &ss, min, &mut a, &mut b);
@@ -294,7 +301,14 @@ mod tests {
     #[test]
     fn compact_matches_the_scalar_specification() {
         for len in (0..40).chain([63, 64, 65, 255, 256, 257, 1000]) {
-            for (seed, min) in [(1, 0.0), (2, 0.5), (3, 0.95), (4, -1.0), (5, f64::INFINITY)] {
+            for (seed, min) in [
+                (1, 0.0),
+                (2, 0.5),
+                (3, 0.95),
+                (4, -1.0),
+                (5, f64::INFINITY),
+                (6, f64::NAN),
+            ] {
                 let (sd, ss) = case(len, seed * 31 + len as u64);
                 let s64: Vec<f64> = ss.iter().map(|&s| f64::from(s)).collect();
                 let (mut a, mut b) = (sd.clone(), s64.clone());
@@ -337,7 +351,7 @@ mod tests {
         }
         for len in [0, 1, 7, 8, 9, 16, 17, 100, 256] {
             let (sd, ss) = case(len, 77 + len as u64);
-            for min in [0.0, 0.3, 0.9] {
+            for min in [0.0, 0.3, 0.9, -1.0, f64::INFINITY, f64::NAN] {
                 let (mut a, mut b) = (vec![0; len], vec![0.0; len]);
                 let (mut c, mut d) = (vec![0; len], vec![0.0; len]);
                 // SAFETY: the CPU has AVX-512F (checked above).
@@ -351,6 +365,23 @@ mod tests {
                 let n = unsafe { avx512::compact_from(&mut e, &mut f, 0, min) };
                 let m = compact_from_scalar(&mut g, &mut h, 0, min);
                 assert_eq!((n, &e[..n], bits(&f[..n])), (m, &g[..m], bits(&h[..m])));
+                // A kept prefix of every length the dispatched form may hand
+                // over, before the kernel starts compacting.
+                for start in [0usize, 3, 8] {
+                    let start = start.min(len);
+                    let mut s64: Vec<f64> = ss.iter().map(|&s| f64::from(s)).collect();
+                    s64[..start].fill(f64::MAX);
+                    let (mut e, mut f) = (sd.clone(), s64.clone());
+                    let (mut g, mut h) = (sd.clone(), s64);
+                    // SAFETY: as above.
+                    let n = unsafe { avx512::compact_from(&mut e, &mut f, start, min) };
+                    let m = compact_from_scalar(&mut g, &mut h, start, min);
+                    assert_eq!(
+                        (n, &e[..n], bits(&f[..n])),
+                        (m, &g[..m], bits(&h[..m])),
+                        "len {len} min {min} start {start}"
+                    );
+                }
             }
         }
     }
