@@ -735,3 +735,122 @@ mod tests {
         assert_eq!(input.usage().unwrap().attempts, 2);
     }
 }
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::Directory;
+    use lucene_util::test_support::TempDir;
+
+    struct Bytes(Vec<u8>);
+    impl ReadAt for Bytes {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+        fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<usize> {
+            let end = offset.checked_add(dst.len()).unwrap();
+            dst.copy_from_slice(&self.0[offset..end]);
+            Ok(dst.len())
+        }
+    }
+    fn input(bytes: Vec<u8>) -> RangeInput {
+        RangeInput::new(
+            Arc::new(Bytes(bytes)),
+            RangeLimits {
+                block_bytes: 16,
+                cache_blocks: 2,
+                attempts: 4096,
+                transferred_bytes: 65536,
+            },
+        )
+        .unwrap()
+    }
+    #[test]
+    fn immutable_directory_admission_and_metadata_reuse() {
+        let root = TempDir::new("range-directory");
+        let files = vec![
+            ("s.tip".into(), input(vec![3; 31])),
+            ("s.doc".into(), input(vec![9; 64])),
+        ];
+        let dir = RangeDirectory::new(root.path(), files).unwrap();
+        assert_eq!(dir.list_all().unwrap(), ["s.doc", "s.tip"]);
+        assert_eq!(dir.file_length("s.doc").unwrap(), 64);
+        assert_eq!(&*dir.open("s.tip").unwrap(), &[3; 31]);
+        assert_eq!(&*dir.open("s.tip").unwrap(), &[3; 31]);
+        assert_eq!(
+            dir.metadata_usage().unwrap(),
+            MetadataUsage {
+                files: 1,
+                reserved_bytes: 31
+            }
+        );
+        assert!(dir.open("s.doc").is_err());
+        assert!(dir.open("missing.tip").is_err());
+        assert!(dir.open_range("missing.doc").is_err());
+        assert!(dir.file_length("absent").is_err());
+        assert!(dir.open_range("s.tip").unwrap().is_none());
+        let data = dir.open_range("s.doc").unwrap().unwrap();
+        let mut bytes = [0; 4];
+        data.read_exact_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [9; 4]);
+        assert!(dir.create_output("new").is_err());
+        assert!(dir.sync(&[]).is_err());
+        assert!(dir.rename("s.doc", "other").is_err());
+        assert!(dir.delete_file("s.doc").is_err());
+        assert!(dir.sync_meta_data().is_err());
+        assert!(dir.obtain_lock("write.lock").is_err());
+        assert_eq!(dir.list_all().unwrap(), ["s.doc", "s.tip"]);
+    }
+    #[test]
+    fn inventory_rejects_identity_path_and_count_violations_before_io() {
+        for names in [
+            vec!["../escape"],
+            vec![""],
+            vec!["."],
+            vec![".."],
+            vec!["a/b"],
+            vec!["same", "same"],
+            vec!["a"; 129],
+        ] {
+            let root = TempDir::new("range-bad-inventory");
+            let files = names
+                .into_iter()
+                .map(|n| (n.to_owned(), input(vec![])))
+                .collect();
+            assert!(RangeDirectory::new(root.path(), files).is_err());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+        struct TooLarge;
+        impl ReadAt for TooLarge {
+            fn len(&self) -> usize {
+                128 * 1024 * 1024 + 1
+            }
+            fn read_at(&self, _: usize, _: &mut [u8]) -> Result<usize> {
+                panic!("inventory refusal must precede physical I/O")
+            }
+        }
+        let root = TempDir::new("range-large-inventory");
+        let limits = RangeLimits {
+            block_bytes: 16,
+            cache_blocks: 2,
+            attempts: 1,
+            transferred_bytes: 16,
+        };
+        let source = RangeInput::new(Arc::new(TooLarge), limits).unwrap();
+        assert!(RangeDirectory::new(root.path(), vec![("large.doc".into(), source)]).is_err());
+    }
+    #[test]
+    fn streaming_integrity_rejects_truncation_footer_and_payload_corruption() {
+        let mut valid = vec![42; 8193];
+        crate::codec_util::write_footer(&mut valid);
+        let source = input(valid.clone());
+        source.check_integrity().unwrap();
+        assert!(source.usage().unwrap().cache_bytes <= 32);
+        assert!(source.usage().unwrap().attempts > 2);
+        valid[4096] ^= 1;
+        assert!(input(valid).check_integrity().is_err());
+        for length in [0, 1, 15, 16, 17] {
+            assert!(input(vec![0; length]).check_integrity().is_err());
+        }
+    }
+}

@@ -494,8 +494,8 @@ impl LeafFieldComparator for Leaf<'_> {
 /// each document's values, ascending.
 enum NumericColumn<'a> {
     Absent,
-    Single(doc_values::NumericReader<'a>),
-    Multi(doc_values::SortedNumericReader<'a>),
+    Single(Box<doc_values::NumericReader<'a>>),
+    Multi(Box<doc_values::SortedNumericReader<'a>>),
 }
 
 fn numeric_column<'a>(reader: &'a SegmentReader, field: &str) -> Result<NumericColumn<'a>> {
@@ -506,13 +506,13 @@ fn numeric_column<'a>(reader: &'a SegmentReader, field: &str) -> Result<NumericC
         return Ok(NumericColumn::Absent);
     };
     if let Some(e) = meta.sorted_numeric_entry(info.number) {
-        return Ok(NumericColumn::Multi(doc_values::SortedNumericReader::new(
-            data, e,
+        return Ok(NumericColumn::Multi(Box::new(
+            doc_values::SortedNumericReader::new(data, e),
         )));
     }
     if let Some(e) = meta.numeric_entry(info.number) {
-        return Ok(NumericColumn::Single(doc_values::NumericReader::new(
-            data, e,
+        return Ok(NumericColumn::Single(Box::new(
+            doc_values::NumericReader::new(data, e),
         )));
     }
     if info.doc_values_type == lucene_codecs::field_infos::DocValuesType::None {

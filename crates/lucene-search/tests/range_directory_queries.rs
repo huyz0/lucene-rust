@@ -4,7 +4,7 @@
 use lucene_codecs::stored_fields::FieldValue;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{
-    Document, Field, NumericDocValuesField, Store, StoredValue, StringField,
+    Document, Field, NumericDocValuesField, SortedDocValuesField, Store, StoredValue, StringField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
@@ -29,6 +29,7 @@ struct Event {
     requested: usize,
     received: usize,
     failed: bool,
+    elapsed_micros: u128,
 }
 struct Trace {
     phase: &'static str,
@@ -70,6 +71,7 @@ impl ReadAt for Source {
         let fault = trace
             .fault
             .filter(|(suffix, _)| self.name.ends_with(suffix));
+        let started = std::time::Instant::now();
         let mut received = 0;
         let result = if let Some((_, short)) = fault {
             if short {
@@ -93,6 +95,7 @@ impl ReadAt for Source {
             requested: out.len(),
             received,
             failed: result.is_err() || received != out.len(),
+            elapsed_micros: started.elapsed().as_micros(),
         });
         Ok(result?)
     }
@@ -124,6 +127,9 @@ fn inputs(root: &Path, names: &[String], trace: &Arc<Mutex<Trace>>) -> Vec<(Stri
         .collect()
 }
 fn corpus(root: &Path) -> Vec<String> {
+    corpus_profile(root, false, 384, false)
+}
+fn corpus_profile(root: &Path, compound: bool, docs: i32, sorted_values: bool) -> Vec<String> {
     let dir = MmapDirectory::with_read_threshold(root, 0);
     let mut writer = IndexWriter::open(
         &dir,
@@ -136,10 +142,10 @@ fn corpus(root: &Path) -> Vec<String> {
         },
     )
     .unwrap();
-    writer.set_use_compound_file(false);
-    writer.set_max_buffered_docs(1024).unwrap();
-    writer.set_ram_buffer_size_mb(8.0).unwrap();
-    for i in 0..384 {
+    writer.set_use_compound_file(compound);
+    writer.set_max_buffered_docs(8192).unwrap();
+    writer.set_ram_buffer_size_mb(32.0).unwrap();
+    for i in 0..docs {
         let mut d = Document::new();
         d.add(StringField::new("id", format!("id{i:04}"), Store::Yes));
         d.add(StringField::new("body", "needle", Store::No));
@@ -149,6 +155,9 @@ fn corpus(root: &Path) -> Vec<String> {
             if i % 2 == 0 { "even" } else { "odd" },
             Store::No,
         ));
+        if sorted_values {
+            d.add(SortedDocValuesField::new("unsupported", b"value".to_vec()));
+        }
         if i % 7 != 0 {
             d.add(NumericDocValuesField::new("rank", 383 - i));
         }
@@ -369,6 +378,27 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
     assert_eq!(baseline_actual, total);
     let events = &trace.lock().unwrap().events;
     let touched: BTreeSet<_> = events.iter().map(|e| e.file.clone()).collect();
+    for name in &touched {
+        assert!(
+            name.starts_with("segments_")
+                || [
+                    ".si", ".fnm", ".tim", ".tip", ".tmd", ".doc", ".dvm", ".dvd", ".fdm", ".fdx",
+                    ".fdt", ".liv"
+                ]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)),
+            "unexpected touched reader format {name}"
+        );
+    }
+    for phase in ["prepare", "cold-query", "fault-query", "integrity"] {
+        let selected: Vec<_> = events.iter().filter(|e| e.phase == phase).collect();
+        let requested: usize = selected.iter().map(|e| e.requested).sum();
+        let received: usize = selected.iter().map(|e| e.received).sum();
+        println!(
+            "RANGE_PHASE phase={phase} attempts={} requested={requested} received={received}",
+            selected.len()
+        );
+    }
     for suffix in [
         ".si", ".fnm", ".tim", ".tip", ".tmd", ".doc", ".dvm", ".dvd", ".fdm", ".fdx", ".fdt",
         ".liv",
@@ -417,9 +447,45 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
     for e in events.iter().chain(baseline_guard.events.iter()) {
         writeln!(
             report,
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            e.phase, e.file, e.offset, e.requested, e.received, e.failed
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            e.phase, e.file, e.offset, e.requested, e.received, e.failed, e.elapsed_micros
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn unadvertised_range_profiles_refuse_before_query_results() {
+    for (compound, docs, sorted_values, diagnostic) in [
+        (true, 384, false, "non-compound"),
+        (false, 4097, false, "bounded"),
+        (false, 384, true, "single-valued numeric"),
+    ] {
+        let source_root = TempDir::new("range-profile-source");
+        let names = corpus_profile(source_root.path(), compound, docs, sorted_values);
+        // These are valid materialized indexes. Refusal belongs specifically
+        // to the declared range profile, not to corrupt test bytes.
+        let resident = MmapDirectory::with_read_threshold(source_root.path(), 0);
+        let reader = DirectoryReader::open(&resident).unwrap();
+        assert_eq!(reader.segment_readers().len(), 1);
+        drop(reader);
+        let trace = Arc::new(Mutex::new(Trace::new()));
+        let files = inputs(source_root.path(), &names, &trace);
+        let scratch = TempDir::new("range-profile-metadata");
+        let dir = RangeDirectory::new(scratch.path(), files).unwrap();
+        let error = match DirectoryReader::open(&dir) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("unadvertised range profile opened successfully"),
+        };
+        assert!(error.contains(diagnostic), "{error}");
+        assert!(
+            !trace
+                .lock()
+                .unwrap()
+                .events
+                .iter()
+                .any(|e| e.file.ends_with(".cfs")),
+            "compound refusal must not materialize/read the archive"
+        );
     }
 }
