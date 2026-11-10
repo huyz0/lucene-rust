@@ -603,9 +603,9 @@ pub fn cast(v: &Value, c: &CastOp) -> Result<Value, Throw> {
                 let mut u = s.encode_utf16();
                 match (u.next(), u.next()) {
                     (Some(c), None) => Ok(Value::Char(c)),
-                    _ => Err(Throw::class_cast(format!(
-                        "cannot cast java.lang.String with length not equal to one to char"
-                    ))),
+                    _ => Err(Throw::class_cast(
+                        "cannot cast java.lang.String with length not equal to one to char",
+                    )),
                 }
             }
             Value::Null => Err(Throw::class_cast(

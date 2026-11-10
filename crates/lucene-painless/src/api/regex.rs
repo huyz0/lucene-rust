@@ -281,13 +281,16 @@ pub fn replace_with(
 }
 
 /// A `Matcher`: the input and the current match's groups.
+/// Each group's byte range in the last match, `None` where it took no part.
+type Groups = Vec<Option<(usize, usize)>>;
+
 #[derive(Debug)]
 pub struct JMatcher {
     pattern: Value,
     input: Rc<str>,
     /// Byte position the next `find` starts at.
     pos: Cell<usize>,
-    groups: RefCell<Option<Vec<Option<(usize, usize)>>>>,
+    groups: RefCell<Option<Groups>>,
     names: Vec<Option<String>>,
 }
 

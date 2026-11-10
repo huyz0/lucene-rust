@@ -8,6 +8,7 @@
 
 pub mod array;
 pub mod collection;
+pub mod doc;
 pub mod dynamic;
 pub mod functional;
 pub mod iter;
@@ -17,6 +18,7 @@ pub mod math;
 pub mod number;
 pub mod objects;
 pub mod regex;
+pub mod score;
 pub mod string;
 
 use std::rc::Rc;
@@ -63,6 +65,7 @@ pub fn static_method(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
             functional::function_static(name, arity)
         }
         "java.lang.System" => objects::system_lookup(name, arity),
+        score::UTILS => score::static_lookup(name, arity),
         _ => None,
     }
 }
@@ -134,8 +137,8 @@ pub struct ClassBinding {
 }
 
 /// The class bindings of the base allowlist and the score context.
-pub fn class_binding(_class: &str, _method: &str) -> Option<ClassBinding> {
-    None
+pub fn class_binding(class: &str, _method: &str) -> Option<ClassBinding> {
+    score::class_binding(class)
 }
 
 /// The binary name of a class a `def` reference names canonically

@@ -17,7 +17,7 @@ pub struct JIter {
 }
 
 impl JIter {
-    pub fn new(items: Vec<Value>) -> Value {
+    pub fn value(items: Vec<Value>) -> Value {
         Value::object(JIter {
             items,
             pos: Cell::new(0),
@@ -99,7 +99,7 @@ pub fn elements(vm: &mut Vm, v: &Value) -> Result<Vec<Value>, Throw> {
 }
 
 pub fn iterator(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
-    Ok(JIter::new(elements(vm, &args[0])?))
+    Ok(JIter::value(elements(vm, &args[0])?))
 }
 
 pub fn has_next(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {

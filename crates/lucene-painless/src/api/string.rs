@@ -361,7 +361,7 @@ pub fn static_lookup(name: &str, arity: usize) -> Option<ApiFn> {
                     .items
                     .iter()
                     .map(|c| if let Value::Char(c) = c { *c } else { 0 })
-                    .map(|c| char_string(c))
+                    .map(char_string)
                     .collect(),
                 v => v.java_to_string(),
             }))
@@ -616,7 +616,7 @@ fn illegal_conv(conv: char, v: &Value) -> Throw {
 fn group(digits: &str) -> String {
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
