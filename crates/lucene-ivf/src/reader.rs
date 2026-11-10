@@ -349,9 +349,6 @@ impl<'a> GroupTop<'a> {
     }
 
     fn offer(&mut self, c: Candidate) {
-        if self.size == 0 {
-            return;
-        }
         let g = (self.group)(c.doc);
         if let Some(held) = self.best.get_mut(&g) {
             if c > *held {

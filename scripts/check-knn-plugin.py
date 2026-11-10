@@ -26,7 +26,8 @@ answer the same queries. The Rust engine writes the plugin node's segments.
   nested     a knn_vector under a nested field: the best child per parent,
              filters at the root and on the nested docs, and
              expand_nested_docs with inner hits, the same hits, scores and
-             inner hits as stock.
+             inner hits as stock; the same queries on a nested `ivf` field
+             probing every cluster, stock's hits too.
   ivf        the plugin's own opt-in `lucene_rust` engine (`method: ivf`, no
              stock counterpart, so stock must refuse the mapping): every
              hit scores its exact score (f32 and half-float rerank vectors);
@@ -276,28 +277,33 @@ def nested_check(failures):
     mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
                               "nest": {"type": "nested", "properties": {"color": {"type": "keyword"},
                                                                        "emb": field_mapping(spec)}}}}
-    for port, rust in ((OURS[1], True), (STOCK[1], False)):
+    ivf_index = "nested_ivf"
+    ivf_nested = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
+                                 "nest": {"type": "nested", "properties": {"color": {"type": "keyword"},
+                                                                          "emb": ivf_mapping()}}}}
+    for port, rust, name, m in ((OURS[1], True, index, mapping), (STOCK[1], False, index, mapping),
+                                (OURS[1], True, ivf_index, ivf_nested)):
         settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                     "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
         if rust:
             settings["index.lucene_rust.engine"] = True
-        req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+        req(port, "PUT", f"/{name}", {"settings": settings, "mappings": m})
         per = len(docs) // SEGMENTS
         for s in range(SEGMENTS):
             lines = []
             for d in docs[s * per:(s + 1) * per]:
-                lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+                lines.append(json.dumps({"index": {"_index": name, "_id": d["_id"]}}))
                 lines.append(json.dumps({k: v for k, v in d.items() if k != "_id"}))
             r = req(port, "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
             assert not r["errors"], json.dumps(r)[:2000]
-            req(port, "POST", f"/{index}/_flush")
-        req(port, "POST", f"/{index}/_refresh")
+            req(port, "POST", f"/{name}/_flush")
+        req(port, "POST", f"/{name}/_refresh")
 
     def nested(inner, **extra):
         return {"nested": {"path": "nest", "query": {"knn": {"nest.emb": inner}}, **extra}}
 
-    def hits(port, body):
-        r = req(port, "POST", f"/{index}/_search", body)
+    def hits(port, body, name=index):
+        r = req(port, "POST", f"/{name}/_search", body)
         out = []
         for h in r["hits"]["hits"]:
             inner = h.get("inner_hits", {}).get("nest", {}).get("hits", {}).get("hits", [])
@@ -339,6 +345,16 @@ def nested_check(failures):
             checked += 1
             if not agree(got, want):
                 failures.append(f"{index} {label} query {qi}: {got[:2]} vs {want[:2]}")
+            # The same nested queries on an IVF field probing every cluster:
+            # the clusters are probed per parent, and find stock's hits.
+            if "ef_search" in label:
+                continue
+            body = json.loads(json.dumps(body))
+            body["query"]["nested"]["query"]["knn"]["nest.emb"]["method_parameters"] = {"nprobes": IVF_ALL}
+            got = hits(OURS[1], body, ivf_index)
+            checked += 1
+            if not agree(got, want):
+                failures.append(f"{ivf_index} {label} query {qi}: {got[:2]} vs stock's {want[:2]}")
         # The best child per parent, exhaustively: stock's graph is small enough to find it.
         best = {}
         for d in docs:

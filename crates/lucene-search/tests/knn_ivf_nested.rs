@@ -12,6 +12,7 @@ use lucene_codecs::field_infos::{
     FieldInfo, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
 use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
+use lucene_index::buffered_updates::Term;
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::{
     DocumentVector, ExplicitDocument, IndexWriter, InvertedField, InvertedTerms,
@@ -27,7 +28,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::test_support::TempDir;
 
 const DIM: usize = 16;
-const PARENTS_PER_SEGMENT: usize = 400;
+const PARENTS_PER_SEGMENT: usize = 2000;
 const SEGMENTS: usize = 2;
 
 fn noise(seed: u64) -> impl FnMut() -> f32 {
@@ -66,11 +67,16 @@ fn layout() -> Vec<Option<(usize, usize)>> {
         .collect()
 }
 
+/// The blocks' parents; with `.0`, none in the segments from that doc base
+/// on.
 #[derive(Debug)]
-struct Parents;
+struct Parents(Option<i32>);
 
 impl BitSetProducer for Parents {
     fn bit_set(&self, leaf: &OpenSegment<'_>) -> lucene_search::Result<Option<Arc<FixedBitSet>>> {
+        if self.0.is_some_and(|b| leaf.doc_base >= b) {
+            return Ok(None);
+        }
         let reader = leaf.reader.unwrap();
         let max_doc = reader.max_doc as usize;
         let docs = layout();
@@ -89,7 +95,13 @@ impl BitSetProducer for Parents {
     }
 }
 
-/// Children carry `parity` `even` or `odd` by child number.
+/// One parent in 40's first child.
+fn rare(p: usize, c: usize) -> bool {
+    p.is_multiple_of(40) && c == 0
+}
+
+/// Children carry `parity` `even` or `odd` by child number, and `rare`
+/// when [`rare`].
 fn build(dir: &FsDirectory) {
     let mut w = IndexWriter::open(
         dir,
@@ -138,6 +150,9 @@ fn build(dir: &FsDirectory) {
                     let mut terms = InvertedTerms::default();
                     let term: &[u8] = if c % 2 == 0 { b"even" } else { b"odd" };
                     terms.push::<Vec<u8>>(term, 1, &[], &[], &[]);
+                    if rare(*p, *c) {
+                        terms.push::<Vec<u8>>(b"rare", 1, &[], &[], &[]);
+                    }
                     doc.fields.inverted.push(InvertedField {
                         field_number: 0,
                         terms,
@@ -218,7 +233,7 @@ fn recall(
             k,
             k,
             filter,
-            &Parents,
+            &Parents(None),
             false,
             nprobes,
         )
@@ -258,4 +273,64 @@ fn nested_ivf_probes_for_the_best_child_of_each_parent() {
     let filtered = recall(&dir, 0, Some(&even), |_, c| c % 2 == 0);
     assert!(filtered >= 0.9, "filtered recall {filtered}");
     assert_eq!(recall(&dir, 100_000, Some(&even), |_, c| c % 2 == 0), 1.0);
+    // Too few children to probe for: scanned exactly.
+    let few = Clause::Term(TermQuery::new("parity", b"rare".to_vec()));
+    assert_eq!(recall(&dir, 1, Some(&few), rare), 1.0);
+    // Deleted children are never returned.
+    let mut w = IndexWriter::open(
+        &dir,
+        Vec::new(),
+        "Lucene104",
+        LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        },
+    )
+    .unwrap();
+    w.delete_documents_by_term(&[Term {
+        field: "parity".into(),
+        bytes: b"odd".to_vec(),
+    }])
+    .unwrap();
+    w.commit().unwrap();
+    w.close().unwrap();
+    let live = recall(&dir, 0, None, |_, c| c % 2 == 0);
+    assert!(live >= 0.9, "recall after deletes {live}");
+    let filtered = recall(&dir, 0, Some(&even), |_, c| c % 2 == 0);
+    assert!(filtered >= 0.9, "filtered recall after deletes {filtered}");
+}
+
+#[test]
+fn a_segment_without_parents_has_no_nested_hits() {
+    let tmp = TempDir::new("knn-ivf-nested-none");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir);
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let second = segments[1].doc_base;
+    for q in 0..5 {
+        let t = target(q);
+        let hits = knn_top_hits_nested_with(
+            &segments,
+            "v",
+            &KnnTarget::Float(t.clone()),
+            10,
+            10,
+            None,
+            &Parents(Some(second)),
+            false,
+            0,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 10);
+        assert!(hits.iter().all(|h| h.doc_id < second));
+        let want = exact(&t, 10, |p, _| p < PARENTS_PER_SEGMENT);
+        let found = hits
+            .iter()
+            .filter(|h| want.iter().any(|w| w.0 == h.doc_id as usize))
+            .count();
+        assert!(found >= 8, "query {q}: {found}/10");
+    }
 }

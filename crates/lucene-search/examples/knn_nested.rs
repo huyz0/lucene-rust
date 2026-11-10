@@ -179,7 +179,11 @@ fn main() {
                 Some(row) => {
                     let mut d = ExplicitDocument::default();
                     let mut terms = InvertedTerms::default();
-                    let term: &[u8] = if row.is_multiple_of(2) { b"even" } else { b"odd" };
+                    let term: &[u8] = if row.is_multiple_of(2) {
+                        b"even"
+                    } else {
+                        b"odd"
+                    };
                     terms.push::<Vec<u8>>(term, 1, &[], &[], &[]);
                     d.fields.inverted.push(InvertedField {
                         field_number: 0,
