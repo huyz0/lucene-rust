@@ -248,6 +248,10 @@ impl RangeStoredFieldsReader<'_> {
     pub fn document(&self, doc: i32) -> Result<Document> {
         self.metadata.document_range(&self.data, doc)
     }
+    /// Owned metadata with no borrowed data/index bytes, for SegmentReader.
+    pub fn metadata(&self) -> StoredFieldsReader<'static> {
+        self.metadata.rebind(&[], &[])
+    }
 }
 
 /// Open `.fdt` directly through range header/footer reads and resident metadata.
@@ -884,7 +888,11 @@ impl<'d> StoredFieldsReader<'d> {
     /// bytes are not dereferenced. Caller must bind metadata and source to the
     /// same immutable file; use an empty-fdt `rebind` after metadata admission.
     /// Both encoded and inflated chunk sizes are capped at 1 MiB.
-    pub fn document_range(&self, source: &RangeInput, doc_id: i32) -> Result<Document> {
+    fn serialized_document_range(
+        &self,
+        source: &RangeInput,
+        doc_id: i32,
+    ) -> Result<SerializedDocument> {
         if doc_id < 0 || doc_id >= self.max_doc {
             return Err(Error::DocOutOfRange(doc_id, self.max_doc));
         }
@@ -952,7 +960,24 @@ impl<'d> StoredFieldsReader<'d> {
             )
             .into());
         }
-        parse_document(header.num_stored_fields[index], &bytes)
+        Ok(SerializedDocument {
+            num_stored_fields: header.num_stored_fields[index],
+            bytes,
+        })
+    }
+
+    pub fn document_range(&self, source: &RangeInput, doc: i32) -> Result<Document> {
+        let doc = self.serialized_document_range(source, doc)?;
+        parse_document(doc.num_stored_fields, &doc.bytes)
+    }
+    pub fn visit_document_range(
+        &self,
+        source: &RangeInput,
+        doc: i32,
+        visitor: &mut dyn StoredFieldVisitor,
+    ) -> Result<()> {
+        let doc = self.serialized_document_range(source, doc)?;
+        visit_document(doc.num_stored_fields, &doc.bytes, visitor)
     }
 
     /// Decompresses the **whole** chunk containing `doc_id` -- the port of
