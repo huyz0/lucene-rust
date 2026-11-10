@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Builds the tiny ONNX text-embedding models under fixtures/ml/ (random
-weights, BERT and DistilBERT shapes) that lucene-ml's tests and the plugin's
-ml e2e run, and their ml-commons model zips.
+"""Builds the tiny ONNX models under fixtures/ml/ (random weights) that
+lucene-ml's tests and the plugin's ml e2e run, and their ml-commons model
+zips: text embedding (BERT and DistilBERT shapes), sparse encoding (a masked
+LM head max-pooled over tokens) and a cross-encoder.
+
+An existing tokenizer.json is kept, so models added later share the
+vocabulary the recorded vectors were made with.
 
 Needs torch, transformers and tokenizers (pip). The expected vectors come from
 a stock OpenSearch node: scripts/ml-golden.py.
@@ -9,13 +13,15 @@ a stock OpenSearch node: scripts/ml-golden.py.
 Usage: scripts/gen-ml-fixture.py [out_dir]   (default fixtures/ml)
 """
 import hashlib
+import json
 import os
 import sys
 import zipfile
 
 import torch
 from tokenizers import BertWordPieceTokenizer
-from transformers import BertConfig, BertModel, DistilBertConfig, DistilBertModel
+from transformers import (BertConfig, BertForMaskedLM, BertForSequenceClassification, BertModel,
+                          DistilBertConfig, DistilBertModel)
 
 CORPUS = [
     "the quick brown fox jumps over the lazy dog",
@@ -30,7 +36,7 @@ CORPUS = [
 
 def export(module, names, out, path):
     ids = torch.ones(1, 6, dtype=torch.long)
-    args = tuple(ids if n != "token_type_ids" else torch.zeros_like(ids) for n in names)
+    args = tuple(torch.zeros_like(ids) if n == "token_type_ids" else ids for n in names)
     dyn = {n: {0: "b", 1: "s"} for n in names}
     for o in out:
         dyn[o] = {0: "b", 1: "s"} if o == "last_hidden_state" else {0: "b"}
@@ -41,14 +47,16 @@ def export(module, names, out, path):
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "fixtures/ml"
     os.makedirs(out, exist_ok=True)
-    corpus = os.path.join(out, "corpus.txt")
-    with open(corpus, "w") as f:
-        f.write("\n".join(CORPUS * 4))
-    tok = BertWordPieceTokenizer(lowercase=True, strip_accents=True)
-    tok.train([corpus], vocab_size=400, min_frequency=1)
-    os.remove(corpus)
-    tok.save(os.path.join(out, "tokenizer.json"))
-    vocab = tok.get_vocab_size()
+    tokenizer = os.path.join(out, "tokenizer.json")
+    if not os.path.exists(tokenizer):
+        corpus = os.path.join(out, "corpus.txt")
+        with open(corpus, "w") as f:
+            f.write("\n".join(CORPUS * 4))
+        tok = BertWordPieceTokenizer(lowercase=True, strip_accents=True)
+        tok.train([corpus], vocab_size=400, min_frequency=1)
+        os.remove(corpus)
+        tok.save(tokenizer)
+    vocab = len(json.load(open(tokenizer))["model"]["vocab"])
     torch.manual_seed(11)
 
     bert = BertModel(BertConfig(vocab_size=vocab, hidden_size=32, num_hidden_layers=2, num_attention_heads=4,
@@ -77,11 +85,41 @@ def main():
         def forward(self, input_ids, attention_mask):
             return self.m(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
 
+    small = dict(vocab_size=vocab, hidden_size=32, num_hidden_layers=2, num_attention_heads=4,
+                 intermediate_size=64, max_position_embeddings=512)
+    mlm = BertForMaskedLM(BertConfig(**small)).eval()
+
+    class Sparse(torch.nn.Module):
+        """Per-vocabulary weights: max over the text's tokens of log(1 + relu(logit)), shifted so most
+        are zero."""
+
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, input_ids, attention_mask):
+            logits = self.m(input_ids=input_ids, attention_mask=attention_mask).logits - 0.15
+            w = torch.log1p(torch.relu(logits)) * attention_mask.unsqueeze(-1).float()
+            return w.max(dim=1).values
+
+    cross = BertForSequenceClassification(BertConfig(num_labels=1, **small)).eval()
+
+    class Cross(torch.nn.Module):
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, input_ids, attention_mask, token_type_ids):
+            return self.m(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids).logits
+
     three = ("input_ids", "attention_mask", "token_type_ids")
     models = {
         "tiny-bert": (Bert(bert, False), three, ("last_hidden_state",)),
         "tiny-bert-pooled": (Bert(bert, True), three, ("last_hidden_state", "sentence_embedding")),
         "tiny-distilbert": (Distil(distil), three[:2], ("last_hidden_state",)),
+        # The input names ml-commons' SentenceTransformerTranslator gives a sparse encoding model.
+        "tiny-sparse": (Sparse(mlm), ("input1.input_ids", "input1.attention_mask"), ("output",)),
+        "tiny-cross-encoder": (Cross(cross), three, ("logits",)),
     }
     for name, (module, names, outputs) in models.items():
         onnx = os.path.join(out, f"{name}.onnx")
