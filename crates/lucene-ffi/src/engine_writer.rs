@@ -773,7 +773,9 @@ pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 /// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
 /// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>`,
 /// `sq:<scalar encoding wire number>` or
-/// `ivf:<target_cluster_size>:<rerank encoding>`; `None` for anything else.
+/// `ivf:<target_cluster_size>:<rerank encoding>` (1-bit codes) or
+/// `ivf:<target_cluster_size>:<rerank encoding>:<quantizer>`
+/// (`IVF_QUANTIZERS` wire number); `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let parts: Vec<&str> = value.split(':').collect();
     let int = |s: &str| s.parse::<i32>().ok();
@@ -791,6 +793,10 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
             ScalarEncoding::from_wire_number(int(e)?)?,
         )),
         ["ivf", size, e] => KnnVectorsFormat::ivf(size.parse().ok()?, e.parse().ok()?).ok(),
+        ["ivf", size, e, q] => {
+            KnnVectorsFormat::ivf_quantized(size.parse().ok()?, e.parse().ok()?, q.parse().ok()?)
+                .ok()
+        }
         _ => None,
     }
 }
@@ -867,10 +873,11 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
 /// fields only; recorded as `KNN990HnswBinaryVectorsFormat`) or `5` k-NN's
 /// `KNN1040HnswHalfFloatVectorsFormat(max_conn, beam_width)` (float fields
 /// only) or `6` `LuceneRustIvfVectorsFormat(target_cluster_size,
-/// rerank_encoding)`; kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn,
+/// rerank_encoding, quantizer)`; kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn,
 /// i32 beam_width`, kinds `2` and `3` by `u8 scalar encoding`
 /// (`ScalarEncoding.getWireNumber`), kind `6` by `i32 target_cluster_size, u8
-/// rerank_encoding` (`0` f32, `1` f16, `2` bf16, `3` int8).
+/// rerank_encoding` (`0` f32, `1` f16, `2` bf16, `3` int8), `u8 quantizer`
+/// (`IVF_QUANTIZERS` wire number).
 fn decode_vector_schema(
     c: &mut Cursor<'_>,
 ) -> Result<
@@ -929,7 +936,8 @@ fn decode_vector_schema(
             let size = u32::try_from(c.i32("target cluster size")?)
                 .map_err(|_| decode_error("target cluster size"))?;
             let rerank = c.u8("rerank encoding")?;
-            Some(KnnVectorsFormat::ivf(size, rerank).map_err(invalid)?)
+            let quantizer = c.u8("IVF quantizer")?;
+            Some(KnnVectorsFormat::ivf_quantized(size, rerank, quantizer).map_err(invalid)?)
         }
         _ => return Err(decode_error("vectors format")),
     };
@@ -5253,8 +5261,9 @@ mod tests {
                 1 | 4 | 5 => b.i32(m).i32(100),
                 2 => b.i32(m).i32(100).u8(2),
                 3 => b.u8(2),
-                // `m` is the cluster size, the rerank encoding f16.
-                6 => b.i32(m).u8(1),
+                // `m` is the cluster size, the rerank encoding f16, the
+                // quantizer bbq.
+                6 => b.i32(m).u8(1).u8(0),
                 _ => b,
             };
             b.u8(0).i32(0).0
@@ -5316,6 +5325,10 @@ mod tests {
             Some(KnnVectorsFormat::ivf(384, 1).unwrap())
         );
         assert_eq!(
+            parse_vectors_format("ivf:384:1:6"),
+            Some(KnnVectorsFormat::ivf_quantized(384, 1, 6).unwrap())
+        );
+        assert_eq!(
             parse_vectors_format("sq:1"),
             Some(KnnVectorsFormat::scalar_quantized(
                 ScalarEncoding::PackedNibble
@@ -5331,6 +5344,8 @@ mod tests {
             "ivf:8:0",
             "ivf:384:4",
             "ivf:384",
+            "ivf:384:1:11",
+            "ivf:384:1:x",
         ] {
             assert_eq!(parse_vectors_format(bad), None, "{bad}");
         }
