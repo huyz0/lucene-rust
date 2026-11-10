@@ -1591,13 +1591,20 @@ fn buffer_graphs<'v>(
                 .find(|f| f.name == field && f.vector_dimension > 0)
                 .map(|f| f.number)
         });
-        let Some(g) = number.and_then(|n| b.vector_graphs.iter().find(|g| g.field_number == n))
-        else {
+        let Some(n) = number else {
             continue;
         };
+        let graph = b.vector_graphs.iter().find(|g| g.field_number == n);
+        let index: (&dyn lucene_codecs::buffer_vectors::BufferSearch, i32) = match graph {
+            Some(g) => (g.graph.as_ref(), g.count),
+            None => match b.vector_lists.iter().find(|l| l.field_number == n) {
+                Some(l) => (l.lists.as_ref(), l.count),
+                None => continue,
+            },
+        };
         out.push(lucene_search::knn_search::BufferedVectors {
-            graph: &g.graph,
-            count: g.count,
+            index: index.0,
+            count: index.1,
             segments: range,
         });
     }

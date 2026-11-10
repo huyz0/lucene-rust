@@ -218,6 +218,11 @@ impl IvfGroupWriter {
         Ok(())
     }
 
+    /// The clusters of the fields written so far.
+    pub(crate) fn clusters(&self) -> &[lucene_ivf::FieldClusters] {
+        self.writer.clusters()
+    }
+
     /// The three files, `None` when no float field was written.
     pub(crate) fn finish(self) -> Option<Files> {
         self.any.then(|| {
@@ -228,6 +233,133 @@ impl IvfGroupWriter {
                 (EXTENSIONS[2], files.vectors),
             ]
         })
+    }
+}
+
+/// Each IVF field's clusters from the last flush that wrote it
+/// ([`IndexingConfig::buffer_lists_for`]).
+///
+/// [`IndexingConfig::buffer_lists_for`]: crate::index_writer::IndexingConfig::buffer_lists_for
+#[derive(Debug, Default)]
+pub(crate) struct ClusterSink {
+    fields: std::sync::Mutex<Vec<(i32, Arc<BufferRouter>)>>,
+}
+
+impl ClusterSink {
+    /// Keeps `clusters`, replacing their fields' earlier ones unless those
+    /// have more than twice as many clusters: flushes finish in any order,
+    /// and a small one (a refresh of a few documents) would leave later
+    /// buffers little to prune by.
+    pub(crate) fn record(&self, clusters: &[lucene_ivf::FieldClusters]) {
+        let mut fields = self
+            .fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for c in clusters.iter().filter(|c| !c.is_empty()) {
+            let router = Arc::new(BufferRouter::new(c.clone()));
+            match fields.iter_mut().find(|(n, _)| *n == c.number) {
+                Some(slot) if slot.1.clusters.len() > c.len().saturating_mul(2) => {}
+                Some(slot) => slot.1 = router,
+                None => fields.push((c.number, router)),
+            }
+        }
+    }
+
+    /// Field `number`'s router, if a flush wrote its clusters.
+    pub(crate) fn get(
+        &self,
+        number: i32,
+    ) -> Option<Arc<dyn lucene_codecs::buffer_lists::ClusterRouter>> {
+        let fields = self
+            .fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fields
+            .iter()
+            .find(|(n, _)| *n == number)
+            .map(|(_, r)| Arc::clone(r) as Arc<dyn lucene_codecs::buffer_lists::ClusterRouter>)
+    }
+}
+
+/// How far past its cluster's radius a buffered vector may be and still
+/// join it: farther, it is an outlier every search scores.
+const OUTLIER_RADII: f32 = 1.5;
+
+/// A flushed field's clusters as a buffer routes to them: the reader's
+/// router, and a vector beyond [`OUTLIER_RADII`] of its nearest cluster's
+/// radius (or of the mean radius, for a cluster of one) left out.
+#[derive(Debug)]
+pub(crate) struct BufferRouter {
+    clusters: lucene_ivf::FieldClusters,
+    router: lucene_ivf::routing::Router,
+    mean_radius: f32,
+    nprobe: usize,
+}
+
+impl BufferRouter {
+    fn new(clusters: lucene_ivf::FieldClusters) -> Self {
+        let n = clusters.radii.len().max(1);
+        let mean_radius = clusters.radii.iter().sum::<f32>() / n as f32;
+        BufferRouter {
+            router: clusters.router(),
+            nprobe: clusters.nprobe(),
+            mean_radius,
+            clusters,
+        }
+    }
+}
+
+impl lucene_codecs::buffer_lists::ClusterRouter for BufferRouter {
+    fn clusters(&self) -> usize {
+        self.clusters.len()
+    }
+
+    fn assign(&self, v: &[f32]) -> Option<usize> {
+        let normalized;
+        let v = if self.clusters.similarity == lucene_ivf::Similarity::Cosine {
+            let mut u = v.to_vec();
+            // A zero vector has no direction and stays zero.
+            let _ = lucene_util::vector_util::l2normalize(&mut u, false);
+            normalized = u;
+            &normalized[..]
+        } else {
+            v
+        };
+        let dim = self.clusters.dimension;
+        let c = if self.clusters.similarity == lucene_ivf::Similarity::MaximumInnerProduct {
+            // Its clusters are Euclidean (k-means' `L2` metric, its radii
+            // L2 distances): the nearest centroid, not the best product.
+            self.clusters
+                .centroids
+                .chunks_exact(dim.max(1))
+                .map(|m| lucene_util::simd::square_distance_f32(v, m))
+                .enumerate()
+                .min_by(|a, b| a.1.total_cmp(&b.1))?
+                .0
+        } else {
+            *self.router.route(&self.clusters.centroids, v, 1).first()?
+        };
+        let centroid = self
+            .clusters
+            .centroids
+            .get(c.checked_mul(dim)?..c.checked_add(1)?.checked_mul(dim)?)?;
+        let radius = self
+            .clusters
+            .radii
+            .get(c)
+            .copied()
+            .filter(|&r| r > 0.0)
+            .unwrap_or(self.mean_radius);
+        let far = OUTLIER_RADII * radius;
+        (lucene_util::simd::square_distance_f32(v, centroid) <= far * far).then_some(c)
+    }
+
+    fn probe(&self, query: &[f32], nprobe: usize) -> Vec<usize> {
+        self.router.route(&self.clusters.centroids, query, nprobe)
+    }
+
+    fn default_nprobe(&self) -> usize {
+        self.nprobe
     }
 }
 
