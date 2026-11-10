@@ -235,7 +235,11 @@ mod tests {
     fn every_ivf_quantizer_number_has_its_factory() {
         for (number, name) in IVF_QUANTIZERS.iter().enumerate() {
             let factory = quantizer_factory(number as u8).expect(name);
-            let want = if name.starts_with("erq") { "erq" } else { "osq" };
+            let want = if name.starts_with("erq") {
+                "erq"
+            } else {
+                "osq"
+            };
             assert_eq!(factory.name(), want, "{name}");
         }
         assert!(quantizer_factory(IVF_QUANTIZERS.len() as u8).is_none());
