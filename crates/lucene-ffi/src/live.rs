@@ -75,6 +75,10 @@ struct ViewHandle {
     /// so neither does what a request reads of them (the deletes a
     /// `rollback` makes are those of the request's first read).
     prepared: Mutex<Vec<(Vec<u8>, Arc<Prepared>)>>,
+    /// The handle [`ffi_engine_writer_live_view_open`] gives for this view,
+    /// once it gave one: searches sharing it get the same handle, so the
+    /// caller can tell they read the same documents.
+    id: OnceLock<u64>,
 }
 
 impl ViewHandle {
@@ -1098,6 +1102,7 @@ fn prune_chunks(w: &Arc<EngineWriter>, keep: impl Fn(u64) -> bool) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
+        .map(|(h, _)| h)
         .filter(|h| Arc::ptr_eq(&h.writer, w))
         .flat_map(|h| h.view.buffers.iter().map(|b| b.id))
         .collect();
@@ -1151,8 +1156,12 @@ pub(crate) struct CommitLive {
     masks: Arc<Masks>,
 }
 
-fn views() -> &'static Mutex<HashMap<u64, Arc<ViewHandle>>> {
-    static VIEWS: OnceLock<Mutex<HashMap<u64, Arc<ViewHandle>>>> = OnceLock::new();
+/// The open views by handle, each with how many opens of it are not closed
+/// yet ([`ffi_live_view_close`]).
+type Views = Mutex<HashMap<u64, (Arc<ViewHandle>, usize)>>;
+
+fn views() -> &'static Views {
+    static VIEWS: OnceLock<Views> = OnceLock::new();
     VIEWS.get_or_init(Default::default)
 }
 
@@ -1163,7 +1172,7 @@ fn view(id: u64) -> Result<Arc<ViewHandle>, FfiStatus> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&id)
-        .cloned()
+        .map(|(h, _)| Arc::clone(h))
         .ok_or_else(|| {
             set_last_error("live view: unknown or already-closed handle");
             FfiStatus::InvalidHandle
@@ -1250,11 +1259,16 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
             }
         };
         let blob = h.blob.clone();
-        let id = NEXT_VIEW.fetch_add(1, Ordering::Relaxed);
-        views()
+        // A view searches share keeps its handle: each open of it counts.
+        let id = *h
+            .id
+            .get_or_init(|| NEXT_VIEW.fetch_add(1, Ordering::Relaxed));
+        let mut open = views()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, h);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = open.entry(id).or_insert((h, 0));
+        entry.1 = entry.1.saturating_add(1);
+        drop(open);
         // SAFETY: caller contract.
         unsafe {
             *out_view = id;
@@ -1330,6 +1344,7 @@ fn open_view(
         opened: Mutex::new(opened),
         whole: Mutex::new(Whole::default()),
         prepared: Mutex::new(Vec::new()),
+        id: OnceLock::new(),
     });
     Ok(h)
 }
@@ -1363,20 +1378,25 @@ fn len_i32(n: usize) -> Result<i32, FfiStatus> {
     })
 }
 
-/// Closes a view: its buffers may go once no other view reads them.
+/// Closes one open of a view: a view searches share has one handle for all
+/// its opens, closed as many times. Its buffers may go once no other view
+/// reads them.
 #[no_mangle]
 pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
     guard(|| {
-        let h = views()
+        let mut open = views()
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&view)
-            .ok_or_else(|| {
-                set_last_error("live view: unknown or already-closed handle");
-                FfiStatus::InvalidHandle
-            })?;
-        // The view closes when its last handle goes: see `ViewHandle`'s drop.
-        drop(h);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = open.get_mut(&view) else {
+            set_last_error("live view: unknown or already-closed handle");
+            return Err(FfiStatus::InvalidHandle);
+        };
+        entry.1 = entry.1.saturating_sub(1);
+        let last = (entry.1 == 0).then(|| open.remove(&view));
+        drop(open);
+        // The view closes when its last handle goes, outside the lock: see
+        // `ViewHandle`'s drop.
+        drop(last);
         Ok(())
     })
 }
@@ -1520,10 +1540,72 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         };
         let id = view_reader(handle, &v, request, key)?;
         let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
-        let hits = crate::jvm_knn::search(&h, &knn)?;
+        let base = lookup(handle, "ffi_live_view_knn: unknown or closed reader")?
+            .reader
+            .segment_readers()
+            .len();
+        let buffers = if knn.nested.is_some() {
+            Vec::new()
+        } else {
+            buffer_graphs(&v, &h, base, &knn.field)
+        };
+        let hits = crate::jvm_knn::search(&h, &knn, &buffers)?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
+}
+
+/// The buffers of `v` whose vectors of `field` have a graph, as the
+/// segments of `h` (the view's reader over a reader of `base` segments)
+/// that hold them: a buffer read as chunks in its slot, each chunk one
+/// segment of exactly its documents, from the buffer's first one.
+fn buffer_graphs<'v>(
+    v: &'v ViewHandle,
+    h: &crate::registry::JvmReaderHandle,
+    base: usize,
+    field: &str,
+) -> Vec<lucene_search::knn_search::BufferedVectors<'v>> {
+    let readers = h.reader.segment_readers();
+    let mut out = Vec::new();
+    let mut at = base;
+    for (b, plan) in v.view.buffers.iter().zip(&v.plans) {
+        let range = at..at.saturating_add(plan.len());
+        at = range.end;
+        let Some(segments) = readers.get(range.clone()) else {
+            return Vec::new();
+        };
+        let whole = plan.first().is_none_or(|p| p.start == 0)
+            && plan.last().map_or(0, |p| p.end) == b.max_doc
+            && plan.windows(2).all(|w| w[0].end == w[1].start)
+            && plan
+                .iter()
+                .zip(segments)
+                .all(|(p, r)| r.max_doc == p.end.saturating_sub(p.start));
+        if !(b.in_slot && b.chunks && whole) {
+            continue;
+        }
+        let number = segments.iter().find_map(|r| {
+            r.field_infos()
+                .fields
+                .iter()
+                .find(|f| f.name == field && f.vector_dimension > 0)
+                .map(|f| f.number)
+        });
+        let Some(g) = number.and_then(|n| b.vector_graphs.iter().find(|g| g.field_number == n))
+        else {
+            continue;
+        };
+        out.push(lucene_search::knn_search::BufferedVectors {
+            graph: &g.graph,
+            count: g.count,
+            segments: range,
+        });
+    }
+    if at != readers.len() {
+        // Not the view's layout: every segment is searched on its own.
+        return Vec::new();
+    }
+    out
 }
 
 /// The reader handle of `v` over the reader at `handle` that serves

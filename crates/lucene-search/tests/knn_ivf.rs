@@ -216,10 +216,70 @@ fn half_float_rerank_vectors_still_return_exact_scores() {
     assert!(r >= 0.9, "recall {r}");
 }
 
+/// The quantizer name and bits each `IVF_QUANTIZERS` wire number writes
+/// into the `.ivm` state.
+#[test]
+fn every_quantizer_writes_its_codes_and_keeps_exact_scores() {
+    use lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS;
+    for (number, name) in IVF_QUANTIZERS.iter().enumerate() {
+        let tmp = TempDir::new(&format!("knn-ivf-{name}"));
+        let dir = FsDirectory::open(&tmp);
+        build(
+            &dir,
+            KnnVectorsFormat::ivf_quantized(128, 1, number as u8).unwrap(),
+        );
+        let reader = DirectoryReader::open(&dir).unwrap();
+        for seg in reader.segment_readers() {
+            let field = seg
+                .field_infos()
+                .fields
+                .iter()
+                .find(|f| f.name == "v")
+                .unwrap();
+            let index = seg.ivf_for(field.number).unwrap().expect("an IVF index");
+            let want = if name.starts_with("erq") {
+                "erq"
+            } else {
+                "osq"
+            };
+            assert_eq!(index.field(field.number).unwrap().quantizer().name(), want);
+        }
+        let r = recall(&dir, 10, None, |_| true);
+        assert!(r >= 0.9, "{name} recall {r}");
+    }
+}
+
+/// A merge re-quantizes the merged vectors with the writer's quantizer,
+/// whatever the sources were written with.
+#[test]
+fn a_merge_requantizes_with_the_writers_quantizer() {
+    let tmp = TempDir::new("knn-ivf-requant");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir, ivf());
+    let erq4 = KnnVectorsFormat::ivf_quantized(128, 1, 6).unwrap();
+    let mut w = writer(&dir, erq4);
+    w.force_merge(1).unwrap();
+    w.commit().unwrap();
+    w.close().unwrap();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reader.segment_readers().len(), 1);
+    let seg = &reader.segment_readers()[0];
+    let number = seg
+        .field_infos()
+        .fields
+        .iter()
+        .find(|f| f.name == "v")
+        .unwrap()
+        .number;
+    let index = seg.ivf_for(number).unwrap().expect("a merged IVF index");
+    assert_eq!(index.field(number).unwrap().quantizer().name(), "erq");
+}
+
 #[test]
 fn bad_ivf_parameters_are_refused() {
     assert!(KnnVectorsFormat::ivf(8, 0).is_err());
     assert!(KnnVectorsFormat::ivf(128, 4).is_err());
+    assert!(KnnVectorsFormat::ivf_quantized(128, 0, 11).is_err());
     let tmp = TempDir::new("knn-ivf-bad");
     let dir = FsDirectory::open(&tmp);
     let w = ConcurrentIndexWriter::new(
@@ -228,6 +288,7 @@ fn bad_ivf_parameters_are_refused() {
             KnnVectorsFormat::Ivf {
                 target_cluster_size: 0,
                 rerank_encoding: 0,
+                quantizer: 0,
             },
         ),
         1,

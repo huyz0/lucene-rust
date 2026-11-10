@@ -24,6 +24,7 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
+import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.engine.DocumentIndexWriter;
@@ -117,6 +118,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private boolean liveSearch;
     /** How old a view of the buffers a search may read ({@code index.lucene_rust.realtime_max_staleness}). */
     private volatile long liveStalenessNanos;
+    /** The reader over the view searches share under {@link #liveStalenessNanos}, kept until a refresh. */
+    private final SharedLiveReader sharedLive = new SharedLiveReader();
     /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
     private String partitionField;
     /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
@@ -1055,6 +1058,26 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** An open view: {@link NativeBridge#liveViewClose} it once nothing reads it. */
     record LiveViewHandle(long id, byte[] blob) {}
 
+    /** The reader over the view searches share, kept until the next refresh. */
+    SharedLiveReader sharedLive() {
+        return sharedLive;
+    }
+
+    /**
+     * Lets the kept reader over the shared view go, on a refresh or, with {@code close}, for good
+     * when the writer closes.
+     */
+    private void releaseSharedLive(boolean close) {
+        OpenSearchDirectoryReader old = sharedLive.clear(close);
+        if (old != null) {
+            try {
+                old.decRef();
+            } catch (IOException e) {
+                LOGGER.warn("lucene-rust: closing a realtime search's view failed", e);
+            }
+        }
+    }
+
     /**
      * Lets go of the buffered documents a reader of commit {@code generation} already has, once no
      * view reads them: every new search reads that commit or a newer one.
@@ -1281,6 +1304,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void close() throws IOException {
         synchronized (lock) {
             closed = true;
+            // After closed: a search opening a view now keeps no reader of it.
+            releaseSharedLive(true);
             indexing.writeLock().lock();
             try {
                 if (nativeClosed == false) {
@@ -1328,7 +1353,30 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void beforeRefresh() {}
 
     @Override
-    public void afterRefresh(boolean didRefresh) {}
+    public void afterRefresh(boolean didRefresh) {
+        if (didRefresh) {
+            releaseSharedLive(false);
+        }
+    }
+
+    /**
+     * Lets the kept reader over the shared view go after each refresh of the searchers' reader
+     * manager: a search between the internal refresh and its own may have kept one over the reader
+     * it replaced.
+     */
+    org.apache.lucene.search.ReferenceManager.RefreshListener externalRefreshListener() {
+        return new org.apache.lucene.search.ReferenceManager.RefreshListener() {
+            @Override
+            public void beforeRefresh() {}
+
+            @Override
+            public void afterRefresh(boolean didRefresh) {
+                if (didRefresh) {
+                    releaseSharedLive(false);
+                }
+            }
+        };
+    }
 
     @Override
     public Releasable obtainWriteLockOnAllMap() {

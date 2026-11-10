@@ -109,6 +109,7 @@ JAVA_ONLY = {
     ("VectorsFormatSpec.java", "SEVEN_BIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
     ("VectorsFormatSpec.java", "SINGLE_BIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
     ("VectorsFormatSpec.java", "DIBIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
+    ("VectorsFormatSpec.java", "IVF_QUANTIZERS"): "IVF_QUANTIZERS.len() in per_field_knn_vectors.rs, an array's length",
     ("NativeBridge.java", "WARM_FAILED"): "any answer but WARM_OK fails the merge; Rust names none",
     ("QueryEncoder.java", "REGEXP_CACHE_SIZE"): "the Java side's parsed-regexp cache",
     ("NativeDocValues.java", "POINT_READS"): "when a Java iterator hands over to the segment's own for a scan",
