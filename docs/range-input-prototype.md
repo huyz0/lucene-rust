@@ -154,3 +154,13 @@ While this exact branch's PR is a draft, the existing broad workflow defers its
 uncapped build jobs and deliberately fails `ci-ok`. Marking the PR ready restores
 the original complete workflow. Other branches and main retain their existing
 behavior. Draft feedback therefore cannot qualify a merge or a new hsearch pin.
+
+The first published head `d7d60f4f7f28918e0475fd826739e6200dbd879d` ran as
+GitHub Actions `42783579364`. It verified the actual digest pull, source SHA,
+cgroup caps and Rust 1.97.1, then refused before compilation because upstream
+has no committed Cargo.lock. That failure is retained. The fixed feedback job
+can resolve a missing lock in a job-local source copy within the same cap,
+retain only the bounded public lockfile through the normal Actions artifact
+channel, and exit without compiling. The resolved lock must become committed
+source before a compiler run is eligible; no floating dependency graph is
+claimed qualified. This is lockfile preparation, not a new artifact harness.

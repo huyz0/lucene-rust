@@ -26,6 +26,16 @@ read -r quota period </sys/fs/cgroup/cpu.max
 printf 'RANGE_FEEDBACK source=%s cpu=%s/%s memory=4294967296 swap=0 pids=256\n' "$EXPECTED_SOURCE" "$quota" "$period"
 rustc --version --verbose
 cargo --version
+if [ ! -f /src/Cargo.lock ]; then
+  cp -a /src /scratch/source
+  cd /scratch/source
+  cargo generate-lockfile
+  test "$(stat -c %s Cargo.lock)" -le 1048576
+  cp Cargo.lock /scratch/resolved-Cargo.lock
+  sha256sum /scratch/resolved-Cargo.lock
+  echo 'Resolved graph is not yet committed source; compilation remains unrun.'
+  exit 78
+fi
 cargo check --locked -p lucene-store -p lucene-codecs --all-targets
 cargo test --locked -p lucene-store --lib range_input
 cargo test --locked -p lucene-codecs --test blocktree_fixtures range_terms_postings_and_filter_match_java_with_eviction_and_faults
@@ -122,6 +132,17 @@ def main():
             process.terminate()
             process.wait(timeout=15)
         process.stdout.close()
+    resolved = scratch / "resolved-Cargo.lock"
+    if resolved.is_file():
+        import hashlib
+        if resolved.stat().st_size > 1024**2:
+            raise SystemExit("resolved lock exceeds artifact bound")
+        data = resolved.read_bytes()
+        destination = runner_temp / ("range-feedback-" + expected + ".lock")
+        with destination.open("xb") as output:
+            output.write(data)
+        print(json.dumps({"resolved_lock_sha256": hashlib.sha256(data).hexdigest(),
+                          "resolved_lock_bytes": len(data), "compiled": False}))
     print(json.dumps({"source": expected, "exit_code": process.returncode, "refusal": failure,
                       "observed_stdio_bytes": total, "elapsed_seconds": round(time.monotonic() - started, 3)}))
     return 1 if failure else process.returncode

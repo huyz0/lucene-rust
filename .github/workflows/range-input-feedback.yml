@@ -32,3 +32,11 @@ jobs:
           trap 'sudo umount "$scratch"' EXIT
           sudo chown "$(id -u):$(id -g)" "$scratch"
           python3 -B scripts/range-feedback.py "$scratch"
+      - name: Retain a newly resolved lockfile for source pinning
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: range-feedback-${{ github.sha }}-lock
+          path: ${{ runner.temp }}/range-feedback-${{ github.sha }}.lock
+          if-no-files-found: ignore
+          retention-days: 7
