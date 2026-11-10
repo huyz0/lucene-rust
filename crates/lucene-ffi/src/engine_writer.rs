@@ -7462,6 +7462,218 @@ mod tests {
         assert_eq!(sci.codec_name, KNN_CODEC);
     }
 
+    /// **Realtime k-NN.** With live search on, a view's buffered vectors are
+    /// found natively beside the reader's ([`crate::live::ffi_live_view_knn`]):
+    /// the exact top `k` of every vector, a filter applied to the buffers
+    /// too, and a buffered document deleted since hidden. A chunk of the
+    /// buffer, as the warmer cuts them, keeps its vectors without a graph,
+    /// which the flush builds.
+    #[test]
+    fn a_view_finds_buffered_vectors() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_knn,
+        };
+        let tmp = empty_index("engine-writer-live-knn");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let spec = Blob::default()
+            .bytes(b"v")
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(4)
+            .u8(0)
+            .u8(0)
+            .u8(1)
+            .i32(8)
+            .i32(50)
+            .u8(0)
+            .i32(1)
+            .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+            .bytes(b"hnsw:8:50")
+            .0;
+        register(h, &spec).unwrap();
+        let word = |i: usize| if i.is_multiple_of(2) { "even" } else { "odd" };
+        let add = |from: usize, to: usize| {
+            let mut b = Blob::default().u8(OP_ADD).i32((to - from) as i32);
+            for i in from..to {
+                b = doc(b, &f, &format!("d{i}"), &[word(i)], i as i64, false);
+            }
+            for i in from..to {
+                b = b.i32(1).bytes(b"v").u8(0).i32(4);
+                for x in knn_vector(i) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        add(0, 1200);
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        add(1200, 2400);
+        // A chunk of the buffered documents so far, as the warmer writes
+        // it, and a tail of the rest.
+        crate::live::warm_for_tests(&lookup(h).unwrap(), 1000);
+        add(2400, 2430);
+        let b = doc(
+            Blob::default()
+                .u8(OP_SOFT_UPDATE)
+                .bytes(b"_id")
+                .bytes(b"d2410")
+                .bytes(b"__soft_deletes")
+                .i64(1)
+                .i32(1),
+            &f,
+            "d2410",
+            &[],
+            2430,
+            true,
+        );
+        assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+
+        let knn = |target: &[f32], k: i32, filter: Option<&str>| -> Vec<(i32, f32)> {
+            let mut request = Blob::default()
+                .bytes(b"v")
+                .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+                .i32(4);
+            for &x in target {
+                request = request.f32(x);
+            }
+            request = request.i32(k).i32(k.max(20));
+            request = match filter {
+                None => request.u8(0),
+                Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
+            };
+            let request = request.u8(0).i32(0).0;
+            let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
+            // SAFETY: live request and buffers of 64.
+            let rc = unsafe {
+                ffi_live_view_knn(
+                    reader,
+                    view,
+                    request.as_ptr(),
+                    request.len(),
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    64,
+                    &mut n,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            docs[..n]
+                .iter()
+                .copied()
+                .zip(scores[..n].iter().copied())
+                .collect()
+        };
+        // Committed documents keep their numbers; the buffered ones follow,
+        // in arrival order.
+        for target in [
+            [0.2f32, -0.4, 0.6, 0.5],
+            [0.9, 0.1, 0.2, 0.5],
+            [-0.5, 0.8, 0.9, 0.5],
+        ] {
+            for filter in [None, Some("even")] {
+                let mut want: Vec<(usize, f32)> = (0..2430)
+                    .filter(|&i| i != 2410)
+                    .filter(|&i| filter.is_none_or(|w| w == word(i)))
+                    .map(|i| (i, knn_score(&target, &knn_vector(i))))
+                    .collect();
+                want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                let got = knn(&target, 10, filter);
+                assert_eq!(got.len(), 10);
+                for ((doc, score), (i, exact)) in got.iter().zip(&want) {
+                    assert!(
+                        (score - exact).abs() < 1e-6,
+                        "{target:?} {filter:?}: {score} vs {exact}"
+                    );
+                    let _ = (doc, i);
+                }
+                // Exact hits beyond the committed graph's own misses: every
+                // buffered document in the exact top 10 is found.
+                for &(i, _) in want.iter().take(10).filter(|(i, _)| *i >= 1200) {
+                    assert!(
+                        got.iter().any(|&(d, _)| d as usize == i),
+                        "{target:?} {filter:?}: d{i}"
+                    );
+                }
+                assert!(got.iter().all(|&(d, _)| d != 2410));
+            }
+        }
+        // The whole buffer as the target's neighbours: a buffered vector
+        // found exactly, score and all.
+        let own = knn(&knn_vector(1300), 1, None);
+        assert_eq!(own, vec![(1300, 1.0)]);
+
+        // The committed segment has its graph; the buffers' chunk and tail
+        // keep their vectors without one.
+        let mut whole = 0u64;
+        // SAFETY: no request; a live out-pointer.
+        let rc = unsafe {
+            crate::live::ffi_live_view_reader(
+                reader,
+                view,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut whole,
+            )
+        };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let wh = crate::jvm_reader::lookup(whole, "test").unwrap();
+        let graphs: Vec<bool> = wh
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|seg| {
+                let n = seg
+                    .field_infos()
+                    .fields
+                    .iter()
+                    .find(|i| i.name == "v")
+                    .unwrap()
+                    .number;
+                let (_, graph) = seg.knn_vectors_for(n).unwrap().unwrap();
+                graph.unwrap().graph(n).unwrap().is_some()
+            })
+            .collect();
+        let sizes: Vec<i32> = wh
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.max_doc)
+            .collect();
+        assert!(graphs.len() >= 3, "{graphs:?} {sizes:?}");
+        assert!(graphs[0], "the committed segment's graph");
+        assert!(graphs[1..].iter().all(|g| !g), "{graphs:?}");
+        drop(wh);
+
+        assert_eq!(ffi_live_view_close(view), 0);
+        assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+
+        // The flush builds the graph the chunk did not.
+        let all = commit_settled(h);
+        ffi_engine_writer_close(h);
+        check(&tmp);
+        let _ = all;
+    }
+
     /// **A vector field is written in its mapping's format and searched
     /// natively.** The plugin's field spec (dimension, encoding, similarity,
     /// HNSW parameters) and its documents' vectors section make two segments

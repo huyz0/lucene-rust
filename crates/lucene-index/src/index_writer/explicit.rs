@@ -1204,6 +1204,7 @@ impl IndexingConfig {
                         i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
                         &|name: &str| self.knn_vectors_format_for(name),
                         self.knn_vectors_direct(),
+                        buf.limit.is_none(),
                         &segment_id,
                     )?
                 };
