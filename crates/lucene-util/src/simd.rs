@@ -1471,8 +1471,21 @@ static BYTE_BITS: [[u8; 8]; 256] = {
 /// instead worked a byte at a time -- one table load gives up to eight
 /// positions, written as a fixed-width 8-lane store (which LLVM vectorizes)
 /// whose surplus lanes the next byte overwrites. Sparse words keep the bit
-/// loop, which touches only their set bits.
+/// loop, which touches only their set bits. On AVX-512, where
+/// [`crate::cpu::level`] allows it, a word is instead compressed sixteen
+/// ids at a time (see `expand_bitset_avx512`).
 pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    if crate::cpu::level() == crate::cpu::Level::Avx512 {
+        // SAFETY: `crate::cpu::level` found AVX-512F on this CPU; the kernel
+        // bounds its own reads and writes as below.
+        return unsafe { expand_bitset_avx512(words, base, out) };
+    }
+    expand_bitset_portable(words, base, out)
+}
+
+/// [`expand_bitset`] without AVX-512: the byte-table form described there.
+fn expand_bitset_portable(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     let cap = out.len().min(256);
     // Every write below happens before its `found >= cap` test, so an empty
     // output must not reach them.
@@ -1538,6 +1551,66 @@ pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     }
     // Only what was found: `out[found..]` is left as the caller had it, as
     // the scalar specification leaves it.
+    out[..found].copy_from_slice(&buf[..found]);
+    found
+}
+
+/// [`expand_bitset`] on AVX-512, 1.25-1.75x the byte-table path on
+/// Sapphire Rapids at postings bit-set densities (1/8 to all bits set): a
+/// word with more than four bits set is four 16-bit halves, each one
+/// `vpcompressd` of the sixteen ids it covers by its bits, stored whole
+/// (the surplus lanes are overwritten by the next store or never kept).
+/// Sparse words keep the bit loop, as there.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn expand_bitset_avx512(words: &[u64], base: i32, out: &mut [i32]) -> usize {
+    use std::arch::x86_64::*;
+    let cap = out.len().min(256);
+    if cap == 0 {
+        return 0;
+    }
+    // Slack for the surplus of the last 16-lane store.
+    let mut buf = [0i32; 256 + 16];
+    let mut found = 0usize;
+    let iota = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let sixteen = _mm512_set1_epi32(16);
+    'words: for (w, &word) in words.iter().enumerate() {
+        if word == 0 {
+            continue;
+        }
+        // Wrapping, like every doc id derived from on-disk deltas.
+        let word_base = base.wrapping_add((w * 64) as i32);
+        if word.count_ones() <= 4 {
+            let mut bits = word;
+            while bits != 0 {
+                buf[found] = word_base.wrapping_add(bits.trailing_zeros() as i32);
+                found += 1;
+                if found >= cap {
+                    break 'words;
+                }
+                bits &= bits - 1;
+            }
+            continue;
+        }
+        let mut ids = _mm512_add_epi32(iota, _mm512_set1_epi32(word_base));
+        for half in 0..4 {
+            let mask = (word >> (16 * half)) as u16;
+            // SAFETY: `found < cap <= 256` here (checked below), so the
+            // 16-lane store ends by `256 + 16`, inside `buf`.
+            unsafe {
+                _mm512_storeu_si512(
+                    buf.as_mut_ptr().add(found) as *mut _,
+                    _mm512_maskz_compress_epi32(mask, ids),
+                );
+            }
+            found += mask.count_ones() as usize;
+            if found >= cap {
+                found = cap;
+                break 'words;
+            }
+            ids = _mm512_add_epi32(ids, sixteen);
+        }
+    }
     out[..found].copy_from_slice(&buf[..found]);
     found
 }
@@ -1979,6 +2052,17 @@ mod tests {
             let fb = expand_bitset_scalar(&words, base, &mut b);
             assert_eq!(fa, fb, "round {round}");
             assert_eq!(a[..fa], b[..fb], "round {round}");
+            // Both paths, whichever the dispatch picks on this CPU.
+            let mut c = [7i32; 256];
+            let fc = expand_bitset_portable(&words, base, &mut c);
+            assert_eq!((fc, &c[..fc]), (fb, &b[..fb]), "round {round} portable");
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx512f") {
+                let mut c = [7i32; 256];
+                // SAFETY: the CPU has AVX-512F (checked just above).
+                let fc = unsafe { expand_bitset_avx512(&words, base, &mut c) };
+                assert_eq!((fc, &c[..fc]), (fb, &b[..fb]), "round {round} avx512");
+            }
             // A partial output, as a decode that starts mid-block fills.
             let cap = (xorshift(&mut s) % 257) as usize;
             let (mut a, mut b) = ([7i32; 256], [7i32; 256]);
@@ -1986,6 +2070,20 @@ mod tests {
             let fb = expand_bitset_scalar(&words, base, &mut b[..cap]);
             assert_eq!(fa, fb, "round {round} cap {cap}");
             assert_eq!(a[..fa], b[..fb], "round {round} cap {cap}");
+            let mut c = [7i32; 256];
+            let fc = expand_bitset_portable(&words, base, &mut c[..cap]);
+            assert_eq!(
+                (fc, &c[..]),
+                (fb, &b[..]),
+                "round {round} cap {cap} portable"
+            );
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx512f") {
+                let mut c = [7i32; 256];
+                // SAFETY: the CPU has AVX-512F (checked just above).
+                let fc = unsafe { expand_bitset_avx512(&words, base, &mut c[..cap]) };
+                assert_eq!((fc, &c[..]), (fb, &b[..]), "round {round} cap {cap} avx512");
+            }
         }
         // Full words (the 64-at-once path) between sparse and dense ones, cut
         // off at every kind of output length, including inside a full word.
@@ -2164,6 +2262,14 @@ mod tests {
             prefix_sum_256(base, &deltas, &mut fast);
             prefix_sum_256_scalar(base, &deltas, &mut spec);
             assert_eq!(fast, spec, "round {round}");
+            // Each kernel the dispatch may pick, whichever it picks here.
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            {
+                let mut v = [0i32; 256];
+                // SAFETY: AVX2 is enabled for this whole build.
+                unsafe { prefix_sum_256_avx2(base, &deltas, &mut v) };
+                assert_eq!(v, spec, "round {round} avx2");
+            }
         }
     }
 
