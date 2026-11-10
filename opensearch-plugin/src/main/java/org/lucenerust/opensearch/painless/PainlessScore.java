@@ -28,8 +28,10 @@ import java.util.function.Supplier;
 
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.Scorable;
 import org.lucenerust.opensearch.NativeBridge;
 
+import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
@@ -41,6 +43,7 @@ import org.opensearch.painless.WriterConstants;
 import org.opensearch.painless.lookup.PainlessLookup;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptContext;
+import org.opensearch.script.ScriptException;
 import org.opensearch.script.ScriptService;
 
 /**
@@ -84,8 +87,14 @@ public final class PainlessScore {
         }
     }
 
+    /**
+     * A score script the request sends to the native runtime: its factory, and the index name,
+     * shard and index version {@code ScriptScoreQuery} gives each script it makes.
+     */
+    private record Run(ScoreScript.LeafFactory factory, String index, int shard, Version version) {}
+
     /** The score scripts the request on this thread sends to the native runtime, by run number. */
-    private static final ThreadLocal<List<ScoreScript.LeafFactory>> RUNS = ThreadLocal.withInitial(ArrayList::new);
+    private static final ThreadLocal<List<Run>> RUNS = ThreadLocal.withInitial(ArrayList::new);
 
     /** What a script's error starts with in the native runtime's message ({@code SCRIPT_ERROR}). */
     private static final String SCRIPT_ERROR = "\u0001painless-script-error\u0001";
@@ -193,10 +202,10 @@ public final class PainlessScore {
         RUNS.get().clear();
     }
 
-    /** {@code factory}'s number in this request, for its errors. */
-    public static int run(ScoreScript.LeafFactory factory) {
-        List<ScoreScript.LeafFactory> runs = RUNS.get();
-        runs.add(factory);
+    /** The number in this request, for its errors, of a script {@code factory} makes for an index's shard. */
+    public static int run(ScoreScript.LeafFactory factory, String index, int shard, Version version) {
+        List<Run> runs = RUNS.get();
+        runs.add(new Run(factory, index, shard, version));
         return runs.size() - 1;
     }
 
@@ -212,9 +221,11 @@ public final class PainlessScore {
 
     /**
      * What a native search that ran this request's scripts fails with, from its {@code error}: the
-     * {@code ScriptException} Painless raises for a script's exception, at the same position, or
-     * else an internal error. Never a reason to run the search again in Java: the scripts already
-     * ran.
+     * {@code ScriptException} Painless raises for a script's exception, or else an internal error.
+     * Never a reason to run the search again in Java: the scripts already ran. Painless's own
+     * exception (its message, the Java frames in its script stack) comes from the script run once
+     * more in Java on the one document it threw at, with the score it had; the static check let
+     * through only scripts with no effect but their score, so that run changes nothing.
      */
     public static RuntimeException failure(String error, IndexReader reader) {
         int score = error == null ? -1 : error.indexOf(SCORE_ERROR);
@@ -225,23 +236,57 @@ public final class PainlessScore {
         if (at < 0) {
             return new IllegalStateException("native script_score search failed: " + error);
         }
-        String[] parts = error.substring(at + SCRIPT_ERROR.length()).split("\u0001", 4);
+        // Run number, segment, document, score bits, source offset, exception class, message.
+        String[] parts = error.substring(at + SCRIPT_ERROR.length()).split("\u0001", 7);
         try {
-            ScoreScript.LeafFactory factory = RUNS.get().get(Integer.parseInt(parts[0]));
-            int offset = Integer.parseInt(parts[1]);
-            String message = parts[3].startsWith("1") ? parts[3].substring(1) : null;
-            Throwable cause = exception(parts[2], message);
-            // Painless numbers a script's lines by source offset + 1.
-            cause.setStackTrace(new StackTraceElement[] { new StackTraceElement(WriterConstants.CLASS_NAME, "execute", null, offset < 0 ? -1 : offset + 1) });
+            Run run = RUNS.get().get(Integer.parseInt(parts[0]));
+            int leaf = Integer.parseInt(parts[1]);
+            int doc = Integer.parseInt(parts[2]);
+            float docScore = Float.intBitsToFloat(Integer.parseUnsignedInt(parts[3]));
+            int offset = Integer.parseInt(parts[4]);
+            String message = parts[6].startsWith("1") ? parts[6].substring(1) : null;
             List<LeafReaderContext> leaves = reader.leaves();
-            if (leaves.isEmpty()) {
+            if (leaf >= leaves.size()) {
                 return new IllegalStateException("native script_score search failed: " + error);
             }
-            PainlessScript script = (PainlessScript) factory.newInstance(leaves.get(0));
-            return script.convertToScriptException(cause, Map.of());
+            ScoreScript script = script(run, leaves.get(leaf));
+            ScriptException painless = rethrown(script, doc, docScore);
+            if (painless != null) {
+                return painless;
+            }
+            Throwable cause = exception(parts[5], message);
+            // Painless numbers a script's lines by source offset + 1.
+            cause.setStackTrace(new StackTraceElement[] { new StackTraceElement(WriterConstants.CLASS_NAME, "execute", null, offset < 0 ? -1 : offset + 1) });
+            return ((PainlessScript) script).convertToScriptException(cause, Map.of());
         } catch (IOException | RuntimeException e) {
             return new IllegalStateException("native script_score search failed: " + error, e);
         }
+    }
+
+    /** The script {@code ScriptScoreQuery} makes for {@code leaf}. */
+    private static ScoreScript script(Run run, LeafReaderContext leaf) throws IOException {
+        ScoreScript script = run.factory().newInstance(leaf);
+        script._setIndexName(run.index());
+        script._setShard(run.shard());
+        script._setIndexVersion(run.version());
+        return script;
+    }
+
+    /** The {@code ScriptException} {@code script} raises on {@code doc} scored {@code score}, or null if it runs. */
+    private static ScriptException rethrown(ScoreScript script, int doc, float score) {
+        script.setScorer(new Scorable() {
+            @Override
+            public float score() {
+                return score;
+            }
+        });
+        script.setDocument(doc);
+        try {
+            script.execute(null);
+        } catch (ScriptException e) {
+            return e;
+        }
+        return null;
     }
 
     /** An exception of class {@code name} with {@code message} (null for none). */
