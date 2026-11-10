@@ -20,6 +20,7 @@ pub mod document;
 pub mod field_updates;
 pub mod file_deleter;
 pub mod flush_policy;
+pub mod hnsw_quant_vectors;
 pub mod index_file_deleter;
 pub mod index_sorter;
 pub mod index_upgrader;

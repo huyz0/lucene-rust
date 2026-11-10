@@ -190,7 +190,7 @@ pub fn merge_field(
         })
         .collect();
     let centroids = base_field.centroids();
-    writer.add_clustered(&field, factory, params, &mut |prepared, metric| {
+    writer.add_clustered(&field, factory, params, false, &mut |prepared, metric| {
         kmeans::reuse(
             prepared,
             dimension,
@@ -269,7 +269,7 @@ pub fn merge_field_with_vectors(
     }
     let centroids = base_field.centroids();
     let dimension = field.dimension;
-    writer.add_clustered(field, factory, params, &mut |prepared, metric| {
+    writer.add_clustered(field, factory, params, false, &mut |prepared, metric| {
         kmeans::reuse(
             prepared,
             dimension,

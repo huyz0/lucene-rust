@@ -55,6 +55,7 @@
 
 use lucene_codecs::backward_codecs::hnsw_vectors::RetiredHnswVectorsReader;
 use lucene_codecs::backward_codecs::quantized_vectors::{QuantizedVectorsReader, SearchKind};
+use lucene_codecs::buffer_lists::ivf_accepted_target;
 use lucene_codecs::field_infos::{FieldInfos, VectorEncoding, VectorSimilarityFunction};
 use lucene_codecs::hnsw::{KnnCollect, KnnCollector, VectorScorer};
 use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, OffHeapHnswGraph, SearchOptions};
@@ -164,10 +165,18 @@ pub enum GraphReader<'d> {
         codes: lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'d>,
     },
     /// `LuceneRustIvfVectorsFormat`: a float query probes the field's
-    /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]);
-    /// a byte field, a diversifying search and a selective filter scan the
-    /// raw vectors exhaustively.
+    /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]),
+    /// keeping the best child per parent for a diversifying search; a byte
+    /// field and a selective filter scan the raw vectors exhaustively.
     Ivf(std::sync::Arc<lucene_ivf::IvfReader>),
+    /// `LuceneRustHnswQuantizedVectorsFormat`: the HNSW graph (`None` for a
+    /// field indexed without one) walked on the field's quantized codes,
+    /// the candidates reranked on the raw vectors; the exhaustive branch, a
+    /// diversifying search and a byte field score the raw vectors.
+    HnswQuantized {
+        graph: Option<HnswVectorsReader<'d>>,
+        codes: std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>,
+    },
 }
 
 impl<'d> From<HnswVectorsReader<'d>> for GraphReader<'d> {
@@ -324,7 +333,8 @@ fn leaf_graph<'a, 'd>(
         Some(GraphReader::Lucene99(reader)) => {
             LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
         }
-        Some(GraphReader::ScalarQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
+        Some(GraphReader::ScalarQuantized { graph, .. })
+        | Some(GraphReader::HnswQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
             Some(reader) => lucene99_graph(reader, field_number)?,
             None => None,
         }),
@@ -1113,16 +1123,60 @@ fn leaf_results<S: VectorScorer>(
         );
     }
     leaf_results_rescored(
-        scorer, None, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
+        scorer, None, false, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
     )
+}
+
+/// An exhaustive search's hits, scored on `exact` when given (then they need
+/// no rescoring: the flag is `false`), else on `scorer`.
+fn exact_hits<S: VectorScorer>(
+    scorer: &mut S,
+    exact: Option<&mut (dyn VectorScorer + '_)>,
+    bits: &FixedBitSet,
+    cost: usize,
+    k: usize,
+) -> Result<(Vec<(i32, f32)>, bool)> {
+    Ok(match exact {
+        Some(exact) => (exact_search(&mut DynScorer(exact), bits, cost, k)?, false),
+        None => (exact_search(scorer, bits, cost, k)?, true),
+    })
+}
+
+/// A `dyn` scorer as a sized one, for the generic search functions.
+struct DynScorer<'s, 'd>(&'s mut (dyn VectorScorer + 'd));
+
+impl VectorScorer for DynScorer<'_, '_> {
+    fn score(&mut self, node: i32) -> lucene_codecs::vectors::Result<f32> {
+        self.0.score(node)
+    }
+
+    fn max_ord(&self) -> i32 {
+        self.0.max_ord()
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        self.0.prefetch(nodes)
+    }
+
+    fn bulk_score(
+        &mut self,
+        nodes: &[i32],
+        scores: &mut [f32],
+    ) -> lucene_codecs::vectors::Result<f32> {
+        self.0.bulk_score(nodes, scores)
+    }
 }
 
 /// [`leaf_results`] without diversification, with every collected hit
 /// rescored by `rescore` (and re-ranked, best first) when one is given.
+/// With `exact_on_rescore`, an exhaustive search (a selective filter, or a
+/// graph walk that visited too many nodes) scores with `rescore` itself
+/// rather than collecting `k` on `scorer`'s estimates.
 #[allow(clippy::too_many_arguments)]
 fn leaf_results_rescored<S: VectorScorer>(
     scorer: &mut S,
-    rescore: Option<&mut dyn VectorScorer>,
+    mut rescore: Option<&mut dyn VectorScorer>,
+    exact_on_rescore: bool,
     graph: &LeafGraph<'_, '_>,
     accept: Option<&AcceptOrds<'_>>,
     ord_to_doc: &impl Fn(i32) -> Result<i32>,
@@ -1145,6 +1199,7 @@ fn leaf_results_rescored<S: VectorScorer>(
     // `from_graph`: whether the hits came out of the reader's `search` (and
     // so, for `Lucene90`, are ordinals standing in for documents) rather than
     // out of `exactSearch`, which always reports real documents.
+    let mut needs_rescore = true;
     let (hits, early, from_graph) = if !plan.filtered {
         // Java's `filterWeight == null` branch: `AcceptDocs.fromLiveDocs`,
         // `visitedLimit = Integer.MAX_VALUE`, and no cost heuristic.
@@ -1175,7 +1230,15 @@ fn leaf_results_rescored<S: VectorScorer>(
             // Seeding does not reach here, exactly as in Java: the search
             // strategy is read by `HnswGraphSearcher.search`, and this branch
             // never calls it.
-            (exact_search(scorer, bits, cost, plan.k)?, false, false)
+            let (hits, rescore) = exact_hits(
+                scorer,
+                rescore.as_deref_mut().filter(|_| exact_on_rescore),
+                bits,
+                cost,
+                plan.k,
+            )?;
+            needs_rescore = rescore;
+            (hits, false, false)
         } else {
             // "We pass cost + 1 here to account for the edge case when we
             // explore exactly cost vectors."
@@ -1197,7 +1260,15 @@ fn leaf_results_rescored<S: VectorScorer>(
             } else {
                 // "We stopped the kNN search because it visited too many
                 // nodes, so fall back to exact search."
-                (exact_search(scorer, bits, cost, plan.k)?, false, false)
+                let (hits, rescore) = exact_hits(
+                    scorer,
+                    rescore.as_deref_mut().filter(|_| exact_on_rescore),
+                    bits,
+                    cost,
+                    plan.k,
+                )?;
+                needs_rescore = rescore;
+                (hits, false, false)
             }
         }
     };
@@ -1208,7 +1279,7 @@ fn leaf_results_rescored<S: VectorScorer>(
     // ordinal, and ordinals ascend with doc ids by construction -- so the
     // seed list is this hit set's ordinals, ascending.
     let mut hits = hits;
-    if let Some(rescore) = rescore {
+    if let Some(rescore) = rescore.filter(|_| needs_rescore) {
         if hits.len() > 1 {
             let ords: Vec<i32> = hits.iter().map(|h| h.0).collect();
             rescore.prefetch(&ords);
@@ -1254,14 +1325,29 @@ fn search_leaf(
     )?;
     match target {
         Target::Float(t) => {
-            if let (Some(GraphReader::Ivf(reader)), None) = (&input.hnsw, diversify) {
-                return match ivf_leaf_results(reader, input, resolved, t, plan)? {
-                    Some(found) => Ok(found),
-                    None => Ok((
-                        exact_float_leaf(input, resolved, t, plan.collector_k.max(1))?,
-                        false,
-                    )),
-                };
+            if let Some(GraphReader::Ivf(reader)) = &input.hnsw {
+                match diversify {
+                    None => {
+                        return match ivf_leaf_results(reader, input, resolved, t, plan, None)? {
+                            Some(found) => Ok(found),
+                            None => Ok((
+                                exact_float_leaf(input, resolved, t, plan.collector_k.max(1))?,
+                                false,
+                            )),
+                        };
+                    }
+                    // A leaf without parents has no results.
+                    Some(None) => return Ok((LeafHits::default(), false)),
+                    // Probing for the best child per parent; a filter too
+                    // selective for probing takes the exhaustive walk below.
+                    Some(Some(parents)) => {
+                        if let Some(found) =
+                            ivf_leaf_results(reader, input, resolved, t, plan, Some(parents))?
+                        {
+                            return Ok(found);
+                        }
+                    }
+                }
             }
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
@@ -1290,6 +1376,36 @@ fn search_leaf(
                 );
             }
             let mut scorer = values.scorer(t)?;
+            if let (
+                Some(GraphReader::HnswQuantized { codes, .. }),
+                None,
+                LeafGraph::Lucene99(Some(_)),
+            ) = (&input.hnsw, diversify, &graph)
+            {
+                if let Some(field) = codes.field(resolved.field_number) {
+                    field.check_matches(
+                        values.dimension(),
+                        values.similarity(),
+                        usize::try_from(values.size()).unwrap_or(0),
+                    )?;
+                    // The graph is walked on the codes, the collected
+                    // candidates are rescored on the float vectors, and an
+                    // exhaustive search scores the float vectors directly
+                    // (as does a segment too small for a graph, below).
+                    let mut estimates = codes.scorer(field, t);
+                    return leaf_results_rescored(
+                        &mut estimates,
+                        Some(&mut scorer),
+                        true,
+                        &graph,
+                        accept.as_ref(),
+                        &ord_to_doc,
+                        input.max_doc,
+                        plan,
+                        seed_ords,
+                    );
+                }
+            }
             if diversify.is_none() {
                 if let Some(mut codes) = scalar_quantized_scorer(input, resolved, t)? {
                     // The graph is walked on the codes, then the collected
@@ -1297,6 +1413,7 @@ fn search_leaf(
                     return leaf_results_rescored(
                         &mut codes,
                         Some(&mut scorer),
+                        false,
                         &graph,
                         accept.as_ref(),
                         &ord_to_doc,
@@ -1343,72 +1460,318 @@ fn search_leaf(
     }
 }
 
-/// A filter passing at most this many times the leaf's `k` documents is
-/// searched exhaustively rather than through an IVF index, whose probed
-/// clusters could hold fewer than `k` of them.
-const IVF_EXACT_FILTER_MULTIPLE: usize = 10;
+/// The most a nested field's shortlist first widens for the children each
+/// parent holds; a search finding fewer than `k` parents widens it further
+/// (see [`ivf_leaf_results`]).
+const IVF_MAX_GROUP_SPREAD: usize = 64;
+
+/// The most live filtered documents a filtered IVF search counts one by one,
+/// in a segment where some documents have none: past it, it samples this
+/// many points over the segment for the share that has one.
+const IVF_PASSING_SAMPLE: usize = 4096;
+
+/// The cost of scoring one raw vector exactly, in IVF code scans (with their
+/// share of routing, block reads and rerank): a filter goes to the exact scan
+/// when its documents times this are at most the entries the probes would
+/// scan. Measured in `docs/benchmarks/ivf.md` ("Filtered searches by tenant
+/// size").
+const IVF_EXACT_COST_RATIO: usize = 8;
 
 /// One leaf's search through its IVF index: the `collector_k` best live
 /// documents the filter passes, best first. `None` sends the leaf to the
-/// exhaustive scan instead: a filter too selective for probing
-/// ([`IVF_EXACT_FILTER_MULTIPLE`]). The flag is set when the leaf's
-/// deadline passed before the probes reached `k` accepted documents.
+/// exhaustive scan instead, when it costs less than probing: the filter
+/// passes no more vectors than the probes would have to scan for it
+/// ([`ivf_accepted_target`]), or scoring them exactly costs less than the
+/// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
+/// leaf's deadline passed before the probes reached `k` accepted documents.
+/// A filter on a partition of a field clustered per partition is scored
+/// exactly when it passes at most this many times the accepted target: a
+/// partition's few clusters are probed nearly all, with quantization error,
+/// where its documents' exact scores cost little more (`docs/benchmarks/ivf.md`,
+/// "Clusters per partition").
+const IVF_PARTITION_EXACT_RATIO: usize = 16;
+
+/// Most runs of set bits a filter may have for a filtered IVF search to
+/// prune clusters by document range: a partition's documents are one run
+/// per segment of an index sorted by the partition field.
+const IVF_FILTER_RUNS: usize = 256;
+
+/// The clusters whose document range (`ranges`, lowest and highest
+/// document) holds a document `filter` passes, or `None` when the filter
+/// has more than [`IVF_FILTER_RUNS`] runs of documents.
+fn clusters_holding(ranges: &[(i32, i32)], filter: &FixedBitSet) -> Option<Vec<usize>> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(lo) = filter.next_set_bit(from) {
+        if runs.len() == IVF_FILTER_RUNS {
+            return None;
+        }
+        let hi = filter.next_clear_bit(lo).unwrap_or(filter.len());
+        runs.push((lo, hi));
+        from = hi;
+        if from >= filter.len() {
+            break;
+        }
+    }
+    Some(
+        ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, &(lo, hi))| {
+                let (Ok(lo), Ok(hi)) = (usize::try_from(lo), usize::try_from(hi)) else {
+                    return false;
+                };
+                // The first run ending after `lo` holds a document of the
+                // range when it starts at or below `hi`.
+                let i = runs.partition_point(|r| r.1 <= lo);
+                runs.get(i).is_some_and(|r| r.0 <= hi)
+            })
+            .map(|(c, _)| c)
+            .collect(),
+    )
+}
+
 fn ivf_leaf_results(
     reader: &lucene_ivf::IvfReader,
     input: &VectorsInput<'_>,
     resolved: &ResolvedField,
     target: &[f32],
     plan: &LeafPlan,
+    parents: Option<&FixedBitSet>,
 ) -> Result<Option<(LeafHits, bool)>> {
     let Some(field) = reader.field(resolved.field_number) else {
         return Ok(None);
     };
     let k = plan.collector_k.max(1);
-    let accepted = match input.filter {
-        Some(filter) => {
-            let passing = match input.live_docs {
-                Some(live) => FixedBitSet::intersection_count(filter, live),
-                None => filter.cardinality(),
-            };
-            if passing <= k.saturating_mul(IVF_EXACT_FILTER_MULTIPLE) {
-                return Ok(None);
-            }
-            passing
-        }
-        None => input
-            .live_docs
-            .map_or(field.count(), |l| l.cardinality().min(field.count())),
+    let clusters = field.clusters().max(1);
+    // A nested field's children grouped by parent (the next parent bit at
+    // or after the child, as `DiversifyingNearestChildrenKnnCollector`
+    // finds it), the shortlist widened by the children per parent.
+    let group = |doc: i32| -> i32 {
+        parents
+            .and_then(|p| usize::try_from(doc).ok().and_then(|d| p.next_set_bit(d)))
+            .map_or(i32::MAX, |p| i32::try_from(p).unwrap_or(i32::MAX))
     };
+    let spread = std::cell::Cell::new(parents.map_or(1, |p| {
+        field
+            .count()
+            .div_ceil(p.cardinality().max(1))
+            .clamp(1, IVF_MAX_GROUP_SPREAD)
+    }));
+    // The parents that can be found: at most those still live.
+    let reachable = parents.map_or(0, |p| match input.live_docs {
+        Some(live) => FixedBitSet::intersection_count(p, live),
+        None => p.cardinality(),
+    });
+    let grouped = parents.is_some();
+    // Once the shortlist holds every entry, a grouped search's candidates
+    // are every probed child.
+    let shortlist_full =
+        || spread.get().saturating_mul(k.max(field.auto_rerank(k))) >= field.entries();
+    let base_nprobe = match plan.extras.ivf_nprobes {
+        0 => field.auto_nprobe(),
+        n => n,
+    }
+    .clamp(1, clusters);
     let accept = |doc: i32| {
         input.live_docs.is_none_or(|l| l.get_doc(doc))
             && input.filter.is_none_or(|f| f.get_doc(doc))
     };
     let restricted = input.live_docs.is_some() || input.filter.is_some();
     let filtered: Option<&dyn Fn(i32) -> bool> = restricted.then_some(&accept);
-    // Probing the calibrated depth (or the asked one) first, then twice as
-    // many clusters each time the accepted documents in reach fall short of
-    // `k`: deletions or a filter can empty the nearest clusters.
-    let mut nprobe = match plan.extras.ivf_nprobes {
-        0 => None,
-        n => Some(n),
-    };
-    let (found, partial) = loop {
+    // A search of every cluster, or (`among`) of those clusters only.
+    let search = |nprobe: lucene_ivf::Probes, among: Option<&[usize]>| {
         let params = lucene_ivf::SearchParams {
             k,
-            nprobe: nprobe.map_or(lucene_ivf::Probes::Auto, lucene_ivf::Probes::Fixed),
+            nprobe,
             rerank: lucene_ivf::Rerank::Auto,
         };
-        let found = reader.search(resolved.field_number, target, &params, filtered)?;
-        let probed = nprobe.unwrap_or_else(|| field.auto_nprobe());
-        // `accepted` counts documents without a vector too, so a search of
-        // every cluster is complete whatever it found.
-        if !restricted || found.len() >= k.min(accepted) || probed >= field.clusters() {
-            break (found, false);
+        let field = resolved.field_number;
+        if grouped {
+            let g = lucene_ivf::Grouping {
+                group: &group,
+                spread: spread.get(),
+            };
+            reader.search_grouped(field, target, &params, filtered, among, &g)
+        } else {
+            match among {
+                Some(cs) => reader.search_within(field, target, &params, filtered, cs, None),
+                None => reader.search_with(field, target, &params, filtered, None),
+            }
         }
-        if plan.extras.timed_out() {
-            break (found, true);
+    };
+    // Grouped, `k` counts parents: while fewer than `k` (of those live) are
+    // found, the probes deepen and the shortlist widens, so many siblings
+    // scoring alike cannot crowd the other parents out; both grow until
+    // every cluster's every child is a candidate, an exhaustive search.
+    let short = |found: usize| grouped && found < k.min(reachable);
+    // Whether a short round can still find more.
+    // Whether a short round over `limit` clusters can still find more.
+    let spent = |nprobe: usize, limit: usize, found: usize| {
+        nprobe >= limit && (!short(found) || shortlist_full())
+    };
+    let widen = |found: usize| {
+        if short(found) {
+            spread.set(spread.get().saturating_mul(2));
         }
-        nprobe = Some(probed.saturating_mul(2));
+    };
+    let (found, partial) = match input.filter {
+        // Without a filter, deletions only: the calibrated (or asked) depth,
+        // doubled while fewer than `k` live documents are in reach.
+        None => {
+            let live = input
+                .live_docs
+                .map_or(field.count(), |l| l.cardinality().min(field.count()));
+            let mut nprobe = base_nprobe;
+            loop {
+                let probes = if plan.extras.ivf_nprobes == 0 && nprobe == base_nprobe {
+                    lucene_ivf::Probes::Auto
+                } else {
+                    lucene_ivf::Probes::Fixed(nprobe)
+                };
+                let out = search(probes, None)?;
+                let enough = if grouped {
+                    !short(out.hits.len())
+                } else {
+                    !restricted || out.hits.len() >= k.min(live)
+                };
+                if enough || spent(nprobe, clusters, out.hits.len()) {
+                    break (out.hits, false);
+                }
+                if plan.extras.timed_out() {
+                    break (out.hits, true);
+                }
+                widen(out.hits.len());
+                nprobe = nprobe.saturating_mul(2).min(clusters);
+            }
+        }
+        Some(filter) => {
+            // The live documents the filter passes that have a vector here.
+            let live_passing = match input.live_docs {
+                Some(live) => FixedBitSet::intersection_count(filter, live),
+                None => filter.cardinality(),
+            };
+            let passing = if field.count() >= input.max_doc as usize {
+                live_passing
+            } else {
+                // Some documents have no vector (a nested field's parents, a
+                // sparse field): a filter passing at most
+                // [`IVF_PASSING_SAMPLE`] live documents is counted exactly;
+                // a larger one by the share of its documents with a vector
+                // at that many points spread evenly over the segment. Walking
+                // all of a filter passing half a large segment costs more
+                // than probing for it.
+                let values = input.flat.float_vector_values(resolved.field_number)?;
+                let mut ords = values.doc_to_ord()?;
+                let max_doc = usize::try_from(input.max_doc).unwrap_or(0);
+                let exact = live_passing <= IVF_PASSING_SAMPLE;
+                let step = if exact {
+                    1
+                } else {
+                    max_doc.div_ceil(IVF_PASSING_SAMPLE).max(1)
+                };
+                let (mut n, mut seen) = (0usize, 0usize);
+                let mut at = 0usize;
+                while at < max_doc {
+                    let Some(bit) = filter.next_set_bit(at) else {
+                        break;
+                    };
+                    // The next point: each set bit is counted once.
+                    at = if exact {
+                        bit.saturating_add(1)
+                    } else {
+                        bit.saturating_add(1).max(at.saturating_add(step))
+                    };
+                    // A set bit is below `max_doc`, an `i32`.
+                    let doc = i32::try_from(bit).unwrap_or(i32::MAX);
+                    if input.live_docs.is_none_or(|l| l.get_doc(doc)) {
+                        seen = seen.saturating_add(1);
+                        if ords.ordinal(doc)?.is_some() {
+                            n = n.saturating_add(1);
+                        }
+                    }
+                }
+                if exact {
+                    n
+                } else {
+                    ((live_passing as f64) * n as f64 / seen.max(1) as f64) as usize
+                }
+            };
+            // A filter passing no more documents than the accepted target
+            // is scored exactly: probing would scan at least as many.
+            if passing <= ivf_accepted_target(k) {
+                return Ok(None);
+            }
+            // A field clustered per partition (an index sorted by a
+            // partition field) probes only the clusters whose document range
+            // holds a document the filter passes, as an index of those
+            // documents alone would.
+            let among = field
+                .doc_ranges()
+                .and_then(|ranges| clusters_holding(ranges, filter));
+            // The clusters searched and their entries, as the probes count
+            // them: a spilled vector is in two clusters.
+            let (space_clusters, space_entries) = match &among {
+                Some(cs) => (
+                    cs.len(),
+                    cs.iter().map(|&c| field.cluster_size(c)).sum::<usize>(),
+                ),
+                None => (clusters, field.entries()),
+            };
+            let space_clusters = space_clusters.max(1);
+            let space_entries = space_entries.max(1);
+            let per_cluster = space_entries.div_ceil(space_clusters).max(1);
+            // The calibrated (or asked) depth, as a share of the clusters
+            // searched.
+            let base = if among.is_some() {
+                let fraction = base_nprobe as f64 / clusters as f64;
+                ((fraction * space_clusters as f64).ceil() as usize).clamp(1, space_clusters)
+            } else {
+                base_nprobe
+            };
+            let entries_per_vector = field.entries().max(1) as f64 / field.count().max(1) as f64;
+            let share = (passing as f64 * entries_per_vector / space_entries as f64).min(1.0);
+            // Across the whole field, never more than the filter's share of
+            // what the unfiltered search scans would hold on average, with
+            // slack for clusters below the average size. A partition's own
+            // clusters hold mostly its documents, so it needs no such cap.
+            let cap = match &among {
+                Some(_) => usize::MAX,
+                None => ((base.saturating_mul(per_cluster) as f64 * 0.75) as usize).max(k),
+            };
+            let want = ivf_accepted_target(k)
+                .min(cap)
+                .min((passing as f64 * entries_per_vector) as usize);
+            // The first try probes as many clusters as the filter's share of
+            // the searched clusters needs on average, at least the
+            // calibrated (or asked) depth; the probes double while the
+            // accepted entries they held fall short, as they do where the
+            // filter's documents lie far from the query.
+            let need = (want as f64 / (per_cluster as f64 * share.max(f64::MIN_POSITIVE))).ceil();
+            let mut nprobe = base.max(need.min(space_clusters as f64) as usize);
+            let planned = nprobe.saturating_mul(per_cluster);
+            let exact_below = match &among {
+                Some(_) => want.saturating_mul(IVF_PARTITION_EXACT_RATIO),
+                None => want,
+            };
+            if passing <= exact_below || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
+                return Ok(None);
+            }
+            loop {
+                let out = search(lucene_ivf::Probes::Fixed(nprobe), among.as_deref())?;
+                let found = out.hits.len();
+                if (out.stats.accepted >= want && !short(found))
+                    || spent(nprobe, space_clusters, found)
+                {
+                    break (out.hits, false);
+                }
+                if plan.extras.timed_out() {
+                    break (out.hits, found < k);
+                }
+                widen(found);
+                nprobe = nprobe.saturating_mul(2).min(space_clusters);
+            }
+        }
     };
     let mut hits: Vec<ScoreDoc> = found
         .into_iter()
@@ -1418,7 +1781,9 @@ fn ivf_leaf_results(
         })
         .collect();
     // Rerank vectors stored narrower than `f32` score approximately: the
-    // hits are scored again on the raw vectors, as every other leaf is.
+    // hits are scored again on the raw vectors, as every other leaf is. A
+    // nested search's best child per parent was chosen on those scores, an
+    // approximation as the probes are.
     if field.encoding() != lucene_ivf::VectorEncoding::F32 {
         let values = input.flat.float_vector_values(resolved.field_number)?;
         let mut ords = values.doc_to_ord()?;
@@ -1456,18 +1821,46 @@ fn exact_float_leaf(
     let mut scratch = vec![0f32; target.len()];
     let mut top: std::collections::BinaryHeap<std::cmp::Reverse<(OrdScore, i32)>> =
         std::collections::BinaryHeap::with_capacity(k.saturating_add(1));
-    for ord in 0..values.size() {
-        let doc = values.ord_to_doc(ord)?;
-        if input.live_docs.is_some_and(|l| !l.get_doc(doc))
-            || input.filter.is_some_and(|f| !f.get_doc(doc))
-        {
-            continue;
-        }
-        let score = similarity.score(target, values.vector_ref(ord, &mut scratch)?);
+    let mut offer = |doc: i32, score: f32| {
         // Ties keep the lower doc: it ranks above a higher one.
         top.push(std::cmp::Reverse((OrdScore(score), -doc)));
         if top.len() > k {
             top.pop();
+        }
+    };
+    let live = |doc: i32| input.live_docs.is_none_or(|l| l.get_doc(doc));
+    match input.filter {
+        // A filter visits only the documents it passes, in doc order, so
+        // the cost follows the filter and not the field: a small tenant's
+        // range of a large segment reads only that range's vectors.
+        Some(filter) => {
+            let mut ords = values.doc_to_ord()?;
+            let mut from = 0usize;
+            while let Some(bit) = filter.next_set_bit(from) {
+                from = bit.saturating_add(1);
+                // A set bit is below `max_doc`, an `i32`.
+                let doc = i32::try_from(bit).unwrap_or(i32::MAX);
+                if !live(doc) {
+                    continue;
+                }
+                if let Some(ord) = ords.ordinal(doc)? {
+                    offer(
+                        doc,
+                        similarity.score(target, values.vector_ref(ord, &mut scratch)?),
+                    );
+                }
+            }
+        }
+        None => {
+            for ord in 0..values.size() {
+                let doc = values.ord_to_doc(ord)?;
+                if live(doc) {
+                    offer(
+                        doc,
+                        similarity.score(target, values.vector_ref(ord, &mut scratch)?),
+                    );
+                }
+            }
         }
     }
     let mut hits: Vec<ScoreDoc> = top

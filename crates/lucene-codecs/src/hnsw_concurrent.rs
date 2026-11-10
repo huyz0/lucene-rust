@@ -218,6 +218,8 @@ impl ConcurrentHnswGraph {
             self.size.fetch_add(1, Ordering::SeqCst);
         }
         levels.clear();
+        // One allocation per node, not a growth from four levels.
+        levels.reserve_exact(usize::try_from(level.max(0)).unwrap_or(0).saturating_add(1));
         for l in 0..=level.max(0) {
             let max = if l == 0 { self.nsize0 } else { self.nsize };
             levels.push(NeighborArray::new(max, true));

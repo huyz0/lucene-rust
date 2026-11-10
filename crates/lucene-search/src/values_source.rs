@@ -204,7 +204,12 @@ impl<'c> ValuesContext<'c> {
         self
     }
 
-    fn reader(&self, leaf: usize) -> Result<&'c crate::directory_reader::SegmentReader> {
+    /// Leaf `leaf`'s segment reader, which a source outside this crate reads
+    /// its column from.
+    ///
+    /// # Errors
+    /// [`Error::IllegalState`] when the context has no reader for `leaf`.
+    pub fn reader(&self, leaf: usize) -> Result<&'c crate::directory_reader::SegmentReader> {
         let found = match (self.searcher, self.reader) {
             (Some(s), _) => s.segments().get(leaf).and_then(|s| s.reader),
             (None, Some(r)) if leaf == 0 => Some(r),

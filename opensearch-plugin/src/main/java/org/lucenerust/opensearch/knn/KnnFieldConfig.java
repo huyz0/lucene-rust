@@ -30,11 +30,17 @@ import java.util.Map;
  * step; {@code parameters.target_cluster_size} (16 to 65536, default 384) sizes its clusters,
  * {@code parameters.quantizer} ({@link #IVF_QUANTIZERS}: 1-bit {@code bbq} by default, {@code
  * osq2}/{@code osq4}/{@code osq7} for Lucene's optimized scalar quantization at 2, 4 or 7 bits,
- * {@code erq2} to {@code erq8} for Extended RaBitQ at 2 to 8 bits) codes the clusters and {@code
- * parameters.rerank_encoding} ({@code float}, {@code half_float} by default, {@code bfloat16} or
- * {@code int8}) stores the copy it reranks from. Float fields only, in an index on the Rust
- * engine ({@code index.lucene_rust.engine}), which builds the index. A stock node does not know the
- * engine, so it refuses the mapping rather than reading the field another way.
+ * {@code erq2} to {@code erq8} for Extended RaBitQ at 2 to 8 bits, {@code rabitq} for 1-bit RaBitQ)
+ * codes the clusters and {@code parameters.rerank_encoding} ({@code float}, {@code half_float} by
+ * default, {@code bfloat16} or {@code int8}) stores the copy it reranks from. Its {@code method: hnsw}
+ * is Lucene's graph (built on the raw vectors, {@code parameters.m} and {@code
+ * parameters.ef_construction} as for {@code lucene}) walked on quantized codes, the candidates
+ * reranked on the raw vectors ({@code LuceneRustHnswQuantizedVectorsFormat}); {@code
+ * parameters.quantizer} ({@link #HNSW_QUANTIZERS}: {@code erq2} by default) picks the codes. Lucene's
+ * own scalar quantization stays the {@code lucene} engine's ({@code encoder}, {@code
+ * compression_level}). Both methods are for float fields only, in an index on the Rust engine
+ * ({@code index.lucene_rust.engine}), which builds the index. A stock node does not know the engine,
+ * so it refuses the mapping rather than reading the field another way.
  *
  * @param dimension the mapping's dimension: bits for a {@link #binary} field
  * @param binary packed bit vectors, {@code dimension / 8} bytes each
@@ -42,7 +48,7 @@ import java.util.Map;
  * @param encoding a {@link VectorsFormatSpec} scalar encoding wire number, {@code -1} for full precision
  * @param clusterSize an IVF field's target cluster size, {@code 0} for an HNSW one
  * @param rerankEncoding an IVF field's rerank encoding wire number ({@link #RERANK_ENCODINGS})
- * @param quantizer an IVF field's quantizer wire number ({@link #IVF_QUANTIZERS})
+ * @param quantizer a {@code lucene_rust} field's quantizer wire number ({@link #IVF_QUANTIZERS})
  */
 public record KnnFieldConfig(
     int dimension,
@@ -79,8 +85,12 @@ public record KnnFieldConfig(
         "erq5",
         "erq6",
         "erq7",
-        "erq8"
+        "erq8",
+        "rabitq"
     );
+    /** The quantizers of the {@code lucene_rust} engine's {@code hnsw}: 1-bit RaBitQ and Extended RaBitQ at 2 to 8 bits. */
+    public static final List<String> HNSW_QUANTIZERS = List.of("rabitq", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8");
+    static final String DEFAULT_HNSW_QUANTIZER = "erq2";
     static final int MIN_CLUSTER_SIZE = 16;
     static final int MAX_CLUSTER_SIZE = 65_536;
     public static final int MAX_DIMENSION = 16_000;
@@ -102,6 +112,11 @@ public record KnnFieldConfig(
 
     /** An IVF field ({@code lucene_rust} engine, {@code ivf} method). */
     public boolean ivf() {
+        return LUCENE_RUST.equals(engine) && clusterSize > 0;
+    }
+
+    /** A field of the Rust engine's own: {@code lucene_rust} engine, {@code ivf} or {@code hnsw}. */
+    public boolean rustEngine() {
         return LUCENE_RUST.equals(engine);
     }
 
@@ -109,6 +124,9 @@ public record KnnFieldConfig(
     public VectorsFormatSpec format() {
         if (ivf()) {
             return VectorsFormatSpec.ivf(clusterSize, rerankEncoding, quantizer);
+        }
+        if (rustEngine()) {
+            return VectorsFormatSpec.hnswRq(quantizer, m, efConstruction);
         }
         if (binary) {
             return VectorsFormatSpec.hnswHamming(m, efConstruction);
@@ -213,7 +231,7 @@ public record KnnFieldConfig(
         switch (engine) {
             case LUCENE -> {}
             case LUCENE_RUST -> {
-                return ivf(dimension, encodingType, dataType, spaceType, methodName, params, resolvedMode, level);
+                return rust(dimension, encodingType, dataType, spaceType, methodName, params, resolvedMode, level);
             }
             case FAISS -> throw new MapperParsingException(
                 "Engine [faiss] is not supported: this node's knn_vector fields use the [lucene] engine"
@@ -295,8 +313,8 @@ public record KnnFieldConfig(
         return new KnnFieldConfig(dimension, encodingType, binary, false, spaceType, engine, m, efConstruction, encoding, resolvedMode, level, 0, 0, 0);
     }
 
-    /** A {@code lucene_rust} engine mapping: {@code method: ivf} over float vectors. */
-    private static KnnFieldConfig ivf(
+    /** A {@code lucene_rust} engine mapping: {@code method: ivf} or {@code hnsw} over float vectors. */
+    private static KnnFieldConfig rust(
         int dimension,
         VectorEncoding encodingType,
         String dataType,
@@ -306,16 +324,30 @@ public record KnnFieldConfig(
         String mode,
         String level
     ) {
-        if (methodName.equals(IVF) == false) {
-            throw new MapperParsingException(String.format(Locale.ROOT, "Invalid method name for the [lucene_rust] engine: %s; supported: [ivf]", methodName));
+        if (methodName.equals(IVF) == false && methodName.equals("hnsw") == false) {
+            throw new MapperParsingException(
+                String.format(Locale.ROOT, "Invalid method name for the [lucene_rust] engine: %s; supported: [ivf, hnsw]", methodName)
+            );
         }
         if (dataType.equalsIgnoreCase("float") == false) {
             throw new MapperParsingException(
-                String.format(Locale.ROOT, "[data_type] [%s] is not supported by the [lucene_rust] engine's [ivf]; use [float]", dataType.toLowerCase(Locale.ROOT))
+                String.format(
+                    Locale.ROOT,
+                    "[data_type] [%s] is not supported by the [lucene_rust] engine's [%s]; use [float]",
+                    dataType.toLowerCase(Locale.ROOT),
+                    methodName
+                )
             );
         }
         if (mode != null || level != null) {
-            throw new MapperParsingException("[mode] and [compression_level] are not supported by the [lucene_rust] engine's [ivf]; set [parameters.rerank_encoding]");
+            throw new MapperParsingException(
+                methodName.equals(IVF)
+                    ? "[mode] and [compression_level] are not supported by the [lucene_rust] engine's [ivf]; set [parameters.rerank_encoding]"
+                    : "[mode] and [compression_level] are not supported by the [lucene_rust] engine's [hnsw]; set [parameters.quantizer]"
+            );
+        }
+        if (methodName.equals("hnsw")) {
+            return rustHnsw(dimension, encodingType, spaceType, params);
         }
         int clusterSize = DEFAULT_CLUSTER_SIZE;
         int rerank = 1;
@@ -350,6 +382,53 @@ public record KnnFieldConfig(
             }
         }
         return new KnnFieldConfig(dimension, encodingType, false, false, spaceType, LUCENE_RUST, 0, 0, -1, null, null, clusterSize, rerank, quantizer);
+    }
+
+    /** A {@code lucene_rust} engine {@code hnsw} mapping: the graph walked on {@link #HNSW_QUANTIZERS} codes. */
+    private static KnnFieldConfig rustHnsw(int dimension, VectorEncoding encodingType, SpaceType spaceType, Map<String, Object> params) {
+        int m = DEFAULT_M;
+        int efConstruction = DEFAULT_EF_CONSTRUCTION;
+        String quantizer = DEFAULT_HNSW_QUANTIZER;
+        for (Map.Entry<String, Object> p : params.entrySet()) {
+            switch (p.getKey()) {
+                case "m" -> m = positiveInt(p.getValue(), "m", MAX_M);
+                case "ef_construction" -> efConstruction = positiveInt(p.getValue(), "ef_construction", MAX_EF_CONSTRUCTION);
+                case "ef_search" -> throw new MapperParsingException("Invalid parameter: ef_search for the lucene_rust engine; set it in the query");
+                case "quantizer" -> {
+                    quantizer = String.valueOf(p.getValue()).toLowerCase(Locale.ROOT);
+                    if (HNSW_QUANTIZERS.contains(quantizer) == false) {
+                        throw new MapperParsingException(
+                            IVF_QUANTIZERS.contains(quantizer)
+                                ? String.format(
+                                    Locale.ROOT,
+                                    "[quantizer] [%s] is Lucene's scalar quantization: use the [lucene] engine's [encoder] or [compression_level]; "
+                                        + "the [lucene_rust] engine's [hnsw] supports %s",
+                                    quantizer,
+                                    HNSW_QUANTIZERS
+                                )
+                                : String.format(Locale.ROOT, "Invalid [quantizer]: %s; supported: %s", p.getValue(), HNSW_QUANTIZERS)
+                        );
+                    }
+                }
+                default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for hnsw: %s", p.getKey()));
+            }
+        }
+        return new KnnFieldConfig(
+            dimension,
+            encodingType,
+            false,
+            false,
+            spaceType,
+            LUCENE_RUST,
+            m,
+            efConstruction,
+            -1,
+            null,
+            null,
+            0,
+            0,
+            IVF_QUANTIZERS.indexOf(quantizer)
+        );
     }
 
     /** The encoder's scalar encoding, {@code -1} for full precision. */
