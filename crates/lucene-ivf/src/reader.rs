@@ -16,7 +16,7 @@ use crate::kmeans::NO_CLUSTER;
 use crate::routing::{Router, Routing};
 use crate::{
     similarity_from_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
-    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT,
+    VECTORS_CODEC, VERSION_BLOCK_LAYOUT, VERSION_CALIBRATION, VERSION_CURRENT, VERSION_PARTITIONS,
     VERSION_ROUTING_TREE, VERSION_VECTOR_ENCODING,
 };
 
@@ -329,10 +329,11 @@ pub struct IvfField {
     /// Each slot's document, from the doc table, kept in memory: posting
     /// entries name slots, and a filter or a hit needs the document.
     slot_docs: Vec<i32>,
-    /// Each cluster's lowest and highest document, when the clusters hold
-    /// narrow document ranges ([`crate::IvfWriter::add_partitioned_field`]): their
-    /// ranges span on average at most 1/[`RANGED_SPAN`] of the field's
-    /// documents. Empty otherwise, and with spilled entries.
+    /// Whether the field was clustered per partition
+    /// ([`crate::IvfWriter::add_partitioned_field`]).
+    partitioned: bool,
+    /// Each cluster's lowest and highest document, for a field clustered
+    /// per partition without spilled entries; empty otherwise.
     doc_ranges: Vec<(i32, i32)>,
     postings_offset: usize,
     vectors_offset: usize,
@@ -385,6 +386,7 @@ impl IvfField {
             primary_starts: Vec::new(),
             block_starts,
             slot_docs,
+            partitioned: false,
             doc_ranges: Vec::new(),
             postings_offset,
             vectors_offset: 0,
@@ -516,9 +518,9 @@ impl IvfField {
         self.starts.last().copied().unwrap_or(0)
     }
 
-    /// Each cluster's lowest and highest document, when its clusters hold
-    /// narrow document ranges (see [`crate::IvfWriter::add_partitioned_field`]);
-    /// `None` otherwise.
+    /// Each cluster's lowest and highest document, for a field clustered per
+    /// partition ([`crate::IvfWriter::add_partitioned_field`]); `None`
+    /// otherwise.
     pub fn doc_ranges(&self) -> Option<&[(i32, i32)]> {
         (!self.doc_ranges.is_empty()).then_some(self.doc_ranges.as_slice())
     }
@@ -830,6 +832,15 @@ fn read_field(
             tree_parents = Some(parents);
         }
     }
+    let partitioned = if version >= VERSION_PARTITIONS {
+        match input.read_byte()? {
+            0 => false,
+            1 => true,
+            b => return corrupt(format!("field {number}: partitioned flag {b}")),
+        }
+    } else {
+        false
+    };
     let (block_starts, postings_bytes) = block_layout(quantizer.as_ref(), &starts)?;
     if add(postings_offset, postings_bytes, "postings")? > postings_end {
         return corrupt(format!("field {number}: postings past the end of .ivp"));
@@ -870,6 +881,7 @@ fn read_field(
         primary_starts,
         block_starts,
         slot_docs: Vec::new(),
+        partitioned,
         doc_ranges: Vec::new(),
         postings_offset,
         vectors_offset,
@@ -900,36 +912,23 @@ fn block_layout(quantizer: &dyn Quantizer, starts: &[usize]) -> Result<(Vec<usiz
     Ok((block_starts, postings_bytes))
 }
 
-/// How much narrower than the field's own document span its clusters'
-/// ranges must be on average for a filtered search to prune clusters by
-/// range.
-pub const RANGED_SPAN: usize = 2;
-
 /// Each cluster's lowest and highest document (its own vectors are its
-/// slots `starts[c]..starts[c + 1]`), when the ranges are narrow; empty
-/// for spilled entries or wide ranges.
+/// slots `starts[c]..starts[c + 1]`), for a field clustered per partition;
+/// empty for other fields and for spilled entries.
 // ARITH: starts are prefix sums bounded by the slot count.
 #[allow(clippy::arithmetic_side_effects)]
 fn doc_ranges(f: &IvfField) -> Vec<(i32, i32)> {
-    if f.entries() != f.count || f.slot_docs.is_empty() {
+    if !f.partitioned || f.entries() != f.count || f.slot_docs.is_empty() {
         return Vec::new();
     }
-    let mut ranges = Vec::with_capacity(f.clusters());
-    let mut span = 0usize;
-    for c in 0..f.clusters() {
-        let docs = &f.slot_docs[f.starts[c]..f.starts[c + 1]];
-        let lo = docs.iter().copied().min().unwrap_or(0);
-        let hi = docs.iter().copied().max().unwrap_or(-1);
-        span = span.saturating_add(usize::try_from(i64::from(hi) - i64::from(lo) + 1).unwrap_or(0));
-        ranges.push((lo, hi));
-    }
-    let first = f.slot_docs.iter().copied().min().unwrap_or(0);
-    let last = f.slot_docs.iter().copied().max().unwrap_or(0);
-    let own = usize::try_from(i64::from(last) - i64::from(first) + 1).unwrap_or(usize::MAX);
-    if span.saturating_mul(RANGED_SPAN) > own.saturating_mul(f.clusters()) {
-        return Vec::new();
-    }
-    ranges
+    (0..f.clusters())
+        .map(|c| {
+            let docs = &f.slot_docs[f.starts[c]..f.starts[c + 1]];
+            let lo = docs.iter().copied().min().unwrap_or(0);
+            let hi = docs.iter().copied().max().unwrap_or(-1);
+            (lo, hi)
+        })
+        .collect()
 }
 
 /// Reads a field's doc table and inverts it: each slot's document. Checks

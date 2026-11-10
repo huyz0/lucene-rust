@@ -1498,9 +1498,6 @@ fn ivf_leaf_results(
                 }
                 n
             };
-            if passing <= ivf_accepted_target(k) {
-                return Ok(None);
-            }
             // A field clustered per partition (an index sorted by a
             // partition field) probes only the clusters whose document range
             // holds a document the filter passes, as an index of those

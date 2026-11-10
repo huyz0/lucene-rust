@@ -584,10 +584,10 @@ about 9 ms too.)
 `IndexWriter::set_ivf_partition_clusters(Some(min_vectors))` clusters each
 partition of the index sort's first field on its own at flush and merge
 (partitions under `min_vectors` together with their neighbours, here
-20,000). The files keep their format; a reader finds the clusters' document
-ranges narrow (on average at most half the segment) and a filtered search
-probes only the clusters whose range holds a document it passes, with the
-calibrated share of them. A partition of at most 16 times the accepted
+20,000). Each field records it (`.ivm` version 5), the reader keeps each
+cluster's document range, and a filtered search probes only the clusters
+whose range holds a document it passes, with the calibrated share of
+them. A partition of at most 16 times the accepted
 target is scored exactly.
 
 - Large tenants search 1.5-4.2x faster with recall up to 0.97-0.985 (the

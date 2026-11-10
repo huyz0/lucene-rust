@@ -22,7 +22,9 @@
 //!   f32 probe fraction, f32 rerank multiple (`Calibration`),
 //!   from VERSION_ROUTING_TREE: vint routing parent count (0 for none:
 //!   fields below `routing::TREE_MIN_CLUSTERS` clusters), and when not 0,
-//!   each cluster's parent (cluster count x vint, every parent used)
+//!   each cluster's parent (cluster count x vint, every parent used),
+//!   from VERSION_PARTITIONS: byte partitioned (1 when each cluster holds
+//!   documents of one partition run, `IvfWriter::add_partitioned_field`)
 //! Footer
 //! ```
 //!
@@ -173,7 +175,8 @@ fn prepared_vectors(field: &FieldVectors<'_>) -> Vec<f32> {
 /// The lengths of the runs of `docs` (ascending) to cluster on their own:
 /// one per partition (`starts` holds each partition's first document,
 /// ascending) of at least `min` vectors, and the partitions between them
-/// together, in runs of at least `min` (the last of them may be shorter).
+/// together, in runs of at least `min` except where a large partition or
+/// the end cuts one short.
 // ARITH: run lengths are bounded by `docs.len()`.
 #[allow(clippy::arithmetic_side_effects)]
 fn partition_runs(docs: &[i32], starts: &[i32], min: usize) -> Vec<usize> {
@@ -341,7 +344,7 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
-        self.add_clustered(field, factory, params, &mut |vectors, metric| {
+        self.add_clustered(field, factory, params, false, &mut |vectors, metric| {
             kmeans::cluster(
                 vectors,
                 field.dimension,
@@ -377,7 +380,7 @@ impl IvfWriter {
             partition_starts,
             params.partition_min_vectors.max(1),
         );
-        self.add_clustered(field, factory, params, &mut |vectors, metric| {
+        self.add_clustered(field, factory, params, true, &mut |vectors, metric| {
             kmeans::cluster_runs(
                 vectors,
                 field.dimension,
@@ -413,7 +416,9 @@ impl IvfWriter {
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
     ) -> Result<()> {
-        self.add_clustered(field, factory, params, &mut |_, _| clustering.clone())
+        self.add_clustered(field, factory, params, false, &mut |_, _| {
+            clustering.clone()
+        })
     }
 
     /// Checks `field`, clusters its prepared vectors (unit-normalized for
@@ -427,6 +432,7 @@ impl IvfWriter {
         field: &FieldVectors<'_>,
         factory: &dyn QuantizerFactory,
         params: &IvfParams,
+        partitioned: bool,
         clusterer: &mut dyn FnMut(&[f32], kmeans::Metric) -> kmeans::Clustering,
     ) -> Result<()> {
         if params
@@ -707,6 +713,7 @@ impl IvfWriter {
             }
             None => write_count(m, 0)?,
         }
+        m.write_byte(u8::from(partitioned));
         self.field_numbers.push(field.number);
         Ok(())
     }

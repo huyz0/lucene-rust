@@ -6343,8 +6343,7 @@ impl<'d> IndexWriter<'d> {
     /// 8M vectors, tenants of 400k and 1.5M searched about 4x and 1.5x
     /// faster at the same or higher recall, with `min_vectors` 20,000,
     /// while unfiltered searches took 2.3x as long (`docs/benchmarks/ivf.md`,
-    /// "Clusters per partition"). The files keep their format. No effect
-    /// without an index sort.
+    /// "Clusters per partition"). No effect without an index sort.
     ///
     /// [`KnnVectorsFormat::Ivf`]: per_field_knn_vectors::KnnVectorsFormat::Ivf
     pub fn set_ivf_partition_clusters(&mut self, min_vectors: Option<usize>) {
