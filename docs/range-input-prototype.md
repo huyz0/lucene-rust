@@ -430,3 +430,34 @@ Each physical job/host still runs exactly one heavy workload with unchanged
 source/image/cgroup/scratch/deadline/stdio caps and unchanged cell/test counts.
 No paid runner label, local pool or shared cache is added. Earlier serialized
 runs and every queue/failure/cancellation remain unchanged evidence.
+
+
+### Measured execution deadlines and prospective timing bound
+
+At `5478d56b`, x64 ordinary qualification passed. ARM ordinary job
+`129821930733` reached its actual1,800-second execution deadline while test
+suites were still progressing, with no recorded assertion failure and
+9,786,380,288 minimum sampled scratch bytes available. Its result remains a
+failure, not a partial suite pass. x64 release job `129821930755` also reached
+1,800 seconds: the production FFI release build completed in5minutes, but the
+search test build had not completed. Minimum sampled scratch availability was
+18,472,800,256bytes. Both deadline removals bypassed the shell's exit trap;
+final memory counters were not retained and no OOM cause is claimed.
+
+The prospective correction keeps all original Cargo commands, package/feature/
+target/profile scopes and test cases unchanged. Tests, release and coverage
+receive an explicit5,400-second execution limit and110-minute outer job;
+component, checks and provenance retain1,800-second execution limits. CPU2,
+RAM4GiB, zero swap, PID256, scratch20GiB, retained stdio2MiB and the maximum of
+three separate hosted VMs remain unchanged. This is a bounded timing hypothesis
+requiring its own observed qualification, not a claim that either timeout
+passed or that the larger bound is sufficient. Existing failed outcomes,
+queued/running cells and missing historical counters remain intact.
+
+Before disposing of a verified job-owned live container, the host now reads
+its process's unified cgroup membership, verifies the exact container ID in
+the canonical host cgroup path, and retains bounded memory events/peak counters.
+Unavailable counters are reported explicitly. This covers the diagnostic gap
+when deadline removal prevents the guest shell's EXIT trap. An earlier
+uncommitted target-partition draft was preserved as local evidence and was
+never executed or published; it is superseded by this simpler timing revision.

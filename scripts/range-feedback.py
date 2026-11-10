@@ -107,6 +107,43 @@ exit "$coverage_status"
 
 
 
+def prestop_cgroup(name):
+    """Read the verified owned live container's host cgroup before disposal."""
+    try:
+        identity = subprocess.check_output(
+            ["docker", "inspect", "--format", "{{.Id}} {{.State.Pid}}", name],
+            text=True, timeout=5).split()
+        if len(identity) != 2 or not re.fullmatch(r"[0-9a-f]{64}", identity[0]) or not identity[1].isdecimal():
+            raise ValueError("invalid live container identity")
+        container_id, pid = identity
+        if int(pid) <= 0:
+            raise ValueError("container has no live host process")
+        with Path(f"/proc/{pid}/cgroup").open() as source:
+            membership = source.read(4097)
+        if len(membership) > 4096:
+            raise ValueError("host cgroup membership limit")
+        unified = [line[3:] for line in membership.splitlines() if line.startswith("0::/")]
+        if len(unified) != 1:
+            raise ValueError("missing unified host cgroup")
+        root = Path("/sys/fs/cgroup").resolve()
+        group = (root / unified[0].lstrip("/")).resolve()
+        if not group.is_relative_to(root) or not any(
+                part in {container_id, "docker-" + container_id + ".scope"} for part in group.parts):
+            raise ValueError("host cgroup does not identify owned container")
+        counters = {}
+        for filename in ("memory.events", "memory.peak"):
+            with (group / filename).open() as source:
+                content = source.read(1025)
+            if len(content) > 1024:
+                raise ValueError("host cgroup counter limit")
+            counters[filename] = content
+        print(json.dumps({"phase": "prestop-host-cgroup", "available": True,
+                          "counters": counters}), flush=True)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(json.dumps({"phase": "prestop-host-cgroup", "available": False,
+                          "reason": str(error)[:256]}), flush=True)
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or sys.platform != "linux":
         raise SystemExit("requires a separate GitHub Linux runner")
@@ -134,6 +171,9 @@ def main():
     profile = os.environ.get("RANGE_PROFILE", "component")
     if profile not in PROFILES:
         raise SystemExit("unknown fixed qualification profile")
+    # Ordinary/release cells exceeded the original 30-minute bound. Keep
+    # their commands; coverage shares the prospective longer timing limit.
+    deadline = 5400 if profile in {"tests", "release", "coverage"} else 1800
     command = SETUP + PROFILES[profile]
     identity = os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"]
     if not re.fullmatch(r"[0-9]+-[0-9]+", identity):
@@ -142,7 +182,7 @@ def main():
     print(json.dumps({"kind": "bounded-native-qualification", "profile": profile, "source": expected, "image": IMAGE,
                       "cpu": 2, "memory_bytes": 4 * 1024**3, "swap_bytes": 0, "pids": 256,
                       "scratch_filesystem_bytes": stat.f_blocks * stat.f_frsize, "scratch_limit_bytes": SCRATCH_BYTES,
-                      "deadline_seconds": 1800, "stdio_limit_bytes": 2 * 1024**2}), flush=True)
+                      "deadline_seconds": deadline, "stdio_limit_bytes": 2 * 1024**2}), flush=True)
     argv = ["docker", "run", "--rm", "--name", name, "--label", "lucene.range.job=" + identity,
             "--label", "lucene.range.source=" + expected, "--cpus=2", "--memory=4g", "--memory-swap=4g",
             "--pids-limit=256", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -165,7 +205,7 @@ def main():
         while selector.get_map():
             sample = os.statvfs(scratch)
             minimum_scratch_available = min(minimum_scratch_available, sample.f_bavail * sample.f_frsize)
-            if time.monotonic() - started > 1800:
+            if time.monotonic() - started > deadline:
                 failure = "deadline"
                 break
             for key, _ in selector.select(timeout=1):
@@ -183,7 +223,7 @@ def main():
             if failure:
                 break
         if not failure:
-            process.wait(timeout=max(1, 1800 - (time.monotonic() - started)))
+            process.wait(timeout=max(1, deadline - (time.monotonic() - started)))
     except subprocess.TimeoutExpired:
         failure = "deadline"
     finally:
@@ -195,6 +235,9 @@ def main():
             labels = json.loads(result.stdout)
             if labels.get("lucene.range.job") != identity or labels.get("lucene.range.source") != expected:
                 raise SystemExit("refusing cleanup of foreign container")
+            # Deadline removal bypasses the guest EXIT trap. Capture the
+            # owned live cgroup first; missing receipts remain unknown.
+            prestop_cgroup(name)
             subprocess.run(["docker", "rm", "--force", name], check=True, timeout=30)
         if process.poll() is None:
             process.terminate()

@@ -62,7 +62,7 @@ jobs:
     needs: compiler
     name: bounded ${{ matrix.profile }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 110
     strategy:
       fail-fast: false
       max-parallel: 3
