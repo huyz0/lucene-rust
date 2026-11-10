@@ -55,7 +55,7 @@ documents, multiple/foreign postings groups, nonnumeric or multivalued doc
 values and update generations. Legacy/vector range APIs are unadvertised.
 These refusals delimit this prototype, not universal native compatibility.
 Compound support still needs checked member offset/length translation; positions,
-norms, points, skip structures, updates and other representations need explicit
+norms, points, larger skip structures, updates and other representations need explicit
 source-aware interfaces and their own corpus/negative controls. No fallback
 may silently materialize a data archive. Arbitrary corrupt remote metadata is
 not presumed safe merely because the selected data reads are bounded.
@@ -82,8 +82,11 @@ expectations and a separately streamed full-materialization baseline. Data
 families `.tim`, `.doc`, `.dvd`, `.fdt` receive error and short-response faults
 after reader preparation; successful/empty results are rejected. Actual touched
 metadata includes `segments_N`, `.si`, `.fnm`, `.tip`, `.tmd`, `.dvm`, `.fdm`,
-`.fdx`, `.liv` and `.psm` postings metadata. This corpus does not open positions, norms, points, vectors,
-compound or update formats. Physical file/offset/request/response/outcome events
+`.fdx`, `.liv`, `.psm` postings metadata and `.dvs` numeric skip data. The
+selected `.dvs` is admitted as bounded streamed resident index data, then read
+by the existing native skip decoder; it is not a range-native skip cursor.
+This corpus does not open positions, norms, points, vectors, compound or update
+formats. Physical file/offset/request/response/outcome events
 are retained in a finite TSV. Tiny 512-byte per-source caches deliberately
 exercise eviction; this is not a speed or transfer-saving claim.
 
@@ -289,3 +292,22 @@ artifact and exits 78 before benchmark compilation or full qualification.
 That separate lock must become source before the locked check can pass.
 Ordinary test cells explicitly select libraries/binaries/integration tests,
 then doctests separately, avoiding duplicate doctest execution.
+
+
+Run `42794841013` at `555479c5` passed store/Java controls and native profile
+refusals, then its inventory assertion exposed `.dvs` alongside the already
+accounted `.psm`. The retained full trace was inspected as a set: 15 actual
+files spanning `segments_2`, `.si`, `.fnm`, `.tip`, `.tmd`, `.tim`, `.liv`,
+`.fdx`, `.fdm`, `.dvm`, `.dvd`, `.dvs`, `.psm`, `.doc`, `.fdt`. The selected
+`.dvs` is a small bounded streamed resident index using existing native parsing
+and checksums, not silently omitted or advertised as a remote skip cursor.
+Larger skip data still needs a source-aware successor. The follow-up requires
+both auxiliary formats and permits no unknown touched family.
+
+That failed source's raw trace records 2,755 cold-query attempts/690,172 received
+bytes, 1,566 fault-query attempts/391,496 received bytes with eight failures,
+64 integrity attempts/15,888 received bytes, and 70 separate materialization
+attempts/16,437 received bytes. These are physical ReadAt backend observations,
+not kernel cache/disk/network measurements or a performance win. Native query
+expectations/projections and fault checks ran before the inventory assertion,
+but the complete test failed and lint/format/benchmark/matrix were not reached.
