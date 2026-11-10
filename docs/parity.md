@@ -50,7 +50,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | File | Covers | Rows |
 |---|---|---|
 | [matrix.md](parity/matrix.md) | The supported matrix: formats read and written, search and write features, what is out of scope | 14 |
-| [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 34 |
+| [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 35 |
 | [util-geo.md](parity/util-geo.md) | `lucene-util` geo: encodings, tessellator, polygons, distance (M9 T9.1) | 11 |
 | [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums, pluggable stores and encryption, page cache | 30 |
 | [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written, and OpenSearch custom-codecs' zstd stored fields | 83 |
@@ -88,6 +88,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [ml-commons.md](parity/ml-commons.md) | `lucene-ml`: ml-commons' local model inference (text embedding, sparse encoding, sparse tokenize, cross-encoder; ONNX and TorchScript) for the lucene-rust plugin | 10 |
 | [knn-vector.md](parity/knn-vector.md) | the k-NN plugin's `knn_vector` field and `knn` query, and its `_plugins/_knn` REST endpoints, served by the lucene-rust plugin | 6 |
 | [vector-ivf.md](parity/vector-ivf.md) | `lucene-vector-quant`, `lucene-ivf`: the IVF vector index and its pluggable quantizers (this port's own format) | 13 |
+| [tensor.md](parity/tensor.md) | `lucene-tensor`: opt-in multi-vector (late-interaction) fields in binary doc values and `MaxSim` rescoring (this port's own encodings beside Lucene's) | 5 |
 | [vector-disk-hnsw.md](parity/vector-disk-hnsw.md) | `lucene-disk-hnsw`: an opt-in HNSW layout with one read per hop (this port's own format, the stock graph) | 5 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6); sandbox fuzzy-like-this (M13) | 14 |
