@@ -500,3 +500,31 @@ fn unadvertised_range_profiles_refuse_before_query_results() {
         );
     }
 }
+
+#[test]
+fn simpletext_refuses_before_its_materialized_search_form_can_be_built() {
+    let source_root = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/simpletext_search/index"
+    ));
+    let resident = MmapDirectory::with_read_threshold(source_root, 0);
+    let reader = DirectoryReader::open(&resident).unwrap();
+    assert!(!reader.segment_readers().is_empty());
+    let _opened = reader.open_segments().unwrap();
+    let trace = Arc::new(Mutex::new(Trace::new()));
+    let names = resident.list_all().unwrap();
+    let files = inputs(source_root, &names, &trace);
+    let scratch = TempDir::new("range-simpletext-refusal");
+    let dir = RangeDirectory::new(scratch.path(), files).unwrap();
+    let error = match DirectoryReader::open(&dir) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("SimpleText bypassed the declared binary range profile"),
+    };
+    assert!(error.contains("modern binary codec"), "{error}");
+    assert!(trace
+        .lock()
+        .unwrap()
+        .events
+        .iter()
+        .all(|event| event.file.starts_with("segments_")));
+}

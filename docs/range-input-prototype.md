@@ -408,3 +408,25 @@ Ending filesystem bytes, sampled minimum availability, cgroup memory events
 and peak are retained for subsequent failures. The provenance cell runs first
 among the serialized qualification cells. These are grounded corrective bounds,
 not a relabeling of any failed run or relaxation of a coverage/source gate.
+
+
+### Admission self-review and scheduling correction
+
+Self-review found SimpleText dispatch happened before the range admission
+checks. Its existing search-form builder can construct full in-memory data
+representations, so it must not be reached through the declared modern binary
+range profile. The corrective source refuses SimpleText before its `.si` or
+data opens. A committed real Java SimpleText fixture first opens and prepares
+successfully through the materialized API, then must refuse range admission
+with only the commit file touched. This does not remove any selected modern
+query or change materialized SimpleText behavior. Slice-only doc-value views
+are explicitly documented as resident views; only the selected numeric-sort
+executor is ported to the typed range view, and other query families need their
+own source-aware ports before range capability can be advertised.
+
+At this otherwise-required source correction, the qualification matrix permits
+up to3 existing cells concurrently on separate standard GitHub-hosted VMs.
+Each physical job/host still runs exactly one heavy workload with unchanged
+source/image/cgroup/scratch/deadline/stdio caps and unchanged cell/test counts.
+No paid runner label, local pool or shared cache is added. Earlier serialized
+runs and every queue/failure/cancellation remain unchanged evidence.
