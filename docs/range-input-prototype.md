@@ -232,3 +232,22 @@ points, term vectors, norms or additional postings/doc-value suffix groups.
 Their absence must be observed from its real inventory, not assumed. The
 upstream patch plan retains those additional representations and iterators;
 no current-main compatibility or runtime/provider/fleet claim follows.
+
+
+## Bounded qualification expansion
+
+After component feedback passes, the same workflow serializes seven fixed
+fresh-VM qualification cells: workspace lint/rustdoc on native x64 and ARM,
+workspace dev suites/doctests plus production FFI build on each architecture,
+search release suites/doctests plus production FFI release build on each, and
+workspace x64 coverage. All use the same exact image/source and unchanged
+2-CPU/4-GiB/zero-swap/256-PID/8-GiB/1,800-second/2-MiB envelope. A bound refusal
+is retained evidence and requires splitting work, not raising or omitting a
+gate. There is no shared cache. Only one qualification cell runs at a time,
+after the component cell, with fail-fast disabled to preserve independent
+failures. Coverage installs exact cargo-llvm-cov 0.8.7 with its published locked
+graph into job scratch and retains the raw LLVM file export (at most 64 MiB)
+for physical-line projection. Native summary totals remain diagnostics; they
+do not replace physical per-file/per-crate/changed-line accounting. The
+existing workspace 95% gate remains unchanged. This wiring is not a report
+that those cells ran or passed.
