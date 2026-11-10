@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 106;
+    public static final int EXPECTED_ABI_VERSION = 110;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -293,6 +293,10 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
         );
         static final MethodHandle PREPARED_FREE = bind("ffi_engine_prepared_free", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle PAINLESS_CHECK = bind(
+            "ffi_jvm_painless_check",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ANALYSIS_REGISTER = bind(
             "ffi_jvm_analysis_register",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
@@ -736,6 +740,11 @@ public final class NativeBridge {
             throw rethrow(t);
         }
         return status;
+    }
+
+    /** Clears this thread's last error, so that a later one is a later call's. */
+    public static void clearLastError() {
+        fail(OK, "");
     }
 
     private static int nullArgument(String what) {
@@ -1743,6 +1752,34 @@ public final class NativeBridge {
                     return tooLarge("the tokens");
                 }
                 out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Whether the native runtime runs the Painless score script {@code spec} describes (the node's
+     * fields after its sub-query, {@code jvm_painless_score.rs}) exactly as Painless would, decided
+     * before anything runs: {@code out[0]} empty when it does, else the reason as UTF-8.
+     */
+    public static int painlessCheck(byte[] spec, byte[][] out) {
+        if (spec == null) {
+            return nullArgument("spec");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.PAINLESS_CHECK.invokeExact(s.bytes(spec), (long) spec.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] reason = take(result);
+                if (reason == null) {
+                    return tooLarge("the reason");
+                }
+                out[0] = reason;
             }
             return rc;
         } catch (Throwable t) {

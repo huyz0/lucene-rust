@@ -149,6 +149,8 @@ def create(index, shards, index_sort=None):
             "hf": {"type": "half_float"},
             "ul": {"type": "unsigned_long"},
             "wc": {"type": "wildcard"},
+            # A field alias: a script's doc['qa'] reads qty's doc values.
+            "qa": {"type": "alias", "path": "qty"},
         }},
     })
 
@@ -889,6 +891,69 @@ SCROLLS = [
 ]
 
 
+def raw_search(index, body):
+    """`_search` as (HTTP status, body), an error response included."""
+    url, b = search_url(index, body)
+    r = urllib.request.Request(BASE + url, data=json.dumps(b).encode(), method="POST",
+                               headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(r, timeout=120) as resp:
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
+
+
+def error_shape(resp):
+    """A failed search's response with the parts that name a node or time dropped, and its
+    shard failures in shard order."""
+    def norm(v):
+        if isinstance(v, dict):
+            return {k: norm(x) for k, x in v.items() if k not in ("node", "took")}
+        if isinstance(v, list):
+            items = [norm(x) for x in v]
+            if items and all(isinstance(x, dict) and "shard" in x for x in items):
+                items.sort(key=lambda x: (x.get("index") or "", x["shard"]))
+            return items
+        return v
+    out = norm(resp)
+    if isinstance(out, dict) and "hits" in out:
+        out = {"_shards": out.get("_shards"), "hits": shape(resp, {})}
+    return out
+
+
+def script_errors(index, shards):
+    """Painless scripts that throw at run time: the native engine runs them (each passed the
+    static check) and fails exactly as stock does -- the same status, exception type, reason,
+    script_stack and position -- without re-running the search in Java (no fallback)."""
+    rows = [
+        ("unmapped field", "doc['nosuch'].value"),
+        ("division by zero", "long z = doc['n'].value - doc['n'].value; return 1 / z;"),
+        ("missing value", "doc['sp'].value + 1"),
+        ("null receiver", "String s = params.missing; return s.length();"),
+        ("negative score", "doc['qty'].value - 1000"),
+        ("array index", "int[] a = new int[2]; return a[(int) doc['qty'].value + 2];"),
+    ]
+    for name, source in rows:
+        body = {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": source}}}}
+        set_native(index, False)
+        want = raw_search(index, body)
+        set_native(index, True)
+        before = stats()
+        got = raw_search(index, body)
+        after = stats()
+        label = f"script errors {index} [{name}]"
+        check(want[0] != 200 or failed_shards(want[1]), f"{label}: the stock engine fails ({want[0]})")
+        check(got[0] == want[0], f"{label}: status {got[0]} vs stock {want[0]}")
+        a, b = error_shape(got[1]), error_shape(want[1])
+        check(a == b, f"{label}: native error differs from stock: {json.dumps(a, sort_keys=True)[:1500]} vs {json.dumps(b, sort_keys=True)[:1500]}")
+        delta = fallback_delta(before, after)
+        check(not delta, f"{label}: no fallback (the script never re-runs in Java), got {delta}")
+        check(after["native_errors"] == before["native_errors"], f"{label}: not counted as a native error")
+        failed = after["script_errors"] - before["script_errors"]
+        check(failed >= 1, f"{label}: {failed} script errors counted on {shards} shards")
+        print(f"  {label}: status {got[0]}, {failed} script errors, no fallback")
+
+
 def scroll_pages(index, body, limit=40):
     """Every page of a scroll (at most `limit`), each as `shape` gives it."""
     resp = req("POST", f"/{index}/_search?scroll=1m", body)
@@ -1409,6 +1474,8 @@ def main():
     # Spans, intervals, combined_fields, function_score, more_like_this.
     for index, shards in (("single", 1), ("multi", 3)):
         native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
+    for index, shards in (("single", 1), ("multi", 3)):
+        script_errors(index, shards)
     # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
