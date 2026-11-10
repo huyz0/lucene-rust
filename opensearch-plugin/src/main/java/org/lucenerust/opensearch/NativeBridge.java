@@ -400,6 +400,22 @@ public final class NativeBridge {
             "ffi_ml_sparse_tokenize_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
+        static final MethodHandle ML_SPARSE_ENCODING_OPEN = bind(
+            "ffi_ml_sparse_encoding_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_ENCODING = bind(
+            "ffi_ml_sparse_encoding_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BYTE, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_TEXT_SIMILARITY_OPEN = bind(
+            "ffi_ml_text_similarity_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_TEXT_SIMILARITY = bind(
+            "ffi_ml_text_similarity_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle ZSTD_PAGED_DECOMPRESS = bind(
             "ffi_zstd_paged_decompress",
@@ -1834,7 +1850,77 @@ public final class NativeBridge {
         }
     }
 
-    /** Releases a handle from {@link #mlTextEmbeddingOpen} or {@link #mlSparseTokenizeOpen}. */
+    /**
+     * Opens the ONNX sparse encoding model ({@code sparse} true) or cross-encoder at {@code modelPath}
+     * with the {@code tokenizer.json} bytes; its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlOnnxModelOpen(boolean sparse, String modelPath, byte[] tokenizer, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        MethodHandle open = sparse ? H.ML_SPARSE_ENCODING_OPEN : H.ML_TEXT_SIMILARITY_OPEN;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) open.invokeExact(s.bytes(model), (long) model.length, s.bytes(tokenizer), (long) tokenizer.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The sparse vectors of {@code texts} (encoded as for {@link #mlTextEmbeddingEmbed}) from sparse
+     * encoding model {@code handle}, keyed by token id when {@code byId}: per text a {@code u32}
+     * output count, then per output its {@code u32} name length, UTF-8 name and its weights as {@link
+     * #mlSparseTokenize} gives a text's. {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlSparseEncode(long handle, byte[] texts, boolean byId) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_SPARSE_ENCODING.invokeExact(
+                handle,
+                s.bytes(texts),
+                (long) texts.length,
+                (byte) (byId ? 1 : 0),
+                ptrOf(slot),
+                lenOf(slot)
+            );
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Scores each of {@code texts} (encoded as for {@link #mlTextEmbeddingEmbed}) against {@code query}
+     * with cross-encoder {@code handle}: per text a {@code u32} output count, then each output as
+     * {@link #mlTextEmbeddingEmbed} gives a vector. {@code null} on failure, with the reason in {@link
+     * #lastError}.
+     */
+    public static byte[] mlTextSimilarity(long handle, String query, byte[] texts) {
+        byte[] q = query.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_TEXT_SIMILARITY.invokeExact(
+                handle,
+                s.bytes(q),
+                (long) q.length,
+                s.bytes(texts),
+                (long) texts.length,
+                ptrOf(slot),
+                lenOf(slot)
+            );
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from any of the {@code ml*Open} calls. */
     public static int mlModelClose(long handle) {
         try {
             return (int) H.ML_MODEL_CLOSE.invokeExact(handle);

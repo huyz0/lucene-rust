@@ -13,10 +13,19 @@
 //! - [`text_embedding`] is the `TEXT_EMBEDDING` function: one text at a time,
 //!   as ml-commons' `TextEmbeddingModel` runs it, pooled by
 //!   [`text_embedding::Pooling`].
+//! - [`sparse_encoding`] (`SPARSE_ENCODING`) reads a model's vocabulary
+//!   weights back as token weights; [`sparse_tokenize`] (`SPARSE_TOKENIZE`)
+//!   weighs a text's tokens without a network.
+//! - [`text_similarity`] (`TEXT_SIMILARITY`) scores a query against a
+//!   document with a cross-encoder.
+//! - [`onnx`] is the session the model functions share.
 
+pub mod onnx;
 pub mod runtime;
+pub mod sparse_encoding;
 pub mod sparse_tokenize;
 pub mod text_embedding;
+pub mod text_similarity;
 pub mod tokenizer;
 
 /// A failure loading or running a model.

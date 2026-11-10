@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Records, from a stock OpenSearch node with ml-commons, the vectors each
-fixtures/ml model gives under each pooling mode: fixtures/ml/expected.json,
-which lucene-ml's tests compare against.
+"""Records, from a stock OpenSearch node with ml-commons, what each fixtures/ml
+model gives: the text-embedding vectors under each pooling mode, the sparse
+encoding token weights (by token and by id) and the cross-encoder scores, in
+fixtures/ml/expected.json, which lucene-ml's tests compare against.
 
 The node must reach this machine's HTTP server for the model zips (the script
 serves fixtures/ml on --port) and have libtorch available to DJL.
@@ -34,6 +35,9 @@ MODELS = [
     ("tiny-bert-pooled", "bert"),
     ("tiny-distilbert", "distilbert"),
 ]
+SPARSE = "tiny-sparse"
+CROSS = "tiny-cross-encoder"
+QUERY = "how are documents searched"
 CASES = [
     ("mean", True), ("mean", False), ("mean_sqrt_len", True), ("max", True), ("max", False),
     ("weighted_mean", True), ("cls", False), ("last_token", True), ("none", False),
@@ -53,7 +57,7 @@ def main():
     ap.add_argument("host")
     ap.add_argument("--port", type=int, default=8765)
     a = ap.parse_args()
-    zips = {name: model_zip(name) for name, _ in MODELS}
+    zips = {name: model_zip(name) for name in [m for m, _ in MODELS] + [SPARSE, CROSS]}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -116,6 +120,47 @@ def main():
                                       "normalize": normalize, "outputs": vectors})
             req("POST", f"/_plugins/_ml/models/{mid}/_undeploy")
             print(name, pooling, normalize, [v.get("shape", v.get("reason")) for v in vectors])
+    def register(name, function, config=None):
+        z = zips[name]
+        body = {"name": name, "version": "1.0.0", "model_format": "ONNX", "function_name": function,
+                "model_content_hash_value": hashlib.sha256(z).hexdigest(), "model_content_size_in_bytes": len(z),
+                "url": f"http://localhost:{a.port}/{name}.zip"}
+        if config:
+            body["model_config"] = config
+        mid = wait(req("POST", "/_plugins/_ml/models/_register", body)["task_id"])["model_id"]
+        wait(req("POST", f"/_plugins/_ml/models/{mid}/_deploy")["task_id"])
+        return mid
+
+    mid = register(SPARSE, "SPARSE_ENCODING")
+    sparse = {}
+    for fmt in ("WORD", "TOKEN_ID"):
+        out = []
+        for text in TEXTS:
+            try:
+                o = req("POST", f"/_plugins/_ml/_predict/sparse_encoding/{mid}",
+                        {"text_docs": [text], "parameters": {"sparse_embedding_format": fmt}})
+                out.append(o["inference_results"][0]["output"])
+            except urllib.error.HTTPError as e:
+                out.append({"error": e.code, "reason": json.loads(e.read())["error"]["reason"]})
+        sparse[fmt] = out
+    expected["sparse_encoding"] = {"model": SPARSE, "outputs": sparse}
+    req("POST", f"/_plugins/_ml/models/{mid}/_undeploy")
+    print(SPARSE, [o.get("reason") if isinstance(o, dict) else len(o[0]["dataAsMap"]["response"][0])
+                   for o in sparse["WORD"]])
+
+    mid = register(CROSS, "TEXT_SIMILARITY", {"model_type": "bert", "embedding_dimension": 1,
+                                                "framework_type": "huggingface_transformers"})
+    scores = []
+    for text in TEXTS:
+        try:
+            o = req("POST", f"/_plugins/_ml/_predict/text_similarity/{mid}", {"query_text": QUERY, "text_docs": [text]})
+            scores.append(o["inference_results"][0]["output"])
+        except urllib.error.HTTPError as e:
+            scores.append({"error": e.code, "reason": json.loads(e.read())["error"]["reason"]})
+    expected["text_similarity"] = {"model": CROSS, "query": QUERY, "outputs": scores}
+    req("POST", f"/_plugins/_ml/models/{mid}/_undeploy")
+    print(CROSS, [o.get("reason") if isinstance(o, dict) else o[0]["data"] for o in scores])
+
     with open(os.path.join(HERE, "expected.json"), "w") as f:
         json.dump(expected, f, separators=(",", ":"))
     server.shutdown()

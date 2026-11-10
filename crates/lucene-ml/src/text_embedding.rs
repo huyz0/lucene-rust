@@ -8,14 +8,13 @@
 //! its neighbours.
 
 use std::path::Path;
-use std::sync::Mutex;
 
-use ort::session::Session;
-use ort::value::Tensor as OrtTensor;
 use tokenizers::Tokenizer;
 
-use crate::tokenizer::{self, Encoded};
-use crate::{runtime, MlError, Result};
+pub use crate::onnx::Tensor;
+use crate::onnx::{Feed, OnnxModel};
+use crate::tokenizer;
+use crate::{MlError, Result};
 
 /// `TextEmbeddingModelConfig.PoolingMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,15 +56,6 @@ impl Pooling {
     }
 }
 
-/// A float tensor, row major.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Tensor {
-    /// The dimensions.
-    pub shape: Vec<usize>,
-    /// The values.
-    pub data: Vec<f32>,
-}
-
 /// How a model's inputs and outputs are read.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -81,30 +71,22 @@ pub struct Config {
 /// A deployed text-embedding model.
 pub struct TextEmbeddingModel {
     tokenizer: Tokenizer,
-    session: Mutex<Session>,
+    model: OnnxModel,
     token_types: bool,
     pooling: Pooling,
     normalize: bool,
 }
 
-fn model_error(e: impl std::fmt::Display) -> MlError {
-    MlError::Model(e.to_string())
-}
-
 impl TextEmbeddingModel {
     /// Loads the ONNX model at `model` with the tokenizer file `tokenizer`.
-    /// [`runtime::init`] must have run.
+    /// [`crate::runtime::init`] must have run.
     pub fn load(model: &Path, tokenizer_json: &[u8], config: &Config) -> Result<Self> {
         let tokenizer = tokenizer::load(tokenizer_json)?;
-        let environment = runtime::environment()?;
-        let session = Session::builder(environment)
-            .map_err(model_error)?
-            .commit_from_file(model)
-            .map_err(model_error)?;
+        let model = OnnxModel::load(model)?;
         let model_type = config.model_type.to_ascii_lowercase();
         Ok(TextEmbeddingModel {
             tokenizer,
-            session: Mutex::new(session),
+            model,
             token_types: model_type == "bert" || model_type == "albert",
             pooling: config.pooling,
             normalize: config.normalize,
@@ -134,32 +116,16 @@ impl TextEmbeddingModel {
         })
     }
 
-    fn run(&self, encoded: &Encoded) -> Result<Vec<Tensor>> {
-        let len = encoded.ids.len();
-        let shape = [1usize, len];
-        let tensor = |v: &[i64]| OrtTensor::from_array((shape, v.to_vec())).map_err(model_error);
-        let mut inputs = vec![
-            ("input_ids", tensor(&encoded.ids)?),
-            ("attention_mask", tensor(&encoded.attention_mask)?),
+    fn run(&self, encoded: &tokenizer::Encoded) -> Result<Vec<Tensor>> {
+        let mut feeds = vec![
+            ("input_ids", Feed::Ids),
+            ("attention_mask", Feed::AttentionMask),
         ];
         if self.token_types {
-            inputs.push(("token_type_ids", tensor(&encoded.type_ids)?));
+            feeds.push(("token_type_ids", Feed::TypeIds));
         }
-        let mut session = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        let outputs = session.run(inputs).map_err(model_error)?;
-        let mut result = Vec::with_capacity(outputs.len());
-        for (_, value) in outputs.iter() {
-            let (shape, data) = value.try_extract_tensor::<f32>().map_err(model_error)?;
-            let shape = shape
-                .iter()
-                .map(|&d| usize::try_from(d).map_err(model_error))
-                .collect::<Result<Vec<_>>>()?;
-            result.push(Tensor {
-                shape,
-                data: data.to_vec(),
-            });
-        }
-        Ok(result)
+        let outputs = self.model.run(encoded, &feeds)?;
+        Ok(outputs.into_iter().map(|o| o.tensor).collect())
     }
 }
 
