@@ -30,7 +30,9 @@ import java.util.Map;
  * step; {@code parameters.target_cluster_size} (16 to 65536, default 384) sizes its clusters,
  * {@code parameters.quantizer} ({@link #IVF_QUANTIZERS}: 1-bit {@code bbq} by default, {@code
  * osq2}/{@code osq4}/{@code osq7} for Lucene's optimized scalar quantization at 2, 4 or 7 bits,
- * {@code erq2} to {@code erq8} for Extended RaBitQ at 2 to 8 bits, {@code rabitq} for 1-bit RaBitQ)
+ * {@code erq2} to {@code erq8} for Extended RaBitQ at 2 to 8 bits, {@code rabitq} for 1-bit RaBitQ, {@code auto}
+ * to pick among bbq, osq2 and erq2 to erq4 per segment, at each flush and merge, by what the
+ * field's own vectors reach)
  * codes the clusters and {@code parameters.rerank_encoding} ({@code float}, {@code half_float} by
  * default, {@code bfloat16} or {@code int8}) stores the copy it reranks from. Its {@code method: hnsw}
  * is Lucene's graph (built on the raw vectors, {@code parameters.m} and {@code
@@ -86,7 +88,8 @@ public record KnnFieldConfig(
         "erq6",
         "erq7",
         "erq8",
-        "rabitq"
+        "rabitq",
+        "auto"
     );
     /** The quantizers of the {@code lucene_rust} engine's {@code hnsw}: 1-bit RaBitQ and Extended RaBitQ at 2 to 8 bits. */
     public static final List<String> HNSW_QUANTIZERS = List.of("rabitq", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8");

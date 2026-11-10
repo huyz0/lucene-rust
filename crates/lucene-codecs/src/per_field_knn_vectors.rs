@@ -47,10 +47,17 @@ pub const IVF_RERANK_ENCODINGS: [&str; 4] = ["f32", "f16", "bf16", "int8"];
 /// (Lucene's 1-bit optimized scalar quantization with 4-bit queries),
 /// `osq2`/`osq4`/`osq7` (the same quantizer at 2, 4 and 7 bits per
 /// dimension), `erq2` to `erq8` (Extended RaBitQ at 2 to 8 bits) and
-/// `rabitq` (1-bit RaBitQ: `bbq` after a random rotation).
-pub const IVF_QUANTIZERS: [&str; 12] = [
-    "bbq", "osq2", "osq4", "osq7", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8", "rabitq",
+/// `rabitq` (1-bit RaBitQ: `bbq` after a random rotation); `auto` (IVF only:
+/// picked per segment from the field's own vectors,
+/// `lucene_ivf::AutoQuantizer`).
+pub const IVF_QUANTIZERS: [&str; 13] = [
+    "bbq", "osq2", "osq4", "osq7", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8",
+    "rabitq", "auto",
 ];
+
+/// The [`IVF_QUANTIZERS`] wire number of `auto`, which picks an IVF field's
+/// codes per segment and has no graph-walk form.
+pub const IVF_AUTO_QUANTIZER: u8 = 12;
 
 /// A KNN vectors format a field can be routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -198,7 +205,7 @@ impl KnnVectorsFormat {
         beam_width: i32,
     ) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
-        if usize::from(quantizer) >= IVF_QUANTIZERS.len() {
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len() || quantizer == IVF_AUTO_QUANTIZER {
             return Err(InvalidFormat(format!("unknown HNSW quantizer {quantizer}")));
         }
         Ok(KnnVectorsFormat::HnswQuantized {
