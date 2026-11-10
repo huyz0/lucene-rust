@@ -1665,8 +1665,16 @@ impl FlatVectorsWriter {
                 }
             }
             FieldVectorData::Float32(v) => {
-                for component in v {
-                    self.data.extend_from_slice(&component.to_le_bytes());
+                // Sized once and filled in place: the loop compiles to a
+                // straight copy on little-endian targets, where pushing
+                // component by component checked capacity every 4 bytes.
+                let start = self.data.len();
+                // ARITH: the components are already in memory, so their
+                // byte count (and the buffer grown by it) fits a usize.
+                #[allow(clippy::arithmetic_side_effects)]
+                self.data.resize(start + v.len() * 4, 0);
+                for (out, component) in self.data[start..].chunks_exact_mut(4).zip(v) {
+                    out.copy_from_slice(&component.to_le_bytes());
                 }
             }
             FieldVectorData::Byte(v) => self.data.extend_from_slice(v),
@@ -2121,8 +2129,12 @@ fn validate_field(field: &FlatVectorsField, max_doc: i32) -> Result<()> {
     // NaN score would be silently excluded from the bulk-score maximum that
     // gates graph expansion instead of loudly breaking.
     if let FieldVectorData::Float32(values) = &field.values {
-        if let Some((i, v)) = values.iter().enumerate().find(|(_, v)| !v.is_finite()) {
-            return Err(Error::NonFiniteValue(field.field_number, i, *v));
+        // The branch-free pass first (it vectorizes); the position only when
+        // it fails.
+        if !values.iter().fold(true, |ok, v| ok & v.is_finite()) {
+            if let Some((i, v)) = values.iter().enumerate().find(|(_, v)| !v.is_finite()) {
+                return Err(Error::NonFiniteValue(field.field_number, i, *v));
+            }
         }
     }
     Ok(())

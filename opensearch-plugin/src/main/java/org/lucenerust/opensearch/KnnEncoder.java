@@ -92,10 +92,9 @@ final class KnnEncoder {
      */
     static KnnHitsQuery topHits(NativeReaders readers, IndexSearcher searcher, KnnTopVectorQuery q) {
         IndexReader reader = searcher.getIndexReader();
-        // A view of the writer's buffers has segments the native reader does not.
-        if (LiveDirectoryReader.baseOf(reader) != null) {
-            return null;
-        }
+        // A view of the writer's buffers: they are searched beside the native reader's segments,
+        // numbered as the view's leaves.
+        LiveDirectoryReader live = LiveDirectoryReader.find(reader);
         NativeReaders.Acquired acquired = readers.acquire(reader);
         if (acquired.handle() == 0) {
             return null;
@@ -138,12 +137,12 @@ final class KnnEncoder {
         int[] docs = new int[room];
         float[] scores = new float[room];
         int[] count = new int[1];
-        int rc = NativeBridge.readerKnn(acquired.handle(), blob, room, docs, scores, count);
+        int rc = knn(acquired.handle(), live, blob, room, docs, scores, count);
         if (rc == NativeBridge.BUFFER_TOO_SMALL && count[0] > room) {
             room = count[0];
             docs = new int[room];
             scores = new float[room];
-            rc = NativeBridge.readerKnn(acquired.handle(), blob, room, docs, scores, count);
+            rc = knn(acquired.handle(), live, blob, room, docs, scores, count);
         }
         if (rc != NativeBridge.OK) {
             // As every native search does: a failure falls back to Lucene rather than failing the query.
@@ -155,6 +154,12 @@ final class KnnEncoder {
             hits[i] = new ScoreDoc(docs[i], scores[i]);
         }
         return KnnHitsQuery.of(reader, hits);
+    }
+
+    private static int knn(long handle, LiveDirectoryReader live, byte[] blob, int room, int[] docs, float[] scores, int[] count) {
+        return live == null
+            ? NativeBridge.readerKnn(handle, blob, room, docs, scores, count)
+            : NativeBridge.liveViewKnn(handle, live.view().id(), blob, room, docs, scores, count);
     }
 
     private static void target(ByteArrayOutputStream out, KnnTarget t) {
