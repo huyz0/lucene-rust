@@ -1610,6 +1610,11 @@ fn ivf_leaf_results(
                     ((live_passing as f64) * n as f64 / seen.max(1) as f64) as usize
                 }
             };
+            // A filter passing no more documents than the accepted target
+            // is scored exactly: probing would scan at least as many.
+            if passing <= ivf_accepted_target(k) {
+                return Ok(None);
+            }
             // A field clustered per partition (an index sorted by a
             // partition field) probes only the clusters whose document range
             // holds a document the filter passes, as an index of those
