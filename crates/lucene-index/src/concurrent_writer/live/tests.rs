@@ -1216,3 +1216,132 @@ fn a_view_holds_the_buffer_vector_graph() {
     w.close_live_view(&view);
     w.commit().unwrap();
 }
+
+/// A writer whose `v` field is 64-d floats in the IVF format.
+fn ivf_writer(dir: &FsDirectory) -> (ConcurrentIndexWriter<'_>, i32) {
+    let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.set_ram_buffer_size_mb(64.0).unwrap();
+    w.enable_explicit_documents().unwrap();
+    let id = w
+        .register_field(
+            FieldInfo::new("_id", 0)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true),
+        )
+        .unwrap();
+    w.register_field(FieldInfo::new("v", 0).with_vectors(
+        64,
+        lucene_codecs::field_infos::VectorEncoding::Float32,
+        lucene_codecs::field_infos::VectorSimilarityFunction::DotProduct,
+    ))
+    .unwrap();
+    w.set_knn_vectors_format_for_field(
+        "v",
+        lucene_codecs::per_field_knn_vectors::KnnVectorsFormat::ivf_quantized(64, 0, 0).unwrap(),
+    );
+    let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+    w.enable_live_search().unwrap();
+    (w, id)
+}
+
+/// Unit vector `i` of 64 dimensions, near one of 50 cluster means.
+fn clustered(i: i64) -> Vec<f32> {
+    let mut s = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut next = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    };
+    let c = i.rem_euclid(50) as u64;
+    let mut v: Vec<f32> = (0..64u64)
+        .map(|d| {
+            let mean = ((c * 131 + d * 17) % 23) as f32 / 11.0 - 1.0;
+            mean * 2.0 + next()
+        })
+        .collect();
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    v.iter_mut().for_each(|x| *x /= norm);
+    v
+}
+
+fn add_clustered_doc(w: &ConcurrentIndexWriter<'_>, id: i32, i: i64) {
+    let doc = ExplicitDocument {
+        stored: Vec::new(),
+        fields: ExplicitFields {
+            inverted: vec![InvertedField {
+                field_number: id,
+                terms: vec![term(&format!("d{i}"), &[])].into(),
+                norm: None,
+            }],
+            ..ExplicitFields::default()
+        },
+    };
+    let vectors = vec![crate::index_writer::DocumentVector::float32(
+        "v",
+        clustered(i),
+    )];
+    w.add_explicit_documents_with_vectors_in(None, vec![doc], vec![vectors])
+        .unwrap();
+}
+
+/// After a flush wrote an IVF field's clusters, the next buffer routes its
+/// vectors to them, and a view's search of those lists finds the exact
+/// neighbours. The buffer before that flush had none to route to.
+#[test]
+fn a_view_holds_the_buffer_ivf_lists() {
+    let tmp = TempDir::new("live-view-ivf");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, id) = ivf_writer(&dir);
+    for i in 0..3000 {
+        add_clustered_doc(&w, id, i);
+    }
+    let view = w.open_live_view(None).unwrap();
+    assert!(view.buffers.iter().all(|b| b.vector_lists.is_empty()));
+    w.close_live_view(&view);
+    drop(view);
+    w.flush().unwrap();
+    for i in 3000..11_000 {
+        add_clustered_doc(&w, id, i);
+    }
+    let view = w.open_live_view(None).unwrap();
+    let b = view.buffers.iter().find(|b| b.in_slot).unwrap();
+    let l = &b.vector_lists[0];
+    assert_eq!(l.count, 8000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while l.lists.assigned() < l.count && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(l.lists.assigned(), l.count, "the router finished");
+    let score = |a: &[f32], b: &[f32]| {
+        lucene_codecs::field_infos::VectorSimilarityFunction::DotProduct.score(a, b)
+    };
+    let mut found = 0usize;
+    for qi in 0..20i64 {
+        let q = clustered(100_000 + qi * 7);
+        let mut want: Vec<(i32, f32)> = (0..8000)
+            .map(|d| (d, score(&q, &clustered(i64::from(d) + 3000))))
+            .collect();
+        want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let want: Vec<i32> = want.iter().take(10).map(|w| w.0).collect();
+        let hits = l
+            .lists
+            .search(
+                &lucene_codecs::buffer_vectors::BufferQuery::Float32(q),
+                10,
+                l.count,
+                None,
+                0,
+            )
+            .unwrap();
+        found += hits.iter().filter(|h| want.contains(&h.0)).count();
+    }
+    assert!(found >= 180, "recall {found}/200");
+    let lists = std::sync::Arc::clone(&l.lists);
+    w.close_live_view(&view);
+    drop(view);
+    w.flush().unwrap();
+    // The flushed buffer's lists went with it.
+    assert_eq!(std::sync::Arc::strong_count(&lists), 1);
+    w.commit().unwrap();
+}

@@ -55,7 +55,7 @@ use lucene_vector_quant::QuantizerFactory;
 use crate::calibrate::{self, DEFAULT_CALIBRATION_RECALL};
 use crate::kmeans::{self, KMeansParams, SplitMix64};
 use crate::merge::MergeClustering;
-use crate::reader::IvfField;
+use crate::reader::{IvfField, DEFAULT_PROBE_FRACTION};
 use crate::routing;
 use crate::{
     similarity_ordinal, Error, Result, Similarity, VectorEncoding, META_CODEC, POSTINGS_CODEC,
@@ -142,11 +142,65 @@ pub struct IvfFiles {
     pub vectors: Vec<u8>,
 }
 
+/// A written field's clusters, as its reader routes with them: what an
+/// indexing buffer routes its vectors to before they are flushed.
+#[derive(Debug, Clone)]
+pub struct FieldClusters {
+    pub number: i32,
+    pub similarity: Similarity,
+    pub dimension: usize,
+    /// `clusters * dimension` floats, as stored.
+    pub centroids: Vec<f32>,
+    /// Each centroid's parent in the routing tree stored with the field.
+    pub tree_parents: Option<Vec<u32>>,
+    /// Per cluster, the largest distance from its centroid of an entry's
+    /// vector (unit-normalized for `Cosine`).
+    pub radii: Vec<f32>,
+    /// The share of the clusters a search probes by default.
+    pub probe_fraction: f32,
+}
+
+impl FieldClusters {
+    /// How many clusters there are.
+    pub fn len(&self) -> usize {
+        self.centroids
+            .len()
+            .checked_div(self.dimension)
+            .unwrap_or(0)
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The router the field's reader builds ([`Routing::Auto`]).
+    ///
+    /// [`Routing::Auto`]: crate::Routing::Auto
+    pub fn router(&self) -> routing::Router {
+        routing::Router::new(
+            &self.centroids,
+            self.dimension,
+            self.similarity,
+            crate::Routing::Auto,
+            self.tree_parents.as_deref(),
+        )
+    }
+
+    /// The probes a search makes by default: [`IvfField::auto_nprobe`].
+    ///
+    /// [`IvfField::auto_nprobe`]: crate::IvfField::auto_nprobe
+    pub fn nprobe(&self) -> usize {
+        crate::reader::probes_for(self.probe_fraction, self.len())
+    }
+}
+
 /// Writes the IVF files of one segment, field by field.
 #[derive(Debug)]
 pub struct IvfWriter {
     fields: Vec<u8>,
     field_numbers: Vec<i32>,
+    clusters: Vec<FieldClusters>,
     postings: Vec<u8>,
     vectors: Vec<u8>,
     meta: Vec<u8>,
@@ -240,6 +294,7 @@ impl IvfWriter {
         IvfWriter {
             fields: Vec::new(),
             field_numbers: Vec::new(),
+            clusters: Vec::new(),
             postings,
             vectors,
             meta,
@@ -622,7 +677,21 @@ impl IvfWriter {
             None => write_count(m, 0)?,
         }
         self.field_numbers.push(field.number);
+        self.clusters.push(FieldClusters {
+            number: field.number,
+            similarity: field.similarity,
+            dimension: dim,
+            centroids: clustering.centroids.clone(),
+            tree_parents: tree,
+            radii,
+            probe_fraction: calibration.map_or(DEFAULT_PROBE_FRACTION, |c| c.probe_fraction),
+        });
         Ok(())
+    }
+
+    /// The clusters of the fields written so far, in order.
+    pub fn clusters(&self) -> &[FieldClusters] {
+        &self.clusters
     }
 
     /// The finished files.

@@ -8053,10 +8053,42 @@ mod tests {
     /// top 10.
     #[test]
     fn a_view_searches_the_buffer_graph() {
+        let recall = buffer_index_knn("engine-writer-live-knn-graph", "hnsw:8:50", 300, 0, false);
+        // Uniform random 64-d vectors under M 8 and 50 candidates are hard
+        // for any graph: the flushed segment, which holds the same graph,
+        // finds about as many.
+        assert!(
+            recall.0 >= 0.8 && recall.0 >= recall.1 - 0.05,
+            "recall {recall:?}"
+        );
+    }
+
+    /// **Realtime k-NN through a buffer's IVF cluster lists.** After a
+    /// commit wrote an IVF field's clusters, the next buffer routes its
+    /// vectors to them, and a view's search probes them: exact scores,
+    /// deletes and filters honoured, recall at least the flushed segment's
+    /// at the same probes.
+    #[test]
+    fn a_view_searches_the_buffer_ivf_lists() {
+        let recall = buffer_index_knn("engine-writer-live-knn-ivf", "ivf:16:0", 2000, 32, true);
+        assert!(recall.0 >= recall.1 - 0.02, "recall {recall:?}");
+    }
+
+    /// A view's recall@10 over a buffer of 7000 vectors kept with an index
+    /// of format `format` (graph, or with `lists` IVF lists) after
+    /// `committed` committed ones, and the recall once all are flushed, at
+    /// `nprobes`.
+    fn buffer_index_knn(
+        name: &str,
+        format: &str,
+        committed: usize,
+        nprobes: i32,
+        lists: bool,
+    ) -> (f64, f64) {
         use crate::live::{
             ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_knn,
         };
-        let tmp = empty_index("engine-writer-live-knn-graph");
+        let tmp = empty_index(name);
         let h = open_with(&tmp, 256.0, OPEN_LIVE_SEARCH, i32::MAX);
         let f = setup(h);
         let spec = Blob::default()
@@ -8072,14 +8104,19 @@ mod tests {
             .i32(0)
             .i32(64)
             .u8(0)
-            .u8(0)
-            .u8(1)
-            .i32(8)
-            .i32(50)
+            .u8(0);
+        // HNSW M 8, beam 50; or IVF clusters of 16, exact rerank vectors,
+        // bbq codes.
+        let spec = if lists {
+            spec.u8(6).i32(16).u8(0).u8(0)
+        } else {
+            spec.u8(1).i32(8).i32(50)
+        };
+        let spec = spec
             .u8(0)
             .i32(1)
             .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
-            .bytes(b"hnsw:8:50")
+            .bytes(format.as_bytes())
             .0;
         register(h, &spec).unwrap();
         let word = |i: usize| if i.is_multiple_of(2) { "even" } else { "odd" };
@@ -8096,11 +8133,11 @@ mod tests {
             }
             assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
         };
-        add(0, 300);
+        add(0, committed);
         let gen = commit_settled(h);
         let reader = open_reader(&tmp, gen);
         let buffered = 7000;
-        add(300, 300 + buffered);
+        add(committed, committed + buffered);
         let b = doc(
             Blob::default()
                 .u8(OP_SOFT_UPDATE)
@@ -8112,7 +8149,7 @@ mod tests {
             &f,
             "d4000",
             &[],
-            (300 + buffered) as i64,
+            (committed + buffered) as i64,
             true,
         );
         assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
@@ -8125,14 +8162,24 @@ mod tests {
                 .buffers
                 .iter()
                 .flat_map(|b| &b.vector_graphs)
-                .all(|g| g.graph.inserted() == g.graph.len());
-            let graphs = v
+                .all(|g| g.graph.inserted() == g.graph.len())
+                && v.buffers
+                    .iter()
+                    .flat_map(|b| &b.vector_lists)
+                    .all(|l| l.lists.assigned() == l.lists.len());
+            let kept = v
                 .buffers
                 .iter()
-                .map(|b| b.vector_graphs.len())
+                .map(|b| {
+                    if lists {
+                        b.vector_lists.len()
+                    } else {
+                        b.vector_graphs.len()
+                    }
+                })
                 .sum::<usize>();
             w.writer().close_live_view(&v);
-            assert_eq!(graphs, 1, "the buffer keeps a graph of its vectors");
+            assert_eq!(kept, 1, "the buffer keeps an index of its vectors");
             if done {
                 break;
             }
@@ -8164,7 +8211,7 @@ mod tests {
                 None => request.u8(0),
                 Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
             };
-            let request = request.u8(0).i32(0).0;
+            let request = request.u8(0).i32(nprobes).0;
             let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
             // SAFETY: live request and buffers of 64.
             let rc = unsafe {
@@ -8200,7 +8247,7 @@ mod tests {
         };
         let knn =
             |target: &[f32], k: i32, filter: Option<&str>| search(reader, view, target, k, filter);
-        let total = 300 + buffered;
+        let total = committed + buffered;
         type Search<'a> = &'a dyn Fn(&[f32], i32, Option<&str>) -> Vec<(i32, f32)>;
         let recall = |knn: Search<'_>| {
             let (mut found, mut wanted) = (0usize, 0usize);
@@ -8237,19 +8284,13 @@ mod tests {
         assert_eq!(ffi_live_view_close(view), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
 
-        // Uniform random 64-d vectors under M 8 and 50 candidates are hard
-        // for any graph: the flushed segment, which holds the same graph,
-        // finds about as many.
         let all = commit_settled(h);
         let flushed = open_reader(&tmp, all);
         let after = recall(&|t: &[f32], k: i32, f: Option<&str>| search(flushed, 0, t, k, f));
-        assert!(
-            live >= 0.8 && live >= after - 0.05,
-            "recall {live}, flushed {after}"
-        );
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(flushed), 0);
         ffi_engine_writer_close(h);
         check(&tmp);
+        (live, after)
     }
 
     /// **A vector field is written in its mapping's format and searched

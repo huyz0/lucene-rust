@@ -1784,6 +1784,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         let postings = Arc::new(std::mem::take(&mut dwpt.postings));
         let mut columns = std::mem::take(&mut dwpt.live);
         let graphs = columns.take_graphs();
+        columns.drop_lists();
         // Until it is published, a buffer whose documents are all in its
         // columns and packed fields is still read as chunks without
         // postings; any other goes as one segment once published.
