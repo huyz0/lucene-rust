@@ -52,6 +52,15 @@ cargo test --locked -p lucene-search --test range_directory_queries -- --nocaptu
 cargo clippy --locked -p lucene-store -p lucene-codecs --all-targets -- -D warnings
 cargo clippy --locked -p lucene-search --lib -- -D warnings
 cargo fmt --all -- --check
+if [ ! -f /src/benchmarks/rust-runner/Cargo.lock ]; then
+  cp -a /src /scratch/benchmark-source
+  cargo generate-lockfile --manifest-path /scratch/benchmark-source/benchmarks/rust-runner/Cargo.toml
+  cp /scratch/benchmark-source/benchmarks/rust-runner/Cargo.lock /scratch/resolved-benchmark-Cargo.lock
+  sha256sum /scratch/resolved-benchmark-Cargo.lock
+  echo 'Benchmark graph is not yet committed source; benchmark compilation remains unrun.'
+  exit 78
+fi
+cargo check --locked --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets
 ''',
     "checks": r"""
 cargo fmt --all -- --check
@@ -62,12 +71,12 @@ RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --locke
 """,
     "tests": r"""
 cargo build --locked -p lucene-ffi
-cargo test --locked --quiet --workspace -- --test-threads=2
+cargo test --locked --quiet --workspace --lib --bins --tests -- --test-threads=2
 cargo test --locked --quiet --workspace --doc
 """,
     "release": r"""
 cargo build --locked --release -p lucene-ffi
-cargo test --locked --release --quiet -p lucene-search -- --test-threads=2
+cargo test --locked --release --quiet -p lucene-search --lib --bins --tests -- --test-threads=2
 cargo test --locked --release --quiet -p lucene-search --doc
 """,
     "coverage": r"""
@@ -186,6 +195,13 @@ def main():
         with destination.open("xb") as output:
             output.write(data)
         print(json.dumps({"physical_trace_sha256": hashlib.sha256(data).hexdigest(), "physical_trace_bytes": len(data)}))
+    benchmark_lock = scratch / "resolved-benchmark-Cargo.lock"
+    if benchmark_lock.is_file():
+        if benchmark_lock.is_symlink() or benchmark_lock.stat().st_size > 1024**2:
+            raise SystemExit("benchmark lock exceeds artifact envelope")
+        destination = runner_temp / ("range-feedback-" + expected + "-benchmark.lock")
+        with destination.open("xb") as output:
+            output.write(benchmark_lock.read_bytes())
     coverage = scratch / "tmp" / "coverage.json"
     if coverage.is_file():
         if coverage.is_symlink() or coverage.stat().st_size > 64 * 1024**2:

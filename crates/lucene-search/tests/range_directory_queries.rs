@@ -377,6 +377,18 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
         .sum();
     assert_eq!(baseline_actual, total);
     let events = &trace.lock().unwrap().events;
+    // Retain a complete finite file/offset/request/response/outcome trace.
+    let mut report =
+        File::create(std::env::temp_dir().join("range-query-physical-trace.tsv")).unwrap();
+    let baseline_guard = baseline_trace.lock().unwrap();
+    for e in events.iter().chain(baseline_guard.events.iter()) {
+        writeln!(
+            report,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            e.phase, e.file, e.offset, e.requested, e.received, e.failed, e.elapsed_micros
+        )
+        .unwrap();
+    }
     let touched: BTreeSet<_> = events.iter().map(|e| e.file.clone()).collect();
     for name in &touched {
         assert!(
@@ -401,7 +413,7 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
     }
     for suffix in [
         ".si", ".fnm", ".tim", ".tip", ".tmd", ".doc", ".dvm", ".dvd", ".fdm", ".fdx", ".fdt",
-        ".liv",
+        ".liv", ".psm",
     ] {
         assert!(
             touched.iter().any(|n| n.ends_with(suffix)),
@@ -440,18 +452,6 @@ fn directory_reader_queries_are_range_native_cold_bounded_and_fail_closed() {
     assert!(concrete.metadata_usage().unwrap().reserved_bytes <= 16 * 1024 * 1024);
     let physical: usize = events.iter().map(|e| e.requested).sum();
     println!("RANGE_QUERY data_bytes={data_bytes} aggregate_data_cache={data_cache} accessed_data_bytes={accessed_data_bytes} sampled_all_file_cache_bytes={sampled_cache_bytes} physical_range_bytes={physical} materialized_transfer_bytes={baseline_actual} baseline_scratch_bytes={total} trace_events={} metadata_scratch_bytes={}",events.len(),concrete.metadata_usage().unwrap().reserved_bytes);
-    // Retain a complete finite file/offset/request/response/outcome trace.
-    let mut report =
-        File::create(std::env::temp_dir().join("range-query-physical-trace.tsv")).unwrap();
-    let baseline_guard = baseline_trace.lock().unwrap();
-    for e in events.iter().chain(baseline_guard.events.iter()) {
-        writeln!(
-            report,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            e.phase, e.file, e.offset, e.requested, e.received, e.failed, e.elapsed_micros
-        )
-        .unwrap();
-    }
 }
 
 #[test]
