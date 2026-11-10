@@ -2165,6 +2165,8 @@ impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
                 }
                 let _ = lucene_store::prefetch(ranges.get(..count).unwrap_or(&[]));
             }
+        } else if nodes.len() > 1 {
+            self.prefetch(nodes);
         }
         let mut max = f32::NEG_INFINITY;
         for (i, &node) in nodes.iter().enumerate() {
@@ -2176,6 +2178,17 @@ impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
 
     fn max_ord(&self) -> i32 {
         self.values.size()
+    }
+
+    /// Every cache line of every candidate, before the first is scored.
+    /// (Prefetching only each vector's first lines, or a few vectors ahead
+    /// of the scoring loop, measured slower.)
+    fn prefetch(&self, nodes: &[i32]) {
+        for &n in nodes {
+            if let Ok(bytes) = self.values.values.bytes(n) {
+                lucene_util::simd::prefetch_bytes(bytes);
+            }
+        }
     }
 }
 
@@ -2202,6 +2215,14 @@ impl crate::hnsw::VectorScorer for ByteVectorScorer<'_> {
 
     fn max_ord(&self) -> i32 {
         self.values.size()
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        for &n in nodes {
+            if let Ok(bytes) = self.values.vector(n) {
+                lucene_util::simd::prefetch_bytes(bytes);
+            }
+        }
     }
 }
 

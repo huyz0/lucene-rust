@@ -1314,6 +1314,29 @@ impl HnswGraphView for OffHeapHnswGraph<'_> {
         Ok(())
     }
 
+    fn prefetch_neighbors(&self, level: i32, node: i32) {
+        // Level 0 only, where the walk spends its time; the node-offsets
+        // table is small enough to stay cached, the lists are not.
+        if level != 0 || node < 0 || node >= self.size {
+            return;
+        }
+        if let Ok(offset) =
+            direct_monotonic::get(self.offsets_data, &self.offsets_meta, i64::from(node))
+        {
+            if let Some(list) = usize::try_from(offset)
+                .ok()
+                .and_then(|start| self.data.get(start..))
+            {
+                // A full level-0 list: a vint count and up to `2 * M`
+                // group-varint deltas, a few bytes each.
+                let len = (self.max_conn.max(0) as usize)
+                    .saturating_mul(6)
+                    .min(list.len());
+                lucene_util::simd::prefetch_bytes(&list[..len]);
+            }
+        }
+    }
+
     fn sorted_nodes_on_level(&self, level: i32) -> Result<Vec<i32>> {
         if level == 0 {
             return Ok((0..self.size).collect());

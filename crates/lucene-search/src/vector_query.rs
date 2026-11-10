@@ -1209,6 +1209,8 @@ fn leaf_results_rescored<S: VectorScorer>(
     // seed list is this hit set's ordinals, ascending.
     let mut hits = hits;
     if let Some(rescore) = rescore {
+        let ords: Vec<i32> = hits.iter().map(|h| h.0).collect();
+        rescore.prefetch(&ords);
         for hit in &mut hits {
             hit.1 = rescore.score(hit.0)?;
         }

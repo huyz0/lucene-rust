@@ -1397,6 +1397,23 @@ pub fn prefetch<T>(slice: &[T], i: usize) {
     let _ = (slice, i);
 }
 
+/// Starts loading every cache line of `bytes`, so a scan that will read it
+/// soon overlaps its misses with other work instead of stalling on each one
+/// in turn. A hint only, like [`prefetch`].
+#[inline]
+pub fn prefetch_bytes(bytes: &[u8]) {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        prefetch(bytes, i);
+        i = i.saturating_add(64);
+    }
+    // The last line, when `bytes` starts mid-line and ends past a boundary
+    // the stride stepped over.
+    if let Some(last) = bytes.len().checked_sub(1) {
+        prefetch(bytes, last);
+    }
+}
+
 /// `sum(q[i] * c[i])` over the common prefix of `q` and `c`, with `q` read
 /// as unsigned bytes no greater than 127 and `c` as signed bytes: the
 /// 8-bit dot product a coarse ranker scores many codes with. Keeping the
@@ -1623,6 +1640,17 @@ unsafe fn dot_u7_i8_x4_neon(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn prefetch_bytes_is_a_hint_over_any_slice() {
+        let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+        prefetch_bytes(&[]);
+        prefetch_bytes(&data[..1]);
+        prefetch_bytes(&data[3..403]);
+        prefetch_bytes(&data);
+        // Nothing observable changes.
+        assert!(data.iter().enumerate().all(|(i, &b)| b == i as u8));
+    }
     use super::*;
 
     /// The float kernels agree with their scalar specifications bit for bit
