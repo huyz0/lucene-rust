@@ -311,3 +311,32 @@ attempts/16,437 received bytes. These are physical ReadAt backend observations,
 not kernel cache/disk/network measurements or a performance win. Native query
 expectations/projections and fault checks ran before the inventory assertion,
 but the complete test failed and lint/format/benchmark/matrix were not reached.
+
+
+Run `42796000437` at `924004cc6a7d508f8a3b40a0aa2daaae7d17f96e` passed all
+15 selected controls (nine store, four Java-fixture, two native query/profile),
+store/codecs all-target Clippy, search library Clippy and pinned formatting.
+The complete native control measured 9,224 unique cold-query data-block bytes
+against 2,048 configured data-input cache bytes and sampled 1,800 cached bytes
+across all inputs after integrity. It then deliberately exited 78 before the
+benchmark type check because that excluded workspace needed a committed lock.
+The 8,909-byte standard Actions lock artifact has SHA-256
+`72ff470ba30cf7446c480e0eff9b1c666c81279c688d851427a4635a45b660c8`.
+Its 44 package records are a subset of the already pinned workspace graph plus
+only the local `bench-runner` package; no new registry package/version/checksum
+is introduced. The exact artifact bytes are committed for subsequent checks.
+
+The coverage cell also produces an independent empty-profile production map
+export through `scripts/range-production-coverage.py`. It builds the three
+changed libraries with coverage instrumentation and no test target, inventories
+every selected compiler rlib and native archive member, retains every mapped
+object in one unfiltered LLVM file export and binds their hashes/source/tool
+identity. Native stdout is streamed under explicit artifact limits, including
+64 MiB for the export. Object hashes are streamed; test-only source cannot
+supply this denominator. The ordinary workspace coverage run and its original
+95-percent control stay separate. Its native runtime export can later be
+projected against production coordinates for per-file/per-crate/changed-line
+policy. The producer does not implement a new parser, source filter or floor
+and does not declare qualification. Its actual hosted execution is pending.
+The same checks cell now includes the arithmetic, structural/parity and
+existing dependency/vendored-license checks within the unchanged envelope.
