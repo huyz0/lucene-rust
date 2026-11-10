@@ -246,6 +246,10 @@ def encoding(c, ours, stock, z):
         ("target position", p, {"text_docs": ["hello"], "target_response_positions": [0]}),
         ("target name", p, {"text_docs": ["hello"], "target_response": ["output"]}),
         ("no texts", p, {}),
+        ("null text", p, {"text_docs": [None]}),
+        ("result filter", p, {"text_docs": ["hello"], "result_filter": {"target_response_positions": [1]}}),
+        ("text embedding route", "/_plugins/_ml/_predict/text_embedding/<id>", {"text_docs": ["hello"]}),
+        ("similarity route", "/_plugins/_ml/_predict/text_similarity/<id>", {"query_text": "q", "text_docs": ["a"]}),
         ("model route", "/_plugins/_ml/models/<id>/_predict", {"text_docs": ["search documents"]}),
     ]
     compare_calls(c, "tiny-sparse", ours, stock, z, "SPARSE_ENCODING", None, calls)
@@ -258,7 +262,9 @@ def similarity(c, ours, stock, z):
              ("no query", p, {"text_docs": ["hello"]}),
              ("no docs", p, {"query_text": "q", "text_docs": []}),
              ("filters ignored", p, {"query_text": "q", "text_docs": ["a"], "return_number": False, "target_response": ["x"]}),
-             ("model route", "/_plugins/_ml/models/<id>/_predict", {"query_text": "q", "text_docs": ["a b"]})]
+             ("model route", "/_plugins/_ml/models/<id>/_predict", {"query_text": "q", "text_docs": ["a b"]}),
+             ("model route without docs", "/_plugins/_ml/models/<id>/_predict", {"query_text": "q"}),
+             ("text embedding route", "/_plugins/_ml/_predict/text_embedding/<id>", {"text_docs": ["a"]})]
     config = {"model_type": "bert", "embedding_dimension": 1, "framework_type": "huggingface_transformers"}
     compare_calls(c, "tiny-cross-encoder", ours, stock, z, "TEXT_SIMILARITY", config, calls)
 
@@ -279,7 +285,10 @@ def asymmetric(c, ours, stock, z):
              ("bytes", p, {"text_docs": ["hello"], "return_bytes": True}),
              ("target position", p, {"text_docs": ["hello"], "target_response_positions": [0]}),
              ("target position missing", p, {"text_docs": ["hello"], "target_response_positions": [3]}),
-             ("target other", p, {"text_docs": ["hello"], "target_response": ["other"]})]
+             ("target other", p, {"text_docs": ["hello"], "target_response": ["other"]}),
+             ("null text", p, {"text_docs": ["hello", None]}),
+             ("result filter", p, {"text_docs": ["hello"], "result_filter": {"return_number": False}}),
+             ("result filter wins", p, {"text_docs": ["hello"], "return_number": False, "result_filter": {}})]
     compare_calls(c, "tiny-bert-plain", ours, stock, z, "TEXT_EMBEDDING", config, calls)
 
 

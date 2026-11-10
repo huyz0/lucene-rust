@@ -816,16 +816,15 @@ public final class MlCommons {
      */
     public void predict(String algorithm, String modelId, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
         try {
-            String function = algorithm != null ? algorithm.toUpperCase(Locale.ROOT) : local.function(modelId);
-            if ("TEXT_SIMILARITY".equals(function)) {
-                similarityInput(body);
-            } else {
-                textDocs(body);
+            String route = algorithm == null ? null : algorithm.toUpperCase(Locale.ROOT);
+            String function = route != null ? route : local.function(modelId);
+            if (function != null) {
+                validateInput(function, body);
             }
             if (local.isDeployed(modelId)) {
                 threadPool.executor(PREDICT_THREAD_POOL).execute(() -> {
                     try {
-                        listener.onResponse(predictLocal(modelId, body));
+                        listener.onResponse(predictLocal(route, modelId, body));
                     } catch (Exception e) {
                         listener.onFailure(e);
                     }
@@ -833,12 +832,18 @@ public final class MlCommons {
                 return;
             }
             getModel(modelId, ActionListener.wrap(model -> {
+                if (function == null) {
+                    validateInput(String.valueOf(model.get("algorithm")), body);
+                }
                 List<String> workers = workers(model);
                 if (workers.isEmpty()) {
                     throw new IllegalArgumentException("Model not ready yet. Please deploy the model first.");
                 }
                 String node = workers.get(Math.floorMod(roundRobin.getAndIncrement(), workers.size()));
-                byte[] payload = json(body).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                Map<String, Object> call = new LinkedHashMap<>();
+                call.put("route", route);
+                call.put("body", body);
+                byte[] payload = json(call).getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 MlNodes.Request request = new MlNodes.Request(MlNodes.Op.PREDICT, modelId, payload, node);
                 client.execute(MlNodes.PredictAction.INSTANCE, request, ActionListener.wrap(r -> {
                     if (r.getNodes().isEmpty()) {
@@ -877,15 +882,35 @@ public final class MlCommons {
         return live;
     }
 
-    /** Runs {@code body}'s prediction with {@code modelId}, deployed on this node. */
-    private Map<String, Object> predictLocal(String modelId, Map<String, Object> body) {
-        String function = local.function(modelId);
+    /** Parses {@code body} as the input of {@code function}, as stock's REST layer does before running anything. */
+    private static void validateInput(String function, Map<String, Object> body) {
         if ("TEXT_SIMILARITY".equals(function)) {
+            similarityInput(body);
+        } else {
+            textDocs(body);
+        }
+    }
+
+    /**
+     * Runs {@code body}'s prediction with {@code modelId}, deployed on this node. {@code route} is the
+     * path's algorithm ({@code null} on {@code models/<id>/_predict}): the input is parsed as that
+     * algorithm's, which a model of the other input kind (text docs or query and docs) cannot run.
+     */
+    private Map<String, Object> predictLocal(String route, String modelId, Map<String, Object> body) {
+        String function = local.function(modelId);
+        boolean similarity = "TEXT_SIMILARITY".equals(function);
+        if (route != null && "TEXT_SIMILARITY".equals(route) != similarity) {
+            throw new MLException("Failed to inference " + function + " model: " + modelId);
+        }
+        if (similarity) {
             return similarity(modelId, similarityInput(body));
         }
         List<String> texts = textDocs(body);
         Map<String, String> params = embeddingParameters(body);
         try {
+            if (texts.contains(null)) {
+                throw new LocalModels.InferenceException(new NullPointerException("a text of text_docs is null"));
+            }
             return switch (function == null ? "" : function) {
                 case "SPARSE_TOKENIZE" -> sparseTokenize(modelId, texts, params);
                 case "SPARSE_ENCODING" -> sparseEncode(modelId, texts, params, body);
@@ -968,12 +993,15 @@ public final class MlCommons {
     }
 
     /**
-     * {@code ModelTensors.filter}: with {@code target_response} or {@code target_response_positions}
+     * {@code ModelTensors.filter}, by the input's {@code result_filter} or its top-level fields: with
+     * {@code target_response} or {@code target_response_positions}
      * only the tensors they name (by name or position) stay; {@code return_number: false} drops each
      * tensor's {@code data}, and {@code byte_buffer} stays only with {@code return_bytes: true}.
      */
     @SuppressWarnings("unchecked")
-    private static List<Object> filter(List<Map<String, Object>> tensors, Map<String, Object> body) {
+    private static List<Object> filter(List<Map<String, Object>> tensors, Map<String, Object> input) {
+        // A result_filter object takes the place of the four top-level fields.
+        Map<String, Object> body = input.get("result_filter") instanceof Map<?, ?> f ? (Map<String, Object>) f : input;
         boolean returnBytes = Boolean.parseBoolean(String.valueOf(body.getOrDefault("return_bytes", false)));
         boolean returnNumber = Boolean.parseBoolean(String.valueOf(body.getOrDefault("return_number", true)));
         List<Object> names = body.get("target_response") instanceof List<?> l ? (List<Object>) l : List.of();
@@ -1048,11 +1076,6 @@ public final class MlCommons {
 
     /** {@code ModelTensorOutput} for {@code texts}, one {@code inference_results} entry per text. */
     private Map<String, Object> embedLocal(String modelId, List<String> texts, Map<String, Object> body) {
-        for (String t : texts) {
-            if (t == null) {
-                throw new IllegalArgumentException("input data set should not be null");
-            }
-        }
         List<Object> results = new ArrayList<>(texts.size());
         for (String text : texts) {
             List<Map<String, Object>> tensors = new ArrayList<>();
@@ -1194,8 +1217,10 @@ public final class MlCommons {
                 return (local.undeploy(modelId) ? "undeployed" : "not_found").getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
             case PREDICT -> {
-                Map<String, Object> body = parse(payload);
-                Map<String, Object> result = predictLocal(modelId, body);
+                Map<String, Object> call = parse(payload);
+                @SuppressWarnings("unchecked")
+                Map<String, Object> body = (Map<String, Object>) call.get("body");
+                Map<String, Object> result = predictLocal((String) call.get("route"), modelId, body);
                 return json(result).getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
             case PROFILE -> {

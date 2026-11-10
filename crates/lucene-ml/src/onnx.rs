@@ -143,17 +143,18 @@ pub fn feeds_by_name(inputs: &[String]) -> Result<Vec<(String, Feed)>> {
 }
 
 /// One item of a batch of one: DJL's `Batchifier.STACK` unbatchify, which
-/// drops the leading axis. A scalar stays as it is.
-pub fn unbatch(t: Tensor) -> Tensor {
-    let Some((_, rest)) = t.shape.split_first() else {
-        return t;
-    };
-    let n: usize = rest.iter().product();
-    let mut data = t.data;
-    data.truncate(n);
-    Tensor {
-        shape: rest.to_vec(),
-        data,
+/// drops the leading axis. An output without a leading axis of 1 is refused,
+/// as DJL fails to split it.
+pub fn unbatch(t: Tensor) -> Result<Tensor> {
+    match t.shape.split_first() {
+        Some((1, rest)) => Ok(Tensor {
+            shape: rest.to_vec(),
+            data: t.data,
+        }),
+        _ => Err(MlError::Model(format!(
+            "an output of shape {:?} is not a batch of one",
+            t.shape
+        ))),
     }
 }
 
@@ -168,7 +169,7 @@ mod tests {
             data: vec![1.0, 2.0, 3.0],
         };
         assert_eq!(
-            unbatch(t),
+            unbatch(t).unwrap(),
             Tensor {
                 shape: vec![3],
                 data: vec![1.0, 2.0, 3.0]
@@ -178,17 +179,14 @@ mod tests {
             shape: vec![1],
             data: vec![4.0],
         };
-        assert_eq!(unbatch(one).shape, Vec::<usize>::new());
-        let scalar = Tensor {
-            shape: vec![],
-            data: vec![5.0],
-        };
-        assert_eq!(unbatch(scalar.clone()), scalar);
-        let empty = Tensor {
-            shape: vec![0, 2],
-            data: vec![],
-        };
-        assert_eq!(unbatch(empty).shape, vec![2]);
+        assert_eq!(unbatch(one).unwrap().shape, Vec::<usize>::new());
+        for shape in [vec![], vec![0, 2], vec![2, 1]] {
+            let t = Tensor {
+                shape,
+                data: vec![5.0, 6.0],
+            };
+            assert!(matches!(unbatch(t), Err(MlError::Model(_))));
+        }
     }
 
     #[test]

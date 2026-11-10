@@ -52,7 +52,7 @@ impl SparseEncodingModel {
         outputs
             .into_iter()
             .map(|o| {
-                let tensor = onnx::unbatch(o.tensor);
+                let tensor = onnx::unbatch(o.tensor)?;
                 if tensor.shape.len() > 1 {
                     return Err(MlError::Model(format!(
                         "sparse encoding output [{}] has shape {:?}, not one weight per token id",

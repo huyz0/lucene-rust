@@ -35,9 +35,9 @@ impl TextSimilarityModel {
     pub fn score(&self, query: &str, doc: &str) -> Result<Vec<Tensor>> {
         let encoded = tokenizer::encode_pair(&self.tokenizer, query, doc)?;
         let outputs = self.model.run(&encoded, &self.feeds)?;
-        Ok(outputs
+        outputs
             .into_iter()
             .map(|o| onnx::unbatch(o.tensor))
-            .collect())
+            .collect()
     }
 }
