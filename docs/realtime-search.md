@@ -82,9 +82,33 @@ released.
 On the Java side, a search over the buffers reads a new reader, so anything
 OpenSearch caches per reader (global ordinals, for one) is built again for it.
 The plugin's aggregation processor therefore builds the aggregators of a
-search whose aggregations the native pass plans only when Lucene collects
-them (a fallback); a natively answered `terms` aggregation never builds the
-global ordinals OpenSearch's aggregator would (about 1 ms per search at 1M).
+search over the buffers only when their collector is first asked for; a
+natively answered `terms` aggregation never builds the global ordinals
+OpenSearch's aggregator would (about 1 ms per search at 1M).
+
+## Searches Lucene answers
+
+To Lucene a leaf of buffered documents holds no terms or values and every
+document in it is deleted, so a search the native engine cannot run (a
+`script` query, highlighting, `version`, `seq_no_primary_term`, `explain`,
+inner hits, nested fields, a scoring multi-term rewrite) would miss them.
+Before Lucene runs one, the view is handed to it once
+(`ffi_live_view_lucene`, `LiveDirectoryReader.readByLucene`):
+
+- each leaf of buffered documents gets a segment of them with postings: the
+  view's full chunk (written as a search needing postings writes it, kept in
+  memory and copied to a Java `ByteBuffersDirectory`), or, for a buffer
+  flushed since the view opened, its published segment (waited for up to 30 s;
+  the leaf's part copied out with `IndexWriter.addIndexes` when the segment
+  holds more documents than the view saw). The view's deletes are its live
+  documents; stored fields stay read through the view;
+- the commit's leaves leave out the documents deleted since the commit (an
+  update's old version), as the native search's masks do;
+- the reader takes a new cache key, the aggregators built so far are built
+  again, and the query is rewritten again, so nothing read before counts.
+
+The cost is a chunk write with postings and a copy per leaf, once per view;
+natively answered searches pay nothing.
 
 ## Measured search-side costs
 

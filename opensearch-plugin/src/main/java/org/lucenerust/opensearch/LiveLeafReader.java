@@ -45,12 +45,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * One chunk of a buffer of a {@link LiveView} (consecutive documents of it) as a leaf after the reader's, so its hits have doc IDs the fetch
- * phase reads. Only the native searches find them ({@code ffi_jvm_reader_search_live}, or any search
- * of the reader handle {@code ffi_live_view_reader} makes, whose segments match these leaves): to
+ * phase reads. The native searches find them ({@code ffi_jvm_reader_search_live}, or any search
+ * of the reader handle {@code ffi_live_view_reader} makes, whose segments match these leaves); to
  * Lucene every one of them is deleted and the leaf holds no terms, points or values (only bounds
  * that take in the buffered documents', so OpenSearch never skips the shard or rewrites a query to
- * match nothing for the reader's bounds), and no doc values to a scan, so a search Lucene answers
- * sees the reader alone, as it would without live search. Its stored fields, and its doc values
+ * match nothing for the reader's bounds), and no doc values to a scan, until a search Lucene
+ * answers gives it a segment of them ({@link #useLucene}). Its stored fields, and its doc values
  * read a document at a time, are the buffered documents', read through the view.
  */
 public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
@@ -73,6 +73,23 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
     /** The view's buffer the leaf holds. */
     public int buffer() {
         return core.buffer;
+    }
+
+    /**
+     * Gives Lucene the leaf's documents from now on: {@code face} (a segment of them with their
+     * postings, numbered as the leaf numbers them) answers every read but the stored fields, and
+     * {@code live} is the documents not deleted as of the view. Its cache key stays: nothing reads
+     * the leaf through Lucene before (the native engine reads the view itself), and OpenSearch
+     * maps the key to its shard. {@code owner} (what holds {@code face} open) is closed with the
+     * leaf.
+     */
+    void useLucene(LeafReader face, Bits live, java.io.Closeable owner) {
+        core.useLucene(face, live, owner);
+    }
+
+    /** Whether Lucene reads the leaf's documents ({@link #useLucene}). */
+    boolean readsLucene() {
+        return core.face != null;
     }
 
     /** {@code leaf} itself, or the leaf of buffered documents under its wrappers; null for any other leaf. */
@@ -133,7 +150,10 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         public void close() {}
     }
 
-    /** What the leaf holds: the view's documents, deleted to Lucene, with their stored fields. */
+    /**
+     * What the leaf holds: the view's documents with their stored fields, deleted to Lucene until
+     * {@link #useLucene} gives it a segment of them.
+     */
     private static final class Core extends LeafReader {
         private final LiveView view;
         private final int buffer;
@@ -144,6 +164,11 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         private final Bits none;
         /** By field: its {@link #getPointValues}, once read. */
         private final Map<String, Optional<PointValues>> points = new ConcurrentHashMap<>();
+        /** What Lucene reads the documents from ({@link #useLucene}), and which of them are live. */
+        private volatile LeafReader face;
+        private volatile Bits faceLive;
+        private volatile int faceNumDocs;
+        private volatile java.io.Closeable faceOwner;
         private final IndexReader.CacheKey key = CacheKeys.newKey();
         private final List<ClosedListener> listeners = new CopyOnWriteArrayList<>();
         private final CacheHelper cacheHelper = new CacheHelper() {
@@ -165,6 +190,27 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
             this.maxDoc = maxDoc;
             this.infos = infos;
             this.none = new Bits.MatchNoBits(maxDoc);
+        }
+
+        synchronized void useLucene(LeafReader reader, Bits live, java.io.Closeable owner) {
+            if (face != null) {
+                throw new IllegalStateException("the buffered documents are read by Lucene already");
+            }
+            if (reader.maxDoc() != maxDoc || live.length() != maxDoc) {
+                throw new IllegalArgumentException(
+                    "a segment of " + reader.maxDoc() + " documents for a leaf of " + maxDoc + " (live docs " + live.length() + ")"
+                );
+            }
+            int n = 0;
+            for (int d = 0; d < maxDoc; d++) {
+                if (live.get(d)) {
+                    n++;
+                }
+            }
+            faceLive = live;
+            faceNumDocs = n;
+            faceOwner = owner;
+            face = reader;
         }
 
         /**
@@ -235,7 +281,11 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
          * fields.
          */
         @Override
-        public Terms terms(String field) {
+        public Terms terms(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.terms(field);
+            }
             FieldInfo fi = infos.fieldInfo(field);
             if (fi == null || fi.getIndexOptions() == IndexOptions.NONE || maxDoc == 0 || field.startsWith("_")) {
                 return null;
@@ -248,7 +298,14 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         @Override
-        public NumericDocValues getNumericDocValues(String field) {
+        public NumericDocValues getNumericDocValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                var v = f.getNumericDocValues(field);
+                // The leaf declares the field's values (its field infos are the view's): a segment
+                // of documents without any has none, which Lucene takes for a broken index.
+                return v != null || has(field, DocValuesType.NUMERIC) == false ? v : DocValues.emptyNumeric();
+            }
             if (has(field, DocValuesType.NUMERIC) == false) {
                 return null;
             }
@@ -295,7 +352,12 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         @Override
-        public BinaryDocValues getBinaryDocValues(String field) {
+        public BinaryDocValues getBinaryDocValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                var v = f.getBinaryDocValues(field);
+                return v != null || has(field, DocValuesType.BINARY) == false ? v : DocValues.emptyBinary();
+            }
             if (has(field, DocValuesType.BINARY) == false) {
                 return null;
             }
@@ -342,12 +404,22 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         @Override
-        public SortedDocValues getSortedDocValues(String field) {
+        public SortedDocValues getSortedDocValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                var v = f.getSortedDocValues(field);
+                return v != null || has(field, DocValuesType.SORTED) == false ? v : DocValues.emptySorted();
+            }
             return has(field, DocValuesType.SORTED) ? DocValues.emptySorted() : null;
         }
 
         @Override
-        public SortedNumericDocValues getSortedNumericDocValues(String field) {
+        public SortedNumericDocValues getSortedNumericDocValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                var v = f.getSortedNumericDocValues(field);
+                return v != null || has(field, DocValuesType.SORTED_NUMERIC) == false ? v : DocValues.emptySortedNumeric();
+            }
             if (has(field, DocValuesType.SORTED_NUMERIC) == false) {
                 return null;
             }
@@ -355,7 +427,12 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         @Override
-        public SortedSetDocValues getSortedSetDocValues(String field) {
+        public SortedSetDocValues getSortedSetDocValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                var v = f.getSortedSetDocValues(field);
+                return v != null || has(field, DocValuesType.SORTED_SET) == false ? v : DocValues.emptySortedSet();
+            }
             if (has(field, DocValuesType.SORTED_SET) == false) {
                 return null;
             }
@@ -363,30 +440,58 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         @Override
-        public NumericDocValues getNormValues(String field) {
+        public NumericDocValues getNormValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.getNormValues(field);
+            }
             return null;
         }
 
         @Override
-        public DocValuesSkipper getDocValuesSkipper(String field) {
+        public DocValuesSkipper getDocValuesSkipper(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.getDocValuesSkipper(field);
+            }
             return null;
         }
 
         @Override
-        public FloatVectorValues getFloatVectorValues(String field) {
+        public FloatVectorValues getFloatVectorValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.getFloatVectorValues(field);
+            }
             return null;
         }
 
         @Override
-        public ByteVectorValues getByteVectorValues(String field) {
+        public ByteVectorValues getByteVectorValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.getByteVectorValues(field);
+            }
             return null;
         }
 
         @Override
-        public void searchNearestVectors(String field, float[] target, KnnCollector knnCollector, AcceptDocs acceptDocs) {}
+        public void searchNearestVectors(String field, float[] target, KnnCollector knnCollector, AcceptDocs acceptDocs)
+            throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                f.searchNearestVectors(field, target, knnCollector, acceptDocs);
+            }
+        }
 
         @Override
-        public void searchNearestVectors(String field, byte[] target, KnnCollector knnCollector, AcceptDocs acceptDocs) {}
+        public void searchNearestVectors(String field, byte[] target, KnnCollector knnCollector, AcceptDocs acceptDocs)
+            throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                f.searchNearestVectors(field, target, knnCollector, acceptDocs);
+            }
+        }
 
         @Override
         public FieldInfos getFieldInfos() {
@@ -395,7 +500,7 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         @Override
         public Bits getLiveDocs() {
-            return none;
+            return face != null ? faceLive : none;
         }
 
         /**
@@ -406,6 +511,10 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
          */
         @Override
         public PointValues getPointValues(String field) throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.getPointValues(field);
+            }
             FieldInfo fi = infos.fieldInfo(field);
             if (fi == null || fi.getPointDimensionCount() == 0 || maxDoc == 0) {
                 return null;
@@ -445,13 +554,17 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
         }
 
         @Override
-        public TermVectors termVectors() {
+        public TermVectors termVectors() throws IOException {
+            LeafReader f = face;
+            if (f != null) {
+                return f.termVectors();
+            }
             return TermVectors.EMPTY;
         }
 
         @Override
         public int numDocs() {
-            return 0;
+            return face != null ? faceNumDocs : 0;
         }
 
         @Override
@@ -461,8 +574,15 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         @Override
         protected void doClose() throws IOException {
-            for (ClosedListener l : listeners) {
-                l.onClose(key);
+            try {
+                for (ClosedListener l : listeners) {
+                    l.onClose(key);
+                }
+            } finally {
+                java.io.Closeable owner = faceOwner;
+                if (owner != null) {
+                    owner.close();
+                }
             }
         }
 
