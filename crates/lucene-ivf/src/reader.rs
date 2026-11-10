@@ -276,6 +276,13 @@ pub struct SearchStats {
     pub candidates: usize,
     /// Candidates whose full-precision vectors were read and scored.
     pub reranked: usize,
+    /// Posting entries of the probed clusters that the search's filter
+    /// accepts (every entry without a filter). A vector spilled into a
+    /// second cluster is an entry of each.
+    pub accepted: usize,
+    /// Probed clusters not scored because the filter accepts none of their
+    /// entries.
+    pub clusters_empty: usize,
 }
 
 /// A search's hits, best first, and the work it took.
@@ -1214,6 +1221,7 @@ impl IvfField {
         };
         let query_norm = simd::dot_f32(query, query).sqrt();
         let mut scores = Vec::new();
+        let mut docs: Vec<(u32, i32, bool)> = Vec::new();
         // Margins only for the codes kept; off for good once unknown.
         let mut bounded = bounds;
         // Not the clusters the shared floor already prunes: they are skipped
@@ -1232,11 +1240,32 @@ impl IvfField {
                     continue;
                 }
             }
-            stats.clusters_scanned += 1;
             let (offset, len) = self.block_range(c);
             let block = postings.read(offset, len)?;
             let size = self.cluster_size(c);
             let (slots, codes) = block.split_at(size * 4);
+            // Under a filter, each entry's document and verdict come first,
+            // from the slots alone: a cluster the filter accepts nothing of
+            // (most of them, for a small or clustered filter) is not scored.
+            // Without one, only the competitive entries' documents are read.
+            let accepted = match accept {
+                Some(a) => {
+                    docs.clear();
+                    for i in 0..size {
+                        let slot = le_i32(slots, i * 4) as u32;
+                        let doc = self.slot_doc(c, slot)?;
+                        docs.push((slot, doc, a(doc)));
+                    }
+                    docs.iter().filter(|d| d.2).count()
+                }
+                None => size,
+            };
+            stats.accepted += accepted;
+            if accepted == 0 {
+                stats.clusters_empty += 1;
+                continue;
+            }
+            stats.clusters_scanned += 1;
             if uses_centroid {
                 self.target(scorer.as_mut(), c);
             }
@@ -1246,13 +1275,16 @@ impl IvfField {
                 if !top.competitive(score) {
                     continue;
                 }
-                let slot = le_i32(slots, i * 4) as u32;
-                let Some(&doc) = self.slot_docs.get(slot as usize) else {
-                    return corrupt(format!("cluster {c}: slot {slot} out of range"));
+                let (slot, doc) = if accept.is_some() {
+                    let (slot, doc, ok) = docs[i];
+                    if !ok {
+                        continue;
+                    }
+                    (slot, doc)
+                } else {
+                    let slot = le_i32(slots, i * 4) as u32;
+                    (slot, self.slot_doc(c, slot)?)
                 };
-                if accept.is_some_and(|a| !a(doc)) {
-                    continue;
-                }
                 let margin = if bounded {
                     scorer.error_bound(codes, i, score)
                 } else {
@@ -1274,6 +1306,16 @@ impl IvfField {
         let candidates = top.into_order(order);
         stats.candidates = candidates.len();
         Ok(candidates)
+    }
+}
+
+impl IvfField {
+    /// The document of cluster `c`'s entry in `slot`.
+    fn slot_doc(&self, c: usize, slot: u32) -> Result<i32> {
+        match self.slot_docs.get(slot as usize) {
+            Some(&doc) => Ok(doc),
+            None => corrupt(format!("cluster {c}: slot {slot} out of range")),
+        }
     }
 }
 

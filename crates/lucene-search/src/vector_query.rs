@@ -1343,16 +1343,27 @@ fn search_leaf(
     }
 }
 
-/// A filter passing at most this many times the leaf's `k` documents is
-/// searched exhaustively rather than through an IVF index, whose probed
-/// clusters could hold fewer than `k` of them.
-const IVF_EXACT_FILTER_MULTIPLE: usize = 10;
+/// Accepted entries a filtered IVF search scans per hit asked for: the probes
+/// grow until they have scanned this many of the documents the filter passes
+/// (or all of them), so the filter's nearest documents are among the
+/// candidates wherever in the field they lie. See "Filtered searches by
+/// tenant size" in `docs/benchmarks/ivf.md`.
+const IVF_ACCEPTED_PER_HIT: usize = 200;
+
+/// The cost of scoring one raw vector exactly, in IVF code scans (with their
+/// share of routing, block reads and rerank): a filter goes to the exact scan
+/// when its documents times this are at most the entries the probes would
+/// scan. Measured in `docs/benchmarks/ivf.md` ("Filtered searches by tenant
+/// size").
+const IVF_EXACT_COST_RATIO: usize = 8;
 
 /// One leaf's search through its IVF index: the `collector_k` best live
 /// documents the filter passes, best first. `None` sends the leaf to the
-/// exhaustive scan instead: a filter too selective for probing
-/// ([`IVF_EXACT_FILTER_MULTIPLE`]). The flag is set when the leaf's
-/// deadline passed before the probes reached `k` accepted documents.
+/// exhaustive scan instead, when it costs less than probing: the filter
+/// passes no more vectors than the probes would have to scan for it
+/// ([`IVF_ACCEPTED_PER_HIT`]), or scoring them exactly costs less than the
+/// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
+/// leaf's deadline passed before the probes reached `k` accepted documents.
 fn ivf_leaf_results(
     reader: &lucene_ivf::IvfReader,
     input: &VectorsInput<'_>,
@@ -1364,51 +1375,110 @@ fn ivf_leaf_results(
         return Ok(None);
     };
     let k = plan.collector_k.max(1);
-    let accepted = match input.filter {
-        Some(filter) => {
-            let passing = match input.live_docs {
-                Some(live) => FixedBitSet::intersection_count(filter, live),
-                None => filter.cardinality(),
-            };
-            if passing <= k.saturating_mul(IVF_EXACT_FILTER_MULTIPLE) {
-                return Ok(None);
-            }
-            passing
-        }
-        None => input
-            .live_docs
-            .map_or(field.count(), |l| l.cardinality().min(field.count())),
-    };
+    let clusters = field.clusters().max(1);
+    let base_nprobe = match plan.extras.ivf_nprobes {
+        0 => field.auto_nprobe(),
+        n => n,
+    }
+    .clamp(1, clusters);
     let accept = |doc: i32| {
         input.live_docs.is_none_or(|l| l.get_doc(doc))
             && input.filter.is_none_or(|f| f.get_doc(doc))
     };
     let restricted = input.live_docs.is_some() || input.filter.is_some();
     let filtered: Option<&dyn Fn(i32) -> bool> = restricted.then_some(&accept);
-    // Probing the calibrated depth (or the asked one) first, then twice as
-    // many clusters each time the accepted documents in reach fall short of
-    // `k`: deletions or a filter can empty the nearest clusters.
-    let mut nprobe = match plan.extras.ivf_nprobes {
-        0 => None,
-        n => Some(n),
-    };
-    let (found, partial) = loop {
+    let search = |nprobe: lucene_ivf::Probes| {
         let params = lucene_ivf::SearchParams {
             k,
-            nprobe: nprobe.map_or(lucene_ivf::Probes::Auto, lucene_ivf::Probes::Fixed),
+            nprobe,
             rerank: lucene_ivf::Rerank::Auto,
         };
-        let found = reader.search(resolved.field_number, target, &params, filtered)?;
-        let probed = nprobe.unwrap_or_else(|| field.auto_nprobe());
-        // `accepted` counts documents without a vector too, so a search of
-        // every cluster is complete whatever it found.
-        if !restricted || found.len() >= k.min(accepted) || probed >= field.clusters() {
-            break (found, false);
+        reader.search_with(resolved.field_number, target, &params, filtered, None)
+    };
+    let (found, partial) = match input.filter {
+        // Without a filter, deletions only: the calibrated (or asked) depth,
+        // doubled while fewer than `k` live documents are in reach.
+        None => {
+            let live = input
+                .live_docs
+                .map_or(field.count(), |l| l.cardinality().min(field.count()));
+            let mut nprobe = base_nprobe;
+            loop {
+                let probes = if plan.extras.ivf_nprobes == 0 && nprobe == base_nprobe {
+                    lucene_ivf::Probes::Auto
+                } else {
+                    lucene_ivf::Probes::Fixed(nprobe)
+                };
+                let out = search(probes)?;
+                if !restricted || out.hits.len() >= k.min(live) || nprobe >= clusters {
+                    break (out.hits, false);
+                }
+                if plan.extras.timed_out() {
+                    break (out.hits, true);
+                }
+                nprobe = nprobe.saturating_mul(2).min(clusters);
+            }
         }
-        if plan.extras.timed_out() {
-            break (found, true);
+        Some(filter) => {
+            // The live documents the filter passes that have a vector here.
+            let passing = if field.count() >= input.max_doc as usize {
+                match input.live_docs {
+                    Some(live) => FixedBitSet::intersection_count(filter, live),
+                    None => filter.cardinality(),
+                }
+            } else {
+                let values = input.flat.float_vector_values(resolved.field_number)?;
+                let mut ords = values.doc_to_ord()?;
+                let mut n = 0usize;
+                let mut from = 0usize;
+                while let Some(bit) = filter.next_set_bit(from) {
+                    from = bit.saturating_add(1);
+                    // A set bit is below `max_doc`, an `i32`.
+                    let doc = i32::try_from(bit).unwrap_or(i32::MAX);
+                    if input.live_docs.is_none_or(|l| l.get_doc(doc))
+                        && ords.ordinal(doc)?.is_some()
+                    {
+                        n = n.saturating_add(1);
+                    }
+                }
+                n
+            };
+            // Entries, as the probes count them: a spilled vector is in two
+            // clusters.
+            let entries = field.entries().max(1);
+            let per_cluster = entries.div_ceil(clusters).max(1);
+            let share = passing as f64 / field.count().max(1) as f64;
+            // Never more than the filter's share of what the unfiltered
+            // search scans would hold on average, with slack for clusters
+            // below the average size.
+            let expected = (base_nprobe.saturating_mul(per_cluster) as f64 * 0.75) as usize;
+            let want = k
+                .saturating_mul(IVF_ACCEPTED_PER_HIT)
+                .min(expected.max(k))
+                .min(((passing as f64) * entries as f64 / field.count().max(1) as f64) as usize);
+            // The first try probes as many clusters as the filter's share of
+            // the field needs on average, at least the calibrated (or
+            // asked) depth; the probes double while the accepted entries
+            // they held fall short, as they do where the filter's documents
+            // lie far from the query.
+            let need = (want as f64 / (per_cluster as f64 * share.max(f64::MIN_POSITIVE))).ceil();
+            let mut nprobe = base_nprobe.max(need.min(clusters as f64) as usize);
+            let planned = nprobe.saturating_mul(per_cluster);
+            if passing <= want || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
+                return Ok(None);
+            }
+            loop {
+                let out = search(lucene_ivf::Probes::Fixed(nprobe))?;
+                if out.stats.accepted >= want || nprobe >= clusters {
+                    break (out.hits, false);
+                }
+                if plan.extras.timed_out() {
+                    let short = out.hits.len() < k;
+                    break (out.hits, short);
+                }
+                nprobe = nprobe.saturating_mul(2).min(clusters);
+            }
         }
-        nprobe = Some(probed.saturating_mul(2));
     };
     let mut hits: Vec<ScoreDoc> = found
         .into_iter()
@@ -1456,18 +1526,46 @@ fn exact_float_leaf(
     let mut scratch = vec![0f32; target.len()];
     let mut top: std::collections::BinaryHeap<std::cmp::Reverse<(OrdScore, i32)>> =
         std::collections::BinaryHeap::with_capacity(k.saturating_add(1));
-    for ord in 0..values.size() {
-        let doc = values.ord_to_doc(ord)?;
-        if input.live_docs.is_some_and(|l| !l.get_doc(doc))
-            || input.filter.is_some_and(|f| !f.get_doc(doc))
-        {
-            continue;
-        }
-        let score = similarity.score(target, values.vector_ref(ord, &mut scratch)?);
+    let mut offer = |doc: i32, score: f32| {
         // Ties keep the lower doc: it ranks above a higher one.
         top.push(std::cmp::Reverse((OrdScore(score), -doc)));
         if top.len() > k {
             top.pop();
+        }
+    };
+    let live = |doc: i32| input.live_docs.is_none_or(|l| l.get_doc(doc));
+    match input.filter {
+        // A filter visits only the documents it passes, in doc order, so
+        // the cost follows the filter and not the field: a small tenant's
+        // range of a large segment reads only that range's vectors.
+        Some(filter) => {
+            let mut ords = values.doc_to_ord()?;
+            let mut from = 0usize;
+            while let Some(bit) = filter.next_set_bit(from) {
+                from = bit.saturating_add(1);
+                // A set bit is below `max_doc`, an `i32`.
+                let doc = i32::try_from(bit).unwrap_or(i32::MAX);
+                if !live(doc) {
+                    continue;
+                }
+                if let Some(ord) = ords.ordinal(doc)? {
+                    offer(
+                        doc,
+                        similarity.score(target, values.vector_ref(ord, &mut scratch)?),
+                    );
+                }
+            }
+        }
+        None => {
+            for ord in 0..values.size() {
+                let doc = values.ord_to_doc(ord)?;
+                if live(doc) {
+                    offer(
+                        doc,
+                        similarity.score(target, values.vector_ref(ord, &mut scratch)?),
+                    );
+                }
+            }
         }
     }
     let mut hits: Vec<ScoreDoc> = top

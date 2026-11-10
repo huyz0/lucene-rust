@@ -18,7 +18,7 @@ use lucene_index::index_writer::{
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::knn_search::{knn_top_hits, KnnTarget};
-use lucene_search::query::{Clause, TermQuery};
+use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
@@ -48,8 +48,9 @@ fn vector(id: usize) -> Vec<f32> {
     (0..DIM).map(|_| centre() * 4.0 + jitter() * 0.5).collect()
 }
 
-/// `id` stored, the `parity` term (`even`/`odd`) and the `rare` term
-/// (`yes` for one document in 64).
+/// `id` stored, the `parity` term (`even`/`odd`), the `rare` term
+/// (`yes` for one document in 64) and the `centre` term (the centre the
+/// vector is drawn around, `0`-`19`).
 fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
     let mut d = ExplicitDocument::default();
     d.stored.push(StoredField {
@@ -73,6 +74,7 @@ fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
                 b"no"
             },
         ),
+        (3, (id % 20).to_string().as_bytes()),
     ] {
         let mut terms = InvertedTerms::default();
         terms.push::<Vec<u8>>(term, 1, &[], &[], &[]);
@@ -89,7 +91,7 @@ fn writer(dir: &FsDirectory, format: KnnVectorsFormat) -> IndexWriter<'_> {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", VERSION).unwrap();
     w.enable_explicit_documents().unwrap();
     w.register_field(FieldInfo::new("id", 0)).unwrap();
-    for name in ["parity", "rare"] {
+    for name in ["parity", "rare", "centre"] {
         w.register_field(
             FieldInfo::new(name, 0)
                 .with_index_options(IndexOptions::Docs)
@@ -261,6 +263,102 @@ fn filters_and_deletions_hold_through_the_ivf_index() {
     w.close().unwrap();
     let r = recall(&dir, 10, None, |id| id.is_multiple_of(2));
     assert!(r >= 0.9, "recall after deletes {r}");
+}
+
+/// Documents of one large segment around 40 centres, with a `centre` term:
+/// a tenant per centre, each one region of the vector space.
+const REGION_DOCS: usize = 16_000;
+const REGION_CENTRES: usize = 40;
+
+fn region_vector(id: usize) -> Vec<f32> {
+    let mut centre = noise((id % REGION_CENTRES) as u64 + 3_000_000);
+    let mut jitter = noise(id as u64 + 7_000_000);
+    (0..DIM).map(|_| centre() * 4.0 + jitter() * 1.5).collect()
+}
+
+fn build_regions(dir: &FsDirectory) {
+    let w = ConcurrentIndexWriter::new(writer(dir, ivf()), 1).unwrap();
+    let (docs, vectors): (Vec<_>, Vec<_>) = (0..REGION_DOCS)
+        .map(|id| {
+            let mut d = ExplicitDocument::default();
+            d.stored.push(StoredField {
+                field_number: 0,
+                value: FieldValue::String(id.to_string()),
+            });
+            let mut terms = InvertedTerms::default();
+            terms.push::<Vec<u8>>(
+                (id % REGION_CENTRES).to_string().as_bytes(),
+                1,
+                &[],
+                &[],
+                &[],
+            );
+            d.fields.inverted.push(InvertedField {
+                field_number: 3,
+                terms,
+                norm: None,
+            });
+            (d, vec![DocumentVector::float32("v", region_vector(id))])
+        })
+        .unzip();
+    w.add_explicit_documents_with_vectors_in(None, docs, vectors)
+        .unwrap();
+    w.flush().unwrap();
+    w.commit().unwrap();
+    w.into_writer().unwrap().close().unwrap();
+}
+
+#[test]
+fn a_filter_on_one_region_of_the_vectors_keeps_its_recall() {
+    // Tenants whose documents are one region of the vector space (one
+    // centre: 400 documents; eight: 3200), queried from the other regions:
+    // the clusters nearest the query hold none of their documents.
+    let tmp = TempDir::new("knn-ivf-region");
+    let dir = FsDirectory::open(&tmp);
+    build_regions(&dir);
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let k = 10;
+    for centres in [vec![3usize], (0..8).map(|c| c * 5).collect()] {
+        let mut b = BooleanQuery::default();
+        for c in &centres {
+            b.should.push(Clause::Term(TermQuery::new(
+                "centre",
+                c.to_string().into_bytes(),
+            )));
+        }
+        let clause = Clause::Boolean(Box::new(b));
+        let (mut found, mut total) = (0, 0);
+        for q in 0..40 {
+            // A query from a centre of no tenant here.
+            let target = region_vector(REGION_DOCS + q * REGION_CENTRES + 1 + q % 4);
+            let hits = knn_top_hits(
+                &segments,
+                "v",
+                &KnnTarget::Float(target.clone()),
+                k,
+                k,
+                Some(&clause),
+            )
+            .unwrap();
+            let mut all: Vec<(usize, f32)> = (0..REGION_DOCS)
+                .filter(|id| centres.contains(&(id % REGION_CENTRES)))
+                .map(|id| (id, score(&target, &region_vector(id))))
+                .collect();
+            all.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            let want: Vec<usize> = all.iter().take(k).map(|p| p.0).collect();
+            total += k;
+            found += hits
+                .iter()
+                .filter(|h| want.contains(&(h.doc_id as usize)))
+                .count();
+        }
+        let r = found as f64 / total as f64;
+        // Probing the calibrated depth alone reaches 0.94 and 0.77 here.
+        let floor = if centres.len() == 1 { 0.99 } else { 0.9 };
+        assert!(r >= floor, "recall {r} for centres {centres:?}");
+    }
 }
 
 #[test]
