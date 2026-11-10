@@ -773,9 +773,10 @@ pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
 /// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
 /// `hnsw_sq:<scalar encoding wire number>:<max_conn>:<beam_width>`,
 /// `sq:<scalar encoding wire number>` or
-/// `ivf:<target_cluster_size>:<rerank encoding>` (1-bit codes) or
-/// `ivf:<target_cluster_size>:<rerank encoding>:<quantizer>`
-/// (`IVF_QUANTIZERS` wire number); `None` for anything else.
+/// `ivf:<target_cluster_size>:<rerank encoding>` (1-bit codes),
+/// `ivf:<target_cluster_size>:<rerank encoding>:<quantizer>` or
+/// `hnsw_rq:<quantizer>:<max_conn>:<beam_width>` (`IVF_QUANTIZERS` wire
+/// number); `None` for anything else.
 pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let parts: Vec<&str> = value.split(':').collect();
     let int = |s: &str| s.parse::<i32>().ok();
@@ -792,6 +793,9 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
         ["sq", e] => Some(KnnVectorsFormat::scalar_quantized(
             ScalarEncoding::from_wire_number(int(e)?)?,
         )),
+        ["hnsw_rq", q, m, beam] => {
+            KnnVectorsFormat::hnsw_quantized(q.parse().ok()?, int(m)?, int(beam)?).ok()
+        }
         ["ivf", size, e] => KnnVectorsFormat::ivf(size.parse().ok()?, e.parse().ok()?).ok(),
         ["ivf", size, e, q] => {
             KnnVectorsFormat::ivf_quantized(size.parse().ok()?, e.parse().ok()?, q.parse().ok()?)
@@ -938,6 +942,11 @@ fn decode_vector_schema(
             let rerank = c.u8("rerank encoding")?;
             let quantizer = c.u8("IVF quantizer")?;
             Some(KnnVectorsFormat::ivf_quantized(size, rerank, quantizer).map_err(invalid)?)
+        }
+        7 => {
+            let (m, beam) = graph(c)?;
+            let quantizer = c.u8("HNSW quantizer")?;
+            Some(KnnVectorsFormat::hnsw_quantized(quantizer, m, beam).map_err(invalid)?)
         }
         _ => return Err(decode_error("vectors format")),
     };
@@ -5264,6 +5273,8 @@ mod tests {
                 // `m` is the cluster size, the rerank encoding f16, the
                 // quantizer bbq.
                 6 => b.i32(m).u8(1).u8(0),
+                // The quantizer erq2.
+                7 => b.i32(m).i32(100).u8(4),
                 _ => b,
             };
             b.u8(0).i32(0).0
@@ -5277,6 +5288,14 @@ mod tests {
             );
         }
         assert!(decode_field(&schema(0, 6, 8)).is_err());
+        // Quantized HNSW: any field (a byte one gets the graph alone).
+        for encoding in [0, 1] {
+            assert_eq!(
+                decode_field(&schema(encoding, 7, 16)).unwrap().1,
+                Some(KnnVectorsFormat::hnsw_quantized(4, 16, 100).unwrap())
+            );
+        }
+        assert!(decode_field(&schema(0, 7, 0)).is_err());
         assert!(decode_field(&schema(0, 6, -1)).is_err());
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
@@ -5329,6 +5348,10 @@ mod tests {
             Some(KnnVectorsFormat::ivf_quantized(384, 1, 6).unwrap())
         );
         assert_eq!(
+            parse_vectors_format("hnsw_rq:11:16:100"),
+            Some(KnnVectorsFormat::hnsw_quantized(11, 16, 100).unwrap())
+        );
+        assert_eq!(
             parse_vectors_format("sq:1"),
             Some(KnnVectorsFormat::scalar_quantized(
                 ScalarEncoding::PackedNibble
@@ -5344,8 +5367,11 @@ mod tests {
             "ivf:8:0",
             "ivf:384:4",
             "ivf:384",
-            "ivf:384:1:11",
+            "ivf:384:1:12",
             "ivf:384:1:x",
+            "hnsw_rq:12:16:100",
+            "hnsw_rq:4:0:100",
+            "hnsw_rq:4:16",
         ] {
             assert_eq!(parse_vectors_format(bad), None, "{bad}");
         }

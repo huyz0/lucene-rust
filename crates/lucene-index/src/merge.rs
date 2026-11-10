@@ -988,9 +988,11 @@ impl SegmentFormat {
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
             // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`;
-            // `.ivm`/`.ivp`/`.ivv`: `LuceneRustIvfVectorsFormat`'s IVF index.
+            // `.ivm`/`.ivp`/`.ivv`: `LuceneRustIvfVectorsFormat`'s IVF index;
+            // `.vqm`/`.vqd`: `LuceneRustHnswQuantizedVectorsFormat`'s codes.
             SegmentFormat::KnnVectors => &[
                 "vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb", "ivm", "ivp", "ivv",
+                "vqm", "vqd",
             ],
         }
     }
@@ -5172,6 +5174,32 @@ fn merge_vector_group(
             )?;
         }
         files.extend(ivf.finish().into_iter().flatten());
+    }
+
+    if format.hnsw_quantizer().is_some() {
+        // The merged vectors are encoded afresh, against their own mean.
+        let mut merged_fields = Vec::new();
+        for merged_field in plan.iter().map(|p| &p.0) {
+            if merged_field.vector_encoding != VectorEncoding::Float32 {
+                continue;
+            }
+            let values = flat.float_vector_values(merged_field.number)?;
+            merged_fields.push((merged_field, values.all_vectors()?));
+        }
+        let fields: Vec<crate::hnsw_quant_vectors::CodesField<'_>> = merged_fields
+            .iter()
+            .map(|(field, vectors)| crate::hnsw_quant_vectors::CodesField {
+                number: field.number,
+                similarity: field.vector_similarity_function,
+                dimension: usize::try_from(field.vector_dimension).unwrap_or(0),
+                vectors,
+            })
+            .collect();
+        if let Some(codes) =
+            crate::hnsw_quant_vectors::write(format, &fields, merged_segment_id, suffix)?
+        {
+            files.extend(codes);
+        }
     }
 
     if let Some((m, beam_width)) = format.graph() {
