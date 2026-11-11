@@ -11,6 +11,10 @@
 //! finished are searched through the graph, the ones it has not reached yet
 //! are scored exactly. Nothing a search reads takes the buffer's lock.
 //!
+//! A buffer without realtime search keeps the graph only for its flush:
+//! its indexing thread inserts each vector as it appends it
+//! ([`BufferGraph::insert_appended`]), as Lucene's HNSW field writer does.
+//!
 //! The vectors are shared with the buffer's documents (`Arc`s), not copied.
 
 use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
@@ -461,6 +465,18 @@ impl BufferGraph {
                 return Ok(());
             }
         }
+    }
+
+    /// Inserts every appended ordinal the graph has not reached, on the
+    /// calling thread: for a buffer that keeps its graph only for its
+    /// flush, and never schedules [`Self::insert_pending`].
+    ///
+    /// # Errors
+    /// What inserting a node fails with, or an insertion that failed before.
+    pub fn insert_appended(&self) -> Result<()> {
+        let left = self.insert_batch(usize::MAX)?;
+        debug_assert_eq!(left, 0);
+        Ok(())
     }
 
     /// The inserter, unless an insertion failed or panicked.

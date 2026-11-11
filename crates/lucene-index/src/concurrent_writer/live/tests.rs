@@ -1163,7 +1163,7 @@ fn add_vector_doc(w: &ConcurrentIndexWriter<'_>, id: i32, i: i64) {
 
 /// With live search on, the flush writes the graph kept over the buffer's
 /// vectors, and the segment is byte for byte the one it writes with live
-/// search off, which builds the graph at the flush.
+/// search off.
 #[test]
 fn live_search_flushes_the_vector_graph_it_kept() {
     let flushed = |live: bool| {
@@ -1204,6 +1204,188 @@ fn live_search_flushes_the_vector_graph_it_kept() {
     for ((name, a), (_, b)) in on.iter().zip(&off) {
         assert!(a == b, "{name} differs with live search on");
     }
+}
+
+/// The `.vex` and `.vem` a flush writes for a graph built over `vectors`
+/// (16-d dot product, in ordinal order, field 1) and then, when given,
+/// renumbered by `old_to_new`: with a zero segment id and no checksum, as
+/// [`segment_files`] reads files.
+fn expected_graph_files(
+    vectors: &[Vec<f32>],
+    old_to_new: Option<&[i32]>,
+    suffix: &str,
+) -> (Vec<u8>, Vec<u8>) {
+    use lucene_codecs::field_infos::{VectorEncoding, VectorSimilarityFunction};
+    use lucene_codecs::{hnsw, hnsw_vectors, vectors as flat};
+    let id = [0u8; 16];
+    let count = i32::try_from(vectors.len()).unwrap();
+    let field = flat::FlatVectorsField {
+        field_number: 1,
+        similarity: VectorSimilarityFunction::DotProduct,
+        dimension: 16,
+        docs: (0..count).collect(),
+        values: flat::FieldVectorData::Float32(vectors.concat()),
+    };
+    let (vec, vemf) = flat::write_flat_vectors(&[field], count, &id, "").unwrap();
+    let reader = flat::FlatVectorsReader::open(&vemf, &vec, &id, "").unwrap();
+    let values = reader.float_vector_values(1).unwrap();
+    let mut graph =
+        hnsw::HnswGraphBuilder::new(values.ord_scorer(), 16, 100, hnsw::DEFAULT_RAND_SEED)
+            .unwrap()
+            .build(count)
+            .unwrap();
+    if let Some(map) = old_to_new {
+        graph = graph.renumbered(map).unwrap();
+    }
+    let (mut vex, mut vem) = hnsw_vectors::write_hnsw_vectors(
+        &[hnsw_vectors::HnswVectorsField {
+            field_number: 1,
+            encoding: VectorEncoding::Float32,
+            similarity: VectorSimilarityFunction::DotProduct,
+            dimension: 16,
+            count,
+            graph: Some(&graph),
+            m: 16,
+        }],
+        &id,
+        suffix,
+    )
+    .unwrap();
+    vex.truncate(vex.len() - 8);
+    vem.truncate(vem.len() - 8);
+    (vex, vem)
+}
+
+/// The one segment's files, and the vector format's segment suffix.
+fn single_segment(dir: &FsDirectory, path: &std::path::Path) -> (Vec<(String, Vec<u8>)>, String) {
+    let infos = crate::segment_infos::read_latest(dir).unwrap();
+    assert_eq!(infos.segments.len(), 1);
+    let sci = &infos.segments[0];
+    let files = segment_files(path, sci, &sci.segment_name);
+    let suffix = files
+        .iter()
+        .find_map(|(n, _)| n.strip_suffix(".vex"))
+        .and_then(|n| n.strip_prefix('_'))
+        .expect("a .vex")
+        .to_string();
+    (files, suffix)
+}
+
+fn file<'f>(files: &'f [(String, Vec<u8>)], ext: &str) -> &'f [u8] {
+    &files.iter().find(|(n, _)| n.ends_with(ext)).unwrap().1
+}
+
+/// Without live search the buffer builds its graph as the vectors arrive
+/// and the flush writes it: the graph `HnswGraphBuilder` builds over the
+/// flushed vectors.
+#[test]
+fn a_flush_writes_the_graph_built_as_vectors_arrived() {
+    let tmp = TempDir::new("flush-kept-graph");
+    let dir = FsDirectory::open(tmp.path());
+    let kept = || {
+        crate::index_writer::KEPT_GRAPHS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&n| n == 2400)
+            .count()
+    };
+    let before = kept();
+    {
+        let (w, id) = vector_writer(&dir, false);
+        for i in 0..3000 {
+            add_vector_doc(&w, id, i);
+        }
+        w.commit().unwrap();
+    }
+    // Its 2400 vectors (no other test keeps a graph of that many).
+    assert!(kept() > before, "the flush wrote the kept graph");
+    let (files, suffix) = single_segment(&dir, tmp.path());
+    let vectors: Vec<Vec<f32>> = (0..3000).filter(|i| i % 5 != 0).map(unit).collect();
+    let (vex, vem) = expected_graph_files(&vectors, None, &suffix);
+    assert!(file(&files, ".vex") == vex.as_slice());
+    assert!(file(&files, ".vem") == vem.as_slice());
+}
+
+/// Under an index sort the flush writes the graph built in arrival order,
+/// renumbered to the sorted ordinals, as `Lucene99HnswVectorsWriter`'s
+/// `writeSortingField` does.
+#[test]
+fn a_sorted_flush_renumbers_the_graph_built_as_vectors_arrived() {
+    let tmp = TempDir::new("flush-sorted-graph");
+    let dir = FsDirectory::open(tmp.path());
+    const DOCS: i64 = 2500;
+    // A permutation of the documents: 7919 is prime to 2500.
+    let rank = |i: i64| (i * 7919) % DOCS;
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_ram_buffer_size_mb(64.0).unwrap();
+        w.enable_explicit_documents().unwrap();
+        let id = w
+            .register_field(
+                FieldInfo::new("_id", 0)
+                    .with_index_options(IndexOptions::Docs)
+                    .with_omit_norms(true),
+            )
+            .unwrap();
+        let v = w
+            .register_field(FieldInfo::new("v", 0).with_vectors(
+                16,
+                lucene_codecs::field_infos::VectorEncoding::Float32,
+                lucene_codecs::field_infos::VectorSimilarityFunction::DotProduct,
+            ))
+            .unwrap();
+        assert_eq!(v, 1);
+        let r = w
+            .register_field(FieldInfo::new("rank", 0).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .unwrap();
+        w.set_index_sort(Some(&[crate::segment_info::IndexSortField::long(
+            "rank", false, None,
+        )]))
+        .unwrap();
+        let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+        for i in 0..DOCS {
+            let doc = ExplicitDocument {
+                stored: Vec::new(),
+                fields: ExplicitFields {
+                    inverted: vec![InvertedField {
+                        field_number: id,
+                        terms: vec![term(&format!("d{i}"), &[])].into(),
+                        norm: None,
+                    }],
+                    doc_values: vec![StoredField {
+                        field_number: r,
+                        value: FieldValue::Long(rank(i)),
+                    }],
+                    ..ExplicitFields::default()
+                },
+            };
+            let vectors = if i % 5 == 0 {
+                Vec::new()
+            } else {
+                vec![crate::index_writer::DocumentVector::float32("v", unit(i))]
+            };
+            w.add_explicit_documents_with_vectors_in(None, vec![doc], vec![vectors])
+                .unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let (files, suffix) = single_segment(&dir, tmp.path());
+    let arrived: Vec<i64> = (0..DOCS).filter(|i| i % 5 != 0).collect();
+    let mut sorted = arrived.clone();
+    sorted.sort_by_key(|&i| rank(i));
+    let old_to_new: Vec<i32> = arrived
+        .iter()
+        .map(|i| i32::try_from(sorted.iter().position(|j| j == i).unwrap()).unwrap())
+        .collect();
+    let vectors: Vec<Vec<f32>> = arrived.iter().map(|&i| unit(i)).collect();
+    let (vex, vem) = expected_graph_files(&vectors, Some(&old_to_new), &suffix);
+    assert!(file(&files, ".vex") == vex.as_slice());
+    assert!(file(&files, ".vem") == vem.as_slice());
 }
 
 /// A view holds each buffer's vector graph with the vectors it saw, and a

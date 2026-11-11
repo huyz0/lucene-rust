@@ -31,7 +31,8 @@
 //! The extra columns, and the published buffers kept, are not charged to
 //! the RAM buffer, so a writer with live search flushes after the same
 //! documents as one without; [`ConcurrentIndexWriter::live_bytes`] reports
-//! them.
+//! them. The vector graphs are not extra: every buffer keeps them for its
+//! flush and charges them.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
@@ -279,11 +280,18 @@ struct Deletes {
 impl LiveColumns {
     /// Adds document `doc`'s vectors to their fields' graphs, and starts
     /// an inserter on a field whose graph has none running.
+    ///
+    /// Without `live` search only the graphs are kept, for the flush to
+    /// write: no cluster lists (the flush does not read them), a graph under
+    /// an index sort too (the flush renumbers it), and the indexing thread
+    /// inserts each vector itself, as `Lucene99HnswVectorsWriter`'s
+    /// `FieldWriter.addValue` does, so the flush finds no graph work left.
     pub(super) fn record_vectors(
         &mut self,
         doc: i32,
         vectors: &[crate::index_writer::DocumentVector],
         cfg: &IndexingConfig,
+        live: bool,
     ) {
         for v in vectors {
             let Some(number) = cfg.vector_field_number(&v.field_name) else {
@@ -298,13 +306,17 @@ impl LiveColumns {
             }
             let at = match self.graphs.iter().position(|g| g.field_number == number) {
                 Some(at) => at,
-                None => match cfg.buffer_graph_for(&v.field_name) {
+                None => match cfg.buffer_graph_for(&v.field_name, !live) {
                     Some(graph) => {
                         self.graphs.push(crate::index_writer::BufferGraphField {
                             field_number: number,
                             graph: Arc::new(graph),
                         });
                         self.graphs.len().saturating_sub(1)
+                    }
+                    None if !live => {
+                        self.no_graph.push(number);
+                        continue;
                     }
                     None => {
                         match cfg.buffer_lists_for(&v.field_name) {
@@ -336,6 +348,14 @@ impl LiveColumns {
                 self.no_graph.push(number);
                 continue;
             }
+            if !live {
+                if field.graph.insert_appended().is_err() {
+                    // The flush builds the field's graph instead.
+                    self.graphs.remove(at);
+                    self.no_graph.push(number);
+                }
+                continue;
+            }
             if field.graph.schedule() {
                 let graph = Arc::clone(&field.graph);
                 // An insertion that fails or panics leaves the ordinals after
@@ -353,6 +373,15 @@ impl LiveColumns {
                 });
             }
         }
+    }
+
+    /// The heap the vector fields' graphs hold beyond the vectors, which
+    /// the buffer's documents share.
+    pub(super) fn graph_ram_bytes(&self) -> usize {
+        self.graphs
+            .iter()
+            .map(|g| g.graph.ram_bytes())
+            .fold(0usize, usize::saturating_add)
     }
 
     /// Appends document `doc`'s vector to the cluster lists at `at`, and

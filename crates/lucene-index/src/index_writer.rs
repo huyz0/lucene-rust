@@ -4238,6 +4238,7 @@ impl IndexingConfig {
                     self.knn_vectors_direct(),
                     buf.limit.is_none(),
                     buf.graphs,
+                    buf.old_to_new,
                     &self.ivf_clusters,
                     &segment_id,
                 )?
@@ -7927,14 +7928,18 @@ impl IndexingConfig {
     }
 
     /// An empty graph for vector field `name` that grows as its vectors
-    /// arrive and is the graph its flush builds: `None` for a field whose
-    /// format has no graph, scores bytes as Hamming distances, or under an
-    /// index sort (which renumbers the vectors at the flush).
+    /// arrive and is the graph its flush writes: `None` for a field whose
+    /// format has no graph or scores bytes as Hamming distances. Under an
+    /// index sort the flush renumbers the graph, as
+    /// `Lucene99HnswVectorsWriter.writeSortingField` does; only a caller
+    /// that reads the graph by nothing but its flush takes one then
+    /// (`sorted`).
     pub(crate) fn buffer_graph_for(
         &self,
         name: &str,
+        sorted: bool,
     ) -> Option<lucene_codecs::buffer_vectors::BufferGraph> {
-        if self.sorts_documents() {
+        if self.sorts_documents() && !sorted {
             return None;
         }
         let (_, dimension, encoding, similarity) = self.vector_field_shape(name)?;
@@ -11059,6 +11064,7 @@ impl IndexWriter<'_> {
         direct: bool,
         indexes: bool,
         graphs: &[BufferGraphField],
+        old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
@@ -11168,6 +11174,7 @@ impl IndexWriter<'_> {
                 max_doc,
                 indexes,
                 graphs,
+                old_to_new,
                 clusters,
                 segment_id,
                 &suffix,
@@ -11188,14 +11195,18 @@ impl IndexWriter<'_> {
         Ok(Some(output))
     }
 
-    /// The graph live search kept over `field`'s vectors as they arrived,
-    /// when it is the one this flush builds: the same vectors under the
+    /// The graph the buffer kept over `field`'s vectors as they arrived,
+    /// when it is the one this flush writes: the same vectors under the
     /// same ordinals, built with the same parameters and seed by one
     /// inserter in ordinal order, which is what
-    /// `HnswGraphBuilder::new(..).build(count)` does. A half-float format's
-    /// flush graph is built over the vectors as indexed, as the kept one is.
+    /// `HnswGraphBuilder::new(..).build(count)` does. Under an index sort
+    /// (`old_to_new`) it is renumbered to the sorted ordinals, as Lucene
+    /// writes the graph its `FieldWriter` built in arrival order. A
+    /// half-float format's flush graph is built over the vectors as
+    /// indexed, as the kept one is.
     fn kept_graph(
         graphs: &[BufferGraphField],
+        old_to_new: Option<&[usize]>,
         field: &FlatVectorsField,
         params: (i32, i32),
     ) -> Option<hnsw::OnHeapHnswGraph> {
@@ -11213,16 +11224,36 @@ impl IndexWriter<'_> {
         {
             return None;
         }
-        // The ordinals name the same documents.
-        let same_docs = field
-            .docs
-            .iter()
-            .enumerate()
-            .all(|(ord, &doc)| graph.doc(i32::try_from(ord).unwrap_or(-1)) == Some(doc));
-        if !same_docs {
-            return None;
-        }
+        let renumber = match old_to_new {
+            // The ordinals name the same documents.
+            None => {
+                let same_docs =
+                    field.docs.iter().enumerate().all(|(ord, &doc)| {
+                        graph.doc(i32::try_from(ord).unwrap_or(-1)) == Some(doc)
+                    });
+                if !same_docs {
+                    return None;
+                }
+                None
+            }
+            // `Lucene99HnswVectorsWriter.writeSortingField`: the graph was
+            // built in arrival order, and each ordinal takes the place of
+            // its document in the sorted segment's ordinals.
+            Some(old_to_new) => {
+                let mut ords = Vec::with_capacity(field.docs.len());
+                for ord in 0..count {
+                    let old = usize::try_from(graph.doc(ord)?).ok()?;
+                    let new = i32::try_from(*old_to_new.get(old)?).ok()?;
+                    ords.push(i32::try_from(field.docs.binary_search(&new).ok()?).ok()?);
+                }
+                Some(ords)
+            }
+        };
         let graph = graph.graph(count).ok()?;
+        let graph = match renumber {
+            None => graph,
+            Some(ords) => graph.renumbered(&ords).ok()?,
+        };
         #[cfg(test)]
         KEPT_GRAPHS
             .lock()
@@ -11245,6 +11276,7 @@ impl IndexWriter<'_> {
         max_doc: i32,
         indexes: bool,
         graphs: &[BufferGraphField],
+        old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
@@ -11356,7 +11388,7 @@ impl IndexWriter<'_> {
                     let kept = if vectors::scores_hamming(suffix) {
                         None
                     } else {
-                        Self::kept_graph(graphs, field, (m, beam_width))
+                        Self::kept_graph(graphs, old_to_new, field, (m, beam_width))
                     };
                     if let Some(graph) = kept {
                         return Ok(Some(graph));

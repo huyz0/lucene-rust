@@ -1208,6 +1208,7 @@ impl IndexingConfig {
                         self.knn_vectors_direct(),
                         buf.limit.is_none(),
                         buf.graphs,
+                        buf.old_to_new,
                         &self.ivf_clusters,
                         &segment_id,
                     )?
