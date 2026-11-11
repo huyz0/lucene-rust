@@ -7702,6 +7702,29 @@ impl<'d> IndexWriter<'d> {
         &self.cfg.fields
     }
 
+    /// The fields of the segments this writer holds, as their `FieldInfos`
+    /// record them, attributes included: per name, the first segment's.
+    /// A writer opened on an index learns from these what the plugin's
+    /// mapping asked of a field (its per-field formats) before any document
+    /// registers it again.
+    pub fn segment_fields(&self) -> Result<Vec<FieldInfo>> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for segment in self
+            .segment_infos
+            .segments
+            .iter()
+            .chain(&self.flushed_segments)
+        {
+            for field in segment_field_infos(self.dir, segment)?.fields {
+                if seen.insert(field.name.clone()) {
+                    out.push(field);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Buffers `doc` for the next [`IndexWriter::commit`] -- real Lucene's
     /// `IndexWriter.addDocument`.
     ///

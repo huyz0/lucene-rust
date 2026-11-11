@@ -73,6 +73,7 @@ PREFIXES = {
     "SortEncoder.java": "SORT_",
     "NativeCollapse.java": "COLLAPSE_",
     "RustAdaptiveDocValuesProducer.java": "DOC_VALUES_TYPE_",
+    "RustSubstringDocValuesFormat.java": "DOC_VALUES_TYPE_",
 }
 
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
