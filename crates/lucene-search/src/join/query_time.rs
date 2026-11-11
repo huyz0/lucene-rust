@@ -1875,6 +1875,168 @@ pub fn create_global_ordinals_join_query(
     )))
 }
 
+/// OpenSearch's `HasChildQueryBuilder.LateParsingQuery` (what `has_child` and
+/// `has_parent` build): a [`create_global_ordinals_join_query`] call not made
+/// yet, because it searches the reader. [`resolve_late_joins`] makes it
+/// against a searcher, before the query is searched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LateJoinQuery {
+    /// `joinField`: the `SORTED` field both sides share.
+    pub join_field: String,
+    /// `innerQuery`: the documents whose join values are collected.
+    pub from_query: Box<Clause>,
+    /// `toQuery`: the documents matched by those values.
+    pub to_query: Box<Clause>,
+    pub score_mode: ScoreMode,
+    pub min: i32,
+    pub max: i32,
+}
+
+/// Whether `query` holds a [`LateJoinQuery`] anywhere.
+pub fn has_late_joins(query: &BooleanQuery) -> bool {
+    fn clause(c: &Clause) -> bool {
+        match c {
+            Clause::Extended(e) => match e.as_ref() {
+                ExtendedQuery::LateJoin(_) => true,
+                other => other.children().into_iter().any(clause),
+            },
+            Clause::Boolean(b) => has_late_joins(b),
+            Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
+            Clause::ConstantScore(cs) => clause(&cs.inner),
+            Clause::Boost(b) => clause(&b.inner),
+            _ => false,
+        }
+    }
+    query
+        .must
+        .iter()
+        .chain(&query.filter)
+        .chain(&query.should)
+        .chain(&query.must_not)
+        .any(clause)
+}
+
+/// `LateParsingQuery.rewrite(searcher)` for every [`LateJoinQuery`] of
+/// `query` inside booleans, dis-max, boosts and constant-score wrappers: its
+/// from side searched with `searcher` and the join it collects
+/// ([`create_global_ordinals_join_query`]), over the join field's ordinal
+/// map `ordinal_map` answers (OpenSearch's cached global ordinals). A join
+/// inside a from side is resolved first. `None` when there are none.
+///
+/// # Errors
+/// What searching a from side reports, or a join under a wrapper this walk
+/// does not enter.
+pub fn resolve_late_joins(
+    query: &BooleanQuery,
+    searcher: &IndexSearcher<'_, '_>,
+    ordinal_map: &dyn Fn(&str) -> Result<Option<Arc<OrdinalMap>>>,
+) -> Result<Option<BooleanQuery>> {
+    struct Ctx<'c, 's, 'a> {
+        searcher: &'c IndexSearcher<'s, 'a>,
+        ordinal_map: &'c dyn Fn(&str) -> Result<Option<Arc<OrdinalMap>>>,
+    }
+    fn clause(c: &Clause, ctx: &Ctx<'_, '_, '_>) -> Result<Option<Clause>> {
+        Ok(match c {
+            Clause::Extended(e) => match e.as_ref() {
+                ExtendedQuery::LateJoin(q) => {
+                    let from = clause(&q.from_query, ctx)?;
+                    let from = from.as_ref().unwrap_or(&q.from_query);
+                    let to = clause(&q.to_query, ctx)?;
+                    let to = to.as_ref().unwrap_or(&q.to_query);
+                    let map = if ctx.searcher.segments().len() > 1 {
+                        (ctx.ordinal_map)(&q.join_field)?
+                    } else {
+                        None
+                    };
+                    if ctx.searcher.segments().len() > 1 && map.is_none() {
+                        // No segment has the field: no document joins.
+                        return Ok(Some(Clause::MatchNoDocs(
+                            MatchNoDocsQuery::new()
+                                .with_reason("JoinUtil.createJoinQuery: no join values"),
+                        )));
+                    }
+                    Some(create_global_ordinals_join_query(
+                        &q.join_field,
+                        from,
+                        to,
+                        ctx.searcher,
+                        q.score_mode,
+                        map,
+                        q.min,
+                        q.max,
+                    )?)
+                }
+                other if other.children().into_iter().any(clause_has) => {
+                    return Err(Error::IllegalArgument(format!(
+                        "a join inside a {} cannot be resolved",
+                        other.name()
+                    )))
+                }
+                _ => None,
+            },
+            Clause::Boolean(b) => boolean(b, ctx)?.map(|b| Clause::Boolean(Box::new(b))),
+            Clause::DisjunctionMax(d) => {
+                let mut changed = false;
+                let disjuncts = list(&d.disjuncts, ctx, &mut changed)?;
+                changed.then(|| {
+                    let mut d = (**d).clone();
+                    d.disjuncts = disjuncts;
+                    Clause::DisjunctionMax(Box::new(d))
+                })
+            }
+            Clause::ConstantScore(cs) => clause(&cs.inner, ctx)?.map(|inner| {
+                let mut cs = (**cs).clone();
+                cs.inner = Box::new(inner);
+                Clause::ConstantScore(Box::new(cs))
+            }),
+            Clause::Boost(b) => clause(&b.inner, ctx)?.map(|inner| {
+                let mut b = (**b).clone();
+                b.inner = Box::new(inner);
+                Clause::Boost(Box::new(b))
+            }),
+            _ => None,
+        })
+    }
+    fn clause_has(c: &Clause) -> bool {
+        has_late_joins(&BooleanQuery {
+            must: vec![c.clone()],
+            ..Default::default()
+        })
+    }
+    fn list(v: &[Clause], ctx: &Ctx<'_, '_, '_>, changed: &mut bool) -> Result<Vec<Clause>> {
+        v.iter()
+            .map(|c| {
+                Ok(match clause(c, ctx)? {
+                    Some(n) => {
+                        *changed = true;
+                        n
+                    }
+                    None => c.clone(),
+                })
+            })
+            .collect()
+    }
+    fn boolean(b: &BooleanQuery, ctx: &Ctx<'_, '_, '_>) -> Result<Option<BooleanQuery>> {
+        let mut changed = false;
+        let mut out = b.clone();
+        out.must = list(&b.must, ctx, &mut changed)?;
+        out.filter = list(&b.filter, ctx, &mut changed)?;
+        out.should = list(&b.should, ctx, &mut changed)?;
+        out.must_not = list(&b.must_not, ctx, &mut changed)?;
+        Ok(changed.then_some(out))
+    }
+    if !has_late_joins(query) {
+        return Ok(None);
+    }
+    boolean(
+        query,
+        &Ctx {
+            searcher,
+            ordinal_map,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

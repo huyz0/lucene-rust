@@ -630,6 +630,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             handle,
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
+        let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
         let (hits, total, lower_bound) = similarity_checked(
             sim,
             match min_score {
@@ -1272,6 +1273,10 @@ pub(crate) fn search_sorted_blobs(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(
+        sim.as_ref(),
+        crate::jvm_join::resolve(&h, query, sim.as_ref()),
+    )?;
     let (hits, total, lower_bound, max_score, terminated) = similarity_checked(
         sim.as_ref(),
         search_sorted(
@@ -1379,6 +1384,7 @@ pub(crate) fn search_collapsed_blobs(
         handle,
         "ffi_jvm_reader_search_collapsed: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1551,6 +1557,7 @@ pub(crate) fn rescore_hits(
         handle,
         "ffi_jvm_reader_rescore: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1939,6 +1946,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         handle,
         "ffi_jvm_reader_aggregate: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -2093,6 +2101,7 @@ pub(crate) fn count_terminates_blobs(
         handle,
         "ffi_jvm_reader_count_terminates: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
