@@ -2741,3 +2741,63 @@ fn a_set_over_the_cache_budget_is_walked_in_place() {
     let past = DocsRegion::at(8, region.len() as i64, jump, docs.len() as i64);
     assert!(DvCursor::open_in(&tiny, max_doc, &region, past).is_err());
 }
+
+/// Every doc-values type counts documents, not values, for the in-place
+/// walk's `cost`, and the walk reads what the reader's own iterator reads.
+#[test]
+fn an_in_place_walk_counts_documents_and_agrees_with_the_reader() {
+    use super::segment::DvCursor;
+    use crate::directory_reader::DocsWithFieldCache;
+    use lucene_index::document::{self as d, Document, Store};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+
+    let tmp = lucene_util::test_support::TempDir::new("in-place-walk");
+    let dir = FsDirectory::open(tmp.path());
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+    for i in 0..300i64 {
+        let mut doc = Document::new();
+        doc.add(d::StringField::new("id", i.to_string(), Store::No));
+        if i % 3 == 0 {
+            doc.add(d::NumericDocValuesField::new("n", i));
+            doc.add(d::SortedNumericDocValuesField::new("m", i));
+            doc.add(d::SortedNumericDocValuesField::new("m", i + 1000));
+            doc.add(d::BinaryDocValuesField::new("b", vec![i as u8]));
+            doc.add(d::SortedDocValuesField::new("s", format!("v{i}")));
+            doc.add(d::SortedSetDocValuesField::new("ss", "a"));
+            doc.add(d::SortedSetDocValuesField::new("ss", format!("t{i}")));
+        }
+        w.add_fields_document(&doc).unwrap();
+    }
+    w.commit().unwrap();
+    let r = DirectoryReader::open(&dir).unwrap();
+    let seg = &r.segment_readers()[0];
+    let tiny = DocsWithFieldCache::with_budget(64);
+    for field in ["n", "m", "b", "s", "ss"] {
+        let (region, data) = seg.docs_region(field).unwrap();
+        let mut walk = DvCursor::open_in(&tiny, seg.max_doc(), data, region).unwrap();
+        assert_eq!(walk.cost(), 100, "{field}: documents, not values");
+        let mut m = seg.sorted_numeric_doc_values("m").unwrap().unwrap();
+        for doc in 0..300 {
+            let found = walk.advance_exact(doc).unwrap();
+            assert_eq!(found, doc % 3 == 0, "{field} {doc}");
+            if found {
+                assert_eq!(
+                    walk.sparse_index(),
+                    Some(i64::from(doc / 3)),
+                    "{field} {doc}"
+                );
+            }
+            if field == "m" && found {
+                assert!(m.advance_exact(doc).unwrap());
+                assert_eq!(m.next_value().unwrap(), i64::from(doc));
+            }
+        }
+    }
+    assert_eq!(tiny.held(), 0);
+}

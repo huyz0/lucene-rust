@@ -1385,6 +1385,28 @@ impl SegmentReader {
         }
     }
 
+    /// Where the doc-values field `field` records its documents, with the
+    /// column's data (tests).
+    #[cfg(test)]
+    pub(crate) fn docs_region(&self, field: &str) -> Option<(DocsRegion, &[u8])> {
+        let fi = self.field_infos().field_by_name(field)?;
+        let (meta, data) = self.doc_values_for_field(fi.number)?;
+        let region = match fi.doc_values_type {
+            DocValuesType::Numeric => DocsRegion::numeric(meta.numeric_entry(fi.number)?),
+            DocValuesType::Binary => DocsRegion::binary(meta.binary_entry(fi.number)?),
+            DocValuesType::Sorted => DocsRegion::numeric(&meta.sorted_entry(fi.number)?.ords),
+            DocValuesType::SortedNumeric => {
+                DocsRegion::multi(meta.sorted_numeric_entry(fi.number)?)
+            }
+            DocValuesType::SortedSet => match &meta.sorted_set_entry(fi.number)?.kind {
+                SortedSetKind::Single(s) => DocsRegion::numeric(&s.ords),
+                SortedSetKind::Multi { ords, .. } => DocsRegion::multi(ords),
+            },
+            _ => return None,
+        };
+        Some((region, data))
+    }
+
     fn dv_field<'s, E>(
         &'s self,
         field: &str,
