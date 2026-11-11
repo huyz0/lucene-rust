@@ -1,0 +1,260 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.knn.search.processor.mmr;
+
+import org.lucenerust.opensearch.neural.util.lang.Pair;
+import org.opensearch.action.search.SearchRequest;
+import org.opensearch.action.search.SearchResponse;
+import org.opensearch.action.search.SearchResponseSections;
+import org.opensearch.common.xcontent.XContentFactory;
+import org.opensearch.core.common.bytes.BytesReference;
+import org.lucenerust.opensearch.knn.index.KNNVectorSimilarityFunction;
+import org.lucenerust.opensearch.knn.index.VectorDataType;
+import org.opensearch.search.SearchHit;
+import org.opensearch.search.SearchHits;
+import org.opensearch.search.fetch.subphase.FetchSourceContext;
+import org.opensearch.search.pipeline.PipelineProcessingContext;
+import org.opensearch.search.pipeline.ProcessorGenerationContext;
+import org.opensearch.search.pipeline.SearchResponseProcessor;
+import org.opensearch.search.pipeline.SystemGeneratedProcessor;
+import org.opensearch.search.profile.SearchProfileShardResults;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import static org.lucenerust.opensearch.knn.common.KNNConstants.MMR_EXPLAIN;
+import static org.lucenerust.opensearch.knn.common.KNNConstants.MMR_RERANK_CONTEXT;
+import static org.lucenerust.opensearch.knn.search.processor.mmr.MMRUtil.extractVectorFromHit;
+import static org.lucenerust.opensearch.knn.search.processor.mmr.MMRUtil.shouldGenerateMMRProcessor;
+
+/**
+ * A system generated search response processor that rerank the response based on the Maximal Marginal Relevance
+ */
+public class MMRRerankProcessor implements SearchResponseProcessor, SystemGeneratedProcessor {
+    
+    
+    private static final org.apache.logging.log4j.Logger log = org.apache.logging.log4j.LogManager.getLogger(MMRRerankProcessor.class);
+    public static final String TYPE = "mmr_rerank";
+    public static final String DESCRIPTION = "This is a system generated processor that will rerank the response based" + "on Maximal Marginal Relevance.";
+    private final String tag;
+    private final boolean ignoreFailure;
+
+    @Override
+    public SearchResponse processResponse(SearchRequest request, SearchResponse response) {
+        throw new UnsupportedOperationException(String.format(Locale.ROOT, "Should not try to use %s to process a search response without PipelineProcessingContext.", TYPE));
+    }
+
+    @Override
+    public SearchResponse processResponse(SearchRequest request, SearchResponse searchResponse, PipelineProcessingContext requestContext) throws IOException {
+        long startNanos = System.nanoTime();
+        if (isEmptyResponse(searchResponse)) {
+            return searchResponse;
+        }
+        final MMRRerankContext mmrContext = requireMMRContext(requestContext);
+        final KNNVectorSimilarityFunction similarityFunction = mmrContext.getSpaceType().getKnnVectorSimilarityFunction();
+        final int originalQuerySize = mmrContext.getOriginalQuerySize();
+        final float diversity = mmrContext.getDiversity();
+        // HALF_FLOAT vectors are also serialized as decimal numbers in _source, same as FLOAT - only
+        // BYTE/BINARY are genuinely byte-range integers. Routing HALF_FLOAT through the byte path here
+        // would silently truncate/wrap every component via (byte)(double)x, corrupting MMR diversity scoring.
+        final VectorDataType vectorDataType = mmrContext.getVectorDataType();
+        final boolean isFloatVector = VectorDataType.FLOAT.equals(vectorDataType) || VectorDataType.HALF_FLOAT.equals(vectorDataType);
+        final List<SearchHit> candidates = new ArrayList<>(List.of(searchResponse.getHits().getHits()));
+        final Map<String, Object> docVectors = extractVectors(candidates, mmrContext.getVectorFieldPath(), mmrContext.getIndexToVectorFieldPathMap(), isFloatVector);
+        final boolean explainEnabled = Boolean.TRUE.equals(mmrContext.getExplain());
+        final Map<String, MMRExplainInfo> explainInfoMap = explainEnabled ? new LinkedHashMap<>() : null;
+        final List<SearchHit> selected = selectHitsWithMMR(candidates, docVectors, similarityFunction, diversity, originalQuerySize, isFloatVector, explainInfoMap);
+        if (explainEnabled) {
+            injectExplainInfo(selected, explainInfoMap);
+        }
+        applyFetchSourceFilterIfNeeded(selected, mmrContext);
+        final float maxSelectedScore = selected.stream().map(SearchHit::getScore).max(Float::compare).orElse(Float.NEGATIVE_INFINITY);
+        final SearchHits newHits = new SearchHits(selected.toArray(new SearchHit[0]), searchResponse.getHits().getTotalHits(), maxSelectedScore, searchResponse.getHits().getSortFields(), searchResponse.getHits().getCollapseField(), searchResponse.getHits().getCollapseValues());
+        final SearchResponseSections newSections = new SearchResponseSections(newHits, searchResponse.getAggregations(), searchResponse.getSuggest(), searchResponse.isTimedOut(), searchResponse.isTerminatedEarly(), new SearchProfileShardResults(searchResponse.getProfileResults()), searchResponse.getNumReducePhases(), searchResponse.getInternalResponse().getSearchExtBuilders());
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        log.debug("MMR rerank took: {} ms", elapsedMillis);
+        return new SearchResponse(newSections, searchResponse.getScrollId(), searchResponse.getTotalShards(), searchResponse.getSuccessfulShards(), searchResponse.getSkippedShards(), searchResponse.getTook().millis(), searchResponse.getPhaseTook(), searchResponse.getShardFailures(), searchResponse.getClusters(), searchResponse.pointInTimeId());
+    }
+
+    private boolean isEmptyResponse(SearchResponse response) {
+        return response == null || response.getHits() == null || response.getHits().getHits() == null || response.getHits().getHits().length == 0;
+    }
+
+    private MMRRerankContext requireMMRContext(PipelineProcessingContext requestContext) {
+        Object attr = requestContext.getAttribute(MMR_RERANK_CONTEXT);
+        if (attr == null) {
+            throw new IllegalStateException("MMR rerank context cannot be null");
+        }
+        final MMRRerankContext ctx = (MMRRerankContext) attr;
+        if (ctx.getSpaceType() == null) {
+            throw new IllegalStateException("Space type in MMR rerank context cannot be null");
+        }
+        if (ctx.getOriginalQuerySize() == null) {
+            throw new IllegalStateException("Original query size in MMR rerank context cannot be null");
+        }
+        if (ctx.getDiversity() == null) {
+            throw new IllegalStateException("Diversity in MMR rerank context cannot be null");
+        }
+        if (ctx.getVectorDataType() == null) {
+            throw new IllegalStateException("Vector data type in MMR rerank context cannot be null");
+        }
+        return ctx;
+    }
+
+    private Map<String, Object> extractVectors(List<SearchHit> hits, String defaultVectorFieldPath, Map<String, String> indexToVectorFieldPathMap, boolean isFloatVector) {
+        Map<String, Object> vectors = new ConcurrentHashMap<>();
+        for (SearchHit hit : hits) {
+            String vectorPath = defaultVectorFieldPath;
+            if (indexToVectorFieldPathMap != null) {
+                String overridePath = indexToVectorFieldPathMap.get(hit.getIndex());
+                if (overridePath != null && !overridePath.isBlank()) {
+                    vectorPath = overridePath;
+                }
+            }
+            Object embedding = extractVectorFromHit(hit.getSourceAsMap(), vectorPath, hit.getId(), isFloatVector);
+            vectors.put(hit.getId(), embedding);
+        }
+        return vectors;
+    }
+
+    private List<SearchHit> selectHitsWithMMR(List<SearchHit> candidates, Map<String, Object> docVectors, KNNVectorSimilarityFunction similarityFunction, float diversity, int targetSize, boolean isFloatVector, Map<String, MMRExplainInfo> explainInfoMap) {
+        List<SearchHit> selected = new ArrayList<>();
+        Map<String, Float> simCache = new HashMap<>();
+        final boolean collectExplain = explainInfoMap != null;
+        while (selected.size() < targetSize && !candidates.isEmpty()) {
+            Pair<SearchHit, Double> bestCandidate = null;
+            double bestScore = Double.NEGATIVE_INFINITY;
+            float bestMaxSimToSelected = 0.0F;
+            for (SearchHit candidate : candidates) {
+                String candidateId = candidate.getId();
+                float maxSimToSelected = 0.0F;
+                for (SearchHit sel : selected) {
+                    String selId = sel.getId();
+                    String key = cacheKey(candidateId, selId);
+                    String symKey = cacheKey(selId, candidateId);
+                    float sim = simCache.computeIfAbsent(key, k -> {
+                        if (isFloatVector) {
+                            return similarityFunction.compare((float[]) docVectors.get(candidateId), (float[]) docVectors.get(selId));
+                        } else {
+                            return similarityFunction.compare((byte[]) docVectors.get(candidateId), (byte[]) docVectors.get(selId));
+                        }
+                    });
+                    simCache.putIfAbsent(symKey, sim);
+                    maxSimToSelected = Math.max(maxSimToSelected, sim);
+                }
+                double score = (1 - diversity) * candidate.getScore() - diversity * maxSimToSelected;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMaxSimToSelected = maxSimToSelected;
+                    bestCandidate = Pair.of(candidate, score);
+                }
+            }
+            if (bestCandidate != null) {
+                SearchHit bestHit = bestCandidate.getLeft();
+                if (collectExplain) {
+                    MMRExplainInfo explainInfo = MMRExplainInfo.builder().originalScore(bestHit.getScore()).maxSimilarityToSelected(bestMaxSimToSelected).mmrScore(bestCandidate.getRight()).diversity(diversity).build();
+                    explainInfoMap.put(bestHit.getId(), explainInfo);
+                }
+                selected.add(bestHit);
+                candidates.remove(bestHit);
+            }
+        }
+        return selected;
+    }
+
+    /**
+     * Injects MMR explain info into each selected hit's _source as an "mmr_explain" field.
+     */
+    private void injectExplainInfo(List<SearchHit> selected, Map<String, MMRExplainInfo> explainInfoMap) throws IOException {
+        for (SearchHit hit : selected) {
+            MMRExplainInfo explainInfo = explainInfoMap.get(hit.getId());
+            if (explainInfo == null) {
+                throw new IllegalStateException(String.format(Locale.ROOT, "MMR explain info not found for selected hit [%s]. This indicates an internal inconsistency in the MMR selection process.", hit.getId()));
+            }
+            Map<String, Object> source = hit.getSourceAsMap();
+            source.put(MMR_EXPLAIN, explainInfo.toMap());
+            hit.sourceRef(BytesReference.bytes(XContentFactory.jsonBuilder().map(source)));
+        }
+    }
+
+    private void applyFetchSourceFilterIfNeeded(List<SearchHit> hits, MMRRerankContext mmrContext) throws IOException {
+        final FetchSourceContext fetchSourceContext = mmrContext.getOriginalFetchSourceContext();
+        if (fetchSourceContext == null) {
+            return;
+        }
+        // if fetch source is false we directly remove the whole _source
+        if (fetchSourceContext.fetchSource() == false) {
+            for (SearchHit hit : hits) {
+                hit.sourceRef(null);
+            }
+            return;
+        }
+        final Function<Map<String, ?>, Map<String, Object>> filter = fetchSourceContext.getFilter();
+        for (SearchHit hit : hits) {
+            Map<String, Object> filtered = filter.apply(hit.getSourceAsMap());
+            hit.sourceRef(BytesReference.bytes(XContentFactory.jsonBuilder().map(filtered)));
+        }
+    }
+
+    private String cacheKey(String id1, String id2) {
+        return String.join(":", id1, id2);
+    }
+
+    // This processor will be executed pre the user defined search request processor if there is any. Since
+    // we oversample before so it is better to execute this processor to rerank and reduce the response to the
+    // original query size before executing other user defined search response processors.
+    @Override
+    public ExecutionStage getExecutionStage() {
+        return ExecutionStage.PRE_USER_DEFINED;
+    }
+
+    @Override
+    public String getType() {
+        return TYPE;
+    }
+
+    @Override
+    public String getTag() {
+        return tag;
+    }
+
+    @Override
+    public String getDescription() {
+        return DESCRIPTION;
+    }
+
+    @Override
+    public boolean isIgnoreFailure() {
+        return ignoreFailure;
+    }
+
+
+    public static class MMRRerankProcessorFactory implements SystemGeneratedFactory<SearchResponseProcessor> {
+        public static final String TYPE = "mmr_rerank_factory";
+
+        @Override
+        public boolean shouldGenerate(ProcessorGenerationContext context) {
+            return shouldGenerateMMRProcessor(context);
+        }
+
+        @Override
+        public SearchResponseProcessor create(Map<String, Factory<SearchResponseProcessor>> processorFactories, String tag, String description, boolean ignoreFailure, Map<String, Object> config, PipelineContext pipelineContext) throws Exception {
+            return new MMRRerankProcessor(tag, ignoreFailure);
+        }
+    }
+
+    
+    
+    public MMRRerankProcessor(final String tag, final boolean ignoreFailure) {
+        this.tag = tag;
+        this.ignoreFailure = ignoreFailure;
+    }
+}

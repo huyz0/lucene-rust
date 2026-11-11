@@ -106,6 +106,9 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE_INDICATOR"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
+    ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
+    ("MMROverSampleProcessor.java", "DEFAULT_OVERSAMPLE_SCALE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("SemanticFieldProcessorFactory.java", "DEFAULT_BATCH_SIZE"): "the semantic ingest processor's inference batch, run in Java before indexing",
     ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_MAX_WINDOW_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
     ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_BASE_QUERY_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
