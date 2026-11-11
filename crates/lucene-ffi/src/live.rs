@@ -40,7 +40,8 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{Clause, TermQuery};
 use lucene_search::similarities::Similarity;
 use lucene_search::{
-    search_boolean_query_multi_segment_maxscore_counting, search_term_query, TotalHitsRelation,
+    search_boolean_query_multi_segment_maxscore_counting, search_term_query,
+    search_term_query_multi_segment_counting, TotalHitsRelation,
 };
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -48,7 +49,7 @@ use crate::clauses::map_search_error;
 use crate::engine_writer::{self, EngineWriter};
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
-use crate::jvm_reader::{boolean_of, decode_request, lookup};
+use crate::jvm_reader::{boolean_of, decode_request, lookup, JvmQuery};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
 use lucene_index::concurrent_writer::{FieldTotals, LeanSegment, LiveRequest, ViewBuffer};
@@ -2702,13 +2703,31 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             .map(|m| (!m.is_empty()).then_some(m))
             .collect();
         let threshold = u64::try_from(count_limit).unwrap_or(0);
-        let (hits, total) = search_boolean_query_multi_segment_maxscore_counting(
-            &segments,
-            &q,
-            &norms,
-            top_n.max(1),
-            threshold,
-        )
+        // A lone term is scored as the plain reader scores it, with the term
+        // scorer: Lucene rewrites a one-clause boolean to that clause, so the
+        // hits are the same, without a boolean scorer per leaf.
+        let (hits, total) = match &query {
+            JvmQuery::Term(t) => {
+                let term_norms: Vec<_> = norms
+                    .iter()
+                    .map(|m| m.and_then(|m| m.get(&t.field)))
+                    .collect();
+                search_term_query_multi_segment_counting(
+                    &segments,
+                    t,
+                    &term_norms,
+                    top_n.max(1),
+                    threshold,
+                )
+            }
+            JvmQuery::Boolean(_) => search_boolean_query_multi_segment_maxscore_counting(
+                &segments,
+                &q,
+                &norms,
+                top_n.max(1),
+                threshold,
+            ),
+        }
         .map_err(map_search_error)?;
         laps.lap(lucene_index::live_timing::Phase::PlainQuery);
         let hits = if top_n == 0 { Vec::new() } else { hits };
