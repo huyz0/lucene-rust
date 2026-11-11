@@ -13,7 +13,7 @@ test query through each first pass and the `max_sim` rerank:
 
 and prints nDCG@10 and recall@100 against the qrels, with client latency p50 / p95.
 
-  scripts/bench-tensor-beir.py <data dir> <dataset> [--windows 100,300] [--keep]
+  scripts/bench-tensor-beir.py <data dir> <dataset> [--windows=100,300] [--only=<pipeline prefix>] [--keep]
 
 <data dir> holds `<dataset>.docs`, `<dataset>.queries` and `<dataset>.qrels`
 (encode.py's mvbench files) and `<dataset>/corpus.jsonl`, `<dataset>/queries.jsonl`
@@ -76,8 +76,8 @@ def main():
         must = check.must
         must("PUT", "/beir", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                                             "index.lucene_rust.engine": True},
-                               # The token vectors stay out of _source: fetching 100 hits otherwise
-                               # inflates every hit's ~200 KB of JSON (about 70 ms here).
+                               # The token vectors stay out of _source: each hit's fetch otherwise
+                               # reads its whole stored _source, every token's numbers as JSON.
                                "mappings": {"_source": {"excludes": ["colbert"]},
                                             "properties": {"text": {"type": "text"},
                                                            "colbert": {"type": "multi_vector", "dimension": dim,

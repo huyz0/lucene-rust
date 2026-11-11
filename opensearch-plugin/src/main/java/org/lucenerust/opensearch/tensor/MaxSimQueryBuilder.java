@@ -54,6 +54,8 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
     static final ParseField CANDIDATES_FIELD = new ParseField("candidates");
     /** k-NN's limit on {@code k}. */
     static final int MAX_CANDIDATES = 10000;
+    /** The HNSW search's width at least, k-NN's default {@code ef_search}. */
+    static final int MIN_SEARCH_WIDTH = 100;
 
     private String fieldName;
     private float[][] queryVectors;
@@ -119,7 +121,7 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
     /** Match only the {@code n} documents nearest by pooled mean; 0 matches every document with a value. */
     public MaxSimQueryBuilder candidates(int n) {
         if (n < 0 || n > MAX_CANDIDATES) {
-            throw new IllegalArgumentException("[" + NAME + "] [candidates] must be in [1, " + MAX_CANDIDATES + "], got " + n);
+            throw new IllegalArgumentException("[" + NAME + "] [candidates] must be in [0, " + MAX_CANDIDATES + "], got " + n);
         }
         this.candidates = n;
         return this;
@@ -149,16 +151,8 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
                 b.queryVectors = vectors(parser);
             } else if (FILTER_FIELD.match(current, parser.getDeprecationHandler()) && token == XContentParser.Token.START_OBJECT) {
                 b.filter = parseInnerQueryBuilder(parser);
-            } else if (token == XContentParser.Token.VALUE_NUMBER && CANDIDATES_FIELD.match(current, parser.getDeprecationHandler())) {
-                int n = parser.intValue(false);
-                if (n < 1) {
-                    throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] [candidates] must be in [1, " + MAX_CANDIDATES + "], got " + n);
-                }
-                try {
-                    b.candidates(n);
-                } catch (IllegalArgumentException e) {
-                    throw new ParsingException(parser.getTokenLocation(), e.getMessage());
-                }
+            } else if (CANDIDATES_FIELD.match(current, parser.getDeprecationHandler())) {
+                b.candidates = candidates(parser, token);
             } else if (token.isValue() && NAME_FIELD.match(current, parser.getDeprecationHandler())) {
                 b.queryName(parser.text());
             } else if (token.isValue() && BOOST_FIELD.match(current, parser.getDeprecationHandler())) {
@@ -177,6 +171,19 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
             throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] requires [query_vectors], an array of token vectors");
         }
         return b;
+    }
+
+    /** {@code candidates}: a whole number in {@code [1, MAX_CANDIDATES]}. */
+    private static int candidates(XContentParser parser, XContentParser.Token token) throws IOException {
+        String bad = "[" + NAME + "] [candidates] must be a whole number in [1, " + MAX_CANDIDATES + "]";
+        if (token != XContentParser.Token.VALUE_NUMBER) {
+            throw new ParsingException(parser.getTokenLocation(), bad + ", got " + token);
+        }
+        double d = parser.doubleValue();
+        if (d != Math.rint(d) || d < 1 || d > MAX_CANDIDATES) {
+            throw new ParsingException(parser.getTokenLocation(), bad + ", got " + parser.text());
+        }
+        return (int) d;
     }
 
     /** {@code [[f, ...], ...]}: at least one token, every one the same non-zero length. */
@@ -277,7 +284,7 @@ public final class MaxSimQueryBuilder extends AbstractQueryBuilder<MaxSimQueryBu
                 return new MatchNoDocsQuery("[" + NAME + "] query vectors with a zero mean have no nearest documents");
             }
             Query f = filter == null ? null : filter.toQuery(context);
-            return new MaxSimQuery(new KnnTopVectorQuery(mv.pooledField(), KnnTarget.of(mean), candidates, candidates, f), fieldName, queryVectors);
+            return new MaxSimQuery(new KnnTopVectorQuery(mv.pooledField(), KnnTarget.of(mean), candidates, Math.max(candidates, MIN_SEARCH_WIDTH), f), fieldName, queryVectors);
         }
         Query sub = new FieldExistsQuery(fieldName);
         if (filter != null) {

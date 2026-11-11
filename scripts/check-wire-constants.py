@@ -145,7 +145,9 @@ JAVA_ONLY = {
     ("RestNeuralStatsAction.java", "MAX_PARAM_LENGTH"): "the neural stats API's request checks",
     ("MemoryStat.java", "BYTES_PER_KILOBYTES"): "the neural stats API's memory units",
     ("TimestampedEventStat.java", "TRAILING_NUMBER_OF_INTERVALS"): "the neural stats API's trailing event window",
-    ("MultiVectorFieldMapper.java", "MAX_DIMENSION"): "the mapping's validation, at Lucene's KnnVectorsFormat limit",
+    ("MultiVectorFieldMapper.java", "MAX_DIMENSION"): "the mapping's validation, at the k-NN plugin's limit",
+    ("MultiVectorFieldMapper.java", "MAX_POOLED_DIMENSION"): "the mapping's validation, at Lucene's KnnVectorsFormat limit",
+    ("MaxSimQueryBuilder.java", "MIN_SEARCH_WIDTH"): "the query's HNSW width, k-NN's default ef_search",
     ("MaxSimQueryBuilder.java", "MAX_CANDIDATES"): "the query's validation, at k-NN's limit on k",
 }
 

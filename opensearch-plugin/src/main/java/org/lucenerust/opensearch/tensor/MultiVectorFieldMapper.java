@@ -37,7 +37,8 @@ import java.util.function.Supplier;
  * ({@link MaxSimQueryBuilder}); {@code _source} keeps the values as sent. With {@code pooled}, each
  * document's mean token (unit length, {@link MultiVectorEncoding#pooledMean}) is also indexed in a
  * hidden HNSW vector field ({@code <field>._pooled}, dot product), where {@code max_sim}'s {@code
- * candidates} finds the nearest documents.
+ * candidates} finds the nearest documents (a document whose tokens sum to zero has no mean, so
+ * no candidate search finds it).
  *
  * <pre>{@code
  * "colbert": { "type": "multi_vector", "dimension": 96, "encoding": "float16", "pooled": true }
@@ -50,8 +51,10 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
     static final String POOLED = "pooled";
     /** The suffix of the hidden vector field a {@code pooled} field keeps its documents' means in. */
     public static final String POOLED_SUFFIX = "._pooled";
-    /** Lucene's {@code KnnVectorsFormat.DEFAULT_MAX_DIMENSIONS}, the k-NN plugin's limit too. */
+    /** The k-NN plugin's limit on a vector's dimension. */
     static final int MAX_DIMENSION = 16000;
+    /** Lucene's {@code KnnVectorsFormat.DEFAULT_MAX_DIMENSIONS}, the hidden pooled field's limit. */
+    static final int MAX_POOLED_DIMENSION = 1024;
 
     private static MultiVectorFieldType ft(Mapper m) {
         return ((MultiVectorFieldMapper) m).fieldType();
@@ -105,6 +108,9 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
     public static final class TypeParser implements Mapper.TypeParser {
         @Override
         public Mapper.Builder<?> parse(String name, Map<String, Object> node, ParserContext parserContext) {
+            if (node.containsKey("fields")) {
+                throw new MapperParsingException("[" + CONTENT_TYPE + "] field [" + name + "] takes no multi-fields");
+            }
             Builder builder = new Builder(name);
             builder.parse(name, parserContext, node);
             int dim = builder.dimension.getValue();
@@ -114,6 +120,20 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
             if (dim < 1 || dim > MAX_DIMENSION) {
                 throw new MapperParsingException(
                     String.format(Locale.ROOT, "[%s] field [%s] [%s] must be in [1, %d], got %d", CONTENT_TYPE, name, DIMENSION, MAX_DIMENSION, dim)
+                );
+            }
+            if (builder.pooled.getValue() && dim > MAX_POOLED_DIMENSION) {
+                throw new MapperParsingException(
+                    String.format(
+                        Locale.ROOT,
+                        "[%s] field [%s] with [%s] takes a [%s] up to %d, got %d",
+                        CONTENT_TYPE,
+                        name,
+                        POOLED,
+                        DIMENSION,
+                        MAX_POOLED_DIMENSION,
+                        dim
+                    )
                 );
             }
             return builder;
