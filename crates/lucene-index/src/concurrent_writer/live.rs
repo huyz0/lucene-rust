@@ -410,6 +410,15 @@ impl LiveColumns {
         std::mem::take(&mut self.graphs)
     }
 
+    /// Records the next document's stored fields, kept compressed in the
+    /// chunk the stored-fields writer wrote them in.
+    pub(super) fn record_stored_chunk(
+        &mut self,
+        kept: crate::index_writer::packed_fields::ChunkDocument,
+    ) {
+        self.stored.push_chunk(kept);
+    }
+
     /// Records the next document's stored fields.
     pub(super) fn record_stored(&mut self, stored: &[StoredField]) {
         self.stored.push(stored);
@@ -1120,6 +1129,9 @@ pub(super) struct StoredArena {
     bytes: Vec<u8>,
     /// Document `d`'s fields end at `ends[d]`.
     ends: Vec<usize>,
+    /// The documents read from their compressed chunk instead, by
+    /// document: their range of `bytes` is empty.
+    chunks: Vec<(usize, crate::index_writer::packed_fields::ChunkDocument)>,
 }
 
 const LONG: u8 = 0;
@@ -1149,8 +1161,16 @@ impl StoredArena {
         self.ends.push(out.len());
     }
 
+    fn push_chunk(&mut self, kept: crate::index_writer::packed_fields::ChunkDocument) {
+        self.chunks.push((self.ends.len(), kept));
+        self.ends.push(self.bytes.len());
+    }
+
     fn document(&self, doc: usize) -> Option<Vec<StoredField>> {
         let end = *self.ends.get(doc)?;
+        if let Ok(at) = self.chunks.binary_search_by_key(&doc, |c| c.0) {
+            return self.chunks[at].1.document();
+        }
         let start = doc.checked_sub(1).map_or(0, |p| self.ends[p]);
         let mut r = self.bytes.get(start..end)?;
         let mut out = Vec::new();
@@ -1186,9 +1206,15 @@ impl StoredArena {
     }
 
     fn ram_bytes(&self) -> usize {
+        let chunks = self
+            .chunks
+            .iter()
+            .map(|(_, c)| c.chunk.ram_bytes().saturating_add(64))
+            .fold(0usize, usize::saturating_add);
         self.bytes
             .capacity()
             .saturating_add(self.ends.capacity().saturating_mul(8))
+            .saturating_add(chunks)
     }
 }
 
