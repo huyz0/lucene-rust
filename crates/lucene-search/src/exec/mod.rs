@@ -52,6 +52,7 @@ mod phrase;
 pub(crate) mod query_join;
 pub(crate) mod ranges;
 mod req;
+mod sort_prefix;
 pub(crate) mod span;
 pub(crate) mod spans;
 mod term_dismax;
