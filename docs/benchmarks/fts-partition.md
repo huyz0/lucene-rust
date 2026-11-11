@@ -15,24 +15,28 @@ Every query filters by its tenant; a third of the text queries also bound
 `phrase`, `newest` (the tenant's 10 newest, sorted by `ts` desc) and
 `newest_term` (the same with a body term). Classes: large (ranks 1-5), mid
 (20-60), small (300+). `java` is stock Lucene, `base` this port before the
-change (main 7a6ea04b), `rust` after it.
+change (main 7a6ea04b), `rust` after it. The `java` and `rust` columns run
+without a query cache. The `base` columns and `blocks rust, cache on` ran
+with this port's per-segment query cache on. The cache does not touch the
+composite runs, since folded clauses skip it, but it does cache the blocks
+index's tenant filter (before) and its `_primary_term` non-nested filter.
 
 ## Hot mean latency, microseconds
 
-| class, kind | plain java | plain rust | composite java | composite base | composite rust | blocks java | blocks base | blocks rust |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| large term | 739 | 1352 | 393 | 74 | 73 | 473 | 660 | 118 |
-| large phrase | 1091 | 1937 | 479 | 99 | 105 | 633 | 745 | 162 |
-| large and | 995 | 1040 | 235 | 176 | 177 | 353 | 370 | 312 |
-| large or | 1631 | 1772 | 375 | 277 | 283 | 683 | 727 | 625 |
-| large newest | 608 | 607 | 88 | 35 | 35 | 123 | 367 | 94 |
-| large newest_term | 453 | 533 | 215 | 155 | 90 | 228 | 193 | 137 |
-| mid term | 616 | 1088 | 372 | 16 | 16 | 427 | 625 | 51 |
-| mid phrase | 654 | 1252 | 388 | 26 | 28 | 525 | 646 | 72 |
-| mid newest | 545 | 767 | 95 | 77 | 16 | 137 | 227 | 69 |
-| small term | 490 | 1051 | 345 | 13 | 13 | 412 | 617 | 44 |
-| small phrase | 609 | 1140 | 424 | 22 | 21 | 442 | 622 | 61 |
-| small or | 1093 | 809 | 92 | 32 | 33 | 145 | 92 | 83 |
+| class, kind | plain java | plain rust | composite java | composite base | composite rust | blocks java | blocks base | blocks rust | blocks rust, cache on |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| large term | 739 | 1192 | 393 | 74 | 78 | 473 | 660 | 326 | 118 |
+| large phrase | 1091 | 1746 | 479 | 99 | 97 | 633 | 745 | 374 | 162 |
+| large and | 995 | 937 | 235 | 176 | 186 | 353 | 370 | 476 | 312 |
+| large or | 1631 | 1540 | 375 | 277 | 289 | 683 | 727 | 826 | 625 |
+| large newest | 608 | 392 | 88 | 35 | 26 | 123 | 367 | 199 | 94 |
+| large newest_term | 453 | 448 | 215 | 155 | 98 | 228 | 193 | 249 | 137 |
+| mid term | 616 | 951 | 372 | 16 | 15 | 427 | 625 | 241 | 51 |
+| mid phrase | 654 | 1070 | 388 | 26 | 25 | 525 | 646 | 275 | 72 |
+| mid newest | 545 | 630 | 95 | 77 | 10 | 137 | 227 | 173 | 69 |
+| small term | 490 | 844 | 345 | 13 | 12 | 412 | 617 | 249 | 44 |
+| small phrase | 609 | 920 | 424 | 22 | 20 | 442 | 622 | 279 | 61 |
+| small or | 1093 | 689 | 92 | 32 | 29 | 145 | 92 | 205 | 83 |
 
 Raw CSVs and every query's top hits: `/mnt/project-files/perf/fts-partition/`.
 
@@ -45,9 +49,12 @@ Raw CSVs and every query's top hits: `/mnt/project-files/perf/fts-partition/`.
   large with a term 155 -> 90 us. Large tenants alone were already fast
   through the time points' competitive iterator.
 - **Nested blocks** used to turn the run off (`blocks base`, at unsorted
-  speed). Runs of whole blocks bring term and phrase queries 5-14x down,
-  within 3-4x of the flat composite index (the parents' bitset is walked
-  instead of a dense range).
+  speed). With the cache on in both, runs of whole blocks bring term and
+  phrase queries 5-14x down. Without a cache, about 200 us of each blocks
+  query goes to rebuilding the `_primary_term` exists filter's bit set per
+  segment. That still puts it ahead of stock Lucene (249 vs 412 us for a
+  small tenant's term); keeping that bit set per segment would close most
+  of the gap to the flat index.
 - **Bytes read cold** (whole query set once on a dropped page cache,
   `/proc/self/io` read_bytes): plain 82.7 MB, composite 64.9 MB (stock Lucene
   on it 73.3 MB), blocks 89.9 MB after vs 98.2 MB before. A tenant's
@@ -59,4 +66,5 @@ Raw CSVs and every query's top hits: `/mnt/project-files/perf/fts-partition/`.
   (`docFreq`, `docCount`, average length over all tenants) in all of them;
   the sort changes doc ids, not statistics.
 - Not from this change: on the unsorted index this port's filtered `term`
-  and `phrase` are about 2x slower than stock Lucene (separate follow-up).
+  and `phrase` are about 1.7x slower than stock Lucene. #238 fixes that: a
+  boolean's tree fallback built every clause twice.
