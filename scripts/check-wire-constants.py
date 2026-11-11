@@ -106,6 +106,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE_INDICATOR"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("MMROverSampleProcessor.java", "DEFAULT_OVERSAMPLE_SCALE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
