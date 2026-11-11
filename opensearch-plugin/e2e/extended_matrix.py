@@ -106,6 +106,15 @@ def rows():
     add("script_score painless refused", {"query": {"script_score": {"query": {"match": {"body": "gamma"}}, "script": {
         "source": "String t = doc['tag'].size() == 0 ? '' : doc['tag'].value; return t =~ /a$/ ? 2 : 1;"}}}}, "script_score_painless")
 
+    # Painless script queries (filter scripts), checked the same way.
+    def sq(source, **params):
+        return {"script": {"script": {"source": source, "params": params}}}
+    add("script query", {"query": {"bool": {"filter": [sq("doc['qty'].size() > 0 && doc['qty'].value > params.t", t=3)]}}}, "native")
+    add("script query beside match", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
+                                                        "filter": [sq("doc['tag'].size() > 0 && doc['tag'].value == params.t", t="alpha")]}}}, "native")
+    add("script query loop", {"query": {"bool": {"filter": [sq("long s = 0; for (def v : doc['m']) { s += v; } return s % 3 == 0;")]}}, "size": 20}, "native")
+    add("script query refused", {"query": {"bool": {"filter": [sq("doc['tag'].size() > 0 && doc['tag'].value =~ /a/")]}}}, "script_query_painless")
+
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.
     add("more_like_this text", {"query": {"more_like_this": {"fields": ["body"], "like": "alpha beta gamma delta epsilon", "min_term_freq": 1, "min_doc_freq": 1}}}, "native")

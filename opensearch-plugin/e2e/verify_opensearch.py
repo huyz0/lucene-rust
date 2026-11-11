@@ -922,7 +922,7 @@ def error_shape(resp):
 
 
 def script_errors(index, shards):
-    """Painless scripts that throw at run time: the native engine runs them (each passed the
+    """Painless scripts that throw at run time (score, function_score and filter scripts): the native engine runs them (each passed the
     static check) and fails exactly as stock does -- the same status, exception type, reason,
     script_stack and position -- without re-running the search in Java (no fallback)."""
     rows = [
@@ -948,6 +948,12 @@ def script_errors(index, shards):
                                                 {"field_value_factor": {"field": "sp"}}])),
         ("function NaN score", {"query": {"function_score": {"query": {"match": {"body": "alpha"}}, "boost_mode": "replace",
                                                             "functions": [{"script_score": {"script": {"source": "Double.NaN"}}}]}}}),
+    ]
+    # script queries: a filter script's exception.
+    queries += [
+        ("filter missing value", {"query": {"bool": {"filter": [{"script": {"script": {"source": "doc['sp'].value > 1"}}}]}}}),
+        ("filter unmapped field", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
+                                                      "filter": [{"script": {"script": {"source": "doc['nosuch'].value > 0"}}}]}}}),
     ]
     for name, body in queries:
         set_native(index, False)

@@ -77,9 +77,11 @@ pub(crate) const NODE_KNN_SCORE: u8 = crate::jvm_knn_score::NODE_KNN_SCORE;
 pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINLESS_SCORE;
 /// `max_sim` over a `multi_vector` field ([`crate::jvm_max_sim`]).
 pub(crate) const NODE_MAX_SIM: u8 = crate::jvm_max_sim::NODE_MAX_SIM;
+/// `script` query running a Painless script ([`crate::jvm_painless_score`]).
+pub(crate) const NODE_PAINLESS_FILTER: u8 = crate::jvm_painless_score::NODE_PAINLESS_FILTER;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_MAX_SIM;
+pub(crate) const NODE_LAST: u8 = NODE_PAINLESS_FILTER;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -413,6 +415,7 @@ pub(crate) fn decode(
         NODE_KNN_SCORE => return crate::jvm_knn_score::decode(c, depth, nodes),
         NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::jvm_max_sim::decode(c, depth, nodes),
+        NODE_PAINLESS_FILTER => return crate::jvm_painless_score::decode_filter(c),
         NODE_TO_CHILD => {
             let parents = crate::jvm_nodes::decode_parents(c, depth + 1, nodes)?;
             let parent = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
