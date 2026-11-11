@@ -18,7 +18,7 @@ PUT _index_template/logs
   "composed_of": ["lucene_rust_logs@settings", "lucene_rust_logs@mappings"],
   "template": {
     "settings": { "index.derived_source.enabled": true },
-    "mappings": { "properties": { "user": { "properties": { "id": { "type": "keyword" } } } } }
+    "mappings": { "properties": { "message": { "type": "pattern_text" } } }
   }
 }
 ```
@@ -29,9 +29,14 @@ time range, say, or a `trace.id` you search with `prefix` or `wildcard`, which
 `hex_id` refuses) is overridden there.
 
 `index.derived_source.enabled` is left to the index template because it is a
-trade: it drops the stored `_source` copy (the largest saving below) and makes
-every search that returns 100 hits about 2x slower, since each hit's `_source`
-is rebuilt from doc values and stored fields.
+trade: it drops the stored `_source` copy (the largest saving below) and adds
+1-3 ms to a search returning 100 hits, since each hit's `_source` is rebuilt
+from doc values and stored fields. With it, map `message` as `pattern_text`
+too, as above: the message is then kept as a template plus its variables,
+42 MiB less on the corpus below, for about 1 ms more per phrase and 3 ms more
+per newest-100 tail. Without derived source `pattern_text` costs space (the
+variables are stored beside `_source`: 35 MiB more), so the mappings template
+keeps `message` as `text`.
 
 The elected cluster manager puts each template when it is missing or has a
 lower `version` than this plugin's, so upgrading the plugin updates them. Copy
@@ -95,6 +100,17 @@ Measured and left out: `@timestamp` with doc values only saves another 19 MiB
 but makes a timechart over all 7 days 5x slower (32 vs 6 ms), since the
 date histogram can no longer count from the points. Indexing `host.name`,
 `service.name` and `log.level` gave no measured search gain.
+
+`message` as `pattern_text` (same corpus, same queries, same hits):
+
+| | Preset | Preset + `pattern_text` | Preset + derived source | Preset + derived source + `pattern_text` |
+|---|---|---|---|---|
+| MiB on disk | 715 | 750 | 532 | 490 |
+| stored fields `.fdt` / positions `.pos` | 315 / 30 | 381 / 0 | 131 / 30 | 121 / 0 |
+| phrase, 24 h, newest 100 | 8.5 | 7.3 | 10.6 | 11.6 |
+| term, 7 d, newest 100 | 8.7 | 7.5 | 10.0 | 11.5 |
+| tail: newest 100 | 5.5 | 5.2 | 7.6 | 10.7 |
+| wildcard `*timeoutexception*`, 24 h | 11.0 | 7.9 | 10.3 | 11.3 |
 
 ## Rollover and force merge
 
