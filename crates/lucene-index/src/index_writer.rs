@@ -872,6 +872,32 @@ impl FieldLookup {
     }
 }
 
+#[cfg(test)]
+mod field_lookup_tests {
+    use super::{FieldInfo, FieldLookup};
+
+    #[test]
+    fn numbers_resolve_dense_or_sparse_and_the_first_field_wins() {
+        let numbers = [0, 65_535, 65_536, i32::MAX, -1, 7, 65_536, 0];
+        let fields: Vec<FieldInfo> = numbers
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| FieldInfo::new(format!("f{i}"), n))
+            .collect();
+        let lookup = FieldLookup::build(&fields);
+        assert_eq!(lookup.by_number(0), Some(0));
+        assert_eq!(lookup.by_number(65_535), Some(1));
+        assert_eq!(lookup.by_number(65_536), Some(2));
+        assert_eq!(lookup.by_number(i32::MAX), Some(3));
+        assert_eq!(lookup.by_number(-1), Some(4));
+        assert_eq!(lookup.by_number(7), Some(5));
+        assert_eq!(lookup.by_number(6), None);
+        assert_eq!(lookup.by_number(8), None);
+        assert_eq!(lookup.by_number(1 << 20), None);
+        assert_eq!(lookup.by_number(i32::MIN), None);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct IndexingConfig {
     /// `LiveIndexWriterConfig.getMergedSegmentWarmer()`; see
@@ -1621,15 +1647,21 @@ impl ExplicitDocs<'_> {
             )
         });
         let docs = p.len().min(end).saturating_sub(start);
+        // Documents mostly share a shape, so after the first one each role
+        // makes room for every document's values like its, rather than
+        // regrowing (and refaulting) a flush-sized array by doubling. The
+        // estimate is bounded twice, so an odd first document cannot size
+        // the array: per document by `PACKED_ROLE_VALUES_PER_DOC`, and in
+        // all by what the packed bytes can hold (a packed value takes
+        // several bytes; past the bound the array grows as before).
+        let bound = p.ram_bytes() / PACKED_BYTES_PER_ROLE_VALUE;
         p.for_each_range(start, end, |i, d| {
             f(i, d)?;
             for ((values, ends), role) in roles.iter_mut().zip([Role::DocValues, Role::Points]) {
                 values.append(role.values_mut(d));
                 if ends.is_empty() {
-                    // Documents mostly share a shape: room for every
-                    // document's values like the first one's, rather than
-                    // a flush-sized array regrown (and refaulted) by doubling.
-                    values.reserve(values.len().saturating_mul(docs.saturating_sub(1)));
+                    let per_doc = values.len().min(PACKED_ROLE_VALUES_PER_DOC);
+                    values.reserve(per_doc.saturating_mul(docs.saturating_sub(1)).min(bound));
                 }
                 ends.push(values.len());
             }
@@ -1638,6 +1670,12 @@ impl ExplicitDocs<'_> {
         Ok(roles.map(|(values, ends)| RoleValues::Flat { values, ends }))
     }
 }
+
+/// [`ExplicitDocs::packed_roles`]' presizing: at most this many values per
+/// document, however many the first document has, ...
+const PACKED_ROLE_VALUES_PER_DOC: usize = 64;
+/// ... and at most one value per this many bytes of the packed buffer.
+const PACKED_BYTES_PER_ROLE_VALUE: usize = 4;
 
 /// Which per-document values a [`RoleValues`] holds.
 #[derive(Clone, Copy)]

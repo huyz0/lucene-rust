@@ -57,6 +57,10 @@ pub(super) fn collect_columns<D: DocValueFields>(
     docs: &[D],
     configs: &[DocValuesFieldConfig],
 ) -> Option<Vec<Option<DenseColumn>>> {
+    // An empty flush keeps the per-field path's bytes.
+    if docs.is_empty() {
+        return None;
+    }
     let max_field = configs.iter().map(|c| c.field_number).max()?;
     let width = usize::try_from(max_field).ok()?.checked_add(1)?;
     if width > MAX_ROUTED_FIELD || configs.iter().any(|c| c.field_number < 0) {
@@ -66,10 +70,14 @@ pub(super) fn collect_columns<D: DocValueFields>(
     let mut slots: Vec<Slot<'_>> = Vec::with_capacity(configs.len());
     for (i, c) in configs.iter().enumerate() {
         let n = usize::try_from(c.field_number).ok()?;
-        // The first config of a number wins, as `iter().find` would.
-        if slot_of.get(n).copied() == Some(NO_SLOT) {
-            *slot_of.get_mut(n)? = u32::try_from(i).ok()?;
+        // Each per-field column reads its own number's values, so two
+        // configs of one number cannot share a route: leave them all to
+        // that path (which refuses them).
+        let slot = slot_of.get_mut(n)?;
+        if *slot != NO_SLOT {
+            return None;
         }
+        *slot = u32::try_from(i).ok()?;
         let builder = match c.doc_values_type {
             DocValuesType::Numeric => Builder::Numeric {
                 pairs: Vec::with_capacity(docs.len()),
@@ -183,15 +191,15 @@ fn finish(n: i32, builder: Builder<'_>, max_doc: usize) -> Option<DenseColumn> {
         }
         Builder::SortedSet {
             docs,
-            mut counts,
+            counts,
             values,
-        } => DenseColumn::SortedSetOrds(n, sorted_set(docs, &mut counts, &values)),
+        } => DenseColumn::SortedSetOrds(n, sorted_set(docs, counts, &values)),
     })
 }
 
 /// `SortedSetDocValuesWriter`: the distinct values hashed in first, only
 /// those sorted and copied, each document's ordinals ascending and distinct.
-fn sorted_set(docs: Vec<i32>, counts: &mut [u32], values: &[&[u8]]) -> SortedSetOrdsColumn {
+fn sorted_set(docs: Vec<i32>, mut counts: Vec<u32>, values: &[&[u8]]) -> SortedSetOrdsColumn {
     let mut ids: FxHashMap<&[u8], u32> = FxHashMap::default();
     let mut distinct: Vec<&[u8]> = Vec::new();
     let value_ids: Vec<u32> = values
@@ -235,7 +243,7 @@ fn sorted_set(docs: Vec<i32>, counts: &mut [u32], values: &[&[u8]]) -> SortedSet
     SortedSetOrdsColumn {
         dict,
         docs,
-        counts: counts.to_vec(),
+        counts,
         ords,
     }
 }
@@ -367,6 +375,20 @@ mod tests {
             Lucene90DocValuesFormat::default(),
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn empty_flushes_and_repeated_numbers_take_the_per_field_path() {
+        let configs = [config(0, DocValuesType::SortedSet, false)];
+        assert!(super::collect_columns::<Document>(&[], &configs).is_none());
+        let docs = vec![Document {
+            fields: vec![v(2, FieldValue::Long(1))],
+        }];
+        let twice = [
+            config(2, DocValuesType::SortedNumeric, false),
+            config(2, DocValuesType::Numeric, false),
+        ];
+        assert!(super::collect_columns(&docs, &twice).is_none());
     }
 
     #[test]
