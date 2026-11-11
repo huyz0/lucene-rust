@@ -145,6 +145,8 @@ pub(crate) const JS_SCRIPT: u8 = 0x80;
 /// A JavaScript script, as V8 runs it.
 #[derive(Debug)]
 struct JsSource {
+    /// The time limit in milliseconds and the heap limit in megabytes.
+    limits: (i32, i32),
     #[cfg(feature = "js")]
     script: Arc<lucene_script_js::Script>,
     #[cfg(feature = "js")]
@@ -164,6 +166,7 @@ impl JsSource {
         fields: &[FieldSpec],
     ) -> Self {
         JsSource {
+            limits: (timeout_ms, heap_mb),
             #[cfg(feature = "js")]
             script: Arc::new(js::script(&source, timeout_ms, heap_mb, fields)),
             #[cfg(feature = "js")]
@@ -545,8 +548,8 @@ impl JObject for Unavailable {
 }
 
 impl Spec {
-    /// `name` over what the script runs: its IR, params, context, index,
-    /// shard and fields, not its run number.
+    /// `name` over what the script runs: its IR (a js script's source and
+    /// limits), params, context, index, shard and fields, not its run number.
     fn key(&self, name: &str) -> String {
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         let fields: Vec<String> = self
@@ -555,8 +558,9 @@ impl Spec {
             .map(|f| format!("{}:{:?}", f.name, f.kind))
             .collect();
         format!(
-            "{name}(ir={}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
+            "{name}(ir={}, js={:?}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
             hex(&self.ir_blob),
+            self.js.as_ref().map(|j| j.limits),
             hex(&self.params_blob),
             self.needs_score,
             self.filter,

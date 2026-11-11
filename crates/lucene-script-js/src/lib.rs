@@ -3,26 +3,30 @@
 //! A script is an expression, or a function body that `return`s, over the
 //! same names a Painless script reads: `doc['f'].value`, `doc['f'].size()`,
 //! `doc['f'].get(i)`, `doc['f'].empty`, `params`, and `_score`. It runs in
-//! strict mode, in a context of its own whose built-ins and global object are
-//! frozen: no script changes what another document or request sees. V8
+//! strict mode, in a context of its own where everything a script can reach
+//! is frozen: no script changes what another document or request sees. V8
 //! itself has no files, network, timers or modules, and code generation from
-//! strings (`eval`, `Function`) is off, as is WebAssembly.
+//! strings (`eval`, `Function`) is off, as is WebAssembly; typed arrays,
+//! whose memory V8's heap limit does not count, are not there either.
 //!
 //! Each thread keeps one isolate, with every script it has compiled; a
 //! script compiles once per thread. A search's calls share one deadline
 //! ([`Limits::timeout`]), past which V8 stops the script; an isolate past its
 //! heap limit ([`Limits::max_heap`]) stops the script and is dropped.
 //!
-//! Field values cross into V8 a column at a time: the first read of a field
-//! in a call asks the host ([`Fields::load`]) for its values in every document
-//! of the call, into typed arrays the thread reuses.
+//! Field values cross into V8 a column at a time, into typed arrays the
+//! thread reuses: the host ([`Fields::load`]) loads a field's values in
+//! every document of the call before the script runs, once a call of the
+//! script has read it. A read of a field the call has not loaded stops the
+//! call, which runs that document again once the host has loaded it.
+
+#![forbid(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
-use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -306,9 +310,9 @@ impl std::fmt::Display for Failure {
 
 /// Runs `script` on the call's `count` documents into `out`: numbers, or
 /// with `filter` booleans as `1` and `0`. When the script throws on a
-/// document, `out` holds the values of the documents before it. `scores` are the documents'
-/// `_score`s; `segment` names the segment, whose keyword ordinals the
-/// thread's term cache is keyed by.
+/// document, `out` holds the values of the documents before it.
+/// `scores` are the documents' `_score`s; `segment` names the segment,
+/// whose keyword ordinals the thread's term cache is keyed by.
 #[allow(clippy::too_many_arguments)]
 pub fn run_batch(
     script: &Script,
@@ -325,7 +329,7 @@ pub fn run_batch(
         return Ok(());
     }
     with_engine(script.limits, |e| {
-        e.call(script, params, fields, count, |tc, c, args| {
+        e.call(script, params, segment, fields, count, |tc, c, args| {
             let out_arr = c.out.ensure(tc, count);
             let scores_arr: v8::Local<v8::Value> = match scores {
                 Some(s) => {
@@ -339,20 +343,20 @@ pub fn run_batch(
             };
             let batch = v8::Local::new(tc, &c.batch);
             let undefined = v8::undefined(tc).into();
+            let from = v8::Number::new(tc, args.from as f64).into();
             let n = v8::Number::new(tc, count as f64).into();
             let mode = v8::Number::new(tc, if filter { 1.0 } else { 0.0 }).into();
-            let seg = v8::Number::new(tc, segment as f64).into();
             let r = batch.call(
                 tc,
                 undefined,
-                &[n, out_arr, scores_arr, args.params, mode, seg],
+                &[from, n, out_arr, scores_arr, args.params, mode],
             );
-            // On a failure, the documents before the one that failed.
+            // Else the documents before the one that stopped the call.
             let upto = match r {
                 Some(_) => count,
                 None => (c.state.get(0).max(0) as usize).min(count),
             };
-            for (k, o) in out[..upto].iter_mut().enumerate() {
+            for (k, o) in out.iter_mut().enumerate().take(upto).skip(args.from) {
                 *o = c.out.get(k);
             }
             r.map(|_| Out::Null)
@@ -370,15 +374,14 @@ pub fn run_one(
     fields: &mut dyn Fields,
 ) -> Result<Out, Failure> {
     with_engine(script.limits, |e| {
-        e.call(script, params, fields, 1, |tc, c, args| {
+        e.call(script, params, segment, fields, 1, |tc, c, args| {
             let one = v8::Local::new(tc, &c.one);
             let undefined = v8::undefined(tc).into();
             let s = match score {
                 Some(s) => v8::Number::new(tc, s).into(),
                 None => undefined,
             };
-            let seg = v8::Number::new(tc, segment as f64).into();
-            let r = one.call(tc, undefined, &[s, args.params, seg])?;
+            let r = one.call(tc, undefined, &[s, args.params])?;
             Some(out(tc, r, 0))
         })
     })
@@ -436,6 +439,9 @@ const MAX_SCRIPTS: usize = 64;
 /// Most params a compiled script keeps converted.
 const MAX_PARAMS: usize = 16;
 
+/// Most terms a keyword field keeps converted for its segment.
+const MAX_TERMS: usize = 4096;
+
 /// Keys that are already hashes, used as they are.
 #[derive(Default, Clone, Copy)]
 struct KeyHasher(u64);
@@ -452,12 +458,25 @@ impl Hasher for KeyHasher {
     fn write_u64(&mut self, v: u64) {
         self.0 = v;
     }
+    fn write_i64(&mut self, v: i64) {
+        self.0 = v as u64;
+    }
 }
 
 type ByKey<V> = HashMap<u64, V, std::hash::BuildHasherDefault<KeyHasher>>;
 
 thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    /// The thread's isolate, for the heap-limit callback to stop.
+    static HEAP: RefCell<Option<v8::IsolateHandle>> = const { RefCell::new(None) };
+    /// Whether the thread's isolate reached its heap limit.
+    static HEAP_HIT: Cell<bool> = const { Cell::new(false) };
+    /// The thread's isolate's heap limit.
+    static HEAP_MAX: Cell<usize> = const { Cell::new(usize::MAX) };
+    /// The thread's isolate's watch, for the heap check to reach.
+    static WATCH: RefCell<Option<Arc<Watch>>> = const { RefCell::new(None) };
+    /// The fields the running call asked for (`need`).
+    static NEEDS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
 }
 
 fn with_engine<R>(
@@ -466,9 +485,24 @@ fn with_engine<R>(
 ) -> Result<R, Failure> {
     ENGINE.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let engine = slot.get_or_insert_with(|| Engine::new(limits));
-        let r = f(engine);
-        if engine.heap.hit.load(Ordering::Relaxed) {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let engine = slot.get_or_insert_with(|| Engine::new(limits));
+            f(engine)
+        }));
+        let r = match r {
+            Ok(r) => r,
+            Err(panic) => {
+                // The isolate's state is unknown: the next call starts anew.
+                *slot = None;
+                let why = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                return Err(Failure::Host(format!("the js runtime failed: {why}")));
+            }
+        };
+        if HEAP_HIT.with(Cell::get) {
             // Its heap is past the limit: the next call starts a new isolate.
             *slot = None;
         }
@@ -476,34 +510,55 @@ fn with_engine<R>(
     })
 }
 
-/// What the heap-limit callback reads.
-struct Heap {
-    handle: v8::IsolateHandle,
-    hit: AtomicBool,
-    max: usize,
+/// V8 is near the heap limit: the script stops, and the isolate is dropped
+/// after. The room it gets covers the largest object V8 makes at once (a
+/// string or array of about 1 GB), which would otherwise end the process.
+extern "C" fn near_heap_limit(_data: *mut c_void, current: usize, _initial: usize) -> usize {
+    let _ = HEAP_HIT.try_with(|h| h.set(true));
+    let _ = HEAP.try_with(|h| {
+        if let Ok(h) = h.try_borrow() {
+            if let Some(h) = h.as_ref() {
+                h.terminate_execution();
+            }
+        }
+    });
+    current.saturating_add(current.max(1 << 30))
 }
 
-extern "C" fn near_heap_limit(data: *mut c_void, current: usize, _initial: usize) -> usize {
-    // SAFETY: `data` is the engine's boxed `Heap`, which outlives its
-    // isolate (`Engine` drops the isolate first).
-    let heap = unsafe { &*(data as *const Heap) };
-    heap.hit.store(true, Ordering::Relaxed);
-    heap.handle.terminate_execution();
-    // Room to unwind the script; the isolate is dropped after.
-    current.saturating_add(32 << 20)
+/// The watchdog's look at a running script's memory: V8 lets one large
+/// object (a long string, say) past its heap limit without asking, so a
+/// script that keeps making them stops here.
+extern "C" fn heap_check(isolate: &mut v8::Isolate, _data: *mut c_void) {
+    let mut s = v8::HeapStatistics::default();
+    isolate.get_heap_statistics(&mut s);
+    let max = HEAP_MAX.try_with(Cell::get).unwrap_or(usize::MAX);
+    if s.used_heap_size().saturating_add(s.external_memory()) > max {
+        let _ = HEAP_HIT.try_with(|h| h.set(true));
+        // A stop asked for inside an interrupt waits for the next one: the
+        // watchdog asks.
+        let _ = WATCH.try_with(|w| {
+            if let Ok(w) = w.try_borrow() {
+                if let Some(w) = w.as_ref() {
+                    w.over.store(true, Ordering::Release);
+                }
+            }
+        });
+    }
 }
 
 struct Engine {
     // Dropped before the isolate their handles belong to.
     scripts: ByKey<Compiled>,
     isolate: v8::OwnedIsolate,
-    heap: Box<Heap>,
+    max_heap: usize,
     watch: Arc<Watch>,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
         self.watch.retire();
+        let _ = HEAP.try_with(|h| h.replace(None));
+        let _ = WATCH.try_with(|w| w.replace(None));
     }
 }
 
@@ -514,18 +569,32 @@ struct Compiled {
     context: v8::Global<v8::Context>,
     batch: v8::Global<v8::Function>,
     one: v8::Global<v8::Function>,
+    harden: v8::Global<v8::Function>,
+    /// The script's columns as it reads them (`cols` in the prelude).
+    cols: v8::Global<v8::Array>,
     state: Floats<i32>,
     slots: Vec<Slot>,
     out: Floats<f64>,
     scores: Floats<f64>,
     params: ByKey<(Arc<str>, v8::Global<v8::Value>)>,
+    /// What the host loads a column into.
+    values: Vec<f64>,
+    starts: Vec<i32>,
 }
 
 /// A field's column in the call, as the script reads it.
 struct Slot {
+    /// Whether a call has read the field: each call loads it up front.
+    used: bool,
+    /// Whether this call loaded it.
+    loaded: bool,
     values: Floats<f64>,
     starts: Floats<i32>,
+    /// `[values, starts]`, or with a keyword's terms.
     pair: Option<v8::Global<v8::Array>>,
+    /// A keyword's terms by ordinal, for segment `segment`.
+    terms: HashMap<i64, v8::Global<v8::String>>,
+    segment: u64,
 }
 
 /// A typed array the thread keeps, and its memory.
@@ -537,14 +606,18 @@ struct Floats<T> {
 }
 
 trait Element: Copy {
+    const SIZE: usize;
     fn array<'s>(
         scope: &mut v8::HandleScope<'s>,
         buf: v8::Local<'s, v8::ArrayBuffer>,
         len: usize,
     ) -> v8::Local<'s, v8::Value>;
+    fn write(self, to: &[Cell<u8>]);
+    fn read(from: &[Cell<u8>]) -> Self;
 }
 
 impl Element for f64 {
+    const SIZE: usize = 8;
     fn array<'s>(
         scope: &mut v8::HandleScope<'s>,
         buf: v8::Local<'s, v8::ArrayBuffer>,
@@ -554,9 +627,22 @@ impl Element for f64 {
             .expect("a Float64Array")
             .into()
     }
+    fn write(self, to: &[Cell<u8>]) {
+        for (c, b) in to.iter().zip(self.to_ne_bytes()) {
+            c.set(b);
+        }
+    }
+    fn read(from: &[Cell<u8>]) -> Self {
+        let mut b = [0u8; 8];
+        for (b, c) in b.iter_mut().zip(from) {
+            *b = c.get();
+        }
+        f64::from_ne_bytes(b)
+    }
 }
 
 impl Element for i32 {
+    const SIZE: usize = 4;
     fn array<'s>(
         scope: &mut v8::HandleScope<'s>,
         buf: v8::Local<'s, v8::ArrayBuffer>,
@@ -565,6 +651,18 @@ impl Element for i32 {
         v8::Int32Array::new(scope, buf, 0, len)
             .expect("an Int32Array")
             .into()
+    }
+    fn write(self, to: &[Cell<u8>]) {
+        for (c, b) in to.iter().zip(self.to_ne_bytes()) {
+            c.set(b);
+        }
+    }
+    fn read(from: &[Cell<u8>]) -> Self {
+        let mut b = [0u8; 4];
+        for (b, c) in b.iter_mut().zip(from) {
+            *b = c.get();
+        }
+        i32::from_ne_bytes(b)
     }
 }
 
@@ -588,7 +686,7 @@ impl<T: Element> Floats<T> {
             return (v8::Local::new(scope, a), false);
         }
         let len = n.max(self.len.saturating_mul(2)).max(16);
-        let buf = v8::ArrayBuffer::new(scope, len * std::mem::size_of::<T>());
+        let buf = v8::ArrayBuffer::new(scope, len * T::SIZE);
         self.store = Some(buf.get_backing_store());
         let a = T::array(scope, buf, len);
         self.array = Some(v8::Global::new(scope, a));
@@ -604,154 +702,47 @@ impl<T: Element> Floats<T> {
         self.grow(scope, n).0
     }
 
-    fn ptr(&self) -> *mut T {
-        let store = self.store.as_ref().expect("an array");
-        store
-            .data()
-            .map_or(NonNull::dangling(), |p| p.cast::<T>())
-            .as_ptr()
+    fn bytes(&self) -> &[Cell<u8>] {
+        self.store.as_ref().map_or(&[], |s| &s[..])
     }
 
     fn set(&self, k: usize, v: T) {
-        assert!(k < self.len);
-        // SAFETY: `k` is inside the array's backing store, which `store`
-        // keeps alive and V8 aligns for any element type; no script runs
-        // while the host writes it.
-        unsafe { self.ptr().add(k).write(v) }
+        v.write(&self.bytes()[k * T::SIZE..(k + 1) * T::SIZE]);
     }
 
     fn get(&self, k: usize) -> T {
-        assert!(k < self.len);
-        // SAFETY: as `set`.
-        unsafe { self.ptr().add(k).read() }
+        T::read(&self.bytes()[k * T::SIZE..(k + 1) * T::SIZE])
     }
 
     fn copy_from(&self, src: &[T]) {
-        assert!(src.len() <= self.len);
-        // SAFETY: as `set`, for `src.len()` elements.
-        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr(), src.len()) }
+        let to = &self.bytes()[..src.len() * T::SIZE];
+        for (v, to) in src.iter().zip(to.chunks_exact(T::SIZE)) {
+            v.write(to);
+        }
     }
 }
 
 /// What a call hands its body.
 struct Args<'s> {
     params: v8::Local<'s, v8::Value>,
+    /// The first document to run: past those an earlier try finished.
+    from: usize,
 }
 
-/// The call in progress on this thread, which the `load` and `term`
-/// callbacks read.
-struct Call {
-    fields: *mut (dyn Fields + 'static),
-    slots: *mut Vec<Slot>,
-    docs: usize,
-    values: Vec<f64>,
-    starts: Vec<i32>,
-    error: Option<String>,
-}
-
-thread_local! {
-    static CALL: Cell<*mut Call> = const { Cell::new(std::ptr::null_mut()) };
-}
-
-/// Sets this thread's call for as long as it lives.
-struct Entered(*mut Call);
-
-impl Entered {
-    fn new(call: &mut Call) -> Self {
-        let prev = CALL.with(|c| c.replace(call));
-        Entered(prev)
-    }
-}
-
-impl Drop for Entered {
-    fn drop(&mut self) {
-        CALL.with(|c| c.set(self.0));
-    }
-}
-
-fn throw(scope: &mut v8::HandleScope<'_>, message: &str) {
-    let m = v8::String::new(scope, message).expect("a message");
-    let e = v8::Exception::error(scope, m);
-    scope.throw_exception(e);
-}
-
-/// `load(f)`: field `f`'s column for the call, as `[values, starts]`.
-fn load_callback(
+/// `need(f)`: the script reads field `f`, which this call has not loaded:
+/// the call stops, and runs again once the host loads it.
+fn need_callback(
     scope: &mut v8::HandleScope<'_>,
     args: v8::FunctionCallbackArguments<'_>,
-    mut rv: v8::ReturnValue<'_>,
+    _rv: v8::ReturnValue<'_>,
 ) {
-    let call = CALL.with(Cell::get);
-    if call.is_null() {
-        return throw(scope, "no call is running");
-    }
-    // SAFETY: `call` is the `Call` an `Entered` guard set for the duration
-    // of the V8 call this callback runs inside, and nothing else holds it.
-    let call = unsafe { &mut *call };
     let f = args.get(0).int32_value(scope).unwrap_or(-1);
-    // SAFETY: as `call`: the slots of the compiled script running.
-    let slots = unsafe { &mut *call.slots };
-    let Some(slot) = usize::try_from(f).ok().and_then(|f| slots.get_mut(f)) else {
-        return throw(scope, "no such field");
-    };
-    call.values.clear();
-    call.starts.clear();
-    // SAFETY: as `call`: the host's fields, borrowed for the call.
-    let fields = unsafe { &mut *call.fields };
-    if let Err(e) = fields.load(f as usize, &mut call.values, &mut call.starts) {
-        call.error = Some(e.clone());
-        return throw(scope, &e);
-    }
-    if call.starts.len() != call.docs + 1 {
-        let e = format!(
-            "field {f}: {} starts for {} documents",
-            call.starts.len(),
-            call.docs
-        );
-        call.error = Some(e.clone());
-        return throw(scope, &e);
-    }
-    let (values, new_values) = slot.values.grow(scope, call.values.len());
-    let (starts, new_starts) = slot.starts.grow(scope, call.starts.len());
-    slot.values.copy_from(&call.values);
-    slot.starts.copy_from(&call.starts);
-    if new_values || new_starts || slot.pair.is_none() {
-        let pair = v8::Array::new_with_elements(scope, &[values, starts]);
-        slot.pair = Some(v8::Global::new(scope, pair));
-    }
-    let pair = v8::Local::new(scope, slot.pair.as_ref().expect("set above"));
-    rv.set(pair.into());
-}
-
-/// `term(f, ord)`: keyword field `f`'s term `ord`.
-fn term_callback(
-    scope: &mut v8::HandleScope<'_>,
-    args: v8::FunctionCallbackArguments<'_>,
-    mut rv: v8::ReturnValue<'_>,
-) {
-    let call = CALL.with(Cell::get);
-    if call.is_null() {
-        return throw(scope, "no call is running");
-    }
-    // SAFETY: as in `load_callback`.
-    let call = unsafe { &mut *call };
-    let f = args.get(0).int32_value(scope).unwrap_or(-1);
-    let ord = args.get(1).number_value(scope).unwrap_or(-1.0) as i64;
-    let Ok(f) = usize::try_from(f) else {
-        return throw(scope, "no such field");
-    };
-    // SAFETY: as in `load_callback`.
-    let fields = unsafe { &mut *call.fields };
-    match fields.term(f, ord) {
-        Ok(t) => match v8::String::new(scope, &t) {
-            Some(s) => rv.set(s.into()),
-            None => throw(scope, "a term too long for a js string"),
-        },
-        Err(e) => {
-            call.error = Some(e.clone());
-            throw(scope, &e)
+    let _ = NEEDS.try_with(|n| {
+        if let Ok(mut n) = n.try_borrow_mut() {
+            n.push(f);
         }
-    }
+    });
+    scope.terminate_execution();
 }
 
 /// The name of the script's own code in V8's messages.
@@ -766,17 +757,16 @@ impl Engine {
         // A message's stack, for where in the script an error the runner
         // raises comes from.
         isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
-        let heap = Box::new(Heap {
-            handle: isolate.thread_safe_handle(),
-            hit: AtomicBool::new(false),
-            max: limits.max_heap,
-        });
-        isolate.add_near_heap_limit_callback(near_heap_limit, &*heap as *const Heap as *mut c_void);
+        HEAP_HIT.with(|h| h.set(false));
+        HEAP_MAX.with(|h| h.set(limits.max_heap));
+        HEAP.with(|h| h.replace(Some(isolate.thread_safe_handle())));
+        isolate.add_near_heap_limit_callback(near_heap_limit, std::ptr::null_mut());
         let watch = Watch::new(isolate.thread_safe_handle());
+        WATCH.with(|w| w.replace(Some(Arc::clone(&watch))));
         Engine {
             scripts: ByKey::default(),
             isolate,
-            heap,
+            max_heap: limits.max_heap,
             watch,
         }
     }
@@ -788,7 +778,10 @@ impl Engine {
             .get(&script.key)
             .is_some_and(|c| c.source == script.source && c.fields == script.fields);
         if !hit {
-            let c = compile(&mut self.isolate, script)?;
+            let c = compile(&mut self.isolate, script).map_err(|f| match f {
+                Failure::Host(_) if HEAP_HIT.with(Cell::get) => Failure::OutOfMemory(self.max_heap),
+                f => f,
+            })?;
             if self.scripts.len() >= MAX_SCRIPTS {
                 self.scripts.clear();
             }
@@ -797,121 +790,195 @@ impl Engine {
         Ok(self.scripts.get_mut(&script.key).expect("inserted"))
     }
 
-    /// A call of `script` on `docs` documents: `body` runs it.
+    /// A call of `script` on `docs` documents of `segment`: `body` runs it
+    /// from `Args::from`, again after each field the script asks for.
+    #[allow(clippy::too_many_arguments)]
     fn call(
         &mut self,
         script: &Script,
         params: &Params,
+        segment: u64,
         fields: &mut dyn Fields,
         docs: usize,
-        body: impl FnOnce(
+        mut body: impl FnMut(
             &mut v8::TryCatch<'_, v8::HandleScope<'_>>,
             &mut Compiled,
             Args<'_>,
         ) -> Option<Out>,
     ) -> Result<Out, Failure> {
         let (at, deadline) = script.deadline();
+        let timed_out = Failure::TimedOut(script.limits.timeout);
         if Instant::now() >= at {
-            return Err(Failure::TimedOut(script.limits.timeout));
+            return Err(timed_out);
         }
-        let max_heap = self.heap.max;
+        let max_heap = self.max_heap;
         self.compiled(script)?;
         let Engine {
             scripts,
             isolate,
-            heap,
             watch,
+            ..
         } = self;
         let c = scripts.get_mut(&script.key).expect("compiled above");
         let scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Local::new(scope, &c.context);
         let scope = &mut v8::ContextScope::new(scope, context);
         let tc = &mut v8::TryCatch::new(scope);
-        // A stop the watchdog asked for after the last call ended.
-        if watch.fired.swap(false, Ordering::AcqRel) {
-            tc.cancel_terminate_execution();
+        let params_v = c.params(tc, params)?;
+        for slot in &mut c.slots {
+            slot.loaded = false;
         }
-        let params_v = match c.params.get(&params.key) {
-            Some((json, v)) if *json == params.json => v8::Local::new(tc, v),
-            _ => {
-                let v = parse_params(tc, &params.json)?;
-                if c.params.len() >= MAX_PARAMS {
-                    c.params.clear();
+        let mut from = 0;
+        loop {
+            for f in 0..c.slots.len() {
+                if c.slots[f].used && !c.slots[f].loaded {
+                    c.load(tc, f, segment, fields, docs)?;
                 }
-                c.params
-                    .insert(params.key, (params.json.clone(), v8::Global::new(tc, v)));
-                v
             }
-        };
-        // SAFETY: the `'static` is a lie the `Entered` guard keeps: the
-        // pointer is cleared before `fields`'s borrow ends, and only this
-        // call's callbacks read it.
-        let fields: *mut (dyn Fields + 'static) = unsafe { std::mem::transmute(fields) };
-        let mut call = Call {
-            fields,
-            slots: &mut c.slots,
-            docs,
-            values: Vec::new(),
-            starts: Vec::new(),
-            error: None,
-        };
-        let r = {
-            let _entered = Entered::new(&mut call);
-            let _watch = watch.call(deadline);
-            body(tc, c, Args { params: params_v })
-        };
-        if tc.is_execution_terminating() || tc.has_terminated() {
-            tc.cancel_terminate_execution();
-        }
-        match r {
-            Some(out) => Ok(out),
-            None => {
-                if let Some(e) = call.error {
-                    return Err(Failure::Host(e));
-                }
-                if tc.has_terminated() || tc.exception().is_none() {
-                    // The heap callback or the watchdog stopped it.
-                    return Err(if heap.hit.load(Ordering::Relaxed) {
-                        Failure::OutOfMemory(max_heap)
-                    } else {
-                        Failure::TimedOut(script.limits.timeout)
-                    });
-                }
-                let at = c.state.get(0).max(0) as usize;
-                Err(thrown(tc, at))
-            }
-        }
-    }
-}
-
-fn parse_params<'s>(
-    tc: &mut v8::TryCatch<'s, v8::HandleScope<'_>>,
-    json: &str,
-) -> Result<v8::Local<'s, v8::Value>, Failure> {
-    let s = v8::String::new(tc, json).ok_or_else(|| Failure::Host("params too long".into()))?;
-    let v = v8::json::parse(tc, s).ok_or_else(|| Failure::Host("params: not JSON".into()))?;
-    freeze(tc, v, 0);
-    Ok(v)
-}
-
-fn freeze(scope: &mut v8::HandleScope<'_>, v: v8::Local<'_, v8::Value>, depth: usize) {
-    if depth > 64 {
-        return;
-    }
-    let Ok(o) = v8::Local::<v8::Object>::try_from(v) else {
-        return;
-    };
-    if let Some(names) = o.get_own_property_names(scope, Default::default()) {
-        for i in 0..names.length() {
-            let Some(k) = names.get_index(scope, i) else {
-                continue;
+            NEEDS.with(|n| n.borrow_mut().clear());
+            let r = {
+                let watched = watch.call(deadline);
+                let r = body(
+                    tc,
+                    c,
+                    Args {
+                        params: params_v,
+                        from,
+                    },
+                );
+                (r, watched.end())
             };
-            if let Some(child) = o.get(scope, k) {
-                freeze(scope, child, depth + 1);
+            let (r, stopped) = r;
+            let needs = NEEDS.with(|n| std::mem::take(&mut *n.borrow_mut()));
+            if tc.is_execution_terminating() || tc.has_terminated() || stopped || !needs.is_empty()
+            {
+                tc.cancel_terminate_execution();
             }
+            if HEAP_HIT.with(Cell::get) {
+                return Err(Failure::OutOfMemory(max_heap));
+            }
+            if stopped {
+                return Err(timed_out);
+            }
+            if !needs.is_empty() {
+                for f in needs {
+                    let slot = usize::try_from(f).ok().filter(|&f| {
+                        f < c.slots.len() && c.fields[f].1 != Kind::Unreadable && !c.slots[f].loaded
+                    });
+                    let Some(f) = slot else {
+                        return Err(Failure::Host(format!(
+                            "the script asked for field {f}, which it cannot read"
+                        )));
+                    };
+                    c.slots[f].used = true;
+                }
+                from = (c.state.get(0).max(0) as usize).min(docs);
+                tc.reset();
+                if Instant::now() >= at {
+                    return Err(timed_out);
+                }
+                continue;
+            }
+            return match r {
+                Some(out) => Ok(out),
+                None if tc.exception().is_some() && !tc.has_terminated() => {
+                    let at = c.state.get(0).max(0) as usize;
+                    Err(thrown(tc, at))
+                }
+                // Stopped with nothing thrown and no reason the host knows.
+                None => Err(timed_out),
+            };
         }
     }
-    o.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
+}
+
+impl Compiled {
+    /// `params` as the script reads them: parsed and frozen once.
+    fn params<'s>(
+        &mut self,
+        tc: &mut v8::TryCatch<'s, v8::HandleScope<'_>>,
+        params: &Params,
+    ) -> Result<v8::Local<'s, v8::Value>, Failure> {
+        if let Some((json, v)) = self.params.get(&params.key) {
+            if *json == params.json {
+                return Ok(v8::Local::new(tc, v));
+            }
+        }
+        let s = v8::String::new(tc, &params.json)
+            .ok_or_else(|| Failure::Host("params too long".into()))?;
+        let v = v8::json::parse(tc, s).ok_or_else(|| Failure::Host("params: not JSON".into()))?;
+        let harden = v8::Local::new(tc, &self.harden);
+        let undefined = v8::undefined(tc).into();
+        let v = harden
+            .call(tc, undefined, &[v])
+            .ok_or_else(|| Failure::Host("params: too deep to freeze".into()))?;
+        if self.params.len() >= MAX_PARAMS {
+            self.params.clear();
+        }
+        self.params
+            .insert(params.key, (params.json.clone(), v8::Global::new(tc, v)));
+        Ok(v)
+    }
+
+    /// Field `f`'s column for the call's `docs` documents, from the host.
+    fn load(
+        &mut self,
+        scope: &mut v8::HandleScope<'_>,
+        f: usize,
+        segment: u64,
+        fields: &mut dyn Fields,
+        docs: usize,
+    ) -> Result<(), Failure> {
+        self.values.clear();
+        self.starts.clear();
+        fields
+            .load(f, &mut self.values, &mut self.starts)
+            .map_err(Failure::Host)?;
+        if self.starts.len() != docs + 1 {
+            return Err(Failure::Host(format!(
+                "field {f}: {} starts for {docs} documents",
+                self.starts.len()
+            )));
+        }
+        let slot = &mut self.slots[f];
+        let (values, new_values) = slot.values.grow(scope, self.values.len());
+        let (starts, new_starts) = slot.starts.grow(scope, self.starts.len());
+        slot.values.copy_from(&self.values);
+        slot.starts.copy_from(&self.starts);
+        let keyword = self.fields[f].1 == Kind::Keyword;
+        if keyword || new_values || new_starts || slot.pair.is_none() {
+            let mut items = vec![values, starts];
+            if keyword {
+                if slot.segment != segment || slot.terms.len() > MAX_TERMS {
+                    slot.terms.clear();
+                    slot.segment = segment;
+                }
+                let mut terms = Vec::with_capacity(self.values.len());
+                for &v in &self.values {
+                    let ord = v as i64;
+                    let t = match slot.terms.get(&ord) {
+                        Some(t) => v8::Local::new(scope, t),
+                        None => {
+                            let t = fields.term(f, ord).map_err(Failure::Host)?;
+                            let t = v8::String::new(scope, &t).ok_or_else(|| {
+                                Failure::Host("a term too long for a js string".into())
+                            })?;
+                            slot.terms.insert(ord, v8::Global::new(scope, t));
+                            t
+                        }
+                    };
+                    terms.push(t.into());
+                }
+                items.push(v8::Array::new_with_elements(scope, &terms).into());
+            }
+            let pair = v8::Array::new_with_elements(scope, &items);
+            slot.pair = Some(v8::Global::new(scope, pair));
+            let cols = v8::Local::new(scope, &self.cols);
+            cols.set_index(scope, f as u32, pair.into());
+        }
+        slot.loaded = true;
+        Ok(())
+    }
 }
 
 fn thrown(tc: &mut v8::TryCatch<'_, v8::HandleScope<'_>>, at: usize) -> Failure {
@@ -986,20 +1053,28 @@ fn compile(isolate: &mut v8::OwnedIsolate, script: &Script) -> Result<Compiled, 
     context.set_allow_generation_from_strings(false);
     let scope = &mut v8::ContextScope::new(scope, context);
     let tc = &mut v8::TryCatch::new(scope);
+    let setup = |what: &str| {
+        Failure::Host(format!(
+            "the js runtime could not set up the script: {what}"
+        ))
+    };
 
-    let prelude = v8::String::new(tc, PRELUDE).expect("the prelude");
+    let prelude = v8::String::new(tc, PRELUDE).ok_or_else(|| setup("the prelude"))?;
     let factory = v8::Script::compile(tc, prelude, None)
         .and_then(|s| s.run(tc))
         .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
-        .expect("the prelude runs");
+        .ok_or_else(|| setup("the prelude"))?;
 
     let user = user_function(tc, &script.source)?;
 
-    let names: Vec<v8::Local<v8::Value>> = script
-        .fields
-        .iter()
-        .map(|(n, _)| v8::String::new(tc, n).expect("a field name").into())
-        .collect();
+    let mut names = Vec::with_capacity(script.fields.len());
+    for (n, _) in &script.fields {
+        names.push(
+            v8::String::new(tc, n)
+                .ok_or_else(|| setup("a field name"))?
+                .into(),
+        );
+    }
     let names = v8::Array::new_with_elements(tc, &names);
     let kinds: Vec<v8::Local<v8::Value>> = script
         .fields
@@ -1007,53 +1082,62 @@ fn compile(isolate: &mut v8::OwnedIsolate, script: &Script) -> Result<Compiled, 
         .map(|(_, k)| v8::Integer::new(tc, k.code()).into())
         .collect();
     let kinds = v8::Array::new_with_elements(tc, &kinds);
+    let cols = v8::Array::new(tc, 0);
     let mut state = Floats::<i32>::new();
     let state_arr = state.ensure(tc, 1);
-    let load = v8::Function::new(tc, load_callback).expect("load");
-    let term = v8::Function::new(tc, term_callback).expect("term");
+    let need = v8::Function::new(tc, need_callback).ok_or_else(|| setup("need"))?;
     let undefined = v8::undefined(tc).into();
     let api = factory
         .call(
             tc,
             undefined,
             &[
-                load.into(),
-                term.into(),
+                need.into(),
                 user.into(),
                 names.into(),
                 kinds.into(),
+                cols.into(),
                 state_arr,
             ],
         )
         .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok())
-        .expect("the prelude builds a runner");
-    let get = |tc: &mut v8::TryCatch<'_, v8::HandleScope<'_>>, name: &str| {
-        let k = v8::String::new(tc, name).expect("a key");
+        .ok_or_else(|| setup("the runner"))?;
+    let mut get = |name: &str| -> Result<v8::Global<v8::Function>, Failure> {
+        let k = v8::String::new(tc, name).ok_or_else(|| setup(name))?;
         let f = api
             .get(tc, k.into())
             .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
-            .expect("a runner function");
-        v8::Global::new(tc, f)
+            .ok_or_else(|| setup(name))?;
+        Ok(v8::Global::new(tc, f))
     };
-    let batch = get(tc, "batch");
-    let one = get(tc, "one");
+    let batch = get("batch")?;
+    let one = get("one")?;
+    let harden = get("params")?;
     Ok(Compiled {
         source: script.source.clone(),
         fields: script.fields.clone(),
         context: v8::Global::new(tc, context),
         batch,
         one,
+        harden,
+        cols: v8::Global::new(tc, cols),
         state,
         slots: (0..script.fields.len())
             .map(|_| Slot {
+                used: false,
+                loaded: false,
                 values: Floats::new(),
                 starts: Floats::new(),
                 pair: None,
+                terms: HashMap::new(),
+                segment: u64::MAX,
             })
             .collect(),
         out: Floats::new(),
         scores: Floats::new(),
         params: ByKey::default(),
+        values: Vec::new(),
+        starts: Vec::new(),
     })
 }
 
@@ -1128,19 +1212,28 @@ fn compile_body<'s>(
 /// How often the watchdog looks at the calls running.
 const TICK: Duration = Duration::from_millis(5);
 
-/// An isolate's call in progress, as the watchdog sees it: its deadline in
-/// nanoseconds after [`EPOCH`], or `0` when none runs.
+/// A [`Watch`] with no call running.
+const IDLE: u64 = 0;
+/// The watchdog is stopping the call.
+const FIRING: u64 = 1;
+/// The watchdog stopped the call.
+const FIRED: u64 = 2;
+
+/// An isolate's call in progress, as the watchdog sees it: [`IDLE`],
+/// [`FIRING`], [`FIRED`], or the call's deadline in nanoseconds after
+/// [`EPOCH`] (above `FIRED`).
 struct Watch {
     handle: v8::IsolateHandle,
-    deadline: std::sync::atomic::AtomicU64,
-    /// Whether the watchdog stopped a call, which the next call clears.
-    fired: AtomicBool,
+    state: AtomicU64,
+    /// Whether the call is past its heap limit, which stops it as its
+    /// deadline does.
+    over: AtomicBool,
 }
 
 /// Stops each isolate's call at its deadline.
 struct Watchdog {
     watches: Mutex<Vec<Arc<Watch>>>,
-    /// Whether the watchdog sleeps until a call starts.
+    /// Whether the watchdog may sleep until a call starts.
     idle: AtomicBool,
     thread: OnceLock<std::thread::Thread>,
 }
@@ -1151,7 +1244,7 @@ fn nanos(t: Instant) -> u64 {
     let e = *EPOCH.get_or_init(Instant::now);
     u64::try_from(t.saturating_duration_since(e).as_nanos())
         .unwrap_or(u64::MAX)
-        .max(1)
+        .max(FIRED + 1)
 }
 
 fn watchdog() -> &'static Watchdog {
@@ -1172,12 +1265,27 @@ fn watchdog() -> &'static Watchdog {
     w
 }
 
-/// A call the watchdog watches until dropped.
-struct Watched<'w>(&'w Watch);
+/// A call the watchdog watches until it ends.
+struct Watched<'w> {
+    watch: &'w Watch,
+    ended: bool,
+}
+
+impl Watched<'_> {
+    /// The call is over: whether the watchdog stopped it. Once this returns,
+    /// the watchdog stops nothing more of it: a stop it asked for is pending
+    /// on the isolate only when this says so.
+    fn end(mut self) -> bool {
+        self.ended = true;
+        self.watch.end()
+    }
+}
 
 impl Drop for Watched<'_> {
     fn drop(&mut self) {
-        self.0.deadline.store(0, Ordering::Release);
+        if !self.ended {
+            self.watch.end();
+        }
     }
 }
 
@@ -1185,8 +1293,8 @@ impl Watch {
     fn new(handle: v8::IsolateHandle) -> Arc<Self> {
         let w = Arc::new(Watch {
             handle,
-            deadline: std::sync::atomic::AtomicU64::new(0),
-            fired: AtomicBool::new(false),
+            state: AtomicU64::new(IDLE),
+            over: AtomicBool::new(false),
         });
         let dog = watchdog();
         dog.watches
@@ -1198,14 +1306,35 @@ impl Watch {
 
     /// Watches a call until `deadline` (the watchdog's nanoseconds).
     fn call(&self, deadline: u64) -> Watched<'_> {
-        self.deadline.store(deadline, Ordering::Release);
+        self.state.store(deadline, Ordering::Release);
         let dog = watchdog();
         if dog.idle.swap(false, Ordering::AcqRel) {
             if let Some(t) = dog.thread.get() {
                 t.unpark();
             }
         }
-        Watched(self)
+        Watched {
+            watch: self,
+            ended: false,
+        }
+    }
+
+    fn end(&self) -> bool {
+        loop {
+            let s = self.state.load(Ordering::Acquire);
+            if s == FIRING {
+                // The watchdog is between deciding and stopping.
+                std::hint::spin_loop();
+                continue;
+            }
+            if self
+                .state
+                .compare_exchange(s, IDLE, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return s == FIRED;
+            }
+        }
     }
 
     /// No longer watched: its isolate is gone.
@@ -1221,27 +1350,35 @@ impl Watch {
 impl Watchdog {
     fn run(&self) {
         loop {
+            // Set before looking, so a call that starts after the look wakes
+            // the watchdog.
+            self.idle.store(true, Ordering::Release);
             let now = nanos(Instant::now());
             let mut running = false;
             {
                 let watches = self.watches.lock().unwrap_or_else(|p| p.into_inner());
                 for w in watches.iter() {
-                    let d = w.deadline.load(Ordering::Acquire);
-                    if d == 0 {
+                    let d = w.state.load(Ordering::Acquire);
+                    if d <= FIRED {
                         continue;
                     }
                     running = true;
-                    if d <= now {
-                        w.fired.store(true, Ordering::Release);
+                    w.handle.request_interrupt(heap_check, std::ptr::null_mut());
+                    let over = w.over.swap(false, Ordering::AcqRel);
+                    if (d <= now || over)
+                        && w.state
+                            .compare_exchange(d, FIRING, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                    {
                         w.handle.terminate_execution();
+                        w.state.store(FIRED, Ordering::Release);
                     }
                 }
             }
             if running {
+                self.idle.store(false, Ordering::Release);
                 std::thread::sleep(TICK);
             } else {
-                self.idle.store(true, Ordering::Release);
-                // A call that started before `idle` was set is seen next time.
                 std::thread::park_timeout(Duration::from_secs(1));
             }
         }

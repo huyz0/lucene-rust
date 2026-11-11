@@ -756,8 +756,8 @@ public final class PainlessScore {
     }
 
     /**
-     * The {@code ScriptException} of lang {@code js} for a JavaScript script's failure: run,
-     * exception name, message, line and column (1-based line, 0-based column, -1 for none).
+     * The {@code ScriptException} of lang {@code js} for a JavaScript script's failure: run, line
+     * and column (1-based line, 0-based column, -1 for none), exception name and message.
      */
     private static RuntimeException jsFailure(String failure) {
         String[] parts = failure.split("\u0001", 5);
@@ -772,8 +772,15 @@ public final class PainlessScore {
         } catch (RuntimeException e) {
             // The script's source stays out of the error.
         }
-        int line = Integer.parseInt(parts[3]);
-        int column = Integer.parseInt(parts[4]);
+        int line;
+        int column;
+        try {
+            line = Integer.parseInt(parts[1]);
+            column = Integer.parseInt(parts[2]);
+        } catch (NumberFormatException e) {
+            line = -1;
+            column = -1;
+        }
         List<String> stack = new ArrayList<>();
         String[] lines = source.split("\n", -1);
         if (line >= 1 && line <= lines.length) {
@@ -784,7 +791,7 @@ public final class PainlessScore {
         }
         return new ScriptException(
             "runtime error",
-            new IllegalArgumentException(parts[1] + ": " + parts[2]),
+            new IllegalArgumentException(parts[3] + ": " + parts[4]),
             stack,
             source,
             org.lucenerust.opensearch.js.JsScripts.NAME

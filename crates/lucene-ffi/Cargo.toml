@@ -57,7 +57,7 @@ lucene-analysis-smartcn = { path = "../lucene-analysis-smartcn", optional = true
 lucene-analysis-stempel = { path = "../lucene-analysis-stempel", optional = true, default-features = false }
 lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik", optional = true, default-features = false }
 lucene-analysis-phonetic = { path = "../lucene-analysis-phonetic", optional = true }
-# `lang: "js"` scripts on V8 (`jvm_js.rs`), behind feature `js`: off by
+# `lang: "js"` scripts on V8 (`jvm_painless_score/js.rs`), behind feature `js`: off by
 # default, and the plugin builds it only with -Pjs.
 lucene-script-js = { path = "../lucene-script-js", optional = true }
 

@@ -2,8 +2,8 @@
 resolver = "2"
 # The benchmark runner is not part of the gate: it has no tests, so including
 # it would drag the workspace coverage gate down for a measurement tool.
-# lucene-script-js is out so `--workspace` builds never fetch V8; lucene-ffi's
-# `js` feature builds it.
+# lucene-script-js is out so `--workspace` builds never build V8 (whose build
+# script downloads its library); lucene-ffi's `js` feature builds it.
 exclude = ["benchmarks/rust-runner", "crates/lucene-ffi/fuzz", "crates/lucene-script-js"]
 members = [
     "crates/lucene-util",
