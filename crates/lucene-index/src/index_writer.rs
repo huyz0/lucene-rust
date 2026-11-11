@@ -173,6 +173,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 mod add_indexes;
 #[cfg(test)]
 mod block_tests;
+mod dv_columns;
 mod explicit;
 mod inverted_terms;
 mod lifecycle;
@@ -812,11 +813,24 @@ impl FlushDeletes<'_> {
 /// first field with a given name or number wins, as the `iter().find` scans
 /// these replace did: they ran per document and per value, so a wide schema
 /// paid O(fields) for every one.
+///
+/// Field numbers are small and dense (`FieldInfos.Builder` hands them out
+/// from 0), so the number lookup is an array indexed by number: it runs for
+/// every field of every document added, where a hash per lookup was a
+/// measurable share of the add. A number past [`DENSE_FIELD_NUMBERS`] (only
+/// a caller registering explicit numbers could make one) goes to a map.
 #[derive(Clone, Default)]
 pub(crate) struct FieldLookup {
     by_name: std::collections::HashMap<String, usize>,
-    by_number: std::collections::HashMap<i32, usize>,
+    /// Position by number, [`NO_FIELD`] where none.
+    by_number: Vec<u32>,
+    sparse_by_number: std::collections::HashMap<i32, usize>,
 }
+
+/// Field numbers below this are looked up by index.
+const DENSE_FIELD_NUMBERS: usize = 1 << 16;
+/// [`FieldLookup::by_number`]'s empty slot.
+const NO_FIELD: u32 = u32::MAX;
 
 impl FieldLookup {
     fn build(fields: &[FieldInfo]) -> Self {
@@ -829,7 +843,32 @@ impl FieldLookup {
 
     fn insert(&mut self, at: usize, info: &FieldInfo) {
         self.by_name.entry(info.name.clone()).or_insert(at);
-        self.by_number.entry(info.number).or_insert(at);
+        match (usize::try_from(info.number), u32::try_from(at)) {
+            (Ok(n), Ok(at32)) if n < DENSE_FIELD_NUMBERS && at32 != NO_FIELD => {
+                if self.by_number.len() <= n {
+                    self.by_number.resize(n.saturating_add(1), NO_FIELD);
+                }
+                if let Some(slot) = self.by_number.get_mut(n) {
+                    if *slot == NO_FIELD {
+                        *slot = at32;
+                    }
+                }
+            }
+            _ => {
+                self.sparse_by_number.entry(info.number).or_insert(at);
+            }
+        }
+    }
+
+    fn by_number(&self, number: i32) -> Option<usize> {
+        match usize::try_from(number) {
+            Ok(n) if n < DENSE_FIELD_NUMBERS => self
+                .by_number
+                .get(n)
+                .filter(|&&at| at != NO_FIELD)
+                .map(|&at| at as usize),
+            _ => self.sparse_by_number.get(&number).copied(),
+        }
     }
 }
 
@@ -1581,10 +1620,17 @@ impl ExplicitDocs<'_> {
                 Vec::with_capacity(p.len().min(end).saturating_sub(start)),
             )
         });
+        let docs = p.len().min(end).saturating_sub(start);
         p.for_each_range(start, end, |i, d| {
             f(i, d)?;
             for ((values, ends), role) in roles.iter_mut().zip([Role::DocValues, Role::Points]) {
                 values.append(role.values_mut(d));
+                if ends.is_empty() {
+                    // Documents mostly share a shape: room for every
+                    // document's values like the first one's, rather than
+                    // a flush-sized array regrown (and refaulted) by doubling.
+                    values.reserve(values.len().saturating_mul(docs.saturating_sub(1)));
+                }
                 ends.push(values.len());
             }
             Ok(())
@@ -1712,9 +1758,8 @@ impl IndexingConfig {
     /// The configured field numbered `number`.
     pub(crate) fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
         self.field_lookup
-            .by_number
-            .get(&number)
-            .and_then(|&at| self.fields.get(at))
+            .by_number(number)
+            .and_then(|at| self.fields.get(at))
     }
 
     /// Adds a field to the schema, keeping the lookups in step.
@@ -5639,6 +5684,10 @@ enum DenseColumn {
     SparseSorted(i32, Vec<(i32, Vec<u8>)>),
     SparseSortedNumeric(i32, Vec<(i32, Vec<i64>)>),
     SparseSortedSet(i32, Vec<(i32, Vec<Vec<u8>>)>),
+    /// A SORTED_NUMERIC column, dense or sparse, in flat form.
+    SortedNumericColumn(i32, doc_values::SortedNumericColumn),
+    /// A SORTED_SET column, dense or sparse, with its dictionary built.
+    SortedSetOrds(i32, doc_values::SortedSetOrdsColumn),
 }
 
 impl DenseColumn {
@@ -5656,6 +5705,10 @@ impl DenseColumn {
                 doc_values::DenseField::SparseSortedNumeric(*n, v)
             }
             DenseColumn::SparseSortedSet(n, v) => doc_values::DenseField::SparseSortedSet(*n, v),
+            DenseColumn::SortedNumericColumn(n, c) => {
+                doc_values::DenseField::SortedNumericColumn(*n, c)
+            }
+            DenseColumn::SortedSetOrds(n, c) => doc_values::DenseField::SortedSetOrds(*n, c),
         }
     }
 }
@@ -10602,9 +10655,15 @@ impl IndexWriter<'_> {
             };
         }
 
+        let mut routed = dv_columns::collect_columns(docs, configs)
+            .unwrap_or_default()
+            .into_iter();
         let columns: Vec<DenseColumn> = configs
             .iter()
-            .map(|config| Self::collect_dense_column(docs, config))
+            .map(|config| match routed.next().flatten() {
+                Some(column) => Ok(column),
+                None => Self::collect_dense_column(docs, config),
+            })
             .collect::<Result<Vec<_>>>()?;
         let fields: Vec<doc_values::DenseField<'_>> =
             columns.iter().map(DenseColumn::as_dense_field).collect();
