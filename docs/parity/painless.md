@@ -5,41 +5,23 @@ end (parse, analysis, `ir`) and sends the IR (`PainlessIr.java`, `PIR1`); Rust c
 register program and runs it with Painless's runtime semantics (`def` dispatch, `DefMath`,
 casts, the allowlisted classes).
 
-**Checked before it runs.** A `script_score` script runs natively from its first document to its
-last, or not at all. Before the query is sent, `lucene-painless/src/check.rs::check` (through
-`ffi_jvm_painless_check`) decides statically, on the compiled and specialised program and without
-running any of it, that the native runtime serves every operation exactly as Painless does: every
-call, `def` field access and cast by the receiver classes its static type admits (each site
-carries Painless's own answer per class, `PainlessIr.siteTable`), every `doc` read by a constant
-mapped field with a native reading, every `params` read folded, and only the script class's own
-methods the context serves. A refused script runs in Java (fallback `script_score_painless`); the
-answer is cached per script, params and field kinds (`PainlessScore.CHECKED`), so a refused
-script costs one check, not one per request. Regular expressions run natively only where Rust's
-`regex` matches `java.util.regex` exactly (`api/regex.rs::translate`); others (`$`, `\b`,
-back-references, lookaround, inline flags, possessive quantifiers, other flags) are refused. The check
-also refuses a change to a collection view (`keySet`, `values`, `entrySet` and its entries,
-`subList`, sorted sub-views: live views in Java, copies natively), a cast of one other than to
-its interface, and a method reference the runtime has no target for. Past a document's values,
-`doc[...]` reads `ScriptDocValues`'s reused array as Java does (stale values, empty keyword
-slots, `ArrayIndexOutOfBoundsException` past its grown length).
+**Checked before it runs.** A script runs natively from its first document to its last, or not
+at all. `lucene-painless/src/check.rs::check` (via `ffi_jvm_painless_check`) decides statically, on
+the specialised program, that every call, `def` access and cast resolves as Painless's would for
+each class its static type admits (Painless's answers per class ride in `PainlessIr.siteTable`),
+every `doc` read is a constant mapped field with a native reading, every `params` read folds, and
+only methods the context serves are used. Refused: regexes `regex` does not match exactly
+(`api/regex.rs::translate`), changes to live collection views, casts of views, method references
+without a target. A refusal runs in Java (`*_painless`), cached per script, params and kinds
+(`PainlessScore.CHECKED`).
 
-**Never re-run.** A script that passed the check and then throws natively fails the search as it
-fails in Java: the same `ScriptException` (class, message, `script_stack`, position) or, for a
-negative or NaN score, `ScriptScoreQuery`'s `IllegalArgumentException`. The search is not run
-again in Java (`RustQueryPhaseSearcher.scriptFailure`); the stats count it as `script_errors`,
-not `native_errors`. The exception itself is Painless's: the native error names the segment,
-document and score the script threw at, and the plugin runs the script once more in Java on that
-one document (`PainlessScore.failure`), so the message (a helpful `NullPointerException`'s local
-names included) and the Java frames in `script_stack` (`LeafDocLookup.get`,
-`ScriptDocValues$Longs.get`, ...) are the JVM's own. That run has no effect beyond its result:
-the check passes only scripts whose sole effect is their score. A gap the check let through (the runtime's own `Unsupported`) is the
-plugin's failure, not the script's: like any other internal native failure it falls back to
-Lucene, which runs the script again (score scripts are pure, so only time is lost). Tested by `jvm_painless_score.rs::scripts_score_as_opensearch_does` (each
-fixture outcome, offsets included), `tests/corpus.rs` (every corpus script the check passes
-throws exactly what Painless throws) and `e2e/verify_opensearch.py::script_errors` (stock and
-native error responses equal, no fallback). Known gap: three corpus scripts whose Painless error
-is a JVM `WrongMethodTypeException` (a `def` brace access with a string key on a list or array)
-throw a different message natively; in the plugin the search still fails with Painless's own.
+**Never re-run.** A checked script that throws fails the search as in Java, with the same
+`ScriptException` (class, message, `script_stack`, position): the error names what the script ran
+on and the plugin runs it once more in Java there (`PainlessScore.failure`) for the JVM's own
+message and frames; the stats count `script_errors`. A runtime gap (`Unsupported`) is the
+plugin's failure and falls back. Tested by `jvm_painless_score.rs` (fixture outcomes, offsets
+included), `tests/corpus.rs` and `e2e/verify_opensearch.py::script_errors`. Known gap: three corpus
+scripts whose Painless error is a JVM `WrongMethodTypeException` throw a different message natively.
 
 | Java | Rust | Status |
 |---|---|---|
