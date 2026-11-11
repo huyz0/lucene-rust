@@ -1,5 +1,6 @@
 //! Fixed values encoded byte for byte as the plugin's Java `MultiVectorEncoding`
-//! encodes them (`NativeSelfTestTensor` holds the same hex).
+//! encodes them, and their pooled mean as its `pooledMean` (`NativeSelfTestTensor`
+//! holds the same hex).
 #![allow(clippy::arithmetic_side_effects)]
 
 use lucene_tensor::{encode, TokenEncoding};
@@ -46,4 +47,14 @@ fn every_encoding_writes_the_plugins_bytes() {
     ] {
         assert_eq!(hex(&encode(&tokens(), 3, e).unwrap()), want, "{}", e.name());
     }
+}
+
+/// `pooled_mean` of the tokens, little-endian (`MultiVectorEncoding.pooledMean`).
+const POOLED: &str = "1736353fc2d334bfa90193b8";
+
+#[test]
+fn the_pooled_mean_is_the_plugins() {
+    let m = lucene_tensor::pooled_mean(&tokens(), 3);
+    let bytes: Vec<u8> = m.iter().flat_map(|x| x.to_le_bytes()).collect();
+    assert_eq!(hex(&bytes), POOLED);
 }
