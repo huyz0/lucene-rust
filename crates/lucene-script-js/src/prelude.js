@@ -30,6 +30,31 @@
   ]) {
     delete globalThis[name];
   }
+  // The last match, which RegExp's legacy accessors read and set across
+  // calls.
+  for (const name of [
+    "input",
+    "$_",
+    "lastMatch",
+    "$&",
+    "lastParen",
+    "$+",
+    "leftContext",
+    "$`",
+    "rightContext",
+    "$'",
+    "$1",
+    "$2",
+    "$3",
+    "$4",
+    "$5",
+    "$6",
+    "$7",
+    "$8",
+    "$9",
+  ]) {
+    delete RegExp[name];
+  }
 
   // Every object a script can reach freezes: what it holds, its accessors and
   // its prototype, transitively, so no script changes what a later document
@@ -82,6 +107,15 @@
   reach(() => /a/[Symbol.matchAll]("a"));
   reach(() => [].values().map((x) => x));
   reach(() => Iterator.from({ next() { return { done: true }; } }));
+  // An error's own stack accessor.
+  reach(() => new Error());
+  reach(() => {
+    try {
+      null.x;
+    } catch (e) {
+      return e;
+    }
+  });
   for (const o of intrinsics) harden(o);
   harden(globalThis);
 

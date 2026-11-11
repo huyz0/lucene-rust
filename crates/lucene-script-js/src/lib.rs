@@ -7,7 +7,11 @@
 //! is frozen: no script changes what another document or request sees. V8
 //! itself has no files, network, timers or modules, and code generation from
 //! strings (`eval`, `Function`) is off, as is WebAssembly; typed arrays,
-//! whose memory V8's heap limit does not count, are not there either.
+//! whose memory V8's heap limit does not count, are not there either. (The
+//! locale-taking string and number methods still reach ICU, whose objects V8
+//! caches per locale.) As everything is frozen, assigning a property a
+//! built-in prototype holds (`e.name = ...` on an error) throws in strict
+//! mode: a script defines it instead (`Object.defineProperty`).
 //!
 //! Each thread keeps one isolate, with every script it has compiled; a
 //! script compiles once per thread. A search's calls share one deadline
@@ -352,9 +356,10 @@ pub fn run_batch(
                 &[from, n, out_arr, scores_arr, args.params, mode],
             );
             // Else the documents before the one that stopped the call.
+            let faulted = NEEDS.with(|n| !n.borrow().is_empty());
             let upto = match r {
-                Some(_) => count,
-                None => (c.state.get(0).max(0) as usize).min(count),
+                Some(_) if !faulted => count,
+                _ => (c.state.get(0).max(0) as usize).min(count),
             };
             for (k, o) in out.iter_mut().enumerate().take(upto).skip(args.from) {
                 *o = c.out.get(k);
@@ -382,7 +387,7 @@ pub fn run_one(
                 None => undefined,
             };
             let r = one.call(tc, undefined, &[s, args.params])?;
-            Some(out(tc, r, 0))
+            Some(result(tc, r))
         })
     })
 }
@@ -390,7 +395,25 @@ pub fn run_one(
 /// Deepest array a result may nest.
 const MAX_DEPTH: usize = 16;
 
-fn out(scope: &mut v8::HandleScope<'_>, v: v8::Local<'_, v8::Value>, depth: usize) -> Out {
+/// Most values a result holds, over all its arrays.
+const MAX_VALUES: usize = 1 << 20;
+
+/// What the script returned, as the host reads it.
+fn result(scope: &mut v8::HandleScope<'_>, v: v8::Local<'_, v8::Value>) -> Out {
+    let mut left = MAX_VALUES;
+    out(scope, v, 0, &mut left)
+}
+
+fn out(
+    scope: &mut v8::HandleScope<'_>,
+    v: v8::Local<'_, v8::Value>,
+    depth: usize,
+    left: &mut usize,
+) -> Out {
+    if *left == 0 {
+        return Out::Other(format!("a result of more than {MAX_VALUES} values"));
+    }
+    *left -= 1;
     if v.is_null_or_undefined() {
         Out::Null
     } else if v.is_number() {
@@ -401,12 +424,21 @@ fn out(scope: &mut v8::HandleScope<'_>, v: v8::Local<'_, v8::Value>, depth: usiz
         Out::String(v.to_rust_string_lossy(scope))
     } else if v.is_array() && depth < MAX_DEPTH {
         let a: v8::Local<v8::Array> = v.try_into().expect("an array");
-        let mut items = Vec::with_capacity(a.length() as usize);
+        let len = a.length() as usize;
+        if len > *left {
+            *left = 0;
+            return Out::Other(format!("a result of more than {MAX_VALUES} values"));
+        }
+        let mut items = Vec::new();
         for i in 0..a.length() {
-            let item = a
-                .get_index(scope, i)
-                .unwrap_or_else(|| v8::undefined(scope).into());
-            items.push(out(scope, item, depth + 1));
+            // None once the call is stopped.
+            let Some(item) = a.get_index(scope, i) else {
+                break;
+            };
+            match out(scope, item, depth + 1, left) {
+                Out::Other(t) if *left == 0 => return Out::Other(t),
+                o => items.push(o),
+            }
         }
         Out::List(items)
     } else {
@@ -511,10 +543,11 @@ fn with_engine<R>(
 }
 
 /// V8 is near the heap limit: the script stops, and the isolate is dropped
-/// after. The room it gets covers the largest object V8 makes at once (a
-/// string or array of about 1 GB), which would otherwise end the process.
+/// after. The room it gets the first time covers the largest object V8 makes
+/// at once (a string or array of about 1 GB), which would otherwise end the
+/// process: a thread's isolate holds at most its limit and that.
 extern "C" fn near_heap_limit(_data: *mut c_void, current: usize, _initial: usize) -> usize {
-    let _ = HEAP_HIT.try_with(|h| h.set(true));
+    let again = HEAP_HIT.try_with(|h| h.replace(true)).unwrap_or(true);
     let _ = HEAP.try_with(|h| {
         if let Ok(h) = h.try_borrow() {
             if let Some(h) = h.as_ref() {
@@ -522,7 +555,12 @@ extern "C" fn near_heap_limit(_data: *mut c_void, current: usize, _initial: usiz
             }
         }
     });
-    current.saturating_add(current.max(1 << 30))
+    // Once: past that, only room for the script to unwind.
+    if again {
+        current.saturating_add(16 << 20)
+    } else {
+        current.saturating_add(current.max(1 << 30))
+    }
 }
 
 /// The watchdog's look at a running script's memory: V8 lets one large
@@ -532,7 +570,9 @@ extern "C" fn heap_check(isolate: &mut v8::Isolate, _data: *mut c_void) {
     let mut s = v8::HeapStatistics::default();
     isolate.get_heap_statistics(&mut s);
     let max = HEAP_MAX.try_with(Cell::get).unwrap_or(usize::MAX);
-    if s.used_heap_size().saturating_add(s.external_memory()) > max {
+    // On the heap only: scripts make no typed arrays, and the host's columns
+    // are outside it.
+    if s.used_heap_size() > max {
         let _ = HEAP_HIT.try_with(|h| h.set(true));
         // A stop asked for inside an interrupt waits for the next one: the
         // watchdog asks.
@@ -778,9 +818,12 @@ impl Engine {
             .get(&script.key)
             .is_some_and(|c| c.source == script.source && c.fields == script.fields);
         if !hit {
-            let c = compile(&mut self.isolate, script).map_err(|f| match f {
-                Failure::Host(_) if HEAP_HIT.with(Cell::get) => Failure::OutOfMemory(self.max_heap),
-                f => f,
+            let c = compile(&mut self.isolate, script).map_err(|f| {
+                if HEAP_HIT.with(Cell::get) {
+                    Failure::OutOfMemory(self.max_heap)
+                } else {
+                    f
+                }
             })?;
             if self.scripts.len() >= MAX_SCRIPTS {
                 self.scripts.clear();
