@@ -563,7 +563,30 @@ pub unsafe extern "C" fn ffi_jvm_reader_derived_source_alloc(
     guard(|| {
         // SAFETY: caller contract.
         unsafe { clear_out(out_ptr, out_len)? };
-        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc)?;
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, true)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_fetch::source_blob`] without the vectors: a derived-source document's `_source`
+/// as stored, each vector masked, as an owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_source_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, false)?;
         // SAFETY: caller contract.
         unsafe { give(encoded, out_ptr, out_len) };
         Ok(())
