@@ -3622,3 +3622,64 @@ fn index_or_doc_values_fills_the_cache_from_its_index_side() {
         assert!(p.is_empty(), "{p:?}");
     }
 }
+
+/// A boolean of one scoring clause and filters, searched for top scores,
+/// declines its own bulk scorers for `DefaultBulkScorer` over the scorer
+/// tree: the tree is composed from the clauses already built, so a point
+/// range filter walks its tree once per segment, not twice.
+#[test]
+fn a_lone_scoring_clause_with_filters_builds_each_filter_once() {
+    use super::ranges::RANGE_WALKS;
+    use crate::directory_reader::DirectoryReader;
+    use crate::index_searcher::IndexSearcher;
+    use crate::query::{BooleanQuery, Clause, PhraseQuery, PointsRangeQuery, TermQuery};
+    use lucene_index::document::{Document, LongPoint, Store, StringField, TextField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::upgrade::LATEST;
+
+    const DOCS: i64 = 20_000;
+    let dir = lucene_store::ByteBuffersDirectory::new();
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(1024.0).unwrap();
+        for i in 0..DOCS {
+            let mut d = Document::new();
+            d.add(LongPoint::new("ts", &[(i * 7919) % DOCS]).unwrap());
+            if i % 50 == 0 {
+                d.add(StringField::new("tenant", "t1", Store::No));
+            }
+            let body = if i % 3 == 0 { "red fox" } else { "fox red" };
+            d.add(TextField::new("body", body, Store::No));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let mut segs = opened.as_open_segments();
+    for s in &mut segs {
+        s.cache = None;
+    }
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let scoring = [
+        Clause::Term(TermQuery::new("body", b"fox".to_vec())),
+        Clause::Phrase(PhraseQuery::new("body", ["red", "fox"].map(String::from))),
+    ];
+    for (must, want) in scoring.into_iter().zip([81u64, 27]) {
+        let q = BooleanQuery {
+            must: vec![must],
+            filter: vec![
+                Clause::Term(TermQuery::new("tenant", b"t1".to_vec())),
+                Clause::PointsRange(PointsRangeQuery::new("ts", 0, DOCS / 5)),
+            ],
+            ..BooleanQuery::default()
+        };
+        RANGE_WALKS.with(|n| n.set(0));
+        let top = searcher.search(&q, 10).unwrap();
+        assert_eq!(RANGE_WALKS.with(std::cell::Cell::get), segs.len());
+        assert_eq!(top.total_hits.value, want);
+    }
+}
