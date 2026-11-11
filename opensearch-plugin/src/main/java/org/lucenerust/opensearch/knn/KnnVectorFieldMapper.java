@@ -152,8 +152,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                 engine.getValue(),
                 method.getValue(),
                 mode.getValue(),
-                compression.getValue(),
-                indexSettings.get(KnnSettings.SPACE_TYPE.getKey())
+                compression.getValue()
             );
         }
 

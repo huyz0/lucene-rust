@@ -80,23 +80,44 @@ public final class KnnSettings {
 
     public static final Setting<Boolean> INDEX_REMOTE_BUILD = Setting.boolSetting(
         "index.knn.remote_index_build.enabled",
-        false,
+        true,
         Property.IndexScope,
         Property.Dynamic
-    );
-
-    /** {@code index.knn.space_type}: deprecated in the stock plugin, the space when a mapping names none. */
-    public static final Setting<String> SPACE_TYPE = Setting.simpleString(
-        "index.knn.space_type",
-        SpaceType.DEFAULT,
-        Property.IndexScope,
-        Property.Dynamic,
-        Property.Deprecated
     );
 
     private static Setting<Integer> nodeInt(String key, int def) {
         return Setting.intSetting(key, def, 0, Property.NodeScope, Property.Dynamic);
     }
+
+    /**
+     * {@code knn.quantization.cache.size.limit}: a size or heap ratio, at most 10% of the heap. The
+     * remote index build and quantization cache settings configure features of the faiss engine,
+     * which the plugin does not have; they are accepted and validated as stock does, and read by
+     * nothing.
+     */
+    static final Setting<org.opensearch.core.common.unit.ByteSizeValue> QUANTIZATION_STATE_CACHE_SIZE_LIMIT = new Setting<>(
+        "knn.quantization.cache.size.limit",
+        "5%",
+        s -> {
+            org.opensearch.core.common.unit.ByteSizeValue limit = org.opensearch.common.unit.MemorySizeValue.parseBytesSizeValueOrHeapRatio(
+                s,
+                "knn.quantization.cache.size.limit"
+            );
+            org.opensearch.core.common.unit.ByteSizeValue heap = org.opensearch.monitor.jvm.JvmInfo.jvmInfo().getMem().getHeapMax();
+            if (limit.getKbFrac() / heap.getKbFrac() > 0.10) {
+                throw new org.opensearch.OpenSearchParseException(
+                    "{} ({} KB) cannot exceed {}% of the heap ({} KB).",
+                    "knn.quantization.cache.size.limit",
+                    limit.getKb(),
+                    10,
+                    heap.getKb()
+                );
+            }
+            return limit;
+        },
+        Property.NodeScope,
+        Property.Dynamic
+    );
 
     private static Setting<Boolean> nodeBool(String key, boolean def, boolean dynamic) {
         return dynamic
@@ -116,12 +137,13 @@ public final class KnnSettings {
             SHARD_LEVEL_RESCORING_DISABLED,
             FAISS_FILTER_DISABLE_EXACT_SEARCH,
             INDEX_REMOTE_BUILD,
-            SPACE_TYPE,
             nodeInt("knn.algo_param.index_thread_qty", 1),
             nodeBool("knn.memory.circuit_breaker.enabled", true, true),
             Setting.simpleString("knn.memory.circuit_breaker.limit", "50%", Property.NodeScope, Property.Dynamic),
             nodeBool("knn.circuit_breaker.triggered", false, true),
-            nodeInt("knn.circuit_breaker.unset.percentage", 75),
+            Setting.doubleSetting("knn.circuit_breaker.unset.percentage", 75, 0, 100, Property.NodeScope, Property.Dynamic),
+            nodeBool("knn.feature.cache.force_evict.enabled", false, true),
+            nodeBool("knn.feature.prefetch.enabled", true, true),
             nodeBool("knn.cache.item.expiry.enabled", false, true),
             Setting.positiveTimeSetting(
                 "knn.cache.item.expiry.minutes",
@@ -136,7 +158,43 @@ public final class KnnSettings {
             nodeBool("knn.faiss.avx512.disabled", false, false),
             nodeBool("knn.faiss.avx512_spr.disabled", false, false),
             nodeBool("knn.remote_index_build.enabled", false, true),
-            nodeBool("knn.dynamic_mapping.enabled", false, true)
+            nodeBool("knn.dynamic_mapping.enabled", false, true),
+            Setting.memorySizeSetting("knn.vector_streaming_memory.limit", "1%", Property.Dynamic, Property.NodeScope),
+            QUANTIZATION_STATE_CACHE_SIZE_LIMIT,
+            Setting.positiveTimeSetting(
+                "knn.quantization.cache.expiry.minutes",
+                org.opensearch.common.unit.TimeValue.timeValueMinutes(60),
+                Property.NodeScope,
+                Property.Dynamic
+            ),
+            Setting.byteSizeSetting(
+                "index.knn.remote_index_build.size.min",
+                new org.opensearch.core.common.unit.ByteSizeValue(50, org.opensearch.core.common.unit.ByteSizeUnit.MB),
+                Property.Dynamic,
+                Property.IndexScope
+            ),
+            Setting.simpleString("knn.remote_index_build.repository", Property.Dynamic, Property.NodeScope),
+            Setting.byteSizeSetting(
+                "knn.remote_index_build.size.max",
+                new org.opensearch.core.common.unit.ByteSizeValue(0, org.opensearch.core.common.unit.ByteSizeUnit.MB),
+                Property.Dynamic,
+                Property.NodeScope
+            ),
+            Setting.simpleString("knn.remote_index_build.service.endpoint", Property.NodeScope, Property.Dynamic),
+            Setting.timeSetting(
+                "knn.remote_index_build.client.timeout",
+                org.opensearch.common.unit.TimeValue.timeValueMinutes(60),
+                Property.NodeScope,
+                Property.Dynamic
+            ),
+            Setting.timeSetting(
+                "knn.remote_index_build.poll.interval",
+                org.opensearch.common.unit.TimeValue.timeValueSeconds(5),
+                Property.NodeScope,
+                Property.Dynamic
+            ),
+            org.opensearch.common.settings.SecureSetting.secureString("knn.remote_index_build.service.username", null),
+            org.opensearch.common.settings.SecureSetting.secureString("knn.remote_index_build.service.password", null)
         );
     }
 

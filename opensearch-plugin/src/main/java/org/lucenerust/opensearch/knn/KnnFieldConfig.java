@@ -152,8 +152,7 @@ public record KnnFieldConfig(
         String topEngine,
         Map<String, Object> method,
         String mode,
-        String compression,
-        String indexSpace
+        String compression
     ) {
         if (dimension == -1) {
             throw new MapperParsingException(String.format(Locale.ROOT, "Dimension value missing for vector: %s", field));
@@ -199,7 +198,7 @@ public record KnnFieldConfig(
 
         String space = pick(topSpace, methodSpace, "Space type", SpaceType.UNDEFINED);
         SpaceType spaceType = SpaceType.of(
-            space == null ? (indexSpace == null ? (binary ? SpaceType.HAMMING.value() : SpaceType.DEFAULT) : indexSpace) : space
+            space == null ? (binary ? SpaceType.HAMMING.value() : SpaceType.DEFAULT) : space
         );
         // SpaceType.validateVectorDataType: hamming is for binary vectors only, and binary vectors only for hamming.
         if (binary != (spaceType == SpaceType.HAMMING)) {

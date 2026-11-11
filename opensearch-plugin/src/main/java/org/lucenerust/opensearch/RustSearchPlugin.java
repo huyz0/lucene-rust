@@ -67,6 +67,10 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.core.action.ActionResponse;
 import org.lucenerust.opensearch.neural.ml.MLCommonsClientAccessor;
 import org.lucenerust.opensearch.neural.processor.NeuralQueryEnricherProcessor;
+import org.lucenerust.opensearch.neural.processor.NeuralSparseTwoPhaseProcessor;
+import org.lucenerust.opensearch.neural.processor.factory.RerankProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.rerank.RerankProcessor;
+import org.lucenerust.opensearch.neural.query.ext.RerankSearchExtBuilder;
 import org.lucenerust.opensearch.neural.processor.SparseEncodingProcessor;
 import org.lucenerust.opensearch.neural.processor.TextChunkingProcessor;
 import org.lucenerust.opensearch.neural.processor.TextEmbeddingProcessor;
@@ -658,12 +662,23 @@ public class RustSearchPlugin extends Plugin implements
         );
     }
 
-    /** neural-search's {@code neural_query_enricher}. */
+    /** neural-search's {@code ext.rerank}, the query context a rerank processor reads. */
+    @Override
+    public List<SearchExtSpec<?>> getSearchExts() {
+        return List.of(new SearchExtSpec<>(RerankSearchExtBuilder.PARAM_FIELD_NAME, RerankSearchExtBuilder::new, RerankSearchExtBuilder::parse));
+    }
+
+    /** neural-search's {@code neural_query_enricher} and {@code neural_sparse_two_phase_processor}. */
     @Override
     public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchRequestProcessor>> getRequestProcessors(
         Parameters parameters
     ) {
-        return Map.of(NeuralQueryEnricherProcessor.TYPE, new NeuralQueryEnricherProcessor.Factory());
+        return Map.of(
+            NeuralQueryEnricherProcessor.TYPE,
+            new NeuralQueryEnricherProcessor.Factory(),
+            NeuralSparseTwoPhaseProcessor.TYPE,
+            new NeuralSparseTwoPhaseProcessor.Factory()
+        );
     }
 
     /** The node's neural-search view of ml-commons; one per node, made on first use. */
@@ -717,6 +732,9 @@ public class RustSearchPlugin extends Plugin implements
     public List<org.opensearch.threadpool.ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
         List<org.opensearch.threadpool.ExecutorBuilder<?>> builders = new ArrayList<>();
         builders.add(HybridSearch.executorBuilder(settings));
+        if (stockKnn == false) {
+            builders.add(new org.opensearch.threadpool.FixedExecutorBuilder(settings, "training", 1, 1, "knn", false));
+        }
         if (stockMl == false) {
             builders.addAll(MlCommons.executorBuilders(settings));
         }
@@ -745,7 +763,10 @@ public class RustSearchPlugin extends Plugin implements
     public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchResponseProcessor>> getResponseProcessors(
         Parameters parameters
     ) {
-        return HybridSearch.responseProcessors();
+        Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchResponseProcessor>> processors =
+            new java.util.HashMap<>(HybridSearch.responseProcessors());
+        processors.put(RerankProcessor.TYPE, new RerankProcessorFactory(mlClient(), parameters.searchPipelineService.getClusterService()));
+        return processors;
     }
 
     @Override
@@ -761,6 +782,8 @@ public class RustSearchPlugin extends Plugin implements
         List<RestHandler> handlers = new ArrayList<>();
         handlers.add(new RestStatsAction(stats, readers, libraryPath));
         handlers.add(org.lucenerust.opensearch.neural.NeuralStats.restHandler());
+        handlers.add(new org.lucenerust.opensearch.sparse.SparseShardsTransport.Rest(true));
+        handlers.add(new org.lucenerust.opensearch.sparse.SparseShardsTransport.Rest(false));
         if (stockKnn == false) {
             handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
             handlers.addAll(KnnModelHandlers.all(clusterService::get));
@@ -775,6 +798,18 @@ public class RustSearchPlugin extends Plugin implements
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
         List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> actions = new ArrayList<>();
         actions.add(org.lucenerust.opensearch.neural.NeuralStats.actionHandler());
+        actions.add(
+            new ActionHandler<>(
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.WarmupAction.INSTANCE,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.WarmupTransportAction.class
+            )
+        );
+        actions.add(
+            new ActionHandler<>(
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.ClearCacheAction.INSTANCE,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.ClearCacheTransportAction.class
+            )
+        );
         if (stockKnn == false) {
             actions.add(new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class));
             actions.add(new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class));

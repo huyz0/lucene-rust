@@ -1,0 +1,165 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor.rerank;
+
+import org.opensearch.action.search.SearchResponse;
+import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.xcontent.XContentBuilder;
+import org.lucenerust.opensearch.neural.processor.rerank.context.ContextSourceFetcher;
+import org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.SearchHitValidator;
+import org.lucenerust.opensearch.neural.stats.events.EventStatName;
+import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
+import org.opensearch.search.SearchHit;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.getScoreFromSourceMap;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.getValueFromSource;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.isNumeric;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.mappingExistsInSource;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.removeTargetFieldFromSource;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.validateRerankCriteria;
+
+/**
+ * A reranking processor that reorders search results based on the content of a specified field.
+ * <p>
+ * The ByFieldRerankProcessor allows for reordering of search results by considering the content of a
+ * designated target field within each document. This processor will update the <code>_score</code> field with what has been provided
+ * by {@code target_field}. When {@code keep_previous_score} is enabled a new field is appended called <code>previous_score</code> which was the score prior to reranking.
+ * <p>
+ * Key features:
+ * <ul>
+ *   <li>Reranks search results based on a specified target field</li>
+ *   <li>Optionally removes the target field from the final search results</li>
+ *   <li>Supports nested field structures using dot notation</li>
+ * </ul>
+ * <p>
+ * The processor uses the following configuration parameters:
+ * <ul>
+ *   <li>{@code target_field}: The field to be used for reranking (required)</li>
+ *   <li>{@code remove_target_field}: Whether to remove the target field from the final results (optional, default: false)</li>
+ *   <li>{@code keep_previous_score}: Whether to append the previous score in a configurable field (optional, default: false)</li>
+ *   <li>{@code previous_score_field}: The field name used to store the score calculated before reranking when {@code keep_previous_score} is true (optional, default: {@code previous_score})</li>
+ * </ul>
+ * <p>
+ * Usage example:
+ * <pre>
+ * {
+ *   "rerank": {
+ *     "by_field": {
+ *       "target_field": "document.relevance_score",
+ *       "remove_target_field": true,
+ *       "keep_previous_score": false,
+ *       "previous_score_field": "previous_score"
+ *     }
+ *   }
+ * }
+ * </pre>
+ * <p>
+ * This processor is useful in scenarios where additional, document-specific
+ * information stored in a field can be used to improve the relevance of search results
+ * beyond the initial scoring.
+ */
+public class ByFieldRerankProcessor extends RescoringRerankProcessor {
+    private static final org.apache.logging.log4j.Logger log = org.apache.logging.log4j.LogManager.getLogger(ByFieldRerankProcessor.class);
+    public static final String TARGET_FIELD = "target_field";
+    public static final String REMOVE_TARGET_FIELD = "remove_target_field";
+    public static final String KEEP_PREVIOUS_SCORE = "keep_previous_score";
+    public static final String PREVIOUS_SCORE_FIELD = "previous_score_field";
+    public static final boolean DEFAULT_REMOVE_TARGET_FIELD = false;
+    public static final boolean DEFAULT_KEEP_PREVIOUS_SCORE = false;
+    public static final String DEFAULT_PREVIOUS_SCORE_FIELD = "previous_score";
+    protected final String targetField;
+    protected final boolean removeTargetField;
+    protected final boolean keepPreviousScore;
+    protected final String previousScoreField;
+
+    /**
+     * Constructor to pass values to the RerankProcessor constructor.
+     *
+     * @param description           The description of the processor
+     * @param tag                   The processor's identifier
+     * @param ignoreFailure         If true, OpenSearch ignores any failure of this processor and
+     *                              continues to run the remaining processors in the search pipeline.
+     * @param targetField           The field you want to replace your <code>_score</code> with
+     * @param removeTargetField     A flag to let you delete the target_field for better visualization (i.e. removes a duplicate value)
+     * @param keepPreviousScore     A flag to let you decide to stash your previous <code>_score</code> in {@code previousScoreField} (i.e. for debugging purposes)
+     * @param previousScoreField    The field name used to store the score calculated before reranking when {@code keepPreviousScore} is true
+     * @param contextSourceFetchers  Context from some source and puts it in a map for a reranking processor to use <b> (Unused in ByFieldRerankProcessor)</b>
+     */
+    public ByFieldRerankProcessor(final String description, final String tag, final boolean ignoreFailure, final String targetField, final boolean removeTargetField, final boolean keepPreviousScore, final String previousScoreField, final List<ContextSourceFetcher> contextSourceFetchers) {
+        super(RerankType.BY_FIELD, description, tag, ignoreFailure, contextSourceFetchers);
+        this.targetField = targetField;
+        this.removeTargetField = removeTargetField;
+        this.keepPreviousScore = keepPreviousScore;
+        this.previousScoreField = previousScoreField;
+    }
+
+    @Override
+    public void rescoreSearchResponse(final SearchResponse response, final Map<String, Object> rerankingContext, final ActionListener<List<Float>> listener) {
+        EventStatsManager.increment(EventStatName.RERANK_BY_FIELD_PROCESSOR_EXECUTIONS);
+        SearchHit[] searchHits = response.getHits().getHits();
+        SearchHitValidator searchHitValidator = this::byFieldSearchHitValidator;
+        if (!validateRerankCriteria(searchHits, searchHitValidator, listener)) {
+            return;
+        }
+        List<Float> scores = new ArrayList<>(searchHits.length);
+        for (SearchHit hit : searchHits) {
+            Map<String, Object> sourceAsMap = hit.getSourceAsMap();
+            float score = getScoreFromSourceMap(sourceAsMap, targetField);
+            scores.add(score);
+            if (keepPreviousScore) {
+                sourceAsMap.put(previousScoreField, hit.getScore());
+            }
+            if (removeTargetField) {
+                removeTargetFieldFromSource(sourceAsMap, targetField);
+            }
+            try {
+                XContentBuilder builder = XContentBuilder.builder(XContentType.JSON.xContent());
+                BytesReference sourceMapAsBytes = BytesReference.bytes(builder.map(sourceAsMap));
+                hit.sourceRef(sourceMapAsBytes);
+            } catch (IOException e) {
+                log.error(e.getMessage());
+                listener.onFailure(new RuntimeException(e));
+                return;
+            }
+        }
+        listener.onResponse(scores);
+    }
+
+    /**
+     * Implements the behavior of the SearchHit validator {@code SearchHitValidator}
+     * It checks all the following
+     * <ul>
+     *     <li>Checks the search hit has a source mapping</li>
+     *     <li>Checks that the mapping exists in the source mapping using the target_field</li>
+     *     <li>Checks that the mapping has a numerical score for it to rerank</li>
+     * </ul>
+     * @param hit A search hit to validate
+     */
+    public void byFieldSearchHitValidator(final SearchHit hit) {
+        if (!hit.hasSource()) {
+            log.error(String.format(Locale.ROOT, "There is no source field to be able to perform rerank on hit [%s]", hit.getId()));
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "There is no source field to be able to perform rerank on hit [%s]", hit.getId()));
+        }
+        Map<String, Object> sourceMap = hit.getSourceAsMap();
+        if (!mappingExistsInSource(sourceMap, targetField)) {
+            log.error(String.format(Locale.ROOT, "The field to rerank [%s] is not found at hit [%s]", targetField, hit.getId()));
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "The field to rerank by is not found at hit [%s]", hit.getId()));
+        }
+        Optional<Object> val = getValueFromSource(sourceMap, targetField);
+        if (!(isNumeric(val.get()))) {
+            // Strictly get the type of value removing the prefix of getClass() having a value is guaranteed so no NPE check
+            String typeOfMapping = val.get().getClass().getSimpleName();
+            log.error(String.format(Locale.ROOT, "The field mapping to rerank [%s: %s] is not Numerical, instead of type [%s]", targetField, val.orElse(null), typeOfMapping));
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "The field mapping to rerank by [%s] is not Numerical, instead of type [%s]", val.orElse(null), typeOfMapping));
+        }
+    }
+}
