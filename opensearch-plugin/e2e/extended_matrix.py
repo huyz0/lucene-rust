@@ -84,7 +84,15 @@ def rows():
     add("function_score in bool", {"query": {"bool": {"must": [{"match": {"title": "alpha"}}],
                                                       "should": [{"function_score": {"query": {"match": {"body": "beta"}}, "functions": [{"field_value_factor": {"field": "qty", "missing": 2}}]}}]}}}, "native")
     add("function_score min_score", fs([{"weight": 2}], min_score=1), "function_score_min_score")
-    add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].value + 1"}}}]), "function_score_script")
+    # Painless script_score functions the native runtime runs (checked first, see docs/parity/painless.md).
+    add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].size() == 0 ? 1 : doc['qty'].value + 1"}}}]), "native")
+    add("function_score script _score replace", fs([{"script_score": {"script": {"source": "_score * params.f + 1", "params": {"f": 0.5}}}}],
+                                                    boost_mode="replace"), "native")
+    add("function_score script filtered weight sum", fs([{"filter": {"term": {"tag": "alpha"}}, "script_score": {"script": {"source": "Math.log(2 + doc['n'].value)"}}, "weight": 2},
+                                                          {"field_value_factor": {"field": "qty", "missing": 1}}], score_mode="sum", boost_mode="max"), "native")
+    add("function_score script loop", fs([{"script_score": {"script": {"source": "double s = 0.5; for (def v : doc['m']) { s += v / 1000.0; } return s;"}}}],
+                                         score_mode="first"), "native")
+    add("function_score script refused", fs([{"script_score": {"script": {"source": "doc['tag'].size() > 0 && doc['tag'].value =~ /a/ ? 2 : 1"}}}]), "function_score_script")
     add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "native")
     # Painless scripts the native runtime runs (checked statically first, see docs/parity/painless.md).
     add("script_score painless doc values", {"query": {"script_score": {"query": {"match": {"body": "beta"}}, "script": {
