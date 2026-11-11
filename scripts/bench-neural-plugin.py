@@ -14,6 +14,8 @@ and tiny-sparse encoding models. Per node, one at a time:
   semantic   the same documents into a semantic field on the dense model
              (embedded by the system ingest processor, no pipeline):
              documents per second, and neural on it: p50 / p99 ms
+  mmr        knn k 10 on the dense field with the mmr extension (50
+             candidates, diversity 0.5): p50 / p99 ms
   rerank     a match query's top 10 reranked by the tiny cross-encoder through
              the rerank response processor, and the same query unreranked:
              p50 / p99 ms
@@ -102,6 +104,13 @@ def bench(n, docs, queries):
         assert s == 200, json.dumps(r)[:500]
 
     out["semantic neural p50/p99 ms"] = timed(lambda i: run_sem({"query": {"neural": {"text": {"query_text": qs[i], "k": 10}}}}), queries)
+    n.ok("PUT", "/_cluster/settings", {"persistent": {"cluster.search.enabled_system_generated_factories": ["*"]}})
+    vecs = [n.ok("POST", "/_plugins/_ml/_predict/text_embedding/" + dense, {"text_docs": [qs[i]], "target_response": ["sentence_embedding"]})
+            ["inference_results"][0]["output"][0]["data"] for i in range(queries)]
+    out["mmr p50/p99 ms"] = timed(lambda i: run({"query": {"knn": {"emb": {"vector": vecs[i], "k": 10}}}, "size": 10, "_source": False,
+                                                  "ext": {"mmr": {"candidates": 50, "diversity": 0.5}}}), queries)
+    out["knn p50/p99 ms"] = timed(lambda i: run({"query": {"knn": {"emb": {"vector": vecs[i], "k": 10}}}, "size": 10, "_source": False}), queries)
+    n.ok("PUT", "/_cluster/settings", {"persistent": {"cluster.search.enabled_system_generated_factories": None}})
     match = lambda i: {"query": {"match": {"text": qs[i]}}, "size": 10}
     out["match p50/p99 ms"] = timed(lambda i: run(match(i)), queries)
     out["rerank p50/p99 ms"] = timed(lambda i: run({**match(i), "ext": {"rerank": {"query_context": {"query_text": qs[i]}}}}, "bench-rr"), queries)
