@@ -79,6 +79,7 @@ pub mod segment_state;
 pub mod simpletext;
 pub mod stored_fields;
 pub mod stored_fields_writer;
+pub mod substring;
 pub mod suggest;
 pub mod term_ngram;
 pub mod term_vectors;
