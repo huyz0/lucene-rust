@@ -81,6 +81,9 @@ pub enum ExtendedQuery {
     /// [`ExtendedQuery::PhraseWildcardWeight`] before it is searched.
     PhraseWildcard(crate::sandbox::search::PhraseWildcardQuery),
     PhraseWildcardWeight(crate::sandbox::search::ResolvedPhraseWildcard),
+    /// A substring, wildcard or regexp search over a `RustSubstring`
+    /// doc-values field ([`SubstringQuery`]).
+    Substring(SubstringQuery),
     /// A query only tests build ([`crate::test_support::TestQuery`]).
     #[cfg(any(test, feature = "asserting"))]
     Test(crate::test_support::TestQuery),
@@ -114,6 +117,7 @@ into_clause! {
     PointInSetQuery => PointInSet,
     IndexOrDocValuesQuery => IndexOrDocValues,
     DocumentClause => Document,
+    SubstringQuery => Substring,
 }
 
 impl From<crate::function::FunctionQuery> for Clause {
@@ -178,6 +182,7 @@ impl ExtendedQuery {
             ExtendedQuery::BayesianScore(_) => "BayesianScoreQuery",
             ExtendedQuery::DocAndScore(_) => "DocAndScoreQuery",
             ExtendedQuery::NumericDocValuesRange(_) => "SortedNumericDocValuesRangeQuery",
+            ExtendedQuery::Substring(_) => "SubstringQuery",
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
@@ -832,6 +837,74 @@ impl NumericDocValuesRangeQuery {
             lower,
             upper,
         }
+    }
+}
+
+/// How a [`SubstringQuery`]'s pattern reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubstringKind {
+    /// `WildcardQuery` syntax over the whole value.
+    Wildcard,
+    /// Lucene `RegExp` syntax over the whole value.
+    Regexp,
+    /// The pattern anywhere in the value.
+    Contains,
+    /// The whole value.
+    Exact,
+}
+
+/// A search over a BINARY doc-values field of the `RustSubstring` format
+/// ([`lucene_codecs::substring`]) -- OpenSearch's `wildcard` field
+/// queries: the field's trigram index narrows the blocks, the values settle
+/// each document. On a segment where the field's doc values are plain
+/// BINARY, every value is tested. Constant-scored.
+#[derive(Debug, Clone)]
+pub struct SubstringQuery {
+    pub field: String,
+    pub kind: SubstringKind,
+    pub pattern: String,
+    pub case_insensitive: bool,
+    matcher: Arc<lucene_codecs::substring::SubstringMatcher>,
+}
+
+impl PartialEq for SubstringQuery {
+    fn eq(&self, o: &Self) -> bool {
+        self.field == o.field
+            && self.kind == o.kind
+            && self.pattern == o.pattern
+            && self.case_insensitive == o.case_insensitive
+    }
+}
+
+impl SubstringQuery {
+    /// A query of `kind` for `pattern`; a malformed regexp is an error.
+    pub fn new(
+        field: impl Into<String>,
+        kind: SubstringKind,
+        pattern: impl Into<String>,
+        case_insensitive: bool,
+    ) -> Result<Self> {
+        use lucene_codecs::substring::SubstringMatcher;
+        let pattern = pattern.into();
+        let matcher = match kind {
+            SubstringKind::Wildcard => SubstringMatcher::wildcard(&pattern, case_insensitive),
+            SubstringKind::Contains => SubstringMatcher::contains(&pattern, case_insensitive),
+            SubstringKind::Exact => SubstringMatcher::exact(&pattern, case_insensitive),
+            SubstringKind::Regexp => SubstringMatcher::regexp(&pattern, case_insensitive)
+                .map_err(|e| Error::InvalidQuery(format!("regexp [{pattern}]: {e}")))?,
+        };
+        Ok(SubstringQuery {
+            field: field.into(),
+            kind,
+            pattern,
+            case_insensitive,
+            matcher: Arc::new(matcher),
+        })
+    }
+
+    /// The compiled pattern.
+    pub fn matcher(&self) -> &Arc<lucene_codecs::substring::SubstringMatcher> {
+        &self.matcher
     }
 }
 

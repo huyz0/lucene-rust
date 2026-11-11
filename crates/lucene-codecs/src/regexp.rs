@@ -502,6 +502,19 @@ impl RegexpPattern {
         keys
     }
 
+    /// This pattern under `RegExp.ASCII_CASE_INSENSITIVE`: an ASCII letter,
+    /// alone or in a string, matches either case (`toCaseInsensitiveChar`);
+    /// classes, ranges and every other character are as written.
+    pub fn ascii_case_insensitive(&self) -> Self {
+        Self {
+            root: ascii_case_fold(&self.root),
+            compiled: CompileCache {
+                source: format!("\u{0}ascii-ci\u{0}{}", self.compiled.source),
+                cell: std::sync::OnceLock::new(),
+            },
+        }
+    }
+
     /// The longest byte run every matching term is guaranteed to start with,
     /// e.g. `cat.*` -> `cat`, `(cat|dog)` -> `` (no single common leading
     /// byte run across an alternation, so this conservatively returns empty
@@ -712,6 +725,41 @@ fn literal_bytes(node: &Node) -> Option<Vec<u8>> {
             Some(one.repeat(*min as usize))
         }
         _ => None,
+    }
+}
+
+/// `c` as `toCaseInsensitiveChar` builds it: an ASCII letter as a class of
+/// both cases.
+fn ascii_case_char(c: char) -> Node {
+    if c.is_ascii_alphabetic() {
+        let (l, u) = (c.to_ascii_lowercase() as u32, c.to_ascii_uppercase() as u32);
+        Node::Class {
+            ranges: vec![(u, u), (l, l)],
+            negated: false,
+        }
+    } else {
+        Node::Char(c)
+    }
+}
+
+/// [`RegexpPattern::ascii_case_insensitive`]'s tree.
+fn ascii_case_fold(node: &Node) -> Node {
+    match node {
+        Node::Char(c) => ascii_case_char(*c),
+        Node::Str(s) if s.chars().any(|c| c.is_ascii_alphabetic()) => {
+            Node::Concat(s.chars().map(ascii_case_char).collect())
+        }
+        Node::Concat(items) => Node::Concat(items.iter().map(ascii_case_fold).collect()),
+        Node::Alt(items) => Node::Alt(items.iter().map(ascii_case_fold).collect()),
+        Node::Intersect(a, b) => {
+            Node::Intersect(Box::new(ascii_case_fold(a)), Box::new(ascii_case_fold(b)))
+        }
+        Node::Repeat { inner, min, max } => Node::Repeat {
+            inner: Box::new(ascii_case_fold(inner)),
+            min: *min,
+            max: *max,
+        },
+        other => other.clone(),
     }
 }
 

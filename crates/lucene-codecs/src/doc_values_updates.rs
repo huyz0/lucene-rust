@@ -1101,6 +1101,7 @@ mod tests {
             data_offset: 0,
             data_length: 0,
             addresses: None,
+            substring: None,
         }
     }
 
