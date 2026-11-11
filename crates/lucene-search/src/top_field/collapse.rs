@@ -482,7 +482,12 @@ impl<'a> GroupColumn<'a> {
     }
 
     /// `doc`'s group, `-1` for a document without a value.
-    pub(crate) fn id(&self, doc: i32) -> i32 {
+    //
+    // SENTINEL: `-1` = "no value", its own group (collapse's missing
+    // group), and [`MULTI`] = several values; ids of groups are `>= 0`.
+    // Callers pass it back to `members`, `value` and `value_of_doc`, which
+    // name both.
+    pub(crate) fn doc_group(&self, doc: i32) -> i32 {
         match &*self.col {
             SortColumn::Groups { ids, .. } => usize::try_from(doc)
                 .ok()
@@ -548,7 +553,7 @@ impl<'a> GroupColumn<'a> {
     /// # Errors
     /// As [`Self::value`], and a multi-valued document.
     pub(crate) fn value_of_doc(&self, doc: i32) -> Result<CollapseValue> {
-        match self.id(doc) {
+        match self.doc_group(doc) {
             MULTI => Err(multi_valued(doc)),
             id => self.value(id),
         }

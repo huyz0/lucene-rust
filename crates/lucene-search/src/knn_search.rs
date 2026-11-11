@@ -535,7 +535,7 @@ pub fn knn_top_hits_grouped(
         .iter()
         .map(|&i| -> Box<dyn Fn(i32) -> i32 + '_> {
             match &columns[i] {
-                Some(c) => Box::new(move |doc| c.id(doc)),
+                Some(c) => Box::new(move |doc| c.doc_group(doc)),
                 None => Box::new(|_| -1),
             }
         })
