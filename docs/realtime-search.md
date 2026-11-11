@@ -20,7 +20,7 @@ flowchart LR
     CUT["Inline cut, indexing thread:<br/>every 32 adds, a buffer with<br/>&ge;1024 docs past its last chunk"]
     WARM["Warmer thread, every 5 ms:<br/>tails of &ge;256 docs"]
     FLUSH["Flush (RAM full or refresh):<br/>segment encoded from the<br/>postings streams"]
-    REFRESH["Refresh = commit:<br/>buffers released once external<br/>searches moved on and no view reads them"]
+    REFRESH["Refresh = NRT snapshot (no commit, no fsync):<br/>buffers released once external<br/>searches moved on and no view reads them"]
   end
 
   subgraph D["Where search data lives"]
@@ -62,7 +62,7 @@ flowchart LR
 
 | Data | Built by | When | Read by a search as |
 |---|---|---|---|
-| Segment files | flush | RAM buffer full, or refresh (a commit under realtime) | the commit's reader; deletes since the commit applied as masks |
+| Segment files | flush | RAM buffer full, or refresh (an NRT snapshot, as without realtime) | the snapshot's reader; deletes since the snapshot applied as masks |
 | Postings streams (term hash + byte slices) | indexing thread | every add | the snapshot decodes the query's terms only |
 | Packed fields | indexing thread | every add | source for chunk writes (full blocks shared, not copied) |
 | Live columns (norms, deletes, stored arena, doc values, presence, points) | indexing thread | every add | chunk and tail writes; fetch reads the stored arena |
@@ -76,8 +76,10 @@ buffer holds about log2(docs / chunk) chunks and each document is written a
 few times. A search absorbs at most 4096 docs itself; larger rewrites are
 left to the warmer. A buffer taken for a flush stays readable as lean chunks
 until it is published and no view reads it that way, then as its published
-segment (files pinned against merges) until the commit holding it is
-released.
+segment (files pinned against merges) until the reader's segment list
+holding it is released. Views are keyed by the version of the segment list
+a reader opened, an NRT snapshot's as a commit's, so a refresh writes no
+`segments_N` and syncs nothing.
 
 The stored arena keeps a copy of each small document's stored fields, so a
 fetch costs no decompression. A document of a stored-fields chunk's size or
