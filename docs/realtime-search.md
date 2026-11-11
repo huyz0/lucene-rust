@@ -200,20 +200,19 @@ after the last refresh.
 
 | Method | mode | took mean (unfiltered / filtered) | recall@10 (unfiltered) | write to visible p50 | indexing CPU |
 |---|---|---|---|---|---|
-| lucene hnsw | refresh 1s | 1.7 / 1.4 ms | 0.845 | 525 ms | 54.8 s |
-| lucene hnsw | realtime | 2.8 / 2.4 ms | 0.858 | 4.2 ms | 45.0 s |
-| lucene hnsw | realtime, staleness 0 | 3.4 / 2.9 ms | 0.849 | 3.8 ms | 46.8 s |
-| lucene_rust ivf | refresh 1s | 2.1 / 1.5 ms | 0.987 | 536 ms | 46.6 s |
-| lucene_rust ivf | realtime | 3.0 / 2.5 ms | 0.997 | 4.3 ms | 40.9 s |
-| lucene_rust hnsw rabitq | refresh 1s | 1.8 / 1.4 ms | 0.807 | 543 ms | 55.6 s |
-| lucene_rust hnsw rabitq | realtime | 3.0 / 2.7 ms | 0.818 | 5.0 ms | 51.7 s |
+| lucene hnsw | refresh 1s | 2.3 / 1.9 ms | 0.845 | 558 ms | 55.3 s |
+| lucene hnsw | realtime | 2.5 / 2.2 ms | 0.857 | 4.3 ms | 54.5 s |
+| lucene_rust ivf | refresh 1s | 2.3 / 1.6 ms | 0.988 | 535 ms | 47.7 s |
+| lucene_rust ivf | realtime | 2.8 / 2.5 ms | 0.993 | 4.5 ms | 47.7 s |
+| lucene_rust hnsw rabitq | refresh 1s | 2.0 / 1.6 ms | 0.805 | 545 ms | 56.7 s |
+| lucene_rust hnsw rabitq | realtime | 2.7 / 2.7 ms | 0.808 | 4.9 ms | 54.6 s |
 
-Realtime indexes with less CPU (the flush writes the graph kept over the
-buffer). Most of the search gap is the k-NN derived source, which stays off
-under realtime: the vectors are kept in `_source` as well, segments are about
-2.4 times larger and more of them stay unmerged (33-52 against 24-34); the
-refresh-based index without derived source takes 2.3 / 1.5 ms. With the same
-segments and nothing buffered the realtime path costs 0.1 ms over the plugin's.
+Realtime indexes with no more CPU (the flush writes the graph kept over the
+buffer) and the same memory. k-NN derived source works under realtime: a
+buffered document's `_source` is stored masked, as a flushed one's is, and its
+vectors are put back from the buffer when it is read; a `_source` in another
+content type than JSON is stored whole while buffered. With the same segments
+and nothing buffered the realtime path costs 0.1 ms over the plugin's.
 An index sort is refused with realtime search (the flush would renumber the
 buffered documents).
 

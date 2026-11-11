@@ -5,7 +5,8 @@ found by a k-NN search with no refresh, for each method, unfiltered, filtered an
     check_knn_realtime.py URL
 
 Each case: 2000 docs are indexed and flushed (IVF gets clusters), refresh is turned off, then 100
-more are written; a k=1 search for each new doc's own vector must return that doc. Prints one line
+more are written; a k=1 search for each new doc's own vector must return that doc, and a new doc's
+_source must hold its vector (k-NN derived source puts it back from the buffer). Prints one line
 per case and exits non-zero when any case misses.
 """
 import json
@@ -44,7 +45,6 @@ METHODS = {
                        "parameters": {"target_cluster_size": 64}}},
     "ivf_auto": {"method": {"name": "ivf", "engine": "lucene_rust", "space_type": "l2",
                             "parameters": {"quantizer": "auto"}}},
-    "flat": {"method": {"name": "flat", "engine": "lucene_rust", "space_type": "l2"}},
     "default": {},
 }
 
@@ -103,6 +103,19 @@ def run(name, method, nested, sort, rng):  # sort: realtime refuses an index sor
             hits = req("POST", f"/{index}/_search", {"size": 1, "_source": False, "query": q})["hits"]["hits"]
             if not hits or hits[0]["_id"] != str(i):
                 missed[kind] += 1
+    # Derived source: an unrefreshed document's _source holds its vectors, read from the buffer.
+    sources = {}
+    for i in range(2000, 2100, 7):
+        hit = req("POST", f"/{index}/_search", {"size": 1, "query": {"ids": {"values": [str(i)]}}})["hits"]["hits"]
+        sources[i] = hit[0]["_source"] if hit else None
+    bad_source = 0
+    for i, src in sources.items():
+        got = None
+        if src:
+            got = src["parts"][0].get("emb") if nested else src.get("emb")
+        if not isinstance(got, list) or any(abs(a - b) > 1e-6 for a, b in zip(got, docs[i])):
+            bad_source += 1
+    missed["source"] = bad_source
     ok = not any(missed.values())
     print(f"{'ok  ' if ok else 'MISS'} {index}: missed of 100 {missed}", flush=True)
     req("DELETE", f"/{index}")

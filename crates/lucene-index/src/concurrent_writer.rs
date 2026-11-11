@@ -116,7 +116,8 @@ mod live;
 pub(crate) use live::DocValuesRun;
 pub use live::{
     FieldTotals, KeywordRun, LeanSegment, LiveBuffer, LiveBufferField, LiveDocValue,
-    LiveFieldRequest, LivePattern, LiveRequest, LiveSnapshot, LiveView, PointBounds, ViewBuffer,
+    LiveDocumentVectors, LiveFieldRequest, LivePattern, LiveRequest, LiveSnapshot, LiveView,
+    PointBounds, ViewBuffer,
 };
 
 /// A value only reached through `&mut`: a slot's buffer is read by
@@ -554,6 +555,17 @@ impl<'d> ConcurrentIndexWriter<'d> {
         drop(core);
         self.changed.notify_all();
         out
+    }
+
+    /// How many fields are registered: the schema only grows, so a changed
+    /// count means [`Self::field_infos`] changed.
+    pub fn field_count(&self) -> usize {
+        self.cfg().field_list().len()
+    }
+
+    /// [`IndexWriter::fields`], from any thread: the fields registered so far.
+    pub fn field_infos(&self) -> Vec<FieldInfo> {
+        self.cfg().field_list().to_vec()
     }
 
     /// [`IndexWriter::register_field`], from any thread: the field is known
@@ -1813,7 +1825,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 max_doc: i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX),
                 segment: None,
                 held_files: Vec::new(),
-                vectors: if lean.is_some() { vectors } else { Vec::new() },
+                vectors,
                 lean,
                 explicit: dwpt.explicit.snapshot(),
             };

@@ -341,7 +341,7 @@ public class RustSearchPlugin extends Plugin implements
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
         if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
-            indexModule.addIndexOperationListener(new DerivedSource.Listener());
+            indexModule.addIndexOperationListener(new DerivedSource.Listener(RustEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
         }
         // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
         // setting is dynamic, so turning it on later is refused too, rather than ignored.

@@ -702,7 +702,9 @@ pub(super) struct Flushing {
     /// ([`ConcurrentIndexWriter::live_doc_values`]).
     pub(super) explicit: PackedFields,
     /// Each document's vectors (their values shared with the flush), for
-    /// the chunks written from `lean`; empty when no document has one.
+    /// the chunks written from `lean` and for putting a document's vectors
+    /// back in its `_source` ([`ConcurrentIndexWriter::live_document_vectors`]);
+    /// empty when no document has one.
     pub(super) vectors: Vec<Vec<crate::index_writer::DocumentVector>>,
 }
 
@@ -727,7 +729,6 @@ impl Flushing {
     fn drop_lean(&mut self) {
         self.columns.drop_chunk_columns();
         self.lean = None;
-        self.vectors = Vec::new();
     }
 }
 
@@ -941,6 +942,7 @@ impl LiveFlushes {
             postings: &f.postings,
             columns: &f.columns,
             explicit: &f.explicit,
+            vectors: &f.vectors,
             num_docs: usize::try_from(f.max_doc).unwrap_or(0),
         })
     }
@@ -1103,6 +1105,15 @@ pub struct FieldTotals {
     pub doc_count: i32,
 }
 
+/// A buffered document's vectors ([`ConcurrentIndexWriter::live_document_vectors`]).
+#[derive(Debug, Clone, Default)]
+pub struct LiveDocumentVectors {
+    /// The document's own vectors.
+    pub own: Vec<crate::index_writer::DocumentVector>,
+    /// Each nested child's vectors, in document order.
+    pub children: Vec<Vec<crate::index_writer::DocumentVector>>,
+}
+
 /// A buffered document's stored fields, in the order they were added.
 #[derive(Debug, Clone, Default)]
 pub(super) struct StoredArena {
@@ -1136,6 +1147,12 @@ impl StoredArena {
             out.extend_from_slice(bytes);
         }
         self.ends.push(out.len());
+    }
+
+    /// Whether document `doc` stored any field; `None` past the last one.
+    fn has_fields(&self, doc: usize) -> Option<bool> {
+        let end = *self.ends.get(doc)?;
+        Some(end > doc.checked_sub(1).map_or(0, |p| self.ends[p]))
     }
 
     fn document(&self, doc: usize) -> Option<Vec<StoredField>> {
@@ -1186,6 +1203,9 @@ struct Source<'a> {
     postings: &'a PendingPostings,
     columns: &'a LiveColumns,
     explicit: &'a PackedFields,
+    /// Each document's vectors; shorter than `num_docs` (empty) past the
+    /// last document with one.
+    vectors: &'a [Vec<crate::index_writer::DocumentVector>],
     /// How many documents the buffer holds now.
     num_docs: usize,
 }
@@ -1340,6 +1360,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
                 explicit: &dwpt.explicit,
+                vectors: &dwpt.vectors,
                 num_docs: dwpt.num_docs(),
             };
             let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
@@ -1354,6 +1375,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &f.postings,
                 columns: &f.columns,
                 explicit: &f.explicit,
+                vectors: &f.vectors,
                 num_docs: usize::try_from(f.max_doc).unwrap_or(0),
             };
             let mut buffer = view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?;
@@ -1821,6 +1843,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &d.postings,
                 columns: &d.live,
                 explicit: &d.explicit,
+                vectors: &d.vectors,
                 num_docs: d.num_docs(),
             }));
         }
@@ -1923,6 +1946,42 @@ impl ConcurrentIndexWriter<'_> {
         let doc = usize::try_from(doc).map_err(|_| missing())?;
         self.with_buffer(b.id, |s| s.and_then(|s| s.columns.stored.document(doc)))
             .ok_or_else(missing)
+    }
+
+    /// The vectors of document `doc` of `view`'s buffer `buffer`, and those
+    /// of each of its nested children in document order: the documents of
+    /// its block before it, back to the previous document with stored
+    /// fields (a nested document stores none). Fails where
+    /// [`Self::live_document`] fails.
+    pub fn live_document_vectors(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+    ) -> Result<LiveDocumentVectors> {
+        let missing =
+            || Error::LiveSearch(format!("no buffered document {doc} in buffer {buffer}"));
+        let b = view.buffers.get(buffer).ok_or_else(missing)?;
+        if doc < 0 || doc >= b.max_doc {
+            return Err(missing());
+        }
+        let doc = usize::try_from(doc).map_err(|_| missing())?;
+        self.with_buffer(b.id, |s| {
+            let s = s?;
+            let of = |d: usize| s.vectors.get(d).cloned().unwrap_or_default();
+            let mut first = doc;
+            while let Some(before) = first.checked_sub(1) {
+                if s.columns.stored.has_fields(before)? {
+                    break;
+                }
+                first = before;
+            }
+            Some(LiveDocumentVectors {
+                own: of(doc),
+                children: (first..doc).map(of).collect(),
+            })
+        })
+        .ok_or_else(missing)
     }
 
     /// The doc values of document `doc` of `view`'s buffer `buffer`, for
