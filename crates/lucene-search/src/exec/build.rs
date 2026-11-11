@@ -679,7 +679,7 @@ fn sim_term<'a>(
 
 /// `t`'s term state in this segment: the statistics pass's seek when it
 /// made one here (`TermStates`), else a seek of its own.
-fn seek_term(
+pub(super) fn seek_term(
     ctx: &LeafContext<'_>,
     field_terms: &lucene_codecs::blocktree::FieldTerms,
     t: &TermQuery,
@@ -929,6 +929,31 @@ pub(crate) fn build_clauses<'a, 'q>(
     let flatten = mode.needs_scores() && q.minimum_should_match <= 1;
     // The lead cost the deferred `IndexOrDocValuesQuery`s were built with.
     let mut lead_cost = None;
+    // The required clauses that score nothing -- the filters, and the
+    // `MUST` clauses of a boolean built without scores -- on the segment's
+    // leading sort keys, matched as one run (`sort_prefix_run`), by group
+    // and position. A `MUST` clause's run never stands for a lone scoring
+    // clause rebuilt below.
+    let mut prefix_run: ((i32, i32), Vec<(usize, usize)>) = ((0, 0), Vec::new());
+    let mut run_parents = None;
+    {
+        let at: Vec<(usize, usize)> = (if mode == Mode::NoScores { 0..2 } else { 1..2 })
+            .flat_map(|g| (0..groups[g].0.len()).map(move |i| (g, i)))
+            .collect();
+        let clauses: Vec<&Clause> = at.iter().map(|&(g, i)| &groups[g].0[i]).collect();
+        if let Some(found) = super::sort_prefix::sort_prefix_run(ctx, &clauses)? {
+            let Some(run) = found.run else {
+                return Ok(None);
+            };
+            let mut used: Vec<(usize, usize)> = found.clauses.into_iter().map(|u| at[u]).collect();
+            // The run stands in a filter's place when one is among them.
+            if let Some(f) = used.iter().position(|&(g, _)| g == 1) {
+                used.swap(0, f);
+            }
+            prefix_run = (run, used);
+            run_parents = found.parents;
+        }
+    }
     for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
         for (i, c) in clauses.iter().enumerate() {
             if let (2, true, Clause::Fuzzy(f)) = (g, flatten, c) {
@@ -936,6 +961,26 @@ pub(crate) fn build_clauses<'a, 'q>(
                 costs[g].push(None);
                 built[g].push(None);
                 flattened[i] = Some(children);
+                continue;
+            }
+            // The filters on the segment's leading sort keys: one run of
+            // doc ids, standing in the first of them's place, the others
+            // dropped.
+            if let Some(at) = prefix_run.1.iter().position(|&p| p == (g, i)) {
+                let child = if at == 0 {
+                    let (min, max) = prefix_run.0;
+                    match run_parents {
+                        None => crate::exec::ranges::doc_range(min, max, boost, *m),
+                        Some(parents) => {
+                            crate::exec::ranges::bits_range(parents, min, max, boost, *m)
+                        }
+                    }
+                    .map(Child::Scorer)
+                } else {
+                    None
+                };
+                costs[g].push(child.as_ref().map(Child::cost));
+                built[g].push(child);
                 continue;
             }
             if deferred && index_or_doc_values_of(c).is_some() {
@@ -952,24 +997,6 @@ pub(crate) fn build_clauses<'a, 'q>(
                     }
                 }
                 continue;
-            }
-            // A filter on the field a segment is sorted by first, where every
-            // document holds at most one term of it: its documents are one
-            // run of doc ids, matched without reading the postings.
-            if g == 1 {
-                if let Clause::Term(t) = c {
-                    if let Some(run) = sorted_term_run(ctx, t)? {
-                        let child = run.and_then(|(min, max)| {
-                            crate::exec::ranges::doc_range(min, max, boost, *m).map(Child::Scorer)
-                        });
-                        if child.is_none() {
-                            return Ok(None);
-                        }
-                        costs[g].push(child.as_ref().map(Child::cost));
-                        built[g].push(child);
-                        continue;
-                    }
-                }
             }
             let child = child(ctx, c, boost, *m, *top)?;
             if child.is_none() && *required {
@@ -1047,7 +1074,13 @@ pub(crate) fn build_clauses<'a, 'q>(
         }
     }
     let mut must_pairs = pair(must, &q.must);
-    if top_level && written > 1 && must_pairs.len() + should_pairs.len() == 1 && !from_fuzzy {
+    let run_in_must = prefix_run.1.first().is_some_and(|&(g, _)| g == 0);
+    if top_level
+        && written > 1
+        && must_pairs.len() + should_pairs.len() == 1
+        && !from_fuzzy
+        && !run_in_must
+    {
         let lone = must_pairs.first_mut().or(should_pairs.first_mut());
         if let Some((built, clause)) = lone {
             if !built.is_leg() {
@@ -1072,7 +1105,10 @@ pub(crate) fn build_clauses<'a, 'q>(
 /// `first + docFreq - 1`, which leaves no gap. `Some(None)`
 /// when the term is absent; `None` where there is no run, or a segment has
 /// document blocks, where only the parents follow the sort.
-fn sorted_term_run(ctx: &LeafContext<'_>, t: &TermQuery) -> Result<Option<Option<(i32, i32)>>> {
+pub(super) fn sorted_term_run(
+    ctx: &LeafContext<'_>,
+    t: &TermQuery,
+) -> Result<Option<Option<(i32, i32)>>> {
     use lucene_index::segment_info::IndexSortKind;
     let Some(reader) = ctx.reader else {
         return Ok(None);

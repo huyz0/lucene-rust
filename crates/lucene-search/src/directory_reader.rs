@@ -183,6 +183,8 @@ pub struct SegmentReader {
     /// [`Self::skip_indexes`].
     dvs: Vec<(Arc<Input>, String, Arc<doc_values::DocValuesMeta>)>,
     skip_indexes: Arc<OnceLock<HashMap<i32, doc_values::DocValuesSkipIndex>>>,
+    /// [`Self::block_parents`], found on first use.
+    block_parents: Arc<OnceLock<Option<Arc<BlockParents>>>>,
     /// Sparse doc-values fields' documents (their `IndexedDISI`), decoded on
     /// first use and shared by every iterator opened over them since, under
     /// the process-wide byte budget of [`crate::sparse_docs_cache`]. Shared
@@ -740,6 +742,7 @@ impl SegmentReader {
             derived_source: None,
             dvs: Vec::new(),
             skip_indexes: Arc::default(),
+            block_parents: Arc::default(),
             docs_with_field: Arc::default(),
             max_doc,
             doc_base: 0,
@@ -1373,6 +1376,7 @@ impl SegmentReader {
             .map(Arc::new),
             dvs,
             skip_indexes: Arc::default(),
+            block_parents: Arc::default(),
             docs_with_field: Arc::default(),
             max_doc: si.doc_count,
             doc_base,
@@ -2293,6 +2297,54 @@ impl SegmentReader {
         self.has_blocks
     }
 
+    /// A segment of document blocks: its parent documents (those the
+    /// `IndexWriterConfig.setParentField` field marks) and, by index sort
+    /// key, whether only parents hold the key's values. `None` without
+    /// blocks or a parent field.
+    ///
+    /// # Errors
+    /// A corrupt docs-with-field region.
+    pub(crate) fn block_parents(&self) -> crate::Result<Option<&BlockParents>> {
+        if let Some(found) = self.block_parents.get() {
+            return Ok(found.as_deref());
+        }
+        let found = self.find_block_parents()?.map(Arc::new);
+        let _ = self.block_parents.set(found);
+        Ok(self.block_parents.get().and_then(|f| f.as_deref()))
+    }
+
+    fn find_block_parents(&self) -> crate::Result<Option<BlockParents>> {
+        if !self.has_blocks || self.simpletext.is_some() || self.max_doc <= 0 {
+            return Ok(None);
+        }
+        let Some(field) = self.field_infos.fields.iter().find(|f| f.parent_field) else {
+            return Ok(None);
+        };
+        let all = |n: i32| {
+            let mut b = FixedBitSet::new(n as usize);
+            b.set_range(0, n as usize);
+            b
+        };
+        let parents = match self.doc_values_exists_docs(&field.name)? {
+            Some(ExistsDocs::Bits(b)) => b,
+            Some(ExistsDocs::All) => all(self.max_doc),
+            Some(ExistsDocs::None) | None => return Ok(None),
+        };
+        let mut keys_on_parents = Vec::new();
+        for key in self.index_sort().unwrap_or_default() {
+            let only = match self.doc_values_exists_docs(&key.field)? {
+                Some(ExistsDocs::Bits(b)) => FixedBitSet::and_not_count(&b, &parents) == 0,
+                Some(ExistsDocs::All) => parents.cardinality() == self.max_doc as usize,
+                Some(ExistsDocs::None) | None => true,
+            };
+            keys_on_parents.push(only);
+        }
+        Ok(Some(BlockParents {
+            parents,
+            keys_on_parents,
+        }))
+    }
+
     /// `SegmentReader.getSegmentInfo().info.getDiagnostics()`.
     pub fn diagnostics(&self) -> &[(String, String)] {
         &self.diagnostics
@@ -2797,6 +2849,18 @@ impl SegmentReader {
             .find(|(number, _)| *number == field_number)
             .map(|(_, f)| f)
     }
+}
+
+/// [`SegmentReader::block_parents`]: where the index sort puts a segment of
+/// document blocks' documents. Only the parents follow the sort, each
+/// after its block's children, which share its place.
+#[derive(Debug)]
+pub(crate) struct BlockParents {
+    /// The parent documents, a bit per document below `maxDoc`.
+    pub(crate) parents: FixedBitSet,
+    /// By index sort key, in order: whether no child holds a value of the
+    /// key's field, so the key orders the blocks by their parents' values.
+    pub(crate) keys_on_parents: Vec<bool>,
 }
 
 /// A segment's documents with a value for a field ([`SegmentReader::field_exists_docs`]).

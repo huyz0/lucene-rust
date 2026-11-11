@@ -1410,8 +1410,15 @@ pub(crate) fn bulk_boolean_own<'a>(
             // `TOP_SCORES` gets no bulk scorer of its own, but
             // `DefaultBulkScorer` over `ConjunctionScorer`, which collects --
             // and so counts -- every document the scoring clause's impacts
-            // iterator lands on.
-            return bulk_boolean_tree(ctx, q, boost, mode);
+            // iterator lands on. The clauses built above are its children.
+            return bulk_tree_of(
+                children(must),
+                children(filter),
+                children(should),
+                must_not,
+                msm,
+                mode,
+            );
         } else if all_legs(&must) && all_legs(&filter) {
             let mut legs: Vec<TermLeg<'a>> = std::mem::take(&mut must)
                 .into_iter()
@@ -1450,7 +1457,14 @@ pub(crate) fn bulk_boolean_own<'a>(
             let filter_scorer = filter_of(std::mem::take(&mut filter));
             if filter_scorer.two_phase() {
                 if !filter_scorer.batch_matches() || !super::batches_on() {
-                    return bulk_boolean_tree(ctx, q, boost, mode);
+                    return bulk_tree_of(
+                        vec![c],
+                        vec![Child::Scorer(filter_scorer)],
+                        children(should),
+                        must_not,
+                        msm,
+                        mode,
+                    );
                 }
                 return Ok(Some(Bulk::TwoPhaseTerm(
                     Box::new(c.into_leg()),
@@ -1478,7 +1492,14 @@ pub(crate) fn bulk_boolean_own<'a>(
             let filter_scorer = filter_of(std::mem::take(&mut filter));
             let dense = filter_scorer.cost().saturating_mul(8) >= inner_cost;
             if filter_scorer.two_phase() || filter_scorer.contains(0).is_none() || !dense {
-                return bulk_boolean_tree(ctx, q, boost, mode);
+                return bulk_tree_of(
+                    vec![c],
+                    vec![Child::Scorer(filter_scorer)],
+                    children(should),
+                    must_not,
+                    msm,
+                    mode,
+                );
             }
             drop(c);
             match bulk_clause(ctx, clause, boost, mode)? {
@@ -1749,6 +1770,29 @@ fn bulk_boolean_tree<'a>(
     mode: Mode,
 ) -> Result<Option<Bulk<'a>>> {
     Ok(super::build::build_boolean_root(ctx, q, boost, mode, true)?.map(Bulk::scorer))
+}
+
+/// `DefaultBulkScorer` over the boolean's scorer tree, composed from the
+/// clauses [`bulk_boolean_own`] already built: the scorer
+/// [`bulk_boolean_tree`] builds, without building every clause a second
+/// time (a point range's matches, a term's dictionary seek).
+fn bulk_tree_of<'a>(
+    must: Vec<Child<'a>>,
+    filter: Vec<Child<'a>>,
+    should: Vec<Child<'a>>,
+    must_not: Vec<Child<'a>>,
+    msm: usize,
+    mode: Mode,
+) -> Result<Option<Bulk<'a>>> {
+    let scorer = super::build::compose(must, filter, should, must_not, msm, mode, true)?;
+    #[cfg(any(test, feature = "asserting"))]
+    let scorer = scorer.map(|s| super::asserting::wrap(s, mode, true));
+    Ok(scorer.map(Bulk::scorer))
+}
+
+/// The built clauses of one group, without the clauses they came from.
+fn children<'a>(v: Vec<(Child<'a>, &Clause)>) -> Vec<Child<'a>> {
+    v.into_iter().map(|(c, _)| c).collect()
 }
 
 /// `filteredOptionalBulkScorer`'s filter: the `FILTER` clauses as one
