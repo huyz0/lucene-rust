@@ -935,6 +935,7 @@ pub(crate) fn build_clauses<'a, 'q>(
     // and position. A `MUST` clause's run never stands for a lone scoring
     // clause rebuilt below.
     let mut prefix_run: ((i32, i32), Vec<(usize, usize)>) = ((0, 0), Vec::new());
+    let mut run_parents = None;
     {
         let at: Vec<(usize, usize)> = (if mode == Mode::NoScores { 0..2 } else { 1..2 })
             .flat_map(|g| (0..groups[g].0.len()).map(move |i| (g, i)))
@@ -950,6 +951,7 @@ pub(crate) fn build_clauses<'a, 'q>(
                 used.swap(0, f);
             }
             prefix_run = (run, used);
+            run_parents = found.parents;
         }
     }
     for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
@@ -967,7 +969,13 @@ pub(crate) fn build_clauses<'a, 'q>(
             if let Some(at) = prefix_run.1.iter().position(|&p| p == (g, i)) {
                 let child = if at == 0 {
                     let (min, max) = prefix_run.0;
-                    crate::exec::ranges::doc_range(min, max, boost, *m).map(Child::Scorer)
+                    match run_parents {
+                        None => crate::exec::ranges::doc_range(min, max, boost, *m),
+                        Some(parents) => {
+                            crate::exec::ranges::bits_range(parents, min, max, boost, *m)
+                        }
+                    }
+                    .map(Child::Scorer)
                 } else {
                     None
                 };

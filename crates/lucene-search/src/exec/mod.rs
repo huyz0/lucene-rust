@@ -53,6 +53,7 @@ pub(crate) mod query_join;
 pub(crate) mod ranges;
 mod req;
 mod sort_prefix;
+pub use sort_prefix::pinned_sort_keys;
 pub(crate) mod span;
 pub(crate) mod spans;
 mod term_dismax;
