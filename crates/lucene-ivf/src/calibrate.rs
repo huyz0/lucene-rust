@@ -26,7 +26,7 @@ use rayon::prelude::*;
 
 use crate::kmeans::{self, SplitMix64};
 use crate::reader::{reach, Candidate, IvfField, Order, RangeSource, SearchStats};
-use crate::Result;
+use crate::{Result, Similarity};
 
 /// A field's calibrated search depth.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,14 +72,83 @@ struct Truth {
     neighbours: Vec<u32>,
 }
 
+/// The sampled queries of a field and their exact `k` nearest neighbours
+/// among the field's other vectors: what calibration measures recall
+/// against, the same whatever the field's quantizer.
+pub(crate) struct Truths {
+    truths: Vec<Truth>,
+    k: usize,
+}
+
+impl Truths {
+    /// [`QUERIES`] of the `n` vectors of `vectors` (as indexed: `Cosine`
+    /// vectors unit-normalized), picked by `seed`, with their neighbours by
+    /// a brute-force scan; `None` for fewer than two vectors.
+    // ARITH: indices are below the vector count.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn sample(
+        vectors: &[f32],
+        dim: usize,
+        similarity: Similarity,
+        seed: u64,
+    ) -> Option<Self> {
+        let n = vectors.len().checked_div(dim)?;
+        if n < 2 {
+            return None;
+        }
+        let k = K.min(n - 1);
+        let queries = kmeans::sample_indices(n, QUERIES, &mut SplitMix64::new(seed));
+        let truths = queries
+            .par_iter()
+            .map(|&qi| {
+                let q = kmeans::row(vectors, dim, qi);
+                let mut scored: Vec<(f32, u32)> = (0..n)
+                    .filter(|&j| j != qi)
+                    .map(|j| (similarity.score(q, kmeans::row(vectors, dim, j)), j as u32))
+                    .collect();
+                let by_score =
+                    |a: &(f32, u32), b: &(f32, u32)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
+                if k < scored.len() {
+                    scored.select_nth_unstable_by(k, by_score);
+                    scored.truncate(k);
+                }
+                Truth {
+                    query: qi,
+                    neighbours: scored.into_iter().map(|(_, j)| j).collect(),
+                }
+            })
+            .collect();
+        Some(Truths { truths, k })
+    }
+
+    fn total(&self) -> usize {
+        self.truths.iter().map(|t| t.neighbours.len()).sum()
+    }
+}
+
+/// What a field's quantizer reaches at its calibrated depth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Evaluation {
+    /// The depth calibrated for the target.
+    pub(crate) calibration: Calibration,
+    /// Whether the shallowest rerank cap tried reaches the target.
+    pub(crate) reached: bool,
+    /// The recall at that cap (the deepest cap's when none reaches it).
+    pub(crate) recall: f64,
+    /// The candidates reranked per query at that cap: the shallowest that
+    /// reaches the target, which ranks quantizers by their codes alone (the
+    /// recorded calibration may rerank up to `GENEROUS` times more, a slack
+    /// every candidate gets alike).
+    pub(crate) reranked: f64,
+    /// The cluster entries scanned per query at the calibrated nprobe.
+    pub(crate) scanned: f64,
+}
+
 /// The calibrated depth of `field`, written in memory with its postings in
 /// `postings`, each slot's document being its vector's index in `vectors`
 /// (as indexed: `Cosine` vectors unit-normalized). `clusters_of[i]` holds
 /// vector `i`'s primary cluster and its spilled one (`u32::MAX` for none).
 /// `None` for a field of fewer than two vectors.
-// ARITH: indices are below the vector or cluster counts; counts are sums of
-// at most `QUERIES * K` hits.
-#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn calibrate(
     field: &IvfField,
     postings: &dyn RangeSource,
@@ -88,36 +157,34 @@ pub(crate) fn calibrate(
     target: f32,
     seed: u64,
 ) -> Result<Option<Calibration>> {
+    let Some(truths) = Truths::sample(vectors, field.dimension(), field.similarity(), seed) else {
+        return Ok(None);
+    };
+    Ok(evaluate(field, postings, vectors, clusters_of, target, &truths)?.map(|e| e.calibration))
+}
+
+/// [`calibrate`] against `truths`, with what the chosen depth reaches.
+// ARITH: indices are below the vector or cluster counts; counts are sums of
+// at most `QUERIES * K` hits.
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) fn evaluate(
+    field: &IvfField,
+    postings: &dyn RangeSource,
+    vectors: &[f32],
+    clusters_of: &[[u32; 2]],
+    target: f32,
+    truths: &Truths,
+) -> Result<Option<Evaluation>> {
     let n = field.count();
     let nlist = field.clusters();
-    if n < 2 || nlist == 0 {
+    if n < 2 || nlist == 0 || truths.truths.is_empty() {
         return Ok(None);
     }
     let dim = field.dimension();
     let similarity = field.similarity();
-    let k = K.min(n - 1);
-    let queries = kmeans::sample_indices(n, QUERIES, &mut SplitMix64::new(seed));
-
-    let truths: Vec<Truth> = queries
-        .par_iter()
-        .map(|&qi| {
-            let q = kmeans::row(vectors, dim, qi);
-            let mut scored: Vec<(f32, u32)> = (0..n)
-                .filter(|&j| j != qi)
-                .map(|j| (similarity.score(q, kmeans::row(vectors, dim, j)), j as u32))
-                .collect();
-            let by_score = |a: &(f32, u32), b: &(f32, u32)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
-            if k < scored.len() {
-                scored.select_nth_unstable_by(k, by_score);
-                scored.truncate(k);
-            }
-            Truth {
-                query: qi,
-                neighbours: scored.into_iter().map(|(_, j)| j).collect(),
-            }
-        })
-        .collect();
-    let total: usize = truths.iter().map(|t| t.neighbours.len()).sum();
+    let k = truths.k;
+    let total = truths.total();
+    let truths = &truths.truths;
 
     // nprobe: the first of 1, 2, 4, ..., nlist whose clusters hold enough
     // neighbours. All clusters hold every one.
@@ -150,13 +217,15 @@ pub(crate) fn calibrate(
     }
 
     // rerank: per cap, the hits and the candidates reranked of a bounded
-    // rerank (as `Rerank::Bounded`), summed over the queries.
+    // rerank (as `Rerank::Bounded`), summed over the queries, and the
+    // entries each query's probes scan.
     let longest = depth(MULTIPLES[MULTIPLES.len() - 1], k);
-    let per_query: Vec<Vec<(usize, usize)>> = truths
+    let per_query: Vec<(Vec<(usize, usize)>, usize)> = truths
         .par_iter()
-        .map(|t| -> Result<Vec<(usize, usize)>> {
+        .map(|t| -> Result<(Vec<(usize, usize)>, usize)> {
             let q = kmeans::row(vectors, dim, t.query);
             let probes = field.probe_order(q, nprobe);
+            let scanned = probes.iter().map(|&c| field.cluster_size(c)).sum();
             let own = t.query as i32;
             let accept = move |doc: i32| doc != own;
             let candidates = field.scan(
@@ -174,27 +243,27 @@ pub(crate) fn calibrate(
                 .iter()
                 .map(|c| similarity.score(q, kmeans::row(vectors, dim, c.doc as usize)))
                 .collect();
-            Ok(MULTIPLES
+            let caps = MULTIPLES
                 .iter()
                 .map(|&m| {
                     let cap = depth(m, k).min(candidates.len());
                     bounded(&candidates[..cap], &exact, k, &t.neighbours)
                 })
-                .collect())
+                .collect();
+            Ok((caps, scanned))
         })
         .collect::<Result<_>>()?;
     let sums: Vec<(usize, usize)> = (0..MULTIPLES.len())
         .map(|m| {
             per_query
                 .iter()
-                .fold((0, 0), |(h, w), q| (h + q[m].0, w + q[m].1))
+                .fold((0, 0), |(h, w), q| (h + q.0[m].0, w + q.0[m].1))
         })
         .collect();
+    let scanned: usize = per_query.iter().map(|q| q.1).sum();
     let goal = f64::from(target) * total as f64;
-    let reached = sums
-        .iter()
-        .position(|&(hits, _)| hits as f64 >= goal)
-        .unwrap_or(MULTIPLES.len() - 1);
+    let first = sums.iter().position(|&(hits, _)| hits as f64 >= goal);
+    let reached = first.unwrap_or(MULTIPLES.len() - 1);
     // A deeper cap costs only what the early stop lets through: take the
     // deepest whose work stays within `GENEROUS` of the first that reaches
     // the target.
@@ -203,9 +272,16 @@ pub(crate) fn calibrate(
         .take_while(|&m| sums[m].1 as f64 <= budget)
         .last()
         .unwrap_or(reached);
-    Ok(Some(Calibration {
-        probe_fraction: nprobe as f32 / nlist as f32,
-        rerank_multiple: MULTIPLES[chosen],
+    let queries = truths.len() as f64;
+    Ok(Some(Evaluation {
+        calibration: Calibration {
+            probe_fraction: nprobe as f32 / nlist as f32,
+            rerank_multiple: MULTIPLES[chosen],
+        },
+        reached: first.is_some(),
+        recall: sums[reached].0 as f64 / total.max(1) as f64,
+        reranked: sums[reached].1 as f64 / queries,
+        scanned: scanned as f64 / queries,
     }))
 }
 

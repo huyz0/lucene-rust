@@ -313,6 +313,13 @@ pub trait QuantizerFactory: Send + Sync + std::fmt::Debug {
         sample: &[f32],
     ) -> Result<Box<dyn Quantizer>>;
 
+    /// The factories a writer picks among for each field it writes, by
+    /// what that field's own vectors reach; `None` (the default) for a
+    /// factory that is itself the pick.
+    fn candidates(&self) -> Option<&[Box<dyn QuantizerFactory>]> {
+        None
+    }
+
     /// Rebuilds the quantizer whose [`Quantizer::state`] was `state`.
     ///
     /// # Errors

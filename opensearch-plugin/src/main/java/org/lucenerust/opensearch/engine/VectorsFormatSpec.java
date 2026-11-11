@@ -33,7 +33,9 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
     public static final int DIBIT = 4;
 
     /** How many IVF quantizers there are: {@code KnnFieldConfig.IVF_QUANTIZERS}'s size. */
-    static final int IVF_QUANTIZERS = 12;
+    static final int IVF_QUANTIZERS = 13;
+    /** The wire number of {@code auto}: IVF only, an HNSW walk has no such codes. */
+    static final int IVF_AUTO_QUANTIZER = 12;
 
     public static VectorsFormatSpec hnsw(int m, int beam) {
         return new VectorsFormatSpec(1, m, beam, 0);
@@ -95,7 +97,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
                 case "hnsw_half" -> p.length == 3 ? hnswHalfFloat(Integer.parseInt(p[1]), Integer.parseInt(p[2])) : DEFAULT;
                 case "hnsw_rq" -> {
                     int quantizer = p.length == 4 ? Integer.parseInt(p[1]) : -1;
-                    yield quantizer >= 0 && quantizer < IVF_QUANTIZERS
+                    yield quantizer >= 0 && quantizer < IVF_QUANTIZERS && quantizer != IVF_AUTO_QUANTIZER
                         ? hnswRq(quantizer, Integer.parseInt(p[2]), Integer.parseInt(p[3]))
                         : DEFAULT;
                 }
