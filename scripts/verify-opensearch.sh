@@ -17,7 +17,11 @@
 # own, operation for operation, through restarts, SIGKILL, a writer panic and
 # a tripped breaker.
 #
-#   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--keep]
+# With --js the plugin is built with V8 (-Pjs) and the node serves
+# `"lang": "js"` scripts (lucene_rust.script.js.enabled), which the e2e
+# checks against the same scripts in Painless.
+#
+#   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--js] [--keep]
 #
 # Needs Docker, a JDK 25 (Gradle's toolchain; see
 # opensearch-plugin/build.gradle), Gradle and cargo. The node listens on
@@ -32,6 +36,7 @@ PORT="${OS_PORT:-9200}"
 KEEP=0
 YAML=0
 ENGINE=0
+JS=0
 YAML_SUITES="${YAML_SUITES:-search,search.aggregation,search.highlight,search.inner_hits,mlt,msearch,scroll,count,explain,suggest,get,index,delete,bulk,update,mget,exists}"
 ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -39,11 +44,15 @@ while [[ $# -gt 0 ]]; do
         --keep) KEEP=1; shift ;;
         --yaml) YAML=1; shift ;;
         --engine) ENGINE=1; shift ;;
+        --js) JS=1; shift ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
 
 scripts/opensearch-dist.sh
+if [[ $JS == 1 ]]; then
+    export ORG_GRADLE_PROJECT_js=1 E2E_JS=1
+fi
 gradle --no-daemon -q -p opensearch-plugin clean bundlePlugin check
 rm -f opensearch-plugin/docker/*.zip
 cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/docker/
@@ -63,6 +72,9 @@ docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 NODE_ENV=()
 if [[ $ENGINE == 1 ]]; then
     NODE_ENV=(-e lucene_rust.engine.default=true)
+fi
+if [[ $JS == 1 ]]; then
+    NODE_ENV+=(-e lucene_rust.script.js.enabled=true -e lucene_rust.script.js.timeout=1s)
 fi
 start_node() { # name port image [docker-run args...]
     docker rm -f "$1" >/dev/null 2>&1 || true
