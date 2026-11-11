@@ -31,6 +31,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.Scorable;
 import org.lucenerust.opensearch.NativeBridge;
 
+import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
@@ -104,6 +105,12 @@ public final class PainlessScore {
      * ({@code SCORE_ERROR}); {@code ScriptScoreQuery} raises it as an IllegalArgumentException.
      */
     private static final String SCORE_ERROR = "\u0001painless-score-error\u0001";
+
+    /**
+     * What an {@code OpenSearchException} of a query holding a native script starts with
+     * ({@code OPENSEARCH_ERROR}): {@code function_score}'s missing value or invalid final score.
+     */
+    private static final String OPENSEARCH_ERROR = "\u0001opensearch-error\u0001";
 
     private PainlessScore() {}
 
@@ -211,7 +218,7 @@ public final class PainlessScore {
 
     /** Whether {@code error} is a script's own exception or invalid score, not an internal failure. */
     public static boolean scriptFailed(String error) {
-        return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR));
+        return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR) || error.contains(OPENSEARCH_ERROR));
     }
 
     /** Whether this request sent a score script to the native runtime. */
@@ -231,6 +238,10 @@ public final class PainlessScore {
         int score = error == null ? -1 : error.indexOf(SCORE_ERROR);
         if (score >= 0) {
             return new IllegalArgumentException(error.substring(score + SCORE_ERROR.length()));
+        }
+        int opensearch = error == null ? -1 : error.indexOf(OPENSEARCH_ERROR);
+        if (opensearch >= 0) {
+            return new OpenSearchException(error.substring(opensearch + OPENSEARCH_ERROR.length()));
         }
         int at = error == null ? -1 : error.indexOf(SCRIPT_ERROR);
         if (at < 0) {
