@@ -37,6 +37,7 @@ import org.lucenerust.opensearch.painless.PainlessScore;
 import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
 import org.lucenerust.opensearch.knn.script.PainlessKnnScript;
 import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.index.query.IntervalFilterScript;
 import org.opensearch.script.AggregationScript;
 import org.opensearch.script.FilterScript;
 import org.opensearch.script.NumberSortScript;
@@ -361,6 +362,13 @@ final class ExtendedEncoder {
     @SuppressWarnings("unchecked")
     private static String source(IntervalsSource s, ByteArrayOutputStream out) throws ReflectiveOperationException {
         String name = s.getClass().getName();
+        if (name.equals("org.opensearch.index.query.IntervalsSourceProvider$ScriptFilterSource")) {
+            out.write(6);
+            out.write(2);
+            writeString(out, (String) field(s, "name"));
+            String why = painlessInterval((IntervalFilterScript) field(s, "script"), out);
+            return why != null ? why : source((IntervalsSource) field(s, "in"), out);
+        }
         if (name.startsWith(INTERVALS) == false) {
             return "interval_" + s.getClass().getSimpleName();
         }
@@ -805,6 +813,26 @@ final class ExtendedEncoder {
         return null;
     }
 
+    /**
+     * An {@code intervals} query's script filter, as the native runtime runs it: its spec (context
+     * {@link PainlessScore#INTERVAL}), or why it stays in Java.
+     */
+    private static String painlessInterval(IntervalFilterScript script, ByteArrayOutputStream out) {
+        String source = PainlessScore.sourceOf(script);
+        if (source == null) {
+            return "interval_script";
+        }
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        if (((Painless) prepared).names().length != 0) {
+            return "interval_painless";
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runInterval(script));
+        return null;
+    }
+
     /** A script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
     private record Painless(byte context, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {}
 
@@ -823,6 +851,7 @@ final class ExtendedEncoder {
             case PainlessScore.SORT -> PainlessScore.sort(script.getIdOrCode());
             case PainlessScore.AGGREGATION -> PainlessScore.aggregation(script.getIdOrCode());
             case PainlessScore.TERMS_SET -> PainlessScore.termsSet(script.getIdOrCode());
+            case PainlessScore.INTERVAL -> PainlessScore.interval(script.getIdOrCode());
             default -> PainlessScore.score(script.getIdOrCode());
         };
         if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
