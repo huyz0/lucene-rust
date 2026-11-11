@@ -640,6 +640,36 @@ impl BinaryDocValues for SegBinary<'_> {
     }
 }
 
+/// BINARY values of the `RustSubstring` format, decompressed a block at a
+/// time.
+struct SegSubstring<'a> {
+    cur: DvCursor<'a>,
+    index: lucene_codecs::substring::SubstringIndex<'a>,
+    block: lucene_codecs::substring::Block,
+    at: Option<usize>,
+}
+
+impl SegSubstring<'_> {
+    fn miss(&mut self) {
+        self.at = None;
+    }
+
+    fn load(&mut self) -> Result<()> {
+        let doc = self.cur.doc;
+        self.index
+            .read_block(i64::from(doc) >> self.index.block_shift(), &mut self.block)?;
+        self.at = self.block.docs().binary_search(&doc).ok();
+        Ok(())
+    }
+}
+dv_iterator!(SegSubstring);
+
+impl BinaryDocValues for SegSubstring<'_> {
+    fn binary_value(&self) -> &[u8] {
+        self.at.map(|k| self.block.value(k)).unwrap_or_default()
+    }
+}
+
 struct SegSorted<'a> {
     cur: DvCursor<'a>,
     ords: NumericReader<'a>,
@@ -1385,6 +1415,24 @@ impl SegmentReader {
         }
     }
 
+    /// `field`'s `RustSubstring` index, when its BINARY doc values are
+    /// written in that format ([`lucene_codecs::substring`]).
+    pub fn substring_index(
+        &self,
+        field: &str,
+    ) -> Result<Option<lucene_codecs::substring::SubstringIndex<'_>>> {
+        let Some((e, data)) = self.dv_field(field, DocValuesType::Binary, |m, n| m.binary_entry(n))
+        else {
+            return Ok(None);
+        };
+        match e.substring.as_deref() {
+            Some(sub) => Ok(Some(lucene_codecs::substring::SubstringIndex::new(
+                data, sub,
+            )?)),
+            None => Ok(None),
+        }
+    }
+
     /// Where the doc-values field `field` records its documents, with the
     /// column's data (tests).
     #[cfg(test)]
@@ -1493,6 +1541,14 @@ impl LeafReader for SegmentReader {
         else {
             return Ok(None);
         };
+        if let Some(sub) = e.substring.as_deref() {
+            return Ok(Some(Box::new(SegSubstring {
+                cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
+                index: lucene_codecs::substring::SubstringIndex::new(data, sub)?,
+                block: lucene_codecs::substring::Block::new(),
+                at: None,
+            })));
+        }
         Ok(Some(Box::new(SegBinary {
             cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
             reader: BinaryReader::new(data, e),

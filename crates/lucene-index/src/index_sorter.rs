@@ -160,7 +160,7 @@ pub fn read_segment_terms(
             let mut reader = doc_values::BinaryReader::new(dvd, entry);
             let mut out = Vec::with_capacity(len);
             for doc in 0..max_doc {
-                out.push(reader.value(doc)?.map(<[u8]>::to_vec));
+                out.push(reader.value_ref(doc)?.map(<[u8]>::to_vec));
             }
             Ok(Some(out))
         }

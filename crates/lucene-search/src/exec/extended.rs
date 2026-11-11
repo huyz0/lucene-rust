@@ -238,6 +238,7 @@ pub(crate) fn build<'a>(
         ExtendedQuery::Function(q) => super::function::function_query(ctx, q, boost),
         ExtendedQuery::FunctionRange(q) => super::function::function_range(ctx, q),
         ExtendedQuery::FunctionMatch(q) => super::function::function_match(ctx, q, boost, mode),
+        ExtendedQuery::Substring(q) => super::substring::substring(ctx, q, boost, mode),
         ExtendedQuery::Interval(q) => super::intervals::interval(ctx, q, boost, mode),
         ExtendedQuery::Span(q) => super::spans::span_node(ctx, q, boost, mode),
         ExtendedQuery::Covering(q) => {
@@ -307,12 +308,27 @@ pub(crate) enum Supplier {
     /// No scorer supplier: the whole query matches nothing here.
     Absent,
     /// A supplier; its cost when it can be had without building the scorer
-    /// (`PointRangeQuery`'s `estimateDocCount`), `None` otherwise.
+    /// (`PointRangeQuery`'s `estimateDocCount`, for the native long range
+    /// too), `None` otherwise.
     Present(Option<i64>),
 }
 
 /// The index side's supplier and `cost()`.
 pub(crate) fn index_side(ctx: &LeafContext<'_>, clause: &Clause) -> Result<Supplier> {
+    if let Clause::PointsRange(q) = clause {
+        // The one-dimensional long `PointRangeQuery` it stands for.
+        if q.min > q.max {
+            return Ok(Supplier::Absent);
+        }
+        let points = PointRangeQuery {
+            field: q.field.clone(),
+            num_dims: 1,
+            bytes_per_dim: 8,
+            lower: crate::extended_query::long_bytes(q.min).to_vec(),
+            upper: crate::extended_query::long_bytes(q.max).to_vec(),
+        };
+        return super::ranges::point_range_cost(ctx, &points);
+    }
     let Clause::Extended(e) = clause else {
         return Ok(Supplier::Present(None));
     };
