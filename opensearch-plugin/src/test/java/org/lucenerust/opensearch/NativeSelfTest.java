@@ -392,6 +392,24 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        // A range with doc values is one node (kind 47) after the tree tag; any other
+        // IndexOrDocValuesQuery is its index side.
+        byte[] both = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 5)
+            ),
+            f -> true
+        ).blob();
+        check(both != null && both[1] == 47, "a long range with doc values encodes as one node");
+        byte[] other = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 6)
+            ),
+            f -> true
+        ).blob();
+        check(other != null && other[1] == 11, "a range whose sides differ encodes its index side");
         // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
@@ -483,7 +501,7 @@ public final class NativeSelfTest {
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
                 // `range`, `term` and `terms` on the other numeric widths and
                 // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
-                case 10 -> switch (r.nextInt(6)) {
+                case 10 -> switch (r.nextInt(7)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
                     case 2 -> {
@@ -495,6 +513,15 @@ public final class NativeSelfTest {
                         // A range on an index-sorted shard's sort field: encoded as its fallback.
                         long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
                         yield new org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery("sl", a, b, LongPoint.newRangeQuery("sl", a, b));
+                    }
+                    case 5 -> {
+                        // A long range on a field with doc values, as OpenSearch builds it: one
+                        // node, either side per segment.
+                        long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
+                        yield new org.apache.lucene.search.IndexOrDocValuesQuery(
+                            LongPoint.newRangeQuery("sl", a, b),
+                            org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("sl", a, b)
+                        );
                     }
                     default -> new BoostQuery(IntPoint.newRangeQuery("si", 10, 20), 2f);
                 };

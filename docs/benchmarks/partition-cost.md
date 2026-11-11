@@ -37,16 +37,14 @@ within 2% across layouts (203-209 MB).
 - **Refresh** is where it shows: a refresh flushes what was buffered, and a
   sorted flush takes 3x (rust) to 3-5x (stock) as long. Searches see new
   documents that much later at the same refresh interval.
-- **Merges** run about as often; sorted merges take 1.4x the time. Force merge: 1.3-1.5x (rust), 1.3-1.9x
-  (stock).
+- **Merges** run about as often; sorted merges take 1.4x the time. Force
+  merge: 1.3-1.5x (rust), 1.3-1.9x (stock).
 - **Queries**: the composite sort brings a small tenant's text query 20-40x
   down from unsorted. With the tenant alone sorted, queries that filter only
   on the tenant gain 3x (`and`), but a query with another filter (`term`
-  and `phrase` here, both with a time range) stays at unsorted speed in
-  this port: the tenant's doc-id run is found, but the one-scoring-term bulk
-  path (`Bulk::FilteredTerm`) walks the term's postings over the whole
-  segment and tests the run per document instead of starting and ending at
-  it. Composite sorts avoid it because the time range folds into the run.
+  and `phrase` here, both with a time range) stayed at unsorted speed: the
+  range collected its points over the whole segment. Composite sorts avoid
+  it because the time range folds into the run. Fixed in the next section.
 - **Own segments per tenant** (`segments`, 200k documents; 2M did not
   finish in 10 minutes): 756 docs/s against 210k, refreshes of 65 s
   (one tiny segment per tenant per refresh), 4,687 segments, term queries
@@ -81,6 +79,36 @@ every cell. `ivf-p` is IVF with clusters per tenant
   flushes, so a refresh with vectors buffered takes seconds (4.5-5.4 s
   mean against stock's 0.2 s, which builds the graph as documents arrive).
 
+## Ranges with doc values keep their choice
+
+What the tenant-only rows above spend is the time range: 80% of a small
+tenant's query collects the range's points into a bit set over the whole
+segment. OpenSearch builds a `long`/`date`/`double` range on a field with
+doc values as an `IndexOrDocValuesQuery`, which in Lucene checks doc values
+instead when a cheaper clause leads; the plugin used to send only its points
+side. It now sends the pair as one node (`NODE_POINT_RANGE_OR_DV`, ABI 129),
+and the native side estimates the points side's cost as Lucene does, so the
+tenant's doc-id run (or a selective term) leads and the range is checked on
+its documents' doc values. Merged 2M-document indexes, hot mean µs;
+`stock` is Lucene 10.5.2 with the query OpenSearch builds:
+
+| class, kind | unsorted before | after | stock | tenant sort before | after | stock | composite after | stock |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| small term | 382 | 48 | 69 | 422 | 24 | 39 | 11 | 46 |
+| small phrase | 437 | 96 | 158 | 437 | 30 | 59 | 17 | 67 |
+| mid term | 463 | 128 | 182 | 450 | 69 | 51 | 13 | 59 |
+| mid phrase | 607 | 256 | 299 | 468 | 66 | 81 | 21 | 88 |
+| large term | 662 | 390 | 438 | 588 | 233 | 175 | 79 | 160 |
+| large phrase | 1211 | 911 | 961 | 915 | 699 | 340 | 101 | 328 |
+
+Top hits, totals and score bits are the same as before on all 360 queries of
+every layout, and the scores equal stock Lucene's. The composite sort was
+already folding the range into its run and does not change. Large tenants
+on the tenant-only sort stay behind stock (233 vs 175 µs): the range's doc
+values are checked one document at a time over 40k-360k candidates.
+`fts_partition` and `PartitionBench` take `RANGE=iodv` for the OpenSearch
+shape.
+
 ## Verdict
 
 Sorting by tenant does not improve merge or indexing; it costs 18-27%
@@ -89,7 +117,8 @@ and about nothing for vectors. It is a query-side layout: composite tenant +
 time sorts make small and mid tenants' text queries 20-40x faster and IVF's
 mid tenants 2.7x. Own segments per tenant lose on every axis. Keep the
 sort opt-in; recommend the composite sort over the tenant alone for
-always-filtered tenants until `Bulk::FilteredTerm` (and the phrase path)
-clamp to the run; keep `ivf_partition_clusters` opt-in.
+always-filtered tenants when they sort or filter by time too (the tenant
+alone now gets most of the gain on ranged queries); keep
+`ivf_partition_clusters` opt-in.
 
 Raw data: `/mnt/project-files/perf/partition-cost/`.

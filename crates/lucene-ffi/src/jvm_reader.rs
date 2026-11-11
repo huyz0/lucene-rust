@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 123;
+pub const JVM_ABI_VERSION: u32 = 129;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -81,7 +81,7 @@ const NODE_PHRASE: u8 = 7;
 const NODE_TERM_SET: u8 = 8;
 const NODE_PREFIX: u8 = 9;
 const NODE_WILDCARD: u8 = 10;
-const NODE_POINT_RANGE: u8 = 11;
+pub(crate) const NODE_POINT_RANGE: u8 = 11;
 const NODE_REGEXP: u8 = 12;
 const NODE_EXISTS: u8 = 13;
 const NODE_TERM_STATS: u8 = 14;
