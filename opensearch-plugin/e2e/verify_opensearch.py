@@ -436,7 +436,7 @@ def matrix():
                              "aggs": {"s": {"stats": sc("doc['qty'].size() == 0 ? 0 : doc['qty'].value * params.f", f=2)}}}, "native")
     add("agg script sum avg min", {"size": 0, "aggs": {"s": {"sum": sc("doc['n'].value % 7")}, "a": {"avg": sc("doc['ratio'].size() == 0 ? 1 : doc['ratio'].value")},
                                                        "lo": {"min": sc("doc['tag'].size() == 0 ? -1 : doc['tag'].value.length()")}}}, "native")
-    add("agg script list values", {"size": 0, "aggs": {"c": {"value_count": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")},
+    add("agg script list values", {"size": 0, "aggs": {"s": {"sum": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")},
                                                        "hi": {"max": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")}}}, "native")
     add("agg script boolean", {"size": 0, "aggs": {"s": {"sum": sc("doc['qty'].size() > 0 && doc['qty'].value > 3")}}}, "native")
     add("agg script under terms", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"m": {"max": sc("doc['n'].value * 3")}}}}}, "native")
@@ -914,12 +914,15 @@ def raw_search(index, body):
         return e.code, json.loads(e.read().decode())
 
 
-def error_shape(resp):
+def error_shape(resp, suppressed=True):
     """A failed search's response with the parts that name a node or time dropped, and its
-    shard failures in shard order."""
+    shard failures in shard order; without `suppressed`, the other slices' exceptions a
+    concurrent search adds to the first are dropped too."""
+    drop = ("node", "took") if suppressed else ("node", "took", "suppressed")
+
     def norm(v):
         if isinstance(v, dict):
-            return {k: norm(x) for k, x in v.items() if k not in ("node", "took")}
+            return {k: norm(x) for k, x in v.items() if k not in drop}
         if isinstance(v, list):
             items = [norm(x) for x in v]
             if items and all(isinstance(x, dict) and "shard" in x for x in items):
@@ -986,7 +989,11 @@ def script_errors(index, shards):
         label = f"script errors {index} [{name}]"
         check(want[0] != 200 or failed_shards(want[1]), f"{label}: the stock engine fails ({want[0]})")
         check(got[0] == want[0], f"{label}: status {got[0]} vs stock {want[0]}")
-        a, b = error_shape(got[1]), error_shape(want[1])
+        # A request with aggregations runs concurrently in stock (search.concurrent_segment_search
+        # auto): each slice's first exception after the first is suppressed into it. The native
+        # aggregation stops at the first.
+        whole = not name.startswith("agg ")
+        a, b = error_shape(got[1], whole), error_shape(want[1], whole)
         check(a == b, f"{label}: native error differs from stock: {json.dumps(a, sort_keys=True)[:1500]} vs {json.dumps(b, sort_keys=True)[:1500]}")
         delta = fallback_delta(before, after)
         check(not delta, f"{label}: no fallback (the script never re-runs in Java), got {delta}")
