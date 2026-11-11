@@ -213,6 +213,7 @@ pub mod document;
 pub mod drill_sideways_query;
 mod drill_sideways_scorer;
 mod exec;
+pub use exec::pinned_sort_keys;
 /// One segment's readers as the query executor reads them
 /// ([`LeafContext::for_spans`]).
 pub use exec::LeafContext;
