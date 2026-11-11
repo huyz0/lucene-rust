@@ -271,6 +271,12 @@ fn scripts_cannot_reach_out_or_keep_state() {
             "Object.getPrototypeOf(/a/[Symbol.matchAll]('a')).x = 1; return 1",
             "TypeError",
         ),
+        ("RegExp.input = 'x'; return 1", "TypeError"),
+        ("RegExp.$1.x", "TypeError"),
+        (
+            "Object.getOwnPropertyDescriptor(new Error(), 'stack').get.x = 1; return 1",
+            "TypeError",
+        ),
         // No memory outside the heap V8 limits.
         ("new Uint8Array(1 << 30)", "ReferenceError"),
         ("new ArrayBuffer(8)", "ReferenceError"),
@@ -355,11 +361,63 @@ fn a_field_read_first_runs_its_document_again() {
         vec![0.0, 20.0, 30.0]
     );
     assert_eq!(f.loads, 2);
+    // A catch that runs on, and a document before it that is done.
+    let s = script(
+        "if (doc['a'].value < 2) return 1; try { return doc['b'].value; } catch (e) { let k = 0; for (let i = 0; i < 1000; i++) k += i; return k; }",
+        &[("a", Kind::Number), ("b", Kind::Number)],
+    );
+    let mut f = mem(vec![
+        vec![vec![1.0], vec![2.0], vec![3.0]],
+        vec![vec![10.0], vec![20.0], vec![30.0]],
+    ]);
+    assert_eq!(
+        batch(&s, &p, &mut f, 3, None).unwrap(),
+        vec![1.0, 20.0, 30.0]
+    );
     let mut one = mem(vec![vec![vec![5.0]], vec![vec![7.0]]]);
     assert_eq!(
         run_one(&s, &p, 0, None, &mut one).unwrap(),
         Out::Number(7.0)
     );
+}
+
+#[test]
+fn a_result_too_large_is_refused() {
+    let mut f = mem(vec![]);
+    let p = params(&[]);
+    for src in [
+        "const a = []; a.length = 2 ** 32 - 1; return a",
+        "let a = [0]; for (let i = 0; i < 15; i++) a = Array(1000).fill(a); return a",
+    ] {
+        let out = run_one(&script(src, &[]), &p, 0, None, &mut f).unwrap();
+        assert_eq!(
+            out,
+            Out::Other(format!("a result of more than {MAX_VALUES} values")),
+            "{src}"
+        );
+    }
+}
+
+#[test]
+fn a_large_column_is_not_the_scripts_memory() {
+    std::thread::spawn(|| {
+        let s = Script::new(
+            "doc['n'].size()",
+            vec![("n".into(), Kind::Number)],
+            Limits {
+                timeout: Duration::from_secs(60),
+                max_heap: 16 << 20,
+            },
+        );
+        let n = 4096;
+        let mut f = mem(vec![(0..n).map(|_| vec![1.0; 1024]).collect()]);
+        assert_eq!(
+            batch(&s, &params(&[]), &mut f, n, None).unwrap(),
+            vec![1024.0; n]
+        );
+    })
+    .join()
+    .unwrap();
 }
 
 #[test]

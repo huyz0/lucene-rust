@@ -77,7 +77,8 @@ public final class JsScripts {
 
     /**
      * The heap each search thread's V8 isolate may grow to: the node holds up to this much per
-     * thread that has run a js script, outside the JVM heap and its circuit breakers.
+     * thread that has run a js script, outside the JVM heap and its circuit breakers, and for a
+     * moment as much again or 1 GB more, for a script that makes one large object past it.
      */
     public static final Setting<ByteSizeValue> MAX_HEAP = Setting.byteSizeSetting(
         "lucene_rust.script.js.max_heap",
@@ -286,6 +287,10 @@ public final class JsScripts {
             int rc = NativeBridge.painlessCheck(spec.toByteArray(), out);
             hit = rc != NativeBridge.OK ? "check failed: " + NativeBridge.lastError()
                 : out[0] == null ? "" : new String(out[0], StandardCharsets.UTF_8);
+            if (hit.startsWith("check failed") || hit.contains("past its heap limit")) {
+                // Not the script's: the next check tries again.
+                return hit;
+            }
             if (CHECKED.size() >= CACHE_LIMIT) {
                 CHECKED.clear();
             }
@@ -361,21 +366,50 @@ public final class JsScripts {
             }
         }
         for (char q : new char[] { '\'', '"', '`' }) {
-            int from = source.indexOf(q);
-            while (from >= 0) {
-                int to = source.indexOf(q, from + 1);
-                if (to < 0) {
-                    break;
+            // Between any two quotes, and between two a backslash does not escape.
+            for (boolean escapes : new boolean[] { false, true }) {
+                int from = next(source, q, 0, escapes);
+                while (from >= 0) {
+                    int to = next(source, q, from + 1, escapes);
+                    if (to < 0) {
+                        break;
+                    }
+                    String s = source.substring(from + 1, to);
+                    out.add(s);
+                    if (s.indexOf('\\') >= 0) {
+                        out.add(unescaped(s));
+                    }
+                    from = to;
                 }
-                String s = source.substring(from + 1, to);
-                out.add(s);
-                if (s.indexOf('\\') >= 0) {
-                    out.add(unescaped(s));
-                }
-                from = to;
             }
         }
         return out;
+    }
+
+    /** Where {@code q} next is in {@code s} from {@code from}, past escaped ones with {@code escapes}. */
+    private static int next(String s, char q, int from, boolean escapes) {
+        int i = s.indexOf(q, from);
+        while (escapes && i > 0) {
+            int slashes = 0;
+            while (i - 1 - slashes >= 0 && s.charAt(i - 1 - slashes) == '\\') {
+                slashes++;
+            }
+            if (slashes % 2 == 0) {
+                break;
+            }
+            i = s.indexOf(q, i + 1);
+        }
+        return i;
+    }
+
+    /** The code point {@code hex} spells, or null. */
+    private static Integer codePoint(String hex) {
+        try {
+            int cp = Integer.parseInt(hex, 16);
+            return Character.isValidCodePoint(cp) ? cp : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /** {@code s} with its JavaScript escapes read. */
@@ -385,6 +419,23 @@ public final class JsScripts {
             char c = s.charAt(i);
             if (c == '\\' && i + 1 < s.length()) {
                 char e = s.charAt(++i);
+                int hex = e == 'x' ? 2 : e == 'u' ? 4 : 0;
+                if (e == 'u' && i + 1 < s.length() && s.charAt(i + 1) == '{') {
+                    int end = s.indexOf('}', i + 2);
+                    Integer cp = end < 0 ? null : codePoint(s.substring(i + 2, end));
+                    if (cp != null) {
+                        out.appendCodePoint(cp);
+                        i = end;
+                        continue;
+                    }
+                } else if (hex > 0 && i + hex < s.length()) {
+                    Integer cp = codePoint(s.substring(i + 1, i + 1 + hex));
+                    if (cp != null) {
+                        out.appendCodePoint(cp);
+                        i += hex;
+                        continue;
+                    }
+                }
                 out.append(switch (e) {
                     case 'n' -> '\n';
                     case 't' -> '\t';
