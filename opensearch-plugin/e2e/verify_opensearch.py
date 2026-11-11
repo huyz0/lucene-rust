@@ -31,6 +31,7 @@ import urllib.request
 
 import geo_matrix
 import extended_matrix
+import hex_id_matrix
 
 BASE = "http://localhost:9200"
 FAILURES = []
@@ -1564,7 +1565,7 @@ def main():
         native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
     for index, shards in (("single", 1), ("multi", 3)):
         script_errors(index, shards)
-    # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
+    # parent-join: has_child/has_parent run natively (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
     except RuntimeError:
@@ -1595,6 +1596,8 @@ def main():
     # Five rounds: a filter is cached on its fifth use (UsageTrackingQueryCachingPolicy).
     for _ in range(5):
         native += run_matrix("geo", 1, "geo merged", rows=geo_matrix.rows())
+    # hex_id against keyword on the same values, under both engines and derived source.
+    native += hex_id_matrix.run(req, check, stats)
     print(f"matrix: {len(matrix())} request shapes x 4 indices, {len(geo_matrix.rows())} geo shapes x 2 indices; {native} shard queries ran native")
     # The fetch phase and get API with native stored fields.
     run_fetch("single", "fetch")

@@ -1056,6 +1056,8 @@ pub(crate) fn aggregate_tree_blobs(
         handle,
         "ffi_jvm_reader_aggregate_tree: unknown or already-closed handle",
     )?;
+    let query =
+        crate::jvm_reader::similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode

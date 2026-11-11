@@ -63,7 +63,8 @@ A request runs native when **all** of these hold:
   `TermStates`, as `multi_match` `cross_fields` builds);
 - every field in the index uses a default postings format some Lucene
   9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
-  `Lucene103`, `Lucene104`; M8 T8.5) or a completion format
+  `Lucene103`, `Lucene104`; M8 T8.5), the engine's zstd term-block format
+  `RustZstd104` (`index.lucene_rust.zstd_terms`), or a completion format
   (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
   an index an OpenSearch 2.x node wrote is served natively after the upgrade
   to 3.9.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
@@ -171,7 +172,7 @@ where the native call's fixed cost shows -- see
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
-| `has_child`, `has_parent` | `JoinUtil`'s global-ordinal joins (package-private Lucene classes) | no (`query_*`, `clause_*`): the join's from side runs in Java during the rewrite |
+| `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`lucene_rust_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
 
 ### Lucene-side leaves (Track A, 2026-10-30)
@@ -233,7 +234,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `RustZstd104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
