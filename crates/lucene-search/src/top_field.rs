@@ -93,6 +93,7 @@ use crate::Result;
 use std::sync::Arc;
 
 mod collapse;
+mod newest_n;
 mod opensearch;
 pub use collapse::{
     search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue,
@@ -4298,6 +4299,11 @@ pub(crate) fn search_sorted_leaves_with_statistics(
         similarity,
         scorer_only,
     };
+    if leaves.is_none() {
+        if let Some(top) = newest_n::search(&run)? {
+            return Ok(top);
+        }
+    }
     search_segments(&run, &all)
 }
 
@@ -4400,6 +4406,9 @@ pub fn search_sorted_min_score(
         similarity: None,
         scorer_only: false,
     };
+    if let Some(top) = newest_n::search(&run)? {
+        return Ok(top);
+    }
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
     let parts = crate::slices::run_slices_if(parallel, slices, |slice| {
@@ -5244,9 +5253,12 @@ mod tests {
             (&keyword, vec![keyword_last("ks", true)]),
         ];
         for (reader, sort) in cases {
+            // The comparators' own skipping, not the bounded newest-N search's.
             let with = |disabled: bool| {
                 DISABLE_SKIPPER.with(|d| d.set(disabled));
+                newest_n::tests::DISABLED.with(|d| d.set(true));
                 let r = run_t(reader, &all(), &sort, 10, 100, None).unwrap();
+                newest_n::tests::DISABLED.with(|d| d.set(false));
                 DISABLE_SKIPPER.with(|d| d.set(false));
                 r
             };
