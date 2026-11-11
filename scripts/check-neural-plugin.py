@@ -20,17 +20,21 @@ are compared:
   two_phase  neural_sparse_two_phase_processor: hits and pipeline errors
   warmup     _plugins/_neural/warmup and clear_cache on sparse and other indexes
   settings   every knn.* and neural_search setting's default, and bad values
+  semantic   semantic fields (dense and sparse models, chunking, the field's
+             options, model_selection, put mapping): the mappings the
+             transformer writes, the documents the system processor embeds,
+             neural and match queries on them, and the mapping errors
   sparse     neural_sparse by query_text with a model, by query_text with the
              default bert-uncased analyzer, by query_tokens, with the enricher,
              and its errors
 
   scripts/check-neural-plugin.py [--stock http://localhost:9200] [--keep]
-                                 [--only analyze,ingest,neural,sparse,rerank,two_phase,warmup,settings]
+                                 [--only analyze,ingest,neural,sparse,rerank,two_phase,warmup,settings,semantic]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import argparse, glob, importlib.util, json, os, shutil, subprocess, sys, urllib.error, urllib.request
+import argparse, functools, glob, hashlib, importlib.util, json, os, re, shutil, subprocess, sys, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = "3.9.0"
@@ -397,6 +401,131 @@ def sparse(c, ours, stock, z):
     return mids
 
 
+# ---------------------------------------------------------------- semantic
+
+def semantic_dense_model(n, z):
+    """tiny-bert with the additional_config.space_type a semantic field needs."""
+    body = {"name": f"tiny-bert-sem-{ml.RUN}", "version": "1.0.0", "model_format": "ONNX",
+            "model_content_hash_value": hashlib.sha256(z).hexdigest(), "model_content_size_in_bytes": len(z),
+            "url": f"http://localhost:{ml.SERVE}/tiny-bert.zip",
+            "model_config": {"model_type": "bert", "embedding_dimension": 32, "framework_type": "sentence_transformers",
+                             "pooling_mode": "mean", "normalize_result": True, "additional_config": {"space_type": "l2"}}}
+    mid = n.task(n.ok("POST", "/_plugins/_ml/models/_register", body)["task_id"])["model_id"]
+    n.task(n.ok("POST", f"/_plugins/_ml/models/{mid}/_deploy")["task_id"])
+    return mid
+
+
+def semantic_mappings(dense, sparse, plain):
+    return [
+        ("dense", {"properties": {"text": {"type": "semantic", "model_id": dense}, "n": {"type": "integer"}}}),
+        ("sparse", {"properties": {"text": {"type": "semantic", "model_id": sparse}, "n": {"type": "integer"}}}),
+        ("sparse search model", {"properties": {"text": {"type": "semantic", "model_id": sparse, "semantic_field_search_analyzer": "bert-uncased"},
+                                                "n": {"type": "integer"}}}),
+        ("dense chunking", {"properties": {"text": {"type": "semantic", "model_id": dense, "chunking": True}, "n": {"type": "integer"}}}),
+        ("dense chunking strategies", {"properties": {"text": {"type": "semantic", "model_id": dense, "chunking": [
+            {"algorithm": "delimiter", "parameters": {"delimiter": " "}}, {"algorithm": "fixed_token_length", "parameters": {"token_limit": 3}}]},
+            "n": {"type": "integer"}}}),
+        ("dense options", {"properties": {"text": {"type": "semantic", "model_id": dense, "raw_field_type": "match_only_text",
+                                                   "semantic_info_field_name": "info", "skip_existing_embedding": True,
+                                                   "dense_embedding_config": {"method": {"name": "hnsw", "engine": "lucene", "parameters": {"m": 8}}}},
+                                          "n": {"type": "integer"}}}),
+        ("sparse prune", {"properties": {"text": {"type": "semantic", "model_id": sparse,
+                                                  "sparse_encoding_config": {"prune_type": "max_ratio", "prune_ratio": 0.5}},
+                                         "n": {"type": "integer"}}}),
+        ("nested object", {"properties": {"obj": {"properties": {"text": {"type": "semantic", "model_id": sparse}}}, "n": {"type": "integer"}}}),
+        ("keyword raw", {"properties": {"text": {"type": "semantic", "model_id": sparse, "raw_field_type": "keyword"}, "n": {"type": "integer"}}}),
+        ("model_selection", {"properties": {"text": {"type": "semantic", "model_selection": {"language_option": "ENGLISH", "model_type": "SPARSE"}},
+                                            "n": {"type": "integer"}}}),
+    ], [
+        ("no model", {"properties": {"text": {"type": "semantic"}}}),
+        ("unknown model", {"properties": {"text": {"type": "semantic", "model_id": "no-such-model"}}}),
+        ("wrong model kind", {"properties": {"text": {"type": "semantic", "model_id": plain}}}),
+        ("bad raw type", {"properties": {"text": {"type": "semantic", "model_id": sparse, "raw_field_type": "integer"}}}),
+        ("dense config on sparse", {"properties": {"text": {"type": "semantic", "model_id": sparse, "dense_embedding_config": {"method": {"name": "hnsw"}}}}}),
+        ("sparse config on dense", {"properties": {"text": {"type": "semantic", "model_id": dense, "sparse_encoding_config": {"prune_type": "top_k", "prune_ratio": 3}}}}),
+        ("bad chunking", {"properties": {"text": {"type": "semantic", "model_id": dense, "chunking": [{"algorithm": "nope"}]}}}),
+        ("unknown param", {"properties": {"text": {"type": "semantic", "model_id": dense, "nope": 1}}}),
+        ("model_selection unset", {"properties": {"text": {"type": "semantic", "model_selection": {"language_option": "MULTILINGUAL", "model_type": "DENSE"}}}}),
+        ("model_selection bad", {"properties": {"text": {"type": "semantic", "model_selection": {"language_option": "KLINGON", "model_type": "DENSE"}}}}),
+        ("model_selection and model_id", {"properties": {"text": {"type": "semantic", "model_id": dense,
+                                                                  "model_selection": {"language_option": "ENGLISH", "model_type": "DENSE"}}}}),
+    ]
+
+
+def semantic_queries(label):
+    q = [("neural", {"query": {"neural": {"text": {"query_text": "dense retrieval of documents", "k": 5}}}}),
+         ("neural filter", {"query": {"neural": {"text": {"query_text": "documents", "k": 5, "filter": {"range": {"n": {"gte": 4}}}}}}}),
+         ("match raw", {"query": {"match": {"text": "documents"}}}),
+         ("bool", {"query": {"bool": {"must": [{"neural": {"text": {"query_text": "search", "k": 10}}}], "filter": [{"term": {"n": 3}}]}}})]
+    if "sparse" in label or label in ("keyword raw", "model_selection"):
+        q = [(l, json.loads(json.dumps(b).replace(', "k": 5', "").replace(', "k": 10', "").replace('"k": 5, ', ""))) for l, b in q]
+        q.append(("neural_sparse", {"query": {"neural_sparse": {"text": {"query_text": "sparse retrieval of documents"}}}}))
+    if label == "nested object":
+        q = [(l, json.loads(json.dumps(b).replace('"text"', '"obj.text"'))) for l, b in q]
+    return q
+
+
+def semantic(c, ours, stock, z, zs):
+    dense = [semantic_dense_model(n, z) for n in (ours, stock)]
+    sparse = [deploy(n, golden.SPARSE, "SPARSE_ENCODING", zs) for n in (ours, stock)]
+    plain = [text_model(n, z) for n in (ours, stock)]
+    for n, mid in zip((ours, stock), sparse):
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.neural_search.model_selection.model_id.sparse.english": mid}})
+    ids = dense + sparse + plain
+    def norm(r):
+        t = functools.reduce(lambda t, i: t.replace(i, "<id>"), ids, json.dumps(r))
+        # Where no engine is named, stock's knn_vector default is faiss and the plugin's lucene.
+        t = t.replace('"engine": "faiss"', '"engine": "lucene"')
+        # neural-search lists allowed values from a Set.of, whose order differs between JVM runs.
+        return json.loads(re.sub(r"\[([\w-]+(?:, [\w-]+)+)\]", lambda m: "[" + ", ".join(sorted(m.group(1).split(", "))) + "]", t))
+    good = [semantic_mappings(d, sp, pl) for d, sp, pl in zip(dense, sparse, plain)]
+    docs = [{"_id": d["_id"], "text": d["text"], "n": d["n"]} for d in DOCS[:12]] + [{"_id": "long", "text": LONG, "n": 99}]
+    before = rust_stats(ours)
+    for (label, mo), (_, ms) in zip(good[0][0], good[1][0]):
+        idx = "sem-" + label.replace(" ", "-").replace("_", "-")
+        outs = []
+        for n, m in ((ours, mo), (stock, ms)):
+            n.call("DELETE", f"/{idx}")
+            outs.append(answer(n.call("PUT", f"/{idx}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "index.knn": True}, "mappings": m})))
+        compare(c, f"semantic create {label}", norm(outs[0]), norm(outs[1]))
+        if outs[0][0] != 200 or outs[1][0] != 200:
+            continue
+        compare(c, f"semantic mapping {label}", *both(ours, stock, lambda n: norm(n.ok("GET", f"/{idx}/_mapping")[idx])))
+        body = docs if label != "nested object" else [{"_id": d["_id"], "obj": {"text": d["text"]}, "n": d["n"]} for d in docs]
+        for n in (ours, stock):
+            bulk(n, idx, body)
+        src = lambda n: norm([h["_source"] for h in n.ok("POST", f"/{idx}/_search", {"size": 50, "sort": [{"n": "asc"}]})["hits"]["hits"]])
+        compare(c, f"semantic documents {label}", src(ours), src(stock))
+        for qlabel, q in semantic_queries(label):
+            compare(c, f"semantic {label} {qlabel}", *both(ours, stock, lambda n: norm(hits(n.call("POST", f"/{idx}/_search", q)))))
+        # An update re-embeds only when the text changed (skip_existing_embedding) and keeps the model info.
+        upd = {"doc": {"n": 50}} if label != "nested object" else {"doc": {"n": 50}}
+        for n in (ours, stock):
+            n.ok("POST", f"/{idx}/_update/1?refresh=true", upd)
+        compare(c, f"semantic updated {label}", *both(ours, stock, lambda n: norm(n.ok("GET", f"/{idx}/_doc/1")["_source"])))
+    for (label, mo), (_, ms) in zip(good[0][1], good[1][1]):
+        outs = []
+        for n, m in ((ours, mo), (stock, ms)):
+            n.call("DELETE", "/sem-bad")
+            outs.append(answer(n.call("PUT", "/sem-bad", {"settings": {"index.knn": True}, "mappings": m})))
+        compare(c, f"semantic bad {label}", norm(outs[0]), norm(outs[1]))
+    after = rust_stats(ours)
+    falls = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
+             if v != before.get("fallbacks", {}).get(k, 0)}
+    c.true("semantic searches ran natively", after.get("native_queries", 0) > before.get("native_queries", 0) and not falls,
+           f"fallbacks {falls}")
+    # Adding a semantic field to an existing index through the put mapping API.
+    outs = []
+    for n, d in zip((ours, stock), dense):
+        n.call("DELETE", "/sem-put")
+        n.ok("PUT", "/sem-put", {"settings": {"index.knn": True}, "mappings": {"properties": {"n": {"type": "integer"}}}})
+        outs.append(answer(n.call("PUT", "/sem-put/_mapping", {"properties": {"text": {"type": "semantic", "model_id": d}}})))
+    compare(c, "semantic put mapping", norm(outs[0]), norm(outs[1]))
+    compare(c, "semantic put mapping result", *both(ours, stock, lambda n: norm(n.ok("GET", "/sem-put/_mapping")["sem-put"])))
+    for n in (ours, stock):
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.neural_search.model_selection.model_id.sparse.english": None}})
+
+
 # ---------------------------------------------------------------- rerank
 
 CROSS_CONFIG = {"model_type": "bert", "embedding_dimension": 1, "framework_type": "huggingface_transformers"}
@@ -557,6 +686,7 @@ def main():
             "two_phase": lambda: two_phase(c, ours, stock, zips[golden.SPARSE]),
             "warmup": lambda: warmup(c, ours, stock),
             "settings": lambda: settings(c, ours, stock),
+            "semantic": lambda: semantic(c, ours, stock, zips["tiny-bert"], zips[golden.SPARSE]),
             "ingest": lambda: ingest(c, ours, stock, [text_model(n, zips["tiny-bert"]) for n in (ours, stock)],
                                      [deploy(n, golden.SPARSE, "SPARSE_ENCODING", zips[golden.SPARSE]) for n in (ours, stock)]),
         }
