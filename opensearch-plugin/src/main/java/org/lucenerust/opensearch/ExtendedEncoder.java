@@ -43,6 +43,7 @@ import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptType;
+import org.opensearch.script.TermsSetQueryScript;
 import org.opensearch.common.lucene.search.function.RandomScoreFunction;
 import org.opensearch.common.lucene.search.function.ScoreFunction;
 import org.opensearch.common.lucene.search.function.ScriptScoreFunction;
@@ -784,6 +785,26 @@ final class ExtendedEncoder {
         return null;
     }
 
+    /**
+     * A {@code terms_set} query's {@code minimum_should_match_script}, made by {@code factory}, as
+     * the native runtime runs it: its spec (context {@link PainlessScore#TERMS_SET}), or why it
+     * stays in Java.
+     */
+    static String painlessTermsSet(TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "covering_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runTermsSet(factory));
+        return null;
+    }
+
     /** A script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
     private record Painless(byte context, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {}
 
@@ -801,6 +822,7 @@ final class ExtendedEncoder {
             case PainlessScore.FILTER -> PainlessScore.filter(script.getIdOrCode());
             case PainlessScore.SORT -> PainlessScore.sort(script.getIdOrCode());
             case PainlessScore.AGGREGATION -> PainlessScore.aggregation(script.getIdOrCode());
+            case PainlessScore.TERMS_SET -> PainlessScore.termsSet(script.getIdOrCode());
             default -> PainlessScore.score(script.getIdOrCode());
         };
         if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {

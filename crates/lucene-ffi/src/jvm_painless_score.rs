@@ -65,7 +65,8 @@ use lucene_search::top_field::{
     FieldComparator, FieldComparatorSource, LeafCtx, LeafFieldComparator, SortValue,
 };
 use lucene_search::values_source::{
-    BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
+    BoxDoubleValues, BoxLongValues, DoubleValues, DoubleValuesSource, LongValues, LongValuesSource,
+    ValuesContext,
 };
 use lucene_search::{Error, Result};
 use lucene_util::half_float::sortable_short_to_half_float;
@@ -142,6 +143,9 @@ struct Spec {
     sort: bool,
     /// An `AggregationScript`: `execute()` returns the document's values.
     agg: bool,
+    /// A `TermsSetQueryScript`: `execute()` returns the document's
+    /// minimum number of matching terms.
+    terms_set: bool,
     index: String,
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
@@ -195,7 +199,7 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
 
 /// The node's script, after its sub-query.
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
-    let (mut agg, mut sort) = (false, false);
+    let (mut agg, mut sort, mut terms_set) = (false, false, false);
     let (needs_score, filter) = match c.u8()? {
         0 => (false, false),
         1 => (true, false),
@@ -212,9 +216,13 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
             agg = true;
             (false, false)
         }
+        6 => {
+            terms_set = true;
+            (false, false)
+        }
         other => {
             return Err(invalid(format!(
-                "query tree: painless script context {other} (expected 0..=5)"
+                "query tree: painless script context {other} (expected 0..=6)"
             )))
         }
     };
@@ -262,6 +270,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         filter,
         sort,
         agg,
+        terms_set,
         index,
         shard,
         script_id,
@@ -409,7 +418,7 @@ impl JObject for Unavailable {
 impl Spec {
     /// Whether the script is a `ScoreScript`.
     fn is_score(&self) -> bool {
-        !self.filter && !self.sort && !self.agg
+        !self.filter && !self.sort && !self.agg && !self.terms_set
     }
 
     /// Where a spec blob holds its script's run number.
@@ -439,7 +448,7 @@ impl Spec {
         ];
         const FILTER: &[&str] = &["getParams", "getDoc"];
         const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
-        if self.filter || self.agg || (self.sort && !self.needs_score) {
+        if self.filter || self.agg || self.terms_set || (self.sort && !self.needs_score) {
             FILTER
         } else if self.sort {
             SORT_WITH_SCORE
@@ -1550,6 +1559,95 @@ impl lucene_search::bucket_aggs::ScriptValues for AggLeaf<'_> {
     }
 }
 
+/// `terms_set`'s `minimum_should_match_script`
+/// (`TermsSetQueryBuilder.ScriptLongValueSource`), checked: each document's
+/// minimum is `execute().longValue()`, none when the script returns `null`.
+#[derive(Debug)]
+pub(crate) struct PainlessMinimum(Arc<Spec>);
+
+impl PainlessMinimum {
+    /// The covering node's script ([`decode_spec`]'s layout), checked.
+    pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
+        let spec = decode_spec(c)?;
+        if !spec.terms_set {
+            return Err(invalid(
+                "query tree: a covering minimum with another context's script",
+            ));
+        }
+        spec.check()
+            .map_err(|r| invalid(format!("query tree: painless script not checked: {r}")))?;
+        Ok(PainlessMinimum(Arc::new(spec)))
+    }
+}
+
+impl LongValuesSource for PainlessMinimum {
+    fn get_values<'c>(
+        &self,
+        ctx: &ValuesContext<'c>,
+        leaf: usize,
+        _scores: Option<BoxDoubleValues<'c>>,
+    ) -> Result<BoxLongValues<'c>> {
+        Ok(Box::new(MinimumLeaf {
+            script: scripts(&self.0, ctx.leaf_reader(leaf)?, Leaf::Ord(leaf), None)?,
+            current: 0,
+        }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    /// `ScriptLongValueSource.isCacheable`: never.
+    fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
+        false
+    }
+
+    fn describe(&self) -> String {
+        "painless_minimum".to_string()
+    }
+}
+
+/// A [`PainlessMinimum`] on one segment.
+struct MinimumLeaf<'c> {
+    script: ScriptScores<'c>,
+    current: i64,
+}
+
+/// `Number.longValue()` of what a `TermsSetQueryScript` returns.
+fn long_value(v: &Value) -> Result<i64> {
+    Ok(match v {
+        Value::Byte(n) => i64::from(*n),
+        Value::Short(n) => i64::from(*n),
+        Value::Int(n) => i64::from(*n),
+        Value::Long(n) => *n,
+        // `(long)`: saturating, NaN to 0, as Rust's cast is.
+        Value::Float(n) => *n as i64,
+        Value::Double(n) => *n as i64,
+        other => {
+            return Err(Error::IllegalArgument(format!(
+                "painless runtime: a terms_set minimum {}",
+                other.java_to_string()
+            )))
+        }
+    })
+}
+
+impl LongValues for MinimumLeaf<'_> {
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        self.script.env.doc = doc;
+        let v = self.script.run_object()?;
+        if matches!(v, Value::Null) {
+            return Ok(false);
+        }
+        self.current = long_value(&v)?;
+        Ok(true)
+    }
+
+    fn long_value(&mut self) -> Result<i64> {
+        Ok(self.current)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2015,6 +2113,89 @@ mod tests {
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
+    /// **`terms_set` minimums.** Each fixture sort script, run as a
+    /// `terms_set` query's `minimum_should_match_script`: each document's
+    /// minimum is the sort's double as `Number.longValue()` reads it, and
+    /// where the sort threw, the minimum throws the same exception at the
+    /// same offset.
+    #[test]
+    fn terms_set_minimums_read_what_opensearch_reads() {
+        let tmp = TempDir::new("painless-score-terms-set");
+        for e in std::fs::read_dir(fixture("index")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let h = open(&tmp);
+        let handle = crate::jvm_reader::lookup(h, "reader").unwrap();
+        let mut wrong = Vec::new();
+        let mut ran = 0;
+        for case in cases() {
+            if case.sort.is_none() {
+                continue;
+            }
+            let mut spec = case.spec.clone();
+            spec[0] = 6;
+            let minimum = PainlessMinimum::decode(&mut Cursor::new(&spec))
+                .unwrap_or_else(|_| panic!("{}: {}", case.source, crate::error::last_error()));
+            let mut got: Vec<(i32, i64)> = Vec::new();
+            let mut threw = None;
+            'segments: for seg in handle.reader.segment_readers() {
+                let ctx = ValuesContext::for_reader(seg);
+                let mut values = minimum.get_values(&ctx, 0, None).unwrap();
+                for doc in 0..seg.max_doc {
+                    match values.advance_exact(doc) {
+                        Ok(true) => got.push((seg.doc_base + doc, values.long_value().unwrap())),
+                        Ok(false) => {}
+                        Err(e) => {
+                            threw = Some(e.to_string());
+                            break 'segments;
+                        }
+                    }
+                }
+            }
+            got.sort_by_key(|&(d, _)| d);
+            let bad = match (&case.outcome, threw) {
+                (Outcome::Sorted(want), None) => {
+                    let mut want: Vec<(i32, i64)> = want
+                        .iter()
+                        .map(|&(d, v)| {
+                            let d_value = lucene_util::numeric_utils::sortable_long_to_double(v);
+                            (d, d_value as i64)
+                        })
+                        .collect();
+                    want.sort_by_key(|&(d, _)| d);
+                    (got != want).then(|| format!("minimums {got:?}, want {want:?}"))
+                }
+                (Outcome::Threw(class, _, offset), Some(e)) => {
+                    let want = format!("\u{1}{offset}\u{1}{class}\u{1}");
+                    (!e.contains(SCRIPT_ERROR) || !e.contains(&want))
+                        .then(|| format!("{e:?}, want ..{want:?}"))
+                }
+                (o, r) => Some(format!("{o:?} vs {r:?}")),
+            };
+            if let Some(bad) = bad {
+                wrong.push(format!("{}: {bad}", case.source));
+            }
+            ran += 1;
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        assert!(ran >= 10, "{ran} scripts run");
+        drop(handle);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// `Number.longValue()`: Java's narrowing, saturating and `NaN` to 0.
+    #[test]
+    fn terms_set_minimums_narrow_as_java_does() {
+        assert_eq!(long_value(&Value::Int(-3)).unwrap(), -3);
+        assert_eq!(long_value(&Value::Double(2.9)).unwrap(), 2);
+        assert_eq!(long_value(&Value::Double(-2.9)).unwrap(), -2);
+        assert_eq!(long_value(&Value::Double(f64::NAN)).unwrap(), 0);
+        assert_eq!(long_value(&Value::Double(1e300)).unwrap(), i64::MAX);
+        assert_eq!(long_value(&Value::Float(-1e30)).unwrap(), i64::MIN);
+        assert!(long_value(&Value::Bool(true)).is_err());
+    }
+
     /// `ScriptDoubleValues.toDoubleValue`: numbers and booleans, and the
     /// error OpenSearch raises for anything else.
     #[test]
@@ -2213,6 +2394,7 @@ mod bench {
                 filter: false,
                 sort: false,
                 agg: false,
+                terms_set: false,
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,

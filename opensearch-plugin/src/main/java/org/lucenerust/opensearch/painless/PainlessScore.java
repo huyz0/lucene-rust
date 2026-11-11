@@ -50,6 +50,7 @@ import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptException;
 import org.opensearch.script.ScriptService;
+import org.opensearch.script.TermsSetQueryScript;
 
 /**
  * The Painless scripts the native engine runs in place of the classes Painless generates: each
@@ -95,9 +96,9 @@ public final class PainlessScore {
 
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
-     * a number sort script, an aggregation script.
+     * a number sort script, an aggregation script, a {@code terms_set} minimum.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5;
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
     private interface Run {
@@ -171,6 +172,26 @@ public final class PainlessScore {
         @Override
         public ScriptException rethrown(Object s, int doc, float score) {
             AggregationScript script = (AggregationScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /** A {@code terms_set} query's {@code minimum_should_match_script}, as {@code ScriptLongValueSource} makes it. */
+    private record TermsSetRun(TermsSetQueryScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            TermsSetQueryScript script = (TermsSetQueryScript) s;
             script.setDocument(doc);
             try {
                 script.execute();
@@ -265,6 +286,11 @@ public final class PainlessScore {
         return compile(AggregationScript.CONTEXT, AggregationScript.class, source);
     }
 
+    /** {@code source} compiled for the {@code terms_set} context, as {@link #score}. */
+    public static Object termsSet(String source) {
+        return compile(TermsSetQueryScript.CONTEXT, TermsSetQueryScript.class, source);
+    }
+
     /** {@code source} compiled for the filter context, as {@link #score}. */
     public static Object filter(String source) {
         return compile(FilterScript.CONTEXT, FilterScript.class, source);
@@ -352,6 +378,11 @@ public final class PainlessScore {
     /** The number in this request, for its errors, of an aggregation's script. */
     public static int run(AggregationScript.LeafFactory factory) {
         return run(new AggregationRun(factory));
+    }
+
+    /** The number in this request, for its errors, of a {@code terms_set} minimum script. */
+    public static int runTermsSet(TermsSetQueryScript.LeafFactory factory) {
+        return run(new TermsSetRun(factory));
     }
 
     private static int run(Run run) {
