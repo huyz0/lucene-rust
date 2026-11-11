@@ -498,11 +498,21 @@ def semantic(c, ours, stock, z, zs):
         compare(c, f"semantic documents {label}", src(ours), src(stock))
         for qlabel, q in semantic_queries(label):
             compare(c, f"semantic {label} {qlabel}", *both(ours, stock, lambda n: norm(hits(n.call("POST", f"/{idx}/_search", q)))))
-        # An update re-embeds only when the text changed (skip_existing_embedding) and keeps the model info.
-        upd = {"doc": {"n": 50}} if label != "nested object" else {"doc": {"n": 50}}
-        for n in (ours, stock):
-            n.ok("POST", f"/{idx}/_update/1?refresh=true", upd)
-        compare(c, f"semantic updated {label}", *both(ours, stock, lambda n: norm(n.ok("GET", f"/{idx}/_doc/1")["_source"])))
+        # Updates: one leaving the text alone, one changing it, which re-embeds (skip_existing_embedding
+        # reuses the stored embedding only for unchanged text).
+        text_upd = {"obj": {"text": "a changed text"}} if label == "nested object" else {"text": "a changed text"}
+        for step, upd in (("same text", {"n": 50}), ("new text", text_upd)):
+            for n in (ours, stock):
+                n.ok("POST", f"/{idx}/_update/1?refresh=true", {"doc": upd})
+            compare(c, f"semantic updated {label} {step}", *both(ours, stock, lambda n: norm(n.ok("GET", f"/{idx}/_doc/1")["_source"])))
+        if label == "dense options":
+            info = lambda n: n.ok("GET", f"/{idx}/_doc/1")["_source"]["info"]["embedding"]
+            first = info(ours)
+            ours.ok("POST", f"/{idx}/_update/1?refresh=true", {"doc": {"n": 51}})
+            kept = info(ours)
+            ours.ok("POST", f"/{idx}/_update/1?refresh=true", {"doc": {"text": "yet another text"}})
+            c.true("semantic skip_existing_embedding keeps, then re-embeds", kept == first and info(ours) != first,
+                   "the embedding did not stay for the same text or did not change for a new one")
     for (label, mo), (_, ms) in zip(good[0][1], good[1][1]):
         outs = []
         for n, m in ((ours, mo), (stock, ms)):

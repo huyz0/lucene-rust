@@ -44,7 +44,12 @@ public final class MLModel {
     /** {@code model_config.embedding_dimension}, or null. */
     public Integer getEmbeddingDimension() {
         Map<String, Object> config = getModelConfig();
-        return config != null && config.get("embedding_dimension") instanceof Number n ? n.intValue() : null;
+        Object d = config == null ? null : config.get("embedding_dimension");
+        // ml-commons parses it with XContentParser.intValue(), which takes a number or a numeric string.
+        if (d instanceof Number n) {
+            return n.intValue();
+        }
+        return d instanceof String str ? (int) Double.parseDouble(str) : null;
     }
 
     /** {@code MLModel.getAlgorithm().name()}: TEXT_EMBEDDING, SPARSE_ENCODING, REMOTE, ... */
