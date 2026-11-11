@@ -773,6 +773,8 @@ jobs:
         run: python3 scripts/check-knn-rest.py
       - name: hybrid search and its pipelines against a stock neural-search node
         run: python3 scripts/check-hybrid.py
+      - name: neural queries, query_text and ingest processors against a stock neural-search node
+        run: python3 scripts/check-neural-plugin.py
 
   # ---------------------------------------------------------------------------
   # The FFI surface under libFuzzer + AddressSanitizer. A short run

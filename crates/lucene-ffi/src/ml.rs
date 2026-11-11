@@ -9,7 +9,9 @@
 //! ([`ffi_ml_sparse_tokenize_alloc`]), as do sparse encoding models
 //! ([`ffi_ml_sparse_encoding_open`], [`ffi_ml_sparse_encoding_alloc`]);
 //! cross-encoders ([`ffi_ml_text_similarity_open`]) score documents against
-//! a query ([`ffi_ml_text_similarity_alloc`]).
+//! a query ([`ffi_ml_text_similarity_alloc`]). The `bert-uncased` analyzers
+//! ([`ffi_ml_hf_analyzer_open`]) turn one text into its token stream
+//! ([`ffi_ml_hf_analyze_alloc`]).
 //!
 //! TorchScript models run on libtorch, loaded once ([`ffi_ml_torch_init`]);
 //! [`ffi_ml_torch_open`] opens one for any of those functions. Sparse
@@ -32,6 +34,7 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use lucene_ml::hf_analyzer::HfAnalyzer;
 use lucene_ml::sparse_encoding::{SparseEncodingModel, SparseOutput};
 use lucene_ml::sparse_tokenize::{SparseTokenizer, Weight};
 use lucene_ml::text_embedding::{
@@ -53,6 +56,7 @@ use crate::registry::{lock_recovering, read_recovering};
 enum Model {
     TextEmbedding(TextEmbeddingModel),
     SparseTokenize(SparseTokenizer),
+    HfAnalyzer(HfAnalyzer),
     SparseEncoding(SparseEncodingModel),
     TextSimilarity(TextSimilarityModel),
     TorchTextEmbedding(TorchTextEmbeddingModel),
@@ -266,6 +270,86 @@ pub unsafe extern "C" fn ffi_ml_sparse_tokenize_alloc(
         let encoded = encode_weights(&weights)?;
         // SAFETY: caller contract.
         unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// Opens a `bert-uncased`-style analyzer from its `tokenizer.json` bytes
+/// and, when `idf` is not null, its `idf.json` bytes; writes its handle to
+/// `*out_handle`. Close it with [`ffi_ml_model_close`].
+///
+/// # Safety
+/// Each non-null pointer must be valid for its length; `out_handle` for one
+/// write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_hf_analyzer_open(
+    tokenizer: *const u8,
+    tokenizer_len: usize,
+    idf: *const u8,
+    idf_len: usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let tokenizer = unsafe { bytes_from_raw(tokenizer, tokenizer_len) }?;
+        let idf = if idf.is_null() {
+            None
+        } else {
+            // SAFETY: caller contract.
+            Some(unsafe { bytes_from_raw(idf, idf_len) }?)
+        };
+        let loaded = HfAnalyzer::load(tokenizer, idf).map_err(ml_failure)?;
+        let handle =
+            lock_recovering(models()).insert_checked(Arc::new(Model::HfAnalyzer(loaded)))?;
+        // SAFETY: caller contract.
+        unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// The token stream of the UTF-8 text `text` from analyzer `handle`, to
+/// `*out_ptr`/`*out_len`, a buffer to free with
+/// [`crate::ffm_bridge::ffi_jvm_free_bytes`]: a `u32` count, then per token
+/// its `u32` id, `u32` start and end offsets in Unicode scalar values, `u32` byte
+/// length, the UTF-8 token and its `f32` weight, all little endian.
+///
+/// # Safety
+/// `text` must be valid for `len` bytes; `out_ptr` and `out_len` for one
+/// write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_hf_analyze_alloc(
+    handle: u64,
+    text: *const u8,
+    len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len) }?;
+        // SAFETY: caller contract.
+        let bytes = unsafe { bytes_from_raw(text, len) }?;
+        let text = std::str::from_utf8(bytes).map_err(|_| FfiStatus::Decode)?;
+        let model = model(handle)?;
+        let Model::HfAnalyzer(analyzer) = &*model else {
+            return Err(wrong_kind("analyzer"));
+        };
+        let tokens = analyzer.analyze(text).map_err(ml_failure)?;
+        let mut out = Vec::new();
+        out.extend_from_slice(&u32_of(tokens.len())?.to_le_bytes());
+        for t in &tokens {
+            out.extend_from_slice(&t.id.to_le_bytes());
+            out.extend_from_slice(&t.start.to_le_bytes());
+            out.extend_from_slice(&t.end.to_le_bytes());
+            out.extend_from_slice(&u32_of(t.token.len())?.to_le_bytes());
+            out.extend_from_slice(t.token.as_bytes());
+            out.extend_from_slice(&t.weight.to_le_bytes());
+        }
+        // SAFETY: caller contract.
+        unsafe { give(out, out_ptr, out_len) };
         Ok(())
     })
 }
@@ -873,6 +957,67 @@ mod tests {
         // SAFETY: a null idf means none; a null out-pointer is refused.
         let status = unsafe {
             ffi_ml_sparse_tokenize_open(
+                tokenizer.as_ptr(),
+                tokenizer.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, FfiStatus::NullPointer.code());
+    }
+
+    #[test]
+    fn hf_analyzer_streams_tokens_with_offsets_and_refuses_the_wrong_kind() {
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/ml");
+        let tokenizer = std::fs::read(format!("{fixtures}/tokenizer.json")).unwrap();
+        let idf = br#"{"search": 3.0}"#;
+        let mut handle = 0u64;
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            ffi_ml_hf_analyzer_open(
+                tokenizer.as_ptr(),
+                tokenizer.len(),
+                idf.as_ptr(),
+                idf.len(),
+                &mut handle,
+            )
+        };
+        assert_eq!(status, 0);
+        let text = "search search";
+        let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            ffi_ml_hf_analyze_alloc(handle, text.as_ptr(), text.len(), &mut ptr, &mut len)
+        };
+        assert_eq!(status, 0);
+        // SAFETY: the pair this module wrote.
+        let out = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: the pair this module wrote.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let u32_at = |i: usize| u32::from_le_bytes(out[i..i + 4].try_into().unwrap());
+        assert_eq!(u32_at(0), 2, "both occurrences, no special tokens");
+        assert_eq!((u32_at(8), u32_at(12)), (0, 6));
+        let token_len = u32_at(16) as usize;
+        assert_eq!(&out[20..20 + token_len], b"search");
+        let weight = f32::from_le_bytes(out[20 + token_len..24 + token_len].try_into().unwrap());
+        assert_eq!(weight, 3.0);
+        let second = 24 + token_len;
+        assert_eq!((u32_at(second + 4), u32_at(second + 8)), (7, 13));
+        // SAFETY: invalid UTF-8 is refused.
+        let status =
+            unsafe { ffi_ml_hf_analyze_alloc(handle, [0xffu8].as_ptr(), 1, &mut ptr, &mut len) };
+        assert_eq!(status, FfiStatus::Decode.code());
+        let input = texts(&["search"]);
+        // SAFETY: valid buffers.
+        let status = unsafe {
+            ffi_ml_sparse_tokenize_alloc(handle, input.as_ptr(), input.len(), &mut ptr, &mut len)
+        };
+        assert_eq!(status, FfiStatus::InvalidArgument.code());
+        assert_eq!(ffi_ml_model_close(handle), 0);
+        // SAFETY: a null out-pointer is refused.
+        let status = unsafe {
+            ffi_ml_hf_analyzer_open(
                 tokenizer.as_ptr(),
                 tokenizer.len(),
                 std::ptr::null(),
