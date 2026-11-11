@@ -275,9 +275,9 @@ def matrix():
     add("terms_set field", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"], "minimum_should_match_field": "qty"}}}}, "native")
     add("terms_set script", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}}}, "native")
     add("terms_set script num_terms", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"],
-        "minimum_should_match_script": {"source": "Math.min(params.num_terms, doc['qty'].value % 3 + 1)"}}}}}, "native")
+        "minimum_should_match_script": {"source": "doc['qty'].size() == 0 ? 1 : Math.min(params.num_terms, doc['qty'].value % 3 + 1)"}}}}}, "native")
     add("terms_set script null minimum", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3"],
-        "minimum_should_match_script": {"source": "doc['qty'].value > 20 ? null : 1"}}}}}, "native")
+        "minimum_should_match_script": {"source": "def m = null; if (doc['qty'].size() > 0 && doc['qty'].value <= 20) { m = 1; } return m;"}}}}}, "native")
     add("terms_set script refused", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
         "minimum_should_match_script": {"source": "doc['m'].stream().count() > 1 ? 2 : 1"}}}}}, "covering_painless")
     add("distance_feature date", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "7d"}}]}}}, "native")
