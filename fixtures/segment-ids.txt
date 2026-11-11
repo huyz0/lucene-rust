@@ -418,9 +418,9 @@ opensearch_zstd/zstd/segments_2 b5c78aa39c90defc3759705527074cd0
 opensearch_zstd/zstd_no_dict/_0.si a912420ce30a3a7966aeda7cefa6b974
 opensearch_zstd/zstd_no_dict/_1.si a912420ce30a3a7966aeda7cefa6b978
 opensearch_zstd/zstd_no_dict/segments_2 a912420ce30a3a7966aeda7cefa6b97b
-painless-score/index/_0.si 6cab65fc6e34bbda6101c9640b59efe5
-painless-score/index/_1.si 6cab65fc6e34bbda6101c9640b59efe9
-painless-score/index/segments_2 6cab65fc6e34bbda6101c9640b59efec
+painless-score/index/_0.si 93d71fb2d24e2a66803c76fa913091b2
+painless-score/index/_1.si 93d71fb2d24e2a66803c76fa913091b6
+painless-score/index/segments_2 93d71fb2d24e2a66803c76fa913091b9
 per_field_doc_values/flushed/_0.si 18a6a9a0e6d5db83c716a9125c64443d
 per_field_doc_values/flushed/_1.si 18a6a9a0e6d5db83c716a9125c644441
 per_field_doc_values/flushed/segments_2 18a6a9a0e6d5db83c716a9125c644444
