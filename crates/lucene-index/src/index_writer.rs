@@ -2534,11 +2534,20 @@ impl IndexingConfig {
         let mut reorder: Option<Vec<i32>> = None;
         let mut hook_diagnostics: Vec<(String, String)> = Vec::new();
         if let Some((hooks, infos)) = &plan.hooks {
-            let blocks_without_parent = !hooks.finds_blocks()
-                && opened.iter().any(|o| o.has_blocks)
-                && opened
-                    .iter()
-                    .any(|o| !o.field_infos.iter().any(|f| f.parent_field));
+            // A source without a parent field is reordered whole only when
+            // it carries the hooks' block root field.
+            let root = hooks.block_root_field();
+            let blocks_without_parent = opened.iter().any(|o| o.has_blocks)
+                && opened.iter().any(|o| {
+                    !o.field_infos.iter().any(|f| {
+                        f.parent_field
+                            || root.is_some_and(|r| {
+                                f.name == r
+                                    && f.doc_values_type
+                                        == lucene_codecs::field_infos::DocValuesType::Numeric
+                            })
+                    })
+                });
             let may_reorder =
                 self.index_sort.is_none() && merge_sort.is_none() && !blocks_without_parent;
             let prepared = hooks

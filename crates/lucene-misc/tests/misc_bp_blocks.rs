@@ -234,3 +234,40 @@ fn documents_none_of_which_has_the_root_field_are_reordered_as_unblocked() {
     let order = blocks(&reader);
     assert!(order.windows(2).any(|w| w[0] > w[1]), "{order:?}");
 }
+
+#[test]
+fn blocks_none_of_whose_roots_has_the_root_field_are_left_in_order() {
+    let dir = ByteBuffersDirectory::new();
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+    let mut reorderer = BpIndexReorderer::new();
+    reorderer.set_min_doc_freq(2).unwrap();
+    reorderer.set_min_partition_size(2).unwrap();
+    reorderer.set_fields(Some(vec!["body".to_string()]));
+    reorderer.set_block_root_field(Some("_primary_term".to_string()));
+    w.set_pluggable_merge_policy(Some(Arc::new(BpReorderingMergePolicy::new(
+        Box::new(TieredMergePolicy::default()),
+        reorderer,
+    ))));
+    for b in 0..120 {
+        // The blocks of [`block`], their roots without the field.
+        let mut docs = block(b);
+        let mut root = Document::new();
+        let word = WORDS[(b * 7) % WORDS.len()];
+        root.add(TextField::new("body", format!("{word} root"), Store::No));
+        root.add(StringField::new("block", b.to_string(), Store::Yes));
+        *docs.last_mut().unwrap() = root;
+        w.add_fields_documents(&docs).unwrap();
+        if b % 40 == 39 {
+            w.commit().unwrap();
+        }
+    }
+    w.force_merge(1).unwrap();
+    w.close().unwrap();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reordered(&reader), "false");
+}

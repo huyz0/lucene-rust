@@ -85,9 +85,11 @@ public final class JoinQueries {
 
     /**
      * {@code query} with every {@code has_child} and {@code has_parent} in it wrapped in a {@link
-     * NativeJoinQueryBuilder}, in place where they are held by another query's field or list:
-     * {@code bool}, {@code constant_score}, {@code dis_max}, {@code boosting}, {@code nested}, {@code
-     * function_score}'s query, the joins' own inner queries. The tree's root is returned wrapped.
+     * NativeJoinQueryBuilder}, in place where they are held by another query's field or list: the
+     * queries the native search resolves joins under ({@link #DESCEND}: {@code bool}, {@code
+     * constant_score}, {@code dis_max}, the joins' own inner queries). A join anywhere else (under
+     * {@code nested}, {@code function_score}, {@code hybrid}) stays as OpenSearch built it. The
+     * tree's root is returned wrapped.
      */
     public static QueryBuilder wrap(QueryBuilder query) {
         return wrap(query, new IdentityHashMap<>(), 0);
@@ -100,12 +102,18 @@ public final class JoinQueries {
 
     private static final int MAX_DEPTH = 64;
 
+    /** The queries whose clauses {@link #wrap} looks in. */
+    private static final java.util.Set<String> DESCEND = java.util.Set.of("bool", "constant_score", "dis_max", "has_child", "has_parent");
+
     private static boolean holds(QueryBuilder q, Map<Object, Boolean> seen, int depth) {
         if (q == null || depth > MAX_DEPTH || seen.put(q, Boolean.TRUE) != null) {
             return false;
         }
         if (isJoin(q)) {
             return true;
+        }
+        if (DESCEND.contains(q.getWriteableName()) == false) {
+            return false;
         }
         for (Class<?> k = q.getClass(); k != null && k != Object.class; k = k.getSuperclass()) {
             for (Field f : k.getDeclaredFields()) {
@@ -127,6 +135,9 @@ public final class JoinQueries {
 
     private static QueryBuilder wrap(QueryBuilder q, Map<Object, Boolean> seen, int depth) {
         if (q == null || q instanceof NativeJoinQueryBuilder || depth > MAX_DEPTH || seen.put(q, Boolean.TRUE) != null) {
+            return q;
+        }
+        if (DESCEND.contains(q.getWriteableName()) == false) {
             return q;
         }
         // The children first: a join inside a join's inner query is wrapped too.

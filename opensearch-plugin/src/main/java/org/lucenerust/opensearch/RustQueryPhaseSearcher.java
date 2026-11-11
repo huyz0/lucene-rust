@@ -538,7 +538,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
         // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
-        if (ctx.mapperService().hasNested() && ctx.query() instanceof KnnHitsQuery) return "nested";
+        if (ctx.mapperService().hasNested() && holdsKnnHits(ctx.query())) return "nested";
         boolean[] expands = new boolean[1];
         org.apache.lucene.search.QueryVisitor visitor = new org.apache.lucene.search.QueryVisitor() {
             @Override
@@ -574,6 +574,25 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         ctx.query().visit(visitor);
         return expands[0] ? "multi_term" : null;
+    }
+
+    /** Whether {@code query} is or holds a {@link KnnHitsQuery}, under any wrapper. */
+    private static boolean holdsKnnHits(Query query) {
+        boolean[] found = new boolean[1];
+        query.visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public void visitLeaf(Query q) {
+                if (q instanceof KnnHitsQuery) {
+                    found[0] = true;
+                }
+            }
+
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
+                return this;
+            }
+        });
+        return found[0] || query instanceof KnnHitsQuery;
     }
 
     /** Whether {@code q}'s rewrite leaves its terms to the search: a constant-score or doc-values one. */

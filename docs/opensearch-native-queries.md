@@ -171,7 +171,7 @@ where the native call's fixed cost shows -- see
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
-| `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`lucene_rust_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a realtime view or a profiled search runs the join in Java |
+| `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`lucene_rust_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
 
 ### Lucene-side leaves (Track A, 2026-10-30)

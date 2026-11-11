@@ -200,10 +200,12 @@ pub trait MergeHooks: Send + Sync + fmt::Debug {
         may_reorder: bool,
     ) -> std::result::Result<PreparedMerge, String>;
 
-    /// Whether the reorder finds document blocks without a parent field, so
-    /// a merge of segments with blocks and none may still be reordered.
-    fn finds_blocks(&self) -> bool {
-        false
+    /// The numeric doc-values field whose documents end the blocks the
+    /// reorder keeps whole without a parent field: a merge of segments with
+    /// blocks and no parent field may still be reordered when each carries
+    /// it.
+    fn block_root_field(&self) -> Option<&str> {
+        None
     }
 }
 

@@ -53,8 +53,8 @@ impl MergeReaderHooks for BpHooks {
         vec![(REORDERED.to_string(), reordered.to_string())]
     }
 
-    fn finds_blocks(&self) -> bool {
-        self.reorderer.block_root_field().is_some()
+    fn block_root_field(&self) -> Option<&str> {
+        self.reorderer.block_root_field()
     }
 }
 
