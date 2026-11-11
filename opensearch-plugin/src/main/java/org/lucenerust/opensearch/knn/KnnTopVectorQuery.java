@@ -188,8 +188,15 @@ public final class KnnTopVectorQuery extends Query {
         }
         NativeSearch n = nativeSearch;
         if (n != null) {
-            KnnHitsQuery hits = n.search(searcher, q);
+            // A later phase of the same request (the fetch phase, a scroll page) rewrites the query
+            // again: the hits its first rewrite found.
+            KnnHitsQuery hits = KnnHitsMemo.find(searcher, q);
             if (hits != null) {
+                return hits;
+            }
+            hits = n.search(searcher, q);
+            if (hits != null) {
+                KnnHitsMemo.keep(searcher, q, hits);
                 return hits;
             }
         }

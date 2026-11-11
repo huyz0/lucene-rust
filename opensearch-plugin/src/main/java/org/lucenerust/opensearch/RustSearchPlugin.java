@@ -411,7 +411,7 @@ public class RustSearchPlugin extends Plugin implements
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
-                        NativeStoredFieldsReader.fetchStarted();
+                        NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -631,6 +631,7 @@ public class RustSearchPlugin extends Plugin implements
         Map<String, Mapper.TypeParser> mappers = new HashMap<>();
         mappers.put(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
         mappers.put(MultiVectorFieldMapper.CONTENT_TYPE, new MultiVectorFieldMapper.TypeParser());
+        mappers.put(org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.CONTENT_TYPE, org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.PARSER);
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
         mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
         if (stockKnn == false) {
