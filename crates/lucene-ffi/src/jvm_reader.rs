@@ -38,7 +38,7 @@ use lucene_search::top_field::{
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
+    count_boolean_query_segment_with, search_boolean_query_multi_segment_maxscore_counting,
     search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
 use lucene_store::Directory;
@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 114;
+pub const JVM_ABI_VERSION: u32 = 119;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -651,6 +651,11 @@ const SORT_HALF_FLOAT: u8 = 9;
 /// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
 /// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
 const SORT_UNSIGNED_LONG: u8 = 10;
+/// A Painless `_script` key of type `number`
+/// ([`crate::jvm_painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
+/// only, then the script ([`crate::jvm_painless_score`]'s layout, context
+/// `3` or `4`).
+pub(crate) const SORT_SCRIPT: u8 = 11;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -769,6 +774,19 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if ty == SORT_SCRIPT {
+            if flags & !SORT_REVERSE != 0 {
+                return Err(bad(format!("sort blob: _script key flags {flags:#x}")));
+            }
+            let source = crate::jvm_painless_score::PainlessSort::decode(&mut c)?;
+            keys.push(SortField::with_source(
+                "_script",
+                Arc::new(source),
+                flags & SORT_REVERSE != 0,
+            ));
+            lucene_geo.push(false);
+            continue;
+        }
         if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             lucene_geo.push(false);
@@ -2873,11 +2891,19 @@ fn total_hits_with(
     if bound > count_limit {
         return Ok((bound, true));
     }
+    // A function query's reader-wide preparation, once for every segment.
+    let counted = (0..segments.len()).all(|i| known.get(i).copied().flatten().is_some());
+    let global = match query {
+        JvmQuery::Boolean(q) if !counted => {
+            lucene_search::count_preparation(segments, q).map_err(map_search_error)?
+        }
+        _ => None,
+    };
     let mut total = 0i64;
     for (i, seg) in segments.iter().enumerate() {
         let n = match known.get(i).copied().flatten() {
             Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
-            None => count_segment(seg, query)?,
+            None => count_segment(seg, query, global.as_ref())?,
         };
         total = total.saturating_add(n);
         if total > count_limit {
@@ -2952,14 +2978,17 @@ fn lower_bound(seg: &OpenSegment<'_>, deleted: i64, clause: &Clause) -> Result<i
 }
 
 /// `IndexSearcher.count` for one segment.
-fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStatus> {
+fn count_segment(
+    seg: &OpenSegment<'_>,
+    query: &JvmQuery,
+    global: Option<&lucene_search::GlobalStats>,
+) -> Result<i64, FfiStatus> {
     Ok({
         match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
             // The scored search's scorer tree, in `COMPLETE_NO_SCORES`.
-            JvmQuery::Boolean(q) => {
-                count_boolean_query_segment(seg, q).map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            }
+            JvmQuery::Boolean(q) => count_boolean_query_segment_with(seg, q, global)
+                .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
         }
         .map_err(map_search_error)?
     })
@@ -3947,9 +3976,9 @@ pub(crate) mod tests {
     }
 
     /// `(hits as (doc, values), total, lower_bound)`, or the status.
-    type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
+    pub(crate) type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
 
-    fn run_sorted(
+    pub(crate) fn run_sorted(
         handle: u64,
         query: &[u8],
         sort: &[u8],

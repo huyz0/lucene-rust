@@ -136,7 +136,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        PainlessScore.beginRequest();
+        PainlessScore.beginRequest(() -> ctx.request().source() == null ? null : ctx.request().source().toString());
         try {
             return containsHybrid(query)
                 ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
@@ -210,7 +210,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
-            : NativeAggregationTree.plan(ctx, field -> true);
+            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
@@ -336,8 +336,16 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // collector does too, told which segments -- and where the query
             // pins the index sort's first keys and sorts by the ones after.
             byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            Sort keys = sort;
+            FieldDoc from = after;
+            boolean counts = countSegments(ctx, terminateAfter);
+            int limit = terminateAfter;
+            // A script key's script reads fields by the index's mappings.
             SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
-                : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter), indexSorted);
+                : ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted)
+                );
             reason = sorted.fallbackReason();
             sortBlob = sorted.blob();
         }
