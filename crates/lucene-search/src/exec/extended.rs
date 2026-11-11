@@ -281,6 +281,11 @@ pub(crate) fn build<'a>(
              (rescorer::rewrite_rescore_clauses) before it is searched"
                 .into(),
         )),
+        ExtendedQuery::LateJoin(_) => Err(crate::Error::IllegalState(
+            "LateParsingQuery must be resolved against the searcher \
+             (join::resolve_late_joins) before it is searched"
+                .into(),
+        )),
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(

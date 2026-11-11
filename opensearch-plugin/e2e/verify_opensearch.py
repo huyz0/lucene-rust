@@ -1564,7 +1564,7 @@ def main():
         native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
     for index, shards in (("single", 1), ("multi", 3)):
         script_errors(index, shards)
-    # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
+    # parent-join: has_child/has_parent run natively (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
     except RuntimeError:
