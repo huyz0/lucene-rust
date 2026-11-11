@@ -8226,7 +8226,7 @@ mod tests {
         for &x in &target {
             request = request.f32(x);
         }
-        let request = request.i32(10).i32(100).u8(0).u8(0).i32(0).0;
+        let request = request.i32(10).i32(100).u8(0).u8(0).i32(0).u8(0).0;
         let (mut first, mut second) = (Vec::new(), Vec::new());
         for _ in 0..rounds {
             add(next, next + step);
@@ -8390,7 +8390,7 @@ mod tests {
                 None => request.u8(0),
                 Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
             };
-            let request = request.u8(0).i32(0).0;
+            let request = request.u8(0).i32(0).u8(0).0;
             let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
             // SAFETY: live request and buffers of 64.
             let rc = unsafe {
@@ -8706,7 +8706,7 @@ mod tests {
                 None => request.u8(0),
                 Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
             };
-            let request = request.u8(0).i32(nprobes).0;
+            let request = request.u8(0).i32(nprobes).u8(0).0;
             let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
             // SAFETY: live request and buffers of 64.
             let rc = unsafe {

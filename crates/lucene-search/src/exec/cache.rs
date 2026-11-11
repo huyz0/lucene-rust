@@ -154,6 +154,15 @@ pub(crate) enum SortColumn {
         starts: Vec<usize>,
         values: Vec<i64>,
     },
+    /// A collapse field as group ids (a grouped KNN search's groups): each
+    /// document's, `-1` for one without a value; a keyword field's are its
+    /// ordinals, a numeric field's index `values`. `groups` counts the
+    /// distinct ids, the missing one included.
+    Groups {
+        ids: Vec<i32>,
+        values: Vec<i64>,
+        groups: usize,
+    },
 }
 
 impl SortColumn {
@@ -162,6 +171,7 @@ impl SortColumn {
             SortColumn::Ords(o) => o.len() * 4,
             SortColumn::Longs { values, has } => values.len() * 8 + has.words().len() * 8,
             SortColumn::Multi { starts, values } => starts.len() * 8 + values.len() * 8,
+            SortColumn::Groups { ids, values, .. } => ids.len() * 4 + values.len() * 8,
         }
     }
 }

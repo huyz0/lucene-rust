@@ -26,6 +26,7 @@ use super::{
 };
 use crate::collector::{ScoreMode, ScoringCollector};
 use crate::directory_reader::SegmentReader;
+use crate::exec::cache::SortColumn;
 use crate::exec::{self, Mode, NO_MORE_DOCS};
 use crate::field_norms::FieldNorms;
 use crate::multi_segment::OpenSegment;
@@ -36,6 +37,7 @@ use crate::reader::{
 };
 use crate::tree_set::TreeSet;
 use crate::{Error, Result};
+use std::sync::Arc;
 
 /// Which `CollapsingDocValuesSource` reads the collapse field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,6 +370,133 @@ impl<'a> Selector<'a> {
             Selector::Keyword(v) => v.lookup_ord(ord),
             Selector::KeywordMulti(v) => v.lookup_ord(i64::from(ord)),
             _ => Err(SortError::Ordinal(i64::from(ord)).into()),
+        }
+    }
+}
+
+/// A segment's collapse field as one group id per document, for a search
+/// that groups as it goes (a grouped KNN search): the field read once, in
+/// document order, then looked up at random. Kept in the segment's cache of
+/// decoded columns when it fits, decoded for the search alone when not.
+pub(crate) struct GroupColumn<'a> {
+    col: Arc<SortColumn>,
+    /// Reads a keyword group's term; `None` for a numeric field.
+    terms: Option<Selector<'a>>,
+}
+
+impl<'a> GroupColumn<'a> {
+    /// `field`'s groups in `seg`, read as `kind`.
+    ///
+    /// # Errors
+    /// The field's doc values unreadable, of a type `kind` does not read, or
+    /// holding several values for one document.
+    pub(crate) fn open(
+        reader: &'a SegmentReader,
+        seg: &OpenSegment<'a>,
+        field: &str,
+        kind: CollapseKind,
+    ) -> Result<Self> {
+        let max_doc = reader.max_doc;
+        let mut build = || -> Result<SortColumn> {
+            let mut selector = Selector::open(reader, field, kind)?;
+            let n = usize::try_from(max_doc).unwrap_or(0);
+            let mut ids = Vec::with_capacity(n);
+            let mut values = Vec::new();
+            let mut numbered: HashMap<i64, i32> = HashMap::new();
+            let mut seen_ords: Vec<bool> = Vec::new();
+            let mut missing = false;
+            let mut groups = 0usize;
+            for doc in 0..max_doc {
+                let id = match selector.advance(doc)? {
+                    Key::Missing => {
+                        missing = true;
+                        -1
+                    }
+                    Key::Ord(o) => {
+                        let at = usize::try_from(o).unwrap_or(0);
+                        if at >= seen_ords.len() {
+                            seen_ords.resize(at.saturating_add(1), false);
+                        }
+                        if !seen_ords[at] {
+                            seen_ords[at] = true;
+                            groups = groups.saturating_add(1);
+                        }
+                        o
+                    }
+                    Key::Long(v) => {
+                        let next = i32::try_from(values.len()).unwrap_or(i32::MAX);
+                        *numbered.entry(v).or_insert_with(|| {
+                            values.push(v);
+                            groups = groups.saturating_add(1);
+                            next
+                        })
+                    }
+                };
+                ids.push(id);
+            }
+            if missing {
+                groups = groups.saturating_add(1);
+            }
+            Ok(SortColumn::Groups {
+                ids,
+                values,
+                groups,
+            })
+        };
+        let key = format!("group\0{field}\0{kind:?}");
+        let cached = match seg.cache {
+            Some(cache) => cache.sort_column(&key, max_doc, &mut build)?,
+            None => None,
+        };
+        let col = match cached {
+            Some(col) => col,
+            None => Arc::new(build()?),
+        };
+        let terms = match kind {
+            CollapseKind::Keyword => Some(Selector::open(reader, field, kind)?),
+            CollapseKind::Numeric => None,
+        };
+        Ok(Self { col, terms })
+    }
+
+    /// `doc`'s group, `-1` for a document without a value.
+    pub(crate) fn id(&self, doc: i32) -> i32 {
+        match &*self.col {
+            SortColumn::Groups { ids, .. } => usize::try_from(doc)
+                .ok()
+                .and_then(|d| ids.get(d))
+                .copied()
+                .unwrap_or(-1),
+            _ => -1,
+        }
+    }
+
+    /// The distinct groups of the segment's documents.
+    pub(crate) fn groups(&self) -> usize {
+        match &*self.col {
+            SortColumn::Groups { groups, .. } => *groups,
+            _ => 0,
+        }
+    }
+
+    /// Group `id`'s value, as the collapse collector reports it.
+    ///
+    /// # Errors
+    /// A term that cannot be read, or an id the column never gave.
+    pub(crate) fn value(&mut self, id: i32) -> Result<CollapseValue> {
+        if id < 0 {
+            return Ok(CollapseValue::Missing);
+        }
+        if let Some(terms) = &mut self.terms {
+            return Ok(CollapseValue::Bytes(terms.term(id)?));
+        }
+        match &*self.col {
+            SortColumn::Groups { values, .. } => usize::try_from(id)
+                .ok()
+                .and_then(|i| values.get(i))
+                .map(|&v| CollapseValue::Long(v))
+                .ok_or_else(|| SortError::Ordinal(i64::from(id)).into()),
+            _ => Err(SortError::Ordinal(i64::from(id)).into()),
         }
     }
 }
