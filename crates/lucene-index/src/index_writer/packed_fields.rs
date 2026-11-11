@@ -334,12 +334,32 @@ impl StreamedStored {
         self.reserved.as_ref()
     }
 
-    /// Adds the next document's stored values.
-    pub(crate) fn add(&mut self, doc: &Document) {
+    /// Adds the next document's stored values. With `keep`, a document
+    /// of a chunk's size or more comes back as the compressed chunk that
+    /// holds it, which it closes, for live search to read it from rather
+    /// than from a copy of its values.
+    pub(crate) fn add(&mut self, doc: &Document, keep: bool) -> Option<ChunkDocument> {
         for f in &doc.fields {
             self.fields.insert(f.field_number);
         }
+        let big = keep
+            && stored_bytes(doc) >= usize::try_from(self.mode.chunk_size()).unwrap_or(usize::MAX);
+        if !big {
+            self.writer.add_document(doc);
+            return None;
+        }
+        let at = self.writer.num_docs();
+        self.writer.capture_chunks();
         self.writer.add_document(doc);
+        let chunk = self
+            .writer
+            .take_captured()
+            .into_iter()
+            .find(|c| c.contains(at))?;
+        Some(ChunkDocument {
+            chunk: std::sync::Arc::new(chunk),
+            doc: at,
+        })
     }
 
     /// The heap the writer holds now: the chunk being filled, the `.fdt`
@@ -386,6 +406,33 @@ impl StreamedStored {
         drop(self.writer);
         name
     }
+}
+
+/// A buffered document as [`StreamedStored::add`] kept it: the compressed
+/// chunk that holds it and its number there.
+#[derive(Debug, Clone)]
+pub(crate) struct ChunkDocument {
+    pub(crate) chunk: std::sync::Arc<stored_fields::WrittenChunk>,
+    pub(crate) doc: i32,
+}
+
+impl ChunkDocument {
+    /// The document's stored fields.
+    pub(crate) fn document(&self) -> Option<Vec<StoredField>> {
+        self.chunk.document(self.doc).ok().map(|d| d.fields)
+    }
+}
+
+/// About how many bytes `doc`'s stored values take.
+fn stored_bytes(doc: &Document) -> usize {
+    doc.fields
+        .iter()
+        .map(|f| match &f.value {
+            FieldValue::Binary(b) => b.len(),
+            FieldValue::String(s) => s.len(),
+            _ => 8,
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 fn corrupt() -> Error {

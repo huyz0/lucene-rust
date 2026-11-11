@@ -171,13 +171,13 @@ pub enum FieldValue {
     Double(f64),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredField {
     pub field_number: i32,
     pub value: FieldValue,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Document {
     pub fields: Vec<StoredField>,
 }
@@ -735,9 +735,20 @@ impl<'d> StoredFieldsReader<'d> {
             doc_id as i64,
         )?;
         let block_start = self.block_start_pointer(block_index)?;
+        self.chunk_header_at(block_start, doc_id)
+    }
 
+    /// [`Self::read_chunk_header`] for the chunk at `.fdt` offset
+    /// `block_start`.
+    fn chunk_header_at(
+        &self,
+        block_start: i64,
+        doc_id: i32,
+    ) -> Result<(ChunkHeader, SliceInput<'d>)> {
         let mut input = SliceInput::new(self.fdt);
-        input.seek(block_start as usize)?;
+        input.seek(
+            usize::try_from(block_start).map_err(|_| Error::DocOutOfRange(doc_id, self.max_doc))?,
+        )?;
         let doc_base = input.read_vint()?;
         let token = input.read_vint()?;
         // Java's `token >>> 2`: an *unsigned* shift, so a corrupt token with
@@ -1523,6 +1534,77 @@ impl ChunkCursor {
     }
 }
 
+/// One chunk as a [`StoredFieldsWriter`] wrote it, compressed, kept apart
+/// from the `.fdt` ([`StoredFieldsWriter::capture_chunks`]) so its
+/// documents can be read while the file is still being written.
+#[derive(Debug, Clone)]
+pub struct WrittenChunk {
+    mode: Mode,
+    doc_base: i32,
+    docs: i32,
+    bytes: Vec<u8>,
+}
+
+impl WrittenChunk {
+    /// Whether the chunk holds the writer's document `doc_id`.
+    pub fn contains(&self, doc_id: i32) -> bool {
+        doc_id >= self.doc_base && doc_id.saturating_sub(self.doc_base) < self.docs
+    }
+
+    /// The compressed bytes it holds.
+    pub fn ram_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    /// The writer's document `doc_id`, decompressed from the chunk.
+    ///
+    /// # Errors
+    /// The chunk does not hold `doc_id`, or does not decode.
+    pub fn document(&self, doc_id: i32) -> Result<Document> {
+        if !self.contains(doc_id) {
+            return Err(Error::DocOutOfRange(
+                doc_id,
+                self.doc_base.saturating_add(self.docs),
+            ));
+        }
+        let reader = StoredFieldsReader {
+            fdt: &self.bytes,
+            fdx: &[],
+            data_codec: self.mode.data_codec(),
+            compression: self.mode.compression(),
+            max_docs_per_chunk: self.mode.max_docs_per_chunk(),
+            chunk_size: self.mode.chunk_size(),
+            max_doc: self.doc_base.saturating_add(self.docs),
+            num_chunks: 1,
+            num_dirty_chunks: 0,
+            num_dirty_docs: 0,
+            max_pointer: self.bytes.len() as i64,
+            docs_start_pointer: 0,
+            docs_end_pointer: 0,
+            docs_meta: Arc::new(direct_monotonic::Meta::empty()),
+            start_pointers_start_pointer: 0,
+            start_pointers_end_pointer: 0,
+            start_pointers_meta: Arc::new(direct_monotonic::Meta::empty()),
+            zstd_dictionary: None,
+        };
+        let (header, mut input) = reader.chunk_header_at(0, doc_id)?;
+        let index = header.index_of(doc_id);
+        // ARITH: `chunk_header_at` built `offsets` with `chunk_docs + 1`
+        // non-decreasing entries and checked `doc_id` is in the chunk.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (start, end) = (
+            header.offsets[index] as usize,
+            header.offsets[index + 1] as usize,
+        );
+        let bytes = if start == end {
+            Vec::new()
+        } else {
+            reader.decompress_range(&header, &mut input, start, end)?
+        };
+        parse_document(header.num_stored_fields[index], &bytes)
+    }
+}
+
 /// Port of `Lucene90CompressingStoredFieldsWriter` for `Mode.BEST_SPEED` --
 /// the write-side counterpart of [`open`]/[`StoredFieldsReader::document`].
 /// Documents are buffered into chunks exactly as Java does (close on the
@@ -1633,6 +1715,8 @@ pub struct StoredFieldsWriter {
     /// [`Mode::ZstdPaged`]'s chunk under construction, encoded here first so
     /// the writer can see whether it fits the current page.
     page_chunk: Vec<u8>,
+    /// The chunks written since [`Self::capture_chunks`], while it is on.
+    captured: Option<Vec<WrittenChunk>>,
 }
 
 /// The least `.fdt` bytes, summed over a merge's sources, for which the
@@ -1834,7 +1918,29 @@ impl StoredFieldsWriter {
                 scratch
             },
             page_chunk: Vec::new(),
+            captured: None,
         }
+    }
+
+    /// Keeps a copy of each chunk written from now on until
+    /// [`Self::take_captured`], so their documents stay readable once the
+    /// `.fdt` bytes go to the output.
+    pub fn capture_chunks(&mut self) {
+        self.captured = Some(Vec::new());
+    }
+
+    /// The chunks written since [`Self::capture_chunks`], which stops
+    /// keeping them.
+    pub fn take_captured(&mut self) -> Vec<WrittenChunk> {
+        self.captured.take().unwrap_or_default()
+    }
+
+    /// How many documents it holds: the next document's id.
+    pub fn num_docs(&self) -> i32 {
+        // ARITH: buffered documents are fewer than a chunk's cap, and
+        // `advance_doc_base` keeps `doc_base` inside `i32`.
+        self.doc_base
+            .saturating_add(self.num_buffered_docs() as i32)
     }
 
     /// Gives a [`Mode::ZstdPaged`] writer the dictionary every chunk is
@@ -2136,8 +2242,29 @@ impl StoredFieldsWriter {
     /// the chunk just written (which is the *next* chunk's start pointer,
     /// and after the last chunk is `maxPointer`).
     fn record_chunk(&mut self) {
+        let chunk_base = self.docs_values.last().copied().unwrap_or(0);
+        let chunk_start = self.start_pointers_values.last().copied().unwrap_or(0);
         self.docs_values.push(self.doc_base as i64);
         self.start_pointers_values.push(self.fdt_pointer());
+        if let Some(captured) = self.captured.as_mut() {
+            // The chunk starts after what was spilled: spills happen only
+            // here, after a whole chunk.
+            let from = u64::try_from(chunk_start)
+                .unwrap_or(0)
+                .saturating_sub(self.fdt_spilled);
+            let bytes = self
+                .fdt
+                .get(usize::try_from(from).unwrap_or(usize::MAX)..)
+                .unwrap_or_default()
+                .to_vec();
+            let doc_base = i32::try_from(chunk_base).unwrap_or(i32::MAX);
+            captured.push(WrittenChunk {
+                mode: self.mode,
+                doc_base,
+                docs: self.doc_base.saturating_sub(doc_base),
+                bytes,
+            });
+        }
         if self.fdt.len() >= STREAM_BYTES {
             self.spill_fdt();
         }
@@ -3294,6 +3421,81 @@ mod tests {
         let mut out = Vec::new();
         write_string(&mut out, s);
         out
+    }
+
+    #[test]
+    fn a_captured_chunk_reads_back_its_documents_in_every_mode() {
+        let doc = |i: usize, len: usize| Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(format!("id-{i}")),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Binary(
+                        (0..len).map(|j| ((i * 31 + j / 7) % 251) as u8).collect(),
+                    ),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(i as i64),
+                },
+            ],
+        };
+        for mode in [
+            Mode::BestSpeed,
+            Mode::BestCompression,
+            Mode::Zstd(ZstdMode::zstd(3)),
+            Mode::Zstd(ZstdMode::zstd_no_dict(3)),
+            Mode::ZstdPaged(3),
+        ] {
+            let mut w = StoredFieldsWriter::new(mode, &[0; ID_LENGTH], "");
+            let docs: Vec<Document> = (0..12)
+                .map(|i| doc(i, if i % 4 == 3 { 700_000 } else { 300 }))
+                .collect();
+            let mut kept = Vec::new();
+            for d in &docs {
+                let at = w.num_docs();
+                let big = d.fields.len() == 3
+                    && matches!(&d.fields[1].value, FieldValue::Binary(b) if b.len() > 1000);
+                if big {
+                    w.capture_chunks();
+                }
+                w.add_document(d);
+                if big {
+                    let chunks = w.take_captured();
+                    let chunk = chunks
+                        .into_iter()
+                        .find(|c| c.contains(at))
+                        .expect("a big document closes its chunk");
+                    kept.push((at, chunk));
+                }
+            }
+            assert_eq!(kept.len(), 3, "{mode:?}");
+            for (at, chunk) in &kept {
+                assert_eq!(
+                    &chunk.document(*at).unwrap(),
+                    &docs[*at as usize],
+                    "{mode:?}"
+                );
+                assert!(chunk.document(*at + 1).is_err(), "{mode:?}");
+                assert!(chunk.ram_bytes() > 0);
+            }
+            // Documents sharing the big one's chunk read back too.
+            let (at, chunk) = &kept[0];
+            for d in 0..*at {
+                if chunk.contains(d) {
+                    assert_eq!(&chunk.document(d).unwrap(), &docs[d as usize], "{mode:?}");
+                }
+            }
+            // The file the writer goes on to finish is unchanged by capturing.
+            let mut plain = StoredFieldsWriter::new(mode, &[0; ID_LENGTH], "");
+            for d in &docs {
+                plain.add_document(d);
+            }
+            assert_eq!(w.finish(), plain.finish(), "{mode:?}");
+        }
     }
 
     #[test]
