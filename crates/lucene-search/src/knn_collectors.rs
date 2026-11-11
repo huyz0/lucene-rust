@@ -338,6 +338,267 @@ impl<C: KnnCollect> KnnCollect for TimeLimitingKnnCollector<C> {
 }
 
 // ---------------------------------------------------------------------------
+// FilteredWalkPlanner
+// ---------------------------------------------------------------------------
+
+/// A filtered graph walk that gives up for an exact scan of the filter's
+/// vectors once the walk is predicted to cost more than the scan.
+///
+/// An unfiltered walk visits about `unfiltered_visits` nodes; a filtered one
+/// about that many divided by the share of the nodes it meets that the
+/// filter passes. That share is measured over the first `probe` visits of
+/// the walk on level 0 (or until it has collected `k`), and never counted below the
+/// filter's share of the whole graph (`global_share`): a walk starting far
+/// from the filter's documents still reaches them at the global rate. A
+/// filter correlated with the query's neighbourhood -- a tenant queried from
+/// inside its own region -- keeps walking; one the neighbourhood rarely
+/// passes switches to the scan after the probe. A walk that goes on gives up
+/// all the same past twice the scan's cost (`scan_visits`), where Lucene's
+/// own limit is four times it.
+#[derive(Debug, Clone)]
+pub struct FilteredWalkPlanner<C> {
+    delegate: C,
+    unfiltered_visits: f64,
+    global_share: f64,
+    scan_visits: u64,
+    probe: u64,
+    accepted: u64,
+    /// Visits before level 0's walk: the upper levels' descent, which
+    /// collects nothing and so is left out of the probe.
+    descent: u64,
+    /// Whether level 0's walk has begun (a collect or an expanded
+    /// candidate).
+    level0: bool,
+    decided: bool,
+    gave_up: bool,
+}
+
+impl<C: KnnCollect> FilteredWalkPlanner<C> {
+    pub fn new(
+        delegate: C,
+        unfiltered_visits: f64,
+        global_share: f64,
+        scan_visits: u64,
+        probe: u64,
+    ) -> Self {
+        Self {
+            delegate,
+            unfiltered_visits,
+            global_share,
+            scan_visits,
+            probe,
+            accepted: 0,
+            descent: 0,
+            level0: false,
+            decided: false,
+            gave_up: false,
+        }
+    }
+
+    /// Whether the walk stopped for the exact scan.
+    pub fn gave_up(&self) -> bool {
+        self.gave_up
+    }
+
+    pub fn into_inner(self) -> C {
+        self.delegate
+    }
+}
+
+impl<C: KnnCollect> KnnCollect for FilteredWalkPlanner<C> {
+    fn k(&self) -> usize {
+        self.delegate.k()
+    }
+    fn early_terminated(&self) -> bool {
+        self.gave_up || self.delegate.early_terminated()
+    }
+    fn inc_visited_count(&mut self, count: usize) {
+        self.delegate.inc_visited_count(count);
+        let visited = self.delegate.visited_count();
+        if self.decided {
+            if visited > self.scan_visits.saturating_mul(2) {
+                self.gave_up = true;
+            }
+            return;
+        }
+        if !self.level0 {
+            self.descent = visited;
+            return;
+        }
+        let walked = visited.saturating_sub(self.descent);
+        if walked >= self.probe || self.accepted >= self.delegate.k() as u64 {
+            self.decided = true;
+            // Until the collector is full every accepted node it meets is
+            // collected, so `accepted` counts them.
+            let share = (self.accepted as f64 / walked.max(1) as f64).max(self.global_share);
+            let predicted = self.unfiltered_visits / share;
+            if predicted - walked as f64 > self.scan_visits as f64 {
+                self.gave_up = true;
+            }
+        }
+    }
+    fn visited_count(&self) -> u64 {
+        self.delegate.visited_count()
+    }
+    fn visit_limit(&self) -> u64 {
+        self.delegate.visit_limit()
+    }
+    fn collect(&mut self, node: i32, similarity: f32) -> bool {
+        self.level0 = true;
+        if !self.decided {
+            self.accepted = self.accepted.saturating_add(1);
+        }
+        self.delegate.collect(node, similarity)
+    }
+    fn min_competitive_similarity(&self) -> f32 {
+        self.delegate.min_competitive_similarity()
+    }
+    fn next_vectors_block(&mut self) {
+        self.level0 = true;
+        self.delegate.next_vectors_block()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AdaptiveBeamCollector
+// ---------------------------------------------------------------------------
+
+/// A distance-adaptive stop for a graph walk: the walk goes on while its
+/// best unexplored candidate is within `1 + slack` times the distance of
+/// the `hits`-th best node collected so far, instead of while it beats the
+/// worst of the collector's `k` (Al-Jazzazi et al., "Distance Adaptive Beam
+/// Search for Provably Accurate Graph-Based Nearest Neighbor Search", the
+/// rule behind Vespa's `exploration-slack`). The walk then explores as far
+/// as the query's neighbourhood needs rather than a fixed beam: at the same
+/// number of visited nodes it finds more of the true `hits` nearest.
+///
+/// Distances come from the similarity's score: `1 - score` for cosine and
+/// dot product (`(1 + cos) / 2`), `sqrt(1 / score - 1)` for Euclidean
+/// (`1 / (1 + d^2)`). Maximum inner product has no such distance, and its
+/// walk keeps the delegate's bound.
+#[derive(Debug, Clone)]
+pub struct AdaptiveBeamCollector<C> {
+    delegate: C,
+    /// The best `hits` scores collected, worst first once full.
+    best: std::collections::BinaryHeap<std::cmp::Reverse<OrderedScore>>,
+    hits: usize,
+    slack: f32,
+    euclidean: bool,
+}
+
+/// An `f32` ordered by `total_cmp`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OrderedScore(f32);
+
+impl Eq for OrderedScore {}
+
+impl PartialOrd for OrderedScore {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedScore {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+impl<C: KnnCollect> AdaptiveBeamCollector<C> {
+    /// `None` for a similarity without a distance to scale.
+    pub fn new(
+        delegate: C,
+        hits: usize,
+        slack: f32,
+        similarity: lucene_codecs::field_infos::VectorSimilarityFunction,
+    ) -> Option<Self> {
+        use lucene_codecs::field_infos::VectorSimilarityFunction as F;
+        let euclidean = match similarity {
+            F::Euclidean => true,
+            F::Cosine | F::DotProduct => false,
+            F::MaximumInnerProduct => return None,
+        };
+        Some(Self {
+            delegate,
+            best: std::collections::BinaryHeap::with_capacity(hits.saturating_add(1)),
+            hits: hits.max(1),
+            slack: slack.max(0.0),
+            euclidean,
+        })
+    }
+
+    pub fn into_inner(self) -> C {
+        self.delegate
+    }
+}
+
+impl<C: KnnCollect> KnnCollect for AdaptiveBeamCollector<C> {
+    fn k(&self) -> usize {
+        self.delegate.k()
+    }
+    fn early_terminated(&self) -> bool {
+        self.delegate.early_terminated()
+    }
+    fn inc_visited_count(&mut self, count: usize) {
+        self.delegate.inc_visited_count(count)
+    }
+    fn visited_count(&self) -> u64 {
+        self.delegate.visited_count()
+    }
+    fn visit_limit(&self) -> u64 {
+        self.delegate.visit_limit()
+    }
+    fn collect(&mut self, node: i32, similarity: f32) -> bool {
+        self.delegate.collect(node, similarity);
+        let score = OrderedScore(similarity);
+        if self.best.len() < self.hits {
+            self.best.push(std::cmp::Reverse(score));
+            return self.best.len() == self.hits;
+        }
+        match self.best.peek() {
+            Some(std::cmp::Reverse(worst)) if score > *worst => {
+                self.best.pop();
+                self.best.push(std::cmp::Reverse(score));
+                true
+            }
+            _ => false,
+        }
+    }
+    fn min_competitive_similarity(&self) -> f32 {
+        // No bound until the delegate is full too, so the walk still finds
+        // `k` hits when `hits < k`.
+        if self.delegate.min_competitive_similarity() == f32::NEG_INFINITY {
+            return f32::NEG_INFINITY;
+        }
+        let Some(std::cmp::Reverse(OrderedScore(kth))) =
+            self.best.peek().filter(|_| self.best.len() >= self.hits)
+        else {
+            return f32::NEG_INFINITY;
+        };
+        self.bound(*kth)
+    }
+    fn next_vectors_block(&mut self) {
+        self.delegate.next_vectors_block()
+    }
+}
+
+impl<C> AdaptiveBeamCollector<C> {
+    /// The least score within `1 + slack` times the distance of `kth`.
+    fn bound(&self, kth: f32) -> f32 {
+        let scale = 1.0 + self.slack;
+        if self.euclidean {
+            if kth <= 0.0 {
+                return f32::NEG_INFINITY;
+            }
+            let d = (1.0 / kth - 1.0).max(0.0).sqrt() * scale;
+            1.0 / (1.0 + d * d)
+        } else {
+            1.0 - scale * (1.0 - kth)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FloatHeap, BlockingFloatHeap, MultiLeafKnnCollector
 // ---------------------------------------------------------------------------
 
@@ -620,6 +881,142 @@ impl KnnCollect for MultiLeafKnnCollector<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lucene_codecs::field_infos::VectorSimilarityFunction;
+
+    #[test]
+    fn the_walk_planner_gives_up_after_a_probe_that_meets_few_accepted_nodes() {
+        // 1000 unfiltered visits, a filter passing 10% of the graph, a scan
+        // costing 2000 visits, a probe of 100.
+        let mut p =
+            FilteredWalkPlanner::new(KnnCollector::new(50, u64::MAX), 1000.0, 0.1, 2000, 100);
+        // The probe meets 2 accepted nodes in 100: still counted at the
+        // global 10%, 10_000 visits predicted, more than the scan.
+        p.collect(1, 0.9);
+        p.collect(2, 0.8);
+        p.inc_visited_count(99);
+        assert!(!p.early_terminated());
+        p.inc_visited_count(1);
+        assert!(p.gave_up() && p.early_terminated());
+    }
+
+    #[test]
+    fn the_walk_planner_keeps_walking_where_the_filter_passes_the_neighbourhood() {
+        let mut p =
+            FilteredWalkPlanner::new(KnnCollector::new(50, u64::MAX), 1000.0, 0.1, 2000, 100);
+        for i in 0..60 {
+            p.collect(i, 0.5);
+        }
+        p.inc_visited_count(100);
+        // 60% passing: 1_667 predicted, cheaper than the scan.
+        assert!(!p.gave_up());
+        // Accepted nodes are no longer counted once decided.
+        p.collect(99, 0.1);
+        assert_eq!(p.accepted, 60);
+        // Past twice the scan's cost it gives up all the same.
+        p.inc_visited_count(3900);
+        assert!(!p.gave_up());
+        p.inc_visited_count(1);
+        assert!(p.gave_up());
+        let inner = p.into_inner();
+        assert_eq!(inner.visited_count(), 4001);
+    }
+
+    #[test]
+    fn the_walk_planner_leaves_the_descent_out_of_the_probe() {
+        let mut p =
+            FilteredWalkPlanner::new(KnnCollector::new(100, u64::MAX), 1000.0, 0.1, 2000, 100);
+        // 300 visits on the upper levels collect nothing.
+        p.inc_visited_count(300);
+        assert!(!p.gave_up());
+        // Level 0: 60 of the first 100 pass.
+        p.next_vectors_block();
+        for i in 0..60 {
+            p.collect(i, 0.5);
+        }
+        p.inc_visited_count(99);
+        assert!(!p.decided);
+        p.inc_visited_count(1);
+        assert!(p.decided && !p.gave_up());
+    }
+
+    #[test]
+    fn the_walk_planner_decides_once_the_collector_is_full() {
+        let mut p =
+            FilteredWalkPlanner::new(KnnCollector::new(2, u64::MAX), 1000.0, 0.01, 50, 1000);
+        p.collect(1, 0.9);
+        p.collect(2, 0.8);
+        // Full after 2 visits: share 1.0, 1000 predicted, more than 50.
+        p.inc_visited_count(2);
+        assert!(p.gave_up());
+        assert_eq!(p.k(), 2);
+        assert_eq!(p.visit_limit(), u64::MAX);
+        assert!(p.min_competitive_similarity() > 0.0);
+    }
+
+    #[test]
+    fn adaptive_beam_bound_scales_the_kth_distance() {
+        let mut c = AdaptiveBeamCollector::new(
+            KnnCollector::new(2, u64::MAX),
+            2,
+            0.5,
+            VectorSimilarityFunction::Cosine,
+        )
+        .unwrap();
+        assert_eq!(c.min_competitive_similarity(), f32::NEG_INFINITY);
+        assert!(!c.collect(1, 0.9));
+        assert!(c.collect(2, 0.8));
+        // 2nd best 0.8: distance 0.2, times 1.5 = 0.3.
+        assert!((c.min_competitive_similarity() - 0.7).abs() < 1e-6);
+        assert!(!c.collect(3, 0.1));
+        assert!(c.collect(4, 0.95));
+        assert!((c.min_competitive_similarity() - 0.85).abs() < 1e-6);
+        assert_eq!(c.k(), 2);
+        let inner = c.into_inner();
+        assert_eq!(inner.top_docs().len(), 2);
+
+        // Fewer hits than k: no bound until the delegate is full.
+        let mut f = AdaptiveBeamCollector::new(
+            KnnCollector::new(3, u64::MAX),
+            1,
+            0.0,
+            VectorSimilarityFunction::DotProduct,
+        )
+        .unwrap();
+        f.collect(1, 0.9);
+        f.collect(2, 0.5);
+        assert_eq!(f.min_competitive_similarity(), f32::NEG_INFINITY);
+        f.collect(3, 0.4);
+        assert!((f.min_competitive_similarity() - 0.9).abs() < 1e-6);
+
+        let mut e = AdaptiveBeamCollector::new(
+            KnnCollector::new(1, u64::MAX),
+            1,
+            1.0,
+            VectorSimilarityFunction::Euclidean,
+        )
+        .unwrap();
+        // score 0.5 = distance 1; doubled = 2, score 1 / (1 + 4).
+        e.collect(1, 0.5);
+        assert!((e.min_competitive_similarity() - 0.2).abs() < 1e-6);
+        e.collect(2, 1.0);
+        assert!((e.min_competitive_similarity() - 1.0).abs() < 1e-6);
+        let mut z = AdaptiveBeamCollector::new(
+            KnnCollector::new(1, u64::MAX),
+            1,
+            1.0,
+            VectorSimilarityFunction::Euclidean,
+        )
+        .unwrap();
+        z.collect(1, 0.0);
+        assert_eq!(z.min_competitive_similarity(), f32::NEG_INFINITY);
+        assert!(AdaptiveBeamCollector::new(
+            KnnCollector::new(10, u64::MAX),
+            1,
+            1.0,
+            VectorSimilarityFunction::MaximumInnerProduct,
+        )
+        .is_none());
+    }
 
     #[test]
     fn float_heap_keeps_the_largest() {

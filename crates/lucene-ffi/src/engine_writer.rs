@@ -8550,10 +8550,11 @@ mod tests {
     fn a_view_searches_the_buffer_graph() {
         let recall = buffer_index_knn("engine-writer-live-knn-graph", "hnsw:8:50", 300, 0, false);
         // Uniform random 64-d vectors under M 8 and 50 candidates are hard
-        // for any graph: the flushed segment, which holds the same graph,
-        // finds about as many.
+        // for any graph. The flushed segment holds the same graph but scans
+        // its half-passing filter exactly (the walk would cost about as
+        // much), so it finds at least as many.
         assert!(
-            recall.0 >= 0.8 && recall.0 >= recall.1 - 0.05,
+            recall.0 >= 0.8 && recall.1 >= recall.0 - 0.05,
             "recall {recall:?}"
         );
     }
