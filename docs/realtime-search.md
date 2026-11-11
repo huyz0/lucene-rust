@@ -79,6 +79,18 @@ until it is published and no view reads it that way, then as its published
 segment (files pinned against merges) until the commit holding it is
 released.
 
+Under `index.lucene_rust.realtime_max_staleness` (20 ms by default),
+searches share one view instead of opening their own, and the warmer opens
+the next shared view (writing its tails and making the reads of recent
+requests) ahead of them. It replaces a shared view with one holding later
+writes once a search took the current one, or once the current one is three
+quarters of the bound old, so searches further apart than the bound still
+find a view written ahead. Opening a new view on every write instead (every
+5 ms under a steady load) made views nobody read. At 12k docs/s, node CPU
+went down 1-4% with 60 searches/s and 5% with 20 searches/s, with the same
+search latency; the median time to visibility went from 4-5 ms to 7-8 ms,
+within the bound.
+
 On the Java side, a search over the buffers reads a new reader, so anything
 OpenSearch caches per reader (global ordinals, for one) is built again for it.
 The plugin's aggregation processor therefore builds the aggregators of a
