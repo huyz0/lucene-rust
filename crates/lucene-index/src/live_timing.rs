@@ -56,9 +56,15 @@ pub enum Phase {
     ChunkSlotWait,
     /// Writing a search's own chunk without doc values.
     ChunkLean,
+    /// A k-NN search's view reader, found or built.
+    KnnReader,
+    /// A k-NN search over a view's reader and buffers.
+    KnnSearch,
+    /// The part of [`Phase::KnnSearch`] spent in the buffers' own indexes.
+    KnnBuffers,
 }
 
-const PHASES: usize = 23;
+const PHASES: usize = 26;
 
 const NAMES: [&str; PHASES] = [
     "view_open",
@@ -84,6 +90,9 @@ const NAMES: [&str; PHASES] = [
     "c_points",
     "c_slot_wait",
     "c_lean",
+    "knn_reader",
+    "knn_search",
+    "knn_buffers",
 ];
 
 struct Sums {

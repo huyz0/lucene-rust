@@ -256,14 +256,15 @@ public final class RustEngineSupport {
     public static final String FUZZY_SET_REFUSED = "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
 
     /**
-     * Whether an index with these settings is served by the Rust engine: it asked for it, or it
-     * inherits the node default and none of its static settings sends it to OpenSearch's engine.
+     * Whether an index with these settings is served by the Rust engine: it asked for it (or for
+     * realtime search, which only it serves), or it inherits the node default and none of its static settings sends it to OpenSearch's engine.
      */
     public static boolean servedByRust(org.opensearch.common.settings.Settings settings) {
         if (ENGINE_ENABLED.get(settings) == false) {
             return false;
         }
         return ENGINE_ENABLED.exists(settings)
+            || REALTIME_SEARCH.get(settings)
             || (CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
                 && (org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false
                     || unsupportedSort(settings) == null));

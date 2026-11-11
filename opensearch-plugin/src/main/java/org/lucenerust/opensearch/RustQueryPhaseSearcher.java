@@ -5,6 +5,7 @@ package org.lucenerust.opensearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lucenerust.opensearch.knn.KnnHitsQuery;
 import org.lucenerust.opensearch.neural.query.HybridQuery;
 import org.lucenerust.opensearch.neural.search.query.HybridAggregationProcessor;
 import org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher;
@@ -371,6 +372,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 } else if (liveIneligible(ctx) != null) {
                     // Lucene sees the view's documents as deleted and answers from the reader's.
                     reason = "realtime_view";
+                } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
+                    // A k-NN search's hits, found when the query was rewritten: nothing of the
+                    // buffers is read again.
+                    storeKnnHits(ctx, hits);
                 } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
                     // Everything else reads the buffers written as segments, one per leaf of the
                     // view: aggregations, sorts, collapse, rescore, and what the plain path's
@@ -624,6 +629,34 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         store(ctx, new TopDocsAndMaxScore(new TopDocs(total, hits), n == 0 ? Float.NaN : scores[0]), null);
         stats.liveQuery();
         return true;
+    }
+
+    /**
+     * The top hits and total of {@code hits} alone, as the native plain search gives them: best
+     * score first, the lower doc on a tie, {@code from + size} of them, counted up to
+     * {@code track_total_hits}.
+     */
+    private void storeKnnHits(SearchContext ctx, KnnHitsQuery hits) {
+        int[] docs = hits.docs();
+        float[] scores = hits.scores();
+        ScoreDoc[] all = new ScoreDoc[docs.length];
+        for (int i = 0; i < docs.length; i++) {
+            all[i] = new ScoreDoc(docs[i], scores[i]);
+        }
+        java.util.Arrays.sort(all, (a, b) -> a.score != b.score ? Float.compare(b.score, a.score) : Integer.compare(a.doc, b.doc));
+        int n = ctx.size() == 0 ? 0 : Math.min(all.length, ctx.from() + ctx.size());
+        ScoreDoc[] top = java.util.Arrays.copyOf(all, n);
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        TotalHits total;
+        if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED) {
+            total = new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        } else if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_ACCURATE && all.length > Math.max(trackUpTo, n)) {
+            total = new TotalHits(Math.max(trackUpTo, n), TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        } else {
+            total = new TotalHits(all.length, TotalHits.Relation.EQUAL_TO);
+        }
+        store(ctx, new TopDocsAndMaxScore(new TopDocs(total, top), n == 0 ? Float.NaN : top[0].score), null);
+        stats.liveQuery();
     }
 
     /** Why this request cannot run native, or null when it can. */

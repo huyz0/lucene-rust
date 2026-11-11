@@ -701,15 +701,24 @@ pub(super) struct Flushing {
     /// flush), for reading one document's doc values
     /// ([`ConcurrentIndexWriter::live_doc_values`]).
     pub(super) explicit: PackedFields,
+    /// Each document's vectors (their values shared with the flush), for
+    /// the chunks written from `lean` and for putting a document's vectors
+    /// back in its `_source` ([`ConcurrentIndexWriter::live_document_vectors`]);
+    /// empty when no document has one.
+    pub(super) vectors: Vec<Vec<crate::index_writer::DocumentVector>>,
 }
 
 /// What a chunk without postings is written from, copied out of its
 /// buffer so the buffer's lock is not held while it is written.
 struct Copied {
+    /// A flushing buffer's postings, for a chunk written with them (the
+    /// flush only reads them).
+    postings: Option<Arc<PendingPostings>>,
     explicit: PackedFields,
     /// Documents `start..end` of the chunk; empty for a flushing buffer.
     docs: Vec<lucene_codecs::stored_fields::Document>,
     custom: Vec<Vec<(String, i32)>>,
+    /// Documents `start..end`'s vectors; empty when none has one.
     vectors: Vec<Vec<crate::index_writer::DocumentVector>>,
     has_blocks: bool,
     partition: Option<Arc<str>>,
@@ -724,8 +733,8 @@ impl Flushing {
 }
 
 /// What a chunk of a flushing buffer without postings is written from,
-/// beside its packed fields ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
-/// whose documents carry no fields or vectors of their own.
+/// beside its packed fields and vectors ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only
+/// for a buffer whose documents carry no fields of their own.
 pub(super) struct LeanSource {
     pub(super) has_blocks: bool,
     pub(super) partition: Option<Arc<str>>,
@@ -933,6 +942,7 @@ impl LiveFlushes {
             postings: &f.postings,
             columns: &f.columns,
             explicit: &f.explicit,
+            vectors: &f.vectors,
             num_docs: usize::try_from(f.max_doc).unwrap_or(0),
         })
     }
@@ -1095,6 +1105,15 @@ pub struct FieldTotals {
     pub doc_count: i32,
 }
 
+/// A buffered document's vectors ([`ConcurrentIndexWriter::live_document_vectors`]).
+#[derive(Debug, Clone, Default)]
+pub struct LiveDocumentVectors {
+    /// The document's own vectors.
+    pub own: Vec<crate::index_writer::DocumentVector>,
+    /// Each nested child's vectors, in document order.
+    pub children: Vec<Vec<crate::index_writer::DocumentVector>>,
+}
+
 /// A buffered document's stored fields, in the order they were added.
 #[derive(Debug, Clone, Default)]
 pub(super) struct StoredArena {
@@ -1178,6 +1197,9 @@ struct Source<'a> {
     postings: &'a PendingPostings,
     columns: &'a LiveColumns,
     explicit: &'a PackedFields,
+    /// Each document's vectors; shorter than `num_docs` (empty) past the
+    /// last document with one.
+    vectors: &'a [Vec<crate::index_writer::DocumentVector>],
     /// How many documents the buffer holds now.
     num_docs: usize,
 }
@@ -1229,7 +1251,12 @@ impl ConcurrentIndexWriter<'_> {
             .map(|f| f.postings.bytes())
             .fold(slots, usize::saturating_add);
         live.buffers()
-            .map(|f| f.columns.ram_bytes().saturating_add(f.explicit.ram_bytes()))
+            .map(|f| {
+                f.columns
+                    .ram_bytes()
+                    .saturating_add(f.explicit.ram_bytes())
+                    .saturating_add(vectors_bytes(&f.vectors))
+            })
             .fold(retained, usize::saturating_add)
             .saturating_add(live.history_bytes)
     }
@@ -1332,6 +1359,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &dwpt.postings,
                 columns: &dwpt.live,
                 explicit: &dwpt.explicit,
+                vectors: &dwpt.vectors,
                 num_docs: dwpt.num_docs(),
             };
             let mut buffer = view_buffer(&source, tail, max_doc, &cfg)?;
@@ -1346,6 +1374,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &f.postings,
                 columns: &f.columns,
                 explicit: &f.explicit,
+                vectors: &f.vectors,
                 num_docs: usize::try_from(f.max_doc).unwrap_or(0),
             };
             let mut buffer = view_buffer(&source, &flushing_tail, f.max_doc, &cfg)?;
@@ -1523,7 +1552,6 @@ impl ConcurrentIndexWriter<'_> {
                 );
                 (slot.num_docs(), columns_of(&slot.live), None)
             }
-            None if postings => return Err(flushed()),
             None => {
                 let live = self.live_flushes();
                 let f = live
@@ -1534,10 +1562,11 @@ impl ConcurrentIndexWriter<'_> {
                     .ok_or_else(flushed)?;
                 let source = f.lean.as_ref().ok_or_else(flushed)?;
                 let copied = Copied {
+                    postings: postings.then(|| Arc::clone(&f.postings)),
                     explicit: f.explicit.snapshot(),
                     docs: Vec::new(),
                     custom: Vec::new(),
-                    vectors: Vec::new(),
+                    vectors: padded_or_empty(&f.vectors, start, end).into_owned(),
                     has_blocks: source.has_blocks,
                     partition: source.partition.clone(),
                 };
@@ -1684,6 +1713,7 @@ impl ConcurrentIndexWriter<'_> {
                 // indexing.
                 let c = match (slot, copied.take()) {
                     (Some(slot), _) => Copied {
+                        postings: None,
                         explicit: slot.explicit.snapshot(),
                         docs: padded(&slot.docs, start, end).into_owned(),
                         custom: padded_or_empty(&slot.custom_freq_terms, start, end).into_owned(),
@@ -1696,9 +1726,10 @@ impl ConcurrentIndexWriter<'_> {
                 };
                 // A flushing buffer keeps no documents: they are all empty.
                 let docs = padded(&c.docs, 0, end.saturating_sub(start));
+                let none = PendingPostings::default();
                 write(
                     &c.explicit,
-                    &PendingPostings::default(),
+                    c.postings.as_deref().unwrap_or(&none),
                     &docs,
                     &c.custom,
                     &c.vectors,
@@ -1811,6 +1842,7 @@ impl ConcurrentIndexWriter<'_> {
                 postings: &d.postings,
                 columns: &d.live,
                 explicit: &d.explicit,
+                vectors: &d.vectors,
                 num_docs: d.num_docs(),
             }));
         }
@@ -1913,6 +1945,46 @@ impl ConcurrentIndexWriter<'_> {
         let doc = usize::try_from(doc).map_err(|_| missing())?;
         self.with_buffer(b.id, |s| s.and_then(|s| s.columns.stored.document(doc)))
             .ok_or_else(missing)
+    }
+
+    /// The vectors of document `doc` of `view`'s buffer `buffer`, and those
+    /// of each of its nested children in document order: the documents
+    /// after the previous one with a doc value of field `parent_marker`
+    /// (`_primary_term`, which only root documents carry), as
+    /// `DerivedSourceLuceneHelper.getFirstChild` finds them. Fails where
+    /// [`Self::live_doc_values`] fails.
+    pub fn live_document_vectors(
+        &self,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+        parent_marker: i32,
+    ) -> Result<LiveDocumentVectors> {
+        let missing =
+            || Error::LiveSearch(format!("no buffered document {doc} in buffer {buffer}"));
+        let b = view.buffers.get(buffer).ok_or_else(missing)?;
+        if doc < 0 || doc >= b.max_doc {
+            return Err(missing());
+        }
+        let doc = usize::try_from(doc).map_err(|_| missing())?;
+        self.with_buffer(b.id, |s| {
+            let s = s?;
+            if s.explicit.len() != s.num_docs {
+                return Some(Err(Error::LiveSearch(format!(
+                    "buffer {buffer} holds documents not added as explicit fields"
+                ))));
+            }
+            let first = match previous_with(s.explicit, doc, parent_marker) {
+                Ok(previous) => previous.map_or(0, |p| p.saturating_add(1)),
+                Err(e) => return Some(Err(e)),
+            };
+            let of = |d: usize| s.vectors.get(d).cloned().unwrap_or_default();
+            Some(Ok(LiveDocumentVectors {
+                own: of(doc),
+                children: (first..doc).map(of).collect(),
+            }))
+        })
+        .ok_or_else(missing)?
     }
 
     /// The doc values of document `doc` of `view`'s buffer `buffer`, for
@@ -2168,6 +2240,42 @@ fn padded<T: Clone + Default>(list: &[T], start: usize, end: usize) -> std::borr
 }
 
 /// Like [`padded`], but an empty list (no document has an entry) stays empty.
+/// The last document before `doc` of `explicit` with a doc value of field
+/// `field`, searched in windows growing back from `doc`.
+fn previous_with(explicit: &PackedFields, doc: usize, field: i32) -> Result<Option<usize>> {
+    let mut end = doc;
+    for back in [16usize, 256, 4096, usize::MAX] {
+        let start = doc.saturating_sub(back);
+        let mut found = None;
+        explicit.for_each_range(start, end, |d, f| {
+            if f.doc_values.iter().any(|v| v.field_number == field) {
+                found = Some(start.saturating_add(d));
+            }
+            Ok(())
+        })?;
+        if found.is_some() || start == 0 {
+            return Ok(found);
+        }
+        end = start;
+    }
+    Ok(None)
+}
+
+/// What `vectors` hold: each vector's values and name.
+fn vectors_bytes(vectors: &[Vec<crate::index_writer::DocumentVector>]) -> usize {
+    vectors
+        .iter()
+        .flatten()
+        .map(|v| {
+            let values = match &v.value {
+                crate::index_writer::VectorValue::Float32(x) => x.len().saturating_mul(4),
+                crate::index_writer::VectorValue::Byte(x) => x.len(),
+            };
+            values.saturating_add(v.field_name.len())
+        })
+        .fold(vectors.len().saturating_mul(24), usize::saturating_add)
+}
+
 fn padded_or_empty<T: Clone + Default>(
     list: &[T],
     start: usize,
