@@ -127,6 +127,33 @@ public enum MultiVectorEncoding {
         return b.array();
     }
 
+    /**
+     * The tokens' mean, scaled to unit length ({@code lucene_tensor::pooled_mean}: summed and scaled
+     * in double), or null when it is zero: a document's one vector for finding candidates.
+     */
+    public static float[] pooledMean(float[][] tokens) {
+        int dim = tokens[0].length;
+        double[] mean = new double[dim];
+        for (float[] t : tokens) {
+            for (int k = 0; k < dim; k++) {
+                mean[k] += t[k];
+            }
+        }
+        double norm = 0;
+        for (double m : mean) {
+            norm += m * m;
+        }
+        norm = Math.sqrt(norm);
+        if (norm == 0 || Double.isFinite(norm) == false) {
+            return null;
+        }
+        float[] out = new float[dim];
+        for (int k = 0; k < dim; k++) {
+            out[k] = (float) (mean[k] / norm);
+        }
+        return out;
+    }
+
     /** A decoded value: {@code tokens} tokens of {@code dim} floats in the block layout. */
     public record Blocks(int dim, int tokens, float[] values) {}
 

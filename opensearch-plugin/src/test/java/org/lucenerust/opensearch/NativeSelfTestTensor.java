@@ -57,6 +57,9 @@ final class NativeSelfTestTensor {
         "feffffff03000000110000000000803f0000803f01000000e4f100440402013c0683c13b0402813b0402013b0683413b0683c13b0402813b0683c13b0402013c8542213c0683413c87c3613c0402813c7f00057f81818181002a7f7f7f7f7f7f0300fd814000207f7f55001520262a00fd000000b1eb81008181c096f0cd00e57f00000000000000000000000000000008000000000000000000000000000000d0000000000000000000000000000000"
     };
 
+    /** {@code golden.rs}'s {@code POOLED}. */
+    private static final String GOLDEN_POOLED = "1736353fc2d334bfa90193b8";
+
     /** {@code golden.rs}'s tokens. */
     private static float[][] golden() {
         float[][] t = new float[17][];
@@ -122,6 +125,13 @@ final class NativeSelfTestTensor {
             String hex = HexFormat.of().formatHex(ENCODINGS[e].encode(golden(), 3));
             check.accept(hex.equals(GOLDEN[e]), "multi_vector " + ENCODINGS[e].getName() + " writes lucene-tensor's bytes: " + hex);
         }
+        java.nio.ByteBuffer pooled = java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (float x : MultiVectorEncoding.pooledMean(golden())) {
+            pooled.putFloat(x);
+        }
+        String pooledHex = HexFormat.of().formatHex(pooled.array());
+        check.accept(pooledHex.equals(GOLDEN_POOLED), "multi_vector pooled mean is lucene-tensor's: " + pooledHex);
+        check.accept(MultiVectorEncoding.pooledMean(new float[][] { { 1f, -2f }, { -1f, 2f } }) == null, "a zero mean pools to nothing");
         Path dir = Files.createTempDirectory("lucene-rust-selftest-tensor");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
