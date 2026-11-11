@@ -179,6 +179,19 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         return fieldName;
     }
 
+    public Float getMaxDistance() {
+        return maxDistance;
+    }
+
+    public Float getMinScore() {
+        return minScore;
+    }
+
+    /** k-NN's {@code setK}: MMR widens a query's k to its candidate count before the search runs. */
+    public void setK(int k) {
+        this.k = k;
+    }
+
     public Integer getK() {
         return k;
     }
@@ -557,6 +570,10 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         KnnVectorFieldMapper.KnnVectorFieldType knn = (KnnVectorFieldMapper.KnnVectorFieldType) ft;
         if (knn.isIndexedForAnn() == false) {
             throw new IllegalArgumentException(String.format(Locale.ROOT, "Field '%s' is not built for ANN search.", fieldName));
+        }
+        // k-NN's getVectorQueryType: k 0 (as MMR's candidates 0 leaves it) counts as unset.
+        if (maxDistance == null && minScore == null && (k == null || k == 0)) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires exactly one of k, distance or score to be set", NAME));
         }
         // Counted where the stock plugin counts: once the field is a knn one, before the vector is checked.
         KnnStats.query(

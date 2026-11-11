@@ -13,6 +13,13 @@ import org.lucenerust.opensearch.ml.MlSettings;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
 import org.opensearch.indices.SystemIndexDescriptor;
 import org.opensearch.plugins.SystemIndexPlugin;
+import org.lucenerust.opensearch.knn.search.extension.MMRSearchExtBuilder;
+import org.lucenerust.opensearch.knn.search.processor.KNNSourceExcludesProcessor;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMRKnnQueryTransformer;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMROverSampleProcessor;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMRQueryTransformer;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMRRerankProcessor;
+import org.lucenerust.opensearch.neural.processor.mmr.MMRNeuralQueryTransformer;
 import org.lucenerust.opensearch.neural.mapper.SemanticFieldMapper;
 import org.lucenerust.opensearch.neural.mappingtransformer.SemanticMappingTransformer;
 import org.lucenerust.opensearch.neural.ml.resolver.DefaultSemanticModelResolver;
@@ -704,7 +711,45 @@ public class RustSearchPlugin extends Plugin implements
     /** neural-search's {@code ext.rerank}, the query context a rerank processor reads. */
     @Override
     public List<SearchExtSpec<?>> getSearchExts() {
-        return List.of(new SearchExtSpec<>(RerankSearchExtBuilder.PARAM_FIELD_NAME, RerankSearchExtBuilder::new, RerankSearchExtBuilder::parse));
+        List<SearchExtSpec<?>> exts = new ArrayList<>();
+        exts.add(new SearchExtSpec<>(RerankSearchExtBuilder.PARAM_FIELD_NAME, RerankSearchExtBuilder::new, RerankSearchExtBuilder::parse));
+        if (stockKnn == false) {
+            exts.add(new SearchExtSpec<>(MMRSearchExtBuilder.NAME, MMRSearchExtBuilder::new, MMRSearchExtBuilder::parse));
+        }
+        return exts;
+    }
+
+    /**
+     * k-NN's system search processors: {@code knn_default_excludes}, which leaves knn_vector fields out
+     * of a search's {@code _source} unless asked for, and MMR's oversampling request processor.
+     */
+    @Override
+    public Map<String, org.opensearch.search.pipeline.SystemGeneratedProcessor.SystemGeneratedFactory<org.opensearch.search.pipeline.SearchRequestProcessor>> getSystemGeneratedRequestProcessors(
+        Parameters parameters
+    ) {
+        if (stockKnn) {
+            return Map.of();
+        }
+        Map<String, MMRQueryTransformer<? extends org.opensearch.index.query.QueryBuilder>> transformers = Map.of(
+            KnnQueryBuilder.NAME,
+            new MMRKnnQueryTransformer(),
+            NeuralQueryBuilder.NAME,
+            new MMRNeuralQueryTransformer()
+        );
+        return Map.of(
+            KNNSourceExcludesProcessor.Factory.TYPE,
+            new KNNSourceExcludesProcessor.Factory(clusterService.get(), resolver.get()),
+            MMROverSampleProcessor.MMROverSampleProcessorFactory.TYPE,
+            new MMROverSampleProcessor.MMROverSampleProcessorFactory(parameters.client, transformers)
+        );
+    }
+
+    /** k-NN's MMR rerank response processor. */
+    @Override
+    public Map<String, org.opensearch.search.pipeline.SystemGeneratedProcessor.SystemGeneratedFactory<org.opensearch.search.pipeline.SearchResponseProcessor>> getSystemGeneratedResponseProcessors(
+        Parameters parameters
+    ) {
+        return stockKnn ? Map.of() : Map.of(MMRRerankProcessor.MMRRerankProcessorFactory.TYPE, new MMRRerankProcessor.MMRRerankProcessorFactory());
     }
 
     /** neural-search's {@code neural_query_enricher} and {@code neural_sparse_two_phase_processor}. */
@@ -712,6 +757,7 @@ public class RustSearchPlugin extends Plugin implements
     public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchRequestProcessor>> getRequestProcessors(
         Parameters parameters
     ) {
+        org.lucenerust.opensearch.neural.util.NeuralSearchClusterUtil.instance().setSearchPipelineService(parameters.searchPipelineService);
         return Map.of(
             NeuralQueryEnricherProcessor.TYPE,
             new NeuralQueryEnricherProcessor.Factory(),
