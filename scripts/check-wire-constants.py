@@ -105,6 +105,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("SemanticFieldProcessorFactory.java", "DEFAULT_BATCH_SIZE"): "the semantic ingest processor's inference batch, run in Java before indexing",
     ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_MAX_WINDOW_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
     ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_BASE_QUERY_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
     ("NeuralSparseTwoPhaseProcessor.java", "MAX_WINDOWS_SIZE_LOWER_BOUND"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
