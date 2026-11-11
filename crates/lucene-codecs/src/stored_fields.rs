@@ -1717,6 +1717,9 @@ pub struct StoredFieldsWriter {
     page_chunk: Vec<u8>,
     /// The chunks written since [`Self::capture_chunks`], while it is on.
     captured: Option<Vec<WrittenChunk>>,
+    /// [`Self::set_zstd_dictionary`] gave the chunks a dictionary, which a
+    /// [`WrittenChunk`] does not carry.
+    has_dictionary: bool,
 }
 
 /// The least `.fdt` bytes, summed over a merge's sources, for which the
@@ -1919,14 +1922,18 @@ impl StoredFieldsWriter {
             },
             page_chunk: Vec::new(),
             captured: None,
+            has_dictionary: false,
         }
     }
 
     /// Keeps a copy of each chunk written from now on until
     /// [`Self::take_captured`], so their documents stay readable once the
-    /// `.fdt` bytes go to the output.
+    /// `.fdt` bytes go to the output. A writer with a zstd dictionary
+    /// ([`Self::set_zstd_dictionary`]) captures none.
     pub fn capture_chunks(&mut self) {
-        self.captured = Some(Vec::new());
+        if !self.has_dictionary {
+            self.captured = Some(Vec::new());
+        }
     }
 
     /// The chunks written since [`Self::capture_chunks`], which stops
@@ -1970,6 +1977,7 @@ impl StoredFieldsWriter {
         self.fdt.truncate(header);
         self.fdt.write_vint(dict.len() as i32);
         self.fdt.extend_from_slice(dict);
+        self.has_dictionary = true;
         let dict = (!dict.is_empty()).then_some(dict);
         if dict.is_some() {
             let pad = self.fdt.len().next_multiple_of(ZSTD_PAGED_PAGE_SIZE);
@@ -3496,6 +3504,12 @@ mod tests {
             }
             assert_eq!(w.finish(), plain.finish(), "{mode:?}");
         }
+        // Chunks compressed against a dictionary are not captured.
+        let mut w = StoredFieldsWriter::new(Mode::ZstdPaged(3), &[0; ID_LENGTH], "");
+        w.set_zstd_dictionary(&[7; 1024]);
+        w.capture_chunks();
+        w.add_document(&doc(0, 700_000));
+        assert!(w.take_captured().is_empty());
     }
 
     #[test]

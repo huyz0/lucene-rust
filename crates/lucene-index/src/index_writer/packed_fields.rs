@@ -423,7 +423,9 @@ impl ChunkDocument {
     }
 }
 
-/// About how many bytes `doc`'s stored values take.
+/// About how many bytes `doc`'s stored values take: a string or binary
+/// value its length, a number 8, more than its encoding takes. A document
+/// counted big that does not close a chunk is copied as a small one is.
 fn stored_bytes(doc: &Document) -> usize {
     doc.fields
         .iter()
