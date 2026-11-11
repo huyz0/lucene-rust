@@ -447,13 +447,88 @@ public final class PainlessScore {
 
     /** Starts a request on this thread: no script sent yet. */
     public static void beginRequest() {
+        beginRequest(null);
+    }
+
+    /**
+     * Starts a request on this thread whose search source, as JSON, {@code source} gives: what
+     * {@link #compiledWithDefaults} reads, once, if it is asked.
+     */
+    public static void beginRequest(Supplier<String> source) {
         RUNS.get().clear();
+        REQUEST_SOURCE.set(source);
+        UNDEFAULTED.remove();
         NativeBridge.clearLastError();
     }
 
     /** Ends the request on this thread. */
     public static void endRequest() {
         RUNS.get().clear();
+        REQUEST_SOURCE.remove();
+        UNDEFAULTED.remove();
+    }
+
+    /** The request's search source, for {@link #compiledWithDefaults}; null outside a request. */
+    private static final ThreadLocal<Supplier<String>> REQUEST_SOURCE = new ThreadLocal<>();
+
+    /**
+     * The inline sources the request compiles with options of their own, and {@code null} in it
+     * when the request names a stored script; read from the request's source on first use.
+     */
+    private static final ThreadLocal<java.util.Set<String>> UNDEFAULTED = new ThreadLocal<>();
+
+    /**
+     * Whether a script of {@code source}, read off its compiled factory, was compiled with the
+     * node's default compiler settings, as {@link #compile} compiles it: no script of the request
+     * with that source sets an option other than {@code content_type} ({@code max_loop_counter},
+     * {@code picky}), and the request names no stored script (whose options its source does not
+     * show). A request whose source cannot be read compiled nothing with defaults as far as the
+     * native runtime knows.
+     */
+    public static boolean compiledWithDefaults(String source) {
+        java.util.Set<String> undefaulted = UNDEFAULTED.get();
+        if (undefaulted == null) {
+            undefaulted = new java.util.HashSet<>();
+            Supplier<String> request = REQUEST_SOURCE.get();
+            try {
+                String json = request == null ? null : request.get();
+                if (json != null) {
+                    undefaultedScripts(
+                        org.opensearch.common.xcontent.XContentHelper.convertToMap(
+                            org.opensearch.common.xcontent.json.JsonXContent.jsonXContent,
+                            json,
+                            false
+                        ),
+                        null,
+                        undefaulted
+                    );
+                }
+            } catch (RuntimeException e) {
+                undefaulted.add(null);
+            }
+            UNDEFAULTED.set(undefaulted);
+        }
+        return undefaulted.contains(null) == false && undefaulted.contains(source) == false;
+    }
+
+    /** Adds to {@code out} what {@link #UNDEFAULTED} holds of {@code value}, found under {@code key}. */
+    private static void undefaultedScripts(Object value, String key, java.util.Set<String> out) {
+        if (value instanceof Map<?, ?> m) {
+            if (key != null && key.endsWith("script") && m.get("id") != null) {
+                out.add(null);
+            }
+            if (m.get("source") instanceof String src && m.get("options") instanceof Map<?, ?> options
+                && options.keySet().stream().anyMatch(k -> "content_type".equals(k) == false)) {
+                out.add(src);
+            }
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                undefaultedScripts(e.getValue(), String.valueOf(e.getKey()), out);
+            }
+        } else if (value instanceof List<?> l) {
+            for (Object v : l) {
+                undefaultedScripts(v, key, out);
+            }
+        }
     }
 
     /** The number in this request, for its errors, of a script {@code factory} makes for an index's shard. */

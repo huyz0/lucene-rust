@@ -762,6 +762,9 @@ final class ExtendedEncoder {
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) sp[1];
+        if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
+            return "sort_script_options";
+        }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.SORT, "sort_script");
         if (prepared instanceof String reason) {
             return reason;
@@ -785,6 +788,9 @@ final class ExtendedEncoder {
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) sp[1];
+        if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
+            return "aggregation_script_options";
+        }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.AGGREGATION, "aggregation_script");
         if (prepared instanceof String reason) {
             return reason;
@@ -805,6 +811,9 @@ final class ExtendedEncoder {
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) sp[1];
+        if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
+            return "covering_options";
+        }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
         if (prepared instanceof String reason) {
             return reason;
@@ -821,6 +830,9 @@ final class ExtendedEncoder {
         String source = PainlessScore.sourceOf(script);
         if (source == null) {
             return "interval_script";
+        }
+        if (PainlessScore.compiledWithDefaults(source) == false) {
+            return "interval_options";
         }
         Object prepared = painless(new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
         if (prepared instanceof String reason) {
