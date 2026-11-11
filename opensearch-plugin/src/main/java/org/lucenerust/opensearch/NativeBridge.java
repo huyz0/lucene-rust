@@ -2880,20 +2880,20 @@ public final class NativeBridge {
     // ---- Live search of the writer's buffers (live.rs). ----
 
     /**
-     * Opens a view of the documents buffered in writer {@code writer} that a reader of commit
-     * {@code commitGeneration} lacks: its handle into {@code outView[0]}, its blob ({@code published:
+     * Opens a view of the documents buffered in writer {@code writer} that a reader of the segment
+     * list at version {@code readerVersion} (a commit's or an NRT snapshot's) lacks: its handle into {@code outView[0]}, its blob ({@code published:
      * i64}, {@code count: i32}, then per buffer {@code maxDoc: i32}, {@code deleted: i32} and that many
      * deleted documents, little-endian) into {@code outBlob[0]}. {@link #INVALID_ARGUMENT} when the
-     * buffers cannot be read for that commit; the caller then searches the reader alone.
+     * buffers cannot be read for that list; the caller then searches the reader alone.
      */
-    public static int liveViewOpen(long writer, long commitGeneration, long[] outView, byte[][] outBlob) {
+    public static int liveViewOpen(long writer, long readerVersion, long[] outView, byte[][] outBlob) {
         if (outView == null || outView.length < 1 || outBlob == null || outBlob.length < 1) {
             return fail(INVALID_ARGUMENT, "outView and outBlob need a slot each");
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment view = s.alloc(Long.BYTES);
             MemorySegment blob = ownedSlot(s);
-            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, commitGeneration, view, ptrOf(blob), lenOf(blob));
+            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, readerVersion, view, ptrOf(blob), lenOf(blob));
             if (rc == OK) {
                 long id = view.get(JAVA_LONG, 0);
                 byte[] bytes = take(blob);
@@ -3026,10 +3026,10 @@ public final class NativeBridge {
         }
     }
 
-    /** Lets go of the buffers a reader of commit {@code generation} already has, once no view reads them. */
-    public static int writerReleaseLive(long writer, long generation) {
+    /** Lets go of the buffers a reader of the segment list at {@code version} already has, once no view reads them. */
+    public static int writerReleaseLive(long writer, long version) {
         try {
-            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, version);
         } catch (Throwable t) {
             throw rethrow(t);
         }
