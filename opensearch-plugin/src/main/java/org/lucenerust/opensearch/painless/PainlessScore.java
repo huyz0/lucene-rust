@@ -52,7 +52,10 @@ import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptException;
 import org.opensearch.script.ScriptService;
+import org.opensearch.script.SimilarityScript;
+import org.opensearch.script.SimilarityWeightScript;
 import org.opensearch.script.TermsSetQueryScript;
+import org.opensearch.index.similarity.ScriptedSimilarity;
 
 /**
  * The Painless scripts the native engine runs in place of the classes Painless generates: each
@@ -99,9 +102,10 @@ public final class PainlessScore {
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
      * a number sort script, an aggregation script, a {@code terms_set} minimum, an
-     * {@code intervals} filter script.
+     * {@code intervals} filter script, a scripted similarity's script and its weight script.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7;
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
+        SIMILARITY = 8, SIMILARITY_WEIGHT = 9;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
     private interface Run {
@@ -235,6 +239,73 @@ public final class PainlessScore {
             }
             return null;
         }
+    }
+
+    /**
+     * A scripted similarity's script ({@code weight} false) or weight script: Java makes one of
+     * its scripts again, with the arguments the error names, for Painless's own exception.
+     */
+    private record SimilarityRun(ScriptedSimilarity similarity, boolean weight) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            try {
+                Object factory = privateField(ScriptedSimilarity.class, weight ? "weightScriptFactory" : "scriptFactory").get(similarity);
+                return weight ? ((SimilarityWeightScript.Factory) factory).newInstance() : ((SimilarityScript.Factory) factory).newInstance();
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            return null;
+        }
+
+        /**
+         * The {@code ScriptException} the script raises on the arguments {@code slot} names --
+         * the weight's bits (score script only), the query boost's bits, the field's and the
+         * term's statistics, then (score script only) the frequency's bits and the norm -- or null.
+         */
+        ScriptException rethrown(Object script, String slot) {
+            String[] v = slot.split(":");
+            try {
+                int i = 0;
+                double w = weight ? 0 : Double.longBitsToDouble(Long.parseUnsignedLong(v[i++]));
+                Object query = construct(ScriptedSimilarity.Query.class, new Class<?>[] { float.class },
+                    Float.intBitsToFloat(Integer.parseUnsignedInt(v[i++])));
+                Object field = construct(ScriptedSimilarity.Field.class, new Class<?>[] { long.class, long.class, long.class },
+                    Long.parseLong(v[i++]), Long.parseLong(v[i++]), Long.parseLong(v[i++]));
+                Object term = construct(ScriptedSimilarity.Term.class, new Class<?>[] { long.class, long.class },
+                    Long.parseLong(v[i++]), Long.parseLong(v[i++]));
+                if (weight) {
+                    ((SimilarityWeightScript) script).execute(
+                        (ScriptedSimilarity.Query) query, (ScriptedSimilarity.Field) field, (ScriptedSimilarity.Term) term);
+                } else {
+                    ScriptedSimilarity.Doc d = (ScriptedSimilarity.Doc) construct(ScriptedSimilarity.Doc.class, new Class<?>[0]);
+                    privateField(ScriptedSimilarity.Doc.class, "freq").setFloat(d, Float.intBitsToFloat(Integer.parseUnsignedInt(v[i++])));
+                    privateField(ScriptedSimilarity.Doc.class, "norm").setLong(d, Long.parseLong(v[i++]));
+                    ((SimilarityScript) script).execute(
+                        w, (ScriptedSimilarity.Query) query, (ScriptedSimilarity.Field) field, (ScriptedSimilarity.Term) term, d);
+                }
+            } catch (ScriptException e) {
+                return e;
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return null;
+            }
+            return null;
+        }
+    }
+
+    private static Field privateField(Class<?> c, String name) throws NoSuchFieldException {
+        Field f = c.getDeclaredField(name);
+        f.setAccessible(true);
+        return f;
+    }
+
+    private static Object construct(Class<?> c, Class<?>[] types, Object... args) throws ReflectiveOperationException {
+        java.lang.reflect.Constructor<?> k = c.getDeclaredConstructor(types);
+        k.setAccessible(true);
+        return k.newInstance(args);
     }
 
     /** One interval, as {@code IntervalFilterScript.Interval} reads its iterator. */
@@ -385,6 +456,12 @@ public final class PainlessScore {
     /** {@code source} compiled for the {@code intervals} filter context, as {@link #score}. */
     public static Object interval(String source) {
         return compile(IntervalFilterScript.CONTEXT, IntervalFilterScript.class, source);
+    }
+
+    /** {@code source} compiled for the similarity context ({@code weight} false) or the similarity weight context, as {@link #score}. */
+    public static Object similarity(String source, boolean weight) {
+        return weight ? compile(SimilarityWeightScript.CONTEXT, SimilarityWeightScript.class, source)
+            : compile(SimilarityScript.CONTEXT, SimilarityScript.class, source);
     }
 
     /** {@code source} compiled for the filter context, as {@link #score}. */
@@ -561,6 +638,11 @@ public final class PainlessScore {
         return run(new IntervalRun(script));
     }
 
+    /** The number in this request, for its errors, of a scripted similarity's script or ({@code weight}) its weight script. */
+    public static int runSimilarity(ScriptedSimilarity similarity, boolean weight) {
+        return run(new SimilarityRun(similarity, weight));
+    }
+
     private static int run(Run run) {
         List<Run> runs = RUNS.get();
         runs.add(run);
@@ -609,6 +691,12 @@ public final class PainlessScore {
             Run run = RUNS.get().get(Integer.parseInt(parts[0]));
             int offset0 = Integer.parseInt(parts[4]);
             String message0 = parts[6].startsWith("1") ? parts[6].substring(1) : null;
+            if (run instanceof SimilarityRun similarity) {
+                // The script's arguments where a document goes.
+                Object script = similarity.script(null);
+                ScriptException painless = similarity.rethrown(script, parts[2]);
+                return painless != null ? painless : converted(script, parts[5], message0, offset0);
+            }
             if (run instanceof IntervalRun interval) {
                 // The interval, start:end:gaps, where a document goes.
                 String[] at3 = parts[2].split(":", 3);

@@ -31,6 +31,7 @@ impl Throw {
             class: class.into(),
             message: Some(message.into()),
             cause: None,
+            at: None,
         }))
     }
 
@@ -39,6 +40,7 @@ impl Throw {
             class: class.into(),
             message: None,
             cause: None,
+            at: None,
         }))
     }
 
@@ -103,6 +105,12 @@ pub struct JException {
     pub class: String,
     pub message: Option<String>,
     pub cause: Option<Value>,
+    /// Where it was made: Java fills an exception's stack trace when it is
+    /// made, so its offset is the constructor call's (or, for the runtime's
+    /// own, the failing operation's), wherever it is thrown again. `None`
+    /// for a runtime exception no `catch` has taken yet: the VM's
+    /// [`Vm::loc`] is still where it was raised.
+    pub at: Option<i32>,
 }
 
 impl JObject for JException {
@@ -628,9 +636,18 @@ impl<'a> Vm<'a> {
     }
 
     /// Runs the script's `execute` with `args`.
+    ///
+    /// On an exception a script made, [`Self::loc`] is where it made it:
+    /// the offset Painless's `ScriptException` reports.
     pub fn execute(&mut self, args: &[Value]) -> Result<Value, Throw> {
         let entry = self.prog.entry;
-        self.call_local(entry, args)
+        let r = self.call_local(entry, args);
+        if let Err(t) = &r {
+            if let Some(at) = crate::object::downcast::<JException>(&t.0).and_then(|e| e.at) {
+                self.loc = at;
+            }
+        }
+        r
     }
 
     /// Calls function `func` of the script.
@@ -852,7 +869,16 @@ impl<'a> Vm<'a> {
                         }) else {
                             return Err(t);
                         };
-                        frame.regs[c.slot as usize] = t.0;
+                        // A runtime exception keeps where it was raised, for
+                        // a `throw` of it after the catch.
+                        frame.regs[c.slot as usize] =
+                            match crate::object::downcast::<JException>(&t.0) {
+                                Some(e) if e.at.is_none() => Value::object(JException {
+                                    at: Some(self.loc),
+                                    ..e.clone()
+                                }),
+                                _ => t.0,
+                            };
                         let flow = self.run(frame, &c.body)?;
                         if !matches!(flow, Flow::Normal) {
                             return Ok(flow);
