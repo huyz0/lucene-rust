@@ -596,8 +596,8 @@ def realtime():
         a, b = out[rt], out[ref]
         check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"],
               f"{where}: script query through a flushed point in time: {a['hits']['total']} vs {b['hits']['total']}")
-        ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
-        hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
+        ha = [(h["_id"], tuple(h["sort"])) for h in a["hits"]["hits"]]
+        hb = [(h["_id"], tuple(h["sort"])) for h in b["hits"]["hits"]]
         first = next((i for i, (x, y) in enumerate(zip(ha, hb)) if x != y), min(len(ha), len(hb)))
         only_a = sorted(set(ha) - set(hb))[:5]
         only_b = sorted(set(hb) - set(ha))[:5]
