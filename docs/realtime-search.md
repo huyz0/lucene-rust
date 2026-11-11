@@ -140,9 +140,13 @@ costs exact scoring of the tail, not memory. The buffer flushes at the RAM
 buffer's limit as with realtime off, which bounds both the backlog and the
 graph; the graph itself (about 0.4 KB a vector at M 16, reported by
 `live_bytes` while the buffer is in its slot) is not charged to the RAM buffer, so segments end at the same
-documents. A buffer's graph goes with its flush: views of a flushing or
-published buffer read its vectors from the segment, and an inserter
-still running stops once the flush is done with the graph. Peak RSS of a burst
+documents. A buffer's graph goes with its flush: a view of a flushing
+buffer scans its vectors exactly from the buffer's chunks (the flush keeps
+the vector lists, their values shared, for that) until it is published, then
+reads them from the segment, and an inserter still running stops once the
+flush is done with the graph. A view that opened while the buffer was in its
+slot writes its chunks from the flushing buffer the same way, its postings
+included, so a search racing a flush neither fails nor falls back to Lucene. Peak RSS of a burst
 (`lucene-index` example `live_vector_memory`, 4 indexing threads on 4 cores,
 64 MB RAM buffer, a view opened every 100 ms, no commit until the end):
 
@@ -183,6 +187,34 @@ format also read exactly); a k-NN search of a buffer with a graph reads only
 their deletes and filter matches. Chunks and tails with vectors are still
 written as segments, not lean parts: about 1.3 ms per view for a tail of about
 2.5k 128-d vectors.
+
+
+### End to end on OpenSearch
+
+`opensearch-plugin/e2e/bench_knn_realtime.py` (one shard, GloVe-100 L2,
+100k vectors flushed, the next 100k indexed at 1.5k docs/s from one client
+while two clients send k=10 searches, half filtered to 2% of documents, 20/s
+each; recall@10 against every document acknowledged before the search; 4
+cores). `check_knn_realtime.py` checks each method finds vectors written
+after the last refresh.
+
+| Method | mode | took mean (unfiltered / filtered) | recall@10 (unfiltered) | write to visible p50 | indexing CPU |
+|---|---|---|---|---|---|
+| lucene hnsw | refresh 1s | 2.3 / 1.9 ms | 0.845 | 558 ms | 55.3 s |
+| lucene hnsw | realtime | 2.5 / 2.2 ms | 0.857 | 4.3 ms | 54.5 s |
+| lucene_rust ivf | refresh 1s | 2.3 / 1.6 ms | 0.988 | 535 ms | 47.7 s |
+| lucene_rust ivf | realtime | 2.8 / 2.5 ms | 0.993 | 4.5 ms | 47.7 s |
+| lucene_rust hnsw rabitq | refresh 1s | 2.0 / 1.6 ms | 0.805 | 545 ms | 56.7 s |
+| lucene_rust hnsw rabitq | realtime | 2.7 / 2.7 ms | 0.808 | 4.9 ms | 54.6 s |
+
+Realtime indexes with no more CPU (the flush writes the graph kept over the
+buffer) and the same memory. k-NN derived source works under realtime: a
+buffered document's `_source` is stored masked, as a flushed one's is, and its
+vectors are put back from the buffer when it is read; a `_source` in another
+content type than JSON is stored whole while buffered. With the same segments
+and nothing buffered the realtime path costs 0.1 ms over the plugin's.
+An index sort is refused with realtime search (the flush would renumber the
+buffered documents).
 
 ## Searches Lucene answers
 
