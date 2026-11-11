@@ -139,6 +139,9 @@ pub struct EngineWriter {
     live_chunks: Mutex<crate::live::Chunks>,
     /// Writes those segments ahead of the searches ([`crate::live`]).
     live_warmer: crate::live::Warmer,
+    /// The k-NN derived-source fields of buffered documents, as of how many
+    /// fields were registered ([`EngineWriter::live_derived`]).
+    live_derived: Mutex<(usize, Option<Arc<crate::live::LiveDerived>>)>,
 }
 
 /// The policies [`install_merge_policies`] builds around the writer's
@@ -279,6 +282,25 @@ struct Holds {
 impl EngineWriter {
     pub(crate) fn writer(&self) -> &ConcurrentIndexWriter<'static> {
         &self.handle.writer
+    }
+
+    /// The fields whose `_source` values buffered documents hold masked
+    /// ([`DERIVED_SOURCE_ATTRIBUTE`]), `None` when there are none; resolved
+    /// again only once more fields are registered.
+    pub(crate) fn live_derived(&self) -> Option<Arc<crate::live::LiveDerived>> {
+        let count = self.writer().field_count();
+        let mut cached = self
+            .live_derived
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cached.0 != count {
+            let infos = self.writer().field_infos();
+            *cached = (
+                infos.len(),
+                crate::live::LiveDerived::of(infos).map(Arc::new),
+            );
+        }
+        cached.1.clone()
     }
 
     pub(crate) fn live_chunks(&self) -> MutexGuard<'_, crate::live::Chunks> {
@@ -814,7 +836,7 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
 pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "lucene_rust.derived_source";
 
 /// The `.si` list that names `info` when it carries [`DERIVED_SOURCE_ATTRIBUTE`].
-fn derived_source_list(info: &FieldInfo) -> Option<&'static str> {
+pub(crate) fn derived_source_list(info: &FieldInfo) -> Option<&'static str> {
     use lucene_search::derived_source::{DERIVED_VECTOR_FIELDS, NESTED_DERIVED_VECTOR_FIELDS};
     info.attributes
         .iter()
@@ -1438,6 +1460,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
             sparse: flags & OPEN_SPARSE != 0,
             live_chunks: Mutex::default(),
             live_warmer: crate::live::Warmer::default(),
+            live_derived: Mutex::new((0, None)),
         };
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         if let Some(&upcall) = MERGE_UPCALL.get() {
@@ -6744,7 +6767,8 @@ mod tests {
         assert!(leaves_seen.iter().any(|&n| n > 1), "{leaves_seen:?}");
 
         // A buffer published after views of it opened: one whose chunks
-        // were all written reads them; one whose last chunk was not cannot.
+        // were all written reads them; one whose last chunk was not writes
+        // it from what the buffer keeps for the views reading it as chunks.
         let open = || {
             let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
             // SAFETY: live out-pointers.
@@ -6798,8 +6822,9 @@ mod tests {
                 &mut whole,
             )
         };
-        assert_ne!(rc, 0);
-        assert!(crate::error::last_error().contains("being flushed"));
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        let q = crate::jvm_reader::tests::term_blob("_id", "last");
+        assert_eq!(scored_hits(whole, &q).1, 1);
         assert_eq!(ffi_live_view_close(written), 0);
         assert_eq!(ffi_live_view_close(unwritten), 0);
         assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
@@ -7501,6 +7526,174 @@ mod tests {
     /// list it under `derived_vector_fields`, a forced merge keeps the list,
     /// and a read of the masked `_source` gets the vector back, before and
     /// after the merge; the segments record k-NN's codec over `Lucene104`.
+    /// A buffered document's masked `_source` reads back with the buffer's
+    /// vectors put in, a nested field's from its block's children in order
+    /// (children that store a field of their own included), as a flushed
+    /// segment's reads back from its vector files: from a buffer still
+    /// taking documents and from one published while a view reads it. A
+    /// `_source` that is not JSON reads back as stored.
+    #[test]
+    fn a_buffered_derived_source_reads_back_with_its_vectors() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_document_alloc,
+        };
+        let tmp = empty_index("engine-writer-live-derived-source");
+        let h = open_with(&tmp, 64.0, OPEN_KNN | OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let source = register(h, &field("_source", 0, 1, 0, 0)).unwrap();
+        let term = register(h, &field("_primary_term", 0, 0, 1, 0)).unwrap();
+        let tag = register(h, &field("parts.tag", 0, 1, 0, 0)).unwrap();
+        let vector_field = |name: &str, derived: &[u8]| {
+            Blob::default()
+                .bytes(name.as_bytes())
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .u8(0)
+                .i32(0)
+                .i32(0)
+                .i32(0)
+                .i32(4)
+                .u8(0)
+                .u8(0)
+                .u8(1)
+                .i32(8)
+                .i32(50)
+                .u8(0)
+                .i32(2)
+                .bytes(VECTORS_FORMAT_ATTRIBUTE.as_bytes())
+                .bytes(b"hnsw:8:50")
+                .bytes(DERIVED_SOURCE_ATTRIBUTE.as_bytes())
+                .bytes(derived)
+                .0
+        };
+        register(h, &vector_field("v", b"true")).unwrap();
+        register(h, &vector_field("parts.e", b"nested")).unwrap();
+        let gen = commit_settled(h);
+        // A block per root: its children (each storing a tag, as a nested
+        // field with `store: true` does) then the root, which alone has
+        // `_primary_term`. Vectors are numbered by `first`, in document order.
+        let block = |id: &str, children: usize, src: &[u8], first: usize| {
+            let mut b = Blob::default().u8(OP_ADD).i32(children as i32 + 1);
+            for c in 0..children {
+                b = b
+                    .i32(1)
+                    .i32(tag)
+                    .u8(1)
+                    .bytes(format!("t{c}").as_bytes())
+                    .i32(0)
+                    .i32(0)
+                    .i32(0);
+            }
+            b = b
+                .i32(2)
+                .i32(f.id)
+                .u8(1)
+                .bytes(id.as_bytes())
+                .i32(source)
+                .u8(1)
+                .bytes(src)
+                .i32(1)
+                .i32(f.id)
+                .u8(0)
+                .i32(1)
+                .bytes(id.as_bytes())
+                .i32(1)
+                .u8(0)
+                .i32(2)
+                .i32(f.seq)
+                .u8(0)
+                .i64(0)
+                .i32(term)
+                .u8(0)
+                .i64(1)
+                .i32(0);
+            for c in 0..=children {
+                let name: &[u8] = if c < children { b"parts.e" } else { b"v" };
+                b = b.i32(1).bytes(name).u8(0).i32(4);
+                for x in knn_vector(first + c) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let text = |i: usize| {
+            let v: Vec<String> = knn_vector(i)
+                .iter()
+                .map(|x| lucene_analysis::attributes::java_float_to_string(*x))
+                .collect();
+            format!("[{}]", v.join(","))
+        };
+        block("d0", 1, br#"{"v":1,"parts":[{"e":1,"tag":"t0"}]}"#, 0);
+        block(
+            "d1",
+            2,
+            br#"{"v":1,"parts":[{"e":1,"tag":"t0"},{"e":1,"tag":"t1"}]}"#,
+            2,
+        );
+        // Not JSON (a CBOR map): stored whole while buffered, read back as stored.
+        let cbor: &[u8] = &[0xa1, 0x61, b'v', 0x01];
+        block("d2", 0, cbor, 5);
+        let want = [
+            (
+                1,
+                format!(
+                    r#"{{"v":{},"parts":[{{"e":{},"tag":"t0"}}]}}"#,
+                    text(1),
+                    text(0)
+                )
+                .into_bytes(),
+            ),
+            (
+                4,
+                format!(
+                    r#"{{"v":{},"parts":[{{"e":{},"tag":"t0"}},{{"e":{},"tag":"t1"}}]}}"#,
+                    text(4),
+                    text(2),
+                    text(3)
+                )
+                .into_bytes(),
+            ),
+            (5, cbor.to_vec()),
+        ];
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            view
+        };
+        let read_all = |view: u64, when: &str| {
+            for (doc, want) in &want {
+                let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+                // SAFETY: live out-pointers.
+                let rc = unsafe { ffi_live_view_document_alloc(view, 0, *doc, &mut ptr, &mut len) };
+                assert_eq!(rc, 0, "{when} {doc}: {}", crate::error::last_error());
+                // SAFETY: the buffer the call just gave.
+                let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+                // SAFETY: the buffer the call gave, freed once.
+                unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                assert!(
+                    blob.windows(want.len()).any(|w| w == want.as_slice()),
+                    "{when} {doc}: {}",
+                    String::from_utf8_lossy(&blob)
+                );
+            }
+        };
+        let view = open();
+        read_all(view, "in its slot");
+        // Published while the view reads it: read from what the flush kept.
+        commit_settled(h);
+        read_all(view, "published");
+        assert_eq!(ffi_live_view_close(view), 0);
+        ffi_engine_writer_close(h);
+    }
+
     #[test]
     fn derived_source_fields_are_listed_kept_by_merges_and_read_back() {
         use lucene_search::derived_source::DERIVED_VECTOR_FIELDS;

@@ -124,7 +124,7 @@ struct Entry {
 #[derive(Default)]
 struct Inner {
     policy: UsageTrackingPolicy,
-    entries: HashMap<String, Entry>,
+    entries: HashMap<Arc<str>, Entry>,
     clock: u64,
     bytes: usize,
 }
@@ -204,6 +204,44 @@ impl std::fmt::Debug for SegmentQueryCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SegmentQueryCache").finish_non_exhaustive()
     }
+}
+
+/// Formatted clause keys a thread keeps ([`clause_key`]).
+const KEY_MEMO: usize = 8;
+
+thread_local! {
+    /// The last clauses a thread keyed, by address, with their keys: a
+    /// search asks every segment's cache about the same clauses.
+    static KEYS: std::cell::RefCell<Vec<(usize, Clause, Arc<str>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `clause`'s cache key, its `Debug` form (`Query.equals` and `hashCode`
+/// for the cache's map). Formatted once per clause a search asks about,
+/// not once per segment: a clause at the same address and equal to one
+/// keyed before takes that key. Equal clauses format alike but for a float
+/// `0.0` against `-0.0`, which only boosts, tie breakers and constant
+/// scores carry: none changes what an unscored clause matches.
+fn clause_key(clause: &Clause) -> Arc<str> {
+    let addr = std::ptr::from_ref(clause).addr();
+    let found = KEYS.with(|k| {
+        k.borrow()
+            .iter()
+            .find(|(a, c, _)| *a == addr && c == clause)
+            .map(|(_, _, key)| Arc::clone(key))
+    });
+    if let Some(key) = found {
+        return key;
+    }
+    let key: Arc<str> = format!("{clause:?}").into();
+    KEYS.with(|k| {
+        let mut k = k.borrow_mut();
+        if k.len() >= KEY_MEMO {
+            k.remove(0);
+        }
+        k.push((addr, clause.clone(), Arc::clone(&key)));
+    });
+    key
 }
 
 /// What the policy is asked about: the clause's identity and shape.
@@ -300,7 +338,7 @@ impl SegmentQueryCache {
         if never || max_doc < MIN_SEGMENT_SIZE {
             return Ok(None);
         }
-        let key = format!("{clause:?}");
+        let key = clause_key(clause);
         let policy_key = PolicyKey {
             key: &key,
             costly,
@@ -315,7 +353,7 @@ impl SegmentQueryCache {
             if !cacheable {
                 return Ok(None);
             }
-            if let Some(entry) = inner.entries.get_mut(&key) {
+            if let Some(entry) = inner.entries.get_mut(&*key) {
                 entry.last_used = now;
                 if entry.set.is_empty() {
                     return Ok(Some(CacheResult::Empty));
@@ -389,7 +427,7 @@ impl SegmentQueryCache {
         Ok(Some(col))
     }
 
-    fn insert(&self, key: String, set: Arc<CachedSet>) {
+    fn insert(&self, key: Arc<str>, set: Arc<CachedSet>) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.clock += 1;
         let now = inner.clock;
@@ -999,8 +1037,8 @@ mod tests {
     fn a_racing_second_insert_replaces_the_first() {
         let cache = SegmentQueryCache::default();
         let set = || Arc::new(CachedSet::Docs(vec![1, 2, 3]));
-        cache.insert("q".to_string(), set());
-        cache.insert("q".to_string(), set());
+        cache.insert("q".into(), set());
+        cache.insert("q".into(), set());
         assert_eq!(cache.stats(), (1, 12));
     }
 
@@ -1087,5 +1125,30 @@ mod tests {
             has: FixedBitSet::new(2),
         };
         assert_eq!(longs.ram_bytes(), 16 + 8);
+    }
+
+    /// A clause keyed again takes its first key; a different clause at the
+    /// same address gets its own; an equal clause elsewhere gets an equal
+    /// key.
+    #[test]
+    fn a_clause_is_formatted_once_per_search() {
+        let mut c = Clause::Prefix(PrefixQuery::new("f", "a"));
+        let first = clause_key(&c);
+        assert!(Arc::ptr_eq(&first, &clause_key(&c)));
+        assert_eq!(&*first, format!("{c:?}"));
+        c = Clause::Prefix(PrefixQuery::new("f", "b"));
+        let other = clause_key(&c);
+        assert_ne!(first, other);
+        assert_eq!(&*other, format!("{c:?}"));
+        let elsewhere = Box::new(Clause::Prefix(PrefixQuery::new("f", "a")));
+        assert_eq!(clause_key(&elsewhere), first);
+        // Past the memo's size, the oldest is formatted again, alike.
+        let many: Vec<Clause> = (0..KEY_MEMO + 2)
+            .map(|i| Clause::Prefix(PrefixQuery::new("f", format!("m{i}"))))
+            .collect();
+        for m in &many {
+            assert_eq!(&*clause_key(m), format!("{m:?}"));
+        }
+        assert_eq!(&*clause_key(&many[0]), format!("{:?}", many[0]));
     }
 }
