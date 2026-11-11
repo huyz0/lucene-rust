@@ -1149,12 +1149,6 @@ impl StoredArena {
         self.ends.push(out.len());
     }
 
-    /// Whether document `doc` stored any field; `None` past the last one.
-    fn has_fields(&self, doc: usize) -> Option<bool> {
-        let end = *self.ends.get(doc)?;
-        Some(end > doc.checked_sub(1).map_or(0, |p| self.ends[p]))
-    }
-
     fn document(&self, doc: usize) -> Option<Vec<StoredField>> {
         let end = *self.ends.get(doc)?;
         let start = doc.checked_sub(1).map_or(0, |p| self.ends[p]);
@@ -1257,7 +1251,12 @@ impl ConcurrentIndexWriter<'_> {
             .map(|f| f.postings.bytes())
             .fold(slots, usize::saturating_add);
         live.buffers()
-            .map(|f| f.columns.ram_bytes().saturating_add(f.explicit.ram_bytes()))
+            .map(|f| {
+                f.columns
+                    .ram_bytes()
+                    .saturating_add(f.explicit.ram_bytes())
+                    .saturating_add(vectors_bytes(&f.vectors))
+            })
             .fold(retained, usize::saturating_add)
             .saturating_add(live.history_bytes)
     }
@@ -1949,15 +1948,17 @@ impl ConcurrentIndexWriter<'_> {
     }
 
     /// The vectors of document `doc` of `view`'s buffer `buffer`, and those
-    /// of each of its nested children in document order: the documents of
-    /// its block before it, back to the previous document with stored
-    /// fields (a nested document stores none). Fails where
-    /// [`Self::live_document`] fails.
+    /// of each of its nested children in document order: the documents
+    /// after the previous one with a doc value of field `parent_marker`
+    /// (`_primary_term`, which only root documents carry), as
+    /// `DerivedSourceLuceneHelper.getFirstChild` finds them. Fails where
+    /// [`Self::live_doc_values`] fails.
     pub fn live_document_vectors(
         &self,
         view: &LiveView,
         buffer: usize,
         doc: i32,
+        parent_marker: i32,
     ) -> Result<LiveDocumentVectors> {
         let missing =
             || Error::LiveSearch(format!("no buffered document {doc} in buffer {buffer}"));
@@ -1968,20 +1969,22 @@ impl ConcurrentIndexWriter<'_> {
         let doc = usize::try_from(doc).map_err(|_| missing())?;
         self.with_buffer(b.id, |s| {
             let s = s?;
-            let of = |d: usize| s.vectors.get(d).cloned().unwrap_or_default();
-            let mut first = doc;
-            while let Some(before) = first.checked_sub(1) {
-                if s.columns.stored.has_fields(before)? {
-                    break;
-                }
-                first = before;
+            if s.explicit.len() != s.num_docs {
+                return Some(Err(Error::LiveSearch(format!(
+                    "buffer {buffer} holds documents not added as explicit fields"
+                ))));
             }
-            Some(LiveDocumentVectors {
+            let first = match previous_with(s.explicit, doc, parent_marker) {
+                Ok(previous) => previous.map_or(0, |p| p.saturating_add(1)),
+                Err(e) => return Some(Err(e)),
+            };
+            let of = |d: usize| s.vectors.get(d).cloned().unwrap_or_default();
+            Some(Ok(LiveDocumentVectors {
                 own: of(doc),
                 children: (first..doc).map(of).collect(),
-            })
+            }))
         })
-        .ok_or_else(missing)
+        .ok_or_else(missing)?
     }
 
     /// The doc values of document `doc` of `view`'s buffer `buffer`, for
@@ -2237,6 +2240,42 @@ fn padded<T: Clone + Default>(list: &[T], start: usize, end: usize) -> std::borr
 }
 
 /// Like [`padded`], but an empty list (no document has an entry) stays empty.
+/// The last document before `doc` of `explicit` with a doc value of field
+/// `field`, searched in windows growing back from `doc`.
+fn previous_with(explicit: &PackedFields, doc: usize, field: i32) -> Result<Option<usize>> {
+    let mut end = doc;
+    for back in [16usize, 256, 4096, usize::MAX] {
+        let start = doc.saturating_sub(back);
+        let mut found = None;
+        explicit.for_each_range(start, end, |d, f| {
+            if f.doc_values.iter().any(|v| v.field_number == field) {
+                found = Some(start.saturating_add(d));
+            }
+            Ok(())
+        })?;
+        if found.is_some() || start == 0 {
+            return Ok(found);
+        }
+        end = start;
+    }
+    Ok(None)
+}
+
+/// What `vectors` hold: each vector's values and name.
+fn vectors_bytes(vectors: &[Vec<crate::index_writer::DocumentVector>]) -> usize {
+    vectors
+        .iter()
+        .flatten()
+        .map(|v| {
+            let values = match &v.value {
+                crate::index_writer::VectorValue::Float32(x) => x.len().saturating_mul(4),
+                crate::index_writer::VectorValue::Byte(x) => x.len(),
+            };
+            values.saturating_add(v.field_name.len())
+        })
+        .fold(vectors.len().saturating_mul(24), usize::saturating_add)
+}
+
 fn padded_or_empty<T: Clone + Default>(
     list: &[T],
     start: usize,

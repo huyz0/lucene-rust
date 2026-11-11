@@ -163,7 +163,8 @@ final class KnnEncoder {
     /**
      * Gives Lucene the buffered documents of the searcher's realtime view (if it reads one), for a
      * k-NN search the native engine could not answer: without them Lucene would miss the buffered
-     * vectors. Throws when they cannot be read.
+     * vectors. Without a native reader of the searcher the committed segments answer alone, as
+     * every other search over it does; throws when the buffers cannot be read.
      */
     static void readBuffersByLucene(NativeReaders readers, IndexSearcher searcher) throws IOException {
         IndexReader reader = searcher.getIndexReader();
@@ -172,7 +173,10 @@ final class KnnEncoder {
             return;
         }
         NativeReaders.Acquired acquired = readers.acquire(reader);
-        if (acquired.handle() == 0 || live.readByLucene(acquired.handle(), FLUSH_WAIT_MILLIS, reader) == false) {
+        if (acquired.handle() == 0) {
+            return;
+        }
+        if (live.readByLucene(acquired.handle(), FLUSH_WAIT_MILLIS, reader) == false) {
             throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + NativeBridge.lastError());
         }
     }

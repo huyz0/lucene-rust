@@ -7527,8 +7527,11 @@ mod tests {
     /// and a read of the masked `_source` gets the vector back, before and
     /// after the merge; the segments record k-NN's codec over `Lucene104`.
     /// A buffered document's masked `_source` reads back with the buffer's
-    /// vectors put in, a nested field's from the block's children in order,
-    /// as a flushed segment's reads back from its vector files.
+    /// vectors put in, a nested field's from its block's children in order
+    /// (children that store a field of their own included), as a flushed
+    /// segment's reads back from its vector files: from a buffer still
+    /// taking documents and from one published while a view reads it. A
+    /// `_source` that is not JSON reads back as stored.
     #[test]
     fn a_buffered_derived_source_reads_back_with_its_vectors() {
         use crate::live::{
@@ -7538,6 +7541,8 @@ mod tests {
         let h = open_with(&tmp, 64.0, OPEN_KNN | OPEN_LIVE_SEARCH, i32::MAX);
         let f = setup(h);
         let source = register(h, &field("_source", 0, 1, 0, 0)).unwrap();
+        let term = register(h, &field("_primary_term", 0, 0, 1, 0)).unwrap();
+        let tag = register(h, &field("parts.tag", 0, 1, 0, 0)).unwrap();
         let vector_field = |name: &str, derived: &[u8]| {
             Blob::default()
                 .bytes(name.as_bytes())
@@ -7567,61 +7572,53 @@ mod tests {
         register(h, &vector_field("v", b"true")).unwrap();
         register(h, &vector_field("parts.e", b"nested")).unwrap();
         let gen = commit_settled(h);
-        // A block: two nested children (no stored fields), then the parent.
-        let masked = r#"{"v":1,"parts":[{"e":1},{"e":1}]}"#;
-        let mut b = Blob::default()
-            .u8(OP_ADD)
-            .i32(3)
-            .i32(0)
-            .i32(0)
-            .i32(0)
-            .i32(0)
-            .i32(0)
-            .i32(0)
-            .i32(0)
-            .i32(0);
-        b = b
-            .i32(2)
-            .i32(f.id)
-            .u8(1)
-            .bytes(b"d0")
-            .i32(source)
-            .u8(1)
-            .bytes(masked.as_bytes())
-            .i32(1)
-            .i32(f.id)
-            .u8(0)
-            .i32(1)
-            .bytes(b"d0")
-            .i32(1)
-            .u8(0)
-            .i32(1)
-            .i32(f.seq)
-            .u8(0)
-            .i64(0)
-            .i32(0);
-        for (name, i) in [("parts.e", 1), ("parts.e", 2), ("v", 3)] {
-            b = b.i32(1).bytes(name.as_bytes()).u8(0).i32(4);
-            for x in knn_vector(i) {
-                b = b.f32(x);
+        // A block per root: its children (each storing a tag, as a nested
+        // field with `store: true` does) then the root, which alone has
+        // `_primary_term`. Vectors are numbered by `first`, in document order.
+        let block = |id: &str, children: usize, src: &[u8], first: usize| {
+            let mut b = Blob::default().u8(OP_ADD).i32(children as i32 + 1);
+            for c in 0..children {
+                b = b
+                    .i32(1)
+                    .i32(tag)
+                    .u8(1)
+                    .bytes(format!("t{c}").as_bytes())
+                    .i32(0)
+                    .i32(0)
+                    .i32(0);
             }
-        }
-        assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
-
-        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
-        // SAFETY: live out-pointers.
-        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
-        assert_eq!(rc, 0, "{}", crate::error::last_error());
-        // SAFETY: the buffer the call gave, freed once.
-        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
-        let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
-        // SAFETY: live out-pointers.
-        let rc = unsafe { ffi_live_view_document_alloc(view, 0, 2, &mut ptr, &mut len) };
-        assert_eq!(rc, 0, "{}", crate::error::last_error());
-        // SAFETY: the buffer the call just gave.
-        let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
-        // SAFETY: the buffer the call gave, freed once.
-        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            b = b
+                .i32(2)
+                .i32(f.id)
+                .u8(1)
+                .bytes(id.as_bytes())
+                .i32(source)
+                .u8(1)
+                .bytes(src)
+                .i32(1)
+                .i32(f.id)
+                .u8(0)
+                .i32(1)
+                .bytes(id.as_bytes())
+                .i32(1)
+                .u8(0)
+                .i32(2)
+                .i32(f.seq)
+                .u8(0)
+                .i64(0)
+                .i32(term)
+                .u8(0)
+                .i64(1)
+                .i32(0);
+            for c in 0..=children {
+                let name: &[u8] = if c < children { b"parts.e" } else { b"v" };
+                b = b.i32(1).bytes(name).u8(0).i32(4);
+                for x in knn_vector(first + c) {
+                    b = b.f32(x);
+                }
+            }
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
         let text = |i: usize| {
             let v: Vec<String> = knn_vector(i)
                 .iter()
@@ -7629,17 +7626,70 @@ mod tests {
                 .collect();
             format!("[{}]", v.join(","))
         };
-        let want = format!(
-            r#"{{"v":{},"parts":[{{"e":{}}},{{"e":{}}}]}}"#,
-            text(3),
-            text(1),
-            text(2)
+        block("d0", 1, br#"{"v":1,"parts":[{"e":1,"tag":"t0"}]}"#, 0);
+        block(
+            "d1",
+            2,
+            br#"{"v":1,"parts":[{"e":1,"tag":"t0"},{"e":1,"tag":"t1"}]}"#,
+            2,
         );
-        assert!(
-            blob.windows(want.len()).any(|w| w == want.as_bytes()),
-            "{}",
-            String::from_utf8_lossy(&blob)
-        );
+        // Not JSON (a CBOR map): stored whole while buffered, read back as stored.
+        let cbor: &[u8] = &[0xa1, 0x61, b'v', 0x01];
+        block("d2", 0, cbor, 5);
+        let want = [
+            (
+                1,
+                format!(
+                    r#"{{"v":{},"parts":[{{"e":{},"tag":"t0"}}]}}"#,
+                    text(1),
+                    text(0)
+                )
+                .into_bytes(),
+            ),
+            (
+                4,
+                format!(
+                    r#"{{"v":{},"parts":[{{"e":{},"tag":"t0"}},{{"e":{},"tag":"t1"}}]}}"#,
+                    text(4),
+                    text(2),
+                    text(3)
+                )
+                .into_bytes(),
+            ),
+            (5, cbor.to_vec()),
+        ];
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            view
+        };
+        let read_all = |view: u64, when: &str| {
+            for (doc, want) in &want {
+                let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+                // SAFETY: live out-pointers.
+                let rc = unsafe { ffi_live_view_document_alloc(view, 0, *doc, &mut ptr, &mut len) };
+                assert_eq!(rc, 0, "{when} {doc}: {}", crate::error::last_error());
+                // SAFETY: the buffer the call just gave.
+                let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+                // SAFETY: the buffer the call gave, freed once.
+                unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                assert!(
+                    blob.windows(want.len()).any(|w| w == want.as_slice()),
+                    "{when} {doc}: {}",
+                    String::from_utf8_lossy(&blob)
+                );
+            }
+        };
+        let view = open();
+        read_all(view, "in its slot");
+        // Published while the view reads it: read from what the flush kept.
+        commit_settled(h);
+        read_all(view, "published");
         assert_eq!(ffi_live_view_close(view), 0);
         ffi_engine_writer_close(h);
     }

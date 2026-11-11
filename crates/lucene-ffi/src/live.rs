@@ -2990,6 +2990,9 @@ pub(crate) struct LiveDerived {
     fields: lucene_search::derived_source::DerivedFields,
     /// Each derived field's name, by number.
     names: HashMap<i32, String>,
+    /// `_primary_term`'s number, which marks a block's root document; `None`
+    /// before it is registered (no document has nested children yet).
+    parent_marker: Option<i32>,
 }
 
 impl LiveDerived {
@@ -3014,9 +3017,17 @@ impl LiveDerived {
         if names.is_empty() {
             return None;
         }
+        let parent_marker = infos
+            .iter()
+            .find(|f| f.name == "_primary_term")
+            .map(|f| f.number);
         let infos = lucene_codecs::field_infos::FieldInfos { fields: infos };
         let fields = lucene_search::derived_source::DerivedFields::from_attributes(&lists, &infos)?;
-        Some(Self { fields, names })
+        Some(Self {
+            fields,
+            names,
+            parent_marker,
+        })
     }
 
     /// `fields`, document `doc` of `view`'s buffer `buffer`'s stored fields,
@@ -3038,12 +3049,13 @@ impl LiveDerived {
             let FieldValue::Binary(source) = &f.value else {
                 continue;
             };
-            if !lucene_search::derived_source::needs_injection(source).map_err(refused)? {
+            // A _source in another content type is stored whole while buffered.
+            if !lucene_search::derived_source::needs_injection(source).unwrap_or(false) {
                 continue;
             }
             let vectors = writer
                 .writer()
-                .live_document_vectors(view, buffer, doc)
+                .live_document_vectors(view, buffer, doc, self.parent_marker.unwrap_or(-1))
                 .map_err(live_error)?;
             let mut from = BufferVectors {
                 names: &self.names,
