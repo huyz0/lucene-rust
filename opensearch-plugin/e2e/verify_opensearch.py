@@ -933,8 +933,23 @@ def script_errors(index, shards):
         ("negative score", "doc['qty'].value - 1000"),
         ("array index", "int[] a = new int[2]; return a[(int) doc['qty'].value + 2];"),
     ]
-    for name, source in rows:
-        body = {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": source}}}}
+    queries = [(name, {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": source}}}})
+               for name, source in rows]
+
+    def fs(functions):
+        return {"query": {"function_score": {"query": {"match": {"body": "alpha"}}, "functions": functions}}}
+
+    # function_score: a script function's exception or negative score, and the query's own
+    # errors around a script function (a missing field value, an invalid final score).
+    queries += [
+        ("function missing value", fs([{"script_score": {"script": {"source": "doc['sp'].value + 1"}}}])),
+        ("function negative score", fs([{"script_score": {"script": {"source": "-1 - doc['n'].value"}}}])),
+        ("function beside a missing value", fs([{"script_score": {"script": {"source": "2"}}},
+                                                {"field_value_factor": {"field": "sp"}}])),
+        ("function NaN score", {"query": {"function_score": {"query": {"match": {"body": "alpha"}}, "boost_mode": "replace",
+                                                            "functions": [{"script_score": {"script": {"source": "Double.NaN"}}}]}}}),
+    ]
+    for name, body in queries:
         set_native(index, False)
         want = raw_search(index, body)
         set_native(index, True)

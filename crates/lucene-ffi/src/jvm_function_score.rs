@@ -25,6 +25,9 @@
 //! What OpenSearch throws on -- a missing field value without `missing`, a
 //! negative field-value score, a negative or `NaN` final score -- is a search
 //! error here, so the query re-runs on Lucene and fails there as it would.
+//! A node holding a Painless script function (tag `5`) never re-runs: those
+//! errors carry the plugin's markers and fail the search as OpenSearch's
+//! own exceptions, like the script's.
 //!
 //! The node, after its kind byte:
 //!
@@ -51,7 +54,9 @@ use lucene_search::{Error, Result};
 use crate::clauses::check_clause_count;
 use crate::error::FfiStatus;
 use crate::jvm_nodes::invalid;
+use crate::jvm_painless_score::{opensearch_error, score_error, LeafScript, ScriptFunction};
 use crate::jvm_reader::{decode_node, hex, Cursor};
+use lucene_painless::number::double_to_string;
 
 /// `CombineFunction`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -267,6 +272,8 @@ enum Function {
         offset: f64,
         mode: MultiValue,
     },
+    /// `ScriptScoreFunction` over a Painless script the native runtime runs.
+    Script(Arc<ScriptFunction>),
 }
 
 impl Function {
@@ -286,7 +293,26 @@ impl Function {
                 field: RandomField::Keyword(f) | RandomField::Long(f),
                 ..
             } => out.push(f),
+            Function::Script(s) => out.extend(s.fields()),
             Function::One | Function::Random { .. } => {}
+        }
+    }
+
+    /// Whether this is or wraps a script.
+    fn scripted(&self) -> bool {
+        match self {
+            Function::Weight { inner, .. } => inner.scripted(),
+            Function::Script(_) => true,
+            _ => false,
+        }
+    }
+
+    /// `needsScores()`: a script that reads `_score`.
+    fn needs_score(&self) -> bool {
+        match self {
+            Function::Weight { inner, .. } => inner.needs_score(),
+            Function::Script(s) => s.needs_score(),
+            _ => false,
         }
     }
 }
@@ -296,6 +322,7 @@ const FUNCTION_WEIGHT: u8 = 1;
 const FUNCTION_FIELD_VALUE: u8 = 2;
 const FUNCTION_RANDOM: u8 = 3;
 const FUNCTION_DECAY: u8 = 4;
+const FUNCTION_SCRIPT: u8 = 5;
 
 /// The node (kind `24`, its byte read at `start`).
 pub(crate) fn decode(
@@ -352,11 +379,16 @@ pub(crate) fn decode(
             function: decode_function(c, 0)?,
         });
     }
+    let scripted = functions.iter().any(|f| f.function.scripted());
+    let needs_sub =
+        combine != Combine::Replace || functions.iter().any(|f| f.function.needs_score());
     let source = OpenSearchFunctionScore {
         combine,
         score_mode,
         max_boost,
         functions,
+        scripted,
+        needs_sub,
         key: hex(c.since(start)),
     };
     Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
@@ -392,6 +424,7 @@ fn numeric(c: &mut Cursor<'_>) -> std::result::Result<Numeric, FfiStatus> {
 /// | `2` | `field`, `numeric: u8` (`0` long, `1` double, `2` float), `factor: f32`, `modifier: u8` (`Modifier`'s ordinal), `has_missing: u8`, `missing: f64` | `FieldValueFactorFunction` |
 /// | `3` | `salted_seed: i32`, `kind: u8` (`0` doc ID, `1` keyword + `field`, `2` long + `field`) | `RandomScoreFunction` |
 /// | `4` | `decay: u8` (`0` gauss, `1` exp, `2` linear), `field`, `numeric: u8`, `origin`, `scale` (processed), `offset` (`f64`), `mode: u8` (`MultiValueMode`'s ordinal) | a numeric or date decay function |
+/// | `5` | a Painless score script, checked ([`ScriptFunction::decode`]) | `ScriptScoreFunction` |
 fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<Function, FfiStatus> {
     Ok(match c.u8()? {
         FUNCTION_ONE => Function::One,
@@ -483,6 +516,7 @@ fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<Func
                 mode,
             }
         }
+        FUNCTION_SCRIPT => Function::Script(Arc::new(ScriptFunction::decode(c)?)),
         other => {
             return Err(invalid(format!(
                 "query tree: unknown score function {other} at depth {depth}"
@@ -516,6 +550,12 @@ pub(crate) struct OpenSearchFunctionScore {
     score_mode: ScoreMode,
     max_boost: f32,
     functions: Vec<Filtered>,
+    /// Whether a function runs a script: the node's own errors then fail the
+    /// search as OpenSearch's do instead of running it again in Java.
+    scripted: bool,
+    /// `subQueryScoreMode` needs scores: the combine reads the sub-query's
+    /// score, or a script reads `_score`.
+    needs_sub: bool,
     /// The node's bytes, hex: the source's identity.
     key: String,
 }
@@ -534,9 +574,11 @@ impl DoubleValuesSource for OpenSearchFunctionScore {
                 Some(s) => Some(s.get_values(ctx, leaf, None)?),
                 None => None,
             };
-            functions.push((filter, LeafFunction::new(&f.function, reader)?));
+            functions.push((filter, LeafFunction::new(&f.function, ctx, leaf, reader)?));
         }
         Ok(Box::new(FunctionScoreValues {
+            scripted: self.scripted,
+            needs_sub: self.needs_sub,
             combine: self.combine,
             score_mode: self.score_mode,
             max_boost: self.max_boost,
@@ -548,9 +590,9 @@ impl DoubleValuesSource for OpenSearchFunctionScore {
     }
 
     /// `subQueryScoreMode`: the sub-query scores unless the functions'
-    /// score replaces it (no function here reads the score itself).
+    /// score replaces it and no script reads `_score`.
     fn needs_scores(&self) -> bool {
-        self.combine != Combine::Replace
+        self.needs_sub
     }
 
     fn is_cacheable(&self, ctx: &ValuesContext<'_>, leaf: usize) -> bool {
@@ -616,18 +658,23 @@ enum LeafFunction<'c> {
         mode: MultiValue,
         distances: Vec<f64>,
     },
+    Script(Box<LeafScript<'c>>),
 }
 
 impl<'c> LeafFunction<'c> {
     fn new(
         f: &Function,
+        ctx: &ValuesContext<'c>,
+        leaf: usize,
         reader: &'c lucene_search::directory_reader::SegmentReader,
     ) -> Result<Self> {
         Ok(match f {
             Function::One => LeafFunction::One,
-            Function::Weight { weight, inner } => {
-                LeafFunction::Weight(*weight, Box::new(LeafFunction::new(inner, reader)?))
-            }
+            Function::Weight { weight, inner } => LeafFunction::Weight(
+                *weight,
+                Box::new(LeafFunction::new(inner, ctx, leaf, reader)?),
+            ),
+            Function::Script(s) => LeafFunction::Script(Box::new(s.leaf(ctx, leaf)?)),
             Function::FieldValue {
                 field,
                 numeric,
@@ -684,11 +731,13 @@ impl<'c> LeafFunction<'c> {
         })
     }
 
-    /// `LeafScoreFunction.score(docId, subQueryScore)`.
-    fn score(&mut self, doc: i32) -> Result<f64> {
+    /// `LeafScoreFunction.score(docId, subQueryScore)`; `scripted` as the
+    /// node's.
+    fn score(&mut self, doc: i32, sub: f32, scripted: bool) -> Result<f64> {
         Ok(match self {
             LeafFunction::One => 1.0,
-            LeafFunction::Weight(w, inner) => inner.score(doc)? * f64::from(*w),
+            LeafFunction::Weight(w, inner) => inner.score(doc, sub, scripted)? * f64::from(*w),
+            LeafFunction::Script(s) => s.score(doc, sub)?,
             LeafFunction::FieldValue {
                 values,
                 field,
@@ -701,6 +750,10 @@ impl<'c> LeafFunction<'c> {
                     numeric.decode(values.next_value()?)
                 } else if let Some(m) = missing {
                     *m
+                } else if scripted {
+                    return Err(opensearch_error(format!(
+                        "Missing value for field [{field}]"
+                    )));
                 } else {
                     return Err(Error::IllegalArgument(format!(
                         "Missing value for field [{field}]"
@@ -708,9 +761,15 @@ impl<'c> LeafFunction<'c> {
                 };
                 let result = modifier.apply(value * f64::from(*factor));
                 if result < 0.0 {
-                    return Err(Error::IllegalArgument(format!(
-                        "field value function must not produce negative scores, but got: [{result}] for field value: [{value}]"
-                    )));
+                    let (r, v) = (double_to_string(result), double_to_string(value));
+                    let message = format!(
+                        "field value function must not produce negative scores, but got: [{r}] for field value: [{v}]"
+                    );
+                    return Err(if scripted {
+                        score_error(message)
+                    } else {
+                        Error::IllegalArgument(message)
+                    });
                 }
                 result
             }
@@ -799,6 +858,8 @@ fn random(hash: i32) -> f64 {
 }
 
 struct FunctionScoreValues<'c> {
+    scripted: bool,
+    needs_sub: bool,
     combine: Combine,
     score_mode: ScoreMode,
     max_boost: f32,
@@ -819,13 +880,14 @@ impl FunctionScoreValues<'_> {
     }
 
     /// `FunctionFactorScorer.computeScore(doc, subQueryScore)`.
-    fn compute(&mut self, doc: i32) -> Result<f64> {
+    fn compute(&mut self, doc: i32, sub: f32) -> Result<f64> {
+        let scripted = self.scripted;
         let mut factor = 1.0f64;
         match self.score_mode {
             ScoreMode::First => {
                 for (filter, f) in &mut self.functions {
                     if Self::in_filter(filter, doc)? {
-                        factor = f.score(doc)?;
+                        factor = f.score(doc, sub, scripted)?;
                         break;
                     }
                 }
@@ -839,7 +901,7 @@ impl FunctionScoreValues<'_> {
                 };
                 for (filter, f) in &mut self.functions {
                     if Self::in_filter(filter, doc)? {
-                        let s = f.score(doc)?;
+                        let s = f.score(doc, sub, scripted)?;
                         best = if max {
                             java_max(s, best)
                         } else {
@@ -860,7 +922,7 @@ impl FunctionScoreValues<'_> {
             ScoreMode::Multiply => {
                 for (filter, f) in &mut self.functions {
                     if Self::in_filter(filter, doc)? {
-                        factor *= f.score(doc)?;
+                        factor *= f.score(doc, sub, scripted)?;
                     }
                 }
             }
@@ -868,7 +930,7 @@ impl FunctionScoreValues<'_> {
                 let (mut total, mut weights) = (0.0f64, 0.0f64);
                 for ((filter, f), w) in self.functions.iter_mut().zip(&self.weights) {
                     if Self::in_filter(filter, doc)? {
-                        total += f.score(doc)?;
+                        total += f.score(doc, sub, scripted)?;
                         weights += f64::from(*w);
                     }
                 }
@@ -886,7 +948,7 @@ impl FunctionScoreValues<'_> {
 
 impl DoubleValues for FunctionScoreValues<'_> {
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
-        let sub = match (&mut self.scores, self.combine != Combine::Replace) {
+        let sub = match (&mut self.scores, self.needs_sub) {
             (Some(s), true) => {
                 if s.advance_exact(doc)? {
                     s.double_value()? as f32
@@ -896,14 +958,20 @@ impl DoubleValues for FunctionScoreValues<'_> {
             }
             _ => 0.0,
         };
-        let factor = self.compute(doc)?;
+        let factor = self.compute(doc, sub)?;
         let score = self
             .combine
             .combine(f64::from(sub), factor, f64::from(self.max_boost));
         if score < 0.0 || score.is_nan() {
-            return Err(Error::IllegalArgument(format!(
-                "function score query returned an invalid score: {score} for doc: {doc}"
-            )));
+            let message = format!(
+                "function score query returned an invalid score: {} for doc: {doc}",
+                lucene_painless::number::float_to_string(score)
+            );
+            return Err(if self.scripted {
+                opensearch_error(message)
+            } else {
+                Error::IllegalArgument(message)
+            });
         }
         self.value = f64::from(score);
         Ok(true)
