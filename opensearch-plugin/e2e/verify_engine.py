@@ -28,6 +28,8 @@ swapped), every observable result must be identical:
   * index.derived_source.enabled (and its translog form): _source rebuilt from doc values and
     stored fields the same on both engines, through searches, gets, top_hits, updates and
     SIGKILL, and on realtime search's buffered hits.
+  * the logs preset's component templates: registered, and an index composed of them answering log
+    searches as an OpenSearch-engine index with the stock mapping does.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -1172,6 +1174,110 @@ def codecs(container):
         must("DELETE", f"/{idx}")
 
 
+def logs_preset():
+    """The logs preset's component templates: registered by the cluster manager, inert until an
+    index template names them, and an index composed of them answers log searches (terms, phrases,
+    windows, newest first, stats and timecharts) exactly as an OpenSearch-engine index with the
+    stock mapping does, with its small fields kept as doc values only."""
+    names = ("lucene_rust_logs@settings", "lucene_rust_logs@mappings")
+    have = {}
+    for _ in range(30):
+        have = {t["name"]: t["component_template"] for t in
+                req("GET", "/_component_template/lucene_rust_logs*")[1].get("component_templates", [])}
+        if len(have) == 2:
+            break
+        time.sleep(1)
+    check(sorted(have) == sorted(names) and all(t.get("version", 0) >= 1 for t in have.values()),
+          f"logs preset component templates registered: {sorted(have)}")
+    for idx in ("logs_java", "logs_preset"):
+        req("DELETE", f"/{idx}")
+    must("PUT", "/_index_template/logs_preset_e2e", {"index_patterns": ["logs_preset"], "composed_of": list(names),
+         "template": {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1}}})
+    must("PUT", "/logs_preset")
+    must("PUT", "/logs_java", {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.lucene_rust.engine": False},
+                               "mappings": {"properties": {"@timestamp": {"type": "date"}, "message": {"type": "text"},
+                                                           "host": {"properties": {"name": {"type": "keyword"}}},
+                                                           "service": {"properties": {"name": {"type": "keyword"}}},
+                                                           "log": {"properties": {"level": {"type": "keyword"}}},
+                                                           "http": {"properties": {"response": {"properties": {
+                                                               "status_code": {"type": "integer"}}}}},
+                                                           "event": {"properties": {"duration": {"type": "long"}}},
+                                                           "user": {"type": "keyword"}, "bytes": {"type": "long"}}}})
+    settings = must("GET", "/logs_preset/_settings")["logs_preset"]["settings"]["index"]
+    check(settings.get("lucene_rust", {}).get("engine") == "true" and settings.get("sort", {}).get("field") in ("@timestamp", ["@timestamp"]),
+          f"logs preset settings applied: {settings.get('sort')}")
+    props = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
+    check(props["@timestamp"].get("skip_list") is True and props["event"]["properties"]["duration"].get("index") is False
+          and props["host"]["properties"]["name"].get("index") is False and props["message"].get("norms") is False,
+          f"logs preset mapping applied: {json.dumps(props)[:300]}")
+    r = random.Random(17)
+    t0 = 1_760_000_000_000
+    msgs = ("connection reset by peer", "GET /api/v1/cart HTTP/1.1 200", "java.net.SocketTimeoutException: timed out",
+            "user logged in from 10.0.0.1", "block blk_123 replicated", "cache miss for key session")
+    for batch in range(6):
+        lines = []
+        for i in range(500):
+            n = batch * 500 + i
+            doc = {"@timestamp": t0 + n * 1000 + r.randrange(1000), "message": f"{r.choice(msgs)} {r.choice(WORDS)} {n}",
+                   "host": {"name": f"h{r.randrange(12)}"}, "service": {"name": r.choice(("cart", "auth", "search"))},
+                   "log": {"level": r.choice(("INFO",) * 8 + ("WARN", "ERROR"))},
+                   "http": {"response": {"status_code": r.choice((200, 200, 200, 404, 500, 503))}},
+                   "event": {"duration": r.randrange(1, 5000)}, "user": f"u{r.randrange(50)}", "bytes": r.randrange(10**6)}
+            lines += [{"index": {"_id": f"l{n}"}}, doc]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx in ("logs_java", "logs_preset"):
+            out = must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            check(not out["errors"], f"{idx}: bulk {batch} applies every operation")
+            if batch % 2 == 1:
+                must("POST", f"/{idx}/_flush")
+    dyn = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
+    check(dyn["bytes"].get("index") is False and dyn["user"]["type"] == "keyword",
+          f"logs preset dynamic templates: bytes {dyn['bytes']}, user {dyn['user']}")
+    end = t0 + 3000 * 1000
+    win = lambda a: {"range": {"@timestamp": {"gte": end - a, "lt": end}}}
+    desc = [{"@timestamp": "desc"}, {"_id": "asc"}]
+    shapes = [
+        {"size": 20, "sort": desc, "query": {"match": {"message": "timed"}}},
+        {"size": 20, "sort": desc, "query": {"bool": {"must": {"match_phrase": {"message": "connection reset by peer"}},
+                                                      "filter": win(1_200_000)}}},
+        {"size": 20, "sort": desc, "query": {"bool": {"filter": [{"term": {"host.name": "h3"}},
+                                                                 {"term": {"log.level": "ERROR"}}, win(1_800_000)]}}},
+        {"size": 30, "sort": desc, "query": {"match_all": {}}},
+        {"size": 0, "query": {"bool": {"filter": [{"term": {"log.level": "ERROR"}}, win(2_000_000)]}},
+         "aggs": {"s": {"terms": {"field": "service.name"}}}},
+        {"size": 0, "query": {"bool": {"filter": win(600_000)}},
+         "aggs": {"t": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1m"},
+                        "aggs": {"l": {"terms": {"field": "log.level"}}}}}},
+        {"size": 0, "track_total_hits": True, "query": {"range": {"http.response.status_code": {"gte": 500}}},
+         "aggs": {"p": {"max": {"field": "event.duration"}}, "b": {"sum": {"field": "bytes"}}}},
+        {"size": 0, "track_total_hits": True, "query": {"terms": {"service.name": ["cart", "auth"]}}},
+        {"size": 10, "sort": desc, "query": {"bool": {"filter": [{"term": {"user": "u7"}}, {"range": {"bytes": {"lt": 500000}}}]}}},
+    ]
+
+    def answers(idx):
+        out = []
+        for body in shapes:
+            res = must("POST", f"/{idx}/_search?request_cache=false", body)
+            out.append((res["hits"]["total"], [(h["_id"], h.get("_source"), h.get("sort")) for h in res["hits"]["hits"]],
+                        res.get("aggregations")))
+        return out
+
+    for label in ("logs preset", "logs preset, force-merged"):
+        for idx in ("logs_java", "logs_preset"):
+            must("POST", f"/{idx}/_refresh")
+        java, preset = answers("logs_java"), answers("logs_preset")
+        for i, (a, b) in enumerate(zip(java, preset)):
+            check(a == b, f"{label}: search {i} answers as the stock mapping does: {json.dumps(a)[:200]} vs {json.dumps(b)[:200]}")
+        for idx in ("logs_java", "logs_preset"):
+            must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+    stats = must("GET", "/_plugins/lucene_rust/stats")
+    check(stats.get("native_errors", 0) == 0, f"no native errors on logs preset indices: {stats.get('native_errors')}")
+    must("DELETE", "/_index_template/logs_preset_e2e")
+    for idx in ("logs_java", "logs_preset"):
+        must("DELETE", f"/{idx}")
+
+
 def encrypted(container):
     """The rust_encrypted store (BYOK encryption at rest) under both engines: the same results as a
     plaintext index, every shard file encrypted on disk, and both survive SIGKILL."""
@@ -1288,6 +1394,7 @@ def main():
     unsupported()
     codecs(a.container)
     derived_source(a.container)
+    logs_preset()
     encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)
