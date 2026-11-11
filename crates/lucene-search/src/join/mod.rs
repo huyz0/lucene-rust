@@ -25,9 +25,10 @@ pub use query::{
     ToChildBlockJoinQuery, ToParentBlockJoinQuery, DEFAULT_CHILD_LIMIT_PER_PARENT,
 };
 pub use query_time::{
-    create_global_ordinals_join_query, create_join_query, create_numeric_join_query, ordinal_map,
-    seeking_term_set_terms_enum, terms_query, CollectedOrdinals, GlobalOrdinalsCollector,
-    GlobalOrdinalsQuery, GlobalOrdinalsWithScoreCollector, GlobalOrdinalsWithScoreQuery,
+    create_global_ordinals_join_query, create_join_query, create_numeric_join_query,
+    has_late_joins, ordinal_map, resolve_late_joins, seeking_term_set_terms_enum, terms_query,
+    CollectedOrdinals, GlobalOrdinalsCollector, GlobalOrdinalsQuery,
+    GlobalOrdinalsWithScoreCollector, GlobalOrdinalsWithScoreQuery, LateJoinQuery,
     NumericJoinCollector, NumericType, PointInSetIncludingScoreQuery, SeekingTermSet,
     TermSetSource, TermsCollector, TermsIncludingScoreQuery, TermsWithScoreCollector,
 };

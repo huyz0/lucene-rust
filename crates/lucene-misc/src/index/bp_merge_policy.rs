@@ -44,13 +44,17 @@ impl MergeReaderHooks for BpHooks {
         match self.reorderer.compute_doc_map(reader) {
             Ok(map) => Ok(Some(map)),
             // Skip reordering, we don't have enough RAM anyway.
-            Err(ReorderError::NotEnoughRam(_)) => Ok(None),
+            Err(ReorderError::NotEnoughRam(_) | ReorderError::Unsupported(_)) => Ok(None),
             Err(ReorderError::Failed(e)) => Err(e),
         }
     }
 
     fn diagnostics(&self, reordered: bool) -> Vec<(String, String)> {
         vec![(REORDERED.to_string(), reordered.to_string())]
+    }
+
+    fn finds_blocks(&self) -> bool {
+        self.reorderer.block_root_field().is_some()
     }
 }
 

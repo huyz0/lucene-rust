@@ -2534,7 +2534,8 @@ impl IndexingConfig {
         let mut reorder: Option<Vec<i32>> = None;
         let mut hook_diagnostics: Vec<(String, String)> = Vec::new();
         if let Some((hooks, infos)) = &plan.hooks {
-            let blocks_without_parent = opened.iter().any(|o| o.has_blocks)
+            let blocks_without_parent = !hooks.finds_blocks()
+                && opened.iter().any(|o| o.has_blocks)
                 && opened
                     .iter()
                     .any(|o| !o.field_infos.iter().any(|f| f.parent_field));

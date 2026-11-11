@@ -380,6 +380,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     // Everything else reads the buffers written as segments, one per leaf of the
                     // view: aggregations, sorts, collapse, rescore, and what the plain path's
                     // buffers cannot answer.
+                    if (ctx.mapperService().hasNested()) {
+                        // The fetch phase finds a buffered hit's root document by doc values the
+                        // view's leaves read only from the buffers given to Lucene as segments.
+                        readByLucene(ctx, searcher, live);
+                    }
                     long[] whole = new long[1];
                     long built = System.nanoTime();
                     // The request's terms only: the hits query's (the post_filter's terms with the
@@ -526,14 +531,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
      * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
      * was expanded or given term statistics over the reader's terms alone (a multi-term query under
-     * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested documents.
+     * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested k-NN hits.
      */
     static String liveIneligible(SearchContext ctx) {
         if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
         if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
-        // Nested documents: the view has no parent filter to tell them apart.
-        if (ctx.mapperService().hasNested()) return "nested";
+        // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
+        if (ctx.mapperService().hasNested() && ctx.query() instanceof KnnHitsQuery) return "nested";
         boolean[] expands = new boolean[1];
         org.apache.lucene.search.QueryVisitor visitor = new org.apache.lucene.search.QueryVisitor() {
             @Override
@@ -582,12 +587,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Whether a plain scored search goes to the buffers written as segments rather than the view's
      * own postings: {@code min_score}, a concurrent count's per-slice early termination, and a
-     * scroll or {@code search_after} page, which the view's search does not do. A scroll's or point
-     * in time's pages share one searcher supplier, so one view and one numbering of its documents.
+     * scroll or {@code search_after} page, which the view's search does not do, and an index with
+     * nested documents, whose blocks the view's postings do not tell apart (the buffers written as
+     * segments keep each block whole, its root last). A scroll's or point in time's pages share one
+     * searcher supplier, so one view and one numbering of its documents.
      */
     private static boolean plainIneligible(SearchContext ctx) {
         return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch()
-            || ctx.scrollContext() != null || ctx.searchAfter() != null;
+            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested();
     }
 
     /**

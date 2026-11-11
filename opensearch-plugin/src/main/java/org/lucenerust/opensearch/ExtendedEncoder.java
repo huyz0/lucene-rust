@@ -109,6 +109,7 @@ final class ExtendedEncoder {
     static final byte NODE_PAINLESS_SCORE = 43;
     static final byte NODE_MAX_SIM = 44;
     static final byte NODE_PAINLESS_FILTER = 45;
+    static final byte NODE_JOIN = 46;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -147,6 +148,9 @@ final class ExtendedEncoder {
             }
             if (q.getClass() == ToChildBlockJoinQuery.class) {
                 return toChild((ToChildBlockJoinQuery) q, out, child);
+            }
+            if (q instanceof org.lucenerust.opensearch.join.DeferredJoinQuery dj) {
+                return join(dj, out, child);
             }
             if (q instanceof SpanQuery sq) {
                 out.write(NODE_SPAN);
@@ -189,6 +193,27 @@ final class ExtendedEncoder {
             return reason;
         }
         return child.node(q.getChildQuery());
+    }
+
+    /**
+     * {@code has_child}/{@code has_parent}: the join field, score mode, {@code min_children} and
+     * {@code max_children}, the to side and the from side, both rewritten.
+     */
+    private static String join(org.lucenerust.opensearch.join.DeferredJoinQuery q, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        if (q.from() == null || q.to() == null) {
+            return "join_unrewritten";
+        }
+        out.write(NODE_JOIN);
+        writeString(out, q.joinField());
+        out.write((byte) q.scoreMode().ordinal());
+        writeInt(out, q.minChildren());
+        writeInt(out, q.maxChildren());
+        String reason = child.node(q.to());
+        if (reason != null) {
+            return reason;
+        }
+        return child.node(q.from());
     }
 
     private static String toChild(ToChildBlockJoinQuery q, ByteArrayOutputStream out, Child child)
