@@ -1052,7 +1052,7 @@ def js_rows():
         rows.append((name, make({"lang": "js", "source": js}), make({"source": painless or js})))
 
     score = lambda s: {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": s}}}
-    both("score double field", lambda s: score(dict(s, params={"w": 0.5})), "doc['price'].size() == 0 ? 1 : doc['price'].value * params.w + 1")
+    both("score double field", lambda s: score(dict(s, params={"w": 0.5})), "doc['price'].size() == 0 ? 1 : Math.abs(doc['price'].value) * params.w + 1")
     both("score reading _score", score, "_score * 2 + (doc['qty'].size() == 0 ? 0 : doc['qty'].value)")
     both("score keyword", score, "doc['tag'].size() > 0 && doc['tag'].value == 'gamma' ? 3 : 1")
     both("score body", score, "let t = 0; for (const v of doc['m']) { t += v; } return t + 1;",
