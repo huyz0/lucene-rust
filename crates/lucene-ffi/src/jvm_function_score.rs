@@ -252,6 +252,9 @@ enum Function {
     /// `FieldValueFactorFunction`.
     FieldValue {
         field: String,
+        /// The field as the request names it (an alias's own name), in
+        /// errors.
+        name: String,
         numeric: Numeric,
         factor: f32,
         modifier: Modifier,
@@ -295,6 +298,15 @@ impl Function {
             } => out.push(f),
             Function::Script(s) => out.extend(s.fields()),
             Function::One | Function::Random { .. } => {}
+        }
+    }
+
+    /// Where the scripts it is or wraps have their run numbers.
+    fn script_ids(&self, out: &mut Vec<usize>) {
+        match self {
+            Function::Weight { inner, .. } => inner.script_ids(out),
+            Function::Script(s) => out.push(s.script_id_at()),
+            _ => {}
         }
     }
 
@@ -380,6 +392,16 @@ pub(crate) fn decode(
         });
     }
     let scripted = functions.iter().any(|f| f.function.scripted());
+    // The node's bytes, without its scripts' run numbers: two equal
+    // functions compare equal wherever they sit in the request.
+    let mut key = c.since(start).to_vec();
+    let mut ids = Vec::new();
+    for f in &functions {
+        f.function.script_ids(&mut ids);
+    }
+    for at in ids {
+        key[at - start..at - start + 4].fill(0);
+    }
     let needs_sub =
         combine != Combine::Replace || functions.iter().any(|f| f.function.needs_score());
     let source = OpenSearchFunctionScore {
@@ -389,7 +411,7 @@ pub(crate) fn decode(
         functions,
         scripted,
         needs_sub,
-        key: hex(c.since(start)),
+        key: hex(&key),
     };
     Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
         FunctionScoreQuery::new(sub, Arc::new(source)),
@@ -421,7 +443,7 @@ fn numeric(c: &mut Cursor<'_>) -> std::result::Result<Numeric, FfiStatus> {
 /// |---|---|---|
 /// | `0` | nothing | `ScoreOne` (`weight` alone) |
 /// | `1` | `weight: f32`, the inner function (not another weight) | `WeightFactorFunction` |
-/// | `2` | `field`, `numeric: u8` (`0` long, `1` double, `2` float), `factor: f32`, `modifier: u8` (`Modifier`'s ordinal), `has_missing: u8`, `missing: f64` | `FieldValueFactorFunction` |
+/// | `2` | `field` (its doc values), `name` (the requested name, in errors), `numeric: u8` (`0` long, `1` double, `2` float), `factor: f32`, `modifier: u8` (`Modifier`'s ordinal), `has_missing: u8`, `missing: f64` | `FieldValueFactorFunction` |
 /// | `3` | `salted_seed: i32`, `kind: u8` (`0` doc ID, `1` keyword + `field`, `2` long + `field`) | `RandomScoreFunction` |
 /// | `4` | `decay: u8` (`0` gauss, `1` exp, `2` linear), `field`, `numeric: u8`, `origin`, `scale` (processed), `offset` (`f64`), `mode: u8` (`MultiValueMode`'s ordinal) | a numeric or date decay function |
 /// | `5` | a Painless score script, checked ([`ScriptFunction::decode`]) | `ScriptScoreFunction` |
@@ -437,6 +459,7 @@ fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<Func
         }
         FUNCTION_FIELD_VALUE => {
             let field = field(c)?;
+            let name = self::field(c)?;
             let numeric = numeric(c)?;
             let factor = f32::from_bits(c.i32()? as u32);
             let modifier = match c.u8()? {
@@ -460,6 +483,7 @@ fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<Func
             let missing = c.f64()?;
             Function::FieldValue {
                 field,
+                name,
                 numeric,
                 factor,
                 modifier,
@@ -677,13 +701,14 @@ impl<'c> LeafFunction<'c> {
             Function::Script(s) => LeafFunction::Script(Box::new(s.leaf(ctx, leaf)?)),
             Function::FieldValue {
                 field,
+                name,
                 numeric,
                 factor,
                 modifier,
                 missing,
             } => LeafFunction::FieldValue {
                 values: get_sorted_numeric(reader, field)?,
-                field: field.clone(),
+                field: name.clone(),
                 numeric: *numeric,
                 factor: *factor,
                 modifier: *modifier,
@@ -762,9 +787,18 @@ impl<'c> LeafFunction<'c> {
                 let result = modifier.apply(value * f64::from(*factor));
                 if result < 0.0 {
                     let (r, v) = (double_to_string(result), double_to_string(value));
-                    let message = format!(
+                    let mut message = format!(
                         "field value function must not produce negative scores, but got: [{r}] for field value: [{v}]"
                     );
+                    match modifier {
+                        Modifier::Ln => message.push_str(
+                            "; consider using ln1p or ln2p instead of ln to avoid negative scores",
+                        ),
+                        Modifier::Log => message.push_str(
+                            "; consider using log1p or log2p instead of log to avoid negative scores",
+                        ),
+                        _ => {}
+                    }
                     return Err(if scripted {
                         score_error(message)
                     } else {
@@ -1027,6 +1061,7 @@ mod tests {
     fn fvf(field: &str, numeric: u8, factor: f32, modifier: u8, missing: Option<f64>) -> Blob {
         Blob::default()
             .u8(FUNCTION_FIELD_VALUE)
+            .str(field)
             .str(field)
             .u8(numeric)
             .f32(factor)
