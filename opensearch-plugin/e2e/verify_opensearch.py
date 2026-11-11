@@ -429,6 +429,17 @@ def matrix():
     add("agg missing date_histogram", {"size": 0, "aggs": {"h": {"date_histogram": {"field": "ts", "calendar_interval": "day", "missing": "2023-11-15"}}}}, "native")
     add("agg missing range", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"r": {"range": {"field": "m", "missing": 500, "ranges": [{"to": 100}, {"from": 100, "to": 600}, {"from": 600}]}}}}, "native")
     add("agg missing terms double", {"size": 0, "aggs": {"t": {"terms": {"field": "md", "size": 4, "missing": -1.25}}}}, "native")
+    # Metrics over a Painless script alone, checked as other scripts are.
+    def sc(source, **params):
+        return {"script": {"source": source, "params": params}}
+    add("agg script stats", {"size": 0, "query": {"match": {"body": "alpha"}},
+                             "aggs": {"s": {"stats": sc("doc['qty'].size() == 0 ? 0 : doc['qty'].value * params.f", f=2)}}}, "native")
+    add("agg script sum avg min", {"size": 0, "aggs": {"s": {"sum": sc("doc['n'].value % 7")}, "a": {"avg": sc("doc['ratio'].size() == 0 ? 1 : doc['ratio'].value")},
+                                                       "lo": {"min": sc("doc['tag'].size() == 0 ? -1 : doc['tag'].value.length()")}}}, "native")
+    add("agg script list values", {"size": 0, "aggs": {"c": {"value_count": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")},
+                                                       "hi": {"max": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")}}}, "native")
+    add("agg script boolean", {"size": 0, "aggs": {"s": {"sum": sc("doc['qty'].size() > 0 && doc['qty'].value > 3")}}}, "native")
+    add("agg script under terms", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"m": {"max": sc("doc['n'].value * 3")}}}}}, "native")
     add("agg missing fraction on a long", {"size": 0, "aggs": {"t": {"terms": {"field": "m", "missing": 3.5}}}}, "aggregations")
     add("agg missing keyword terms", {"size": 0, "aggs": {"t": {"terms": {"field": "mtag", "missing": "none"}}}}, "native")
     add("agg missing keyword terms existing term", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "mtag", "size": 5, "missing": "alpha3"}}}}, "native")
@@ -953,6 +964,11 @@ def script_errors(index, shards):
     queries += [
         ("sort missing value", {"query": {"match": {"body": "alpha"}},
                                 "sort": [{"_script": {"type": "number", "script": {"source": "doc['sp'].value"}}}]}),
+    ]
+    # Aggregation scripts: the script's exception, and a value that is not a number.
+    queries += [
+        ("agg script missing value", {"size": 0, "aggs": {"s": {"sum": {"script": {"source": "doc['sp'].value"}}}}}),
+        ("agg script string value", {"size": 0, "aggs": {"s": {"max": {"script": {"source": "doc['tag'].size() == 0 ? 1 : doc['tag'].value"}}}}}),
     ]
     # script queries: a filter script's exception.
     queries += [

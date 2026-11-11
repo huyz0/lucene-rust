@@ -34,6 +34,7 @@ import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
+import org.opensearch.search.aggregations.AggregationExecutionException;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.NumberFieldMapper;
@@ -42,6 +43,7 @@ import org.opensearch.painless.PainlessScript;
 import org.opensearch.painless.PainlessScriptEngine;
 import org.opensearch.painless.WriterConstants;
 import org.opensearch.painless.lookup.PainlessLookup;
+import org.opensearch.script.AggregationScript;
 import org.opensearch.script.FilterScript;
 import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
@@ -93,9 +95,9 @@ public final class PainlessScore {
 
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
-     * a number sort script.
+     * a number sort script, an aggregation script.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3;
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
     private interface Run {
@@ -159,6 +161,26 @@ public final class PainlessScore {
         }
     }
 
+    /** An aggregation's script, as {@code ValuesSource.Numeric.Script} makes it. */
+    private record AggregationRun(AggregationScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            AggregationScript script = (AggregationScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
     /** A {@code script} query's filter script, as {@code ScriptQuery} makes it. */
     private record FilterRun(FilterScript.LeafFactory factory) implements Run {
         @Override
@@ -197,6 +219,9 @@ public final class PainlessScore {
      */
     private static final String OPENSEARCH_ERROR = "\u0001opensearch-error\u0001";
 
+    /** What an aggregation's {@code AggregationExecutionException} starts with ({@code AGGREGATION_ERROR}). */
+    private static final String AGGREGATION_ERROR = "\u0001aggregation-error\u0001";
+
     private PainlessScore() {}
 
     /** Takes the node's Painless engine from {@code scripts}; without it every script runs in Java. */
@@ -233,6 +258,11 @@ public final class PainlessScore {
     /** {@code source} compiled for the number sort context, as {@link #score}. */
     public static Object sort(String source) {
         return compile(NumberSortScript.CONTEXT, NumberSortScript.class, source);
+    }
+
+    /** {@code source} compiled for the aggregation context, as {@link #score}. */
+    public static Object aggregation(String source) {
+        return compile(AggregationScript.CONTEXT, AggregationScript.class, source);
     }
 
     /** {@code source} compiled for the filter context, as {@link #score}. */
@@ -319,6 +349,11 @@ public final class PainlessScore {
         return run(new SortRun(factory));
     }
 
+    /** The number in this request, for its errors, of an aggregation's script. */
+    public static int run(AggregationScript.LeafFactory factory) {
+        return run(new AggregationRun(factory));
+    }
+
     private static int run(Run run) {
         List<Run> runs = RUNS.get();
         runs.add(run);
@@ -327,7 +362,8 @@ public final class PainlessScore {
 
     /** Whether {@code error} is a script's own exception or invalid score, not an internal failure. */
     public static boolean scriptFailed(String error) {
-        return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR) || error.contains(OPENSEARCH_ERROR));
+        return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR) || error.contains(OPENSEARCH_ERROR)
+            || error.contains(AGGREGATION_ERROR));
     }
 
     /** Whether this request sent a script to the native runtime. */
@@ -351,6 +387,10 @@ public final class PainlessScore {
         int opensearch = error == null ? -1 : error.indexOf(OPENSEARCH_ERROR);
         if (opensearch >= 0) {
             return new OpenSearchException(error.substring(opensearch + OPENSEARCH_ERROR.length()));
+        }
+        int aggregation = error == null ? -1 : error.indexOf(AGGREGATION_ERROR);
+        if (aggregation >= 0) {
+            return new AggregationExecutionException(error.substring(aggregation + AGGREGATION_ERROR.length()));
         }
         int at = error == null ? -1 : error.indexOf(SCRIPT_ERROR);
         if (at < 0) {
