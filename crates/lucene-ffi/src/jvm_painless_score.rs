@@ -34,6 +34,14 @@
 //! The fields are the ones the script names by a constant (`doc['f']`); the
 //! check refuses a script that names one any other way.
 //!
+//! A context byte with bit `0x80` set ([`JS_SCRIPT`]) marks a JavaScript
+//! script (`lang: "js"`, of the plugin's opt-in script engine): the IR is
+//! the script's UTF-8 source, and two `i32`s follow the fields, its time
+//! limit per search in milliseconds and its heap limit in megabytes. It runs
+//! on V8 (`lucene-script-js`) only in a library built with feature `js`;
+//! the check refuses it otherwise, and refuses the interval and similarity
+//! contexts.
+//!
 //! OpenSearch's `script` query (`ScriptQuery`, a `FilterScript`) is node
 //! `45`: the same fields with no sub-query and flag `2`. Its `params` are the
 //! script's alone, and a document matches when `execute()` returns `true`,
@@ -131,6 +139,53 @@ struct FieldSpec {
 #[derive(Debug)]
 pub(crate) struct PainlessScoreSource(Arc<Spec>);
 
+/// The context byte's flag for a JavaScript script.
+pub(crate) const JS_SCRIPT: u8 = 0x80;
+
+/// A JavaScript script, as V8 runs it.
+#[derive(Debug)]
+struct JsSource {
+    #[cfg(feature = "js")]
+    script: Arc<lucene_script_js::Script>,
+    #[cfg(feature = "js")]
+    params: lucene_script_js::Params,
+}
+
+#[cfg(feature = "js")]
+mod js;
+
+impl JsSource {
+    #[cfg_attr(not(feature = "js"), allow(unused_variables))]
+    fn new(
+        source: String,
+        timeout_ms: i32,
+        heap_mb: i32,
+        params: &ir::Constant,
+        fields: &[FieldSpec],
+    ) -> Self {
+        JsSource {
+            #[cfg(feature = "js")]
+            script: Arc::new(js::script(&source, timeout_ms, heap_mb, fields)),
+            #[cfg(feature = "js")]
+            params: js::params(params),
+        }
+    }
+
+    /// Whether this library runs the script and V8 compiles it.
+    fn check(&self) -> std::result::Result<(), Refused> {
+        #[cfg(feature = "js")]
+        {
+            self.script.check().map_err(|e| Refused(e.to_string()))
+        }
+        #[cfg(not(feature = "js"))]
+        {
+            Err(Refused(
+                "js scripts need a native library built with feature js".to_string(),
+            ))
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Spec {
     script: ir::Script,
@@ -164,6 +219,8 @@ struct Spec {
     /// Where `script_id` is in the blob: no part of the script's equality.
     script_id_at: usize,
     fields: Vec<FieldSpec>,
+    /// A JavaScript script: `script` is then empty.
+    js: Option<JsSource>,
 }
 
 pub(crate) fn decode(
@@ -212,7 +269,9 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
     let (mut agg, mut sort, mut terms_set, mut interval) = (false, false, false, false);
     let (mut similarity, mut similarity_weight) = (false, false);
-    let (needs_score, filter) = match c.u8()? {
+    let context = c.u8()?;
+    let is_js = context & JS_SCRIPT != 0;
+    let (needs_score, filter) = match context & !JS_SCRIPT {
         0 => (false, false),
         1 => (true, false),
         2 => (false, true),
@@ -251,8 +310,15 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         }
     };
     let ir_blob = c.bytes()?.to_vec(); // alloc-ok: the script, bounded by the blob
-    let script =
-        ir::decode(&ir_blob).map_err(|e| invalid(format!("query tree: painless script: {e}")))?;
+    let script = if is_js {
+        ir::Script {
+            functions: Vec::new(),
+            classes: ir::ClassTable::default(),
+            sites: Vec::new(),
+        }
+    } else {
+        ir::decode(&ir_blob).map_err(|e| invalid(format!("query tree: painless script: {e}")))?
+    };
     let params_blob = c.bytes()?.to_vec(); // alloc-ok: the params, bounded by the blob
     let params = ir::decode_constant(&params_blob)
         .map_err(|e| invalid(format!("query tree: painless params: {e}")))?;
@@ -285,6 +351,18 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         };
         fields.push(FieldSpec { name, read, kind });
     }
+    let js = if is_js {
+        let source = String::from_utf8(ir_blob.clone())
+            .map_err(|_| invalid("query tree: js script source is not UTF-8"))?;
+        let timeout_ms = c.i32()?;
+        let heap_mb = c.i32()?;
+        if timeout_ms <= 0 || heap_mb <= 0 {
+            return Err(invalid("query tree: js script limits must be positive"));
+        }
+        Some(JsSource::new(source, timeout_ms, heap_mb, &params, &fields))
+    } else {
+        None
+    };
     Ok(Spec {
         script,
         ir_blob,
@@ -303,6 +381,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         script_id,
         script_id_at,
         fields,
+        js,
     })
 }
 
@@ -538,8 +617,18 @@ impl Spec {
         }
     }
 
-    /// [`lucene_painless::check`] on the program each segment runs.
+    /// [`lucene_painless::check`] on the program each segment runs; for a
+    /// JavaScript script, whether this library runs it and V8 compiles it.
     fn check(&self) -> std::result::Result<(), Refused> {
+        if let Some(js) = &self.js {
+            if self.interval || self.similarity || self.similarity_weight {
+                return Err(Refused(
+                    "js scripts run in the score, filter, sort, aggregation and terms_set contexts"
+                        .to_string(),
+                ));
+            }
+            return js.check();
+        }
         let mut prog =
             lucene_painless::compile::compile(&self.script).map_err(|e| Refused(e.to_string()))?;
         let doc_lookup = Value::object(DocLookup);
@@ -1105,6 +1194,9 @@ struct ScriptScores<'c> {
     args: Vec<Value>,
     scores: Option<BoxDoubleValues<'c>>,
     value: f32,
+    /// A JavaScript script's run on this segment.
+    #[cfg(feature = "js")]
+    js: Option<js::JsLeaf>,
 }
 
 impl ScriptScores<'_> {
@@ -1121,6 +1213,10 @@ impl ScriptScores<'_> {
 
     /// What the script returns for the current document.
     fn run_object(&mut self) -> Result<Value> {
+        #[cfg(feature = "js")]
+        if let Some(js) = &self.js {
+            return js.run_object(&mut self.env);
+        }
         let id = self.env.source.script_id;
         let at = At {
             leaf: self.env.leaf,
@@ -1146,6 +1242,10 @@ impl ScriptScores<'_> {
 
     /// What the script returns for the current document, as a `double`.
     fn run_value(&mut self) -> Result<f64> {
+        #[cfg(feature = "js")]
+        if let Some(js) = &self.js {
+            return js.run_value(&mut self.env);
+        }
         let id = self.env.source.script_id;
         let at = At {
             leaf: self.env.leaf,
@@ -1269,6 +1369,10 @@ impl DoubleValues for ScriptScores<'_> {
         out: &mut [f64],
         has: &mut [bool],
     ) -> Result<()> {
+        #[cfg(feature = "js")]
+        if let Some(js) = &self.js {
+            return js.fill_batch(&mut self.env, docs, scores, out, has);
+        }
         if let Some((t, _)) = &self.typed {
             if t.batchable() && !docs.is_empty() {
                 return self.fill_columns(docs, scores, out, has);
@@ -1330,6 +1434,9 @@ fn scripts<'c>(
     leaf: Leaf,
     scores: Option<BoxDoubleValues<'c>>,
 ) -> Result<ScriptScores<'c>> {
+    if spec.js.is_some() {
+        return js_scripts(spec, reader, leaf, scores);
+    }
     let mut prog = lucene_painless::compile::compile(&spec.script)
         .map_err(|e| Error::IllegalArgument(format!("painless script: {e}")))?;
     let arity = prog.funcs[prog.entry as usize].arity as usize;
@@ -1355,8 +1462,66 @@ fn scripts<'c>(
         (t, regs)
     });
     drop(fields);
+    let env = score_env(source, reader, leaf, params, doc_lookup);
+    Ok(ScriptScores {
+        typed,
+        pool: Vec::new(),
+        columns: BatchRegs::default(),
+        bindings: vec![None; prog.binding_sites], // alloc-ok: the compiled program's own count
+        prog: Rc::new(prog),
+        env,
+        // `execute(ExplanationHolder)`: no explanation while scoring.
+        args: vec![Value::Null; arity], // alloc-ok: execute's own arity
+        scores,
+        value: 0.0,
+        #[cfg(feature = "js")]
+        js: None,
+    })
+}
+
+/// A JavaScript script ready to run on segment `leaf`.
+fn js_scripts<'c>(
+    spec: &Arc<Spec>,
+    reader: &'c lucene_search::directory_reader::SegmentReader,
+    leaf: Leaf,
+    scores: Option<BoxDoubleValues<'c>>,
+) -> Result<ScriptScores<'c>> {
+    #[cfg(not(feature = "js"))]
+    {
+        let _ = (spec, reader, leaf, scores);
+        Err(Error::IllegalArgument(
+            "js scripts need a library built with feature js".to_string(),
+        ))
+    }
+    #[cfg(feature = "js")]
+    {
+        let source = Arc::clone(spec);
+        let env = score_env(source, reader, leaf, Value::Null, Value::Null);
+        Ok(ScriptScores {
+            typed: None,
+            pool: Vec::new(),
+            columns: BatchRegs::default(),
+            bindings: Vec::new(),
+            prog: Rc::new(Program::default()),
+            env,
+            args: Vec::new(),
+            scores,
+            value: 0.0,
+            js: Some(js::JsLeaf::new(spec, next_scorer_id())),
+        })
+    }
+}
+
+/// The context of `source` on segment `reader`.
+fn score_env<'c>(
+    source: Arc<Spec>,
+    reader: &'c lucene_search::directory_reader::SegmentReader,
+    leaf: Leaf,
+    params: Value,
+    doc_lookup: Value,
+) -> ScoreEnv<'c> {
     let n = source.fields.len();
-    let env = ScoreEnv {
+    ScoreEnv {
         index: Value::str(&source.index),
         reader,
         leaf,
@@ -1380,19 +1545,7 @@ fn scripts<'c>(
         score: 0.0,
         params,
         doc_lookup,
-    };
-    Ok(ScriptScores {
-        typed,
-        pool: Vec::new(),
-        columns: BatchRegs::default(),
-        bindings: vec![None; prog.binding_sites], // alloc-ok: the compiled program's own count
-        prog: Rc::new(prog),
-        env,
-        // `execute(ExplanationHolder)`: no explanation while scoring.
-        args: vec![Value::Null; arity], // alloc-ok: execute's own arity
-        scores,
-        value: 0.0,
-    })
+    }
 }
 
 /// A `function_score` `script_score` function's script
@@ -3717,6 +3870,7 @@ mod bench {
                 script_id: 0,
                 script_id_at: 0,
                 fields,
+                js: None,
             }));
             let n = seg.max_doc;
             let mut best = f64::MAX;

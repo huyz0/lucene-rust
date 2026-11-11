@@ -21,6 +21,7 @@ Usage: verify_opensearch.py <base-url> <container-name> [--docs N] [--bench-out 
 """
 import argparse
 import json
+import os
 import random
 import statistics
 import subprocess
@@ -1042,6 +1043,86 @@ def script_errors(index, shards):
         print(f"  {label}: status {got[0]}, {failed} script errors, no fallback")
 
 
+def js_rows():
+    """JavaScript scripts beside the same scripts in Painless, in each context the js engine
+    serves: (name, js body, Painless body). The sources read alike in both languages."""
+    rows = []
+
+    def both(name, make, js, painless=None):
+        rows.append((name, make({"lang": "js", "source": js}), make({"source": painless or js})))
+
+    score = lambda s: {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": s}}}
+    both("score double field", lambda s: score(dict(s, params={"w": 0.5})), "doc['price'].size() == 0 ? 1 : doc['price'].value * params.w + 1")
+    both("score reading _score", score, "_score * 2 + (doc['qty'].size() == 0 ? 0 : doc['qty'].value)")
+    both("score keyword", score, "doc['tag'].size() > 0 && doc['tag'].value == 'gamma' ? 3 : 1")
+    both("score body", score, "let t = 0; for (const v of doc['m']) { t += v; } return t + 1;",
+         "long t = 0; for (def v : doc['m']) { t += v; } return t + 1;")
+    both("score date millis", score, "doc['ts'].size() == 0 ? 1 : doc['ts'].value / 1e12",
+         "doc['ts'].size() == 0 ? 1 : doc['ts'].value.toInstant().toEpochMilli() / 1e12")
+    both("function_score script", lambda s: {"query": {"function_score": {"query": {"match": {"body": "beta"}},
+         "functions": [{"script_score": {"script": s}}]}}}, "doc['n'].value % 5 + 0.5")
+    both("filter script", lambda s: {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"script": {"script": s}}]}}},
+         "doc['qty'].size() > 0 && doc['qty'].value > 3")
+    both("filter script count", lambda s: {"size": 0, "track_total_hits": True, "query": {"bool": {"filter": [{"script": {"script": s}}]}}},
+         "doc['n'].value % 3 == 1")
+    both("sort script", lambda s: {"query": {"match": {"body": "gamma"}}, "sort": [{"_script": {"type": "number", "script": s, "order": "desc"}}]},
+         "doc['n'].value * -1.0")
+    both("agg script", lambda s: {"size": 0, "aggs": {"s": {"sum": {"script": s}}, "a": {"avg": {"script": s}}}}, "doc['n'].value % 7")
+    both("agg script under terms", lambda s: {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"m": {"max": {"script": s}}}}}},
+         "doc['n'].value * 3")
+    both("terms_set script", lambda s: {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"],
+         "minimum_should_match_script": s}}}}, "doc['qty'].size() == 0 ? 1 : Math.min(params.num_terms, doc['qty'].value % 3 + 1)")
+    return rows
+
+
+def run_js(index, shards):
+    """`"lang": "js"` scripts (a node built with -Pjs and lucene_rust.script.js.enabled): each
+    runs natively and answers as the same script in Painless does; a failure is a
+    ScriptException of lang js, never a run in Java."""
+    set_native(index, True)
+    for name, js, painless in js_rows():
+        label = f"js {index} [{name}]"
+        want = shape(complete(search(index, painless)), painless)
+        before = stats()
+        got = shape(complete(search(index, js)), js)
+        after = stats()
+        diff = same(got, want)
+        check(diff is None, f"{label}: differs from Painless: {diff}")
+        ran = after["native_queries"] - before["native_queries"]
+        check(ran == shards, f"{label}: ran native on {ran} of {shards} shards; fallbacks {fallback_delta(before, after)}")
+        check(after["native_errors"] == before["native_errors"], f"{label}: native errors")
+    score = lambda src: {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"lang": "js", "source": src}}}}
+    for name, body, want in [
+        ("missing value", score("doc['sp'].value + 1"), "Error: A document doesn't have a value for a field!"),
+        ("not a number", score("'x'"), "TypeError: a score script must return a number, not string"),
+        ("time limit", score("while (true) {}"), "the js script ran past its time limit"),
+        ("no globals", score("globalThis.x = 1; return 1"), "TypeError"),
+        ("syntax", score("return ("), "SyntaxError"),
+    ]:
+        label = f"js errors {index} [{name}]"
+        before = stats()
+        status, resp = raw_search(index, body)
+        after = stats()
+        text = json.dumps(resp)
+        check(status == 400 or failed_shards(resp), f"{label}: fails ({status})")
+        check("script_exception" in text and want in text, f"{label}: a js script_exception with {want!r}: {text[:800]}")
+        check(not fallback_delta(before, after), f"{label}: no fallback, got {fallback_delta(before, after)}")
+    # With the native engine off the search runs in Java, where no js script runs: it fails
+    # before any script does.
+    set_native(index, False)
+    status, resp = raw_search(index, score("1"))
+    check(status >= 400 or failed_shards(resp), f"js {index} [in Java]: fails ({status})")
+    check("run only in the native engine" in json.dumps(resp), f"js {index} [in Java]: says why: {json.dumps(resp)[:500]}")
+    set_native(index, True)
+    print(f"  js {index}: {len(js_rows())} rows as Painless answers them, errors as js script_exceptions")
+
+
+def js_off(index):
+    """Without lucene_rust.script.js.enabled a node has no js language."""
+    status, resp = raw_search(index, {"query": {"script_score": {"query": {"match_all": {}}, "script": {"lang": "js", "source": "1"}}}})
+    check(status == 400 and "script_lang not supported [js]" in json.dumps(resp), f"js off {index}: {status} {json.dumps(resp)[:300]}")
+
+
 def scroll_pages(index, body, limit=40):
     """Every page of a scroll (at most `limit`), each as `shape` gives it."""
     resp = req("POST", f"/{index}/_search?scroll=1m", body)
@@ -1564,6 +1645,11 @@ def main():
         native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
     for index, shards in (("single", 1), ("multi", 3)):
         script_errors(index, shards)
+    for index, shards in (("single", 1), ("multi", 3)):
+        if os.environ.get("E2E_JS"):
+            run_js(index, shards)
+        else:
+            js_off(index)
     # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
