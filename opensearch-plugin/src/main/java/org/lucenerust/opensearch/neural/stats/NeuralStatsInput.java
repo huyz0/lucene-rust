@@ -19,8 +19,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
-import static org.lucenerust.opensearch.neural.util.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForMetricStats;
-import static org.lucenerust.opensearch.neural.util.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForStatCategoryFiltering;
+import static org.lucenerust.opensearch.neural.common.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForMetricStats;
+import static org.lucenerust.opensearch.neural.common.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForStatCategoryFiltering;
 
 /**
  * Entity class to hold input parameters for retrieving neural stats

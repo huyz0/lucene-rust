@@ -18,8 +18,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import static org.lucenerust.opensearch.neural.util.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForMetricStats;
-import static org.lucenerust.opensearch.neural.util.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForStatCategoryFiltering;
+import static org.lucenerust.opensearch.neural.common.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForMetricStats;
+import static org.lucenerust.opensearch.neural.common.MinClusterVersionUtil.isClusterOnOrAfterMinReqVersionForStatCategoryFiltering;
 
 /**
  * NeuralStatsResponse consists of the aggregated responses from the nodes
