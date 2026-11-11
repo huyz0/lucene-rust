@@ -128,6 +128,8 @@ struct Spec {
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
     script_id: i32,
+    /// Where `script_id` is in the blob: no part of the script's equality.
+    script_id_at: usize,
     fields: Vec<FieldSpec>,
 }
 
@@ -170,6 +172,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
     }
     let index = string(c)?;
     let shard = c.i32()?;
+    let script_id_at = c.pos();
     let script_id = c.i32()?;
     let n = c.len()?;
     let mut fields = Vec::with_capacity(n.min(c.remaining())); // alloc-ok: bounded by the blob
@@ -202,6 +205,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         index,
         shard,
         script_id,
+        script_id_at,
         fields,
     })
 }
@@ -321,6 +325,12 @@ impl JObject for Unavailable {
 }
 
 impl Spec {
+    /// Where a spec blob holds its script's run number.
+    #[cfg(test)]
+    fn at_script_id(blob: &[u8]) -> usize {
+        decode_spec(&mut Cursor::new(blob)).unwrap().script_id_at
+    }
+
     /// The script class's own methods the score context serves.
     fn internals(&self) -> &'static [&'static str] {
         const WITHOUT_SCORE: &[&str] = &[
@@ -1188,6 +1198,13 @@ impl ScriptFunction {
         Ok(ScriptFunction(Arc::new(spec)))
     }
 
+    /// Where the script's run number is in the node blob, which a node's
+    /// equality leaves out (Java's `ScriptScoreFunction` compares the
+    /// script alone).
+    pub(crate) fn script_id_at(&self) -> usize {
+        self.0.script_id_at
+    }
+
     /// Whether the script reads `_score`.
     pub(crate) fn needs_score(&self) -> bool {
         self.0.needs_score
@@ -1530,6 +1547,36 @@ mod tests {
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
+    /// Two `function_score` nodes that differ only in their script's run
+    /// number are equal, as Java's `ScriptScoreFunction`s comparing the
+    /// script are (so a boolean query merges them as duplicates).
+    #[test]
+    fn script_function_equality_ignores_the_run_number() {
+        use crate::jvm_nodes::NODE_FUNCTION_SCORE;
+        let case = cases()
+            .into_iter()
+            .find(|c| check(&c.spec).unwrap().is_none())
+            .unwrap();
+        let decoded = |run: i32| {
+            let mut spec = case.spec.clone();
+            let at = Spec::at_script_id(&spec);
+            spec[at..at + 4].copy_from_slice(&run.to_le_bytes());
+            let node = Blob::default()
+                .u8(NODE_FUNCTION_SCORE)
+                .u8(1)
+                .u8(0)
+                .f32(f32::MAX)
+                .raw(&case.sub)
+                .i32(1)
+                .u8(0)
+                .u8(5)
+                .raw(&Blob(spec));
+            let mut nodes = 0;
+            crate::jvm_reader::decode_node(&mut Cursor::new(&node.0), 0, &mut nodes).unwrap()
+        };
+        assert_eq!(decoded(0), decoded(7));
+    }
+
     /// `cargo test --release -p lucene-ffi --lib painless_check_cost --
     /// --ignored --nocapture`: the static check's cost per fixture script
     /// (decode, compile, specialise, check), once per distinct script and
@@ -1678,6 +1725,7 @@ mod bench {
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,
+                script_id_at: 0,
                 fields,
             }));
             let n = seg.max_doc;
