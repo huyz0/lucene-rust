@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "_meta": {
+    "managed_by": "lucene-rust",
+    "description": "Index settings for log indices: Rust engine, newest first, zstd stored fields and term blocks, adaptive doc values. Opt in by naming this template in an index template's composed_of."
+  },
+  "template": {
+    "settings": {
+      "index": {
+        "lucene_rust.engine": true,
+        "sort.field": "@timestamp",
+        "sort.order": "desc",
+        "lucene_rust.stored_fields.paged_zstd": true,
+        "lucene_rust.zstd_terms": true,
+        "lucene_rust.adaptive_doc_values": true
+      }
+    }
+  }
+}

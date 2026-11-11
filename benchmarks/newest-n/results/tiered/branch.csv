@@ -1,0 +1,52 @@
+shape,n,median_ms,p90_ms,reps,hits,total,relation
+match_all ts desc,10,0.1603,0.1815,400,10,6454808,EqualTo
+match_all ts asc,10,12.3754,14.4892,95,10,1000010,GreaterThanOrEqualTo
+match_all ts_s(skipper) desc,10,0.4564,0.5612,400,10,6454808,EqualTo
+match_all ts_s(skipper) asc,10,0.4840,0.5538,400,10,12288,GreaterThanOrEqualTo
+src=openssh ts desc,10,41.5258,55.9358,27,10,638947,EqualTo
+src=hdfs ts desc,10,7.2419,10.3490,156,10,1901733,EqualTo
+src=openssh ts_s(skipper) desc,10,55.8608,67.2545,21,10,638947,EqualTo
+range24h ts desc,10,0.1879,0.3178,400,10,1001,GreaterThanOrEqualTo
+range24h&hdfs ts desc,10,7.4230,10.7024,154,10,1001,GreaterThanOrEqualTo
+range24h&openssh(0 hits) ts desc,10,0.2467,0.2999,400,0,0,EqualTo
+match_all tsec(ties) desc,10,0.1573,0.2331,400,10,6454808,EqualTo
+match_all tsec(ties) asc,10,11.4367,11.7402,105,10,1000010,GreaterThanOrEqualTo
+match_all tmiss desc missing_last,10,0.0739,0.0884,400,10,6454808,EqualTo
+match_all tmiss asc missing_last,10,0.0365,0.0422,400,10,6454808,EqualTo
+match_all tmiss desc missing_first,10,0.0377,0.0426,400,10,1001,GreaterThanOrEqualTo
+match_all ts desc search_after,10,0.2857,0.3080,400,10,6454808,EqualTo
+src=hdfs tsec(ties) desc search_after,10,8.7926,12.3537,125,10,1901733,EqualTo
+match_all ts desc,100,0.1856,0.2360,400,100,6454808,EqualTo
+match_all ts asc,100,12.7405,17.2981,89,100,1000100,GreaterThanOrEqualTo
+match_all ts_s(skipper) desc,100,0.7611,0.9187,400,100,6454808,EqualTo
+match_all ts_s(skipper) asc,100,0.3937,0.5538,400,100,12288,GreaterThanOrEqualTo
+src=openssh ts desc,100,55.2629,59.0259,22,100,638947,EqualTo
+src=hdfs ts desc,100,14.8804,23.4043,73,100,1901733,EqualTo
+src=openssh ts_s(skipper) desc,100,67.6358,83.2069,17,100,638947,EqualTo
+range24h ts desc,100,0.2136,0.2536,400,100,1001,GreaterThanOrEqualTo
+range24h&hdfs ts desc,100,15.0830,17.5341,77,100,1001,GreaterThanOrEqualTo
+range24h&openssh(0 hits) ts desc,100,0.2421,0.4280,400,0,0,EqualTo
+match_all tsec(ties) desc,100,0.1887,0.2081,400,100,6454808,EqualTo
+match_all tsec(ties) asc,100,12.6740,23.2426,84,100,1000100,GreaterThanOrEqualTo
+match_all tmiss desc missing_last,100,0.0471,0.0840,400,100,6454808,EqualTo
+match_all tmiss asc missing_last,100,0.0522,0.0639,400,100,6454808,EqualTo
+match_all tmiss desc missing_first,100,0.1369,0.1602,400,100,1001,GreaterThanOrEqualTo
+match_all ts desc search_after,100,0.3979,0.5703,400,100,6454808,EqualTo
+src=hdfs tsec(ties) desc search_after,100,15.7954,24.2338,68,100,1901733,EqualTo
+match_all ts desc,1000,0.2142,0.4445,400,1000,6454808,EqualTo
+match_all ts asc,1000,69.0019,83.3750,17,1000,5500000,GreaterThanOrEqualTo
+match_all ts_s(skipper) desc,1000,0.7039,0.7692,400,1000,6454808,EqualTo
+match_all ts_s(skipper) asc,1000,26.0513,34.8492,43,1000,1015808,GreaterThanOrEqualTo
+src=openssh ts desc,1000,66.5400,92.3922,17,1000,638947,EqualTo
+src=hdfs ts desc,1000,31.0697,38.9224,39,1000,1901733,EqualTo
+src=openssh ts_s(skipper) desc,1000,69.6782,76.9260,18,1000,638947,EqualTo
+range24h ts desc,1000,0.2670,0.4052,400,1000,1001,GreaterThanOrEqualTo
+range24h&hdfs ts desc,1000,24.8659,29.4698,47,1000,1001,GreaterThanOrEqualTo
+range24h&openssh(0 hits) ts desc,1000,0.2339,0.2626,400,0,0,EqualTo
+match_all tsec(ties) desc,1000,0.2142,0.2297,400,1000,6454808,EqualTo
+match_all tsec(ties) asc,1000,68.4925,70.5468,18,1000,5500000,GreaterThanOrEqualTo
+match_all tmiss desc missing_last,1000,0.2808,0.2997,400,1000,6454808,EqualTo
+match_all tmiss asc missing_last,1000,0.2379,0.2564,400,1000,6454808,EqualTo
+match_all tmiss desc missing_first,1000,92.0584,101.2193,12,1000,5500000,GreaterThanOrEqualTo
+match_all ts desc search_after,1000,0.8375,1.1524,400,1000,6454808,EqualTo
+src=hdfs tsec(ties) desc search_after,1000,28.2609,33.0339,43,1000,1901733,EqualTo
