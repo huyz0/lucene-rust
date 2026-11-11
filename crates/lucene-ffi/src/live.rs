@@ -2700,7 +2700,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         // A lone term is scored as the plain reader scores it, with the term
         // scorer: Lucene rewrites a one-clause boolean to that clause, so the
         // hits are the same, without a boolean scorer per leaf.
-        let (hits, total) = match &query {
+        let searched = match &query {
             JvmQuery::Term(t) => {
                 let term_norms: Vec<_> = norms
                     .iter()
@@ -2722,7 +2722,8 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
                 threshold,
             ),
         }
-        .map_err(map_search_error)?;
+        .map_err(map_search_error);
+        let (hits, total) = crate::jvm_reader::similarity_checked(sim, searched)?;
         laps.lap(lucene_index::live_timing::Phase::PlainQuery);
         let hits = if top_n == 0 { Vec::new() } else { hits };
         let (total, lower_bound) = if count_limit <= 0 {

@@ -845,6 +845,78 @@ final class ExtendedEncoder {
         return null;
     }
 
+    /**
+     * OpenSearch's scripted similarity as the native runtime scores with it (similarity kind 9
+     * of {@code jvm_similarity.rs}, after the kind), or null when it stays in Java: a script that
+     * is not inline Painless compiled with no options or params of its own, or one the static
+     * check refuses.
+     */
+    static byte[] painlessSimilarity(org.opensearch.index.similarity.ScriptedSimilarity sim) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(field(sim, "discountOverlaps") instanceof Boolean b && b ? 1 : 0);
+            writeString(out, sim.toString());
+            Object weightFactory = field(sim, "weightScriptFactory");
+            if (weightFactory == null) {
+                out.write(0);
+            } else {
+                out.write(1);
+                Object w = ((org.opensearch.script.SimilarityWeightScript.Factory) weightFactory).newInstance();
+                if (similarityScript(out, w, (String) field(sim, "weightScriptSource"), true, sim) == false) {
+                    return null;
+                }
+            }
+            Object script = ((org.opensearch.script.SimilarityScript.Factory) field(sim, "scriptFactory")).newInstance();
+            if (similarityScript(out, script, (String) field(sim, "scriptSource"), false, sim) == false) {
+                return null;
+            }
+            return out.toByteArray();
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Writes a scripted similarity's {@code script}, whose {@code Script} printed {@code printed}: false when it stays in Java. */
+    private static boolean similarityScript(
+        ByteArrayOutputStream out,
+        Object script,
+        String printed,
+        boolean weight,
+        org.opensearch.index.similarity.ScriptedSimilarity sim
+    ) {
+        String source = PainlessScore.sourceOf(script);
+        // Compiled as the native runtime compiles it: inline Painless, no options, no params.
+        if (source == null || new Script(ScriptType.INLINE, "painless", source, Map.of()).toString().equals(printed) == false) {
+            return false;
+        }
+        Object compiledOrWhy = PainlessScore.similarity(source, weight);
+        if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
+            return false;
+        }
+        PainlessIr.Compiled compiled = (PainlessIr.Compiled) compiledOrWhy;
+        if (compiled.docFields().isEmpty() == false) {
+            return false;
+        }
+        byte[] params;
+        try {
+            params = PainlessIr.constant(Map.of());
+        } catch (PainlessIr.Unsupported e) {
+            return false;
+        }
+        byte context = weight ? PainlessScore.SIMILARITY_WEIGHT : PainlessScore.SIMILARITY;
+        Painless p = new Painless(context, compiled, params, new String[0], new byte[0]);
+        String refused = PainlessScore.check(compiled, context, params, new byte[0], () -> {
+            ByteArrayOutputStream checked = new ByteArrayOutputStream();
+            painlessSpec(checked, p, "", 0, 0);
+            return checked.toByteArray();
+        });
+        if (refused != null) {
+            return false;
+        }
+        painlessSpec(out, p, "", 0, PainlessScore.runSimilarity(sim, weight));
+        return true;
+    }
+
     /** A script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
     private record Painless(byte context, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {}
 

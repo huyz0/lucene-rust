@@ -1195,7 +1195,7 @@ pub(crate) fn aggregate_tree_blobs(
             }
         }
     }
-    Ok(out)
+    jvm_reader::similarity_checked(sim, Ok(out))
 }
 
 /// The aggregations of a tree blob over the live matches of the query blob:
