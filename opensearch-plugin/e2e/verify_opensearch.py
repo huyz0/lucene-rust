@@ -113,10 +113,10 @@ def create(index, shards, index_sort=None):
             "scrw": {"type": "scripted",
                      "weight_script": {"source": "return query.boost * Math.log((field.docCount + 1.0) / (term.docFreq + 1.0));"},
                      "script": {"source": "double tf = Math.sqrt(doc.freq); double norm = 1 / Math.sqrt(doc.length); return weight * tf * norm;"}},
-            "scrx": {"type": "scripted", "script": {"source": "if (field.docCount < 1000 && doc.length > 3) { throw new IllegalStateException('length ' + doc.length); } return doc.freq;"}},
+            # Index creation validates every similarity at boost 2: these fail only below it.
+            "scrx": {"type": "scripted", "script": {"source": "if (query.boost < 1.5 && doc.length > 3) { throw new IllegalStateException('length ' + doc.length); } return doc.freq;"}},
             "scrs": {"type": "scripted", "script": {"source": "return [doc.freq, 1.0].stream().mapToDouble(x -> x).sum();"}},
-            # Negative on this index only: index creation scores made-up statistics (docCount 1100).
-            "scrn": {"type": "scripted", "script": {"source": "return field.docCount < 1000 ? doc.freq - 1.5 : doc.freq;"}},
+            "scrn": {"type": "scripted", "script": {"source": "return query.boost < 1.5 ? doc.freq - 1.5 : doc.freq;"}},
         },
     }
     settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned",) + SCRIPTED}
