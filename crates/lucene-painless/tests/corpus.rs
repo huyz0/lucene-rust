@@ -308,6 +308,7 @@ fn run_corpus() {
                 let r = t
                     .run_batch(&mut NoDocs, &mut BatchRegs::default(), &mut out)
                     .and_then(|failed| match failed {
+                        None if t.returns_bool() => Ok(Value::Bool(out[0] != 0.0)),
                         None => Ok(Value::Double(out[0])),
                         Some((_, t, _)) => Err(t),
                     });
