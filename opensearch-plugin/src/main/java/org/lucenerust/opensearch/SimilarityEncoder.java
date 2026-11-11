@@ -37,6 +37,7 @@ import org.apache.lucene.search.similarities.NormalizationH3;
 import org.apache.lucene.search.similarities.NormalizationZ;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
+import org.opensearch.index.similarity.NonNegativeScoresSimilarity;
 import org.opensearch.lucene.similarity.LegacyBM25Similarity;
 
 import java.io.ByteArrayOutputStream;
@@ -53,9 +54,10 @@ import java.util.function.Predicate;
  * Lucene's default {@code BM25Similarity} (nothing to send) or one of the classes OpenSearch's
  * {@code SimilarityProviders} builds -- {@code BM25} with any parameters, {@code boolean}, {@code
  * DFR}, {@code IB}, {@code DFI}, {@code LMDirichlet}, {@code LMJelinekMercer}, {@code LegacyBM25},
- * {@code classic} -- and records it. It refuses anything else, which falls back as {@code
- * field_similarity}: {@code scripted} runs the user's script and a plugin's similarity the
- * plugin's code. Matched by exact class: a subclass may score differently.
+ * {@code classic}, and {@code scripted} (inside the {@code NonNegativeScoresSimilarity} OpenSearch
+ * wraps it in) when the native runtime runs its scripts -- and records it. It refuses anything
+ * else, which falls back as {@code field_similarity}: a scripted similarity whose scripts stay in
+ * Java, or a plugin's similarity. Matched by exact class: a subclass may score differently.
  */
 final class SimilarityEncoder implements Predicate<String> {
     static final byte QUERY_SIMILARITY = 4;
@@ -173,8 +175,9 @@ final class SimilarityEncoder implements Predicate<String> {
         } else if (c == LMJelinekMercerSimilarity.class && defaultCollectionModel((LMSimilarity) sim)) {
             out.write(6);
             writeFloat(out, ((LMJelinekMercerSimilarity) sim).getLambda());
-        } else if (sim instanceof org.opensearch.index.similarity.ScriptedSimilarity scripted) {
-            byte[] spec = ExtendedEncoder.painlessSimilarity(scripted);
+        } else if (sim instanceof org.opensearch.index.similarity.ScriptedSimilarity
+            || (sim instanceof NonNegativeScoresSimilarity n && n.getDelegate() instanceof org.opensearch.index.similarity.ScriptedSimilarity)) {
+            byte[] spec = ExtendedEncoder.painlessSimilarity(sim);
             if (spec == null) {
                 return null;
             }

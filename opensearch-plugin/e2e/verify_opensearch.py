@@ -43,7 +43,7 @@ UNVERIFIABLE = []
 # verify_upgrade.py, whose indices 2.x creates, drops it.
 SIMILARITIES = ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "legacy")
 # Scripted similarities: native, weighted, throwing, and one the static check refuses.
-SCRIPTED = ("scr", "scrw", "scrx", "scrs")
+SCRIPTED = ("scr", "scrw", "scrx", "scrs", "scrn")
 
 
 def req(method, path, body=None, ndjson=False):
@@ -115,6 +115,8 @@ def create(index, shards, index_sort=None):
                      "script": {"source": "double tf = Math.sqrt(doc.freq); double norm = 1 / Math.sqrt(doc.length); return weight * tf * norm;"}},
             "scrx": {"type": "scripted", "script": {"source": "if (field.docCount < 1000 && doc.length > 3) { throw new IllegalStateException('length ' + doc.length); } return doc.freq;"}},
             "scrs": {"type": "scripted", "script": {"source": "return [doc.freq, 1.0].stream().mapToDouble(x -> x).sum();"}},
+            # Negative on this index only: index creation scores made-up statistics (docCount 1100).
+            "scrn": {"type": "scripted", "script": {"source": "return field.docCount < 1000 ? doc.freq - 1.5 : doc.freq;"}},
         },
     }
     settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned",) + SCRIPTED}
@@ -1003,6 +1005,7 @@ def script_errors(index, shards):
     # A scripted similarity's exception.
     queries += [
         ("similarity script throws", {"query": {"match": {"tuned.scrx": "alpha"}}}),
+        ("similarity negative score", {"query": {"match": {"tuned.scrn": "alpha"}}}),
     ]
     # terms_set: a minimum_should_match_script's exception.
     queries += [

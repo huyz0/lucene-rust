@@ -1850,6 +1850,7 @@ impl lucene_search::intervals::IntervalAccept for IntervalAccepter {
 /// | field | layout |
 /// |---|---|
 /// | discount overlaps | `u8` |
+/// | negative scores | `u8`: [`NegativeScores`] |
 /// | description | string: `ScriptedSimilarity.toString()` |
 /// | weight script | `u8` `0` none, or `1` and a spec of context `9` |
 /// | script | a spec of context `8` |
@@ -1861,6 +1862,7 @@ struct Scripted {
     script: Spec,
     weight: Option<Spec>,
     discount_overlaps: bool,
+    negative: NegativeScores,
     description: String,
     /// Whether a script failed: read before every score.
     failed: std::sync::atomic::AtomicBool,
@@ -1886,6 +1888,16 @@ impl ScriptedSimilarity {
     /// The similarity after its kind byte, its scripts checked.
     pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
         let discount_overlaps = c.u8()? != 0;
+        let negative = match c.u8()? {
+            0 => NegativeScores::Kept,
+            1 => NegativeScores::Fail,
+            2 => NegativeScores::Zero,
+            other => {
+                return Err(invalid(format!(
+                    "similarity table: negative scores mode {other} (expected 0 to 2)"
+                )))
+            }
+        };
         let description = string(c)?;
         let weight = match c.u8()? {
             0 => None,
@@ -1901,11 +1913,27 @@ impl ScriptedSimilarity {
             script,
             weight,
             discount_overlaps,
+            negative,
             description,
             failed: std::sync::atomic::AtomicBool::new(false),
             failure: std::sync::Mutex::new(None),
         })))
     }
+}
+
+/// What a scripted similarity's negative score does. OpenSearch's
+/// `SimilarityService` wraps every `scripted` similarity in
+/// `NonNegativeScoresSimilarity`, which fails the search on one unless the
+/// `opensearch.enforce.positive.scores` system property is `false`, and then
+/// scores it `0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NegativeScores {
+    /// Unwrapped: the score as the script returned it.
+    Kept,
+    /// `NonNegativeScoresSimilarity` enforcing: an `IllegalArgumentException`.
+    Fail,
+    /// `NonNegativeScoresSimilarity` not enforcing: `0`.
+    Zero,
 }
 
 /// A similarity script's spec: of the weight context or the score one, no
@@ -2222,10 +2250,17 @@ impl Similarity for ScriptedSimilarity {
                 }
             })
             .collect();
-        if scorers.len() == 1 {
+        let scorer: Arc<dyn SimScorer> = if scorers.len() == 1 {
             Arc::new(scorers.pop().expect("one scorer"))
         } else {
             Arc::new(SummedScorer(scorers))
+        };
+        match self.0.negative {
+            NegativeScores::Kept => scorer,
+            _ => Arc::new(NonNegativeScorer {
+                inner: scorer,
+                shared: self.0.clone(),
+            }),
         }
     }
 
@@ -2422,10 +2457,10 @@ struct SummedScorer(Vec<ScriptedScorer>);
 
 impl SimScorer for SummedScorer {
     fn score(&self, freq: f32, norm: i64) -> f32 {
+        // From `0.0` as Java's `double` starts: `Sum` starts from `-0.0`.
         self.0
             .iter()
-            .map(|s| f64::from(s.score(freq, norm)))
-            .sum::<f64>() as f32
+            .fold(0.0f64, |sum, s| sum + f64::from(s.score(freq, norm))) as f32
     }
 
     fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
@@ -2435,6 +2470,51 @@ impl SimScorer for SummedScorer {
             .map(|s| s.explain(freq.clone(), norm))
             .collect();
         Explanation::match_(self.score(freq.value, norm), "Sum of:").with_details(details)
+    }
+}
+
+/// `NonNegativeScoresSimilarity`'s scorer around a scripted similarity's.
+struct NonNegativeScorer {
+    inner: Arc<dyn SimScorer>,
+    shared: Arc<Scripted>,
+}
+
+impl std::fmt::Debug for NonNegativeScorer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NonNegativeScorer")
+            .field("negative", &self.shared.negative)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SimScorer for NonNegativeScorer {
+    /// A negative score fails the search, its explanation the message, or
+    /// is `0` when not enforced; `NaN` and `-0.0` pass.
+    fn score(&self, freq: f32, norm: i64) -> f32 {
+        let score = self.inner.score(freq, norm);
+        if score >= 0.0 || score.is_nan() {
+            return score;
+        }
+        if self.shared.negative == NegativeScores::Fail {
+            let why = self
+                .inner
+                .explain(Explanation::match_(freq, "term frequency"), norm);
+            self.shared.fail(score_error(format!(
+                "Similarities must not produce negative scores, but got:\n{why}"
+            )));
+        }
+        0.0
+    }
+
+    /// A negative explanation as the `max of` it and `0`.
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        let e = self.inner.explain(freq, norm);
+        if e.matched && e.value < 0.0 {
+            Explanation::match_(0.0, "max of:")
+                .with_details(vec![e, Explanation::match_(0.0, "Minimum allowed score")])
+        } else {
+            e
+        }
     }
 }
 
@@ -2479,7 +2559,8 @@ mod tests {
         /// The class `ScriptException` wraps, its message, the offset it
         /// points at.
         Threw(String, Option<String>, i32),
-        /// `ScriptScorer`'s own error: a negative or NaN score.
+        /// `ScriptScorer`'s own error, a negative or NaN score, or
+        /// `NonNegativeScoresSimilarity`'s: its message.
         Refused(String),
         /// A sort script's hits, in the sort's order, with their sortable
         /// longs.
@@ -2703,7 +2784,8 @@ mod tests {
                 r.bytes()
             });
             let description = r.str();
-            let mut sim = Blob::default().u8(1).str(&description);
+            // Wrapped in an enforcing NonNegativeScoresSimilarity, as OpenSearch builds it.
+            let mut sim = Blob::default().u8(1).u8(1).str(&description);
             sim = match &weight {
                 Some(w) => sim.u8(1).raw(&similarity_spec_blob(9, w, 1)),
                 None => sim.u8(0),
@@ -2723,8 +2805,12 @@ mod tests {
                         let class = r.str();
                         let message = (r.u8() == 1).then(|| r.str());
                         let offset = r.i32();
-                        assert_eq!(k, 1, "{source}: not the script's exception: {class}");
-                        Outcome::Threw(class, message, offset)
+                        if k == 2 {
+                            assert_eq!(class, "java.lang.IllegalArgumentException", "{source}");
+                            Outcome::Refused(message.expect("a message"))
+                        } else {
+                            Outcome::Threw(class, message, offset)
+                        }
                     }
                 };
                 let got = run_limit(h, &similarity_query(&sim, kind).0, 1000, i64::MAX);
@@ -2752,6 +2838,23 @@ mod tests {
                         (!e.contains(&script) || !e.ends_with(&want))
                             .then(|| format!("{e:?}, want {script:?}..{want:?}"))
                     }
+                    (Outcome::Refused(message), Err(_)) => {
+                        // A disjunction visits its clauses in another order than
+                        // Lucene's bulk scorer, so it can name another negative doc.
+                        let want = if kind == 1 {
+                            let first = message.split_inclusive('\n').next().unwrap_or("");
+                            format!("{SCORE_ERROR}{first}-")
+                        } else {
+                            format!("{SCORE_ERROR}{message}")
+                        };
+                        let got = &e[e.find(SCORE_ERROR).unwrap_or(0)..];
+                        let same = if kind == 1 {
+                            got.starts_with(&want)
+                        } else {
+                            got == want
+                        };
+                        (!same).then(|| format!("{e:?}, want {want:?}"))
+                    }
                     (o, r) => Some(format!("{o:?} vs {r:?}: {e}")),
                 };
                 match bad {
@@ -2763,6 +2866,83 @@ mod tests {
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         assert_eq!(same, n * 4);
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// A scorer of a constant score, under [`NonNegativeScorer`].
+    #[derive(Debug)]
+    struct Constant(f32);
+
+    impl SimScorer for Constant {
+        fn score(&self, _: f32, _: i64) -> f32 {
+            self.0
+        }
+    }
+
+    /// The fixture's first scripted similarity, its negative scores `mode`.
+    fn first_fixture_similarity(mode: u8) -> std::result::Result<ScriptedSimilarity, FfiStatus> {
+        let data = std::fs::read(fixture("similarity.bin")).unwrap();
+        let mut r = Reader(&data[8..]);
+        let _source = r.str();
+        let ir = r.bytes();
+        assert_eq!(r.u8(), 0, "the first case has no weight script");
+        let blob = Blob::default()
+            .u8(1)
+            .u8(mode)
+            .str("d")
+            .u8(0)
+            .raw(&similarity_spec_blob(8, &ir, 0));
+        ScriptedSimilarity::decode(&mut Cursor::new(&blob.0))
+    }
+
+    /// **`NonNegativeScoresSimilarity`.** A negative score is `0` when not
+    /// enforced and fails the search when enforced, its explanation the
+    /// message; `NaN` and `-0.0` pass; the explanation of a negative score is
+    /// the `max of` it and `0`.
+    #[test]
+    fn negative_scores_as_non_negative_scores_similarity() {
+        let wrap = |mode, score| {
+            let sim = first_fixture_similarity(mode).unwrap();
+            NonNegativeScorer {
+                inner: Arc::new(Constant(score)),
+                shared: sim.0.clone(),
+            }
+        };
+        let zero = wrap(2, -1.5);
+        assert_eq!(zero.score(1.0, 1).to_bits(), 0.0f32.to_bits());
+        assert!(ScriptedSimilarity(zero.shared.clone())
+            .take_failure()
+            .is_none());
+        assert_eq!(wrap(2, -0.0).score(1.0, 1).to_bits(), (-0.0f32).to_bits());
+        assert!(wrap(1, f32::NAN).score(1.0, 1).is_nan());
+        let e = zero.explain(Explanation::match_(1.0, "freq"), 1);
+        assert_eq!(
+            e.to_string(),
+            "0.0 = max of:\n  -1.5 = score(freq=1.0), with freq of:\n    1.0 = freq\n  0.0 = Minimum allowed score\n"
+        );
+        assert_eq!(
+            wrap(2, 2.0)
+                .explain(Explanation::match_(1.0, "freq"), 1)
+                .value,
+            2.0
+        );
+
+        let fail = wrap(1, -1.5);
+        assert_eq!(fail.score(3.0, 1).to_bits(), 0.0f32.to_bits());
+        let msg = ScriptedSimilarity(fail.shared.clone())
+            .take_failure()
+            .unwrap()
+            .to_string();
+        assert!(
+            msg.ends_with(&format!(
+                "{SCORE_ERROR}Similarities must not produce negative scores, but got:\n-1.5 = score(freq=3.0), with freq of:\n  3.0 = term frequency\n"
+            )),
+            "{msg}"
+        );
+
+        for mode in [0u8, 1, 2] {
+            assert!(first_fixture_similarity(mode).is_ok());
+        }
+        assert!(first_fixture_similarity(3).is_err());
     }
 
     /// Scripts the check leaves to Java, before any of them runs.

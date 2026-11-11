@@ -437,7 +437,11 @@ public class ScoreCorpus {
             new SimCase("return Long.toString(term.totalTermFreq).length() + doc.freq;", "return query.boost + field.getSumTotalTermFreq();"),
             // Errors: the script's own, the weight script's.
             new SimCase("if (doc.length > 4) { throw new IllegalArgumentException('long doc ' + doc.length); } return doc.freq;", null),
-            new SimCase("return weight;", "return 1 / (term.totalTermFreq - term.totalTermFreq);")
+            new SimCase("return weight;", "return 1 / (term.totalTermFreq - term.totalTermFreq);"),
+            // Negative scores, which NonNegativeScoresSimilarity refuses; -0.0 passes.
+            new SimCase("return doc.freq - 1.5;", null),
+            new SimCase("return weight * (4 - doc.length);", "return term.docFreq - 1.0;"),
+            new SimCase("return -0.0 * doc.freq;", null)
         );
     }
 
@@ -499,7 +503,8 @@ public class ScoreCorpus {
                 rec.str(sim.toString());
                 IndexSearcher searcher = new IndexSearcher(reader);
                 searcher.setQueryCache(null);
-                searcher.setSimilarity(sim);
+                // As SimilarityService builds every scripted similarity.
+                searcher.setSimilarity(new org.opensearch.index.similarity.NonNegativeScoresSimilarity(sim));
                 for (int kind = 0; kind < 4; kind++) {
                     try {
                         ScoreDoc[] hits = searcher.search(simQuery(kind), 1000).scoreDocs.clone();
