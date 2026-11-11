@@ -199,6 +199,14 @@ pub trait MergeHooks: Send + Sync + fmt::Debug {
         sources: &crate::segment_infos::SegmentInfos,
         may_reorder: bool,
     ) -> std::result::Result<PreparedMerge, String>;
+
+    /// The numeric doc-values field whose documents end the blocks the
+    /// reorder keeps whole without a parent field: a merge of segments with
+    /// blocks and no parent field may still be reordered when each carries
+    /// it.
+    fn block_root_field(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A merge as a writer runs it: the segment names and the `OneMerge`'s

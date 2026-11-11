@@ -39,6 +39,9 @@ pub const DEFAULT_RAM_BUDGET_MB: f64 = 256.0;
 pub enum ReorderError {
     /// `BPIndexReorderer.NotEnoughRAMException`.
     NotEnoughRam(String),
+    /// Documents this reorderer cannot renumber and keep whole (a block
+    /// without its root): the merge keeps their order.
+    Unsupported(String),
     /// Anything else.
     Failed(Error),
 }
@@ -46,7 +49,7 @@ pub enum ReorderError {
 impl std::fmt::Display for ReorderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReorderError::NotEnoughRam(m) => f.write_str(m),
+            ReorderError::NotEnoughRam(m) | ReorderError::Unsupported(m) => f.write_str(m),
             ReorderError::Failed(e) => e.fmt(f),
         }
     }
@@ -72,6 +75,10 @@ pub struct BpIndexReorderer {
     max_iters: i32,
     ram_budget_mb: f64,
     fields: Option<Vec<String>>,
+    /// A numeric doc-values field only the last document of each block has
+    /// (OpenSearch's `_primary_term`, on root documents only), naming the
+    /// blocks of a reader without a parent field.
+    block_root_field: Option<String>,
 }
 
 impl Default for BpIndexReorderer {
@@ -83,6 +90,7 @@ impl Default for BpIndexReorderer {
             max_iters: DEFAULT_MAX_ITERS,
             ram_budget_mb: DEFAULT_RAM_BUDGET_MB,
             fields: None,
+            block_root_field: None,
         }
     }
 }
@@ -159,6 +167,20 @@ impl BpIndexReorderer {
         self.fields = fields;
     }
 
+    /// The field whose numeric doc values mark each document block's last
+    /// document when the reader has no parent field (Lucene's reorderer has
+    /// none: it reorders blocks only by their parent field). A reader where
+    /// every document has a value, or none has, is taken to have no blocks:
+    /// the field must be one every block's root carries.
+    pub fn set_block_root_field(&mut self, field: Option<String>) {
+        self.block_root_field = field;
+    }
+
+    /// [`Self::set_block_root_field`]'s field.
+    pub fn block_root_field(&self) -> Option<&str> {
+        self.block_root_field.as_deref()
+    }
+
     /// `computeDocMap(reader, tempDir, executor)`: the new numbering. The
     /// forward index lives in memory, so there is no temp directory, and the
     /// recursion runs on the calling thread.
@@ -203,9 +225,10 @@ impl BpIndexReorderer {
         let forward = self.build_forward_index(reader, &fields)?;
         let n = usize::try_from(max_doc).unwrap_or(0);
         let mut docs: Vec<i32> = (0..max_doc).collect();
-        let parents = match reader.field_infos().parent_field() {
-            Some(field) => Some(parent_bits(reader, field, n)?),
-            None => None,
+        let parents = match (reader.field_infos().parent_field(), &self.block_root_field) {
+            (Some(field), _) => Some(parent_bits(reader, field, n)?),
+            (None, Some(root)) => root_bits(reader, root, n)?,
+            (None, None) => None,
         };
         let ctx = Ctx {
             reorderer: self,
@@ -364,6 +387,32 @@ fn parent_bits(reader: &dyn CodecReader, field: &str, max_doc: usize) -> Result<
         }
     }
     Ok(bits)
+}
+
+/// The blocks [`BpIndexReorderer::set_block_root_field`] names: the
+/// documents with a value of `field`, `None` when every document has one or
+/// none has (no blocks).
+///
+/// # Errors
+/// [`ReorderError::Unsupported`] when the last document has none: a block
+/// without its root, which no renumbering can keep whole.
+fn root_bits(
+    reader: &dyn CodecReader,
+    field: &str,
+    max_doc: usize,
+) -> std::result::Result<Option<FixedBitSet>, ReorderError> {
+    let bits = parent_bits(reader, field, max_doc)?;
+    let roots = bits.cardinality();
+    if roots == max_doc || roots == 0 {
+        return Ok(None);
+    }
+    // FBS: `max_doc - 1 < bits.len()`, checked non-empty first.
+    if max_doc == 0 || !bits.get(max_doc - 1) {
+        return Err(ReorderError::Unsupported(format!(
+            "the last document has no {field}: a block without its root"
+        )));
+    }
+    Ok(Some(bits))
 }
 
 /// `ForwardIndex`: each document's term ids, ascending.
