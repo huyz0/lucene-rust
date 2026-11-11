@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Neural search through the lucene-rust plugin against stock: ingest and query latency.
 
-Uses the nodes scripts/check-neural-plugin.py --keep leaves running (the
+Uses the nodes scripts/check-neural-plugin.py --keep (with the semantic section) leaves running (the
 plugin on 19241, stock on 19242), the fixtures/ml tiny-bert text embedding
 and tiny-sparse encoding models. Per node, one at a time:
 
@@ -11,6 +11,9 @@ and tiny-sparse encoding models. Per node, one at a time:
   neural     QUERIES neural queries (k 10), one at a time: p50 / p99 ms
   sparse     neural_sparse by query_text with the model, and with the default
              bert-uncased analyzer: p50 / p99 ms
+  semantic   the same documents into a semantic field on the dense model
+             (embedded by the system ingest processor, no pipeline):
+             documents per second, and neural on it: p50 / p99 ms
   rerank     a match query's top 10 reranked by the tiny cross-encoder through
              the rerank response processor, and the same query unreranked:
              p50 / p99 ms
@@ -83,6 +86,22 @@ def bench(n, docs, queries):
     out["neural p50/p99 ms"] = timed(lambda i: run({"query": {"neural": {"emb": {"query_text": qs[i], "model_id": dense, "k": 10}}}}), queries)
     out["neural_sparse model p50/p99 ms"] = timed(lambda i: run({"query": {"neural_sparse": {"feat": {"query_text": qs[i], "model_id": sparse}}}}), queries)
     out["neural_sparse analyzer p50/p99 ms"] = timed(lambda i: run({"query": {"neural_sparse": {"feat": {"query_text": qs[i]}}}}), queries)
+    sem = model_id(n, "tiny-bert-sem-")
+    n.call("DELETE", "/bench-sem")
+    n.ok("PUT", "/bench-sem", {"settings": {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1},
+                               "mappings": {"properties": {"text": {"type": "semantic", "model_id": sem}}}})
+    t = time.perf_counter()
+    for i in range(0, docs, 100):
+        cn.bulk(n, "bench-sem", all_docs[i:i + 100])
+    out["semantic ingest docs/s"] = round(docs / (time.perf_counter() - t), 1)
+    n.ok("POST", "/bench-sem/_refresh")
+    n.ok("POST", "/bench-sem/_forcemerge?max_num_segments=1")
+
+    def run_sem(body):
+        s, r = n.call("POST", "/bench-sem/_search", body)
+        assert s == 200, json.dumps(r)[:500]
+
+    out["semantic neural p50/p99 ms"] = timed(lambda i: run_sem({"query": {"neural": {"text": {"query_text": qs[i], "k": 10}}}}), queries)
     match = lambda i: {"query": {"match": {"text": qs[i]}}, "size": 10}
     out["match p50/p99 ms"] = timed(lambda i: run(match(i)), queries)
     out["rerank p50/p99 ms"] = timed(lambda i: run({**match(i), "ext": {"rerank": {"query_context": {"query_text": qs[i]}}}}, "bench-rr"), queries)
