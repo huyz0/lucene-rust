@@ -3,8 +3,8 @@
 //! variables (Elasticsearch's `pattern_text` idea), so a log index keeps one
 //! copy of each message shape instead of one per line.
 //!
-//! A message is split on single spaces. A token holding an ASCII digit is a
-//! variable; the rest is the template. On 10.6M real Loghub lines this gives
+//! A message is split on single spaces. A token holding an ASCII digit (or
+//! the slot character U+0002) is a variable; the rest is the template. On 10.6M real Loghub lines this gives
 //! 7,887 templates and rebuilds every line exactly. A field `f` is written as
 //! three ordinary Lucene fields ([`fields()`]), so stock Lucene reads the
 //! files:
@@ -22,7 +22,7 @@ pub mod fields;
 pub mod format;
 pub mod phrase;
 
-pub use fields::{fields, ARGS_SUFFIX, TEMPLATE_SUFFIX};
+pub use fields::{fields, ARGS_SUFFIX, MAX_TEMPLATE_BYTES, TEMPLATE_SUFFIX};
 pub use format::{decode_args, encode_args, join, split, Split, VARIABLE};
 pub use phrase::{pattern_phrase_query, PatternPhraseSource, PhraseTokens, Tokenizer};
 
