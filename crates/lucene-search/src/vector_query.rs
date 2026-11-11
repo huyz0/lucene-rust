@@ -68,7 +68,8 @@ use crate::{Error, Result};
 
 mod grouped;
 pub use grouped::{
-    search_grouped_byte_knn_per_segment, search_grouped_float_knn_per_segment, SegmentGroups,
+    search_grouped_byte_knn_per_segment, search_grouped_float_knn_per_segment, GroupFill,
+    GroupMembers, SegmentGroups,
 };
 
 /// How a leaf's collector diversifies its hits.
@@ -1388,6 +1389,8 @@ fn search_leaf(
                             return Ok(found);
                         }
                     }
+                    // Groups scored whole take the exhaustive path.
+                    Some(Diversify::Groups(SegmentGroups { fill: Some(_), .. })) => {}
                     Some(Diversify::Groups(g)) => {
                         let groups = IvfGroups {
                             group: g.group,

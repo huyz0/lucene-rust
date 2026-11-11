@@ -9,7 +9,9 @@
 //! With `per_group == 1` this is the best document of each of the best
 //! `groups` groups, as a block-join search keeps the best child per parent.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+
+use crate::fx_hash::FxHashMap;
 
 /// A document a [`GroupTop`] holds: ordered best last (a higher score, or on
 /// a tie the lower document, compares greater), and named by its document
@@ -26,7 +28,7 @@ pub struct GroupTop<T: GroupItem> {
     groups: usize,
     per_group: usize,
     /// Each held group's documents, best first.
-    held: HashMap<i32, Vec<T>>,
+    held: FxHashMap<i32, Vec<T>>,
     /// Each held group by its best document.
     ranked: BTreeSet<(T, i32)>,
     /// Each held group by its worst held document.
@@ -40,7 +42,7 @@ impl<T: GroupItem> GroupTop<T> {
         Self {
             groups: groups.max(1),
             per_group: per_group.max(1),
-            held: HashMap::new(),
+            held: FxHashMap::default(),
             ranked: BTreeSet::new(),
             floors: BTreeSet::new(),
         }
@@ -148,6 +150,7 @@ fn ends<T: Copy>(list: &[T]) -> (T, T) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct Hit(i32, i32);
@@ -246,7 +249,7 @@ mod tests {
                 .collect();
             for (groups, per_group) in [(1, 1), (3, 1), (3, 2), (5, 4), (10, 10)] {
                 if per_group > 1 {
-                    items.sort_by(|a, b| b.1.cmp(&a.1));
+                    items.sort_by_key(|x| std::cmp::Reverse(x.1));
                 }
                 let mut t = GroupTop::new(groups, per_group);
                 for &(g, h) in &items {

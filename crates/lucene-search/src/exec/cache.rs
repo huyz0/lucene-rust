@@ -162,6 +162,12 @@ pub(crate) enum SortColumn {
         ids: Vec<i32>,
         values: Vec<i64>,
         groups: usize,
+        /// Group id `g`'s documents are `members[starts[g + 1]..starts[g + 2]]`
+        /// (the missing group, `-1`, first), in document order.
+        starts: Vec<u32>,
+        members: Vec<i32>,
+        /// A numeric field's ids, by their values ascending.
+        by_value: Vec<i32>,
     },
 }
 
@@ -171,7 +177,20 @@ impl SortColumn {
             SortColumn::Ords(o) => o.len() * 4,
             SortColumn::Longs { values, has } => values.len() * 8 + has.words().len() * 8,
             SortColumn::Multi { starts, values } => starts.len() * 8 + values.len() * 8,
-            SortColumn::Groups { ids, values, .. } => ids.len() * 4 + values.len() * 8,
+            SortColumn::Groups {
+                ids,
+                values,
+                starts,
+                members,
+                by_value,
+                ..
+            } => {
+                ids.len() * 4
+                    + values.len() * 8
+                    + starts.len() * 4
+                    + members.len() * 4
+                    + by_value.len() * 4
+            }
         }
     }
 }

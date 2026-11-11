@@ -27,6 +27,40 @@ pub struct SegmentGroups<'a> {
     pub groups: usize,
     /// The documents kept of each group, at least one.
     pub per_group: usize,
+    /// When set, the groups whose every document is scored, in place of a
+    /// walk: the second pass of a search that found its best groups first.
+    pub fill: Option<GroupFill<'a>>,
+}
+
+/// Groups to score whole: [`SegmentGroups::fill`].
+#[derive(Debug, Clone, Copy)]
+pub struct GroupFill<'a> {
+    /// Each group's documents.
+    pub members: GroupMembers<'a>,
+    /// The groups, by id.
+    pub groups: &'a [i32],
+}
+
+/// Each group's documents, in document order: group id `g`'s (`-1` for the
+/// documents without a value) are `docs[starts[g + 1]..starts[g + 2]]`.
+#[derive(Debug, Clone, Copy)]
+pub struct GroupMembers<'a> {
+    /// Where each group's documents start, indexed by its id plus one, and
+    /// where the last ends.
+    pub starts: &'a [u32],
+    /// The documents, by group.
+    pub docs: &'a [i32],
+}
+
+impl<'a> GroupMembers<'a> {
+    /// Group `g`'s documents; none for an id never given.
+    pub fn of(&self, g: i32) -> &'a [i32] {
+        let at = usize::try_from(i64::from(g).saturating_add(1)).unwrap_or(usize::MAX);
+        match (self.starts.get(at), self.starts.get(at.saturating_add(1))) {
+            (Some(&from), Some(&to)) => self.docs.get(from as usize..to as usize).unwrap_or(&[]),
+            _ => &[],
+        }
+    }
 }
 
 impl std::fmt::Debug for SegmentGroups<'_> {
@@ -216,6 +250,66 @@ fn grouped_approximate<S: VectorScorer>(
     Ok((c.top.into_sorted(), held, early))
 }
 
+/// Members scored at once.
+const FILL_BLOCK: usize = 64;
+
+/// The best `per_group` documents of each of `fill`'s groups, every
+/// accepted member scored, best first.
+fn fill_groups<S: VectorScorer>(
+    scorer: &mut S,
+    accept_ords: Option<&FixedBitSet>,
+    groups: SegmentGroups<'_>,
+    fill: GroupFill<'_>,
+    ord_to_doc: &dyn Fn(i32) -> Result<i32>,
+) -> Result<Vec<GroupHit>> {
+    let size = scorer.max_ord().max(0);
+    // Every document up to the last ordinal's has a vector: ordinal = doc.
+    let last = size.saturating_sub(1);
+    let dense = size > 0 && ord_to_doc(last)? == last;
+    let mut top = GroupTop::new(usize::MAX, groups.per_group);
+    let mut ords: Vec<i32> = Vec::new();
+    let mut scores: Vec<f32> = Vec::new();
+    for &group in fill.groups {
+        ords.clear();
+        for &doc in fill.members.of(group) {
+            let ord = if dense {
+                (doc < size).then_some(doc)
+            } else {
+                ord_of(doc, size, ord_to_doc)?
+            };
+            if let Some(ord) = ord.filter(|&o| accept_ords.is_none_or(|b| b.get_doc(o))) {
+                ords.push(ord);
+            }
+        }
+        scores.resize(ords.len(), 0.0);
+        for (o, sc) in ords.chunks(FILL_BLOCK).zip(scores.chunks_mut(FILL_BLOCK)) {
+            scorer.bulk_score(o, sc)?;
+        }
+        for (&ord, &score) in ords.iter().zip(&scores) {
+            let doc = if dense { ord } else { ord_to_doc(ord)? };
+            top.offer(group, GroupHit { score, doc, ord });
+        }
+    }
+    Ok(top.into_sorted())
+}
+
+/// The ordinal of `doc` among `size` ordinals whose documents ascend, if
+/// it has one.
+fn ord_of(doc: i32, size: i32, ord_to_doc: &dyn Fn(i32) -> Result<i32>) -> Result<Option<i32>> {
+    let (mut lo, mut hi) = (0i32, size);
+    while lo < hi {
+        // ARITH: `0 <= lo < hi <= size`, so neither overflows.
+        #[allow(clippy::arithmetic_side_effects)]
+        let mid = lo + (hi - lo) / 2;
+        match ord_to_doc(mid)?.cmp(&doc) {
+            std::cmp::Ordering::Less => lo = mid.saturating_add(1),
+            std::cmp::Ordering::Greater => hi = mid,
+            std::cmp::Ordering::Equal => return Ok(Some(mid)),
+        }
+    }
+    Ok(None)
+}
+
 /// One leaf's grouped hits, local documents best first: the graph walked
 /// (a filtered leaf as `getLeafResults` walks it, its visits bounded by the
 /// filter's count), or every accepted vector scored when the filter passes
@@ -234,7 +328,12 @@ pub(super) fn grouped_leaf_results<S: VectorScorer>(
     let k = plan.collector_k.min(size);
     let wanted = plan.k.min(size).min(groups.groups.max(1));
     let accept_bits = accept.map(|a| a.bits());
-    let (hits, early) = if !plan.filtered {
+    let (hits, early) = if let Some(fill) = groups.fill {
+        (
+            fill_groups(scorer, accept_bits, groups, fill, ord_to_doc)?,
+            false,
+        )
+    } else if !plan.filtered {
         let (hits, _, early) = grouped_approximate(
             scorer,
             graph,
@@ -385,6 +484,7 @@ mod tests {
             group: &group,
             groups: 3,
             per_group: 2,
+            fill: None,
         };
         let hits = grouped_exact(&mut s, None, 2, groups, &doc_of).unwrap();
         // Group 1: ords 1 (0.9), 4 (0.2); group 2: 2 (0.5), 5 (0.7); group 0:
@@ -401,6 +501,51 @@ mod tests {
     }
 
     #[test]
+    fn fill_scores_every_member_of_the_groups_asked() {
+        // Ordinal o is doc 2 * o (a sparse field), in group o % 3; doc 7
+        // has no vector.
+        let group = |d: i32| (d / 2) % 3;
+        let doc_of = |o: i32| -> Result<i32> { Ok(2 * o) };
+        let mut s = Fixed(vec![0.1, 0.9, 0.5, 0.8, 0.2, 0.7, 0.3]);
+        // Group ids -1, 0, 1, 2: starts by id + 1.
+        let starts = [0u32, 0, 3, 6, 8];
+        let docs = [0, 6, 12, 2, 7, 8, 4, 10];
+        let members = GroupMembers {
+            starts: &starts,
+            docs: &docs,
+        };
+        assert_eq!(members.of(1), &[2, 7, 8]);
+        assert!(members.of(-1).is_empty() && members.of(9).is_empty());
+        let groups = SegmentGroups {
+            group: &group,
+            groups: 3,
+            per_group: 2,
+            fill: None,
+        };
+        let fill = GroupFill {
+            members,
+            groups: &[1, 0],
+        };
+        let hits = fill_groups(&mut s, None, groups, fill, &doc_of).unwrap();
+        // Group 1: docs 2 (0.9), 8 (0.2); group 0: 6 (0.8), 12 (0.3), 0.
+        let got: Vec<(i32, i32)> = hits.iter().map(|h| (h.doc, h.ord)).collect();
+        assert_eq!(got, vec![(2, 1), (6, 3), (12, 6), (8, 4)]);
+        let mut some = FixedBitSet::new(7);
+        some.set(0);
+        let hits = fill_groups(&mut s, Some(&some), groups, fill, &doc_of).unwrap();
+        assert_eq!(hits.iter().map(|h| h.doc).collect::<Vec<_>>(), vec![0]);
+        // A dense field: ordinal = doc.
+        let same = |o: i32| -> Result<i32> { Ok(o) };
+        let hits = fill_groups(&mut s, None, groups, fill, &same).unwrap();
+        assert_eq!(
+            hits.iter().map(|h| h.doc).collect::<Vec<_>>(),
+            vec![2, 6, 0]
+        );
+        assert_eq!(ord_of(7, 7, &doc_of).unwrap(), None);
+        assert_eq!(ord_of(12, 7, &doc_of).unwrap(), Some(6));
+    }
+
+    #[test]
     fn collector_bounds_by_the_worst_held_document() {
         let group = |d: i32| d / 10;
         let doc_of = |o: i32| -> Result<i32> { Ok(o) };
@@ -408,6 +553,7 @@ mod tests {
             group: &group,
             groups: 10,
             per_group: 2,
+            fill: None,
         };
         let mut c = GroupedCollector::new(2, 3, groups, &doc_of);
         assert_eq!(KnnCollect::k(&c), 4);
@@ -432,6 +578,7 @@ mod tests {
             group: &group,
             groups: 1,
             per_group: 1,
+            fill: None,
         };
         assert!(format!("{groups:?}").contains("per_group: 1"));
     }

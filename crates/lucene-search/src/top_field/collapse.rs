@@ -36,6 +36,7 @@ use crate::reader::{
     NumericDocValues, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
 use crate::tree_set::TreeSet;
+use crate::vector_query::GroupMembers;
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -381,7 +382,7 @@ impl<'a> Selector<'a> {
 pub(crate) struct GroupColumn<'a> {
     col: Arc<SortColumn>,
     /// Reads a keyword group's term; `None` for a numeric field.
-    terms: Option<Selector<'a>>,
+    terms: std::cell::RefCell<Option<Selector<'a>>>,
 }
 
 impl<'a> GroupColumn<'a> {
@@ -437,10 +438,17 @@ impl<'a> GroupColumn<'a> {
             if missing {
                 groups = groups.saturating_add(1);
             }
+            let (starts, members) = group_members(&ids);
+            let mut by_value: Vec<i32> =
+                (0..i32::try_from(values.len()).unwrap_or(i32::MAX)).collect();
+            by_value.sort_unstable_by_key(|&i| values[i as usize]);
             Ok(SortColumn::Groups {
                 ids,
                 values,
                 groups,
+                starts,
+                members,
+                by_value,
             })
         };
         let key = format!("group\0{field}\0{kind:?}");
@@ -456,7 +464,10 @@ impl<'a> GroupColumn<'a> {
             CollapseKind::Keyword => Some(Selector::open(reader, field, kind)?),
             CollapseKind::Numeric => None,
         };
-        Ok(Self { col, terms })
+        Ok(Self {
+            col,
+            terms: std::cell::RefCell::new(terms),
+        })
     }
 
     /// `doc`'s group, `-1` for a document without a value.
@@ -468,6 +479,47 @@ impl<'a> GroupColumn<'a> {
                 .copied()
                 .unwrap_or(-1),
             _ => -1,
+        }
+    }
+
+    /// The id of the group whose value is `value`, if a document here has
+    /// it (`-1` for the documents without a value).
+    ///
+    /// # Errors
+    /// A term dictionary that cannot be read.
+    pub(crate) fn id_of(&self, value: &CollapseValue) -> Result<Option<i32>> {
+        match value {
+            CollapseValue::Missing => Ok(Some(-1)),
+            CollapseValue::Bytes(term) => match &mut *self.terms.borrow_mut() {
+                Some(Selector::Keyword(v)) => Ok(Some(v.lookup_term(term)?).filter(|&o| o >= 0)),
+                Some(Selector::KeywordMulti(v)) => {
+                    let o = v.lookup_term(term)?;
+                    Ok(i32::try_from(o).ok().filter(|&o| o >= 0))
+                }
+                _ => Ok(None),
+            },
+            CollapseValue::Long(v) => match &*self.col {
+                SortColumn::Groups {
+                    values, by_value, ..
+                } => Ok(by_value
+                    .binary_search_by_key(v, |&i| values[i as usize])
+                    .ok()
+                    .map(|at| by_value[at])),
+                _ => Ok(None),
+            },
+        }
+    }
+
+    /// Every group's documents.
+    pub(crate) fn members(&self) -> Option<GroupMembers<'_>> {
+        match &*self.col {
+            SortColumn::Groups {
+                starts, members, ..
+            } => Some(GroupMembers {
+                starts,
+                docs: members,
+            }),
+            _ => None,
         }
     }
 
@@ -483,11 +535,11 @@ impl<'a> GroupColumn<'a> {
     ///
     /// # Errors
     /// A term that cannot be read, or an id the column never gave.
-    pub(crate) fn value(&mut self, id: i32) -> Result<CollapseValue> {
+    pub(crate) fn value(&self, id: i32) -> Result<CollapseValue> {
         if id < 0 {
             return Ok(CollapseValue::Missing);
         }
-        if let Some(terms) = &mut self.terms {
+        if let Some(terms) = &mut *self.terms.borrow_mut() {
             return Ok(CollapseValue::Bytes(terms.term(id)?));
         }
         match &*self.col {
@@ -499,6 +551,40 @@ impl<'a> GroupColumn<'a> {
             _ => Err(SortError::Ordinal(i64::from(id)).into()),
         }
     }
+}
+
+/// Group id `g`'s slot in [`group_members`]' starts: `g + 1`.
+fn slot(g: i32) -> usize {
+    usize::try_from(i64::from(g).saturating_add(1)).unwrap_or(0)
+}
+
+/// Every group's documents, by a counting sort of `ids` (each `-1` or
+/// more): the starts, indexed by id plus one, and the documents.
+fn group_members(ids: &[i32]) -> (Vec<u32>, Vec<i32>) {
+    let slots = ids
+        .iter()
+        .map(|&g| slot(g))
+        .max()
+        .map_or(0, |m| m.saturating_add(1));
+    let mut counts = vec![0u32; slots];
+    for &g in ids {
+        counts[slot(g)] = counts[slot(g)].saturating_add(1);
+    }
+    let mut starts = Vec::with_capacity(slots.saturating_add(1));
+    let mut sum = 0u32;
+    starts.push(0);
+    for c in counts {
+        sum = sum.saturating_add(c);
+        starts.push(sum);
+    }
+    let mut next = starts.clone();
+    let mut members = vec![0i32; ids.len()];
+    for (doc, &g) in ids.iter().enumerate() {
+        let at = &mut next[slot(g)];
+        members[*at as usize] = i32::try_from(doc).unwrap_or(i32::MAX);
+        *at = at.saturating_add(1);
+    }
+    (starts, members)
 }
 
 /// `CollapsingTopDocsCollector`'s state across segments.
