@@ -8880,7 +8880,7 @@ mod tests {
         for x in target {
             request = request.f32(x);
         }
-        let request = request.i32(5).i32(40).u8(0).u8(0).i32(0).0;
+        let request = request.i32(5).i32(40).u8(0).u8(0).i32(0).u8(0).0;
         let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
         // SAFETY: live request and buffers of 5.
         let rc = unsafe {
