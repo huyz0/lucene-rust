@@ -349,6 +349,13 @@ a dependency the shipped library links is not under a licence listed here.
     for the tests), and ships with its licence (`onnxruntime-LICENSE`) and
     the jar's `ThirdPartyNotices.txt` (`onnxruntime-ThirdPartyNotices.txt`).
     `liblucene_ffi.so` loads it at run time; nothing links it.
+- **With `-Pjs`** (`lang: "js"` scripts, off by default) the native library
+  also links V8 through the `v8` crate 130 (rusty_v8, MIT; V8 itself is
+  BSD-3-Clause, Google) and its prebuilt static library, which the crate's
+  build downloads from the rusty_v8 releases. The published crate holds
+  neither licence text, so a `-Pjs` zip handed to anyone else needs V8's
+  `LICENSE.v8` and rusty_v8's `LICENSE` added first; the default build links
+  none of it.
 - **No third-party jar is bundled:** OpenSearch and Lucene are `compileOnly`,
   supplied by the node at run time (both Apache-2.0).
 - **The native library** statically links the workspace and these 27 crates

@@ -57,6 +57,9 @@ lucene-analysis-smartcn = { path = "../lucene-analysis-smartcn", optional = true
 lucene-analysis-stempel = { path = "../lucene-analysis-stempel", optional = true, default-features = false }
 lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik", optional = true, default-features = false }
 lucene-analysis-phonetic = { path = "../lucene-analysis-phonetic", optional = true }
+# `lang: "js"` scripts on V8 (`jvm_js.rs`), behind feature `js`: off by
+# default, and the plugin builds it only with -Pjs.
+lucene-script-js = { path = "../lucene-script-js", optional = true }
 
 [features]
 default = [
@@ -81,6 +84,7 @@ analysis-smartcn = ["dep:lucene-analysis-smartcn"]
 analysis-stempel = ["dep:lucene-analysis-stempel"]
 analysis-morfologik = ["dep:lucene-analysis-morfologik"]
 analysis-phonetic = ["dep:lucene-analysis-phonetic"]
+js = ["dep:lucene-script-js"]
 # Compiles the enabled modules' dictionaries in, so no pack directory is
 # needed (a library about 22 MB larger).
 embedded-data = [

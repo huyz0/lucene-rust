@@ -606,6 +606,7 @@ public class RustSearchPlugin extends Plugin implements
             NODE_PAGE_CACHE_SIZE,
             SparseSettings.SPARSE_INDEX
         ));
+        settings.addAll(org.lucenerust.opensearch.js.JsScripts.settings());
         settings.addAll(NeuralSearchSettings.all());
         if (stockKnn == false) {
             settings.addAll(KnnSettings.settings());
@@ -806,6 +807,7 @@ public class RustSearchPlugin extends Plugin implements
             semanticMappingTransformer.setModelResolver(modelResolver);
         }
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
+        org.lucenerust.opensearch.js.JsScripts.install(scriptService, clusterService.getSettings());
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
             MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);
