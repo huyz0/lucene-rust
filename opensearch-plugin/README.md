@@ -63,7 +63,10 @@ cannot be installed alongside `neural-search`. It serves neural-search
 itself, over its own ml-commons and k-NN: the `neural` and `neural_knn_query`
 queries on `knn_vector` fields; the `text_embedding`, `sparse_encoding`,
 `text_image_embedding` and `text_chunking` ingest processors; the
-`neural_query_enricher` search processor; ml-commons' `bert-uncased` and
+`neural_query_enricher` and `neural_sparse_two_phase_processor` request
+processors; the `rerank` response processor (`ml_opensearch` cross-encoder
+and `by_field`) with its `ext.rerank` context; neural-search's settings and
+`_plugins/_neural/warmup` and `clear_cache` for sparse indexes; ml-commons' `bert-uncased` and
 `mbert-uncased` analyzers and `hf_model_tokenizer` type; and learned sparse
 search: the `sparse_vector` field (`seismic` method, `lucene` engine) on an
 `index.sparse` index, whose segments the Rust engine writes in neural-search's

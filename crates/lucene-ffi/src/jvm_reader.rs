@@ -680,7 +680,8 @@ const SORT_COUNT_SEGMENTS: u8 = 4;
 /// Sort-blob option: after the slices, `count: i32` and one `u8` per segment,
 /// `1` where the sort is a prefix of that segment's index sort
 /// (`TopFieldCollector.canEarlyTerminate`, which the JVM decides with
-/// `SortField.equals`).
+/// `SortField.equals`), `1 + p` where it is the index sort's keys from the
+/// `p`th on, `0` where neither.
 const SORT_INDEX_SORTED: u8 = 8;
 /// At most this many keys: OpenSearch's sorts are a handful, and each key
 /// costs a value per hit on the way back.
@@ -689,14 +690,16 @@ const MAX_SORT_KEYS: usize = 16;
 /// A decoded sort blob: the keys, the search-after document, whether to
 /// track the max score, the slices, `terminate_after` with whether its
 /// total counts whole segments ([`SORT_COUNT_SEGMENTS`]), and per segment
-/// whether the sort is a prefix of its index sort ([`SORT_INDEX_SORTED`]).
+/// where the sort sits in its index sort ([`SORT_INDEX_SORTED`]): the index
+/// sort key it begins at, `None` when it is none of the index sort's runs of
+/// keys.
 pub(crate) type DecodedSort = (
     Vec<SortField>,
     Option<FieldDoc>,
     bool,
     Vec<Vec<usize>>,
     Option<(u64, bool)>,
-    Vec<bool>,
+    Vec<Option<usize>>,
 );
 
 /// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
@@ -916,8 +919,8 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         let n = c.len()?;
         for _ in 0..n {
             index_sorted.push(match c.u8()? {
-                0 => false,
-                1 => true,
+                0 => None,
+                at @ 1..=127 => Some(usize::from(at - 1)),
                 other => return Err(bad(format!("sort blob: index-sort flag {other}"))),
             });
         }
@@ -2168,7 +2171,7 @@ pub(crate) fn search_sorted(
     track_max_score: bool,
     slices: &[Vec<usize>],
     terminate_after: Option<(u64, bool)>,
-    index_sorted: &[bool],
+    index_sorted: &[Option<usize>],
     min_score: Option<f32>,
     sim: Option<&PerFieldSimilarity>,
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
@@ -2186,18 +2189,6 @@ pub(crate) fn search_sorted(
             FfiStatus::Decode
         })?;
     }
-    let segments: Vec<OpenSegment<'_>> = opened
-        .as_open_segments()
-        .into_iter()
-        .zip(&h.live_docs)
-        .enumerate()
-        .map(|(i, (mut s, live))| {
-            s.live_docs = live.as_ref();
-            s.similarity = sim.map(|p| p as &dyn Similarity);
-            s.index_sort_prefix = index_sorted.get(i).copied().unwrap_or(false);
-            s
-        })
-        .collect();
     let q = match query {
         JvmQuery::Term(t) => BooleanQuery {
             must: vec![Clause::Term(t.clone())],
@@ -2205,6 +2196,26 @@ pub(crate) fn search_sorted(
         },
         JvmQuery::Boolean(b) => b.clone(),
     };
+    let mut segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+            s
+        })
+        .collect();
+    // The documents come in the sort's order where it begins the index
+    // sort, or where it follows index sort keys the query pins to one
+    // value each (`tenant = a`, sorted by the timestamp after it).
+    for (s, at) in segments.iter_mut().zip(index_sorted) {
+        s.index_sort_prefix = match *at {
+            None => false,
+            Some(0) => true,
+            Some(p) => lucene_search::pinned_sort_keys(s, &q).map_err(map_search_error)? >= p,
+        };
+    }
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
@@ -4255,9 +4266,15 @@ pub(crate) mod tests {
         let by_score = sort_blob(&[(SORT_SCORE, 0, "", 0)], None);
         assert!(decode_sort(&by_score).unwrap().5.is_empty());
         let flagged = with_index_sorted(by_score.clone(), &[1, 0]);
-        assert_eq!(decode_sort(&flagged).unwrap().5, vec![true, false]);
+        assert_eq!(decode_sort(&flagged).unwrap().5, vec![Some(0), None]);
         assert_eq!(
-            decode_sort(&with_index_sorted(by_score.clone(), &[2])).err(),
+            decode_sort(&with_index_sorted(by_score.clone(), &[3]))
+                .unwrap()
+                .5,
+            vec![Some(2)]
+        );
+        assert_eq!(
+            decode_sort(&with_index_sorted(by_score.clone(), &[128])).err(),
             Some(FfiStatus::InvalidArgument)
         );
         // Flags saying no segment's index sort begins with the search's: the
