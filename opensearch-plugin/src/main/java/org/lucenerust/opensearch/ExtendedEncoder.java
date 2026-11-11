@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch;
 
 import org.apache.lucene.index.Term;
+import org.lucenerust.opensearch.tensor.MaxSimQuery;
 import org.apache.lucene.queries.intervals.IntervalQuery;
 import org.apache.lucene.queries.intervals.IntervalsSource;
 import org.apache.lucene.queries.spans.FieldMaskingSpanQuery;
@@ -76,7 +77,8 @@ import java.util.function.Predicate;
  *       optionally filtered, every {@code score_mode} and {@code boost_mode}, {@code max_boost}
  *       (node 24);
  *   <li>{@code script_score} running k-NN's {@code knn_score} over a {@code knn_vector} space:
- *       OpenSearch's {@link ScriptScoreQuery} without {@code min_score} (node 42).
+ *       OpenSearch's {@link ScriptScoreQuery} without {@code min_score} (node 42);
+ *   <li>{@code max_sim} over a {@code multi_vector} field: {@link MaxSimQuery} (node 44).
  * </ul>
  *
  * <p>The classes are read through their getters, or through {@link Reflect} where Lucene and
@@ -99,6 +101,7 @@ final class ExtendedEncoder {
     static final byte NODE_TO_CHILD = 41;
     static final byte NODE_KNN_SCORE = 42;
     static final byte NODE_PAINLESS_SCORE = 43;
+    static final byte NODE_MAX_SIM = 44;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -121,6 +124,9 @@ final class ExtendedEncoder {
             }
             if (q instanceof ScriptScoreQuery ss) {
                 return knnScore(ss, out, child);
+            }
+            if (q instanceof MaxSimQuery ms) {
+                return maxSim(ms, out, child);
             }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
@@ -532,6 +538,32 @@ final class ExtendedEncoder {
             }
             writeString(out, f);
             writeInt(out, Float.floatToIntBits((float) field(fw, "weight")));
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // max_sim
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link MaxSimQuery}: the sub-query's documents, each scored by its {@code MaxSim} against the
+     * query's tokens (0 without a value), as {@code crates/lucene-ffi/src/jvm_max_sim.rs} reads it.
+     */
+    private static String maxSim(MaxSimQuery q, ByteArrayOutputStream out, Child child) {
+        out.write(NODE_MAX_SIM);
+        String reason = child.node(q.sub());
+        if (reason != null) {
+            return reason;
+        }
+        writeString(out, q.field());
+        float[][] tokens = q.tokens();
+        writeInt(out, tokens[0].length);
+        writeInt(out, tokens.length);
+        for (float[] t : tokens) {
+            for (float v : t) {
+                writeInt(out, Float.floatToIntBits(v));
+            }
         }
         return null;
     }
