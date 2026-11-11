@@ -903,8 +903,6 @@ final class ExtendedEncoder {
             out.write(4);
             out.write(decay);
             writeString(out, ((IndexFieldData<?>) data).getFieldName());
-            // The requested name, an alias's own, as FieldValueFactorFunction's errors name it.
-            writeString(out, (String) field(f, "field"));
             out.write(numeric);
             writeLong(out, Double.doubleToRawLongBits((double) field(f, "origin")));
             writeLong(out, Double.doubleToRawLongBits((double) field(f, "scale")));
