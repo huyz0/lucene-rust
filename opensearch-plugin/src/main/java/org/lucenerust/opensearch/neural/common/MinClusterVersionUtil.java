@@ -1,0 +1,134 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.common;
+
+import org.opensearch.Version;
+
+import org.lucenerust.opensearch.neural.util.NeuralSearchClusterUtil;
+
+import java.util.Map;
+
+import static org.lucenerust.opensearch.knn.KnnQueryBuilder.MAX_DISTANCE_FIELD;
+import static org.lucenerust.opensearch.knn.KnnQueryBuilder.MIN_SCORE_FIELD;
+import static org.lucenerust.opensearch.neural.query.NeuralQueryBuilder.MODEL_ID_FIELD;
+import static org.lucenerust.opensearch.neural.query.NeuralQueryBuilder.QUERY_IMAGE_FIELD;
+
+/**
+ * A util class which holds the logic to determine the min version supported by the request parameters
+ */
+public final class MinClusterVersionUtil {
+
+    private static final Version MINIMAL_SUPPORTED_VERSION_DEFAULT_DENSE_MODEL_ID = Version.V_2_11_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_RADIAL_SEARCH = Version.V_2_14_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_QUERY_IMAGE_FIX = Version.V_2_19_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_PAGINATION_IN_HYBRID_QUERY = Version.V_2_19_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_NEURAL_ORIGINAL_QUERY_TEXT = Version.V_3_0_0;
+    public static final Version MINIMAL_SUPPORTED_VERSION_SEMANTIC_FIELD = Version.V_3_1_0;
+    public static final Version MINIMAL_SUPPORTED_VERSION_SEMANTIC_FIELD_SPARSE_TWO_PHASE = Version.V_3_3_0;
+    public static final Version MINIMAL_SUPPORTED_VERSION_STATS_CATEGORY_FILTERING = Version.V_3_1_0;
+    public static final Version MINIMAL_SUPPORTED_VERSION_METRICS_STATS = Version.V_3_3_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_NEURAL_KNN_QUERY_BUILDER = Version.V_3_0_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_AGENTIC_EMBEDDING_MODEL_ID = Version.V_3_6_0;
+    public static final Version MINIMAL_SUPPORTED_VERSION_SPARSE_NATIVE_ENGINE = Version.V_3_9_0;
+
+    // Constant for neural_knn_query version check
+    public static final String NEURAL_KNN_QUERY = "neural_knn_query";
+
+    // Note this minimal version will act as an override
+    private static final Map<String, Version> MINIMAL_VERSION_NEURAL = Map.of(
+        MODEL_ID_FIELD.getPreferredName(),
+        MINIMAL_SUPPORTED_VERSION_DEFAULT_DENSE_MODEL_ID,
+        MAX_DISTANCE_FIELD.getPreferredName(),
+        MINIMAL_SUPPORTED_VERSION_RADIAL_SEARCH,
+        MIN_SCORE_FIELD.getPreferredName(),
+        MINIMAL_SUPPORTED_VERSION_RADIAL_SEARCH,
+        QUERY_IMAGE_FIELD.getPreferredName(),
+        MINIMAL_SUPPORTED_VERSION_QUERY_IMAGE_FIX,
+        NEURAL_KNN_QUERY,
+        MINIMAL_SUPPORTED_VERSION_NEURAL_KNN_QUERY_BUILDER
+    );
+
+    public static boolean isClusterOnOrAfterMinReqVersionForDefaultDenseModelIdSupport() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_DEFAULT_DENSE_MODEL_ID);
+    }
+
+    public static boolean isClusterOnOrAfterMinReqVersionForRadialSearch() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_RADIAL_SEARCH);
+    }
+
+    public static boolean isClusterOnOrAfterMinReqVersionForPaginationInHybridQuery() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_PAGINATION_IN_HYBRID_QUERY);
+    }
+
+    public static boolean isClusterOnOrAfterMinReqVersionForStatCategoryFiltering() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_STATS_CATEGORY_FILTERING);
+    }
+
+    public static boolean isClusterOnOrAfterMinReqVersionForMetricStats() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_METRICS_STATS);
+    }
+
+    public static boolean isClusterOnOrAfterMinReqVersion(String key) {
+        Version version;
+        if (MINIMAL_VERSION_NEURAL.containsKey(key)) {
+            version = MINIMAL_VERSION_NEURAL.get(key);
+        } else {
+            version = Version.V_2_16_0;
+        }
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(version);
+    }
+
+    /**
+     * Checks if the version from StreamInput/StreamOutput is on or after the minimum required version for NeuralKNNQueryText
+     *
+     * @param version The version to check
+     * @return true if the version is on or after the minimum required version
+     */
+    public static boolean isVersionOnOrAfterMinReqVersionForNeuralKNNQueryText(Version version) {
+        return version.onOrAfter(MINIMAL_SUPPORTED_VERSION_NEURAL_ORIGINAL_QUERY_TEXT);
+    }
+
+    /**
+     * Checks if the cluster min version is on or after the minimum required version for semantic field type
+     *
+     * @return true if the version is on or after the minimum required version
+     */
+    public static boolean isClusterOnOrAfterMinReqVersionForSemanticFieldType() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_SEMANTIC_FIELD);
+    }
+
+    /**
+     * Checks if the cluster min version supports NeuralKNNQueryBuilder
+     *
+     * @return true if the cluster version supports NeuralKNNQueryBuilder
+     */
+    public static boolean isClusterOnOrAfterMinReqVersionForNeuralKNNQueryBuilder() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_NEURAL_KNN_QUERY_BUILDER);
+    }
+
+    /**
+     * Checks if the cluster min version supports embedding_model_id parameter in agentic query translator
+     *
+     * @return true if the cluster version supports embedding_model_id parameter
+     */
+    public static boolean isClusterOnOrAfterMinReqVersionForAgenticEmbeddingModelId() {
+        return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_AGENTIC_EMBEDDING_MODEL_ID);
+    }
+
+    /**
+     * Checks whether a version understands the sparse native engine and the mapping parameters that
+     * came with it.
+     *
+     * Mapping parsing cannot read the applied cluster state -- it runs inside a cluster state applier
+     * on the node that receives the mapping -- so the caller passes the index created version, which
+     * OpenSearch sets to the smallest node version in the cluster at creation time.
+     *
+     * @param version the version to check
+     * @return true if the version supports the sparse native engine
+     */
+    public static boolean isVersionOnOrAfterMinReqVersionForSparseNativeEngine(Version version) {
+        return version.onOrAfter(MINIMAL_SUPPORTED_VERSION_SPARSE_NATIVE_ENGINE);
+    }
+}
