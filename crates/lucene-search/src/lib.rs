@@ -205,6 +205,7 @@ pub mod cardinality_sketch;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;
+pub mod derived_source;
 pub mod directory_reader;
 pub mod doc_value_query;
 pub mod docid_set;
@@ -212,6 +213,7 @@ pub mod document;
 pub mod drill_sideways_query;
 mod drill_sideways_scorer;
 mod exec;
+pub use exec::pinned_sort_keys;
 /// One segment's readers as the query executor reads them
 /// ([`LeafContext::for_spans`]).
 pub use exec::LeafContext;
@@ -225,7 +227,9 @@ pub mod intervals;
 pub mod java_priority_queue;
 pub mod join;
 pub mod knn_collectors;
+pub mod knn_search;
 pub mod leaf_collector;
+pub mod live_segment;
 pub mod matches;
 pub mod memory;
 pub mod mlt;
@@ -237,6 +241,7 @@ pub mod nrt_reader;
 pub mod ordinal_map;
 mod phrase_scorer;
 pub mod points_query;
+pub mod prefetch;
 pub mod query;
 pub mod query_auto_stop_word_analyzer;
 pub mod query_builder;
@@ -430,6 +435,9 @@ pub enum Error {
     /// who sent a bad request (see `lucene_ffi::vectors`).
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
+    /// The IVF index of a `LuceneRustIvfVectorsFormat` field.
+    #[error(transparent)]
+    Ivf(#[from] lucene_ivf::Error),
     /// A KNN query this segment cannot answer as asked -- Java's
     /// `IllegalArgumentException` from `AbstractKnnVectorQuery`'s constructor
     /// and its two subclasses' `approximateSearch`, carrying Java's own
@@ -3587,10 +3595,35 @@ pub(crate) fn search_boolean_query_scored_segment_time_limited<C: ScoringCollect
 /// `Weight.count`-free counting: how many live documents of one segment
 /// `query` matches, run on the same scorer tree and bulk scorers as the
 /// scored search, in `COMPLETE_NO_SCORES` -- frequencies never decoded, no
-/// score computed, no pruning.
+/// score computed, no pruning. A query holding a function query needs its
+/// reader-wide preparation: [`count_boolean_query_segment_with`].
 pub fn count_boolean_query_segment(
     seg: &multi_segment::OpenSegment<'_>,
     query: &BooleanQuery,
+) -> Result<u64> {
+    count_boolean_query_segment_with(seg, query, None)
+}
+
+/// The reader-wide preparation of `query`'s function queries over every
+/// segment of the reader (Java creates each weight over the whole
+/// searcher), for [`count_boolean_query_segment_with`]; `None` when it holds
+/// none.
+///
+/// # Errors
+/// A function source's preparation failing.
+pub fn count_preparation(
+    segments: &[multi_segment::OpenSegment<'_>],
+    query: &BooleanQuery,
+) -> Result<Option<GlobalStats>> {
+    multi_segment::global_function_stats(segments, query, None)
+}
+
+/// [`count_boolean_query_segment`] with `global`, the reader's
+/// [`count_preparation`] of `query`.
+pub fn count_boolean_query_segment_with(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+    global: Option<&GlobalStats>,
 ) -> Result<u64> {
     struct Count(u64);
     impl ScoringCollector for Count {
@@ -3618,7 +3651,7 @@ pub fn count_boolean_query_segment(
         live_docs: seg.live_docs,
         points: seg.points,
         norms: None,
-        global: None,
+        global,
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
@@ -3675,7 +3708,15 @@ pub(crate) fn count_boolean_query_shortcut(
     // (`FieldExistsQuery.count`) when they are exact for this segment, a term
     // from its `docFreq` when the segment has no deletions (`TermWeight.count`
     // -- the dictionary's own, whatever statistics the term scores with).
-    match (lone_leaf(query), seg.reader) {
+    // `IndexOrDocValuesQuery`'s weight counts with its index side's.
+    let lone = lone_leaf(query).map(|c| match c {
+        Clause::Extended(e) => match &**e {
+            extended_query::ExtendedQuery::IndexOrDocValues(q) => &*q.index_query,
+            _ => c,
+        },
+        c => c,
+    });
+    match (lone, seg.reader) {
         (Some(Clause::Exists(e)), Some(reader)) => {
             let mut leaf = reader.field_exists_leaf(&e.field, None)?;
             // The deletions the searcher sees, not the commit's.

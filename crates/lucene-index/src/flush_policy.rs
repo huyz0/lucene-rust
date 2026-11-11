@@ -32,6 +32,9 @@ pub struct FlushControl {
     flush_bytes: usize,
     delete_bytes: usize,
     apply_all_deletes: bool,
+    /// Buffers whose `flush_pending` changed since
+    /// [`Self::take_pending_changes`], so the writer mirrors only those.
+    pending_changes: Vec<usize>,
 }
 
 impl FlushControl {
@@ -95,6 +98,7 @@ impl FlushControl {
             return;
         }
         s.flush_pending = true;
+        self.pending_changes.push(slot);
         self.active_bytes = self.active_bytes.saturating_sub(s.ram_bytes);
         self.flush_bytes = self.flush_bytes.saturating_add(s.ram_bytes);
     }
@@ -107,7 +111,9 @@ impl FlushControl {
             return 0;
         };
         let bytes = s.ram_bytes;
-        if !s.flush_pending {
+        if s.flush_pending {
+            self.pending_changes.push(slot);
+        } else {
             self.active_bytes = self.active_bytes.saturating_sub(bytes);
             self.flush_bytes = self.flush_bytes.saturating_add(bytes);
         }
@@ -118,6 +124,11 @@ impl FlushControl {
     /// `doAfterFlush`: a checked-out buffer's RAM is released.
     pub fn flush_done(&mut self, bytes: usize) {
         self.flush_bytes = self.flush_bytes.saturating_sub(bytes);
+    }
+
+    /// The buffers whose `isFlushPending()` changed since the last call.
+    pub fn take_pending_changes(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.pending_changes)
     }
 
     /// `isFlushPending()` of buffer `slot`.

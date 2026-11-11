@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -38,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 59;
+    public static final int EXPECTED_ABI_VERSION = 135;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -118,6 +119,14 @@ public final class NativeBridge {
                 ADDRESS
             )
         );
+        static final MethodHandle READER_KNN = bind(
+            "ffi_jvm_reader_knn",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle LIVE_VIEW_KNN = bind(
+            "ffi_live_view_knn",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
+        );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
             "ffi_jvm_reader_doc_freq",
@@ -168,6 +177,10 @@ public final class NativeBridge {
             "ffi_jvm_reader_aggregate_tree_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
+        static final MethodHandle SEARCH_HYBRID = bind(
+            "ffi_jvm_reader_search_hybrid_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle SEARCH_COLLAPSED = bind(
             "ffi_jvm_reader_search_collapsed_alloc",
             FunctionDescriptor.of(
@@ -204,6 +217,22 @@ public final class NativeBridge {
             "ffi_jvm_reader_document_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
+        static final MethodHandle DOC_VALUES = bind(
+            "ffi_jvm_reader_doc_values_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle DERIVED_SOURCE = bind(
+            "ffi_jvm_reader_derived_source_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle STORED_SOURCE = bind(
+            "ffi_jvm_reader_stored_source_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle PREFETCH_DOCUMENTS = bind(
+            "ffi_jvm_reader_prefetch_documents",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
+        );
         static final MethodHandle COUNT_TERMINATES = bind(
             "ffi_jvm_reader_count_terminates",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -225,14 +254,31 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
         );
         static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
+        static final MethodHandle STORE_BIND_PAGE_CACHE = bind(
+            "ffi_store_bind_page_cache",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT)
+        );
+        static final MethodHandle STORE_UNBIND_PAGE_CACHE = bind(
+            "ffi_store_unbind_page_cache",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle STORE_PAGE_CACHE_AVAILABLE = bind("ffi_store_page_cache_available", FunctionDescriptor.of(JAVA_INT));
+        static final MethodHandle STORE_SET_PAGE_CACHE_BUDGET = bind(
+            "ffi_store_set_page_cache_budget",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
 
         static final MethodHandle WRITER_OPEN = bind(
-            "ffi_engine_writer_open",
-            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, JAVA_INT, ADDRESS)
+            "ffi_engine_writer_open_codec",
+            FunctionDescriptor.of(
+                JAVA_INT, ADDRESS, JAVA_LONG, JAVA_DOUBLE, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_BYTE,
+                JAVA_INT, ADDRESS
+            )
         );
         static final MethodHandle WRITER_REGISTER_FIELD = bind(
             "ffi_engine_writer_register_field",
@@ -251,6 +297,10 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
         );
         static final MethodHandle PREPARED_FREE = bind("ffi_engine_prepared_free", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle PAINLESS_CHECK = bind(
+            "ffi_jvm_painless_check",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ANALYSIS_REGISTER = bind(
             "ffi_jvm_analysis_register",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
@@ -264,6 +314,14 @@ public final class NativeBridge {
             "ffi_engine_writer_set_merge_scheduler",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, JAVA_DOUBLE)
         );
+        static final MethodHandle WRITER_SET_MERGE_POLICY = bind(
+            "ffi_engine_writer_set_merge_policy",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG, JAVA_LONG, JAVA_DOUBLE, JAVA_DOUBLE)
+        );
+        static final MethodHandle WRITER_SET_OPTIONS = bind(
+            "ffi_engine_writer_set_options",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE, JAVA_DOUBLE, JAVA_LONG, JAVA_BYTE, JAVA_BYTE)
+        );
         static final MethodHandle WRITER_COMMIT_GENERATIONS = bind(
             "ffi_engine_writer_commit_generations",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -275,6 +333,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_HOLD_COMMIT = bind(
             "ffi_engine_writer_hold_commit",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle WRITER_NRT_SNAPSHOT = bind(
+            "ffi_engine_writer_nrt_snapshot",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS, ADDRESS)
         );
         static final MethodHandle WRITER_RELEASE_HOLD = bind(
             "ffi_engine_writer_release_hold",
@@ -288,15 +350,181 @@ public final class NativeBridge {
             "ffi_engine_writer_set_merge_on_flush",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_BYTE)
         );
+        static final MethodHandle WRITER_SET_IVF_PARTITION_CLUSTERS = bind(
+            "ffi_engine_writer_set_ivf_partition_clusters",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_SET_BP_REORDER = bind(
+            "ffi_engine_writer_set_bp_reorder",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                JAVA_BYTE,
+                JAVA_INT,
+                JAVA_FLOAT,
+                JAVA_INT,
+                JAVA_INT,
+                JAVA_DOUBLE,
+                JAVA_INT,
+                JAVA_FLOAT,
+                ADDRESS,
+                JAVA_LONG
+            )
+        );
         static final MethodHandle WRITER_FORCE_MERGE = bind(
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle WRITER_SET_PLUGGABLE_MERGE_POLICY = bind(
+            "ffi_engine_writer_set_pluggable_merge_policy",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG)
+        );
+        static final MethodHandle SET_WARM_UPCALL = bind("ffi_engine_set_warm_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_SET_MERGED_SEGMENT_WARMER = bind(
+            "ffi_engine_writer_set_merged_segment_warmer",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
+        );
+        static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle WRITER_MERGE_STATE = bind(
+            "ffi_engine_writer_merge_state",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle WRITER_STATS = bind(
             "ffi_engine_writer_stats",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle WRITER_CLOSE = bind("ffi_engine_writer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ZSTD_DICTIONARY_OPEN = bind(
+            "ffi_zstd_dictionary_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ZSTD_DICTIONARY_CLOSE = bind("ffi_zstd_dictionary_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ML_RUNTIME_INIT = bind("ffi_ml_runtime_init", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT));
+        static final MethodHandle ML_TEXT_EMBEDDING_OPEN = bind(
+            "ffi_ml_text_embedding_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle ML_TEXT_EMBEDDING_EMBED = bind(
+            "ffi_ml_text_embedding_embed_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_TOKENIZE_OPEN = bind(
+            "ffi_ml_sparse_tokenize_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_TOKENIZE = bind(
+            "ffi_ml_sparse_tokenize_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_HF_ANALYZER_OPEN = bind(
+            "ffi_ml_hf_analyzer_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_HF_ANALYZE = bind(
+            "ffi_ml_hf_analyze_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_ENCODING_OPEN = bind(
+            "ffi_ml_sparse_encoding_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_SPARSE_ENCODING = bind(
+            "ffi_ml_sparse_encoding_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BYTE, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_TEXT_SIMILARITY_OPEN = bind(
+            "ffi_ml_text_similarity_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_TEXT_SIMILARITY = bind(
+            "ffi_ml_text_similarity_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ML_TORCH_INIT = bind(
+            "ffi_ml_torch_init",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT)
+        );
+        static final MethodHandle ML_TORCH_OPEN = bind(
+            "ffi_ml_torch_open",
+            FunctionDescriptor.of(JAVA_INT, JAVA_BYTE, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle ML_TORCH_TEXT_EMBEDDING = bind(
+            "ffi_ml_torch_text_embedding_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ZSTD_PAGED_DECOMPRESS = bind(
+            "ffi_zstd_paged_decompress",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle LIVE_VIEW_OPEN = bind(
+            "ffi_engine_writer_live_view_open",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle LIVE_VIEW_CLOSE = bind("ffi_live_view_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle LIVE_VIEW_READER = bind(
+            "ffi_live_view_reader",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle LIVE_VIEW_LUCENE = bind(
+            "ffi_live_view_lucene",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle WRITER_SET_LIVE_STALENESS = bind(
+            "ffi_engine_writer_set_live_staleness",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_LIVE_REFRESH_SHARED = bind(
+            "ffi_engine_writer_live_refresh_shared",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_RELEASE_LIVE = bind(
+            "ffi_engine_writer_release_live",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle LIVE_DOC_VALUES = bind(
+            "ffi_live_view_doc_values_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle LIVE_DOCUMENT = bind(
+            "ffi_live_view_document_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle LIVE_POINT_BOUNDS = bind(
+            "ffi_live_view_point_bounds_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle SEARCH_LIVE = bind(
+            "ffi_jvm_reader_search_live",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS
+            )
+        );
+        static final MethodHandle ZSTD_TERMS_DICTIONARY_OPEN = bind(
+            "ffi_zstd_terms_dictionary_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ZSTD_TERMS_DICTIONARY_CLOSE = bind(
+            "ffi_zstd_terms_dictionary_close",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle ZSTD_TERMS_DECOMPRESS = bind(
+            "ffi_zstd_terms_decompress",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
     }
 
     /** A {@code MethodHandle.invokeExact} failure: only an error the JVM raised, never a status. */
@@ -440,6 +668,60 @@ public final class NativeBridge {
         }
     }
 
+    /** Reads native bytes lent for the call only: they are freed once it returns, so it keeps no view of them. */
+    @FunctionalInterface
+    public interface Borrowed {
+        void read(MemorySegment bytes) throws IOException;
+    }
+
+    /** The owned buffer an FFI call left in {@code slot}, as a segment: empty for a null pointer. */
+    @SuppressWarnings("restricted") // the native side wrote exactly `len` bytes at `ptr`
+    private static MemorySegment owned(MemorySegment slot) {
+        MemorySegment ptr = slot.get(ADDRESS, 0);
+        long len = slot.get(JAVA_LONG, ADDRESS.byteSize());
+        return ptr.equals(MemorySegment.NULL) ? MemorySegment.NULL : ptr.reinterpret(len);
+    }
+
+    /**
+     * Lends {@code bytes}, an owned buffer from {@link #owned}, to {@code use}, then frees it. The
+     * view {@code use} gets is closed first, so a read through one kept past the call fails instead
+     * of touching freed memory.
+     */
+    @SuppressWarnings("restricted") // the view covers exactly the buffer the native side handed over
+    private static void lend(MemorySegment bytes, Borrowed use) throws IOException {
+        try (Arena call = Arena.ofConfined()) {
+            use.read(bytes.reinterpret(call, null));
+        } finally {
+            if (bytes.equals(MemorySegment.NULL) == false) {
+                try {
+                    H.FREE_BYTES.invokeExact(bytes, bytes.byteSize());
+                } catch (Throwable t) {
+                    throw rethrow(t);
+                }
+            }
+        }
+    }
+
+    /** Calls {@code call}, a per-document FFI fn that leaves an owned buffer, and lends the buffer to {@code use}. */
+    private static int lendOwned(MethodHandle call, long handle, int segment, int doc, Borrowed use) throws IOException {
+        if (use == null) {
+            return nullArgument("use");
+        }
+        MemorySegment bytes;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) call.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
+            if (rc != OK) {
+                return rc;
+            }
+            bytes = owned(result);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+        lend(bytes, use);
+        return OK;
+    }
+
     /** The largest {@code byte[]} every JVM allocates. */
     private static final long MAX_ARRAY = Integer.MAX_VALUE - 8;
 
@@ -470,6 +752,11 @@ public final class NativeBridge {
             throw rethrow(t);
         }
         return status;
+    }
+
+    /** Clears this thread's last error, so that a later one is a later call's. */
+    public static void clearLastError() {
+        fail(OK, "");
     }
 
     private static int nullArgument(String what) {
@@ -721,6 +1008,73 @@ public final class NativeBridge {
         outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
         outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
         return OK;
+    }
+
+    /**
+     * The reader's top hits for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * outDocs}, scores into {@code outScores}, best first, at most {@code room} of them; returns the
+     * status, the hit count in {@code outCount[0]}. An expanded nested search can find more than
+     * {@code room}: the status is then {@link #BUFFER_TOO_SMALL} and {@code outCount[0]} the room it
+     * needs.
+     */
+    public static int readerKnn(long handle, byte[] request, int room, int[] outDocs, float[] outScores, int[] outCount) {
+        return knn(handle, 0, false, request, room, outDocs, outScores, outCount);
+    }
+
+    /**
+     * {@link #readerKnn} over the reader at {@code handle} and the writer's buffers of {@code view}
+     * ({@code ffi_live_view_knn}): doc ids numbered as {@link #liveViewReader}'s handles number them.
+     */
+    public static int liveViewKnn(long handle, long view, byte[] request, int room, int[] outDocs, float[] outScores, int[] outCount) {
+        return knn(handle, view, true, request, room, outDocs, outScores, outCount);
+    }
+
+    private static int knn(
+        long handle,
+        long view,
+        boolean live,
+        byte[] request,
+        int room,
+        int[] outDocs,
+        float[] outScores,
+        int[] outCount
+    ) {
+        if (request == null) {
+            return nullArgument("request");
+        }
+        if (room <= 0 || outDocs == null || outScores == null || Math.min(outDocs.length, outScores.length) < room) {
+            return fail(BUFFER_TOO_SMALL, "output arrays hold fewer than " + room + " hits");
+        }
+        if (outCount == null || outCount.length < 1) {
+            return fail(INVALID_ARGUMENT, "outCount holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment docs = s.room(JAVA_INT, room);
+            MemorySegment scores = s.room(JAVA_FLOAT, room);
+            MemorySegment count = s.alloc(Long.BYTES);
+            count.set(JAVA_LONG, 0, 0L);
+            int rc;
+            try {
+                rc = live
+                    ? (int) H.LIVE_VIEW_KNN.invokeExact(handle, view, s.bytes(request), (long) request.length, docs, scores, (long) room, count)
+                    : (int) H.READER_KNN.invokeExact(handle, s.bytes(request), (long) request.length, docs, scores, (long) room, count);
+            } catch (Throwable t) {
+                throw rethrow(t);
+            }
+            long n = count.get(JAVA_LONG, 0);
+            if (rc == BUFFER_TOO_SMALL) {
+                outCount[0] = n > room && n <= Integer.MAX_VALUE - 8 ? (int) n : 0;
+                return rc;
+            }
+            if (rc != OK) {
+                return rc;
+            }
+            int hits = Math.toIntExact(n);
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, hits);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, hits);
+            outCount[0] = hits;
+            return OK;
+        }
     }
 
     /**
@@ -1044,6 +1398,33 @@ public final class NativeBridge {
     }
 
     /**
+     * Runs a hybrid query's shard phase ({@link NativeHybrid}): the encoded slices' answers
+     * ({@code search_hybrid_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     */
+    public static int searchHybrid(long handle, byte[] blob, byte[][] out) {
+        if (blob == null) {
+            return nullArgument("blob");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.SEARCH_HYBRID.invokeExact(handle, s.bytes(blob), (long) blob.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the hybrid results");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
      * Runs a query blob collapsed ({@link NativeCollapse}): the sort blob's keys ({@link
      * SortEncoder}) on the collapse blob's field, {@code topN} groups per slice; the encoded
      * groups ({@code search_collapsed_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
@@ -1143,24 +1524,69 @@ public final class NativeBridge {
 
     /**
      * Segment {@code segment}'s document {@code doc} (segment-local): its stored fields, in stored
-     * order, encoded as {@code jvm_fetch.rs} documents, in {@code out[0]} ({@link
-     * NativeStoredFieldsReader} reads them).
+     * order, encoded as {@code jvm_fetch.rs} documents ({@link NativeStoredFieldsReader} reads them),
+     * lent to {@code use} in native memory and freed when it returns.
      */
-    public static int document(long handle, int segment, int doc, byte[][] out) {
+    public static int document(long handle, int segment, int doc, Borrowed use) throws IOException {
+        return lendOwned(H.DOCUMENT, handle, segment, doc, use);
+    }
+
+
+    /**
+     * Segment {@code segment}'s document {@code doc} (segment-local): its values of the fields
+     * numbered {@code fields}, encoded as {@code jvm_fetch.rs}'s doc-values blob, in {@code out[0]}
+     * ({@link NativeDocValues} reads them).
+     */
+    public static int docValues(long handle, int segment, int doc, int[] fields, byte[][] out) {
+        if (fields == null) {
+            return nullArgument("fields");
+        }
         if (out == null || out.length < 1) {
             return fail(INVALID_ARGUMENT, "out holds no slot");
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment result = ownedSlot(s);
-            int rc = (int) H.DOCUMENT.invokeExact(handle, segment, doc, ptrOf(result), lenOf(result));
+            int rc = (int) H.DOC_VALUES.invokeExact(handle, segment, doc, s.ints(fields), (long) fields.length, ptrOf(result), lenOf(result));
             if (rc == OK) {
                 byte[] encoded = take(result);
                 if (encoded == null) {
-                    return tooLarge("the document");
+                    return tooLarge("the doc values");
                 }
                 out[0] = encoded;
             }
             return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The {@code _source} of segment {@code segment}'s document {@code doc} with its k-NN vectors put
+     * back, lent to {@code use}: the value a {@code DERIVED_SOURCE} field of {@link #document} leaves out.
+     */
+    public static int derivedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
+        return lendOwned(H.DERIVED_SOURCE, handle, segment, doc, use);
+    }
+
+    /**
+     * {@link #derivedSource} as stored: each k-NN vector's masked value (the number {@code 1}) where
+     * the vector would go, for a fetch whose {@code _source} filter drops every vector field.
+     */
+    public static int storedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
+        return lendOwned(H.STORED_SOURCE, handle, segment, doc, use);
+    }
+
+    /**
+     * {@code StoredFields.prefetch} for the documents {@code docs} (segment-local) of segment {@code
+     * segment}: their stored-fields chunks fetched together where the segment is read by range, so
+     * the fetch phase's reads one at a time find them local. Nothing to do for files on local disk.
+     */
+    public static int prefetchDocuments(long handle, int segment, int[] docs) {
+        if (docs == null) {
+            return nullArgument("docs");
+        }
+        try (Scratch s = Scratch.open()) {
+            return (int) H.PREFETCH_DOCUMENTS.invokeExact(handle, segment, s.ints(docs), (long) docs.length);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1246,6 +1672,64 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Binds the shard directory {@code path} to the page cache: the engine's writers and readers opened
+     * there from now on read its files in pages of {@code pageSize} bytes (0: the default) within the
+     * node's page cache budget; with {@code vectorsOnly}, only the vector formats' files, the rest
+     * staying mapped. Nothing is bound where {@link #storePageCacheAvailable} is false.
+     */
+    public static int storeBindPageCache(String path, int pageSize, boolean vectorsOnly) {
+        if (path == null) {
+            return nullArgument("path");
+        }
+        byte[] utf8 = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_BIND_PAGE_CACHE.invokeExact(s.bytes(utf8), (long) utf8.length, pageSize, vectorsOnly ? 1 : 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Removes {@code path}'s page-cache binding; directories already open keep theirs. */
+    public static int storeUnbindPageCache(String path) {
+        if (path == null) {
+            return nullArgument("path");
+        }
+        byte[] utf8 = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_UNBIND_PAGE_CACHE.invokeExact(s.bytes(utf8), (long) utf8.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Whether shards can be read through the page cache here ({@code userfaultfd} is permitted). */
+    public static boolean storePageCacheAvailable() {
+        try {
+            return (int) H.STORE_PAGE_CACHE_AVAILABLE.invokeExact() == 1;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Sets the bytes the page cache keeps resident across every shard bound to it (0 keeps it). */
+    public static int storeSetPageCacheBudget(long budgetBytes) {
+        try {
+            return (int) H.STORE_SET_PAGE_CACHE_BUDGET.invokeExact(budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Bytes the page cache holds resident now, across every bound shard. */
+    public static long storePageCacheResidentBytes() {
+        try {
+            return (long) H.STORE_PAGE_CACHE_RESIDENT.invokeExact();
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Adds a directory Rust searches for the analysis modules' data packs ({@code analysis_modules.rs}). */
     public static int addDataPackDir(String dir) {
         if (dir == null) {
@@ -1295,6 +1779,34 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Whether the native runtime runs the Painless score script {@code spec} describes (the node's
+     * fields after its sub-query, {@code jvm_painless_score.rs}) exactly as Painless would, decided
+     * before anything runs: {@code out[0]} empty when it does, else the reason as UTF-8.
+     */
+    public static int painlessCheck(byte[] spec, byte[][] out) {
+        if (spec == null) {
+            return nullArgument("spec");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.PAINLESS_CHECK.invokeExact(s.bytes(spec), (long) spec.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] reason = take(result);
+                if (reason == null) {
+                    return tooLarge("the reason");
+                }
+                out[0] = reason;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     public static int closeReader(long handle) {
         try {
             return (int) H.CLOSE_READER.invokeExact(handle);
@@ -1314,24 +1826,439 @@ public final class NativeBridge {
     public static final int STAT_SEGMENTS = 5;
     public static final int STAT_COUNT = 6;
 
+    /** {@link #writerOpen}'s flags. */
+    public static final int OPEN_FAULT_INJECTION = 1;
+    public static final int OPEN_SPARSE = 2;
+    public static final int OPEN_LIVE_SEARCH = 4;
+    public static final int OPEN_MERGE_LZ4_HC = 8;
+    public static final int OPEN_ZSTD_TERMS = 16;
+    public static final int OPEN_ADAPTIVE_DOC_VALUES = 32;
+    public static final int OPEN_PARTITIONED = 64;
+    public static final int OPEN_KNN = 128;
+
+    /** {@link #writerOpen}'s stored fields, one per {@code index.codec} the Rust writer writes. */
+    public static final int STORED_FIELDS_BEST_SPEED = 0;
+    public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
+    public static final int STORED_FIELDS_ZSTD = 2;
+    public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
+    /** The Rust engine's paged zstd stored fields ({@code index.lucene_rust.stored_fields.paged_zstd}). */
+    public static final int STORED_FIELDS_ZSTD_PAGED = 4;
+
+    // ---- ml-commons local models (ml.rs). ----
+
+    /**
+     * Loads the ONNX Runtime library at {@code path}, with {@code threads} intra-op threads shared by
+     * every model (0: one per core). Later calls keep the first library.
+     */
+    public static int mlRuntimeInit(String path, int threads) {
+        byte[] p = path.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.ML_RUNTIME_INIT.invokeExact(s.bytes(p), (long) p.length, threads);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens the ONNX text-embedding model at {@code modelPath} with the {@code tokenizer.json} bytes,
+     * ml-commons' {@code model_type} and {@code pooling_mode}, and whether results are normalized;
+     * its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlTextEmbeddingOpen(
+        String modelPath,
+        byte[] tokenizer,
+        String modelType,
+        String pooling,
+        boolean normalize,
+        long[] outHandle
+    ) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] type = modelType.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] mode = pooling.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_TEXT_EMBEDDING_OPEN.invokeExact(
+                s.bytes(model),
+                (long) model.length,
+                s.bytes(tokenizer),
+                (long) tokenizer.length,
+                s.bytes(type),
+                (long) type.length,
+                s.bytes(mode),
+                (long) mode.length,
+                (byte) (normalize ? 1 : 0),
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Embeds {@code texts} (each a little-endian {@code u32} byte length then UTF-8) with model {@code
+     * handle}: per text a {@code u32} rank, the dimensions, then the {@code f32} values, all little
+     * endian. {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlTextEmbeddingEmbed(long handle, byte[] texts) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_TEXT_EMBEDDING_EMBED.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a sparse tokenize model from its {@code tokenizer.json} bytes and its {@code idf.json}
+     * bytes ({@code null} when it has none); its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlSparseTokenizeOpen(byte[] tokenizer, byte[] idf, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            MemorySegment idfBytes = idf == null ? MemorySegment.NULL : s.bytes(idf);
+            long idfLength = idf == null ? 0L : idf.length;
+            int rc = (int) H.ML_SPARSE_TOKENIZE_OPEN.invokeExact(s.bytes(tokenizer), (long) tokenizer.length, idfBytes, idfLength, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The token weights of {@code texts} (encoded as for {@link #mlTextEmbeddingEmbed}) from sparse
+     * tokenize model {@code handle}: per text a {@code u32} count, then per token its {@code u32} id,
+     * {@code u32} byte length, UTF-8 token and {@code f32} weight, all little endian. {@code null} on
+     * failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlSparseTokenize(long handle, byte[] texts) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_SPARSE_TOKENIZE.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a {@code bert-uncased}-style analyzer from its {@code tokenizer.json} bytes and its
+     * {@code idf.json} bytes ({@code null} when it has none); its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlHfAnalyzerOpen(byte[] tokenizer, byte[] idf, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            MemorySegment idfBytes = idf == null ? MemorySegment.NULL : s.bytes(idf);
+            long idfLength = idf == null ? 0L : idf.length;
+            int rc = (int) H.ML_HF_ANALYZER_OPEN.invokeExact(s.bytes(tokenizer), (long) tokenizer.length, idfBytes, idfLength, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The token stream of the UTF-8 {@code text} from analyzer {@code handle}: a {@code u32} count,
+     * then per token its {@code u32} id, {@code u32} start and end offsets in code points,
+     * {@code u32} byte length, UTF-8 token and {@code f32} weight, all little endian. {@code null}
+     * on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlHfAnalyze(long handle, byte[] text) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_HF_ANALYZE.invokeExact(handle, s.bytes(text), (long) text.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens the ONNX sparse encoding model ({@code sparse} true) or cross-encoder at {@code modelPath}
+     * with the {@code tokenizer.json} bytes; its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlOnnxModelOpen(boolean sparse, String modelPath, byte[] tokenizer, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        MethodHandle open = sparse ? H.ML_SPARSE_ENCODING_OPEN : H.ML_TEXT_SIMILARITY_OPEN;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) open.invokeExact(s.bytes(model), (long) model.length, s.bytes(tokenizer), (long) tokenizer.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The sparse vectors of {@code texts} (encoded as for {@link #mlTextEmbeddingEmbed}) from sparse
+     * encoding model {@code handle}, keyed by token id when {@code byId}: per text a {@code u32}
+     * output count, then per output its {@code u32} name length, UTF-8 name and its weights as {@link
+     * #mlSparseTokenize} gives a text's. {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlSparseEncode(long handle, byte[] texts, boolean byId) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_SPARSE_ENCODING.invokeExact(
+                handle,
+                s.bytes(texts),
+                (long) texts.length,
+                (byte) (byId ? 1 : 0),
+                ptrOf(slot),
+                lenOf(slot)
+            );
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Scores each of {@code texts} (encoded as for {@link #mlTextEmbeddingEmbed}) against {@code query}
+     * with cross-encoder {@code handle}: per text a {@code u32} output count, then each output as
+     * {@link #mlTextEmbeddingEmbed} gives a vector. {@code null} on failure, with the reason in {@link
+     * #lastError}.
+     */
+    public static byte[] mlTextSimilarity(long handle, String query, byte[] texts) {
+        byte[] q = query.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_TEXT_SIMILARITY.invokeExact(
+                handle,
+                s.bytes(q),
+                (long) q.length,
+                s.bytes(texts),
+                (long) texts.length,
+                ptrOf(slot),
+                lenOf(slot)
+            );
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Loads libtorch from directory {@code dir} and the first TorchScript shim of {@code shims}
+     * (encoded as texts are for {@link #mlTextEmbeddingEmbed}) that runs against it, with {@code
+     * threads} intra-op threads shared by every model (0: one per physical core). Later calls keep
+     * the first.
+     */
+    public static int mlTorchInit(String dir, byte[] shims, int threads) {
+        byte[] d = dir.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.ML_TORCH_INIT.invokeExact(s.bytes(d), (long) d.length, s.bytes(shims), (long) shims.length, threads);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@link #mlTorchOpen} functions: a {@code sentence_transformers} text embedding model. */
+    public static final int TORCH_SENTENCE_TRANSFORMERS = 0;
+    /** A {@code huggingface_transformers} text embedding model, pooled natively. */
+    public static final int TORCH_HUGGING_FACE = 1;
+    /** A sparse encoding model, read with {@link #mlSparseEncode}. */
+    public static final int TORCH_SPARSE_ENCODING = 2;
+    /** A cross-encoder, read with {@link #mlTextSimilarity}. */
+    public static final int TORCH_TEXT_SIMILARITY = 3;
+
+    /**
+     * Opens the TorchScript model at {@code modelPath} with the {@code tokenizer.json} bytes for
+     * {@code function} (one of the {@code TORCH_*} constants); a Hugging Face text embedding model is
+     * pooled by the {@code pooling} mode name and normalized when {@code normalize}. Its handle goes to
+     * {@code outHandle[0]}. {@link #mlTorchInit} must have succeeded.
+     */
+    public static int mlTorchOpen(int function, String modelPath, byte[] tokenizer, String pooling, boolean normalize, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] mode = pooling.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_TORCH_OPEN.invokeExact(
+                (byte) function,
+                s.bytes(model),
+                (long) model.length,
+                s.bytes(tokenizer),
+                (long) tokenizer.length,
+                s.bytes(mode),
+                (long) mode.length,
+                (byte) (normalize ? 1 : 0),
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The outputs of TorchScript text embedding model {@code handle} for each of {@code texts}
+     * (encoded as for {@link #mlTextEmbeddingEmbed}): per text a {@code u32} output count, then per
+     * output its {@code u32} name length and UTF-8 name, {@code u32} dict number (0 outside a dict),
+     * {@code u8} data type (0 {@code FLOAT32}, 1 {@code INT64}), {@code u32} rank and dimensions, and
+     * the values, all little endian. {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlTorchEmbed(long handle, byte[] texts) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_TORCH_TEXT_EMBEDDING.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from any of the {@code ml*Open} calls. */
+    public static int mlModelClose(long handle) {
+        try {
+            return (int) H.ML_MODEL_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- Paged zstd stored fields (zstd_dictionary.rs). ----
+
+    /** Prepares a segment's zstd dictionary; its handle into {@code outHandle[0]}. */
+    public static int zstdDictionaryOpen(byte[] dictionary, long[] outHandle) {
+        if (dictionary == null) {
+            return nullArgument("dictionary");
+        }
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ZSTD_DICTIONARY_OPEN.invokeExact(s.bytes(dictionary), (long) dictionary.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #zstdDictionaryOpen}. */
+    public static int zstdDictionaryClose(long handle) {
+        try {
+            return (int) H.ZSTD_DICTIONARY_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes the zstd frame {@code src[0..srcLen)}, compressed against dictionary {@code handle} (0:
+     * none), into exactly {@code dst[0..dstLen)}.
+     */
+    public static int zstdPagedDecompress(long handle, byte[] src, int srcLen, byte[] dst, int dstLen) {
+        if (src == null || dst == null) {
+            return nullArgument(src == null ? "src" : "dst");
+        }
+        if (srcLen < 0 || srcLen > src.length || dstLen < 0 || dstLen > dst.length) {
+            return fail(INVALID_ARGUMENT, "src or dst is shorter than its length");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.bytes(src, srcLen);
+            MemorySegment out = s.alloc(dstLen);
+            int rc = (int) H.ZSTD_PAGED_DECOMPRESS.invokeExact(handle, in, (long) srcLen, out, (long) dstLen);
+            if (rc == OK) {
+                MemorySegment.copy(out, JAVA_BYTE, 0, dst, 0, dstLen);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /**
      * Opens a shard's writer over the index at {@code path}, which must already hold a commit. Commit
      * points are dropped only through {@link #writerDeleteCommits}. {@code faultInjection} allows the
-     * test-only panic operation. {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which
-     * Lucene's tests lower.
+     * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
+     * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
+     * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
+     * the {@code RustAdaptive} format; {@code zstdTerms} writes every field's terms in the {@code
+     * RustZstd104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
+     * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
+     * (the value of the index's partition field) and records it, and merges never mix partitions;
+     * {@code knn} writes a k-NN index's segments under the k-NN codec's name, listing the fields
+     * whose vectors {@code _source} leaves out (derived source).
+     * {@code indexSort} is the index sort as a {@code .si} encodes it (null or empty for none), and
+     * {@code parentFieldUtf8} the field marking each block's last document (null or empty for none).
+     * {@code maxDocs} is {@code IndexWriter.getActualMaxDocs()}, which Lucene's tests lower.
+     * {@code storedFields} is one of the {@code STORED_FIELDS_*} codes, the zstd ones written at
+     * {@code compressionLevel}.
      */
-    public static int writerOpen(byte[] indexPathUtf8, double ramBufferMb, boolean faultInjection, int maxDocs, long[] outHandle) {
+    public static int writerOpen(
+        byte[] indexPathUtf8,
+        double ramBufferMb,
+        boolean faultInjection,
+        boolean sparse,
+        boolean liveSearch,
+        boolean adaptiveDocValues,
+        boolean zstdTerms,
+        boolean mergeLz4Hc,
+        boolean partitioned,
+        boolean knn,
+        byte[] indexSort,
+        byte[] parentFieldUtf8,
+        int maxDocs,
+        int storedFields,
+        int compressionLevel,
+        long[] outHandle
+    ) {
         if (indexPathUtf8 == null) {
             return nullArgument("path");
         }
+        byte[] sort = indexSort == null ? new byte[0] : indexSort;
+        byte[] parent = parentFieldUtf8 == null ? new byte[0] : parentFieldUtf8;
         try (Scratch s = Scratch.open()) {
             MemorySegment out = s.alloc(Long.BYTES);
             int rc = (int) H.WRITER_OPEN.invokeExact(
                 s.bytes(indexPathUtf8),
                 (long) indexPathUtf8.length,
                 ramBufferMb,
-                (byte) (faultInjection ? 1 : 0),
+                (byte) ((faultInjection ? OPEN_FAULT_INJECTION : 0) | (sparse ? OPEN_SPARSE : 0)
+                    | (liveSearch ? OPEN_LIVE_SEARCH : 0) | (adaptiveDocValues ? OPEN_ADAPTIVE_DOC_VALUES : 0)
+                    | (zstdTerms ? OPEN_ZSTD_TERMS : 0) | (mergeLz4Hc ? OPEN_MERGE_LZ4_HC : 0)
+                    | (partitioned ? OPEN_PARTITIONED : 0) | (knn ? OPEN_KNN : 0)),
+                s.bytes(sort),
+                (long) sort.length,
+                s.bytes(parent),
+                (long) parent.length,
                 maxDocs,
+                (byte) storedFields,
+                compressionLevel,
                 out
             );
             if (rc == OK) {
@@ -1519,6 +2446,34 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * {@code index.merge.policy.*}: the writer's {@code TieredMergePolicy} settings, sizes in bytes and
+     * deletes as percentages.
+     */
+    public static int writerSetMergePolicy(
+        long handle,
+        int maxMergeAtOnce,
+        double segmentsPerTier,
+        long maxMergedSegmentBytes,
+        long floorSegmentBytes,
+        double deletesPctAllowed,
+        double forceMergeDeletesPctAllowed
+    ) {
+        try {
+            return (int) H.WRITER_SET_MERGE_POLICY.invokeExact(
+                handle,
+                maxMergeAtOnce,
+                segmentsPerTier,
+                maxMergedSegmentBytes,
+                floorSegmentBytes,
+                deletesPctAllowed,
+                forceMergeDeletesPctAllowed
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** The generations of every live commit point, oldest first; their number goes to {@code outLen[0]}. */
     public static int writerCommitGenerations(long handle, long[] out, int[] outLen) {
         if (out == null) {
@@ -1550,6 +2505,36 @@ public final class NativeBridge {
         }
         try (Scratch s = Scratch.open()) {
             return (int) H.WRITER_DELETE_COMMITS.invokeExact(handle, s.longs(generations), (long) generations.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Flushes the writer's buffers and puts its live segment list, uncommitted, in {@code
+     * bytes[0]} as {@code segments_N} bytes; its files stay pinned under {@code out[0]} until
+     * {@link #writerReleaseHold}, and {@code out[1]} is the last commit's generation, which the
+     * bytes' header names. Returns the status.
+     */
+    public static int writerNrtSnapshot(long handle, long[] out, byte[][] bytes) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            MemorySegment hold = s.alloc(Long.BYTES);
+            MemorySegment gen = s.alloc(Long.BYTES);
+            int rc = (int) H.WRITER_NRT_SNAPSHOT.invokeExact(handle, ptrOf(slot), lenOf(slot), hold, gen);
+            if (rc != OK) {
+                return rc;
+            }
+            long id = hold.get(JAVA_LONG, 0);
+            byte[] infos = take(slot);
+            if (infos == null) {
+                writerReleaseHold(handle, id);
+                return tooLarge("the segment list");
+            }
+            out[0] = id;
+            out[1] = gen.get(JAVA_LONG, 0);
+            bytes[0] = infos;
+            return OK;
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1592,6 +2577,45 @@ public final class NativeBridge {
     }
 
     /**
+     * The writer options beside its merge policy: compound flushed segments, the merge policy's
+     * {@code noCFSRatio} and {@code maxCFSSegmentSize} (bytes) for merged ones, whether indexing threads
+     * help with pending flushes, and whether forced merges interleave their sources.
+     */
+    public static int writerSetOptions(
+        long handle,
+        boolean useCompoundFile,
+        double noCfsRatio,
+        long maxCfsSegmentBytes,
+        boolean checkPendingFlush,
+        boolean shuffleForcedMerges
+    ) {
+        try {
+            return (int) H.WRITER_SET_OPTIONS.invokeExact(
+                handle,
+                (byte) (useCompoundFile ? 1 : 0),
+                noCfsRatio,
+                maxCfsSegmentBytes,
+                (byte) (checkPendingFlush ? 1 : 0),
+                (byte) (shuffleForcedMerges ? 1 : 0)
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * IVF fields' vectors clustered per partition of the index sort's first field: each partition of
+     * at least {@code minVectors} vectors on its own, the smaller ones pooled; {@code 0} turns it off.
+     */
+    public static int writerSetIvfPartitionClusters(long handle, long minVectors) {
+        try {
+            return (int) H.WRITER_SET_IVF_PARTITION_CLUSTERS.invokeExact(handle, minVectors);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
      * Merge-on-commit/refresh: commits and refreshes wait up to {@code waitMillis} for the merges of the
      * segments they publish ({@code 0} turns them off), picked by {@code MergeOnFlushMergePolicy} when
      * {@code mergeOnFlushPolicy}.
@@ -1599,6 +2623,44 @@ public final class NativeBridge {
     public static int writerSetMergeOnFlush(long handle, long waitMillis, boolean mergeOnFlushPolicy) {
         try {
             return (int) H.WRITER_SET_MERGE_ON_FLUSH.invokeExact(handle, waitMillis, (byte) (mergeOnFlushPolicy ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code BPReorderingMergePolicy} around the shard's merge policy, or off when {@code enabled} is
+     * false: merges of at least {@code max(minMergeDocs, minMergeRatio * biggest segment)} documents,
+     * and every forced merge, renumber their documents with {@code BPIndexReorderer}. {@code fields}
+     * empty means every indexed field.
+     */
+    public static int writerSetBpReorder(
+        long handle,
+        boolean enabled,
+        int minDocFreq,
+        float maxDocFreq,
+        int minPartitionSize,
+        int maxIters,
+        double ramBudgetMb,
+        int minMergeDocs,
+        float minMergeRatio,
+        java.util.List<String> fields
+    ) {
+        byte[] names = String.join("\0", fields).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.WRITER_SET_BP_REORDER.invokeExact(
+                handle,
+                (byte) (enabled ? 1 : 0),
+                minDocFreq,
+                maxDocFreq,
+                minPartitionSize,
+                maxIters,
+                ramBudgetMb,
+                minMergeDocs,
+                minMergeRatio,
+                s.bytes(names),
+                (long) names.length
+            );
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1643,10 +2705,465 @@ public final class NativeBridge {
         }
     }
 
+    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code engine_writer.rs}). */
+    public static final int MERGE_POLICY_TIERED = 0;
+    public static final int MERGE_POLICY_LOG_BYTE_SIZE = 1;
+    public static final int MERGE_POLICY_NONE = 2;
+
+    /**
+     * The shard's merge policy when it is not tiered: {@link #MERGE_POLICY_LOG_BYTE_SIZE} with its
+     * merge factor, merged-size bounds in bytes (smallest, largest, largest when forced), most merged
+     * documents and compound-file ratio and cap in bytes; {@link #MERGE_POLICY_NONE} (the rest
+     * ignored) for no merges; {@link #MERGE_POLICY_TIERED} back to the tiered policy.
+     */
+    public static int writerSetPluggableMergePolicy(
+        long handle,
+        int kind,
+        int mergeFactor,
+        long minMergeBytes,
+        long maxMergeBytes,
+        long maxForcedMergeBytes,
+        int maxMergeDocs,
+        double noCfsRatio,
+        long maxCfsSegmentBytes
+    ) {
+        try {
+            return (int) H.WRITER_SET_PLUGGABLE_MERGE_POLICY.invokeExact(
+                handle,
+                kind,
+                mergeFactor,
+                minMergeBytes,
+                maxMergeBytes,
+                maxForcedMergeBytes,
+                maxMergeDocs,
+                noCfsRatio,
+                maxCfsSegmentBytes
+            );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The warm upcall's answers: {@code WARM_OK} in {@code engine_writer.rs}, and any other value fails the merge. */
+    public static final int WARM_OK = 0;
+    public static final int WARM_FAILED = 1;
+
+    /** Registers the upcall that warms the merged segments of writers given a warmer. */
+    public static int setWarmUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_WARM_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@code IndexWriterConfig.setMergedSegmentWarmer}: whether merged segments go to the warm upcall. */
+    public static int writerSetMergedSegmentWarmer(long handle, boolean on) {
+        try {
+            return (int) H.WRITER_SET_MERGED_SEGMENT_WARMER.invokeExact(handle, (byte) (on ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code engine_writer.rs}). */
+    public static final int MERGE_EVENT_BEFORE = 0;
+    public static final int MERGE_EVENT_AFTER = 1;
+    public static final int MERGE_OK = 0;
+    public static final int MERGE_FAILED_IO = 1;
+    public static final int MERGE_FAILED_OTHER = 2;
+
+    /**
+     * Registers the merge upcall that hears every merge of writers opened afterwards, before and after
+     * it runs; those writers' merge schedulers no longer stall indexing threads.
+     */
+    public static int setMergeUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.SET_MERGE_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Whether merges are waiting for a merge thread ({@code IndexWriter.hasPendingMerges}) into
+     * {@code outPending[0]}, and the merge scheduler's IO rate in MB/s into {@code outMbPerSec[0]}.
+     * Safe to call from the merge upcall.
+     */
+    public static int writerMergeState(long handle, boolean[] outPending, double[] outMbPerSec) {
+        if (outPending == null || outPending.length < 1) {
+            return nullArgument("outPending");
+        }
+        if (outMbPerSec == null || outMbPerSec.length < 1) {
+            return nullArgument("outMbPerSec");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment pending = s.alloc(1);
+            MemorySegment rate = s.alloc(Double.BYTES);
+            int rc = (int) H.WRITER_MERGE_STATE.invokeExact(handle, pending, rate);
+            if (rc == OK) {
+                outPending[0] = pending.get(JAVA_BYTE, 0) != 0;
+                outMbPerSec[0] = rate.get(JAVA_DOUBLE, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Closes without committing (Lucene's {@code rollback()}). */
     public static int writerClose(long handle) {
         try {
             return (int) H.WRITER_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- Live search of the writer's buffers (live.rs). ----
+
+    /**
+     * Opens a view of the documents buffered in writer {@code writer} that a reader of the segment
+     * list at version {@code readerVersion} (a commit's or an NRT snapshot's) lacks: its handle into {@code outView[0]}, its blob ({@code published:
+     * i64}, {@code count: i32}, then per buffer {@code maxDoc: i32}, {@code deleted: i32} and that many
+     * deleted documents, little-endian) into {@code outBlob[0]}. {@link #INVALID_ARGUMENT} when the
+     * buffers cannot be read for that list; the caller then searches the reader alone.
+     */
+    public static int liveViewOpen(long writer, long readerVersion, long[] outView, byte[][] outBlob) {
+        if (outView == null || outView.length < 1 || outBlob == null || outBlob.length < 1) {
+            return fail(INVALID_ARGUMENT, "outView and outBlob need a slot each");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment view = s.alloc(Long.BYTES);
+            MemorySegment blob = ownedSlot(s);
+            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, readerVersion, view, ptrOf(blob), lenOf(blob));
+            if (rc == OK) {
+                long id = view.get(JAVA_LONG, 0);
+                byte[] bytes = take(blob);
+                if (bytes == null) {
+                    liveViewClose(id);
+                    return tooLarge("the live view");
+                }
+                outView[0] = id;
+                outBlob[0] = bytes;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * What a search Lucene answers reads {@code view}'s buffers through, over the reader at {@code
+     * handle} (the view's base), into {@code out[0]}: the reader's live documents as of the view, and
+     * each leaf of the view as a segment with its postings ({@code ffi_live_view_lucene} gives the
+     * layout). A buffer flushed since the view opened is waited for up to {@code waitMillis};
+     * {@link #INVALID_ARGUMENT} when it has not published by then.
+     */
+    public static int liveViewLucene(long handle, long view, long waitMillis, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out needs a slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment blob = ownedSlot(s);
+            int rc = (int) H.LIVE_VIEW_LUCENE.invokeExact(handle, view, waitMillis, ptrOf(blob), lenOf(blob));
+            if (rc == OK) {
+                byte[] bytes = take(blob);
+                if (bytes == null) {
+                    return tooLarge("the buffered segments");
+                }
+                out[0] = bytes;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * A reader handle over the reader at {@code handle} and {@code view}'s buffers as segments after
+     * its own, one per buffer, into {@code out[0]}: every native search of it reads the buffered
+     * documents as the leaves of the view number them. It belongs to the view, which closes it; the
+     * caller must not. {@link #INVALID_ARGUMENT} when the buffers cannot be written (one was taken
+     * for a flush since the view opened); the caller then searches the reader alone.
+     * <p>
+     * With {@code query} (a query blob), {@code tree} (an aggregation tree blob, or null) and
+     * {@code extra} (the other queries the search runs, a rescore's, or null), the buffers are
+     * written without their postings and the handle holds only the terms that request reads: it
+     * serves searches of that request alone, much cheaper to build. With a null {@code query}, or a
+     * request whose terms cannot be named up front, it holds every term.
+     */
+    public static int liveViewReader(long handle, long view, byte[] query, byte[] tree, byte[][] extra, long[] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out needs a slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment id = s.alloc(Long.BYTES);
+            MemorySegment q = query == null || query.length == 0 ? MemorySegment.NULL : s.bytes(query);
+            MemorySegment t = query == null || tree == null || tree.length == 0 ? MemorySegment.NULL : s.bytes(tree);
+            byte[] listed = query == null ? null : lengthPrefixed(extra);
+            MemorySegment e = listed == null ? MemorySegment.NULL : s.bytes(listed);
+            int rc = (int) H.LIVE_VIEW_READER.invokeExact(
+                handle,
+                view,
+                q,
+                q == MemorySegment.NULL ? 0L : (long) query.length,
+                t,
+                t == MemorySegment.NULL ? 0L : (long) tree.length,
+                e,
+                e == MemorySegment.NULL ? 0L : (long) listed.length,
+                id
+            );
+            if (rc == OK) {
+                out[0] = id.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@code blobs} one after another, each after its length as a little-endian int; null when none. */
+    private static byte[] lengthPrefixed(byte[][] blobs) {
+        if (blobs == null || blobs.length == 0) {
+            return null;
+        }
+        int size = 0;
+        for (byte[] b : blobs) {
+            size = Math.addExact(size, Math.addExact(Integer.BYTES, b.length));
+        }
+        java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (byte[] b : blobs) {
+            out.putInt(b.length).put(b);
+        }
+        return out.array();
+    }
+
+    /** Closes a view: its buffers may go once nothing else reads them. */
+    public static int liveViewClose(long view) {
+        try {
+            return (int) H.LIVE_VIEW_CLOSE.invokeExact(view);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Lets searches of the writer's buffers share a view up to {@code millis} milliseconds old,
+     * which the writer opens ahead of them; 0 gives each search a view of every write before it.
+     */
+    public static int writerSetLiveStaleness(long writer, long millis) {
+        try {
+            return (int) H.WRITER_SET_LIVE_STALENESS.invokeExact(writer, millis);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Makes every later search of the writer's buffers read a view opened from now on. */
+    public static int writerLiveRefreshShared(long writer) {
+        try {
+            return (int) H.WRITER_LIVE_REFRESH_SHARED.invokeExact(writer);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Lets go of the buffers a reader of the segment list at {@code version} already has, once no view reads them. */
+    public static int writerReleaseLive(long writer, long version) {
+        try {
+            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, version);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The bounds of field number {@code field}'s points in buffer {@code buffer} of {@code view}
+     * into {@code out[0]}: the point count (little-endian long), then the packed least values, then
+     * the packed greatest; empty when the buffer holds no point of the field.
+     */
+    public static int livePointBounds(long view, int buffer, int field, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_POINT_BOUNDS.invokeExact(view, buffer, field, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the bounds");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Document {@code doc} of buffer {@code buffer} of view {@code view}: its doc values of the
+     * fields numbered {@code fields}, encoded as {@link #docValues} encodes a segment's, the terms
+     * of each field numbered {@code 0..n} for that document alone, in {@code out[0]}.
+     */
+    public static int liveDocValues(long view, int buffer, int doc, int[] fields, byte[][] out) {
+        if (fields == null) {
+            return nullArgument("fields");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_DOC_VALUES.invokeExact(view, buffer, doc, s.ints(fields), (long) fields.length, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the doc values");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Document {@code doc} of buffer {@code buffer} of {@code view}: its stored fields encoded as
+     * {@link #document} encodes them, into {@code out[0]}.
+     */
+    public static int liveDocument(long view, int buffer, int doc, byte[][] out) {
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.LIVE_DOCUMENT.invokeExact(view, buffer, doc, ptrOf(result), lenOf(result));
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the document");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@link #search} over reader {@code handle} and the buffers of {@code view} together, a
+     * buffered hit numbered after the reader's {@code maxDoc}. {@code outCounts} as for {@link
+     * #search}, with a fourth slot 1 when the buffers could answer the query and 0 when they could
+     * not, in which case nothing else is written.
+     */
+    public static int searchLive(
+        long handle,
+        long view,
+        byte[] query,
+        int topN,
+        long countLimit,
+        int[] outDocs,
+        float[] outScores,
+        long[] outCounts
+    ) {
+        int refused = checkSearch(query, topN, outDocs, outScores, outCounts, 4);
+        if (refused != OK) {
+            return refused;
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment docs = s.room(JAVA_INT, topN);
+            MemorySegment scores = s.room(JAVA_FLOAT, topN);
+            MemorySegment counts = s.alloc(4 * Long.BYTES);
+            int rc = (int) H.SEARCH_LIVE.invokeExact(
+                handle,
+                view,
+                s.bytes(query),
+                (long) query.length,
+                (long) topN,
+                countLimit,
+                docs,
+                scores,
+                (long) topN,
+                counts,
+                counts.asSlice(Long.BYTES),
+                counts.asSlice(2 * Long.BYTES),
+                counts.asSlice(3 * Long.BYTES)
+            );
+            if (rc != OK) {
+                return rc;
+            }
+            boolean supported = counts.get(JAVA_BOOLEAN, 3 * Long.BYTES);
+            outCounts[3] = supported ? 1 : 0;
+            if (supported == false) {
+                return OK;
+            }
+            int n = Math.toIntExact(counts.get(JAVA_LONG, 0));
+            MemorySegment.copy(docs, JAVA_INT, 0, outDocs, 0, n);
+            MemorySegment.copy(scores, JAVA_FLOAT, 0, outScores, 0, n);
+            outCounts[0] = n;
+            outCounts[1] = counts.get(JAVA_LONG, Long.BYTES);
+            outCounts[2] = counts.get(JAVA_BOOLEAN, 2 * Long.BYTES) ? 1 : 0;
+            return OK;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- RustZstd104 terms dictionaries (zstd_terms.rs). ----
+
+    /** Prepares a field's zstd term-block dictionary; its handle into {@code outHandle[0]}. */
+    public static int zstdTermsDictionaryOpen(byte[] dictionary, long[] outHandle) {
+        if (dictionary == null) {
+            return nullArgument("dictionary");
+        }
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ZSTD_TERMS_DICTIONARY_OPEN.invokeExact(s.bytes(dictionary), (long) dictionary.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a handle from {@link #zstdTermsDictionaryOpen}. */
+    public static int zstdTermsDictionaryClose(long handle) {
+        try {
+            return (int) H.ZSTD_TERMS_DICTIONARY_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Decodes the bare zstd frame {@code src[0..srcLen)} of a zstd term block, compressed against
+     * dictionary {@code handle} (0: none), into exactly {@code dst[0..dstLen)}.
+     */
+    public static int zstdTermsDecompress(long handle, byte[] src, int srcLen, byte[] dst, int dstLen) {
+        if (src == null || dst == null) {
+            return nullArgument(src == null ? "src" : "dst");
+        }
+        if (srcLen < 0 || srcLen > src.length || dstLen < 0 || dstLen > dst.length) {
+            return fail(INVALID_ARGUMENT, "src or dst is shorter than its length");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment in = s.bytes(src, srcLen);
+            MemorySegment out = s.alloc(dstLen);
+            int rc = (int) H.ZSTD_TERMS_DECOMPRESS.invokeExact(handle, in, (long) srcLen, out, (long) dstLen);
+            if (rc == OK) {
+                MemorySegment.copy(out, JAVA_BYTE, 0, dst, 0, dstLen);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

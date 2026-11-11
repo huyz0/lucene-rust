@@ -20,6 +20,7 @@ import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.PhraseQuery;
+import org.apache.lucene.document.SortedNumericDocValuesField;
 import org.apache.lucene.search.IndexOrDocValuesQuery;
 import org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery;
 import org.apache.lucene.search.PointInSetQuery;
@@ -181,6 +182,20 @@ public final class QueryEncoder {
         return new Encoded(out.toByteArray(), null, true);
     }
 
+    /**
+     * {@code query} as one query-tree node, as a filter inside another request ({@code
+     * jvm_knn.rs}): null when written, else the fallback reason. Its scores are not read, so every
+     * field is accepted.
+     */
+    static String encodeNode(Query query, ByteArrayOutputStream out, IndexReaderContext top) {
+        TOP.set(top);
+        try {
+            return node(unwrapUnitBoost(query), out, field -> true, 0, new int[1]);
+        } finally {
+            TOP.remove();
+        }
+    }
+
     /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code clauses.rs}). */
     private static final int MAX_DEPTH = 32;
 
@@ -210,6 +225,8 @@ public final class QueryEncoder {
     /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
     private static final byte NODE_TERM_RANGE = 25;
     private static final byte NODE_POINT_SET = 26;
+    /** {@code NODE_POINT_RANGE_OR_DV} in {@code jvm_queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
+    private static final byte NODE_POINT_RANGE_OR_DV = 48;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -350,8 +367,24 @@ public final class QueryEncoder {
             return null;
         }
         if (q instanceof IndexOrDocValuesQuery iodv) {
-            // Two equivalent ways to run one query; the native side runs the index one. A
-            // wrapper, not a level (nor a node).
+            // A long, date or double range on a field with doc values: both sides over the same
+            // field and bounds, so the native side can pick per segment as Lucene does (doc
+            // values when a cheaper clause leads).
+            if (iodv.getIndexQuery() instanceof PointRangeQuery pr
+                    && pr.getNumDims() == 1
+                    && pr.getBytesPerDim() == Long.BYTES) {
+                long min = NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0);
+                long max = NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0);
+                if (iodv.getRandomAccessQuery().equals(SortedNumericDocValuesField.newSlowRangeQuery(pr.getField(), min, max))) {
+                    out.write(NODE_POINT_RANGE_OR_DV);
+                    writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
+                    writeLong(out, min);
+                    writeLong(out, max);
+                    return null;
+                }
+            }
+            // Otherwise two equivalent ways to run one query; the native side runs the index
+            // one. A wrapper, not a level (nor a node).
             nodes[0]--;
             return node(iodv.getIndexQuery(), out, fieldOk, depth, nodes);
         }
@@ -429,6 +462,16 @@ public final class QueryEncoder {
         String extended = ExtendedEncoder.node(q, out, fieldOk, c -> node(c, out, fieldOk, depth + 1, nodes));
         if (extended != ExtendedEncoder.NOT_EXTENDED) {
             return extended;
+        }
+        // rank_feature and neural_sparse (SparseEncoder).
+        String sparse = SparseEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        if (sparse != SparseEncoder.NOT_SPARSE) {
+            return sparse;
+        }
+        // knn (KnnEncoder).
+        String knn = KnnEncoder.node(q, out, c -> node(c, out, fieldOk, depth + 1, nodes));
+        if (knn != KnnEncoder.NOT_KNN) {
+            return knn;
         }
         // The geo queries (GeoEncoder): written, or a geo reason to fall back.
         String geo = GeoEncoder.node(q, out);
@@ -765,11 +808,17 @@ public final class QueryEncoder {
         return c.getSimpleName();
     }
 
+    /** {@code q} without unit boosts and the neural query's wrapper, which scores as the k-NN query it holds. */
     private static Query unwrapUnitBoost(Query q) {
-        while (q instanceof BoostQuery b && b.getBoost() == 1f) {
-            q = b.getQuery();
+        while (true) {
+            if (q instanceof BoostQuery b && b.getBoost() == 1f) {
+                q = b.getQuery();
+            } else if (q instanceof org.lucenerust.opensearch.neural.query.NeuralKNNQuery n) {
+                q = n.getKnnQuery();
+            } else {
+                return q;
+            }
         }
-        return q;
     }
 
     private static byte[] toArray(BytesRef b) {

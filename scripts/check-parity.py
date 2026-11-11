@@ -65,7 +65,7 @@ MAX_ROW = 2_000
 MAX_FILE = 80_000
 # The per-row and per-file budgets
 # are what keep a row short; the total only says how many rows there may be.
-MAX_TOTAL = 760_000
+MAX_TOTAL = 840_000
 
 # A line of the index's area table: its link and its row count.
 AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")

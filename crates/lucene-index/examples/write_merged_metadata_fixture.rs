@@ -123,7 +123,7 @@ fn main() {
     // proposes them all in one group.
     writer.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 10,
-        segments_per_tier: 2,
+        segments_per_tier: 2.0,
         max_merged_segment_size: 1_000_000,
         reclaim_weight: 1.0,
         floor_segment_size: 100_000,

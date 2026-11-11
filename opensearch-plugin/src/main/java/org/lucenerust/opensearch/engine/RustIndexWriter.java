@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch.engine;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexCommit;
@@ -11,13 +13,18 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LiveIndexWriterConfig;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.MergePolicy;
+import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.TieredMergePolicy;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
+import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.engine.DocumentIndexWriter;
@@ -34,6 +41,7 @@ import java.lang.invoke.MethodType;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -58,10 +66,13 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * IndexWriter.commit} iterates its live commit data after {@code flushAllThreads} -- so the maximum
  * sequence number it records covers every operation the commit holds.
  *
- * <p><b>Refresh is a commit.</b> Java readers open commits ({@link #acquireLatest}), so making new
- * documents visible publishes a {@code segments_N} with the live commit data. Every commit is
- * therefore a complete recovery point. The writer's merges run on its merge threads ({@code
- * index.merge.scheduler.*}) over committed segments, and a merged segment is in the next commit.
+ * <p><b>Refresh is not a commit.</b> A refresh flushes the buffers into segments and opens a Java
+ * reader on the writer's live segment list ({@link #acquireNrt}), as {@code IndexWriter.getReader}
+ * does; nothing is synced. Only {@link #commit} (an OpenSearch flush) writes a {@code segments_N}
+ * with the live commit data, so every commit is a complete recovery point and the translog covers
+ * the rest. Live views of the buffers are keyed by the version of the segment list a reader opened,
+ * an NRT snapshot's as a commit's. The writer's merges run on its merge threads ({@code
+ * index.merge.scheduler.*}); a merged segment is in the next reader and the next commit.
  *
  * <p><b>Commit points are OpenSearch's to drop.</b> After every commit the deletion policy the
  * engine passes (its {@code CombinedDeletionPolicy}) sees the full list, exactly as Lucene's {@code
@@ -73,8 +84,11 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * it, which is how the engine knows to fail the shard.
  */
 final class RustIndexWriter implements DocumentIndexWriter {
+    private static final Logger LOGGER = LogManager.getLogger(RustIndexWriter.class);
+
     private final Directory directory;
     private final long handle;
+    private final int indexCreatedVersionMajor;
     private final FieldRegistry registry;
     private final DocumentEncoder encoder;
     private final IndexWriterConfig config;
@@ -100,7 +114,35 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
+    /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
+    private boolean liveSearch;
+    /** How old a view of the buffers a search may read ({@code index.lucene_rust.realtime_max_staleness}). */
+    private volatile long liveStalenessNanos;
+    /** The reader over the view searches share under {@link #liveStalenessNanos}, kept until a refresh. */
+    private final SharedLiveReader sharedLive = new SharedLiveReader();
+    /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
+    private String partitionField;
+    /** The newest segment list version whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
+    private long liveReleased = -1;
+    private final Object liveLock = new Object();
+    /** The leaf's field infos and the registry size they were built at; under {@link #liveLock}. */
+    private org.apache.lucene.index.FieldInfos liveInfos;
+    private int liveInfosSize = -1;
     private boolean policyInitialized;
+    /** The merge policy settings last sent to the writer; under {@link #lock}. */
+    private double[] mergePolicySettings;
+    /** What {@link #setPluggableMergePolicy} last sent; under {@link #lock}. */
+    private double[] pluggableMergePolicySettings;
+    /** The writer options last sent ({@link #setOptions}); under {@link #lock}. */
+    private double[] writerOptions;
+    /**
+     * The merge-on-flush wait last set, or -1 while no {@code MergeOnFlushMergePolicy} wraps the
+     * merge policy; under {@link #lock}. The wrapper copies the policy's settings when it is set, so
+     * a change to them sets it again.
+     */
+    private long mergeOnFlushPolicyWait = -1;
+    /** The BP reordering settings last sent to the writer; under {@link #lock}. */
+    private BpReorderSettings.Values bpReorder;
     private volatile long lastCommitMaxDoc;
     private volatile long latestGeneration;
 
@@ -116,6 +158,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     ) {
         this.directory = directory;
         this.handle = handle;
+        this.indexCreatedVersionMajor = indexCreatedVersionMajor;
         this.registry = new FieldRegistry(this::register);
         this.encoder = new DocumentEncoder(registry, analyzer, similarity, indexCreatedVersionMajor, softDeletesField, formats);
         this.config = new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(softDeletesField);
@@ -125,16 +168,52 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * {@code sort} as {@code Lucene99SegmentInfoFormat} writes it into a {@code .si}: the field
+     * count, then each field's {@code SortFieldProvider} name and body. Null for no sort.
+     */
+    static byte[] encodeIndexSort(org.apache.lucene.search.Sort sort) throws IOException {
+        if (sort == null) {
+            return null;
+        }
+        org.apache.lucene.store.ByteBuffersDataOutput out = new org.apache.lucene.store.ByteBuffersDataOutput();
+        org.apache.lucene.search.SortField[] fields = sort.getSort();
+        out.writeVInt(fields.length);
+        for (org.apache.lucene.search.SortField f : fields) {
+            org.apache.lucene.index.IndexSorter sorter = f.getIndexSorter();
+            if (sorter == null) {
+                throw new IllegalArgumentException("cannot serialize sort field " + f);
+            }
+            out.writeString(sorter.getProviderName());
+            org.apache.lucene.index.SortFieldProvider.write(f, out);
+        }
+        return out.toArrayCopy();
+    }
+
+    /**
      * Opens the writer over {@code indexPath} (the store's directory, which must hold a commit), and
      * hands every existing commit to {@code deletionPolicy.onInit}, as {@code IndexWriter}'s
-     * constructor does.
+     * constructor does. With a {@code partitionField}, each document goes to the segments of its
+     * partition ({@link #partition}). With an {@code indexSort}, every segment is written in its
+     * order, and {@code parentField} (when not null) marks each block's last document, as
+     * {@code IndexWriterConfig.setIndexSort} and {@code setParentField} have it.
      */
     static RustIndexWriter open(
         Directory directory,
         Path indexPath,
         double ramBufferMb,
         boolean faultInjection,
+        boolean sparse,
+        boolean liveSearch,
+        boolean adaptiveDocValues,
+        boolean zstdTerms,
+        boolean mergeLz4Hc,
+        String partitionField,
+        boolean knn,
+        org.apache.lucene.search.Sort indexSort,
+        String parentField,
         int maxDocs,
+        int storedFields,
+        int compressionLevel,
         Analyzer analyzer,
         Similarity similarity,
         int indexCreatedVersionMajor,
@@ -146,12 +225,24 @@ final class RustIndexWriter implements DocumentIndexWriter {
         org.apache.lucene.codecs.Codec codec
     ) throws IOException {
         installCommitDataUpcall();
+        RustMergeScheduler.installUpcall();
         long[] out = new long[1];
         int status = NativeBridge.writerOpen(
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
             ramBufferMb,
             faultInjection,
+            sparse,
+            liveSearch,
+            adaptiveDocValues,
+            zstdTerms,
+            mergeLz4Hc,
+            partitionField != null,
+            knn,
+            encodeIndexSort(indexSort),
+            parentField == null ? null : parentField.getBytes(StandardCharsets.UTF_8),
             maxDocs,
+            storedFields,
+            compressionLevel,
             out
         );
         if (status != NativeBridge.OK) {
@@ -173,6 +264,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
             w.minRetainedSeqNo = minRetainedSeqNo;
             w.breaker = breaker;
             w.faultInjection = faultInjection;
+            w.liveSearch = liveSearch;
+            w.partitionField = partitionField;
+            if (indexSort != null) {
+                w.config.setIndexSort(indexSort);
+            }
+            if (parentField != null) {
+                w.config.setParentField(parentField);
+            }
             // IndexWriterConfig.setSoftDeletesField: the writer knows the field before any document
             // carries it, so the first soft update -- which may be the first use -- has a field to
             // land on.
@@ -255,7 +354,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * released as commits empty the buffer.
      */
     private void apply(Blob op, int docs) throws IOException {
-        long estimate = BUFFER_BYTES_PER_BLOB_BYTE * op.length();
+        long estimate = reservation(op.length());
         if (breaker != null) {
             if (REFUSABLE.get()) {
                 breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
@@ -307,6 +406,20 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** A conservative ratio of buffered bytes to blob bytes, for the pre-operation reservation. */
     private static final long BUFFER_BYTES_PER_BLOB_BYTE = 4;
 
+    /** Past this many blob bytes, per-document overheads are paid: see {@link #reservation}. */
+    private static final long LARGE_BLOB_BYTES = 1L << 20;
+
+    /**
+     * The bytes an operation of {@code blobBytes} reserves before it is applied: {@link
+     * #BUFFER_BYTES_PER_BLOB_BYTE} per byte up to {@link #LARGE_BLOB_BYTES}, and half that past
+     * it, where the writer's fixed per-document and per-field costs are spent and what is left is
+     * one copy of the text and stored bytes plus their postings.
+     */
+    static long reservation(long blobBytes) {
+        long small = Math.min(blobBytes, LARGE_BLOB_BYTES);
+        return BUFFER_BYTES_PER_BLOB_BYTE * small + BUFFER_BYTES_PER_BLOB_BYTE / 2 * (blobBytes - small);
+    }
+
     /** Trues the breaker up to the writer's own count. */
     private void reconcileBreaker() {
         if (breaker == null) {
@@ -346,14 +459,15 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public long addDocument(ParseContext.Document doc, Term uid) throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.add(List.of(doc)), 1);
+        List<ParseContext.Document> docs = List.of(doc);
+        apply(encoder.add(partition(docs), docs), 1);
         return 0;
     }
 
     @Override
     public long addDocuments(List<ParseContext.Document> docs, Term uid) throws IOException {
         ensureOpen();
-        apply(encoder.add(docs), docs.size());
+        apply(encoder.add(partition(docs), docs), docs.size());
         return 0;
     }
 
@@ -361,6 +475,81 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void addDocument(Iterable<? extends IndexableField> doc) throws IOException {
         ensureOpen();
         apply(encoder.add(List.of(doc)), 1);
+    }
+
+    /**
+     * The partition of a block of documents: the value of the partition field on its root document,
+     * which OpenSearch puts last (nested documents before their parent). A keyword's value is its
+     * doc-values bytes (UTF-8, or {@code 0x} and hex for bytes that are not, such as an ip's); a
+     * numeric's or date's is its long; with several values, the smallest. Null -- the shard's default
+     * partition -- without a partition field or a value. A value the field holds only as analyzed
+     * text is refused: a partition is one exact value.
+     */
+    String partition(List<? extends Iterable<? extends IndexableField>> docs) {
+        if (partitionField == null || docs.isEmpty()) {
+            return null;
+        }
+        BytesRef bytes = null;
+        boolean numeric = false;
+        long number = Long.MAX_VALUE;
+        BytesRef indexed = null;
+        boolean text = false;
+        for (IndexableField f : docs.get(docs.size() - 1)) {
+            if (f.name().equals(partitionField) == false) {
+                continue;
+            }
+            switch (f.fieldType().docValuesType()) {
+                case SORTED, SORTED_SET -> {
+                    BytesRef v = f.binaryValue();
+                    if (bytes == null || v.compareTo(bytes) < 0) {
+                        bytes = v;
+                    }
+                }
+                case NUMERIC, SORTED_NUMERIC -> {
+                    numeric = true;
+                    number = Math.min(number, f.numericValue().longValue());
+                }
+                default -> {
+                    if (f.fieldType().indexOptions() == org.apache.lucene.index.IndexOptions.NONE) {
+                        continue;
+                    }
+                    if (f.fieldType().tokenized()) {
+                        text = true;
+                    } else if (f.binaryValue() != null && (indexed == null || f.binaryValue().compareTo(indexed) < 0)) {
+                        // A keyword without doc values: its indexed term.
+                        indexed = f.binaryValue();
+                    }
+                }
+            }
+        }
+        if (bytes != null) {
+            return partitionString(bytes);
+        }
+        if (numeric) {
+            return Long.toString(number);
+        }
+        if (indexed != null) {
+            return partitionString(indexed);
+        }
+        if (text) {
+            throw new IllegalArgumentException(
+                "the partition field [" + partitionField + "] must be a keyword, numeric, date or ip field, not text"
+            );
+        }
+        return null;
+    }
+
+    /** A partition value's bytes as the string the segment records: UTF-8, or {@code 0x} and hex. */
+    private static String partitionString(BytesRef v) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(v.bytes, v.offset, v.length))
+                .toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            return "0x" + java.util.HexFormat.of().formatHex(v.bytes, v.offset, v.offset + v.length);
+        }
     }
 
     @Override
@@ -373,7 +562,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         Field... softDeletesField
     ) throws IOException {
         ensureOpen();
-        apply(encoder.softUpdate(uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
+        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), docs.size());
     }
 
     @Override
@@ -381,7 +570,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         throws IOException {
         ensureOpen();
         maybeInjectFault(doc);
-        apply(encoder.softUpdate(uid, List.of(doc), onlySoftDeletesField(softDeletesField)), 1);
+        List<ParseContext.Document> docs = List.of(doc);
+        apply(encoder.softUpdate(partition(docs), uid, docs, onlySoftDeletesField(softDeletesField)), 1);
     }
 
     @Override
@@ -547,11 +737,162 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * The merge policy's settings, as {@code IndexWriterConfig.setMergePolicy} hands the shard's
+     * {@code TieredMergePolicy} to {@code IndexWriter}; sent again only when one changed.
+     */
+    void setMergePolicy(TieredMergePolicy policy) throws IOException {
+        double[] settings = {
+            policy.getMaxMergeAtOnce(),
+            policy.getSegmentsPerTier(),
+            policy.getMaxMergedSegmentMB(),
+            policy.getFloorSegmentMB(),
+            policy.getDeletesPctAllowed(),
+            policy.getForceMergeDeletesPctAllowed() };
+        synchronized (lock) {
+            if (Arrays.equals(settings, mergePolicySettings)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetMergePolicy(
+                    handle,
+                    policy.getMaxMergeAtOnce(),
+                    policy.getSegmentsPerTier(),
+                    megabytes(policy.getMaxMergedSegmentMB()),
+                    megabytes(policy.getFloorSegmentMB()),
+                    policy.getDeletesPctAllowed(),
+                    policy.getForceMergeDeletesPctAllowed()
+                ),
+                "setting the merge policy"
+            );
+            mergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
+        }
+    }
+
+    /**
+     * The shard's merge policy when it is not a {@code TieredMergePolicy}: a {@code
+     * LogByteSizeMergePolicy}'s settings, {@code NoMergePolicy}, or ({@code null}) the tiered policy
+     * {@link #setMergePolicy} configures; sent again only when one changed.
+     */
+    void setPluggableMergePolicy(MergePolicy policy) throws IOException {
+        int kind = NativeBridge.MERGE_POLICY_TIERED;
+        LogByteSizeMergePolicy log = null;
+        if (policy instanceof LogByteSizeMergePolicy l) {
+            kind = NativeBridge.MERGE_POLICY_LOG_BYTE_SIZE;
+            log = l;
+        } else if (policy instanceof NoMergePolicy) {
+            kind = NativeBridge.MERGE_POLICY_NONE;
+        }
+        double[] settings = log == null
+            ? new double[] { kind }
+            : new double[] {
+                kind,
+                log.getMergeFactor(),
+                log.getMinMergeMB(),
+                log.getMaxMergeMB(),
+                log.getMaxMergeMBForForcedMerge(),
+                log.getMaxMergeDocs(),
+                log.getNoCFSRatio(),
+                log.getMaxCFSSegmentSizeMB() };
+        synchronized (lock) {
+            if (Arrays.equals(settings, pluggableMergePolicySettings)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetPluggableMergePolicy(
+                    handle,
+                    kind,
+                    log == null ? 0 : log.getMergeFactor(),
+                    log == null ? 0 : megabytes(log.getMinMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMB()),
+                    log == null ? 0 : megabytes(log.getMaxMergeMBForForcedMerge()),
+                    log == null ? 0 : log.getMaxMergeDocs(),
+                    log == null ? 0 : log.getNoCFSRatio(),
+                    log == null ? 0 : megabytes(log.getMaxCFSSegmentSizeMB())
+                ),
+                "setting the merge policy"
+            );
+            pluggableMergePolicySettings = settings;
+            if (mergeOnFlushPolicyWait >= 0) {
+                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+            }
+        }
+    }
+
+    /**
+     * {@code IndexWriterConfig.setUseCompoundFile}, the merge policy's {@code setNoCFSRatio} and
+     * {@code setMaxCFSSegmentSizeMB}, {@code setCheckPendingFlushUpdate}, and OpenSearch's
+     * {@code ShuffleForcedMergePolicy}; sent again only when one changed.
+     */
+    void setOptions(boolean useCompoundFile, double noCfsRatio, double maxCfsSegmentMb, boolean checkPendingFlush, boolean shuffle)
+        throws IOException {
+        double[] options = { useCompoundFile ? 1 : 0, noCfsRatio, maxCfsSegmentMb, checkPendingFlush ? 1 : 0, shuffle ? 1 : 0 };
+        synchronized (lock) {
+            if (Arrays.equals(options, writerOptions)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetOptions(handle, useCompoundFile, noCfsRatio, megabytes(maxCfsSegmentMb), checkPendingFlush, shuffle),
+                "setting the writer options"
+            );
+            writerOptions = options;
+        }
+    }
+
+    /**
+     * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.lucene_rust.bp_reorder.*}
+     * describes it; sent again only when a value changed.
+     */
+    void setBpReorder(BpReorderSettings.Values values) throws IOException {
+        synchronized (lock) {
+            if (values.equals(bpReorder) || (bpReorder == null && values.enabled() == false)) {
+                return;
+            }
+            check(
+                NativeBridge.writerSetBpReorder(
+                    handle,
+                    values.enabled(),
+                    values.minDocFreq(),
+                    values.maxDocFreq(),
+                    values.minPartitionSize(),
+                    values.maxIters(),
+                    values.ramBudgetMb(),
+                    values.minMergeDocs(),
+                    values.minMergeRatio(),
+                    values.fields()
+                ),
+                "setting bp_reorder"
+            );
+            bpReorder = values;
+        }
+    }
+
+    /** {@code TieredMergePolicy}'s own MB-to-bytes conversion, capped as its setters cap it. */
+    private static long megabytes(double mb) {
+        return mb > Long.MAX_VALUE / 1024 / 1024 ? Long.MAX_VALUE : (long) (mb * 1024 * 1024);
+    }
+
+    /**
+     * {@code index.lucene_rust.knn.ivf_partition_clusters}: IVF fields clustered per partition of the
+     * index sort's first field, {@code 0} off.
+     */
+    void setIvfPartitionClusters(int minVectors) throws IOException {
+        synchronized (lock) {
+            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting ivf_partition_clusters");
+        }
+    }
+
+    /**
      * {@code IndexWriterConfig.setMaxFullFlushMergeWaitMillis}, with the merge policy wrapped in
      * {@code MergeOnFlushMergePolicy} when {@code mergeOnFlushPolicy}.
      */
     void setMergeOnFlush(long waitMillis, boolean mergeOnFlushPolicy) throws IOException {
-        check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+        synchronized (lock) {
+            check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+            mergeOnFlushPolicyWait = mergeOnFlushPolicy ? waitMillis : -1;
+        }
     }
 
     private void applyRetention() throws IOException {
@@ -612,25 +953,185 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * Makes every buffered change visible: commits it if there is any, then pins the newest commit's
-     * files for a reader. Returns {@code {generation, hold}}; release the hold with {@link
-     * #releaseHold} once the reader is closed.
+     * Flushes what is buffered and pins the writer's live segment list for a reader: returns its
+     * {@code segments_N} bytes; {@code out[0]} is the hold to {@link #releaseHold} when the reader
+     * closes, {@code out[1]} the last commit's generation. Adds go on meanwhile. The flushed buffers
+     * leave the circuit breaker.
      */
-    long[] acquireLatest() throws IOException {
-        synchronized (lock) {
+    byte[] acquireNrt(long[] out) throws IOException {
+        indexing.readLock().lock();
+        try {
             ensureOpen();
-            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
-                commitLocked();
-            }
-            long gen = latestGeneration;
-            long[] hold = new long[1];
-            check(NativeBridge.writerHoldCommit(handle, gen, hold), "holding commit " + gen);
-            return new long[] { gen, hold[0] };
+            byte[][] bytes = new byte[1][];
+            check(NativeBridge.writerNrtSnapshot(handle, out, bytes), "opening a near-real-time view");
+            return bytes[0];
+        } finally {
+            reconcileBreaker();
+            indexing.readLock().unlock();
         }
     }
 
     long latestGeneration() {
         return latestGeneration;
+    }
+
+    // ---- live search ----
+
+    /** Whether searches read the buffered documents. */
+    boolean liveSearch() {
+        return liveSearch;
+    }
+
+    /** How long, at most, a write takes to show in a search: zero when every search sees every write before it. */
+    long liveStalenessNanos() {
+        return liveStalenessNanos;
+    }
+
+    /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeBridge#writerSetLiveStaleness}). */
+    void setLiveStaleness(org.opensearch.common.unit.TimeValue max) throws IOException {
+        if (liveSearch == false || max.millis() == 0) {
+            return;
+        }
+        synchronized (lock) {
+            ensureOpen();
+            check(NativeBridge.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
+        }
+        liveStalenessNanos = max.nanos();
+    }
+
+    /**
+     * Makes every later search read a view of the buffers opened from now on; false when it could not
+     * (the writer busy with a force merge, or closed), to be tried again.
+     */
+    boolean refreshLiveShared() throws IOException {
+        if (indexing.readLock().tryLock() == false) {
+            return false;
+        }
+        try {
+            if (closed || nativeClosed) {
+                return false;
+            }
+            check(NativeBridge.writerLiveRefreshShared(handle), "refreshing the shared realtime view");
+            return true;
+        } finally {
+            indexing.readLock().unlock();
+        }
+    }
+
+    /**
+     * A view of the documents a reader of the segment list at {@code version} lacks: its handle and blob ({@link
+     * NativeBridge#liveViewOpen}), or null when the buffers cannot be read for that list (they were
+     * let go, a delete by query reached them, the writer is closed); the reader is then searched
+     * alone.
+     */
+    LiveViewHandle openLiveView(long version) {
+        if (liveSearch == false || indexing.readLock().tryLock() == false) {
+            return null;
+        }
+        try {
+            if (closed || nativeClosed) {
+                return null;
+            }
+            long[] view = new long[1];
+            byte[][] blob = new byte[1][];
+            if (NativeBridge.liveViewOpen(handle, version, view, blob) != NativeBridge.OK) {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("lucene-rust: no view of the buffers for segment list version {}: {}", version, NativeBridge.lastError());
+                }
+                return null;
+            }
+            return new LiveViewHandle(view[0], blob[0]);
+        } finally {
+            indexing.readLock().unlock();
+        }
+    }
+
+    /** An open view: {@link NativeBridge#liveViewClose} it once nothing reads it. */
+    record LiveViewHandle(long id, byte[] blob) {}
+
+    /** The reader over the view searches share, kept until the next refresh. */
+    SharedLiveReader sharedLive() {
+        return sharedLive;
+    }
+
+    /**
+     * Lets the kept reader over the shared view go, on a refresh or, with {@code close}, for good
+     * when the writer closes.
+     */
+    private void releaseSharedLive(boolean close) {
+        OpenSearchDirectoryReader old = sharedLive.clear(close);
+        if (old != null) {
+            try {
+                old.decRef();
+            } catch (IOException e) {
+                LOGGER.warn("lucene-rust: closing a realtime search's view failed", e);
+            }
+        }
+    }
+
+    /**
+     * Lets go of the buffered documents a reader of the segment list at {@code version} already has,
+     * once no view reads them: every new search reads that list or a newer one.
+     */
+    void releaseLive(long version) {
+        synchronized (liveLock) {
+            if (liveSearch == false || version <= liveReleased) {
+                return;
+            }
+            indexing.readLock().lock();
+            try {
+                if (nativeClosed == false && NativeBridge.writerReleaseLive(handle, version) == NativeBridge.OK) {
+                    liveReleased = version;
+                }
+            } finally {
+                indexing.readLock().unlock();
+            }
+        }
+    }
+
+    /**
+     * The registered fields as Lucene field infos, for the leaf of buffered documents: the schema
+     * every segment writes, so the leaf agrees with the segments' field infos.
+     */
+    org.apache.lucene.index.FieldInfos liveFieldInfos() {
+        synchronized (liveLock) {
+            int size = registry.size();
+            if (size != liveInfosSize) {
+                liveInfos = buildLiveFieldInfos();
+                liveInfosSize = size;
+            }
+            return liveInfos;
+        }
+    }
+
+    private org.apache.lucene.index.FieldInfos buildLiveFieldInfos() {
+        List<org.apache.lucene.index.FieldInfo> list = new ArrayList<>();
+        for (FieldRegistry.Entry e : registry.entries()) {
+            FieldSchema f = e.schema();
+            list.add(
+                new org.apache.lucene.index.FieldInfo(
+                    f.name,
+                    e.number(),
+                    f.storeTermVectors,
+                    f.omitNorms,
+                    false,
+                    f.indexOptions,
+                    f.docValuesType,
+                    f.skipIndex,
+                    -1,
+                    new HashMap<>(f.attributes),
+                    f.pointDimensionCount,
+                    f.pointIndexDimensionCount,
+                    f.pointNumBytes,
+                    f.vectorDimension,
+                    f.vectorEncoding,
+                    f.vectorSimilarity,
+                    f.softDeletes,
+                    false
+                )
+            );
+        }
+        return new org.apache.lucene.index.FieldInfos(list.toArray(new org.apache.lucene.index.FieldInfo[0]));
     }
 
     void releaseHold(long hold) {
@@ -694,7 +1195,36 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public boolean hasPendingMerges() {
-        return false;
+        if (closed) {
+            return false;
+        }
+        boolean[] pending = new boolean[1];
+        return NativeBridge.writerMergeState(handle, pending, new double[1]) == NativeBridge.OK && pending[0];
+    }
+
+    /** The merge scheduler's IO rate limit in MB/s, infinite when merges are not throttled. */
+    double mergeIoRateMbPerSec() {
+        double[] rate = { Double.POSITIVE_INFINITY };
+        if (closed == false) {
+            NativeBridge.writerMergeState(handle, new boolean[1], rate);
+        }
+        return rate[0];
+    }
+
+    /**
+     * {@code IndexWriterConfig.setMergedSegmentWarmer}: {@code warmer} gets every merged segment
+     * before its merge is published.
+     */
+    void setMergedSegmentWarmer(IndexWriter.IndexReaderWarmer warmer) {
+        synchronized (lock) {
+            ensureOpen();
+            RustMergedSegmentWarmer.install(handle, directory, indexCreatedVersionMajor, warmer);
+        }
+    }
+
+    /** The native writer's handle. */
+    long handle() {
+        return handle;
     }
 
     // ---- state ----
@@ -765,11 +1295,15 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void close() throws IOException {
         synchronized (lock) {
             closed = true;
+            // After closed: a search opening a view now keeps no reader of it.
+            releaseSharedLive(true);
             indexing.writeLock().lock();
             try {
                 if (nativeClosed == false) {
                     nativeClosed = true;
                     NativeBridge.writerClose(handle);
+                    RustMergeScheduler.detach(handle);
+                    RustMergedSegmentWarmer.remove(handle);
                 }
             } finally {
                 indexing.writeLock().unlock();
@@ -810,7 +1344,30 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public void beforeRefresh() {}
 
     @Override
-    public void afterRefresh(boolean didRefresh) {}
+    public void afterRefresh(boolean didRefresh) {
+        if (didRefresh) {
+            releaseSharedLive(false);
+        }
+    }
+
+    /**
+     * Lets the kept reader over the shared view go after each refresh of the searchers' reader
+     * manager: a search between the internal refresh and its own may have kept one over the reader
+     * it replaced.
+     */
+    org.apache.lucene.search.ReferenceManager.RefreshListener externalRefreshListener() {
+        return new org.apache.lucene.search.ReferenceManager.RefreshListener() {
+            @Override
+            public void beforeRefresh() {}
+
+            @Override
+            public void afterRefresh(boolean didRefresh) {
+                if (didRefresh) {
+                    releaseSharedLive(false);
+                }
+            }
+        };
+    }
 
     @Override
     public Releasable obtainWriteLockOnAllMap() {

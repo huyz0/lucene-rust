@@ -59,7 +59,52 @@ will refuse the call instead.
 The node loads the library and checks its ABI version at startup; a missing
 or mismatched library stops the node with one line saying which file and
 platform. OpenSearch accepts one `QueryPhaseSearcher` per node, so this plugin
-cannot be installed alongside `neural-search`.
+cannot be installed alongside `neural-search`. It serves neural-search
+itself, over its own ml-commons and k-NN: the `neural` and `neural_knn_query`
+queries on `knn_vector` fields; the `text_embedding`, `sparse_encoding`,
+`text_image_embedding` and `text_chunking` ingest processors; the
+`neural_query_enricher` and `neural_sparse_two_phase_processor` request
+processors; the `rerank` response processor (`ml_opensearch` cross-encoder
+and `by_field`) with its `ext.rerank` context; neural-search's settings and
+`_plugins/_neural/warmup` and `clear_cache` for sparse indexes; the `semantic`
+field, whose mapping gains the `knn_vector` or `rank_features` field its model
+needs and whose documents are embedded at ingest without a pipeline (chunking,
+`model_selection`, `dense_embedding_config`, `sparse_encoding_config`);
+k-NN's `mmr` search extension and `knn_default_excludes` system processor
+(on with `cluster.search.enabled_system_generated_factories`, as in stock); ml-commons' `bert-uncased` and
+`mbert-uncased` analyzers and `hf_model_tokenizer` type; and learned sparse
+search: the `sparse_vector` field (`seismic` method, `lucene` engine) on an
+`index.sparse` index, whose segments the Rust engine writes in neural-search's
+format (neural-search opens them unchanged), and the `neural_sparse` query by
+`query_tokens` or by `query_text` (a model, an analyzer, or `bert-uncased` by
+default), with `method_parameters` (`top_n`, `k`, `heap_factor`, `filter`),
+also on `rank_features` fields. `scripts/check-neural-plugin.py` compares them
+with stock. The `native` sparse engine is refused. Model inference runs on
+the plugin's own ml-commons, so with `opensearch-ml` installed the model-backed
+queries and processors fail with a message saying so.
+
+### `hex_id` fields
+
+`"type": "hex_id"` is a `keyword` for trace, span and request ids. A value of
+lowercase hex digits (even length) is indexed and doc-valued as its bytes,
+half its characters; any other value (uppercase, odd length, dashes, other
+text) is kept as its exact UTF-8. Results are a `keyword`'s on the same data:
+`term`, `terms`, `exists` and `case_insensitive` `term` match the same
+documents, and sort values, aggregation keys, `docvalue_fields`, `fields`,
+scripts and derived `_source` give back the original strings. The
+differences: non-canonical values sort after the canonical ones, so on mixed
+data a document's values, a sort, a terms aggregation's `_key` order and
+count ties, and composite paging order differently; `prefix`, `wildcard`,
+`regexp`, `fuzzy` and `range` queries are refused, as on an `ip`; whatever
+reads the index terms as text sees the bytes (a terms aggregation's regex
+`include`/`exclude`, highlighting, the `term` suggester, `more_like_this`);
+`cardinality` hashes the bytes, so its estimate can differ by a unit; and a
+non-hex value may be 2 bytes shorter than Lucene's term limit. Parameters:
+`index`, `doc_values`, `null_value`, `ignore_above`, `meta`. The segments are plain Lucene terms and `SORTED_SET` doc values. 5M
+random 32-character trace ids on the Rust engine, one segment: 101 MiB less
+than `keyword` (shard 506 → 405 MiB: terms 144 → 110, doc values 163 → 96),
+with `term`, `terms` and sorted lookups within 2% of `keyword`'s latency
+(`e2e/bench_hex_id.py`; `e2e/hex_id_matrix.py` is the parity check).
 
 ## Operate
 
@@ -69,6 +114,8 @@ cannot be installed alongside `neural-search`.
 | `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Every encodable shape currently measures faster, so the two values agree |
 | `index.lucene_rust.fetch.enabled` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API |
 | `lucene_rust.fetch.reader_wrapper` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
+| `index.lucene_rust.bp_reorder.enabled` (index, dynamic, default `false`) | Lucene's `BPReorderingMergePolicy` around the shard's merge policy: forced merges, and natural merges of at least `bp_reorder.min_merge_docs` (default 65536) documents, renumber documents so ones sharing terms sit together (smaller postings, faster queries). Output segments are ordinary Lucene segments. Tuning: `bp_reorder.fields` (default every indexed field), `min_doc_freq` (4096), `max_doc_freq` (1.0), `min_partition_size` (32), `max_iters` (20), `ram_budget` (256mb), `min_merge_ratio` (0.0). Ignored on sorted and sparse indexes, and a merge of segments holding nested documents keeps their order (Lucene needs a parent field to keep blocks together, and OpenSearch sets none) |
+| `lucene_rust_logs@settings`, `lucene_rust_logs@mappings` (component templates) | the logs preset, opt-in per index template: see [`docs/logs-preset.md`](../docs/logs-preset.md). `lucene_rust.logs_preset.templates.enabled` (node, default `true`) registers them |
 | `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`native_fetches`, `native_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
 
 ### Encryption at rest

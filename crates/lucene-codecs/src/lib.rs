@@ -16,6 +16,7 @@
 // including the module file's own `//!` lines -- in the crate-root scope,
 // which silently breaks every intra-doc link the module writes to its own
 // items. See `docs/rustdoc-gate.md`.
+pub mod adaptive_values;
 pub mod automaton;
 pub mod backward_codecs;
 pub mod bitvectors;
@@ -26,6 +27,8 @@ pub mod blocktree;
 mod blocktree_writer;
 pub mod blocktreeords;
 pub mod bloom;
+pub mod buffer_lists;
+pub mod buffer_vectors;
 pub mod codec;
 pub mod codecs;
 pub mod completion;
@@ -53,6 +56,7 @@ pub mod live_docs;
 pub mod live_docs_writer;
 pub mod lowercase_ascii;
 pub mod lz4;
+pub mod lz4_hc;
 pub mod memory;
 pub mod monotonic_block_packed;
 pub mod norms;
@@ -75,6 +79,7 @@ pub mod segment_state;
 pub mod simpletext;
 pub mod stored_fields;
 pub mod stored_fields_writer;
+pub mod substring;
 pub mod suggest;
 pub mod term_ngram;
 pub mod term_vectors;

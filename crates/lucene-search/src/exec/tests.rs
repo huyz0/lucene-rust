@@ -2886,6 +2886,12 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
     let points = || Clause::from(PointRangeQuery::long_range("num", &[-1000], &[1000]).unwrap());
     let dv = || Clause::from(NumericDocValuesRangeQuery::new("num", -1000, 1000));
     let iodv = || Clause::from(IndexOrDocValuesQuery::new(points(), dv()));
+    let iodv_native = || {
+        Clause::from(IndexOrDocValuesQuery::new(
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("num", -1000, 1000)),
+            dv(),
+        ))
+    };
     let hits = |filter: Clause, lead: bool| {
         let mut q = BooleanQuery::new();
         if lead {
@@ -2912,18 +2918,40 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
         let (by_points, none) = hits(points(), lead);
         assert!(none.is_empty());
         let (by_dv, _) = hits(dv(), lead);
-        let (either, plans) = hits(iodv(), lead);
-        assert!(!either.is_empty());
-        assert_eq!(either, by_points);
-        assert_eq!(either, by_dv);
         let want = if lead {
             IndexOrDocValuesPlan::DocValues
         } else {
             IndexOrDocValuesPlan::Index
         };
-        assert!(!plans.is_empty());
-        assert!(plans.iter().all(|&p| p == want), "lead {lead}: {plans:?}");
+        // The index side as `PointRangeQuery`, and as the native long range
+        // the plugin sends for one (`NODE_POINT_RANGE_OR_DV`), whose cost is
+        // the same estimate.
+        for either in [iodv(), iodv_native()] {
+            let (either, plans) = hits(either, lead);
+            assert!(!either.is_empty());
+            assert_eq!(either, by_points);
+            assert_eq!(either, by_dv);
+            assert!(!plans.is_empty());
+            assert!(plans.iter().all(|&p| p == want), "lead {lead}: {plans:?}");
+        }
     }
+    // Counted as its index side counts (`Weight.count`), alone or not.
+    for q in [iodv(), iodv_native()] {
+        let lone = |c: Clause| BooleanQuery {
+            filter: vec![c],
+            ..BooleanQuery::default()
+        };
+        assert_eq!(
+            searcher.count(&lone(q)).unwrap(),
+            searcher.count(&lone(points())).unwrap()
+        );
+    }
+    // An empty native range has no index side, so no scorer.
+    let empty = Clause::from(IndexOrDocValuesQuery::new(
+        Clause::PointsRange(crate::query::PointsRangeQuery::new("num", 5, 4)),
+        NumericDocValuesRangeQuery::new("num", 5, 4),
+    ));
+    assert!(hits(empty, true).0.is_empty());
     // A segment without the field's doc values (or points): no scorer, as
     // Java's `null` supplier.
     let no_dv = Clause::from(IndexOrDocValuesQuery::new(
@@ -3620,5 +3648,66 @@ fn index_or_doc_values_fills_the_cache_from_its_index_side() {
         let (n, p) = run("mid");
         assert_eq!(n, 7_200);
         assert!(p.is_empty(), "{p:?}");
+    }
+}
+
+/// A boolean of one scoring clause and filters, searched for top scores,
+/// declines its own bulk scorers for `DefaultBulkScorer` over the scorer
+/// tree: the tree is composed from the clauses already built, so a point
+/// range filter walks its tree once per segment, not twice.
+#[test]
+fn a_lone_scoring_clause_with_filters_builds_each_filter_once() {
+    use super::ranges::RANGE_WALKS;
+    use crate::directory_reader::DirectoryReader;
+    use crate::index_searcher::IndexSearcher;
+    use crate::query::{BooleanQuery, Clause, PhraseQuery, PointsRangeQuery, TermQuery};
+    use lucene_index::document::{Document, LongPoint, Store, StringField, TextField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::upgrade::LATEST;
+
+    const DOCS: i64 = 20_000;
+    let dir = lucene_store::ByteBuffersDirectory::new();
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+        w.set_ram_buffer_size_mb(1024.0).unwrap();
+        for i in 0..DOCS {
+            let mut d = Document::new();
+            d.add(LongPoint::new("ts", &[(i * 7919) % DOCS]).unwrap());
+            if i % 50 == 0 {
+                d.add(StringField::new("tenant", "t1", Store::No));
+            }
+            let body = if i % 3 == 0 { "red fox" } else { "fox red" };
+            d.add(TextField::new("body", body, Store::No));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let mut segs = opened.as_open_segments();
+    for s in &mut segs {
+        s.cache = None;
+    }
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+    let norms: Vec<_> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segs, &norms).unwrap();
+    let scoring = [
+        Clause::Term(TermQuery::new("body", b"fox".to_vec())),
+        Clause::Phrase(PhraseQuery::new("body", ["red", "fox"].map(String::from))),
+    ];
+    for (must, want) in scoring.into_iter().zip([81u64, 27]) {
+        let q = BooleanQuery {
+            must: vec![must],
+            filter: vec![
+                Clause::Term(TermQuery::new("tenant", b"t1".to_vec())),
+                Clause::PointsRange(PointsRangeQuery::new("ts", 0, DOCS / 5)),
+            ],
+            ..BooleanQuery::default()
+        };
+        RANGE_WALKS.with(|n| n.set(0));
+        let top = searcher.search(&q, 10).unwrap();
+        assert_eq!(RANGE_WALKS.with(std::cell::Cell::get), segs.len());
+        assert_eq!(top.total_hits.value, want);
     }
 }

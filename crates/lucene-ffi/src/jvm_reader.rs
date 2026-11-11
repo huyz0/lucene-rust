@@ -38,7 +38,7 @@ use lucene_search::top_field::{
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
+    count_boolean_query_segment_with, search_boolean_query_multi_segment_maxscore_counting,
     search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
 use lucene_store::Directory;
@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 59;
+pub const JVM_ABI_VERSION: u32 = 135;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -81,7 +81,7 @@ const NODE_PHRASE: u8 = 7;
 const NODE_TERM_SET: u8 = 8;
 const NODE_PREFIX: u8 = 9;
 const NODE_WILDCARD: u8 = 10;
-const NODE_POINT_RANGE: u8 = 11;
+pub(crate) const NODE_POINT_RANGE: u8 = 11;
 const NODE_REGEXP: u8 = 12;
 const NODE_EXISTS: u8 = 13;
 const NODE_TERM_STATS: u8 = 14;
@@ -188,6 +188,20 @@ pub(crate) fn rewritten(query: JvmQuery) -> JvmQuery {
     }
 }
 
+/// `r`, a search's result over `sim`'s similarities, or the error a
+/// scripted similarity's scorer kept (a `SimScorer` cannot fail): the
+/// search's error, whatever else it returned.
+pub(crate) fn similarity_checked<T>(
+    sim: Option<&PerFieldSimilarity>,
+    r: Result<T, FfiStatus>,
+) -> Result<T, FfiStatus> {
+    use lucene_search::similarities::Similarity;
+    match sim.and_then(|s| s.take_failure()) {
+        Some(e) => Err(crate::clauses::map_search_error(e)),
+        None => r,
+    }
+}
+
 /// One decoded query blob.
 #[derive(Debug)]
 pub(crate) enum JvmQuery {
@@ -251,6 +265,11 @@ impl<'a> Cursor<'a> {
 
     pub(crate) fn f64(&mut self) -> Result<f64, FfiStatus> {
         Ok(f64::from_bits(self.i64()? as u64))
+    }
+
+    /// The bytes not read yet.
+    pub(crate) fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
     }
 
     pub(crate) fn len(&mut self) -> Result<usize, FfiStatus> {
@@ -498,6 +517,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             reader,
             live_docs,
             deleted,
+            commit_live: std::sync::Mutex::new(None),
         }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
@@ -607,10 +627,14 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             handle,
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
-        let (hits, total, lower_bound) = match min_score {
-            Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim)?,
-            None => search(&h, &query, top_n, count_limit, sim)?,
-        };
+        let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
+        let (hits, total, lower_bound) = similarity_checked(
+            sim,
+            match min_score {
+                Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim),
+                None => search(&h, &query, top_n, count_limit, sim),
+            },
+        )?;
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -645,6 +669,11 @@ const SORT_HALF_FLOAT: u8 = 9;
 /// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
 /// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
 const SORT_UNSIGNED_LONG: u8 = 10;
+/// A Painless `_script` key of type `number`
+/// ([`crate::jvm_painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
+/// only, then the script ([`crate::jvm_painless_score`]'s layout, context
+/// `3` or `4`).
+pub(crate) const SORT_SCRIPT: u8 = 11;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -674,7 +703,8 @@ const SORT_COUNT_SEGMENTS: u8 = 4;
 /// Sort-blob option: after the slices, `count: i32` and one `u8` per segment,
 /// `1` where the sort is a prefix of that segment's index sort
 /// (`TopFieldCollector.canEarlyTerminate`, which the JVM decides with
-/// `SortField.equals`).
+/// `SortField.equals`), `1 + p` where it is the index sort's keys from the
+/// `p`th on, `0` where neither.
 const SORT_INDEX_SORTED: u8 = 8;
 /// At most this many keys: OpenSearch's sorts are a handful, and each key
 /// costs a value per hit on the way back.
@@ -683,14 +713,16 @@ const MAX_SORT_KEYS: usize = 16;
 /// A decoded sort blob: the keys, the search-after document, whether to
 /// track the max score, the slices, `terminate_after` with whether its
 /// total counts whole segments ([`SORT_COUNT_SEGMENTS`]), and per segment
-/// whether the sort is a prefix of its index sort ([`SORT_INDEX_SORTED`]).
+/// where the sort sits in its index sort ([`SORT_INDEX_SORTED`]): the index
+/// sort key it begins at, `None` when it is none of the index sort's runs of
+/// keys.
 pub(crate) type DecodedSort = (
     Vec<SortField>,
     Option<FieldDoc>,
     bool,
     Vec<Vec<usize>>,
     Option<(u64, bool)>,
-    Vec<bool>,
+    Vec<Option<usize>>,
 );
 
 /// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
@@ -760,6 +792,19 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if ty == SORT_SCRIPT {
+            if flags & !SORT_REVERSE != 0 {
+                return Err(bad(format!("sort blob: _script key flags {flags:#x}")));
+            }
+            let source = crate::jvm_painless_score::PainlessSort::decode(&mut c)?;
+            keys.push(SortField::with_source(
+                "_script",
+                Arc::new(source),
+                flags & SORT_REVERSE != 0,
+            ));
+            lucene_geo.push(false);
+            continue;
+        }
         if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             lucene_geo.push(false);
@@ -910,8 +955,8 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         let n = c.len()?;
         for _ in 0..n {
             index_sorted.push(match c.u8()? {
-                0 => false,
-                1 => true,
+                0 => None,
+                at @ 1..=127 => Some(usize::from(at - 1)),
                 other => return Err(bad(format!("sort blob: index-sort flag {other}"))),
             });
         }
@@ -1225,19 +1270,26 @@ pub(crate) fn search_sorted_blobs(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound, max_score, terminated) = search_sorted(
-        &h,
-        &query,
-        &keys,
-        after.as_ref(),
-        top_n,
-        count_limit,
-        track,
-        &slices,
-        terminate_after,
-        &index_sorted,
-        min_score,
+    let query = similarity_checked(
         sim.as_ref(),
+        crate::jvm_join::resolve(&h, query, sim.as_ref()),
+    )?;
+    let (hits, total, lower_bound, max_score, terminated) = similarity_checked(
+        sim.as_ref(),
+        search_sorted(
+            &h,
+            &query,
+            &keys,
+            after.as_ref(),
+            top_n,
+            count_limit,
+            track,
+            &slices,
+            terminate_after,
+            &index_sorted,
+            min_score,
+            sim.as_ref(),
+        ),
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1329,6 +1381,7 @@ pub(crate) fn search_collapsed_blobs(
         handle,
         "ffi_jvm_reader_search_collapsed: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1372,7 +1425,7 @@ pub(crate) fn search_collapsed_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     if let Some((n, _)) = terminate_after {
-        let (top, cut) = lucene_search::top_field::search_collapsed_until(
+        let top_cut = lucene_search::top_field::search_collapsed_until(
             &segments,
             h.reader.segment_readers(),
             &q,
@@ -1385,7 +1438,8 @@ pub(crate) fn search_collapsed_blobs(
             track,
             n,
         )
-        .map_err(map_search_error)?;
+        .map_err(map_search_error);
+        let (top, cut) = similarity_checked(sim, top_cut)?;
         return encode_collapsed(&keys, &[top], cut.terminated);
     }
     let parts = lucene_search::top_field::search_collapsed(
@@ -1402,7 +1456,8 @@ pub(crate) fn search_collapsed_blobs(
         &slices,
         min_score,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let parts = similarity_checked(sim, parts)?;
     encode_collapsed(&keys, &parts, false)
 }
 
@@ -1499,6 +1554,7 @@ pub(crate) fn rescore_hits(
         handle,
         "ffi_jvm_reader_rescore: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1553,7 +1609,8 @@ pub(crate) fn rescore_hits(
         rescore_query_weight,
         mode,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let rescored = similarity_checked(sim, rescored)?;
     for (i, hit) in hits.iter().enumerate() {
         docs[i] = hit.doc;
         scores[i] = hit.score;
@@ -1844,6 +1901,19 @@ pub(crate) fn aggregate_counting_blobs(
         .map(|(s, t, total, _)| (s, t, total))
 }
 
+/// Whether a terms aggregation counts buffered documents' keyword runs in
+/// place; a test turns it off to compare with their encoded doc values.
+fn count_runs_in_place() -> bool {
+    #[cfg(test)]
+    {
+        !tests::ENCODED_RUNS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
 /// [`aggregate_counting_blobs`], also handing back each segment's live
 /// match count where the aggregations' pass counted it (`None` for a
 /// segment whose aggregations were answered without visiting its matches):
@@ -1873,6 +1943,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         handle,
         "ffi_jvm_reader_aggregate: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1909,7 +1980,13 @@ pub(crate) fn aggregate_counting_blobs_seen(
     // Each terms field's global ordinals, built once per reader and kept.
     let globals = terms
         .iter()
-        .map(|t| h.reader.global_ords(&t.field))
+        .map(|t| {
+            if count_runs_in_place() {
+                h.reader.global_ords_skipping_runs(&t.field)
+            } else {
+                h.reader.global_ords(&t.field)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
     // min_score scores the query: its fields' norms.
@@ -1928,7 +2005,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let (sliced, seen) = lucene_search::aggs::aggregate_sliced_counting(
+    let sliced = lucene_search::aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -1938,7 +2015,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
         &slices,
         min.as_ref(),
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let (sliced, seen) = similarity_checked(sim, sliced)?;
     let mut states = Vec::new();
     let mut results = Vec::new();
     for (m, t) in sliced {
@@ -2020,6 +2098,7 @@ pub(crate) fn count_terminates_blobs(
         handle,
         "ffi_jvm_reader_count_terminates: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -2067,8 +2146,16 @@ pub(crate) fn count_terminates_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n, min.as_ref())
-        .map_err(map_search_error)
+    let counted = lucene_search::terminate::count_terminates(
+        &segments,
+        &q,
+        &slices,
+        &iterate,
+        n,
+        min.as_ref(),
+    )
+    .map_err(map_search_error);
+    similarity_checked(sim, counted)
 }
 
 /// Whether a concurrent `size: 0` search's count stops early
@@ -2143,7 +2230,7 @@ pub(crate) fn search_sorted(
     track_max_score: bool,
     slices: &[Vec<usize>],
     terminate_after: Option<(u64, bool)>,
-    index_sorted: &[bool],
+    index_sorted: &[Option<usize>],
     min_score: Option<f32>,
     sim: Option<&PerFieldSimilarity>,
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
@@ -2161,18 +2248,6 @@ pub(crate) fn search_sorted(
             FfiStatus::Decode
         })?;
     }
-    let segments: Vec<OpenSegment<'_>> = opened
-        .as_open_segments()
-        .into_iter()
-        .zip(&h.live_docs)
-        .enumerate()
-        .map(|(i, (mut s, live))| {
-            s.live_docs = live.as_ref();
-            s.similarity = sim.map(|p| p as &dyn Similarity);
-            s.index_sort_prefix = index_sorted.get(i).copied().unwrap_or(false);
-            s
-        })
-        .collect();
     let q = match query {
         JvmQuery::Term(t) => BooleanQuery {
             must: vec![Clause::Term(t.clone())],
@@ -2180,6 +2255,26 @@ pub(crate) fn search_sorted(
         },
         JvmQuery::Boolean(b) => b.clone(),
     };
+    let mut segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+            s
+        })
+        .collect();
+    // The documents come in the sort's order where it begins the index
+    // sort, or where it follows index sort keys the query pins to one
+    // value each (`tenant = a`, sorted by the timestamp after it).
+    for (s, at) in segments.iter_mut().zip(index_sorted) {
+        s.index_sort_prefix = match *at {
+            None => false,
+            Some(0) => true,
+            Some(p) => lucene_search::pinned_sort_keys(s, &q).map_err(map_search_error)? >= p,
+        };
+    }
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
@@ -2419,6 +2514,283 @@ pub(crate) fn search(
     })
 }
 
+/// At most this many sub-queries in a hybrid blob (neural-search allows 5).
+const MAX_HYBRID_QUERIES: usize = 16;
+
+/// neural-search's hybrid query shard phase: `HybridBulkScorer` feeding a
+/// `HybridTopScoreDocCollector`, one collector per concurrent-search slice.
+///
+/// Per slice, the documents the collector counted and each sub-query's
+/// `top_n` best documents (best first, ties by ascending doc ID). Stock's
+/// count is not the union's: the bulk scorer scores each segment in windows
+/// of [`HYBRID_WINDOW`] documents, and a document reaches the collector only
+/// when some sub-query scores it above that sub-query's threshold at the
+/// window's start -- 0 at each segment's start, then the best score the
+/// slice's queue has turned away (`setMinCompetitiveScore` lets a scorer skip
+/// what falls below it). [`HybridCollector`] replays exactly that.
+///
+/// The blob: `count: u8` sub-queries, each a request blob ([`decode_request`],
+/// `len: i32` first) with no `min_score`; `top_n: i32`; the slices
+/// ([`decode_slices`], none meaning one slice over every segment).
+///
+/// The answer, little-endian: `slices: i32`, then per slice `total: i64` and
+/// per sub-query `hits: i32` and per hit `doc: i32` and `score` (`f32` bits).
+pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, FfiStatus> {
+    let bad = |m: String| {
+        set_last_error(format!("hybrid blob: {m}"));
+        FfiStatus::InvalidArgument
+    };
+    let mut c = Cursor::new(blob);
+    let count = usize::from(c.u8()?);
+    if count == 0 || count > MAX_HYBRID_QUERIES {
+        return Err(bad(format!(
+            "{count} sub-queries, want 1 to {MAX_HYBRID_QUERIES}"
+        )));
+    }
+    let mut subs = Vec::with_capacity(count); // alloc-ok: count is checked to be at most MAX_HYBRID_QUERIES
+    let mut sim = None;
+    for _ in 0..count {
+        let (query, min_score, s) = decode_request(c.bytes()?)?;
+        if min_score.is_some() {
+            return Err(bad("a sub-query with min_score".into()));
+        }
+        // Every sub-query is scored with the searcher's one similarity.
+        if s.is_some() {
+            sim = s;
+        }
+        subs.push(boolean_of(&query));
+    }
+    let top_n = usize::try_from(c.i32()?).map_err(|_| bad("negative top_n".into()))?;
+    if top_n == 0 {
+        return Err(bad("top_n must be at least 1".into()));
+    }
+    let slices = decode_slices(&mut c, &bad)?;
+    if c.remaining() != 0 {
+        return Err(bad(format!("{} trailing bytes", c.remaining())));
+    }
+    let union = BooleanQuery {
+        should: subs
+            .iter()
+            .map(|q| Clause::Boolean(Box::new(q.clone())))
+            .collect(),
+        ..Default::default()
+    };
+    let fields: Vec<String> = crate::clauses::clause_field_names(&union)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let union_query = JvmQuery::Boolean(union);
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_search_hybrid: unknown or already-closed handle",
+    )?;
+    let mut opened = h.reader.open_segments().map_err(|e| {
+        set_last_error(format!("opening segment postings: {e}"));
+        FfiStatus::Decode
+    })?;
+    if query_uses_points(&union_query) {
+        opened.open_points().map_err(|e| {
+            set_last_error(format!("opening segment points: {e}"));
+            FfiStatus::Decode
+        })?;
+    }
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
+    let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
+        owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
+    let segment_count = h.live_docs.len();
+    let slices = if slices.is_empty() {
+        vec![(0..segment_count).collect::<Vec<_>>()]
+    } else {
+        slices
+    };
+    let mut seen = vec![false; segment_count]; // alloc-ok: segment count of the opened reader
+    for &s in slices.iter().flatten() {
+        if s >= segment_count || std::mem::replace(&mut seen[s], true) {
+            return Err(bad(format!("segment {s} out of range or in two slices")));
+        }
+    }
+    let segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s.similarity = sim.as_ref().map(|p| p as &dyn Similarity);
+            s
+        })
+        .collect();
+    // Each sub-query's weight, over the whole shard: its statistics are the
+    // reader's whichever slice scores it.
+    let prepared = subs
+        .iter()
+        .map(|q| lucene_search::multi_segment::PreparedBoolean::new(&segments, q))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_search_error)?;
+    let mut out = Vec::new();
+    out.extend_from_slice(
+        &i32::try_from(slices.len())
+            .unwrap_or(i32::MAX)
+            .to_le_bytes(),
+    );
+    for slice in &slices {
+        let mut collector = HybridCollector::new(prepared.len(), top_n);
+        for &s in slice {
+            let seg = &segments[s];
+            let scored = prepared
+                .iter()
+                .map(|p| p.score_all(seg, norms[s]))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_search_error)?;
+            collector.segment(&scored, seg.doc_base);
+        }
+        out.extend_from_slice(&collector.total.to_le_bytes());
+        for queue in collector.queues {
+            let hits = queue.into_sorted();
+            out.extend_from_slice(&i32::try_from(hits.len()).unwrap_or(i32::MAX).to_le_bytes());
+            for hit in hits {
+                out.extend_from_slice(&hit.doc.to_le_bytes());
+                out.extend_from_slice(&hit.score.to_bits().to_le_bytes());
+            }
+        }
+    }
+    similarity_checked(sim.as_ref(), Ok(out))
+}
+
+/// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
+const HYBRID_WINDOW: i32 = 1 << 12;
+
+/// A hit in a [`HitQueue`]: greater is better (higher score, then lower doc).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HybridHit {
+    score: f32,
+    doc: i32,
+}
+
+impl Eq for HybridHit {}
+
+impl PartialOrd for HybridHit {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HybridHit {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .partial_cmp(&other.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(other.doc.cmp(&self.doc))
+    }
+}
+
+/// Lucene's `HitQueue(n, false)`: the `n` best hits, the worst on top.
+struct HitQueue {
+    heap: std::collections::BinaryHeap<std::cmp::Reverse<HybridHit>>,
+    size: usize,
+}
+
+impl HitQueue {
+    fn new(size: usize) -> Self {
+        Self {
+            heap: std::collections::BinaryHeap::with_capacity(size.min(1 << 16)), // alloc-ok: capped at 65536
+            size,
+        }
+    }
+
+    /// `insertWithOverflow`: the hit pushed out (the new one when it does not
+    /// beat the worst), or `None` while the queue fills.
+    fn insert_with_overflow(&mut self, hit: HybridHit) -> Option<HybridHit> {
+        if self.heap.len() < self.size {
+            self.heap.push(std::cmp::Reverse(hit));
+            return None;
+        }
+        let mut worst = self.heap.peek_mut()?;
+        if worst.0 < hit {
+            Some(std::mem::replace(&mut worst.0, hit))
+        } else {
+            Some(hit)
+        }
+    }
+
+    fn into_sorted(self) -> Vec<HybridHit> {
+        let mut hits: Vec<HybridHit> = self.heap.into_iter().map(|r| r.0).collect();
+        hits.sort_unstable_by(|a, b| b.cmp(a));
+        hits
+    }
+}
+
+/// One slice's `HybridTopScoreDocCollector`, fed as `HybridBulkScorer` feeds
+/// it.
+struct HybridCollector {
+    queues: Vec<HitQueue>,
+    total: i64,
+    /// One window's scores per sub-query, 0 where it did not compete.
+    window: Vec<Vec<f32>>,
+}
+
+impl HybridCollector {
+    fn new(subs: usize, top_n: usize) -> Self {
+        Self {
+            queues: (0..subs).map(|_| HitQueue::new(top_n)).collect(),
+            total: 0,
+            window: vec![vec![0.0; HYBRID_WINDOW as usize]; subs], // alloc-ok: at most MAX_HYBRID_QUERIES windows of a fixed size
+        }
+    }
+
+    /// One segment: each sub-query's matches with their scores, ascending by
+    /// segment-local doc ID.
+    fn segment(&mut self, scored: &[Vec<lucene_search::collector::ScoreDoc>], doc_base: i32) {
+        // The segment's own HybridSubQueryScorer: thresholds start at 0.
+        let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
+        let mut next = vec![0usize; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
+        let mut matching = vec![0u64; HYBRID_WINDOW as usize / 64]; // alloc-ok: fixed window size
+        loop {
+            let Some(top) = scored
+                .iter()
+                .zip(&next)
+                .filter_map(|(hits, &i)| hits.get(i).map(|h| h.doc_id))
+                .min()
+            else {
+                return;
+            };
+            let base = top & !(HYBRID_WINDOW - 1);
+            let end = base.saturating_add(HYBRID_WINDOW);
+            for (q, hits) in scored.iter().enumerate() {
+                let min = min_scores[q];
+                while let Some(h) = hits.get(next[q]).filter(|h| h.doc_id < end) {
+                    // Only a score above the threshold is collected.
+                    if h.score > min {
+                        let d = (h.doc_id - base) as usize;
+                        matching[d / 64] |= 1 << (d % 64);
+                        self.window[q][d] = h.score;
+                    }
+                    next[q] += 1;
+                }
+            }
+            for (word, bits) in matching.iter_mut().enumerate() {
+                while *bits != 0 {
+                    let d = word * 64 + bits.trailing_zeros() as usize;
+                    *bits &= *bits - 1;
+                    self.total += 1;
+                    let doc = doc_base + base + d as i32;
+                    for (q, queue) in self.queues.iter_mut().enumerate() {
+                        let score = std::mem::take(&mut self.window[q][d]);
+                        if score <= 0.0 {
+                            continue;
+                        }
+                        if let Some(out) = queue.insert_with_overflow(HybridHit { score, doc }) {
+                            min_scores[q] = min_scores[q].max(out.score);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// [`search`] behind OpenSearch's `min_score` (its `MinimumScoreCollector`
 /// around the top-docs collector): only documents scoring at least `min` are
 /// kept and counted; `size: 0` counts them.
@@ -2560,11 +2932,19 @@ fn total_hits_with(
     if bound > count_limit {
         return Ok((bound, true));
     }
+    // A function query's reader-wide preparation, once for every segment.
+    let counted = (0..segments.len()).all(|i| known.get(i).copied().flatten().is_some());
+    let global = match query {
+        JvmQuery::Boolean(q) if !counted => {
+            lucene_search::count_preparation(segments, q).map_err(map_search_error)?
+        }
+        _ => None,
+    };
     let mut total = 0i64;
     for (i, seg) in segments.iter().enumerate() {
         let n = match known.get(i).copied().flatten() {
             Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
-            None => count_segment(seg, query)?,
+            None => count_segment(seg, query, global.as_ref())?,
         };
         total = total.saturating_add(n);
         if total > count_limit {
@@ -2639,14 +3019,17 @@ fn lower_bound(seg: &OpenSegment<'_>, deleted: i64, clause: &Clause) -> Result<i
 }
 
 /// `IndexSearcher.count` for one segment.
-fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStatus> {
+fn count_segment(
+    seg: &OpenSegment<'_>,
+    query: &JvmQuery,
+    global: Option<&lucene_search::GlobalStats>,
+) -> Result<i64, FfiStatus> {
     Ok({
         match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
             // The scored search's scorer tree, in `COMPLETE_NO_SCORES`.
-            JvmQuery::Boolean(q) => {
-                count_boolean_query_segment(seg, q).map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            }
+            JvmQuery::Boolean(q) => count_boolean_query_segment_with(seg, q, global)
+                .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
         }
         .map_err(map_search_error)?
     })
@@ -3226,7 +3609,7 @@ pub(crate) mod tests {
     /// Opens `fixtures/data/bwc/<version>` the way the plugin opens a
     /// searcher's reader: its `segments_N` bytes, every segment's `maxDoc`
     /// and its live docs as words.
-    fn open_bwc(version: &str) -> u64 {
+    pub(crate) fn open_bwc(version: &str) -> u64 {
         open_fixture(&format!("bwc/{version}"))
     }
 
@@ -3634,9 +4017,9 @@ pub(crate) mod tests {
     }
 
     /// `(hits as (doc, values), total, lower_bound)`, or the status.
-    type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
+    pub(crate) type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
 
-    fn run_sorted(
+    pub(crate) fn run_sorted(
         handle: u64,
         query: &[u8],
         sort: &[u8],
@@ -3682,6 +4065,139 @@ pub(crate) mod tests {
             total,
             lower,
         ))
+    }
+
+    /// A hybrid blob over `subs` keeping `top_n`, with `slices` (none = one).
+    fn hybrid_blob(subs: &[Vec<u8>], top_n: i32, slices: &[&[i32]]) -> Vec<u8> {
+        let mut b = vec![subs.len() as u8];
+        for q in subs {
+            b.extend_from_slice(&(q.len() as i32).to_le_bytes());
+            b.extend_from_slice(q);
+        }
+        b.extend_from_slice(&top_n.to_le_bytes());
+        b.extend_from_slice(&(slices.len() as i32).to_le_bytes());
+        for slice in slices {
+            b.extend_from_slice(&(slice.len() as i32).to_le_bytes());
+            for s in *slice {
+                b.extend_from_slice(&s.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// One slice of a hybrid answer: its total and each sub-query's
+    /// `(doc, score)` hits.
+    type HybridSlice = (i64, Vec<Vec<(i32, f32)>>);
+
+    /// Every slice of a hybrid answer.
+    fn decode_hybrid(out: &[u8], subs: usize) -> Vec<HybridSlice> {
+        let mut c = Cursor::new(out);
+        let slices = c.i32().unwrap();
+        let mut res = Vec::new();
+        for _ in 0..slices {
+            let total = c.i64().unwrap();
+            let mut per = Vec::new();
+            for _ in 0..subs {
+                let n = c.i32().unwrap();
+                per.push(
+                    (0..n)
+                        .map(|_| (c.i32().unwrap(), f32::from_bits(c.i32().unwrap() as u32)))
+                        .collect(),
+                );
+            }
+            res.push((total, per));
+        }
+        assert_eq!(c.remaining(), 0);
+        res
+    }
+
+    #[test]
+    fn the_hybrid_collector_counts_only_what_beats_each_windows_threshold() {
+        let sd = |doc_id, score| lucene_search::collector::ScoreDoc { doc_id, score };
+        // Sub-query 0 scores across two windows; sub-query 1 only matches,
+        // scoring 0 (a filter), which stock never collects.
+        let scored = vec![
+            vec![
+                sd(0, 1.0),
+                sd(1, 2.0),
+                sd(4096, 1.5),
+                sd(4097, 3.0),
+                sd(4098, 0.5),
+            ],
+            vec![sd(2, 0.0)],
+        ];
+        let mut c = HybridCollector::new(2, 1);
+        c.segment(&scored, 10);
+        // Window 0: docs 0 and 1 (threshold 0), 1 pushes 0 out (threshold
+        // 1.0). Window 1: 4096 and 4097 beat 1.0, 4098 does not.
+        assert_eq!(c.total, 4);
+        let hits: Vec<(i32, f32)> = c
+            .queues
+            .remove(0)
+            .into_sorted()
+            .iter()
+            .map(|h| (h.doc, h.score))
+            .collect();
+        assert_eq!(hits, vec![(4107, 3.0)]);
+        assert!(c.queues[0].heap.is_empty());
+        // The next segment starts from threshold 0 again, the queue kept.
+        let mut c = HybridCollector::new(1, 1);
+        c.segment(&[vec![sd(0, 5.0)]], 0);
+        c.segment(&[vec![sd(0, 1.0)]], 1);
+        assert_eq!(c.total, 2);
+        let hits = c.queues.remove(0).into_sorted();
+        assert_eq!((hits[0].doc, hits[0].score), (0, 5.0));
+    }
+
+    #[test]
+    fn a_hybrid_search_keeps_each_sub_querys_top_hits_per_slice() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let all: Vec<Vec<(i32, f32)>> = subs
+            .iter()
+            .map(|q| run_limit(h, q, 100, i64::MAX).unwrap().0)
+            .collect();
+        let mut union: Vec<i32> = all.iter().flatten().map(|&(d, _)| d).collect();
+        union.sort_unstable();
+        union.dedup();
+        // One slice: each sub-query's own top hits, the total the union's.
+        let one = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 2, &[])).unwrap(),
+            2,
+        );
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, union.len() as i64);
+        for (got, want) in one[0].1.iter().zip(&all) {
+            assert_eq!(got, &want[..want.len().min(2)]);
+        }
+        // Two slices, the second segment first: each keeps its own segment's
+        // hits, scored with the whole reader's statistics.
+        let two = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[&[1], &[0]])).unwrap(),
+            2,
+        );
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].0 + two[1].0, union.len() as i64);
+        for (q, want) in all.iter().enumerate() {
+            let mut got: Vec<(i32, f32)> = two.iter().flat_map(|s| s.1[q].clone()).collect();
+            got.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            assert_eq!(&got, want);
+        }
+        assert!(two[0].1.iter().flatten().all(|&(d, _)| d >= 4));
+        // Refused: no sub-query, no hits kept, a segment in two slices,
+        // trailing bytes.
+        for bad in [
+            hybrid_blob(&[], 2, &[]),
+            hybrid_blob(&subs, 0, &[]),
+            hybrid_blob(&subs, 2, &[&[0], &[0, 1]]),
+            [hybrid_blob(&subs, 2, &[]), vec![0]].concat(),
+        ] {
+            assert_eq!(
+                search_hybrid_blobs(h, &bad).err(),
+                Some(FfiStatus::InvalidArgument)
+            );
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     #[test]
@@ -3820,9 +4336,15 @@ pub(crate) mod tests {
         let by_score = sort_blob(&[(SORT_SCORE, 0, "", 0)], None);
         assert!(decode_sort(&by_score).unwrap().5.is_empty());
         let flagged = with_index_sorted(by_score.clone(), &[1, 0]);
-        assert_eq!(decode_sort(&flagged).unwrap().5, vec![true, false]);
+        assert_eq!(decode_sort(&flagged).unwrap().5, vec![Some(0), None]);
         assert_eq!(
-            decode_sort(&with_index_sorted(by_score.clone(), &[2])).err(),
+            decode_sort(&with_index_sorted(by_score.clone(), &[3]))
+                .unwrap()
+                .5,
+            vec![Some(2)]
+        );
+        assert_eq!(
+            decode_sort(&with_index_sorted(by_score.clone(), &[128])).err(),
             Some(FfiStatus::InvalidArgument)
         );
         // Flags saying no segment's index sort begins with the search's: the
@@ -4623,6 +5145,27 @@ pub(crate) mod tests {
         ffi_close_jvm_reader(h);
     }
 
+    thread_local! {
+        /// Set: terms aggregations read buffered keyword runs encoded.
+        pub(crate) static ENCODED_RUNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// [`ENCODED_RUNS`] set until dropped, then cleared, a panic included.
+    pub(crate) struct EncodedRuns;
+
+    impl EncodedRuns {
+        pub(crate) fn set(encoded: bool) -> Self {
+            ENCODED_RUNS.with(|c| c.set(encoded));
+            Self
+        }
+    }
+
+    impl Drop for EncodedRuns {
+        fn drop(&mut self) {
+            ENCODED_RUNS.with(|c| c.set(false));
+        }
+    }
+
     fn metrics_blob(fields: &[(u8, &str)]) -> Vec<u8> {
         metrics_blob_from(&fields.iter().map(|&(k, f)| (k, 0, f)).collect::<Vec<_>>())
     }
@@ -5358,6 +5901,51 @@ pub(crate) mod tests {
         ffi_close_jvm_reader(h);
     }
 
+    /// A doc-and-score query whose documents lie past the segment it lands
+    /// on was built against another reader: refused, never answered with
+    /// doc ids outside the index.
+    #[test]
+    fn a_doc_and_score_query_from_another_reader_is_refused() {
+        let blob = [
+            2, 40, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 49, 0, 0, 0, 98, 0, 0, 1, 0, 0, 0, 0,
+            111, 89, 100,
+        ];
+        let h = open();
+        let (mut docs, mut scores) = ([0i32; 10], [0f32; 10]);
+        let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+        let rc = unsafe {
+            ffi_jvm_reader_search(
+                h,
+                blob.as_ptr(),
+                blob.len(),
+                10,
+                10,
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                10,
+                &mut n,
+                &mut total,
+                &mut lower,
+            )
+        };
+        assert_ne!(rc, 0);
+        assert!(crate::error::last_error().contains("different reader"));
+        ffi_close_jvm_reader(h);
+    }
+
+    /// A doc-and-score query listing a document twice is malformed: refused
+    /// at decode rather than reaching a scorer that needs ascending docs.
+    #[test]
+    fn a_doc_and_score_query_listing_a_doc_twice_is_refused() {
+        let mut blob = vec![2, 40, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0];
+        for score in [1.0f32, 2.0] {
+            blob.extend_from_slice(&3i32.to_le_bytes());
+            blob.extend_from_slice(&score.to_le_bytes());
+        }
+        assert!(decode_request(&blob).is_err());
+        assert!(crate::error::last_error().contains("listed twice"));
+    }
+
     #[test]
     fn decode_query_rejects_malformed_blobs() {
         let invalid = Err(FfiStatus::InvalidArgument);
@@ -5999,6 +6587,11 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// A prefix query's blob.
+    pub(crate) fn prefix_blob(field: &str, prefix: &str) -> Vec<u8> {
+        tree(N::Pre(field, prefix))
     }
 
     fn tree(n: N<'_>) -> Vec<u8> {

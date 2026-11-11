@@ -60,10 +60,12 @@
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_output::DataOutput;
+use lucene_store::index_output::{FsIndexOutput, IndexOutput};
 
 use crate::blocktree::{
     POSTINGS_BLOCK_SIZE, POSTINGS_TERMS_CODEC, POSTINGS_VERSION_CURRENT, TERMS_CODEC_NAME,
     TERMS_INDEX_CODEC_NAME, TERMS_META_CODEC_NAME, VERSION_CURRENT as BLOCKTREE_VERSION_CURRENT,
+    ZSTD_TERMS_CODEC_NAME, ZSTD_TERMS_INDEX_CODEC_NAME, ZSTD_TERMS_META_CODEC_NAME,
 };
 use crate::blocktree_writer;
 use crate::field_infos::IndexOptions;
@@ -798,6 +800,12 @@ pub struct WriteOptions {
     /// The same for `.pay`: `None` writes one when some input field has
     /// offsets or payloads.
     pub has_payloads_or_offsets: Option<bool>,
+    /// Write the terms dictionary with zstd blocks at this level: a block is
+    /// zstd-compressed when that makes it at least an eighth smaller, and a
+    /// field with about a MiB or more of blocks gets a dictionary trained on
+    /// its own blocks. Only this port reads such a dictionary; `None` (the
+    /// default) writes Lucene's.
+    pub zstd_term_blocks: Option<i32>,
 }
 
 impl Default for WriteOptions {
@@ -807,6 +815,7 @@ impl Default for WriteOptions {
             max_items_in_block: blocktree_writer::MAX_ITEMS_IN_BLOCK,
             has_prox: None,
             has_payloads_or_offsets: None,
+            zstd_term_blocks: None,
         }
     }
 }
@@ -832,6 +841,9 @@ impl WriteOptions {
             return Err(Error::InvalidBlockSizes(format!(
                 "maxItemsInBlock must be at least 2*(minItemsInBlock-1); got maxItemsInBlock={max} minItemsInBlock={min}"
             )));
+        }
+        if let Some(level) = self.zstd_term_blocks {
+            lucene_zstd::check_level(level).map_err(|e| Error::InvalidBlockSizes(e.to_string()))?;
         }
         Ok(())
     }
@@ -939,6 +951,18 @@ impl<'a> StreamingFieldsWriter<'a> {
         })
     }
 
+    /// Streams `.doc`/`.pos`/`.pay` to these outputs (see
+    /// [`PostingsWriter::stream_to`]); [`Self::finish`] then closes them and
+    /// returns those three buffers empty.
+    pub fn stream_to(
+        &mut self,
+        doc: FsIndexOutput,
+        pos: Option<FsIndexOutput>,
+        pay: Option<FsIndexOutput>,
+    ) {
+        self.postings.stream_to(doc, pos, pay);
+    }
+
     /// `TermsWriter` for one field; its terms follow through
     /// [`Self::add_terms`], then [`Self::finish_field`].
     ///
@@ -1015,6 +1039,7 @@ impl<'a> StreamingFieldsWriter<'a> {
         let (block_terms, singletons) = stats.slices();
         self.postings
             .encode_terms(&input, singletons, norms, &mut field.states);
+        self.postings.maybe_spill();
         for term in block_terms {
             field.term_bytes.extend_from_slice(term.bytes);
             field.term_ends.push(field.term_bytes.len());
@@ -1076,7 +1101,7 @@ impl<'a> StreamingFieldsWriter<'a> {
         if self.field.is_some() {
             return Err(Error::StreamingOrder("finish: a field is still open"));
         }
-        let postings = self.postings.finish();
+        let postings = self.postings.finish()?;
         let (tim, tip, tmd) = self.dict.finish();
         Ok(Output {
             doc: postings.doc,
@@ -1136,6 +1161,49 @@ struct BlockTreeDictionary {
     records: Vec<u8>,
     num_fields: usize,
     block_sizes: (usize, usize),
+    /// [`WriteOptions::zstd_term_blocks`].
+    zstd_level: Option<i32>,
+}
+
+/// Fields with fewer bytes of terms than this get no zstd dictionary: one
+/// would cost more than it saves.
+const ZSTD_DICTIONARY_MIN_TERM_BYTES: usize = 1 << 20;
+/// The most bytes of a field's zstd dictionary.
+const ZSTD_DICTIONARY_SIZE: usize = 16 << 10;
+/// About how many bytes of blocks a dictionary is trained on.
+const ZSTD_SAMPLE_BYTES: usize = 2 << 20;
+
+/// A zstd dictionary for `terms`' blocks, trained on a dry run of the block
+/// writer over them; empty when the field is too small for one or training
+/// fails.
+// ARITH: sums of in-memory term lengths.
+#[allow(clippy::arithmetic_side_effects)]
+fn train_term_block_dictionary(
+    terms: &[blocktree_writer::BlockTerm<'_>],
+    block_sizes: (usize, usize),
+    has_freqs: bool,
+    encode_meta: impl FnMut(&mut Vec<u8>, &[usize]),
+) -> Vec<u8> {
+    let term_bytes: usize = terms.iter().map(|t| t.bytes.len() + 4).sum();
+    if term_bytes < ZSTD_DICTIONARY_MIN_TERM_BYTES {
+        return Vec::new();
+    }
+    let (mut tim, mut tip) = (Vec::new(), Vec::new());
+    let (mut samples, mut sizes) = (Vec::new(), Vec::new());
+    blocktree_writer::write_field_terms(
+        &mut tim,
+        &mut tip,
+        terms,
+        block_sizes,
+        has_freqs,
+        encode_meta,
+        Some(blocktree_writer::BlockZstd::Sample {
+            samples: &mut samples,
+            sizes: &mut sizes,
+            stride: term_bytes.div_ceil(ZSTD_SAMPLE_BYTES),
+        }),
+    );
+    lucene_zstd::train_dictionary_joined(&samples, &sizes, ZSTD_DICTIONARY_SIZE).unwrap_or_default()
 }
 
 impl BlockTreeDictionary {
@@ -1156,9 +1224,19 @@ impl BlockTreeDictionary {
             );
             out
         };
-        let tim = header(TERMS_CODEC_NAME);
-        let tip = header(TERMS_INDEX_CODEC_NAME);
-        let mut tmd = header(TERMS_META_CODEC_NAME);
+        let (tim, tip, mut tmd) = if options.zstd_term_blocks.is_some() {
+            (
+                header(ZSTD_TERMS_CODEC_NAME),
+                header(ZSTD_TERMS_INDEX_CODEC_NAME),
+                header(ZSTD_TERMS_META_CODEC_NAME),
+            )
+        } else {
+            (
+                header(TERMS_CODEC_NAME),
+                header(TERMS_INDEX_CODEC_NAME),
+                header(TERMS_META_CODEC_NAME),
+            )
+        };
         write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
         BlockTreeDictionary {
             tim,
@@ -1167,6 +1245,7 @@ impl BlockTreeDictionary {
             records: Vec::with_capacity(initial),
             num_fields: 0,
             block_sizes: (options.min_items_in_block, options.max_items_in_block),
+            zstd_level: options.zstd_term_blocks,
         }
     }
 
@@ -1186,14 +1265,48 @@ impl BlockTreeDictionary {
         // metadata is encoded by the postings writer, against this
         // field's per-term file pointers.
         let block_terms = field.block_terms;
-        let trie = blocktree_writer::write_field_terms(
-            tim,
-            tip,
-            block_terms,
-            self.block_sizes,
-            field.index_options != IndexOptions::Docs,
-            |meta, indices| field.encode_terms(meta, indices),
-        );
+        let has_freqs = field.index_options != IndexOptions::Docs;
+        let encode = |meta: &mut Vec<u8>, indices: &[usize]| field.encode_terms(meta, indices);
+        let mut dictionary = Vec::new();
+        let trie = match self.zstd_level {
+            None => blocktree_writer::write_field_terms(
+                tim,
+                tip,
+                block_terms,
+                self.block_sizes,
+                has_freqs,
+                encode,
+                None,
+            ),
+            Some(level) => {
+                dictionary =
+                    train_term_block_dictionary(block_terms, self.block_sizes, has_freqs, encode);
+                // The level was validated with the options, so neither fails.
+                let prepared = (!dictionary.is_empty())
+                    .then(|| lucene_zstd::EncoderDictionary::new(&dictionary, level).ok())
+                    .flatten();
+                let mut compressor =
+                    lucene_zstd::BareCompressor::new(level, prepared.as_ref()).ok();
+                // The `.tmd` must name exactly the dictionary the blocks were
+                // compressed against: a reader decoding a dictionary-less
+                // frame against one starts from the dictionary's repeat
+                // offsets and entropy tables, not the frame's.
+                if prepared.is_none() || compressor.is_none() {
+                    dictionary.clear();
+                }
+                blocktree_writer::write_field_terms(
+                    tim,
+                    tip,
+                    block_terms,
+                    self.block_sizes,
+                    has_freqs,
+                    encode,
+                    compressor
+                        .as_mut()
+                        .map(blocktree_writer::BlockZstd::Compress),
+                )
+            }
+        };
 
         // ---- this field's .tmd record ----
         tmd.write_vint(field.field_number);
@@ -1217,6 +1330,10 @@ impl BlockTreeDictionary {
         tmd.write_vlong(trie.index_start as i64);
         tmd.write_vlong(trie.root_fp as i64);
         tmd.write_vlong(trie.index_end as i64);
+        if self.zstd_level.is_some() {
+            tmd.write_vint(dictionary.len() as i32);
+            tmd.write_bytes(&dictionary);
+        }
     }
 
     /// The footers, and the `.tmd`'s two lengths: both are the *whole* file,
@@ -1543,7 +1660,7 @@ where
     for (input, stats) in inputs.iter().zip(field_stats) {
         writer.write_validated_field(input, stats, norms, &mut terms_dict)?;
     }
-    Ok(writer.finish())
+    Ok(writer.finish()?)
 }
 
 /// Per term, in term order, the `IntBlockTermState` file pointers
@@ -1574,6 +1691,9 @@ pub(crate) struct PostingsWriter<'a> {
     doc: Vec<u8>,
     pos: Vec<u8>,
     pay: Vec<u8>,
+    /// Where `.doc`/`.pos`/`.pay` go when [`Self::stream_to`] set outputs,
+    /// with how many bytes of each already went there.
+    spill: Option<PostingsSpill>,
     maxima: PostingsMaxima,
     /// The current call's term pointers and position layouts, kept for
     /// their capacity.
@@ -1583,6 +1703,37 @@ pub(crate) struct PostingsWriter<'a> {
     any_offsets_or_payloads: bool,
     segment_id: &'a [u8; ID_LENGTH],
     segment_suffix: &'a str,
+}
+
+/// Buffered postings bytes a [`PostingsWriter::stream_to`] writer keeps
+/// before handing them to its outputs (a few KB in unit tests, so that they
+/// spill many times).
+pub const SPILL_BYTES: usize = if cfg!(test) { 1 << 12 } else { 1 << 20 };
+
+/// [`PostingsWriter::stream_to`]'s outputs and how much each has taken.
+struct PostingsSpill {
+    doc: FsIndexOutput,
+    pos: Option<FsIndexOutput>,
+    pay: Option<FsIndexOutput>,
+    doc_bytes: u64,
+    pos_bytes: u64,
+    pay_bytes: u64,
+}
+
+impl PostingsSpill {
+    /// Moves the buffers' bytes to the outputs, keeping the buffers' capacity.
+    fn write(&mut self, doc: &mut Vec<u8>, pos: &mut Vec<u8>, pay: &mut Vec<u8>) {
+        let send = |out: Option<&mut FsIndexOutput>, buf: &mut Vec<u8>, total: &mut u64| {
+            if let Some(out) = out {
+                out.write_bytes(buf);
+                *total = total.saturating_add(buf.len() as u64);
+                buf.clear();
+            }
+        };
+        send(Some(&mut self.doc), doc, &mut self.doc_bytes);
+        send(self.pos.as_mut(), pos, &mut self.pos_bytes);
+        send(self.pay.as_mut(), pay, &mut self.pay_bytes);
+    }
 }
 
 impl<'a> PostingsWriter<'a> {
@@ -1618,6 +1769,7 @@ impl<'a> PostingsWriter<'a> {
                 Vec::new()
             },
             maxima: PostingsMaxima::default(),
+            spill: None,
             states: TermStateColumns::default(),
             layouts: Vec::new(),
             any_positions,
@@ -1687,6 +1839,10 @@ impl<'a> PostingsWriter<'a> {
         norms: &[FieldNorms<'_>],
         states: &mut TermStateColumns,
     ) {
+        let (doc_base, pos_base, pay_base) = self
+            .spill
+            .as_ref()
+            .map_or((0, 0, 0), |s| (s.doc_bytes, s.pos_bytes, s.pay_bytes));
         let Self {
             doc,
             pos,
@@ -1741,13 +1897,14 @@ impl<'a> PostingsWriter<'a> {
             layouts.reserve(input.terms.len());
             let mut scratch = PositionScratch::default();
             for t in input.terms.iter() {
-                pos_start_fp.push(pos.len() as u64);
+                pos_start_fp.push(pos_base.saturating_add(pos.len() as u64));
                 if index_has_offsets_or_payloads {
-                    pay_start_fp.push(pay.len() as u64);
+                    pay_start_fp.push(pay_base.saturating_add(pay.len() as u64));
                 }
                 let layout = write_position_tail(
                     pos,
                     pay,
+                    (pos_base, pay_base),
                     t,
                     index_has_offsets,
                     index_has_payloads,
@@ -1769,7 +1926,7 @@ impl<'a> PostingsWriter<'a> {
             // singletons included: a singleton writes no `.doc` bytes, so its
             // `docStartFP` equals the next term's, and `encodeTerm` keys the
             // zigzag singleton branch off that equality.
-            doc_start_fp.push(doc.len() as u64);
+            doc_start_fp.push(doc_base.saturating_add(doc.len() as u64));
             if singletons[i] != -1 {
                 continue;
             }
@@ -1846,8 +2003,49 @@ impl<'a> PostingsWriter<'a> {
         }
     }
 
+    /// Streams `.doc` (and `.pos`/`.pay`, when the segment has them) to
+    /// these outputs from here on: whatever is buffered goes now, and again
+    /// whenever a batch of terms leaves more than [`SPILL_BYTES`] buffered,
+    /// so a long write holds a batch's postings instead of the files.
+    /// [`Self::finish`] then writes the footers, closes the outputs and
+    /// returns empty `.doc`/`.pos`/`.pay` buffers.
+    pub(crate) fn stream_to(
+        &mut self,
+        doc: FsIndexOutput,
+        pos: Option<FsIndexOutput>,
+        pay: Option<FsIndexOutput>,
+    ) {
+        let mut spill = PostingsSpill {
+            doc,
+            pos,
+            pay,
+            doc_bytes: 0,
+            pos_bytes: 0,
+            pay_bytes: 0,
+        };
+        spill.write(&mut self.doc, &mut self.pos, &mut self.pay);
+        self.spill = Some(spill);
+    }
+
+    /// Hands the buffered bytes to the outputs once there are enough of them.
+    fn maybe_spill(&mut self) {
+        if let Some(spill) = self.spill.as_mut() {
+            let buffered = self
+                .doc
+                .len()
+                .saturating_add(self.pos.len())
+                .saturating_add(self.pay.len());
+            if buffered >= SPILL_BYTES {
+                spill.write(&mut self.doc, &mut self.pos, &mut self.pay);
+            }
+        }
+    }
+
     /// `close`: footers and the `.psm` impact maxima and lengths.
-    pub(crate) fn finish(self) -> PostingsFiles {
+    ///
+    /// # Errors
+    /// Closing a [`Self::stream_to`] output.
+    pub(crate) fn finish(self) -> Result<PostingsFiles> {
         let Self {
             mut doc,
             mut pos,
@@ -1857,16 +2055,40 @@ impl<'a> PostingsWriter<'a> {
             any_offsets_or_payloads,
             segment_id,
             segment_suffix,
+            spill,
             ..
         } = self;
         let initial = 256;
-        codec_util::write_footer(&mut doc);
-        if any_positions {
-            codec_util::write_footer(&mut pos);
-        }
-        if any_offsets_or_payloads {
-            codec_util::write_footer(&mut pay);
-        }
+        // The files' lengths, footers included, for `.psm`.
+        let (doc_len, pos_len, pay_len) = if let Some(mut spill) = spill {
+            spill.write(&mut doc, &mut pos, &mut pay);
+            // Empty, and without the capacity a large batch grew them to.
+            (doc, pos, pay) = (Vec::new(), Vec::new(), Vec::new());
+            let footer = |out: &mut FsIndexOutput| {
+                codec_util::write_footer_to(out);
+                out.file_pointer()
+            };
+            let doc_len = footer(&mut spill.doc);
+            let pos_len = spill.pos.as_mut().map_or(0, footer);
+            let pay_len = spill.pay.as_mut().map_or(0, footer);
+            let mut closed = Vec::with_capacity(3);
+            closed.push(spill.doc);
+            closed.extend(spill.pos);
+            closed.extend(spill.pay);
+            for out in closed {
+                out.close()?;
+            }
+            (doc_len, pos_len, pay_len)
+        } else {
+            codec_util::write_footer(&mut doc);
+            if any_positions {
+                codec_util::write_footer(&mut pos);
+            }
+            if any_offsets_or_payloads {
+                codec_util::write_footer(&mut pay);
+            }
+            (doc.len() as u64, pos.len() as u64, pay.len() as u64)
+        };
         // `.psm`, mirroring `Lucene104PostingsWriter.close()`: the impact maxima
         // first, then each postings file's length *including* its footer (Java
         // records `getFilePointer()` after writing the footer). Lucene sizes its
@@ -1884,16 +2106,16 @@ impl<'a> PostingsWriter<'a> {
         psm.write_i32(maxima.impact_bytes_level0);
         psm.write_i32(maxima.num_impacts_level1);
         psm.write_i32(maxima.impact_bytes_level1);
-        psm.write_i64(doc.len() as i64);
+        psm.write_i64(doc_len as i64);
         if any_positions {
-            psm.write_i64(pos.len() as i64);
+            psm.write_i64(pos_len as i64);
             if any_offsets_or_payloads {
-                psm.write_i64(pay.len() as i64);
+                psm.write_i64(pay_len as i64);
             }
         }
         codec_util::write_footer(&mut psm);
 
-        PostingsFiles { doc, psm, pos, pay }
+        Ok(PostingsFiles { doc, psm, pos, pay })
     }
 }
 
@@ -2326,6 +2548,46 @@ fn write_full_block(
     // deltas and freqs are appended.
     let impacts_region_len = rest.len() as i64;
 
+    let last_doc_id = encode_doc_block(block, prev_doc_id, index_has_freq, rest);
+
+    // `numSkipBytes` spans the two header fields below plus the impacts
+    // region -- landing a reader that skips this block on the first doc-delta
+    // byte. This port's own reader parses the field and ignores it, deriving
+    // the same position from `blockLength`; real Lucene's `skipLevel0To`
+    // seeks by it, and a zero here sends it *backwards* to re-read the header
+    // as block data and then off the end of the file. Measure the fields by
+    // building them first, as Java does with its `scratchOutput`.
+    // Java writes `docBuffer[BLOCK_SIZE - 1] - level0LastDocID` as an `int`;
+    // see the per-doc delta in `encode_doc_block`.
+    write_vint15(header, last_doc_id.wrapping_sub(prev_doc_id));
+    write_vlong15(header, rest.len() as i64);
+    // ARITH: both terms are lengths of in-memory scratch buffers this call
+    // just built -- a few KiB each, and both bounded by `isize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let num_skip_bytes = impacts_region_len + header.len() as i64;
+    out.write_vlong(num_skip_bytes);
+    out.write_bytes(header);
+    out.write_bytes(rest);
+
+    last_doc_id
+}
+
+/// A full block's documents and frequencies as its body holds them after
+/// the impacts: the `bitsPerValue` token, the doc deltas from
+/// `prev_doc_id` (packed, a bit set, or nothing when consecutive), then the
+/// frequencies when `index_has_freq`. Returns the block's last document.
+/// `block` is `BLOCK_SIZE` ascending `(doc, freq)` pairs, each document
+/// after `prev_doc_id`.
+///
+/// # Panics
+/// When `block` is not `BLOCK_SIZE` pairs long.
+pub fn encode_doc_block(
+    block: &[(i32, i32)],
+    prev_doc_id: i32,
+    index_has_freq: bool,
+    rest: &mut Vec<u8>,
+) -> i32 {
+    assert_eq!(block.len(), BLOCK_SIZE as usize, "a full block's documents");
     let mut deltas = [0u32; for_util::BLOCK_SIZE];
     let mut prev = prev_doc_id;
     let mut max_delta = 0u32;
@@ -2429,25 +2691,6 @@ fn write_full_block(
         }
         for_util::pfor_encode(&mut freqs, rest);
     }
-
-    // `numSkipBytes` spans the two header fields below plus the impacts
-    // region -- landing a reader that skips this block on the first doc-delta
-    // byte. This port's own reader parses the field and ignores it, deriving
-    // the same position from `blockLength`; real Lucene's `skipLevel0To`
-    // seeks by it, and a zero here sends it *backwards* to re-read the header
-    // as block data and then off the end of the file. Measure the fields by
-    // building them first, as Java does with its `scratchOutput`.
-    // Java writes `docBuffer[BLOCK_SIZE - 1] - level0LastDocID` as an `int`;
-    // see the per-doc delta above.
-    write_vint15(header, last_doc_id.wrapping_sub(prev_doc_id));
-    write_vlong15(header, rest.len() as i64);
-    // ARITH: both terms are lengths of in-memory scratch buffers this call
-    // just built -- a few KiB each, and both bounded by `isize::MAX`.
-    #[allow(clippy::arithmetic_side_effects)]
-    let num_skip_bytes = impacts_region_len + header.len() as i64;
-    out.write_vlong(num_skip_bytes);
-    out.write_bytes(header);
-    out.write_bytes(rest);
 
     last_doc_id
 }
@@ -2650,6 +2893,7 @@ fn write_tail_block(
 fn write_position_tail<T: TermSource>(
     pos_out: &mut Vec<u8>,
     pay_out: &mut Vec<u8>,
+    (pos_base, pay_base): (u64, u64),
     term: &T,
     has_offsets: bool,
     has_payloads: bool,
@@ -2752,9 +2996,9 @@ fn write_position_tail<T: TermSource>(
                 &offset_lengths[start..end],
             );
         }
-        pos_block_fp.push(pos_out.len() as u64);
+        pos_block_fp.push(pos_base.saturating_add(pos_out.len() as u64));
         if has_offsets_or_payloads {
-            pay_block_fp.push(pay_out.len() as u64);
+            pay_block_fp.push(pay_base.saturating_add(pay_out.len() as u64));
         }
         start = end;
     }
@@ -2827,8 +3071,8 @@ fn write_position_tail<T: TermSource>(
     }
 
     PositionLayout {
-        pos_start: pos_out_start as u64,
-        pay_start: has_offsets_or_payloads.then_some(pay_out_start as u64),
+        pos_start: pos_base.saturating_add(pos_out_start as u64),
+        pay_start: has_offsets_or_payloads.then_some(pay_base.saturating_add(pay_out_start as u64)),
         pos_block_fp,
         pay_block_fp,
         last_pos_block_offset,
@@ -6837,6 +7081,49 @@ mod tests {
                 ("tmd", &got.tmd, &expected.tmd),
             ] {
                 assert!(a == b, "batch {batch}: .{name} differs");
+            }
+        }
+        // Streamed to files, the same bytes, the dictionary's pointers
+        // rebased over what already went out.
+        use lucene_store::Directory;
+        assert!(expected.doc.len() + expected.pos.len() > 8 * SPILL_BYTES);
+        for batch in [1usize, 7, usize::MAX] {
+            let root = lucene_util::test_support::TempDir::new("postings-spill");
+            let dir = lucene_store::FsDirectory::open(root.path());
+            let mut w = StreamingFieldsWriter::new(&options, &id, "Lucene104_0").unwrap();
+            w.stream_to(
+                dir.create_output("_0.doc").unwrap(),
+                Some(dir.create_output("_0.pos").unwrap()),
+                Some(dir.create_output("_0.pay").unwrap()),
+            );
+            for input in &inputs {
+                w.start_field(input.field_number, input.index_options, input.has_payloads)
+                    .unwrap();
+                for chunk in input.terms.chunks(batch.min(input.terms.len())) {
+                    w.add_terms(chunk, &norms).unwrap();
+                }
+                w.finish_field(input.doc_count).unwrap();
+            }
+            let got = w.finish().unwrap();
+            assert!(got.doc.is_empty() && got.pos.is_empty() && got.pay.is_empty());
+            for (name, a, b) in [
+                ("psm", &got.psm, &expected.psm),
+                ("tim", &got.tim, &expected.tim),
+                ("tip", &got.tip, &expected.tip),
+                ("tmd", &got.tmd, &expected.tmd),
+            ] {
+                assert!(a == b, "streamed, batch {batch}: .{name} differs");
+            }
+            for (ext, b) in [
+                ("doc", &expected.doc),
+                ("pos", &expected.pos),
+                ("pay", &expected.pay),
+            ] {
+                let file = dir.open(&format!("_0.{ext}")).unwrap();
+                assert!(
+                    file.as_ref() == b.as_slice(),
+                    "streamed, batch {batch}: .{ext} differs"
+                );
             }
         }
     }

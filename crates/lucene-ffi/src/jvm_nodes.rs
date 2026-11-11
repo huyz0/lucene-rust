@@ -100,6 +100,42 @@ fn count(
     Ok(n)
 }
 
+/// A parent filter (a node) as the bit-set producer of a block join, its
+/// sets shared across requests ([`SharedParents`]).
+pub(crate) fn decode_parents(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<Arc<dyn BitSetProducer>, FfiStatus> {
+    let start = c.pos();
+    let parents = crate::jvm_reader::decode_node(c, depth, nodes)?;
+    let key = crate::jvm_reader::hex(c.since(start));
+    Ok(Arc::new(SharedParents {
+        key,
+        query: BooleanQuery {
+            must: vec![parents],
+            ..Default::default()
+        },
+    }))
+}
+
+/// A block or query-time join's `ScoreMode`, by ordinal: `0` None, `1` Avg,
+/// `2` Max, `3` Total, `4` Min.
+pub(crate) fn decode_score_mode(c: &mut Cursor<'_>) -> Result<ScoreMode, FfiStatus> {
+    Ok(match c.u8()? {
+        0 => ScoreMode::None,
+        1 => ScoreMode::Avg,
+        2 => ScoreMode::Max,
+        3 => ScoreMode::Total,
+        4 => ScoreMode::Min,
+        other => {
+            return Err(invalid(format!(
+                "query tree: unknown block-join score mode {other} (expected 0..=4)"
+            )))
+        }
+    })
+}
+
 /// A node of kind 20-24, its kind byte read; `start` is the node's offset.
 pub(crate) fn decode(
     c: &mut Cursor<'_>,
@@ -110,29 +146,9 @@ pub(crate) fn decode(
 ) -> Result<Clause, FfiStatus> {
     let extended = match kind {
         NODE_TO_PARENT => {
-            let score_mode = match c.u8()? {
-                0 => ScoreMode::None,
-                1 => ScoreMode::Avg,
-                2 => ScoreMode::Max,
-                3 => ScoreMode::Total,
-                4 => ScoreMode::Min,
-                other => {
-                    return Err(invalid(format!(
-                        "query tree: unknown block-join score mode {other} (expected 0..=4)"
-                    )))
-                }
-            };
-            let filter_start = c.pos();
-            let parents = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
-            let key = crate::jvm_reader::hex(c.since(filter_start));
+            let score_mode = decode_score_mode(c)?;
+            let parents = decode_parents(c, depth + 1, nodes)?;
             let child = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
-            let parents: Arc<dyn BitSetProducer> = Arc::new(SharedParents {
-                key,
-                query: BooleanQuery {
-                    must: vec![parents],
-                    ..Default::default()
-                },
-            });
             ExtendedQuery::ToParentBlockJoin(ToParentBlockJoinQuery::new(
                 child, parents, score_mode,
             ))
@@ -314,7 +330,7 @@ const MAX_AUTOMATON_STATES: usize = 1 << 16;
 /// | `2` | `DisjunctionIntervalsSource` | `pull_up: u8`, sources |
 /// | `3` / `4` | `Ordered`/`UnorderedIntervalsSource` | sources |
 /// | `5` | `RepeatingIntervalsSource` | `count: i32` (at least 1), `name: u8` (`0` none, `1` `ORDERED`, `2` `UNORDERED`), source |
-/// | `6` | `FilteredIntervalsSource` | `kind: u8` (`0` `MaxGaps`, `1` `MaxWidth`), `n: i32`, source |
+/// | `6` | `FilteredIntervalsSource` | `kind: u8`, then `0` `MaxGaps` / `1` `MaxWidth`: `n: i32`; `2` OpenSearch's `ScriptFilterSource`: `name` (bytes), a checked Painless interval filter script ([`crate::jvm_painless_score::PainlessInterval`]); then the source |
 /// | `7` | `ExtendedIntervalsSource` | `before: i32`, `after: i32`, source |
 /// | `8` | `OffsetIntervalsSource` | `before: u8`, source |
 /// | `9` | `FixedFieldIntervalsSource` | `field`, source |
@@ -387,14 +403,18 @@ pub(crate) fn decode_source(
             }
         }
         SOURCE_FILTERED => {
-            let kind = c.u8()?;
-            let n = c.i32()?;
-            let filter = match kind {
-                0 => IntervalFilterKind::MaxGaps(n),
-                1 => IntervalFilterKind::MaxWidth(n),
+            let filter = match c.u8()? {
+                0 => IntervalFilterKind::MaxGaps(c.i32()?),
+                1 => IntervalFilterKind::MaxWidth(c.i32()?),
+                2 => IntervalFilterKind::Script {
+                    name: std::str::from_utf8(c.bytes()?)
+                        .map_err(|_| FfiStatus::InvalidUtf8)?
+                        .to_string(),
+                    script: Arc::new(crate::jvm_painless_score::PainlessInterval::decode(c)?),
+                },
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown interval filter {other} (expected 0 or 1)"
+                        "query tree: unknown interval filter {other} (expected 0..=2)"
                     )))
                 }
             };
@@ -808,6 +828,7 @@ pub(crate) mod tests {
 
     /// The index opened as the plugin opens a searcher's reader.
     pub(crate) fn open(tmp: &TempDir) -> u64 {
+        crate::register_codecs();
         let dir = FsDirectory::open(tmp.path());
         let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         let name = std::fs::read_dir(tmp.path())

@@ -57,6 +57,9 @@ pub struct CodecFormats {
     /// The codec's default vectors format name
     /// (`PerFieldKnnVectorsFormat.format`).
     pub default_knn_vectors: &'static str,
+    /// Extensions of the files a `FilterCodec`'s own formats add to each
+    /// segment (`sit`, `sip`), which a reader opens beside the native ones.
+    pub extra_files: &'static [&'static str],
 }
 
 /// Every codec Lucene 10.5.0 can read an index with, oldest first: the
@@ -69,6 +72,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene90,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene90HnswVectorsFormat",
     },
     CodecFormats {
@@ -76,6 +80,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene90,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene91HnswVectorsFormat",
     },
     CodecFormats {
@@ -85,6 +90,7 @@ pub const CODECS: &[CodecFormats] = &[
         default_postings: "Lucene90",
         // `Lucene92HnswVectorsFormat.NAME` really is lower-case: 9.2 and 9.3
         // name their vector files `_N_lucene92HnswVectorsFormat_0.vec`.
+        extra_files: &[],
         default_knn_vectors: "lucene92HnswVectorsFormat",
     },
     CodecFormats {
@@ -92,6 +98,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene94HnswVectorsFormat",
     },
     CodecFormats {
@@ -99,6 +106,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene90,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene90",
+        extra_files: &[],
         default_knn_vectors: "Lucene95HnswVectorsFormat",
     },
     CodecFormats {
@@ -106,6 +114,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene99",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -113,6 +122,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene912",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -120,6 +130,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene912",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -127,6 +138,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene101",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -134,6 +146,7 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene103",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
     CodecFormats {
@@ -141,9 +154,79 @@ pub const CODECS: &[CodecFormats] = &[
         segment_info: SegmentInfoFormat::Lucene99,
         field_infos: FieldInfosFormat::Lucene94,
         default_postings: "Lucene104",
+        extra_files: &[],
         default_knn_vectors: "Lucene99HnswVectorsFormat",
     },
 ];
+
+/// OpenSearch custom-codecs' zstd codecs, `(name, delegate)`: each is a
+/// `FilterCodec` over the named Lucene codec that only replaces its stored
+/// fields (with [`crate::stored_fields::Mode::Zstd`] formats, which the
+/// stored-fields reader recognises by their own data codec names). Every
+/// generation the plugin still registers is here, so an index OpenSearch
+/// wrote with `index.codec: zstd` or `zstd_no_dict` opens whichever version
+/// wrote it. `Lucene95CustomCodec` is 2.9.0's name for both modes.
+pub const OPENSEARCH_ZSTD_CODECS: &[(&str, &str)] = &[
+    ("Lucene95CustomCodec", "Lucene95"),
+    ("ZSTD", "Lucene95"),
+    ("ZSTDNODICT", "Lucene95"),
+    ("ZSTD99", "Lucene99"),
+    ("ZSTDNODICT99", "Lucene99"),
+    ("ZSTD912", "Lucene912"),
+    ("ZSTDNODICT912", "Lucene912"),
+    ("ZSTD101", "Lucene101"),
+    ("ZSTDNODICT101", "Lucene101"),
+    ("ZSTD103", "Lucene103"),
+    ("ZSTDNODICT103", "Lucene103"),
+    (ZSTD_CODEC, "Lucene104"),
+    (ZSTD_NO_DICT_CODEC, "Lucene104"),
+];
+
+/// The OpenSearch k-NN plugin's codecs, `(name, delegate)`: each is a
+/// `FilterCodec` over the named Lucene codec. With the lucene engine, a
+/// vector field's files are Lucene's own formats (some under k-NN format
+/// names, which name the same files), so an index the k-NN plugin wrote
+/// opens whichever version wrote it.
+pub const OPENSEARCH_KNN_CODECS: &[(&str, &str)] = &[
+    ("KNN910Codec", "Lucene91"),
+    ("KNN920Codec", "Lucene92"),
+    ("KNN940Codec", "Lucene94"),
+    ("KNN950Codec", "Lucene95"),
+    ("KNN990Codec", "Lucene99"),
+    ("KNN9120Codec", "Lucene912"),
+    ("KNN10010Codec", "Lucene101"),
+    ("KNN1030Codec", "Lucene103"),
+    ("KNN1040Codec", "Lucene104"),
+];
+
+/// The codec OpenSearch 3.x writes for `index.codec: zstd`.
+pub const ZSTD_CODEC: &str = "ZSTD104";
+/// The codec OpenSearch 3.x writes for `index.codec: zstd_no_dict`.
+pub const ZSTD_NO_DICT_CODEC: &str = "ZSTDNODICT104";
+
+/// The codec of the Rust engine's paged zstd stored fields
+/// ([`crate::stored_fields::Mode::ZstdPaged`]): `Lucene104` with those
+/// stored fields. The OpenSearch plugin registers a Java codec of this name.
+pub const ZSTD_PAGED_CODEC: &str = "LuceneRustZstdPaged104";
+
+/// The Rust engine's own `FilterCodec`s, `(name, delegate)` as in
+/// [`OPENSEARCH_ZSTD_CODECS`].
+pub const RUST_CODECS: &[(&str, &str)] = &[(ZSTD_PAGED_CODEC, "Lucene104")];
+
+/// [`OPENSEARCH_ZSTD_CODECS`], [`OPENSEARCH_KNN_CODECS`] and [`RUST_CODECS`] as readable codecs.
+static OPENSEARCH: std::sync::LazyLock<Vec<CodecFormats>> = std::sync::LazyLock::new(|| {
+    OPENSEARCH_ZSTD_CODECS
+        .iter()
+        .chain(OPENSEARCH_KNN_CODECS)
+        .chain(RUST_CODECS)
+        .filter_map(|&(name, delegate)| {
+            CODECS
+                .iter()
+                .find(|c| c.name == delegate)
+                .map(|c| renamed(c, name))
+        })
+        .collect()
+});
 
 static REGISTERED: RwLock<Vec<&'static CodecFormats>> = RwLock::new(Vec::new());
 
@@ -151,9 +234,14 @@ static REGISTERED: RwLock<Vec<&'static CodecFormats>> = RwLock::new(Vec::new());
 /// framework's `Asserting`, `CheapBastard`, ...) readable by its name. Such a
 /// codec composes formats this port reads already; `formats` says which
 /// generation, as the built-in entries do. A later registration under a name
-/// replaces the earlier one; a built-in name cannot be replaced.
+/// replaces the earlier one; a built-in name, or one of
+/// [`OPENSEARCH_ZSTD_CODECS`] or [`OPENSEARCH_KNN_CODECS`], cannot be replaced.
 pub fn register(formats: CodecFormats) {
-    if CODECS.iter().any(|c| c.name == formats.name) {
+    if CODECS
+        .iter()
+        .chain(OPENSEARCH.iter())
+        .any(|c| c.name == formats.name)
+    {
         return;
     }
     let mut registered = REGISTERED.write().unwrap_or_else(|e| e.into_inner());
@@ -173,10 +261,14 @@ pub const fn renamed(formats: &CodecFormats, name: &'static str) -> CodecFormats
 /// `Codec.forName(name)`, restricted to the codecs this port reads: the
 /// built-in ones and those [`register`]ed.
 pub fn for_name(name: &str) -> Option<&'static CodecFormats> {
-    CODECS.iter().find(|c| c.name == name).or_else(|| {
-        let registered = REGISTERED.read().unwrap_or_else(|e| e.into_inner());
-        registered.iter().copied().find(|c| c.name == name)
-    })
+    CODECS
+        .iter()
+        .chain(OPENSEARCH.iter())
+        .find(|c| c.name == name)
+        .or_else(|| {
+            let registered = REGISTERED.read().unwrap_or_else(|e| e.into_inner());
+            registered.iter().copied().find(|c| c.name == name)
+        })
 }
 
 /// The current codec, `Lucene104`.
@@ -210,6 +302,27 @@ mod tests {
         assert_eq!(
             for_name("RenamedForTest").unwrap().segment_info,
             SegmentInfoFormat::Lucene90
+        );
+    }
+
+    #[test]
+    fn opensearch_codecs_read_as_their_delegates() {
+        assert_eq!(
+            OPENSEARCH.len(),
+            OPENSEARCH_ZSTD_CODECS.len() + OPENSEARCH_KNN_CODECS.len() + RUST_CODECS.len()
+        );
+        for &(name, delegate) in OPENSEARCH_ZSTD_CODECS
+            .iter()
+            .chain(OPENSEARCH_KNN_CODECS)
+            .chain(RUST_CODECS)
+        {
+            let c = for_name(name).unwrap();
+            assert_eq!(renamed(c, delegate), *for_name(delegate).unwrap(), "{name}");
+        }
+        register(renamed(for_name("Lucene95").unwrap(), ZSTD_CODEC));
+        assert_eq!(
+            for_name(ZSTD_CODEC).unwrap().segment_info,
+            SegmentInfoFormat::Lucene99
         );
     }
 

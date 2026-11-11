@@ -204,7 +204,12 @@ impl<'c> ValuesContext<'c> {
         self
     }
 
-    fn reader(&self, leaf: usize) -> Result<&'c crate::directory_reader::SegmentReader> {
+    /// Leaf `leaf`'s segment reader, which a source outside this crate reads
+    /// its column from.
+    ///
+    /// # Errors
+    /// [`Error::IllegalState`] when the context has no reader for `leaf`.
+    pub fn reader(&self, leaf: usize) -> Result<&'c crate::directory_reader::SegmentReader> {
         let found = match (self.searcher, self.reader) {
             (Some(s), _) => s.segments().get(leaf).and_then(|s| s.reader),
             (None, Some(r)) if leaf == 0 => Some(r),
@@ -1671,9 +1676,30 @@ impl crate::top_field::FieldComparatorSource for ValuesSortSource {
             match &self.source {
                 ValuesSortKind::Double(s) => {
                     let mut v = s.get_values(ctx, leaf, None)?;
-                    for (doc, slot) in (0..max_doc).zip(values.iter_mut()) {
-                        if v.advance_exact(doc)? {
-                            *slot = Some(double_to_sortable_long(v.double_value()?));
+                    if v.batch_capable() {
+                        // the whole leaf, a block of documents at a time
+                        const BLOCK: i32 = 512;
+                        let (mut docs, mut out, mut has) = (Vec::new(), Vec::new(), Vec::new());
+                        let scores = vec![0.0; BLOCK as usize];
+                        let mut first = 0;
+                        for block in values.chunks_mut(BLOCK as usize) {
+                            docs.clear();
+                            docs.extend(first..first + block.len() as i32);
+                            out.resize(block.len(), 0.0);
+                            has.resize(block.len(), false);
+                            v.fill_batch(&docs, &scores[..block.len()], &mut out, &mut has)?;
+                            for ((slot, &h), &x) in block.iter_mut().zip(&has).zip(&out) {
+                                if h {
+                                    *slot = Some(double_to_sortable_long(x));
+                                }
+                            }
+                            first += BLOCK;
+                        }
+                    } else {
+                        for (doc, slot) in (0..max_doc).zip(values.iter_mut()) {
+                            if v.advance_exact(doc)? {
+                                *slot = Some(double_to_sortable_long(v.double_value()?));
+                            }
                         }
                     }
                 }

@@ -38,12 +38,58 @@ use std::sync::Arc;
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
+use lucene_store::index_output::FsIndexOutput;
 
 use crate::compression::{self, CompressingFormat, Compression, Compressor};
 use crate::direct_monotonic;
 
 const DATA_CODEC_BEST_SPEED: &str = "Lucene90StoredFieldsFastData";
 const DATA_CODEC_BEST_COMPRESSION: &str = "Lucene90StoredFieldsHighData";
+/// OpenSearch custom-codecs' `CustomStoredFieldsZstd` and
+/// `CustomStoredFieldsZstdNoDict` formats (`index.codec: zstd` and
+/// `zstd_no_dict`).
+pub const DATA_CODEC_ZSTD: &str = "CustomStoredFieldsZstd";
+pub const DATA_CODEC_ZSTD_NO_DICT: &str = "CustomStoredFieldsZstdNoDict";
+/// The Rust engine's paged zstd stored fields ([`Mode::ZstdPaged`]).
+pub const DATA_CODEC_ZSTD_PAGED: &str = "RustZstdPagedStoredFieldsData";
+/// The page [`Mode::ZstdPaged`] packs chunks into: a chunk that starts
+/// inside a page also ends inside it, so reading one page is enough to
+/// decode every chunk that starts there. A storage layer that caches whole
+/// pages should use this size or a multiple of it.
+///
+/// Pages are counted from the start of the `.fdt`; a compound file places
+/// such an entry on a page boundary ([`crate::compound_format::write`]).
+/// Readers open the file with this size as its alignment hint
+/// ([`page_alignment`], `Directory::open_aligned`).
+pub const ZSTD_PAGED_PAGE_SIZE: usize = 16 << 10;
+const _: () = assert!(lucene_store::alignment::is_valid_hint(ZSTD_PAGED_PAGE_SIZE));
+/// The `.si` attribute of a segment with [`Mode::ZstdPaged`] stored fields
+/// (value [`ZSTD_PAGED_MODE_VALUE`]); the plugin's Java format reads it to
+/// pick its reader.
+pub const ZSTD_PAGED_MODE_ATTRIBUTE: &str = "LuceneRustStoredFieldsFormat.mode";
+/// [`ZSTD_PAGED_MODE_ATTRIBUTE`]'s value.
+pub const ZSTD_PAGED_MODE_VALUE: &str = "ZSTD_PAGED";
+
+/// The alignment hint a segment's `.fdt` (or the `.cfs` holding it) is
+/// opened with, from the segment's `.si` attributes: [`ZSTD_PAGED_PAGE_SIZE`]
+/// for [`Mode::ZstdPaged`], `None` for every other mode.
+pub fn page_alignment(attributes: &[(String, String)]) -> Option<usize> {
+    attributes
+        .iter()
+        .any(|(k, v)| k == ZSTD_PAGED_MODE_ATTRIBUTE && v == ZSTD_PAGED_MODE_VALUE)
+        .then_some(ZSTD_PAGED_PAGE_SIZE)
+}
+/// [`Mode::ZstdPaged`]'s `chunkSize`: plain bytes per chunk, so one frame.
+const ZSTD_PAGED_CHUNK_SIZE: usize = 16 << 10;
+/// [`Mode::ZstdPaged`]'s `maxDocsPerChunk`.
+const ZSTD_PAGED_MAX_DOCS_PER_CHUNK: usize = 1024;
+/// The least free room at the end of a page worth filling with a chunk of
+/// fewer documents; less than this is padded.
+const ZSTD_PAGED_MIN_FILL: usize = 1 << 10;
+/// How many smaller chunks a writer tries before padding the page.
+const ZSTD_PAGED_FILL_ATTEMPTS: usize = 3;
+/// The largest segment dictionary a reader accepts.
+pub const ZSTD_PAGED_MAX_DICTIONARY: usize = 1 << 20;
 const META_CODEC: &str = "Lucene90FieldsIndexMeta";
 const INDEX_CODEC: &str = "Lucene90FieldsIndexIdx";
 const VERSION_START: i32 = 1;
@@ -108,6 +154,9 @@ pub enum Error {
     },
     #[error("inverted document range: fromDoc={from_doc} > toDoc={to_doc}")]
     InvertedDocRange { from_doc: i32, to_doc: i32 },
+    /// A derived-source `_source` this reader does not rebuild (`lucene_search::derived_source`).
+    #[error("derived source: {0}")]
+    DerivedSource(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -122,13 +171,13 @@ pub enum FieldValue {
     Double(f64),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredField {
     pub field_number: i32,
     pub value: FieldValue,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Document {
     pub fields: Vec<StoredField>,
 }
@@ -143,6 +192,55 @@ pub enum Mode {
     BestSpeed,
     BestCompression,
     Compressing(&'static CompressingFormat),
+    /// OpenSearch custom-codecs' `Lucene*CustomStoredFieldsFormat`: a
+    /// `Lucene90CompressingStoredFieldsFormat` named [`DATA_CODEC_ZSTD`] or
+    /// [`DATA_CODEC_ZSTD_NO_DICT`], with `BEST_COMPRESSION`'s geometry.
+    Zstd(ZstdMode),
+    /// The Rust engine's paged zstd stored fields at a zstd level:
+    /// [`DATA_CODEC_ZSTD_PAGED`], 16 KiB chunks of one zstd frame each,
+    /// compressed against an optional segment dictionary that the `.fdt`
+    /// holds right after its header (`vint length, bytes`), and packed so no
+    /// chunk crosses a [`ZSTD_PAGED_PAGE_SIZE`] boundary unless it starts on
+    /// one. Every other byte of the three files is `Lucene90`'s.
+    ZstdPaged(i32),
+}
+
+/// The settings of a [`Mode::Zstd`] format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ZstdMode {
+    /// `zstd` (each chunk's first bytes as the sub-blocks' dictionary) rather
+    /// than `zstd_no_dict`.
+    pub dictionary: bool,
+    /// The zstd level (`index.codec.compression_level`). Readers ignore it.
+    pub level: i32,
+}
+
+impl ZstdMode {
+    /// `zstd` at `level`.
+    pub const fn zstd(level: i32) -> Self {
+        Self {
+            dictionary: true,
+            level,
+        }
+    }
+
+    /// `zstd_no_dict` at `level`.
+    pub const fn zstd_no_dict(level: i32) -> Self {
+        Self {
+            dictionary: false,
+            level,
+        }
+    }
+
+    /// The `Lucene104CustomCodec.Mode` name the segment records
+    /// (`ZSTD`, `ZSTD_NO_DICT`).
+    pub const fn mode_name(self) -> &'static str {
+        if self.dictionary {
+            "ZSTD"
+        } else {
+            "ZSTD_NO_DICT"
+        }
+    }
 }
 
 impl Mode {
@@ -152,12 +250,15 @@ impl Mode {
             Self::BestSpeed => DATA_CODEC_BEST_SPEED,
             Self::BestCompression => DATA_CODEC_BEST_COMPRESSION,
             Self::Compressing(format) => format.format_name,
+            Self::Zstd(z) if z.dictionary => DATA_CODEC_ZSTD,
+            Self::Zstd(_) => DATA_CODEC_ZSTD_NO_DICT,
+            Self::ZstdPaged(_) => DATA_CODEC_ZSTD_PAGED,
         }
     }
     /// The files' segment suffix (empty for both `Lucene90` modes).
     pub fn segment_suffix(self) -> &'static str {
         match self {
-            Self::BestSpeed | Self::BestCompression => "",
+            Self::BestSpeed | Self::BestCompression | Self::Zstd(_) | Self::ZstdPaged(_) => "",
             Self::Compressing(format) => format.segment_suffix,
         }
     }
@@ -166,13 +267,17 @@ impl Mode {
             Self::BestSpeed => Compression::Lz4WithPreset,
             Self::BestCompression => Compression::DeflateWithPreset,
             Self::Compressing(format) => format.compression,
+            Self::Zstd(z) if z.dictionary => Compression::Zstd,
+            Self::Zstd(_) => Compression::ZstdNoDict,
+            Self::ZstdPaged(_) => Compression::ZstdPaged,
         }
     }
     /// `chunkSize`: the buffered bytes that close a chunk.
     pub fn chunk_size(self) -> i32 {
         match self {
             Self::BestSpeed => BEST_SPEED_CHUNK_SIZE as i32,
-            Self::BestCompression => BEST_COMPRESSION_CHUNK_SIZE as i32,
+            Self::BestCompression | Self::Zstd(_) => BEST_COMPRESSION_CHUNK_SIZE as i32,
+            Self::ZstdPaged(_) => ZSTD_PAGED_CHUNK_SIZE as i32,
             Self::Compressing(format) => format.chunk_size,
         }
     }
@@ -180,14 +285,17 @@ impl Mode {
     pub fn max_docs_per_chunk(self) -> i32 {
         match self {
             Self::BestSpeed => BEST_SPEED_MAX_DOCS_PER_CHUNK as i32,
-            Self::BestCompression => BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+            Self::BestCompression | Self::Zstd(_) => BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+            Self::ZstdPaged(_) => ZSTD_PAGED_MAX_DOCS_PER_CHUNK as i32,
             Self::Compressing(format) => format.max_docs_per_chunk,
         }
     }
     /// `blockShift` of the `.fdx` monotonic arrays.
     pub fn block_shift(self) -> i32 {
         match self {
-            Self::BestSpeed | Self::BestCompression => INDEX_BLOCK_SHIFT as i32,
+            Self::BestSpeed | Self::BestCompression | Self::Zstd(_) | Self::ZstdPaged(_) => {
+                INDEX_BLOCK_SHIFT as i32
+            }
             Self::Compressing(format) => format.block_shift,
         }
     }
@@ -217,6 +325,8 @@ pub struct StoredFieldsReader<'d> {
     start_pointers_start_pointer: i64,
     start_pointers_end_pointer: i64,
     start_pointers_meta: Arc<direct_monotonic::Meta>,
+    /// A [`Mode::ZstdPaged`] segment's dictionary, if it has one.
+    zstd_dictionary: Option<Arc<lucene_zstd::DecoderDictionary>>,
 }
 
 /// Parses `.fdt`+`.fdm`+`.fdx` (already read into memory) and returns a
@@ -257,6 +367,21 @@ pub fn open<'d>(
             Compression::DeflateWithPreset,
             BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
         ),
+        DATA_CODEC_ZSTD => (
+            DATA_CODEC_ZSTD,
+            Compression::Zstd,
+            BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+        ),
+        DATA_CODEC_ZSTD_NO_DICT => (
+            DATA_CODEC_ZSTD_NO_DICT,
+            Compression::ZstdNoDict,
+            BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+        ),
+        DATA_CODEC_ZSTD_PAGED => (
+            DATA_CODEC_ZSTD_PAGED,
+            Compression::ZstdPaged,
+            ZSTD_PAGED_MAX_DOCS_PER_CHUNK as i32,
+        ),
         other => match compression::COMPRESSING_DATA_CODECS
             .iter()
             .find(|(name, _)| *name == other)
@@ -285,6 +410,12 @@ pub fn open<'d>(
         segment_suffix,
     )?;
     codec_util::retrieve_checksum(fdt)?;
+    let zstd_dictionary = if compression == Compression::ZstdPaged {
+        read_zstd_dictionary(&mut fdt_input)?
+            .map(|d| Arc::new(lucene_zstd::DecoderDictionary::new(d)))
+    } else {
+        None
+    };
 
     let mut meta_input = SliceInput::new(fdm);
     codec_util::check_index_header(
@@ -420,7 +551,27 @@ pub fn open<'d>(
         start_pointers_start_pointer,
         start_pointers_end_pointer,
         start_pointers_meta: Arc::new(start_pointers_meta),
+        zstd_dictionary,
     })
+}
+
+/// A [`Mode::ZstdPaged`] `.fdt`'s dictionary, read from `input` positioned
+/// right after the index header: `vint length, bytes`, `None` for length 0.
+fn read_zstd_dictionary<'d>(input: &mut SliceInput<'d>) -> Result<Option<&'d [u8]>> {
+    let len = input.read_vint()?;
+    let len = usize::try_from(len)
+        .ok()
+        .filter(|&l| l <= ZSTD_PAGED_MAX_DICTIONARY)
+        .ok_or_else(|| {
+            lucene_store::Error::Corrupted(format!("invalid zstd dictionary length {len}"))
+        })?;
+    if len == 0 {
+        return Ok(None);
+    }
+    let at = input.position();
+    let dict = input.slice(at, at.saturating_add(len))?;
+    input.skip(len)?;
+    Ok(Some(dict))
 }
 
 impl<'d> StoredFieldsReader<'d> {
@@ -450,6 +601,7 @@ impl<'d> StoredFieldsReader<'d> {
             start_pointers_start_pointer: self.start_pointers_start_pointer,
             start_pointers_end_pointer: self.start_pointers_end_pointer,
             start_pointers_meta: Arc::clone(&self.start_pointers_meta),
+            zstd_dictionary: self.zstd_dictionary.clone(),
         }
     }
 
@@ -493,6 +645,47 @@ impl<'d> StoredFieldsReader<'d> {
             &self.start_pointers_meta,
             block_index,
         )?)
+    }
+
+    /// `StoredFields.prefetch(docID)` for several documents at once: the
+    /// `.fdt` chunk holding each is announced in one
+    /// [`lucene_store::prefetch`], so a fetch phase over a file read by
+    /// range waits for one round trip rather than one per chunk. A no-op
+    /// over memory that is not read by range.
+    ///
+    /// # Errors
+    /// A chunk that could not be fetched, or a corrupt `.fdx` index.
+    pub fn prefetch(&self, docs: &[i32]) -> Result<()> {
+        if !lucene_store::is_prefetchable(self.fdt) {
+            return Ok(());
+        }
+        let docs_region = self.docs_region()?;
+        let mut ranges = Vec::with_capacity(docs.len());
+        for &doc in docs {
+            if doc < 0 || doc >= self.max_doc {
+                continue;
+            }
+            let block = direct_monotonic::floor_index(
+                docs_region,
+                &self.docs_meta,
+                0,
+                self.num_chunks,
+                i64::from(doc),
+            )?;
+            let start = self.block_start_pointer(block)?;
+            let end = match block.checked_add(1) {
+                Some(next) if next < self.num_chunks => self.block_start_pointer(next)?,
+                _ => self.max_pointer,
+            };
+            let start = usize::try_from(start).unwrap_or(usize::MAX);
+            let end = usize::try_from(end)
+                .unwrap_or(0)
+                .max(start.saturating_add(1));
+            if let Some(range) = self.fdt.get(start..end.min(self.fdt.len())) {
+                ranges.push(range);
+            }
+        }
+        Ok(lucene_store::prefetch(&ranges)?)
     }
 
     /// Reads the given document's stored fields.
@@ -542,9 +735,20 @@ impl<'d> StoredFieldsReader<'d> {
             doc_id as i64,
         )?;
         let block_start = self.block_start_pointer(block_index)?;
+        self.chunk_header_at(block_start, doc_id)
+    }
 
+    /// [`Self::read_chunk_header`] for the chunk at `.fdt` offset
+    /// `block_start`.
+    fn chunk_header_at(
+        &self,
+        block_start: i64,
+        doc_id: i32,
+    ) -> Result<(ChunkHeader, SliceInput<'d>)> {
         let mut input = SliceInput::new(self.fdt);
-        input.seek(block_start as usize)?;
+        input.seek(
+            usize::try_from(block_start).map_err(|_| Error::DocOutOfRange(doc_id, self.max_doc))?,
+        )?;
         let doc_base = input.read_vint()?;
         let token = input.read_vint()?;
         // Java's `token >>> 2`: an *unsigned* shift, so a corrupt token with
@@ -734,8 +938,7 @@ impl<'d> StoredFieldsReader<'d> {
                 let unit_len = chunk_size.min(total_length - unit_start);
                 let lo = want_start.max(unit_start).min(unit_start + unit_len);
                 let hi = want_end.min(unit_start + unit_len);
-                compression::decompress(
-                    self.compression,
+                self.decompress_unit(
                     input,
                     unit_len,
                     lo - unit_start,
@@ -745,14 +948,7 @@ impl<'d> StoredFieldsReader<'d> {
                 unit_start += unit_len;
             }
         } else {
-            compression::decompress(
-                self.compression,
-                input,
-                total_length,
-                want_start,
-                wanted,
-                &mut doc_bytes,
-            )?;
+            self.decompress_unit(input, total_length, want_start, wanted, &mut doc_bytes)?;
         }
         if doc_bytes.len() != wanted {
             return Err(lucene_store::Error::Corrupted(format!(
@@ -762,6 +958,42 @@ impl<'d> StoredFieldsReader<'d> {
             .into());
         }
         Ok(doc_bytes)
+    }
+
+    /// [`compression::decompress`] with this segment's dictionary, if any.
+    fn decompress_unit(
+        &self,
+        input: &mut SliceInput<'d>,
+        original_length: usize,
+        offset: usize,
+        length: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        if self.compression == Compression::ZstdPaged {
+            compression::decompress_paged(
+                input,
+                self.zstd_dictionary.as_deref(),
+                original_length,
+                offset,
+                length,
+                out,
+            )?;
+        } else {
+            compression::decompress(
+                self.compression,
+                input,
+                original_length,
+                offset,
+                length,
+                out,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether this is a [`Mode::ZstdPaged`] segment with a dictionary.
+    pub fn has_zstd_dictionary(&self) -> bool {
+        self.zstd_dictionary.is_some()
     }
 
     /// Port of `Lucene90CompressingStoredFieldsReader.serializedDocument`:
@@ -1302,6 +1534,77 @@ impl ChunkCursor {
     }
 }
 
+/// One chunk as a [`StoredFieldsWriter`] wrote it, compressed, kept apart
+/// from the `.fdt` ([`StoredFieldsWriter::capture_chunks`]) so its
+/// documents can be read while the file is still being written.
+#[derive(Debug, Clone)]
+pub struct WrittenChunk {
+    mode: Mode,
+    doc_base: i32,
+    docs: i32,
+    bytes: Vec<u8>,
+}
+
+impl WrittenChunk {
+    /// Whether the chunk holds the writer's document `doc_id`.
+    pub fn contains(&self, doc_id: i32) -> bool {
+        doc_id >= self.doc_base && doc_id.saturating_sub(self.doc_base) < self.docs
+    }
+
+    /// The compressed bytes it holds.
+    pub fn ram_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    /// The writer's document `doc_id`, decompressed from the chunk.
+    ///
+    /// # Errors
+    /// The chunk does not hold `doc_id`, or does not decode.
+    pub fn document(&self, doc_id: i32) -> Result<Document> {
+        if !self.contains(doc_id) {
+            return Err(Error::DocOutOfRange(
+                doc_id,
+                self.doc_base.saturating_add(self.docs),
+            ));
+        }
+        let reader = StoredFieldsReader {
+            fdt: &self.bytes,
+            fdx: &[],
+            data_codec: self.mode.data_codec(),
+            compression: self.mode.compression(),
+            max_docs_per_chunk: self.mode.max_docs_per_chunk(),
+            chunk_size: self.mode.chunk_size(),
+            max_doc: self.doc_base.saturating_add(self.docs),
+            num_chunks: 1,
+            num_dirty_chunks: 0,
+            num_dirty_docs: 0,
+            max_pointer: self.bytes.len() as i64,
+            docs_start_pointer: 0,
+            docs_end_pointer: 0,
+            docs_meta: Arc::new(direct_monotonic::Meta::empty()),
+            start_pointers_start_pointer: 0,
+            start_pointers_end_pointer: 0,
+            start_pointers_meta: Arc::new(direct_monotonic::Meta::empty()),
+            zstd_dictionary: None,
+        };
+        let (header, mut input) = reader.chunk_header_at(0, doc_id)?;
+        let index = header.index_of(doc_id);
+        // ARITH: `chunk_header_at` built `offsets` with `chunk_docs + 1`
+        // non-decreasing entries and checked `doc_id` is in the chunk.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (start, end) = (
+            header.offsets[index] as usize,
+            header.offsets[index + 1] as usize,
+        );
+        let bytes = if start == end {
+            Vec::new()
+        } else {
+            reader.decompress_range(&header, &mut input, start, end)?
+        };
+        parse_document(header.num_stored_fields[index], &bytes)
+    }
+}
+
 /// Port of `Lucene90CompressingStoredFieldsWriter` for `Mode.BEST_SPEED` --
 /// the write-side counterpart of [`open`]/[`StoredFieldsReader::document`].
 /// Documents are buffered into chunks exactly as Java does (close on the
@@ -1332,6 +1635,15 @@ pub fn write_best_speed(
     }
     writer.finish()
 }
+
+/// How many `.fdt` bytes an indexing buffer holds in memory before it
+/// gives its stored fields a file ([`StoredFieldsWriter::stream_to`]).
+pub const SPILL_BYTES: usize = 1 << 20;
+
+/// How many `.fdt` bytes a streaming writer gathers before handing them to
+/// its output: a few chunks, so the writes stay large while the buffer
+/// stays small.
+const STREAM_BYTES: usize = 64 << 10;
 
 /// Lucene's per-mode chunking parameters, from the two
 /// `Lucene90CompressingStoredFieldsFormat` constructions in
@@ -1376,6 +1688,11 @@ pub struct StoredFieldsWriter {
     segment_id: [u8; ID_LENGTH],
     segment_suffix: String,
     fdt: Vec<u8>,
+    /// `.fdt` bytes already handed to an output by [`Self::spill_fdt`]; `fdt`
+    /// holds what follows them.
+    fdt_spilled: u64,
+    /// Where [`Self::stream_to`] sends the `.fdt`, if anywhere.
+    fdt_out: Option<FsIndexOutput>,
     /// Cumulative doc counts, one per chunk written so far, seeded with `0`
     /// -- `write_index_and_meta` appends nothing, so the last entry doubles
     /// as `.fdx`'s trailing `maxDoc` sentinel.
@@ -1395,6 +1712,137 @@ pub struct StoredFieldsWriter {
     /// documents already flushed.
     doc_base: i32,
     scratch: Compressor,
+    /// [`Mode::ZstdPaged`]'s chunk under construction, encoded here first so
+    /// the writer can see whether it fits the current page.
+    page_chunk: Vec<u8>,
+    /// The chunks written since [`Self::capture_chunks`], while it is on.
+    captured: Option<Vec<WrittenChunk>>,
+    /// [`Self::set_zstd_dictionary`] gave the chunks a dictionary, which a
+    /// [`WrittenChunk`] does not carry.
+    has_dictionary: bool,
+}
+
+/// The least `.fdt` bytes, summed over a merge's sources, for which the
+/// merged [`Mode::ZstdPaged`] segment gets a trained dictionary. Training
+/// on [`ZSTD_PAGED_SAMPLE_BYTES`] takes about 0.1-0.15 s whatever the merge
+/// size, and the dictionary saves 4-11% of the `.fdt`: above this size the
+/// training is a small part of the merge and the saving is over a MiB.
+pub const ZSTD_PAGED_DICTIONARY_MIN_BYTES: u64 = 16 << 20;
+/// The size of a trained [`Mode::ZstdPaged`] dictionary.
+pub const ZSTD_PAGED_DICTIONARY_SIZE: usize = 64 << 10;
+/// The plain bytes [`train_zstd_paged_dictionary`] samples.
+const ZSTD_PAGED_SAMPLE_BYTES: usize = 2 << 20;
+
+/// Trains a [`Mode::ZstdPaged`] dictionary on documents sampled from
+/// `readers`' chunks, evenly spread over each reader and in proportion to
+/// its size. `None` when the readers hold too little to train on.
+///
+/// # Errors
+/// A sampled chunk cannot be read.
+// ARITH: sample counts and indices are bounded by `max_doc` and by
+// `ZSTD_PAGED_SAMPLE_BYTES`; `total` sums file lengths.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn train_zstd_paged_dictionary(readers: &[&StoredFieldsReader<'_>]) -> Result<Option<Vec<u8>>> {
+    let total: u64 = readers.iter().map(|r| r.max_pointer().max(0) as u64).sum();
+    if total == 0 {
+        return Ok(None);
+    }
+    // Every sample back to back in one buffer, with each one's end.
+    let mut samples: Vec<u8> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
+    for reader in readers {
+        let max_doc = reader.max_doc();
+        if max_doc == 0 {
+            continue;
+        }
+        let share =
+            (ZSTD_PAGED_SAMPLE_BYTES as u64 * reader.max_pointer().max(0) as u64 / total) as usize;
+        let chunks = share
+            .div_ceil(reader.chunk_size().max(1) as usize)
+            .clamp(1, reader.num_chunks().max(1) as usize);
+        let mut last_base = -1;
+        for j in 0..chunks {
+            let doc = (j as u64 * max_doc as u64 / chunks as u64) as i32;
+            let chunk = reader.read_chunk(doc)?;
+            if chunk.doc_base() == last_base {
+                continue;
+            }
+            last_base = chunk.doc_base();
+            for d in chunk.doc_base()..chunk.doc_base() + chunk.num_docs() {
+                if let Some((_, bytes)) = chunk.document(d) {
+                    if !bytes.is_empty() {
+                        samples.extend_from_slice(&bytes[..bytes.len().min(ZSTD_PAGED_CHUNK_SIZE)]);
+                        ends.push(samples.len());
+                    }
+                }
+            }
+        }
+    }
+    let mut start = 0;
+    let refs: Vec<&[u8]> = ends
+        .iter()
+        .map(|&end| {
+            let sample = &samples[start..end];
+            start = end;
+            sample
+        })
+        .collect();
+    Ok(lucene_zstd::train_dictionary(&refs, ZSTD_PAGED_DICTIONARY_SIZE).ok())
+}
+
+/// One chunk's documents, as [`StoredFieldsWriter`] writes them.
+struct ChunkToWrite<'a> {
+    doc_base: i32,
+    num_stored_fields: &'a [i64],
+    lengths: &'a [i64],
+    payload: &'a [u8],
+    /// Closed before either trigger fired: flagged dirty in the token.
+    force: bool,
+}
+
+impl ChunkToWrite<'_> {
+    /// Appends the chunk to `out`: `docBase`, the token, the field counts
+    /// and lengths, then the payload as one compressed unit, or as one unit
+    /// per `chunk_size` bytes when it is at least twice that (`sliced`).
+    fn encode(
+        &self,
+        scratch: &mut Compressor,
+        compression: Compression,
+        chunk_size: usize,
+        out: &mut Vec<u8>,
+    ) {
+        let chunk_docs = self.lengths.len();
+        // Only a chunk holding a single outsized document can reach this,
+        // since every other chunk closes on the first doc that crosses
+        // `chunk_size`.
+        //
+        // ARITH: `chunk_size` is a positive `i32` (`StoredFieldsWriter::new`)
+        // never assigned again, so doubling it is nowhere near `usize`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let sliced = self.payload.len() >= 2 * chunk_size;
+
+        out.write_vint(self.doc_base);
+        out.write_vint(
+            ((chunk_docs as i32) << 2) | if self.force { 2 } else { 0 } | i32::from(sliced),
+        );
+        if chunk_docs == 1 {
+            out.write_vint(self.num_stored_fields[0] as i32);
+            out.write_vint(self.lengths[0] as i32);
+        } else {
+            write_bulk_ints(out, self.num_stored_fields);
+            write_bulk_ints(out, self.lengths);
+        }
+        if self.payload.is_empty() {
+            return;
+        }
+        if sliced {
+            for slice in self.payload.chunks(chunk_size) {
+                scratch.compress(compression, slice, out);
+            }
+        } else {
+            scratch.compress(compression, self.payload, out);
+        }
+    }
 }
 
 impl StoredFieldsWriter {
@@ -1431,6 +1879,10 @@ impl StoredFieldsWriter {
             segment_id,
             segment_suffix,
         );
+        if matches!(mode, Mode::ZstdPaged(_)) {
+            // No dictionary until `set_zstd_dictionary` says otherwise.
+            fdt.write_vint(0);
+        }
         let start = fdt.len() as i64;
         Self {
             mode,
@@ -1439,6 +1891,8 @@ impl StoredFieldsWriter {
             segment_id: *segment_id,
             segment_suffix: segment_suffix.to_string(),
             fdt,
+            fdt_spilled: 0,
+            fdt_out: None,
             docs_values: vec![0],
             start_pointers_values: vec![start],
             num_dirty_chunks: 0,
@@ -1447,8 +1901,142 @@ impl StoredFieldsWriter {
             lengths: Vec::new(),
             num_stored_fields: Vec::new(),
             doc_base: 0,
-            scratch: Compressor::default(),
+            scratch: {
+                let mut scratch = Compressor::default();
+                let level = match mode {
+                    Mode::Zstd(z) => Some(z.level),
+                    Mode::ZstdPaged(level) => Some(level),
+                    _ => None,
+                };
+                if let Some(level) = level {
+                    // Out-of-range levels clamp to zstd's own range, as
+                    // libzstd itself does; `ZstdLucene104Codec::new` rejects
+                    // them up front.
+                    let levels = lucene_zstd::levels();
+                    let level = level.clamp(*levels.start(), *levels.end());
+                    scratch
+                        .set_zstd_level(level)
+                        .expect("a level inside zstd's range");
+                }
+                scratch
+            },
+            page_chunk: Vec::new(),
+            captured: None,
+            has_dictionary: false,
         }
+    }
+
+    /// Keeps a copy of each chunk written from now on until
+    /// [`Self::take_captured`], so their documents stay readable once the
+    /// `.fdt` bytes go to the output. A writer with a zstd dictionary
+    /// ([`Self::set_zstd_dictionary`]) captures none.
+    pub fn capture_chunks(&mut self) {
+        if !self.has_dictionary {
+            self.captured = Some(Vec::new());
+        }
+    }
+
+    /// The chunks written since [`Self::capture_chunks`], which stops
+    /// keeping them.
+    pub fn take_captured(&mut self) -> Vec<WrittenChunk> {
+        self.captured.take().unwrap_or_default()
+    }
+
+    /// How many documents it holds: the next document's id.
+    pub fn num_docs(&self) -> i32 {
+        // ARITH: buffered documents are fewer than a chunk's cap, and
+        // `advance_doc_base` keeps `doc_base` inside `i32`.
+        self.doc_base
+            .saturating_add(self.num_buffered_docs() as i32)
+    }
+
+    /// Gives a [`Mode::ZstdPaged`] writer the dictionary every chunk is
+    /// compressed against, stored right after the `.fdt` header. The first
+    /// chunk then starts on a page boundary. Must come before any document.
+    ///
+    /// # Panics
+    /// The writer is not [`Mode::ZstdPaged`], already holds documents, or
+    /// `dict` is larger than [`ZSTD_PAGED_MAX_DICTIONARY`].
+    pub fn set_zstd_dictionary(&mut self, dict: &[u8]) {
+        assert!(
+            matches!(self.mode, Mode::ZstdPaged(_)),
+            "a zstd dictionary needs Mode::ZstdPaged"
+        );
+        assert!(
+            self.doc_base == 0
+                && self.num_buffered_docs() == 0
+                && self.fdt_spilled == 0
+                && self.docs_values.len() == 1,
+            "set_zstd_dictionary after documents"
+        );
+        assert!(
+            dict.len() <= ZSTD_PAGED_MAX_DICTIONARY,
+            "zstd dictionary too large"
+        );
+        let header = codec_util::index_header_length(self.mode.data_codec(), &self.segment_suffix);
+        self.fdt.truncate(header);
+        self.fdt.write_vint(dict.len() as i32);
+        self.fdt.extend_from_slice(dict);
+        self.has_dictionary = true;
+        let dict = (!dict.is_empty()).then_some(dict);
+        if dict.is_some() {
+            let pad = self.fdt.len().next_multiple_of(ZSTD_PAGED_PAGE_SIZE);
+            self.fdt.resize(pad, 0);
+        }
+        self.scratch
+            .set_zstd_dictionary(dict)
+            .expect("the writer's level is valid");
+        self.start_pointers_values[0] = self.fdt.len() as i64;
+    }
+
+    /// The heap this writer holds: the compressed `.fdt` so far and the
+    /// chunk being buffered -- what `Lucene90CompressingStoredFieldsWriter`
+    /// accounts in `ramBytesUsed`, with the `.fdt` in memory instead of on
+    /// disk.
+    pub fn ram_bytes(&self) -> usize {
+        let longs = self
+            .docs_values
+            .capacity()
+            .saturating_add(self.start_pointers_values.capacity())
+            .saturating_add(self.lengths.capacity())
+            .saturating_add(self.num_stored_fields.capacity())
+            .saturating_mul(8);
+        self.fdt
+            .capacity()
+            .saturating_add(self.chunk_buf.capacity())
+            .saturating_add(self.page_chunk.capacity())
+            .saturating_add(longs)
+    }
+
+    /// Gives the segment its id after documents were added: rewrites the id
+    /// in the `.fdt` header already written, and the one `.fdx` and `.fdm`
+    /// get at [`Self::finish`]. A buffer streams its documents in before
+    /// the flush names its segment.
+    pub fn set_segment_id(&mut self, segment_id: &[u8; ID_LENGTH]) {
+        // Once spilled, the header is on disk and the buffer's start is chunk
+        // data, not the id.
+        debug_assert_eq!(self.fdt_spilled, 0, "set_segment_id after a spill");
+        if self.fdt_spilled > 0 {
+            return;
+        }
+        // `CodecUtil.writeIndexHeader`: the codec header, then the id.
+        let start = codec_util::header_length(self.mode.data_codec());
+        if let Some(id) = self.fdt.get_mut(start..start.saturating_add(ID_LENGTH)) {
+            id.copy_from_slice(segment_id);
+        }
+        self.segment_id = *segment_id;
+    }
+
+    /// Writes `Mode::BestSpeed` chunks with the high-compression LZ4 match
+    /// finder: the same format, smaller, slower to write. See
+    /// [`Compressor::set_lz4_high_compression`].
+    pub fn set_lz4_high_compression(&mut self, on: bool) {
+        self.scratch.set_lz4_high_compression(on);
+    }
+
+    /// Whether [`Self::set_lz4_high_compression`] is on.
+    pub fn lz4_high_compression(&self) -> bool {
+        self.scratch.lz4_high_compression()
     }
 
     /// `getChunkSize()` -- a bulk chunk copy is only legal from a reader
@@ -1484,8 +2072,12 @@ impl StoredFieldsWriter {
     /// `getMergeStrategy`'s `compressionMode`/`chunkSize`/`tooDirty` trio.
     /// (The version check Java also makes is `open`'s job here -- this port
     /// has exactly one `VERSION_CURRENT` and refuses to open anything else.)
+    ///
+    /// Never for [`Mode::ZstdPaged`]: each segment's chunks are compressed
+    /// against its own dictionary and packed to its own pages.
     pub fn can_bulk_copy(&self, reader: &StoredFieldsReader<'_>) -> bool {
-        reader.data_codec() == self.mode.data_codec()
+        !matches!(self.mode, Mode::ZstdPaged(_))
+            && reader.data_codec() == self.mode.data_codec()
             && reader.chunk_size() == self.chunk_size as i32
             && !self.too_dirty(reader)
     }
@@ -1514,6 +2106,10 @@ impl StoredFieldsWriter {
     /// is exactly what makes a chunk **dirty**: it closed before either
     /// trigger fired, so it is flagged in its token and tallied in `.fdm`.
     fn flush(&mut self, force: bool) {
+        if matches!(self.mode, Mode::ZstdPaged(_)) {
+            self.flush_paged(force);
+            return;
+        }
         debug_assert_ne!(self.trigger_flush(), force);
         let chunk_docs = self.num_buffered_docs();
         // ARITH: both counters are this writer's own, and each `flush` costs
@@ -1526,68 +2122,230 @@ impl StoredFieldsWriter {
             self.num_dirty_chunks += 1;
             self.num_dirty_docs += chunk_docs as i64;
         }
-        // Only a chunk holding a single outsized document can reach this,
-        // since every other chunk closes on the first doc that crosses
-        // `chunk_size`.
-        //
-        // ARITH: `chunk_size` is a positive `i32` (`StoredFieldsWriter::new`)
-        // never assigned again, so doubling it is nowhere near `usize`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let sliced = self.chunk_buf.len() >= 2 * self.chunk_size;
-
-        self.fdt.write_vint(self.doc_base);
-        self.fdt
-            .write_vint(((chunk_docs as i32) << 2) | if force { 2 } else { 0 } | i32::from(sliced));
-
-        if chunk_docs == 1 {
-            self.fdt.write_vint(self.num_stored_fields[0] as i32);
-            self.fdt.write_vint(self.lengths[0] as i32);
-        } else {
-            write_bulk_ints(&mut self.fdt, &self.num_stored_fields);
-            write_bulk_ints(&mut self.fdt, &self.lengths);
-        }
-
-        if !self.chunk_buf.is_empty() {
-            // `chunk_buf` and `fdt` are distinct fields, but the borrow
-            // checker cannot see that through `&mut self`; swap the buffer
-            // out for the duration of the compression and put it back.
-            let payload = std::mem::take(&mut self.chunk_buf);
-            if sliced {
-                for slice in payload.chunks(self.chunk_size) {
-                    self.scratch
-                        .compress(self.mode.compression(), slice, &mut self.fdt);
-                }
-            } else {
-                self.scratch
-                    .compress(self.mode.compression(), &payload, &mut self.fdt);
-            }
-            self.chunk_buf = payload;
-        }
-
-        // Java's `docBase += numBufferedDocs` on an `int`, which wraps
-        // silently. A wrapped `doc_base` would put a negative `docBase` vint
-        // in the `.fdt` and a non-monotonic value in the `.fdx` doc array --
-        // an unopenable segment written without a word of complaint. It takes
-        // more than `IndexWriter.MAX_DOCS` (2^31 - 128) documents in one
-        // segment to get there, which is a caller bug rather than bad input,
-        // so it panics with a name rather than returning a `Result` these
-        // infallible `add_*` entry points do not have.
-        self.doc_base = self
-            .doc_base
-            .checked_add(chunk_docs as i32)
-            .expect("stored fields writer overflowed i32 document ids");
+        let chunk = ChunkToWrite {
+            doc_base: self.doc_base,
+            num_stored_fields: &self.num_stored_fields,
+            lengths: &self.lengths,
+            payload: &self.chunk_buf,
+            force,
+        };
+        chunk.encode(
+            &mut self.scratch,
+            self.mode.compression(),
+            self.chunk_size,
+            &mut self.fdt,
+        );
+        self.advance_doc_base(chunk_docs);
         self.chunk_buf.clear();
         self.lengths.clear();
         self.num_stored_fields.clear();
         self.record_chunk();
     }
 
+    /// Java's `docBase += numBufferedDocs` on an `int`, which wraps
+    /// silently. A wrapped `doc_base` would put a negative `docBase` vint in
+    /// the `.fdt` and a non-monotonic value in the `.fdx` doc array -- an
+    /// unopenable segment written without a word of complaint. It takes more
+    /// than `IndexWriter.MAX_DOCS` (2^31 - 128) documents in one segment to
+    /// get there, which is a caller bug rather than bad input, so it panics
+    /// with a name rather than returning a `Result` these infallible `add_*`
+    /// entry points do not have.
+    fn advance_doc_base(&mut self, docs: usize) {
+        self.doc_base = self
+            .doc_base
+            .checked_add(docs as i32)
+            .expect("stored fields writer overflowed i32 document ids");
+    }
+
+    /// [`Self::flush`] for [`Mode::ZstdPaged`]: writes the buffered
+    /// documents as chunks that never cross a [`ZSTD_PAGED_PAGE_SIZE`]
+    /// boundary unless they start on one. A chunk that does not fit the
+    /// room left in the page is first retried with fewer documents (the
+    /// rest stay buffered for the next chunk); when that fails too, or the
+    /// room is under [`ZSTD_PAGED_MIN_FILL`], the page is padded with zeros
+    /// and the chunk starts the next page.
+    // ARITH: `pos < PAGE`, so `PAGE - pos` is positive; `docs * room` is at
+    // most 2^16 * 2^14; the drained prefix lengths sum the buffered ones.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn flush_paged(&mut self, force: bool) {
+        while self.num_buffered_docs() > 0 && (force || self.trigger_flush()) {
+            let all = self.num_buffered_docs();
+            let mut docs = all;
+            let mut chunk = std::mem::take(&mut self.page_chunk);
+            self.encode_buffered(docs, force, &mut chunk);
+            let pos = (self.fdt_pointer() as usize) % ZSTD_PAGED_PAGE_SIZE;
+            let room = ZSTD_PAGED_PAGE_SIZE - pos;
+            if pos != 0 && chunk.len() > room {
+                let mut fitted = false;
+                // Whether `chunk` no longer holds the whole-buffer encoding.
+                let mut overwritten = false;
+                if room >= ZSTD_PAGED_MIN_FILL {
+                    let mut len = chunk.len();
+                    for _ in 0..ZSTD_PAGED_FILL_ATTEMPTS {
+                        // Scale the document count to the room, a little
+                        // under so the next try does not just miss again.
+                        docs = docs * room * 31 / 32 / len;
+                        if docs == 0 {
+                            break;
+                        }
+                        overwritten = true;
+                        self.encode_buffered(docs, false, &mut chunk);
+                        if chunk.len() <= room {
+                            fitted = true;
+                            break;
+                        }
+                        len = chunk.len();
+                    }
+                }
+                if !fitted {
+                    self.fdt.resize(self.fdt.len() + room, 0);
+                    let next = self.fdt_pointer();
+                    if let Some(start) = self.start_pointers_values.last_mut() {
+                        *start = next;
+                    }
+                    docs = all;
+                    // A chunk's bytes do not depend on where it lands, so
+                    // the first encoding is reused unless a try replaced it.
+                    if overwritten {
+                        self.encode_buffered(docs, force, &mut chunk);
+                    }
+                }
+            }
+            self.fdt.extend_from_slice(&chunk);
+            self.page_chunk = chunk;
+            if docs == all && force {
+                self.num_dirty_chunks += 1;
+                self.num_dirty_docs += docs as i64;
+            }
+            self.advance_doc_base(docs);
+            let bytes: i64 = self.lengths[..docs].iter().sum();
+            self.chunk_buf.drain(..bytes as usize);
+            self.lengths.drain(..docs);
+            self.num_stored_fields.drain(..docs);
+            self.record_chunk();
+        }
+    }
+
+    /// Encodes the first `docs` buffered documents as one chunk into `out`
+    /// (cleared first).
+    fn encode_buffered(&mut self, docs: usize, force: bool, out: &mut Vec<u8>) {
+        out.clear();
+        let bytes: i64 = self.lengths[..docs].iter().sum();
+        let chunk = ChunkToWrite {
+            doc_base: self.doc_base,
+            num_stored_fields: &self.num_stored_fields[..docs],
+            lengths: &self.lengths[..docs],
+            payload: &self.chunk_buf[..bytes as usize],
+            force,
+        };
+        chunk.encode(
+            &mut self.scratch,
+            self.mode.compression(),
+            self.chunk_size,
+            out,
+        );
+    }
+
     /// One `.fdx` entry: the cumulative doc count and the offset one past
     /// the chunk just written (which is the *next* chunk's start pointer,
     /// and after the last chunk is `maxPointer`).
     fn record_chunk(&mut self) {
+        let chunk_base = self.docs_values.last().copied().unwrap_or(0);
+        let chunk_start = self.start_pointers_values.last().copied().unwrap_or(0);
         self.docs_values.push(self.doc_base as i64);
-        self.start_pointers_values.push(self.fdt.len() as i64);
+        self.start_pointers_values.push(self.fdt_pointer());
+        if let Some(captured) = self.captured.as_mut() {
+            // The chunk starts after what was spilled: spills happen only
+            // here, after a whole chunk.
+            let from = u64::try_from(chunk_start)
+                .unwrap_or(0)
+                .saturating_sub(self.fdt_spilled);
+            let bytes = self
+                .fdt
+                .get(usize::try_from(from).unwrap_or(usize::MAX)..)
+                .unwrap_or_default()
+                .to_vec();
+            let doc_base = i32::try_from(chunk_base).unwrap_or(i32::MAX);
+            captured.push(WrittenChunk {
+                mode: self.mode,
+                doc_base,
+                docs: self.doc_base.saturating_sub(doc_base),
+                bytes,
+            });
+        }
+        if self.fdt.len() >= STREAM_BYTES {
+            self.spill_fdt();
+        }
+    }
+
+    /// The `.fdt` bytes held in memory.
+    pub fn buffered_fdt_bytes(&self) -> usize {
+        self.fdt.len()
+    }
+
+    /// The `.fdt` file pointer: bytes spilled plus bytes buffered.
+    fn fdt_pointer(&self) -> i64 {
+        // ARITH: a file length, far below `i64::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let pointer = self.fdt_spilled + self.fdt.len() as u64;
+        pointer as i64
+    }
+
+    /// Streams the `.fdt` to `out` from here on: chunks go to `out` once
+    /// [`STREAM_BYTES`] of them are buffered, so a long write (a merge, a big
+    /// indexing buffer) holds about that much instead of the whole file.
+    /// Finish with [`Self::finish_streamed`]. [`Self::set_segment_id`] must
+    /// come before: the header it rewrites leaves with the first spill.
+    pub fn stream_to(&mut self, out: FsIndexOutput) {
+        self.fdt_out = Some(out);
+    }
+
+    fn spill_fdt(&mut self) {
+        if let Some(out) = self.fdt_out.as_mut() {
+            out.write_bytes(&self.fdt);
+            let first = self.fdt_spilled == 0;
+            // ARITH: a file length.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                self.fdt_spilled += self.fdt.len() as u64;
+            }
+            self.fdt.clear();
+            // What was buffered before streaming began is not needed again.
+            if first && self.fdt.capacity() > 2 * STREAM_BYTES {
+                self.fdt = Vec::new();
+            }
+        }
+    }
+
+    /// [`Self::finish`] for a writer set to [`Self::stream_to`]: writes the
+    /// rest of the `.fdt` and its footer to the output and hands it back for
+    /// the caller to close, with `.fdx` and `.fdm`. A writer that was never
+    /// streamed returns `None` for the output and its whole `.fdt` is lost, so
+    /// callers only use this after [`Self::stream_to`].
+    pub fn finish_streamed(mut self) -> (Option<FsIndexOutput>, Vec<u8>, Vec<u8>) {
+        if self.num_buffered_docs() > 0 {
+            self.flush(true);
+        }
+        let max_doc = self.doc_base;
+        let max_pointer = self.fdt_pointer();
+        self.spill_fdt();
+        let Some(mut out) = self.fdt_out.take() else {
+            return (None, Vec::new(), Vec::new());
+        };
+        codec_util::write_footer_to(&mut out);
+        let (fdx, fdm) = write_index_and_meta(
+            &self.segment_id,
+            &self.segment_suffix,
+            max_doc,
+            &self.docs_values,
+            &self.start_pointers_values,
+            max_pointer,
+            self.chunk_size as i32,
+            self.mode.block_shift() as u32,
+            self.num_dirty_chunks,
+            self.num_dirty_docs,
+        );
+        (Some(out), fdx, fdm)
     }
 
     /// VISITOR path: serialize and buffer one parsed document.
@@ -1863,6 +2621,10 @@ impl StoredFieldsWriter {
             self.flush(true);
         }
         let max_doc = self.doc_base;
+        debug_assert!(
+            self.fdt_out.is_none(),
+            "a streamed writer finishes streamed"
+        );
         let max_pointer = self.fdt.len() as i64;
         codec_util::write_footer(&mut self.fdt);
         let (fdx, fdm) = write_index_and_meta(
@@ -2670,6 +3432,87 @@ mod tests {
     }
 
     #[test]
+    fn a_captured_chunk_reads_back_its_documents_in_every_mode() {
+        let doc = |i: usize, len: usize| Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(format!("id-{i}")),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Binary(
+                        (0..len).map(|j| ((i * 31 + j / 7) % 251) as u8).collect(),
+                    ),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(i as i64),
+                },
+            ],
+        };
+        for mode in [
+            Mode::BestSpeed,
+            Mode::BestCompression,
+            Mode::Zstd(ZstdMode::zstd(3)),
+            Mode::Zstd(ZstdMode::zstd_no_dict(3)),
+            Mode::ZstdPaged(3),
+        ] {
+            let mut w = StoredFieldsWriter::new(mode, &[0; ID_LENGTH], "");
+            let docs: Vec<Document> = (0..12)
+                .map(|i| doc(i, if i % 4 == 3 { 700_000 } else { 300 }))
+                .collect();
+            let mut kept = Vec::new();
+            for d in &docs {
+                let at = w.num_docs();
+                let big = d.fields.len() == 3
+                    && matches!(&d.fields[1].value, FieldValue::Binary(b) if b.len() > 1000);
+                if big {
+                    w.capture_chunks();
+                }
+                w.add_document(d);
+                if big {
+                    let chunks = w.take_captured();
+                    let chunk = chunks
+                        .into_iter()
+                        .find(|c| c.contains(at))
+                        .expect("a big document closes its chunk");
+                    kept.push((at, chunk));
+                }
+            }
+            assert_eq!(kept.len(), 3, "{mode:?}");
+            for (at, chunk) in &kept {
+                assert_eq!(
+                    &chunk.document(*at).unwrap(),
+                    &docs[*at as usize],
+                    "{mode:?}"
+                );
+                assert!(chunk.document(*at + 1).is_err(), "{mode:?}");
+                assert!(chunk.ram_bytes() > 0);
+            }
+            // Documents sharing the big one's chunk read back too.
+            let (at, chunk) = &kept[0];
+            for d in 0..*at {
+                if chunk.contains(d) {
+                    assert_eq!(&chunk.document(d).unwrap(), &docs[d as usize], "{mode:?}");
+                }
+            }
+            // The file the writer goes on to finish is unchanged by capturing.
+            let mut plain = StoredFieldsWriter::new(mode, &[0; ID_LENGTH], "");
+            for d in &docs {
+                plain.add_document(d);
+            }
+            assert_eq!(w.finish(), plain.finish(), "{mode:?}");
+        }
+        // Chunks compressed against a dictionary are not captured.
+        let mut w = StoredFieldsWriter::new(Mode::ZstdPaged(3), &[0; ID_LENGTH], "");
+        w.set_zstd_dictionary(&[7; 1024]);
+        w.capture_chunks();
+        w.add_document(&doc(0, 700_000));
+        assert!(w.take_captured().is_empty());
+    }
+
+    #[test]
     fn single_doc_single_string_field_round_trips() {
         let doc_bytes = field_bytes(0, TYPE_STRING, &string_field_payload("hello"));
         let (fdt, fdx, fdm) = build_single_chunk_index(&doc_bytes);
@@ -3314,6 +4157,137 @@ mod tests {
             skip_field(&mut unknown, 6),
             Err(Error::UnknownTypeTag(6))
         ));
+    }
+
+    fn paged_docs(n: usize) -> Vec<Document> {
+        let words = [
+            "merge", "segment", "commit", "index", "query", "field", "stored", "reader", "writer",
+            "zstd", "page", "cache", "lucene", "rust", "plugin", "search",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        (0..n)
+            .map(|i| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let len = 4 + (state >> 58) as usize * if i % 97 == 0 { 400 } else { 3 };
+                let mut text = format!("{{\"id\":{i},\"msg\":\"");
+                for j in 0..len {
+                    text.push_str(words[((state >> (j % 50)) as usize + j) % words.len()]);
+                    text.push(' ');
+                }
+                text.push_str("\"}");
+                Document {
+                    fields: vec![
+                        StoredField {
+                            field_number: 0,
+                            value: FieldValue::String(text),
+                        },
+                        StoredField {
+                            field_number: 1,
+                            value: FieldValue::Long(i as i64),
+                        },
+                    ],
+                }
+            })
+            .collect()
+    }
+
+    /// Every chunk of a paged `.fdt` either starts on a page boundary or
+    /// ends inside the page it starts in.
+    fn assert_page_packed(reader: &StoredFieldsReader<'_>) {
+        let page = ZSTD_PAGED_PAGE_SIZE as i64;
+        for chunk in 0..reader.num_chunks() {
+            let start = reader.block_start_pointer(chunk).unwrap();
+            let end = if chunk + 1 < reader.num_chunks() {
+                reader.block_start_pointer(chunk + 1).unwrap()
+            } else {
+                reader.max_pointer()
+            };
+            assert!(
+                start % page == 0 || (end - 1) / page == start / page,
+                "chunk {chunk} at {start}..{end} crosses a page"
+            );
+        }
+    }
+
+    #[test]
+    fn paged_zstd_round_trips_with_and_without_a_dictionary_and_packs_pages() {
+        let docs = paged_docs(6000);
+        let mut sizes = Vec::new();
+        for with_dict in [false, true] {
+            let mut w = StoredFieldsWriter::new(Mode::ZstdPaged(3), &id_write(), "");
+            if with_dict {
+                let samples: Vec<Vec<u8>> = docs[..2000]
+                    .chunks(20)
+                    .map(|c| {
+                        let mut b = Vec::new();
+                        for d in c {
+                            serialize_doc_into(d, &mut b);
+                        }
+                        b
+                    })
+                    .collect();
+                let refs: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
+                let dict = lucene_zstd::train_dictionary(&refs, 16 << 10).unwrap();
+                w.set_zstd_dictionary(&dict);
+            }
+            for d in &docs {
+                w.add_document(d);
+            }
+            let (fdt, fdx, fdm) = w.finish();
+            sizes.push(fdt.len());
+            let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+            assert_eq!(reader.data_codec(), DATA_CODEC_ZSTD_PAGED);
+            assert_eq!(reader.has_zstd_dictionary(), with_dict);
+            assert_eq!(reader.max_doc(), docs.len() as i32);
+            if with_dict {
+                assert_eq!(
+                    reader.block_start_pointer(0).unwrap() % ZSTD_PAGED_PAGE_SIZE as i64,
+                    0
+                );
+            }
+            assert_page_packed(&reader);
+            for (i, d) in docs.iter().enumerate() {
+                let got = reader.document(i as i32).unwrap();
+                assert_eq!(got.fields.len(), 2);
+                assert_eq!(got.fields[0].value, d.fields[0].value, "doc {i}");
+                assert_eq!(got.fields[1].value, d.fields[1].value);
+            }
+            // A sequential read sees the same documents.
+            let chunk = reader.read_chunk(4321).unwrap();
+            assert!(chunk.contains(4321));
+        }
+        assert!(sizes[1] < sizes[0], "a dictionary should help: {sizes:?}");
+    }
+
+    #[test]
+    fn paged_zstd_streams_the_same_bytes_it_buffers() {
+        use lucene_store::Directory;
+        let docs = paged_docs(20000);
+        let mut buffered = StoredFieldsWriter::new(Mode::ZstdPaged(1), &id_write(), "");
+        for d in &docs {
+            buffered.add_document(d);
+        }
+        let (fdt, fdx, fdm) = buffered.finish();
+        let root = lucene_util::test_support::TempDir::new("stored-paged-spill");
+        let dir = lucene_store::FsDirectory::open(root.path());
+        let mut streamed = StoredFieldsWriter::new(Mode::ZstdPaged(1), &id_write(), "");
+        streamed.stream_to(dir.create_output("_0.fdt").unwrap());
+        for d in &docs {
+            streamed.add_document(d);
+        }
+        let (out, sfdx, sfdm) = streamed.finish_streamed();
+        out.expect("streamed").close().unwrap();
+        let sfdt = dir.open("_0.fdt").unwrap();
+        assert!(sfdt.as_ref() == fdt.as_slice());
+        assert_eq!((sfdx, sfdm), (fdx.clone(), fdm.clone()));
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+        assert_page_packed(&reader);
+        assert_eq!(
+            reader.document(19999).unwrap().fields[1].value,
+            FieldValue::Long(19999)
+        );
     }
 
     fn id_write() -> [u8; ID_LENGTH] {
@@ -4210,6 +5184,67 @@ mod tests {
         // Every chunk was copied, so nothing was recompressed: the merged
         // `.fdt` is the two sources' chunk bodies plus rebased headers.
         assert_eq!(merged.num_chunks(), ra.num_chunks() + rb.num_chunks());
+    }
+
+    #[test]
+    fn a_streamed_fdt_is_byte_for_byte_the_buffered_one() {
+        use lucene_store::Directory;
+        // Incompressible values, so the `.fdt` passes `SPILL_BYTES` several
+        // times and the chunk pointers cross spills.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let docs: Vec<Document> = (0..3000)
+            .map(|i| {
+                let bytes: Vec<u8> = (0..1500)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        x as u8
+                    })
+                    .collect();
+                Document {
+                    fields: vec![
+                        StoredField {
+                            field_number: 0,
+                            value: FieldValue::Binary(bytes),
+                        },
+                        StoredField {
+                            field_number: 1,
+                            value: FieldValue::Long(i),
+                        },
+                    ],
+                }
+            })
+            .collect();
+        for mode in [Mode::BestSpeed, Mode::BestCompression] {
+            let mut buffered = StoredFieldsWriter::new(mode, &id_write(), "");
+            for d in &docs {
+                buffered.add_document(d);
+            }
+            let (fdt, fdx, fdm) = buffered.finish();
+            assert!(fdt.len() > 3 * SPILL_BYTES, "{} bytes", fdt.len());
+
+            let root = lucene_util::test_support::TempDir::new("stored-spill");
+            let dir = lucene_store::FsDirectory::open(root.path());
+            let mut streamed = StoredFieldsWriter::new(mode, &id_write(), "");
+            streamed.stream_to(dir.create_output("_0.fdt").unwrap());
+            for d in &docs {
+                streamed.add_document(d);
+            }
+            let (out, sfdx, sfdm) = streamed.finish_streamed();
+            out.expect("streamed").close().unwrap();
+            let sfdt = dir.open("_0.fdt").unwrap();
+            assert!(sfdt.as_ref() == fdt.as_slice(), "{mode:?} .fdt differs");
+            assert_eq!((sfdx, sfdm), (fdx.clone(), fdm.clone()), "{mode:?}");
+            let reader = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
+            assert_eq!(reader.max_doc(), 3000);
+            let last = reader.document(2999).unwrap();
+            assert!(matches!(last.fields[1].value, FieldValue::Long(2999)));
+            match (&last.fields[0].value, &docs[2999].fields[0].value) {
+                (FieldValue::Binary(a), FieldValue::Binary(b)) => assert_eq!(a, b),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

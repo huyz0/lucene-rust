@@ -41,6 +41,7 @@ import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.store.FSDirectory;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -127,6 +128,8 @@ public final class NativeSelfTest {
         NativeLibrary.load(Path.of("."));
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
+        realtimePrimary();
+
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
         check(NativeSelfTestAnalysis.described >= 48, "analyzers described: " + NativeSelfTestAnalysis.described);
@@ -145,6 +148,12 @@ public final class NativeSelfTest {
         if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
+        // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
+        if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (pattern_text only): %d phrases compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestPatternText.encoded, checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
         // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
@@ -176,6 +185,12 @@ public final class NativeSelfTest {
         check(NativeSelfTestLeaves.ENCODED.size() == NativeSelfTestLeaves.SHAPES, "leaf shapes compared: " + NativeSelfTestLeaves.ENCODED.keySet());
         NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSimilarity.COMPARED.size() == 9, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
+        NativeSelfTestKnn.run(new Random(31), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
+        NativeSelfTestTensor.run(new Random(37), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
+        NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -187,6 +202,7 @@ public final class NativeSelfTest {
             System.exit(failures > 0 ? 1 : 0);
         }
         storedFields(new Random(11));
+        pointDocValues(new Random(12));
         int compared = 0;
         int bwc = 0;
         int bwcCompared = 0;
@@ -251,6 +267,31 @@ public final class NativeSelfTest {
         }
     }
 
+    /** Which realtime indices RealtimePrimaryFilter sends to their primaries. */
+    private static void realtimePrimary() {
+        record Case(boolean realtime, int replicas, String type, boolean remote, boolean primary) {}
+        Case[] cases = {
+            new Case(true, 1, "SEGMENT", false, true),
+            new Case(true, 1, "SEGMENT", true, true),
+            new Case(true, 1, "DOCUMENT", false, false),
+            new Case(true, 0, "SEGMENT", false, false),
+            new Case(false, 1, "SEGMENT", false, false) };
+        for (Case c : cases) {
+            org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings.builder()
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_REPLICAS, c.replicas())
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REPLICATION_TYPE, c.type())
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE_ENABLED, c.remote())
+                .put(org.lucenerust.opensearch.engine.RustEngineSupport.REALTIME_SEARCH.getKey(), c.realtime())
+                .build();
+            org.opensearch.cluster.metadata.IndexMetadata index = org.opensearch.cluster.metadata.IndexMetadata.builder("rt")
+                .settings(settings)
+                .build();
+            check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
+        }
+    }
+
     private static void check(boolean ok, String what) {
         checks++;
         if (ok == false) {
@@ -261,7 +302,7 @@ public final class NativeSelfTest {
 
     // --- The bridge's error paths ----------------------------------------------------------
 
-    private static void bridgeErrorPaths() {
+    private static void bridgeErrorPaths() throws IOException {
         int[] docs = new int[4];
         float[] scores = new float[4];
         long[] counts = new long[3];
@@ -299,8 +340,10 @@ public final class NativeSelfTest {
         check(out[0] == null, "a failed call hands back nothing");
         check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2], null) == 10, "null aggregate terms slot -> InvalidArgument");
         check(NativeBridge.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
-        check(NativeBridge.document(12345L, 0, 0, out) == NativeBridge.INVALID_HANDLE && out[0] == null, "document on a fabricated handle");
-        check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document out -> InvalidArgument");
+        boolean[] lent = new boolean[1];
+        check(NativeBridge.document(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "document on a fabricated handle");
+        check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document reader -> InvalidArgument");
+        check(NativeBridge.derivedSource(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent _source on a fabricated handle");
         check(NativeBridge.countTerminates(1, blob, null, new long[1]) == 10, "null count spec -> InvalidArgument");
         check(NativeBridge.docFreq(12345L, f, f, new long[1]) == NativeBridge.INVALID_HANDLE, "docFreq on a fabricated handle");
         check(NativeBridge.writerApply(12345L, new byte[2], 5) == 10, "writerApply past the array -> InvalidArgument");
@@ -357,6 +400,24 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        // A range with doc values is one node (kind 48) after the tree tag; any other
+        // IndexOrDocValuesQuery is its index side.
+        byte[] both = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 5)
+            ),
+            f -> true
+        ).blob();
+        check(both != null && both[1] == 48, "a long range with doc values encodes as one node");
+        byte[] other = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 6)
+            ),
+            f -> true
+        ).blob();
+        check(other != null && other[1] == 11, "a range whose sides differ encodes its index side");
         // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
@@ -448,7 +509,7 @@ public final class NativeSelfTest {
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
                 // `range`, `term` and `terms` on the other numeric widths and
                 // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
-                case 10 -> switch (r.nextInt(6)) {
+                case 10 -> switch (r.nextInt(7)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
                     case 2 -> {
@@ -460,6 +521,15 @@ public final class NativeSelfTest {
                         // A range on an index-sorted shard's sort field: encoded as its fallback.
                         long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
                         yield new org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery("sl", a, b, LongPoint.newRangeQuery("sl", a, b));
+                    }
+                    case 5 -> {
+                        // A long range on a field with doc values, as OpenSearch builds it: one
+                        // node, either side per segment.
+                        long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
+                        yield new org.apache.lucene.search.IndexOrDocValuesQuery(
+                            LongPoint.newRangeQuery("sl", a, b),
+                            org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("sl", a, b)
+                        );
                     }
                     default -> new BoostQuery(IntPoint.newRangeQuery("si", 10, 20), 2f);
                 };
@@ -1383,6 +1453,143 @@ public final class NativeSelfTest {
     }
 
     /**
+     * Doc values read a document at a time natively ({@code NativeDocValues}), as a derived
+     * {@code _source} and {@code docvalue_fields} read them, against Lucene's: values, ordinals,
+     * terms, the calls with no document, and the hand-over to the segment's iterator for a scan.
+     */
+    private static void pointDocValues(Random r) throws Exception {
+        Path dir = Files.createTempDirectory("lucene-rust-selftest-dv");
+        NativeReaders readers = new NativeReaders();
+        SearchStats stats = new SearchStats();
+        try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
+            for (int i = 0; i < 2000; i++) {
+                Document doc = new Document();
+                doc.add(new StringField("id", Integer.toString(i), Field.Store.YES));
+                int n = r.nextInt(4);
+                for (int j = 0; j < n; j++) {
+                    doc.add(new org.apache.lucene.document.SortedNumericDocValuesField("num", r.nextLong() >> r.nextInt(60)));
+                }
+                if (r.nextInt(5) > 0) {
+                    doc.add(new org.apache.lucene.document.SortedNumericDocValuesField("one", r.nextInt(1000)));
+                }
+                int t = r.nextInt(4);
+                for (int j = 0; j < t; j++) {
+                    doc.add(new org.apache.lucene.document.SortedSetDocValuesField("kw", new BytesRef("k" + r.nextInt(300))));
+                }
+                if (r.nextInt(5) > 0) {
+                    doc.add(new org.apache.lucene.document.SortedSetDocValuesField("single", new BytesRef("s" + r.nextInt(50))));
+                }
+                w.addDocument(doc);
+                if (i % 700 == 699) {
+                    w.commit();
+                }
+            }
+            w.commit();
+            try (DirectoryReader lucene = DirectoryReader.open(d)) {
+                check(readers.acquire(lucene).handle() != 0, "point doc values: a native handle");
+                DirectoryReader wrapped = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, true);
+                for (int leaf = 0; leaf < lucene.leaves().size(); leaf++) {
+                    org.apache.lucene.index.LeafReader want = lucene.leaves().get(leaf).reader();
+                    org.apache.lucene.index.LeafReader got = wrapped.leaves().get(leaf).reader();
+                    int max = want.maxDoc();
+                    for (int n = 0; n < 300; n++) {
+                        int doc = r.nextInt(max);
+                        for (String f : new String[] { "num", "one" }) {
+                            org.apache.lucene.index.SortedNumericDocValues a = want.getSortedNumericDocValues(f);
+                            org.apache.lucene.index.SortedNumericDocValues b = got.getSortedNumericDocValues(f);
+                            check(b instanceof NativeDocValues.Numbers, "point doc values: " + f + " read natively");
+                            boolean ha = a.advanceExact(doc), hb = b.advanceExact(doc);
+                            check(ha == hb && b.docID() == doc, "point doc values: " + f + " doc " + doc + " has values");
+                            if (ha && hb) {
+                                check(a.docValueCount() == b.docValueCount(), "point doc values: " + f + " count");
+                                for (int i = 0; i < a.docValueCount(); i++) {
+                                    check(a.nextValue() == b.nextValue(), "point doc values: " + f + " doc " + doc + " value " + i);
+                                }
+                            }
+                        }
+                        for (String f : new String[] { "kw", "single" }) {
+                            org.apache.lucene.index.SortedSetDocValues a = want.getSortedSetDocValues(f);
+                            org.apache.lucene.index.SortedSetDocValues b = got.getSortedSetDocValues(f);
+                            check(b instanceof NativeDocValues.Terms, "point doc values: " + f + " read natively");
+                            boolean ha = a.advanceExact(doc), hb = b.advanceExact(doc);
+                            check(ha == hb, "point doc values: " + f + " doc " + doc + " has values");
+                            if (ha && hb) {
+                                check(a.docValueCount() == b.docValueCount(), "point doc values: " + f + " count");
+                                for (int i = 0; i < a.docValueCount(); i++) {
+                                    long oa = a.nextOrd(), ob = b.nextOrd();
+                                    check(oa == ob, "point doc values: " + f + " doc " + doc + " ord " + i);
+                                    check(a.lookupOrd(oa).equals(b.lookupOrd(ob)), "point doc values: " + f + " term " + i);
+                                }
+                            }
+                            long other = r.nextInt((int) a.getValueCount());
+                            check(a.lookupOrd(other).equals(b.lookupOrd(other)), "point doc values: " + f + " lookupOrd of another ordinal");
+                            check(a.getValueCount() == b.getValueCount(), "point doc values: " + f + " value count");
+                            BytesRef key = BytesRef.deepCopyOf(a.lookupOrd(other));
+                            check(a.lookupTerm(key) == b.lookupTerm(key), "point doc values: " + f + " lookupTerm");
+                        }
+                    }
+                    // A scan: point reads, then nextDoc and advance hand over to the segment's iterator.
+                    for (String f : new String[] { "num", "one" }) {
+                        org.apache.lucene.index.SortedNumericDocValues a = want.getSortedNumericDocValues(f);
+                        org.apache.lucene.index.SortedNumericDocValues b = got.getSortedNumericDocValues(f);
+                        int doc = 0;
+                        for (int step = 0; step < 400 && doc < max; step++) {
+                            int how = r.nextInt(3);
+                            int da, db;
+                            if (how == 0) {
+                                da = a.advanceExact(doc) ? doc : -2;
+                                db = b.advanceExact(doc) ? doc : -2;
+                            } else if (how == 1) {
+                                da = a.nextDoc();
+                                db = b.nextDoc();
+                            } else {
+                                int target = Math.max(a.docID(), doc) + 1 + r.nextInt(5);
+                                da = a.advance(target);
+                                db = b.advance(target);
+                            }
+                            check(da == db && a.docID() == b.docID(), "point doc values scan: " + f + " step " + step + ": " + da + " vs " + db);
+                            if (a.docID() == org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS) {
+                                break;
+                            }
+                            if (da >= 0) {
+                                check(a.docValueCount() == b.docValueCount(), "point doc values scan: count");
+                                for (int i = 0; i < a.docValueCount(); i++) {
+                                    check(a.nextValue() == b.nextValue(), "point doc values scan: value");
+                                }
+                            }
+                            doc = a.docID() + 1 + r.nextInt(3);
+                        }
+                    }
+                }
+                check(stats.docValuesCount() > 0, "point doc values read natively: " + stats.docValuesCount());
+                // Outside a fetch phase and a derived-source index, Lucene's own iterators.
+                DirectoryReader plain = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, false);
+                org.apache.lucene.index.LeafReader leaf0 = plain.leaves().get(0).reader();
+                check(leaf0.getSortedNumericDocValues("num") instanceof NativeDocValues.Numbers == false, "plain index: Lucene's doc values");
+                NativeStoredFieldsReader.fetchStarted(true);
+                try {
+                    check(leaf0.getSortedSetDocValues("kw") instanceof NativeDocValues.Terms, "fetch phase: native doc values");
+                    check(NativeStoredFieldsReader.vectorsDropped(), "a fetch phase dropping vectors");
+                    // A fetch phase run inside another (inner hits, top hits) has its own filter.
+                    NativeStoredFieldsReader.fetchStarted(false);
+                    check(NativeStoredFieldsReader.vectorsDropped() == false, "an inner fetch phase keeping vectors");
+                    NativeStoredFieldsReader.fetchEnded();
+                    check(NativeStoredFieldsReader.vectorsDropped(), "the outer fetch phase again");
+                } finally {
+                    NativeStoredFieldsReader.fetchEnded();
+                }
+                check(NativeStoredFieldsReader.vectorsDropped() == false, "outside a fetch phase, vectors are read");
+                check(leaf0.getSortedSetDocValues("missing") == null, "an absent field has none");
+                check(leaf0.getSortedSetDocValues("num") == null, "a field of another doc-values type has none");
+            }
+            readers.closeAll();
+        }
+        try (Stream<Path> s = Files.walk(dir)) {
+            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    /**
      * A Lucene-written index with every stored type, read through {@link
      * NativeStoredFieldsReader} (random access and the sequential reader) and by Lucene with the same
      * visitors -- everything, a {@code NO} on some fields (the last included), a {@code STOP} midway --
@@ -1411,7 +1618,22 @@ public final class NativeSelfTest {
             }
             w.commit();
             try (DirectoryReader lucene = DirectoryReader.open(d)) {
-                check(readers.acquire(lucene).handle() != 0, "stored fields: a native handle");
+                long storedHandle = readers.acquire(lucene).handle();
+                check(storedHandle != 0, "stored fields: a native handle");
+                // A lent document holds its bytes for the call only: a view kept past it fails
+                // instead of reading the freed buffer.
+                java.lang.foreign.MemorySegment[] kept = new java.lang.foreign.MemorySegment[1];
+                int lentRc = NativeBridge.document(storedHandle, 0, 0, bytes -> {
+                    kept[0] = bytes;
+                    check(bytes.byteSize() > 4 && bytes.get(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, 0) > 0, "a lent document holds fields");
+                });
+                check(lentRc == NativeBridge.OK && kept[0] != null, "lent document: " + lentRc);
+                try {
+                    kept[0].get(java.lang.foreign.ValueLayout.JAVA_BYTE, 0);
+                    check(false, "a lent document read after its call");
+                } catch (IllegalStateException expected) {
+                    // closed with the call
+                }
                 DirectoryReader wrapped = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true);
                 String[] skip = { "l", "s" };
                 for (int leaf = 0; leaf < lucene.leaves().size(); leaf++) {
@@ -1439,6 +1661,43 @@ public final class NativeSelfTest {
                 check(stats.fetchCount() > 1000, "stored fields read natively: " + stats.fetchCount());
                 check(stats.sequentialFetchCount() > 300, "through the sequential reader: " + stats.sequentialFetchCount());
                 check(stats.fetchLuceneCount() == 0, "no document fell back to Lucene: " + stats.fetchLuceneCount());
+                // A derived-source index's leaf replays the document it read last: the same
+                // document again (one read per rebuilt stored field, then the hit's own), another
+                // in between, and a read from another thread all match Lucene's.
+                DirectoryReader derived = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, true);
+                for (int leaf = 0; leaf < lucene.leaves().size(); leaf++) {
+                    org.apache.lucene.index.LeafReader want = lucene.leaves().get(leaf).reader();
+                    org.apache.lucene.index.LeafReader got = derived.leaves().get(leaf).reader();
+                    int max = want.maxDoc();
+                    for (int n = 0; n < 200; n++) {
+                        int doc = r.nextInt(max);
+                        int[] order = { doc, doc, r.nextInt(max), doc };
+                        for (int i = 0; i < order.length; i++) {
+                            String[] no = i == 1 ? skip : new String[0];
+                            Recorder a = new Recorder(no, i == 3 ? 2 : Integer.MAX_VALUE);
+                            Recorder b = new Recorder(no, i == 3 ? 2 : Integer.MAX_VALUE);
+                            want.storedFields().document(order[i], a);
+                            got.storedFields().document(order[i], b);
+                            check(a.log.equals(b.log), "derived source leaf " + leaf + " doc " + order[i] + ": " + firstDiff(b.log, a.log));
+                        }
+                        // The document this thread read last, asked for by another thread.
+                        Recorder a = new Recorder(new String[0], Integer.MAX_VALUE);
+                        Recorder b = new Recorder(new String[0], Integer.MAX_VALUE);
+                        want.storedFields().document(doc, a);
+                        java.util.concurrent.atomic.AtomicReference<Throwable> failed = new java.util.concurrent.atomic.AtomicReference<>();
+                        Thread t = new Thread(() -> {
+                            try {
+                                got.storedFields().document(doc, b);
+                            } catch (Throwable e) {
+                                failed.set(e);
+                            }
+                        });
+                        t.start();
+                        t.join();
+                        check(failed.get() == null, "derived source, another thread, doc " + doc + ": " + failed.get());
+                        check(a.log.equals(b.log), "derived source, another thread, doc " + doc);
+                    }
+                }
                 // Disabled, every document is Lucene's.
                 DirectoryReader off = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> false);
                 Recorder x = new Recorder(new String[0], Integer.MAX_VALUE);

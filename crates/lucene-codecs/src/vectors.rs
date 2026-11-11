@@ -96,6 +96,97 @@ pub const META_EXTENSION: &str = "vemf";
 /// `Lucene99FlatVectorsFormat.VECTOR_DATA_EXTENSION`.
 pub const DATA_EXTENSION: &str = "vec";
 
+/// The OpenSearch k-NN plugin's `KNN1040HnswHalfFloatVectorsFormat`: a
+/// `Lucene99HnswVectorsFormat` graph over `KNN1040HalfFloatFlatVectorsFormat`,
+/// which stores FLOAT32 fields as IEEE half floats (two little-endian bytes a
+/// component) and scores them decoded. Its `.vemf` records no similarity: the
+/// field's `FieldInfo` does ([`FlatVectorsReader::resolve_similarities`]).
+pub const HALF_FLOAT_FORMAT_NAME: &str = "KNN1040HnswHalfFloatVectorsFormat";
+/// `KNN1040HalfFloatFlatVectorsFormat`'s `.vemf` codec name.
+pub const HALF_FLOAT_META_CODEC: &str = "KNN1040HalfFloatFlatVectorsFormatMeta";
+/// `KNN1040HalfFloatFlatVectorsFormat`'s `.vec` codec name.
+pub const HALF_FLOAT_DATA_CODEC: &str = "KNN1040HalfFloatFlatVectorsFormatData";
+/// `KNN1040HalfFloatFlatVectorsWriter.VECTOR_DATA_ALIGNMENT`.
+const HALF_FLOAT_ALIGNMENT: usize = 64;
+/// The half-float flat files' only version.
+const HALF_FLOAT_VERSION: i32 = 0;
+
+/// Whether `segment_suffix` (`<format>_<n>`) names a per-field instance of
+/// `format`.
+fn instance_of(segment_suffix: &str, format: &str) -> bool {
+    segment_suffix
+        .strip_prefix(format)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether a per-field instance with codec suffix `segment_suffix` is
+/// [`HALF_FLOAT_FORMAT_NAME`]'s, whose flat files hold half floats.
+pub fn stores_half_floats(segment_suffix: &str) -> bool {
+    instance_of(segment_suffix, HALF_FLOAT_FORMAT_NAME)
+}
+
+/// `Float.floatToFloat16`: round to nearest even, overflow to infinity.
+// ARITH: past the early returns `2^-25 < |f| < 65520`, so the exponent is in
+// `-25..=15`, `expdelta <= 11`, every shift is below 32, and a rounded-up
+// significand is at most `0x400`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn f32_to_f16(f: f32) -> u16 {
+    let doppel = f.to_bits();
+    let sign = ((doppel >> 16) & 0x8000) as u16;
+    // HotSpot's intrinsic (`vcvtps2ph`): the NaN quieted, its significand's
+    // top bits kept. k-NN never stores one.
+    if f.is_nan() {
+        return sign | 0x7e00 | ((doppel >> 13) & 0x03ff) as u16;
+    }
+    let abs = f.abs();
+    // 0x1.ffcp15 + 0x0.002p15: halfway past the largest half float.
+    if abs >= 65520.0 {
+        return sign | 0x7c00;
+    }
+    // At most half the smallest subnormal: rounds to zero.
+    if abs <= f32::from_bits(0x3300_0000) {
+        return sign;
+    }
+    // `Math.getExponent`: the unbiased exponent (-127 for a subnormal f32,
+    // which is far below any half float and returned as zero above).
+    let mut exp = ((doppel >> 23) & 0xff) as i32 - 127;
+    let mut expdelta = 0u32;
+    let mut msb = 0u32;
+    if exp < -14 {
+        expdelta = (-14 - exp) as u32;
+        exp = -15;
+        msb = 0x0080_0000;
+    }
+    let signif = (doppel & 0x007f_ffff) | msb;
+    let mut bits = (signif >> (13 + expdelta)) as u16;
+    let lsb = signif & (1 << (13 + expdelta));
+    let round = signif & (1 << (12 + expdelta));
+    let sticky = signif & ((1 << (12 + expdelta)) - 1);
+    if round != 0 && (lsb | sticky) != 0 {
+        bits += 1;
+    }
+    // Adding, not or-ing: a significand that rounded up to 0x400 carries into
+    // the exponent, as Java's `+` does.
+    sign | ((((exp + 15) as u16) << 10) + bits)
+}
+
+/// `Float.float16ToFloat`.
+// ARITH: a five-bit exponent plus 112 and a ten-bit significand.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn f16_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0f32 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let mant = (h & 0x03ff) as u32;
+    match exp {
+        0 => sign * mant as f32 * f32::from_bits(0x3380_0000), // 2^-24
+        31 => f32::from_bits((u32::from(h & 0x8000) << 16) | 0x7f80_0000 | (mant << 13)),
+        _ => f32::from_bits(
+            (u32::from(h & 0x8000) << 16) | (((exp + 112) as u32) << 23) | (mant << 13),
+        ),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -155,6 +246,15 @@ fn byte_size(encoding: VectorEncoding) -> usize {
     }
 }
 
+/// One stored component's bytes: [`byte_size`], or two for half floats.
+pub(crate) fn element_bytes(encoding: VectorEncoding, half: bool) -> usize {
+    if half {
+        2
+    } else {
+        byte_size(encoding)
+    }
+}
+
 /// `Lucene99FlatVectorsWriter.alignOutput`'s alignment per encoding: 64 for
 /// FLOAT32 (Arm Neoverse cache-line reads), `Float.BYTES` for BYTE.
 fn alignment(encoding: VectorEncoding) -> usize {
@@ -203,6 +303,17 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 /// validation this port doesn't have yet. Returning 0 (a score of 0.5,
 /// "no information") keeps every heap's ordering total instead of poisoning
 /// it with NaN.
+/// [`cosine`] with `a . a` given: the same value bit for bit when
+/// `norm1` is `lucene_util::simd::cosine_parts_f32(a, _).1`.
+pub fn cosine_with_norm(a: &[f32], norm1: f32, b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
+    let (sum, norm2) = lucene_util::simd::dot_and_norm_f32(a, b);
+    if norm1 == 0.0 || norm2 == 0.0 {
+        return 0.0;
+    }
+    (sum as f64 / ((norm1 as f64) * (norm2 as f64)).sqrt()) as f32
+}
+
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
     // The three sums, two 8-lane accumulators each (Panama's `cosineBody`).
@@ -509,7 +620,34 @@ pub struct FlatFieldEntry {
 #[derive(Debug, Clone)]
 pub struct FlatVectorsReader<'a> {
     data: &'a [u8],
-    fields: Vec<FlatFieldEntry>,
+    fields: std::sync::Arc<Vec<FlatFieldEntry>>,
+    /// Byte vectors are scored by Hamming distance
+    /// ([`scores_hamming`]) whatever their recorded similarity.
+    hamming: bool,
+    /// Float vectors are stored as half floats ([`stores_half_floats`]).
+    half: bool,
+    /// Whether every field's similarity is known: a half-float `.vemf`
+    /// leaves it to [`Self::resolve_similarities`].
+    resolved: bool,
+}
+
+/// The OpenSearch k-NN plugin's `KNN990HnswBinaryVectorsFormat`: the
+/// `Lucene99HnswVectorsFormat` files over packed bit vectors, scored by
+/// `KNN9120BinaryVectorScorer` as `1 / (1 + hamming distance)`. The fields
+/// record `EUCLIDEAN`, which nothing reads.
+pub const HAMMING_FORMAT_NAME: &str = "KNN990HnswBinaryVectorsFormat";
+
+/// Whether a per-field instance with codec suffix `segment_suffix`
+/// (`<format>_<n>`) is [`HAMMING_FORMAT_NAME`]'s, whose reader and writer
+/// score byte vectors by Hamming distance.
+pub fn scores_hamming(segment_suffix: &str) -> bool {
+    instance_of(segment_suffix, HAMMING_FORMAT_NAME)
+}
+
+/// `KNNVectorSimilarityFunction.HAMMING.compare`: `1 / (1 + popcount(a ^ b))`.
+#[inline]
+pub fn hamming_score(a: &[u8], b: &[u8]) -> f32 {
+    1.0 / (1.0 + lucene_util::vector_util::xor_bit_count(a, b) as f32)
 }
 
 impl<'a> FlatVectorsReader<'a> {
@@ -522,28 +660,41 @@ impl<'a> FlatVectorsReader<'a> {
         segment_id: &[u8; ID_LENGTH],
         segment_suffix: &str,
     ) -> Result<Self> {
+        let half = stores_half_floats(segment_suffix);
+        // `KNN1040HalfFloatFlatVectorsFormat` has its own codec names, at
+        // version 0 only.
+        let (meta_codec, data_codec, start, current) = if half {
+            (
+                HALF_FLOAT_META_CODEC,
+                HALF_FLOAT_DATA_CODEC,
+                HALF_FLOAT_VERSION,
+                HALF_FLOAT_VERSION,
+            )
+        } else {
+            (META_CODEC, DATA_CODEC, VERSION_START, VERSION_CURRENT)
+        };
         let mut meta = SliceInput::new(meta_buf);
         let meta_version = codec_util::check_index_header(
             &mut meta,
-            META_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
+            meta_codec,
+            start,
+            current,
             segment_id,
             segment_suffix,
         )?;
         let mut data_in = SliceInput::new(data_buf);
         let data_version = codec_util::check_index_header(
             &mut data_in,
-            DATA_CODEC,
-            VERSION_START,
-            VERSION_CURRENT,
+            data_codec,
+            start,
+            current,
             segment_id,
             segment_suffix,
         )?;
         let (meta_version, data_version) = (meta_version.version, data_version.version);
         if meta_version != data_version {
             return corrupt(format!(
-                "Format versions mismatch: meta={meta_version}, {DATA_CODEC}={data_version}"
+                "Format versions mismatch: meta={meta_version}, {data_codec}={data_version}"
             ));
         }
         // A file shorter than its own footer is corruption, not a subtraction:
@@ -575,12 +726,63 @@ impl<'a> FlatVectorsReader<'a> {
             if field_number < 0 {
                 return corrupt(format!("Invalid field number: {field_number}"));
             }
-            fields.push(read_field_entry(&mut meta, field_number, data_buf.len())?);
+            fields.push(read_field_entry(
+                &mut meta,
+                field_number,
+                data_buf.len(),
+                half,
+            )?);
         }
 
         Ok(FlatVectorsReader {
             data: data_buf,
-            fields,
+            fields: std::sync::Arc::new(fields),
+            hamming: scores_hamming(segment_suffix),
+            half,
+            resolved: !half,
+        })
+    }
+
+    /// Whether this reader's float vectors are stored as half floats.
+    pub fn stores_half_floats(&self) -> bool {
+        self.half
+    }
+
+    /// Sets each field's similarity from its `FieldInfo`
+    /// (`similarity(field_number)`), as `KNN1040HalfFloatFlatVectorsReader`
+    /// takes it from `FieldInfos`. A no-op for a `.vemf` that records its
+    /// own; required before reading a half-float reader's vectors.
+    ///
+    /// # Errors
+    /// A field `similarity` does not know.
+    pub fn resolve_similarities(
+        &mut self,
+        similarity: impl Fn(i32) -> Option<VectorSimilarityFunction>,
+    ) -> Result<()> {
+        if self.resolved {
+            return Ok(());
+        }
+        for field in std::sync::Arc::make_mut(&mut self.fields) {
+            field.similarity =
+                similarity(field.field_number).ok_or(Error::UnknownField(field.field_number))?;
+        }
+        self.resolved = true;
+        Ok(())
+    }
+
+    /// [`Self::resolve_similarities`] from the segment's `FieldInfos`.
+    ///
+    /// # Errors
+    /// A vector field `fields` does not hold.
+    pub fn resolve_similarities_from(
+        &mut self,
+        fields: &[crate::field_infos::FieldInfo],
+    ) -> Result<()> {
+        self.resolve_similarities(|number| {
+            fields
+                .iter()
+                .find(|f| f.number == number)
+                .map(|f| f.vector_similarity_function)
         })
     }
 
@@ -590,7 +792,13 @@ impl<'a> FlatVectorsReader<'a> {
     /// their own `.vem`. Every entry must already have passed
     /// [`check_vector_region`] against `data`.
     pub(crate) fn from_entries(data: &'a [u8], fields: Vec<FlatFieldEntry>) -> Self {
-        FlatVectorsReader { data, fields }
+        FlatVectorsReader {
+            data,
+            fields: std::sync::Arc::new(fields),
+            hamming: false,
+            half: false,
+            resolved: true,
+        }
     }
 
     /// `Lucene99FlatVectorsReader.checkIntegrity()`:
@@ -606,6 +814,31 @@ impl<'a> FlatVectorsReader<'a> {
 
     pub fn fields(&self) -> &[FlatFieldEntry] {
         &self.fields
+    }
+
+    /// This reader without its data file, to keep beside the segment's
+    /// files: [`Self::attach`] it to the same data for each search, so the
+    /// metadata is parsed and checked once and shared, not copied.
+    pub fn detached(&self) -> FlatVectorsReader<'static> {
+        FlatVectorsReader {
+            data: &[],
+            fields: self.fields.clone(),
+            hamming: self.hamming,
+            half: self.half,
+            resolved: self.resolved,
+        }
+    }
+
+    /// A detached reader ([`Self::detached`]) over `data`, which must be the
+    /// file the reader was opened on.
+    pub fn attach<'b>(&self, data: &'b [u8]) -> FlatVectorsReader<'b> {
+        FlatVectorsReader {
+            data,
+            fields: self.fields.clone(),
+            hamming: self.hamming,
+            half: self.half,
+            resolved: self.resolved,
+        }
     }
 
     pub fn field(&self, field_number: i32) -> Option<&FlatFieldEntry> {
@@ -659,6 +892,12 @@ impl<'a> FlatVectorsReader<'a> {
     }
 
     fn raw_values(&self, entry: &FlatFieldEntry) -> Result<RawVectorValues<'a>> {
+        if !self.resolved {
+            return corrupt(format!(
+                "field {}: half-float vectors read before their similarity was resolved",
+                entry.field_number
+            ));
+        }
         // `start + len` is formed with `checked_add`, not compared after the
         // fact: a `vectorDataOffset` near `usize::MAX` would otherwise wrap the
         // sum to something small and walk straight past the guard.
@@ -679,12 +918,21 @@ impl<'a> FlatVectorsReader<'a> {
         // the `.vec` file itself. `checked_mul` covers the `size == 0` case,
         // where the identity check says nothing about `dimension`, and a
         // 32-bit `usize`.
-        let Some(vector_bytes) = (entry.dimension as usize).checked_mul(byte_size(entry.encoding))
+        let Some(vector_bytes) =
+            (entry.dimension as usize).checked_mul(element_bytes(entry.encoding, self.half))
         else {
             return corrupt(format!(
                 "vector dimension {} too large for this platform",
                 entry.dimension
             ));
+        };
+        // k-NN normalizes half-float cosine vectors (and queries) before they
+        // get here, and scores them with its FP16 cosine kernel, `(1 + dot) /
+        // 2`: the dot-product score, which is the cosine one for unit vectors.
+        let similarity = if self.half && entry.similarity == VectorSimilarityFunction::Cosine {
+            VectorSimilarityFunction::DotProduct
+        } else {
+            entry.similarity
         };
         Ok(RawVectorValues {
             slice: region,
@@ -692,7 +940,9 @@ impl<'a> FlatVectorsReader<'a> {
             dimension: entry.dimension as usize,
             vector_bytes,
             size: entry.size,
-            similarity: entry.similarity,
+            similarity,
+            hamming: self.hamming && entry.encoding == VectorEncoding::Byte,
+            half: self.half,
             ord_to_doc: entry.ord_to_doc.clone(),
         })
     }
@@ -707,15 +957,26 @@ fn read_field_entry(
     meta: &mut SliceInput<'_>,
     field_number: i32,
     data_len: usize,
+    half: bool,
 ) -> Result<FlatFieldEntry> {
     let encoding = read_vector_encoding(meta)?;
-    let similarity = read_similarity_function(meta)?;
+    if half && encoding != VectorEncoding::Float32 {
+        return corrupt(format!(
+            "field {field_number}: half-float vectors with encoding {encoding:?}"
+        ));
+    }
+    // A half-float `.vemf` has no similarity; `resolve_similarities` sets it.
+    let similarity = if half {
+        VectorSimilarityFunction::Euclidean
+    } else {
+        read_similarity_function(meta)?
+    };
     let vector_data_offset = meta.read_vlong()?;
     let vector_data_length = meta.read_vlong()?;
     let dimension = meta.read_vint()?;
     let size = meta.read_i32()?;
     check_vector_region(
-        encoding,
+        element_bytes(encoding, half),
         dimension,
         size,
         vector_data_offset,
@@ -742,7 +1003,7 @@ fn read_field_entry(
 /// formats of `crate::backward_codecs::hnsw_vectors`, whose readers assert
 /// the same identity (`validateFieldEntry`).
 pub(crate) fn check_vector_region(
-    encoding: VectorEncoding,
+    element_bytes: usize,
     dimension: i32,
     size: i32,
     vector_data_offset: i64,
@@ -766,19 +1027,17 @@ pub(crate) fn check_vector_region(
     // merely a wrong number: it is one an attacker picks to make the identity
     // below hold for an absurd `dimension`/`size` pair.
     let Some(expected) = (dimension as i64)
-        .checked_mul(byte_size(encoding) as i64)
+        .checked_mul(element_bytes as i64)
         .and_then(|v| v.checked_mul(size as i64))
     else {
         return corrupt(format!(
-            "vector data length overflows: size={size} * dim={dimension} * byteSize={}",
-            byte_size(encoding)
+            "vector data length overflows: size={size} * dim={dimension} * byteSize={element_bytes}"
         ));
     };
     if expected != vector_data_length {
         return corrupt(format!(
             "Vector data length {vector_data_length} not matching size={size} * dim={dimension} \
-             * byteSize={} = {expected}",
-            byte_size(encoding)
+             * byteSize={element_bytes} = {expected}"
         ));
     }
     // ARITH: both operands are validated non-negative `i64` above, so each
@@ -859,10 +1118,25 @@ struct RawVectorValues<'a> {
     vector_bytes: usize,
     size: i32,
     similarity: VectorSimilarityFunction,
+    /// Byte vectors scored by [`hamming_score`] instead of `similarity`.
+    hamming: bool,
+    /// Float components stored as little-endian half floats.
+    half: bool,
     ord_to_doc: OrdToDoc,
 }
 
 impl RawVectorValues<'_> {
+    /// Two byte vectors' score under this field's scoring: its similarity,
+    /// or [`hamming_score`] for a [`HAMMING_FORMAT_NAME`] field.
+    #[inline]
+    fn score_bytes(&self, a: &[u8], b: &[u8]) -> f32 {
+        if self.hamming {
+            hamming_score(a, b)
+        } else {
+            self.similarity.score_bytes(a, b)
+        }
+    }
+
     /// One vector's bytes. `slice.len() == size * vector_bytes` is the
     /// identity `read_field_entry` enforced against `.vemf`, so an in-range
     /// ordinal always addresses a whole vector -- but the slice is taken with
@@ -1147,8 +1421,14 @@ impl FloatVectorValues<'_> {
             ));
         }
         let bytes = self.values.bytes(ord)?;
-        for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-            *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        if self.values.half {
+            for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+                *slot = f16_to_f32(u16::from_le_bytes([chunk[0], chunk[1]]));
+            }
+        } else {
+            for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+                *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            }
         }
         Ok(())
     }
@@ -1160,8 +1440,10 @@ impl FloatVectorValues<'_> {
     /// rather than once to decode and again to score.
     pub fn vector_ref<'s>(&'s self, ord: i32, scratch: &'s mut [f32]) -> Result<&'s [f32]> {
         let bytes = self.values.bytes(ord)?;
-        if let Some(floats) = lucene_util::vector_util::le_f32s(bytes) {
-            return Ok(floats);
+        if !self.values.half {
+            if let Some(floats) = lucene_util::vector_util::le_f32s(bytes) {
+                return Ok(floats);
+            }
         }
         self.vector_into(ord, scratch)?;
         Ok(scratch)
@@ -1173,9 +1455,15 @@ impl FloatVectorValues<'_> {
     /// byte-for-byte what this port would write for the same values -- so a
     /// merge can copy a whole run of vectors straight across with one memcpy
     /// instead of decoding and re-encoding each one (Java re-encodes through a
-    /// `ByteBuffer` per vector).
+    /// `ByteBuffer` per vector). A half-float field's are half floats
+    /// ([`Self::stores_half_floats`]).
     pub fn raw_range(&self, from_ord: i32, to_ord: i32) -> Result<&[u8]> {
         self.values.raw_range(from_ord, to_ord)
+    }
+
+    /// Whether the `.vec` holds these components as half floats.
+    pub fn stores_half_floats(&self) -> bool {
+        self.values.half
     }
 
     /// Allocating convenience wrapper around [`vector_into`](Self::vector_into).
@@ -1248,7 +1536,7 @@ impl ByteVectorValues<'_> {
         let mut heap = crate::hnsw::NeighborQueue::new(k, false);
         for ord in 0..self.values.size {
             let v = self.vector(ord)?;
-            heap.insert_with_overflow(ord, self.values.similarity.score_bytes(query, v));
+            heap.insert_with_overflow(ord, self.values.score_bytes(query, v));
         }
         collect_descending(heap, |ord| self.values.ord_to_doc(ord))
     }
@@ -1328,33 +1616,38 @@ pub struct FlatVectorsWriter {
     data: Vec<u8>,
     meta: Vec<u8>,
     max_doc: i32,
+    /// Writes `KNN1040HalfFloatFlatVectorsFormat` ([`stores_half_floats`]).
+    half: bool,
 }
 
 impl FlatVectorsWriter {
     /// `max_doc` is the segment's document count -- it is what decides whether
     /// a field is written dense (`count == maxDoc`, no ord->doc structures at
     /// all) or sparse.
+    ///
+    /// A [`HALF_FLOAT_FORMAT_NAME`] instance's `segment_suffix` makes it write
+    /// `KNN1040HalfFloatFlatVectorsFormat`: float components as half floats,
+    /// no similarity in `.vemf`.
     pub fn new(max_doc: i32, segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Self {
+        let half = stores_half_floats(segment_suffix);
+        let (meta_codec, data_codec, version) = if half {
+            (
+                HALF_FLOAT_META_CODEC,
+                HALF_FLOAT_DATA_CODEC,
+                HALF_FLOAT_VERSION,
+            )
+        } else {
+            (META_CODEC, DATA_CODEC, VERSION_CURRENT)
+        };
         let mut data = Vec::new();
-        codec_util::write_index_header(
-            &mut data,
-            DATA_CODEC,
-            VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        );
+        codec_util::write_index_header(&mut data, data_codec, version, segment_id, segment_suffix);
         let mut meta = Vec::new();
-        codec_util::write_index_header(
-            &mut meta,
-            META_CODEC,
-            VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        );
+        codec_util::write_index_header(&mut meta, meta_codec, version, segment_id, segment_suffix);
         FlatVectorsWriter {
             data,
             meta,
             max_doc,
+            half,
         }
     }
 
@@ -1365,9 +1658,23 @@ impl FlatVectorsWriter {
         let encoding = field.values.encoding();
         let vector_data_offset = self.align_output(encoding);
         match &field.values {
+            FieldVectorData::Float32(v) if self.half => {
+                for &component in v {
+                    self.data
+                        .extend_from_slice(&f32_to_f16(component).to_le_bytes());
+                }
+            }
             FieldVectorData::Float32(v) => {
-                for component in v {
-                    self.data.extend_from_slice(&component.to_le_bytes());
+                // Sized once and filled in place: the loop compiles to a
+                // straight copy on little-endian targets, where pushing
+                // component by component checked capacity every 4 bytes.
+                let start = self.data.len();
+                // ARITH: the components are already in memory, so their
+                // byte count (and the buffer grown by it) fits a usize.
+                #[allow(clippy::arithmetic_side_effects)]
+                self.data.resize(start + v.len() * 4, 0);
+                for (out, component) in self.data[start..].chunks_exact_mut(4).zip(v) {
+                    out.copy_from_slice(&component.to_le_bytes());
                 }
             }
             FieldVectorData::Byte(v) => self.data.extend_from_slice(v),
@@ -1443,7 +1750,8 @@ impl FlatVectorsWriter {
                 0,
             ));
         }
-        let Some(vector_bytes) = (field.dimension as usize).checked_mul(byte_size(field.encoding))
+        let Some(vector_bytes) =
+            (field.dimension as usize).checked_mul(element_bytes(field.encoding, self.half))
         else {
             return corrupt(format!(
                 "field {}: vector dimension {} too large for this platform",
@@ -1553,8 +1861,25 @@ impl FlatVectorsWriter {
             // at most `size <= i32::MAX`. `end - i >= 1` cannot underflow.
             #[allow(clippy::arithmetic_side_effects)]
             let run_end = slot.ord + (end - i) as i32;
-            let bytes = source.values.raw_range(slot.ord, run_end)?;
-            self.data.extend_from_slice(bytes);
+            match &source.values {
+                // Stored the other way: decode and re-encode each vector.
+                MergeSourceValues::Float32(v) if v.stores_half_floats() != self.half => {
+                    let mut scratch = vec![0.0f32; v.dimension()];
+                    for ord in slot.ord..run_end {
+                        v.vector_into(ord, &mut scratch)?;
+                        for &c in &scratch {
+                            if self.half {
+                                self.data.extend_from_slice(&f32_to_f16(c).to_le_bytes());
+                            } else {
+                                self.data.extend_from_slice(&c.to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                values => self
+                    .data
+                    .extend_from_slice(values.raw_range(slot.ord, run_end)?),
+            }
             docs.extend(plan[i..end].iter().map(|s| s.new_doc));
             i = end;
         }
@@ -1604,7 +1929,11 @@ impl FlatVectorsWriter {
     /// alignment and return the aligned offset. Part of the format, not an
     /// optimisation.
     fn align_output(&mut self, encoding: VectorEncoding) -> i64 {
-        let align = alignment(encoding);
+        let align = if self.half {
+            HALF_FLOAT_ALIGNMENT
+        } else {
+            alignment(encoding)
+        };
         let padded = self.data.len().next_multiple_of(align);
         self.data.resize(padded, 0);
         self.data.len() as i64
@@ -1624,7 +1953,10 @@ impl FlatVectorsWriter {
     ) {
         self.meta.write_i32(field_number);
         self.meta.write_i32(encoding_ordinal(encoding));
-        self.meta.write_i32(similarity_ordinal(similarity));
+        // `KNN1040HalfFloatFlatVectorsWriter.writeMeta` writes none.
+        if !self.half {
+            self.meta.write_i32(similarity_ordinal(similarity));
+        }
         self.meta.write_vlong(vector_data_offset);
         self.meta.write_vlong(vector_data_length);
         self.meta.write_vint(dimension);
@@ -1797,8 +2129,12 @@ fn validate_field(field: &FlatVectorsField, max_doc: i32) -> Result<()> {
     // NaN score would be silently excluded from the bulk-score maximum that
     // gates graph expansion instead of loudly breaking.
     if let FieldVectorData::Float32(values) = &field.values {
-        if let Some((i, v)) = values.iter().enumerate().find(|(_, v)| !v.is_finite()) {
-            return Err(Error::NonFiniteValue(field.field_number, i, *v));
+        // The branch-free pass first (it vectorizes); the position only when
+        // it fails.
+        if !values.iter().fold(true, |ok, v| ok & v.is_finite()) {
+            if let Some((i, v)) = values.iter().enumerate().find(|(_, v)| !v.is_finite()) {
+                return Err(Error::NonFiniteValue(field.field_number, i, *v));
+            }
         }
     }
     Ok(())
@@ -1821,23 +2157,84 @@ pub struct FloatVectorScorer<'a> {
     values: FloatVectorValues<'a>,
     similarity: VectorSimilarityFunction,
     query: Vec<f32>,
+    /// `query . query`, for a cosine scorer: the one sum of the three that
+    /// does not depend on the candidate.
+    query_norm: f32,
     scratch: Vec<f32>,
+    /// Whether the `.vec` is read by page ([`lucene_store::is_prefetchable`]):
+    /// a bulk score then fetches every candidate's page in one batch before
+    /// scoring, rather than faulting them in one at a time.
+    paged: bool,
+}
+
+/// `query . query` as [`cosine`] sums it.
+pub(crate) fn query_norm(query: &[f32]) -> f32 {
+    lucene_util::simd::cosine_parts_f32(query, query).1
 }
 
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector_ref(node, &mut self.scratch)?;
-        Ok(self.similarity.score(&self.query, candidate))
+        Ok(if self.similarity == VectorSimilarityFunction::Cosine {
+            normalize_to_unit_interval(cosine_with_norm(&self.query, self.query_norm, candidate))
+        } else {
+            self.similarity.score(&self.query, candidate)
+        })
+    }
+
+    fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
+        if nodes.len() > 1 {
+            self.prefetch(nodes);
+        }
+        let mut max = f32::NEG_INFINITY;
+        for (i, &node) in nodes.iter().enumerate() {
+            scores[i] = self.score(node)?;
+            max = max.max(scores[i]);
+        }
+        Ok(max)
     }
 
     fn max_ord(&self) -> i32 {
         self.values.size()
     }
+
+    /// A `.vec` read by page fetches every candidate's page in one batch
+    /// rather than faulting them in one at a time; one in memory loads every
+    /// cache line of every candidate before the first is scored (see
+    /// `docs/benchmarks/hnsw.md` for the variants measured).
+    fn prefetch(&self, nodes: &[i32]) {
+        if self.paged {
+            // A graph node's neighbours fit one stack batch; more go in
+            // several. Only a hint: a page it misses faults in on its own.
+            const BATCH: usize = 64;
+            let mut ranges: [&[u8]; BATCH] = [&[]; BATCH];
+            for chunk in nodes.chunks(BATCH) {
+                let mut count = 0usize;
+                for &n in chunk {
+                    if let (Ok(bytes), Some(slot)) =
+                        (self.values.values.bytes(n), ranges.get_mut(count))
+                    {
+                        *slot = bytes;
+                        count = count.saturating_add(1);
+                    }
+                }
+                let _ = lucene_store::prefetch(ranges.get(..count).unwrap_or(&[]));
+            }
+            return;
+        }
+        for &n in nodes {
+            if let Ok(bytes) = self.values.values.bytes(n) {
+                lucene_util::simd::prefetch_bytes(bytes);
+            }
+        }
+    }
 }
 
 impl crate::hnsw::UpdateableVectorScorer for FloatVectorScorer<'_> {
     fn set_scoring_ordinal(&mut self, ord: i32) -> Result<()> {
-        self.values.vector_into(ord, &mut self.query)
+        self.values.vector_into(ord, &mut self.query)?;
+        self.query_norm = query_norm(&self.query);
+        Ok(())
     }
 }
 
@@ -1847,18 +2244,25 @@ impl crate::hnsw::UpdateableVectorScorer for FloatVectorScorer<'_> {
 #[derive(Debug, Clone)]
 pub struct ByteVectorScorer<'a> {
     values: ByteVectorValues<'a>,
-    similarity: VectorSimilarityFunction,
     query: Vec<u8>,
 }
 
 impl crate::hnsw::VectorScorer for ByteVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector(node)?;
-        Ok(self.similarity.score_bytes(&self.query, candidate))
+        Ok(self.values.values.score_bytes(&self.query, candidate))
     }
 
     fn max_ord(&self) -> i32 {
         self.values.size()
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        for &n in nodes {
+            if let Ok(bytes) = self.values.vector(n) {
+                lucene_util::simd::prefetch_bytes(bytes);
+            }
+        }
     }
 }
 
@@ -1872,6 +2276,30 @@ impl crate::hnsw::UpdateableVectorScorer for ByteVectorScorer<'_> {
 }
 
 impl<'a> FloatVectorValues<'a> {
+    /// Every vector, ordinal after ordinal, as one run of components:
+    /// borrowed straight from the file when it holds aligned little-endian
+    /// `f32`s, decoded otherwise (half floats, a misaligned buffer).
+    ///
+    /// # Errors
+    /// A vector that does not decode.
+    pub fn all_vectors(&self) -> Result<std::borrow::Cow<'a, [f32]>> {
+        let slice: &'a [u8] = self.values.slice;
+        if !self.values.half {
+            if let Some(floats) = lucene_util::vector_util::le_f32s(slice) {
+                return Ok(std::borrow::Cow::Borrowed(floats));
+            }
+        }
+        let size = usize::try_from(self.values.size).unwrap_or(0);
+        let mut out = vec![0.0f32; size.saturating_mul(self.values.dimension)];
+        for (ord, chunk) in out
+            .chunks_exact_mut(self.values.dimension.max(1))
+            .enumerate()
+        {
+            self.vector_into(ord as i32, chunk)?;
+        }
+        Ok(std::borrow::Cow::Owned(out))
+    }
+
     /// `FlatVectorsScorer.getRandomVectorScorer(similarity, values, target)`.
     pub fn scorer(&self, query: &[f32]) -> Result<FloatVectorScorer<'a>> {
         if query.len() != self.values.dimension {
@@ -1884,8 +2312,19 @@ impl<'a> FloatVectorValues<'a> {
             values: self.clone(),
             similarity: self.values.similarity,
             query: query.to_vec(),
+            query_norm: query_norm(query),
             scratch: vec![0.0; self.values.dimension],
+            paged: self.is_paged(),
         })
+    }
+
+    /// Whether these vectors lie in a file read by page.
+    fn is_paged(&self) -> bool {
+        self.size() > 0
+            && self
+                .values
+                .bytes(0)
+                .is_ok_and(lucene_store::is_prefetchable)
     }
 
     /// `FlatVectorsScorer.getRandomVectorScorerSupplier(...).scorer()`: a
@@ -1895,7 +2334,9 @@ impl<'a> FloatVectorValues<'a> {
             values: self.clone(),
             similarity: self.values.similarity,
             query: vec![0.0; self.values.dimension],
+            query_norm: 0.0,
             scratch: vec![0.0; self.values.dimension],
+            paged: self.is_paged(),
         }
     }
 }
@@ -1911,7 +2352,6 @@ impl<'a> ByteVectorValues<'a> {
         }
         Ok(ByteVectorScorer {
             values: self.clone(),
-            similarity: self.values.similarity,
             query: query.to_vec(),
         })
     }
@@ -1920,7 +2360,6 @@ impl<'a> ByteVectorValues<'a> {
     pub fn ord_scorer(&self) -> ByteVectorScorer<'a> {
         ByteVectorScorer {
             values: self.clone(),
-            similarity: self.values.similarity,
             query: vec![0; self.values.dimension],
         }
     }
@@ -2433,11 +2872,154 @@ mod tests {
             vector_bytes: 4,
             size: 3,
             similarity: VectorSimilarityFunction::Euclidean,
+            hamming: false,
+            half: false,
             ord_to_doc: OrdToDoc::Explicit(std::sync::Arc::from(vec![2, 5, 9])),
         };
         let mut out = Vec::new();
         explicit.ord_to_docs(&mut out).unwrap();
         assert_eq!(out, [2, 5, 9]);
+    }
+
+    // ---------------- half floats ----------------
+
+    const HALF: &str = "KNN1040HnswHalfFloatVectorsFormat_0";
+
+    #[test]
+    fn half_float_conversion_matches_java() {
+        // Values and `Float.floatToFloat16` results from a JDK 25 jshell.
+        for (f, h) in [
+            (0.0f32, 0x0000u16),
+            (-0.0, 0x8000),
+            (1.0, 0x3c00),
+            (-2.5, 0xc100),
+            (65504.0, 0x7bff),
+            (65519.0, 0x7bff),
+            (65520.0, 0x7c00),
+            (f32::INFINITY, 0x7c00),
+            (6.1035156e-5, 0x0400),
+            (5.9604645e-8, 0x0001),
+            (2.9802322e-8, 0x0000),
+            (2.9802326e-8, 0x0001),
+            (0.1, 0x2e66),
+            (1.0009766, 0x3c01),
+            (1.0004883, 0x3c00),
+            (1.0014648, 0x3c02),
+            (2047.5, 0x6800),
+            (1e-6, 0x0011),
+            (-3.3333, 0xc2ab),
+        ] {
+            assert_eq!(f32_to_f16(f), h, "{f}");
+        }
+        assert_eq!(f32_to_f16(f32::NAN), 0x7e00);
+        // Every 251st f32 bit pattern, NaNs included, hashed as
+        // `sum = sum * 31 + floatToFloat16(f)` in Java.
+        let mut sum = 0u64;
+        for i in 0..=(u32::MAX / 251) {
+            let h = f32_to_f16(f32::from_bits(i * 251));
+            sum = sum.wrapping_mul(31).wrapping_add(u64::from(h));
+        }
+        assert_eq!(sum, 0x4a56_b634_55f0_81d9);
+        // Every half float survives a round trip.
+        for h in 0..=u16::MAX {
+            let f = f16_to_f32(h);
+            if f.is_nan() {
+                continue;
+            }
+            assert_eq!(f32_to_f16(f), h, "{h:#x}");
+        }
+    }
+
+    fn open_half(meta: &[u8], data: &[u8]) -> Result<FlatVectorsReader<'static>> {
+        let data: &'static [u8] = Box::leak(data.to_vec().into_boxed_slice());
+        FlatVectorsReader::open(meta, data, &ID, HALF)
+    }
+
+    #[test]
+    fn half_float_fields_round_trip_and_need_their_similarity() {
+        let mut field = float_field(3, 4, vec![0, 2, 5]);
+        field.similarity = VectorSimilarityFunction::DotProduct;
+        let (data, meta) = write_flat_vectors(&[field], 6, &ID, HALF).unwrap();
+        // Two bytes a component, after a 64-aligned header.
+        let mut reader = open_half(&meta, &data).unwrap();
+        assert!(reader.stores_half_floats());
+        let entry = reader.field(3).unwrap();
+        assert_eq!(entry.vector_data_offset % 64, 0);
+        assert_eq!(entry.vector_data_length, 3 * 4 * 2);
+        assert!(reader.float_vector_values(3).is_err());
+        reader
+            .resolve_similarities(|n| (n == 3).then_some(VectorSimilarityFunction::Cosine))
+            .unwrap();
+        assert_eq!(
+            reader.field(3).unwrap().similarity,
+            VectorSimilarityFunction::Cosine
+        );
+        // Scored as k-NN's FP16 cosine kernel scores normalized vectors.
+        let values = reader.float_vector_values(3).unwrap();
+        assert_eq!(values.similarity(), VectorSimilarityFunction::DotProduct);
+        assert_eq!(values.ord_to_doc(1).unwrap(), 2);
+        // `float_field`'s components (`i * 0.5 - 1`) are exact half floats.
+        let want: Vec<f32> = (4..8).map(|i| i as f32 * 0.5 - 1.0).collect();
+        assert_eq!(values.vector(1).unwrap(), want);
+        let mut scratch = vec![0.0; 4];
+        assert_eq!(values.vector_ref(1, &mut scratch).unwrap(), want);
+        // Half floats are decoded, never borrowed.
+        let all = values.all_vectors().unwrap();
+        assert!(matches!(all, std::borrow::Cow::Owned(_)));
+        let every: Vec<f32> = (0..3).flat_map(|o| values.vector(o).unwrap()).collect();
+        assert_eq!(*all, every[..]);
+        // The stock files are not the Lucene99 ones.
+        assert!(open(&meta, &data).is_err());
+    }
+
+    #[test]
+    fn a_merge_converts_between_full_and_half_floats() {
+        let full = float_field(1, 3, vec![0, 1]);
+        let (full_data, full_meta) = write(&[full], 2);
+        let full_reader = open(&full_meta, &full_data).unwrap();
+        let (half_data, half_meta) =
+            write_flat_vectors(&[float_field(1, 3, vec![0, 1])], 2, &ID, HALF).unwrap();
+        let mut half_reader = open_half(&half_meta, &half_data).unwrap();
+        half_reader
+            .resolve_similarities(|_| Some(VectorSimilarityFunction::Euclidean))
+            .unwrap();
+        let map = [0, 1];
+        let map2 = [2, 3];
+        let sources = [
+            FlatVectorMergeSource {
+                values: MergeSourceValues::Float32(full_reader.float_vector_values(1).unwrap()),
+                doc_map: &map,
+            },
+            FlatVectorMergeSource {
+                values: MergeSourceValues::Float32(half_reader.float_vector_values(1).unwrap()),
+                doc_map: &map2,
+            },
+        ];
+        for suffix in ["", HALF] {
+            let mut writer = FlatVectorsWriter::new(4, &ID, suffix);
+            writer
+                .merge_one_flat_vector_field(&MergedFlatVectorField {
+                    field_number: 1,
+                    encoding: VectorEncoding::Float32,
+                    similarity: VectorSimilarityFunction::Euclidean,
+                    dimension: 3,
+                    sources: &sources,
+                })
+                .unwrap();
+            let (data, meta) = writer.finish();
+            let data: &'static [u8] = Box::leak(data.into_boxed_slice());
+            let mut merged = FlatVectorsReader::open(&meta, data, &ID, suffix).unwrap();
+            merged
+                .resolve_similarities(|_| Some(VectorSimilarityFunction::Euclidean))
+                .unwrap();
+            let values = merged.float_vector_values(1).unwrap();
+            for ord in 0..4 {
+                let want: Vec<f32> = (0..3)
+                    .map(|i| (i + (ord % 2) * 3) as f32 * 0.5 - 1.0)
+                    .collect();
+                assert_eq!(values.vector(ord).unwrap(), want, "{suffix} ord {ord}");
+            }
+        }
     }
 
     // ---------------- write-side validation ----------------

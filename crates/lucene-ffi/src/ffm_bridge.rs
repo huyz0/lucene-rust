@@ -34,7 +34,7 @@ use crate::raw::bytes_from_raw;
 ///
 /// # Safety
 /// `out_ptr` and `out_len` must be valid for one write each.
-unsafe fn give(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
+pub(crate) unsafe fn give(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
     let (ptr, len) = if bytes.is_empty() {
         (std::ptr::null_mut(), 0)
     } else {
@@ -53,7 +53,10 @@ unsafe fn give(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
 ///
 /// # Safety
 /// Non-null `out_ptr`/`out_len` must be valid for one write each.
-unsafe fn clear_out(out_ptr: *mut *mut u8, out_len: *mut usize) -> Result<(), FfiStatus> {
+pub(crate) unsafe fn clear_out(
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> Result<(), FfiStatus> {
     if out_ptr.is_null() || out_len.is_null() {
         return Err(FfiStatus::NullPointer);
     }
@@ -391,6 +394,32 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_alloc(
     })
 }
 
+/// [`jvm_reader::search_hybrid_blobs`]: a hybrid query's shard phase, its
+/// slices' answers encoded in an owned buffer.
+///
+/// # Safety
+/// `blob` must be valid for `blob_len` bytes and `out_ptr`/`out_len` for one
+/// write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_search_hybrid_alloc(
+    handle: u64,
+    blob: *const u8,
+    blob_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(blob, blob_len)? };
+        let encoded = jvm_reader::search_hybrid_blobs(handle, blob)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`jvm_reader::search_collapsed_blobs`]: a collapsed search (OpenSearch's
 /// `collapse`), its slices' groups encoded in an owned buffer.
 ///
@@ -451,6 +480,88 @@ pub unsafe extern "C" fn ffi_jvm_reader_document_alloc(
     })
 }
 
+/// [`crate::jvm_fetch::doc_values_blob`]: segment `segment`'s document
+/// `doc` -- its values of the `count` fields numbered at `fields` -- as an
+/// owned buffer.
+///
+/// # Safety
+/// `fields` must be valid for `count` `i32` reads (null when 0);
+/// `out_ptr`/`out_len` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_doc_values_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    fields: *const i32,
+    count: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        if fields.is_null() && count > 0 {
+            return Err(FfiStatus::NullPointer);
+        }
+        let fields: &[i32] = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract, non-null checked above.
+            unsafe { std::slice::from_raw_parts(fields, count) }
+        };
+        let encoded = crate::jvm_fetch::doc_values_blob(handle, segment, doc, fields)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_fetch::source_blob`]: a derived-source document's `_source`, its vectors put
+/// back, as an owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_derived_source_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, true)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_fetch::source_blob`] without the vectors: a derived-source document's `_source`
+/// as stored, each vector masked, as an owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_source_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, false)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`crate::jvm_analysis::register`]: an analyzer for indexing, its id into
 /// `*out_id`.
 ///
@@ -471,6 +582,36 @@ pub unsafe extern "C" fn ffi_jvm_analysis_register(
         let id = crate::jvm_analysis::register(blob)?;
         // SAFETY: caller contract.
         unsafe { *out_id = i32::try_from(id).map_err(|_| FfiStatus::InvalidArgument)? };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_painless_score::check`]: whether the native runtime runs a
+/// score script exactly as Painless would, decided before anything runs.
+/// Writes nothing (a null buffer) when it does, else the reason as UTF-8.
+///
+/// # Safety
+/// `blob` must be valid for `blob_len` bytes, and `out_ptr`/`out_len` for
+/// one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_painless_check(
+    blob: *const u8,
+    blob_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(blob, blob_len)? };
+        let refused = match crate::jvm_painless_score::check(blob)? {
+            None => Vec::new(),
+            Some(r) if r.is_empty() => b"refused".to_vec(),
+            Some(r) => r.into_bytes(),
+        };
+        // SAFETY: caller contract.
+        unsafe { give(refused, out_ptr, out_len) };
         Ok(())
     })
 }

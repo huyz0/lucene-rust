@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch;
 
 import org.apache.lucene.index.Term;
+import org.lucenerust.opensearch.tensor.MaxSimQuery;
 import org.apache.lucene.queries.intervals.IntervalQuery;
 import org.apache.lucene.queries.intervals.IntervalsSource;
 import org.apache.lucene.queries.spans.FieldMaskingSpanQuery;
@@ -20,7 +21,9 @@ import org.apache.lucene.search.CombinedFieldQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.join.QueryBitSetProducer;
+import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.search.join.ScoreMode;
+import org.apache.lucene.search.join.ToChildBlockJoinQuery;
 import org.apache.lucene.search.join.ToParentBlockJoinQuery;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.Automaton;
@@ -29,18 +32,38 @@ import org.apache.lucene.util.automaton.Transition;
 import org.opensearch.common.lucene.search.function.CombineFunction;
 import org.opensearch.common.lucene.search.function.FieldValueFactorFunction;
 import org.opensearch.common.lucene.search.function.FunctionScoreQuery;
+import org.opensearch.common.lucene.search.function.ScriptScoreQuery;
+import org.lucenerust.opensearch.painless.PainlessIr;
+import org.lucenerust.opensearch.painless.PainlessScore;
+import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
+import org.lucenerust.opensearch.knn.script.PainlessKnnScript;
+import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.index.query.IntervalFilterScript;
+import org.opensearch.script.AggregationScript;
+import org.opensearch.script.FilterScript;
+import org.opensearch.script.NumberSortScript;
+import org.opensearch.script.ScoreScript;
+import org.opensearch.script.Script;
+import org.opensearch.script.ScriptType;
+import org.opensearch.script.TermsSetQueryScript;
 import org.opensearch.common.lucene.search.function.RandomScoreFunction;
 import org.opensearch.common.lucene.search.function.ScoreFunction;
+import org.opensearch.common.lucene.search.function.ScriptScoreFunction;
 import org.opensearch.common.lucene.search.function.WeightFactorFunction;
 import org.opensearch.index.fielddata.IndexFieldData;
 import org.opensearch.index.fielddata.IndexNumericFieldData;
 import org.opensearch.index.search.OpenSearchToParentBlockJoinQuery;
 import org.opensearch.search.MultiValueMode;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.lucenerust.opensearch.patterntext.PatternPhraseQuery;
+import org.apache.lucene.search.MultiPhraseQuery;
+import org.apache.lucene.search.PhraseQuery;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.function.Function;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
@@ -63,7 +86,11 @@ import java.util.function.Predicate;
  *   <li>{@code function_score}: OpenSearch's {@link FunctionScoreQuery} with {@code weight}, {@code
  *       field_value_factor}, {@code random_score} and the numeric and date decay functions, each
  *       optionally filtered, every {@code score_mode} and {@code boost_mode}, {@code max_boost}
- *       (node 24).
+ *       (node 24);
+ *   <li>{@code script_score} running k-NN's {@code knn_score} over a {@code knn_vector} space:
+ *       OpenSearch's {@link ScriptScoreQuery} without {@code min_score} (node 42);
+ *   <li>{@code max_sim} over a {@code multi_vector} field: {@link MaxSimQuery} (node 44);
+ *   <li>an exact phrase over a {@code pattern_text} field: {@link PatternPhraseQuery} (node 47).
  * </ul>
  *
  * <p>The classes are read through their getters, or through {@link Reflect} where Lucene and
@@ -83,6 +110,15 @@ final class ExtendedEncoder {
     static final byte NODE_INTERVAL = 22;
     static final byte NODE_COMBINED_FIELD = 23;
     static final byte NODE_FUNCTION_SCORE = 24;
+    static final byte NODE_TO_CHILD = 41;
+    static final byte NODE_KNN_SCORE = 42;
+    static final byte NODE_PAINLESS_SCORE = 43;
+    static final byte NODE_MAX_SIM = 44;
+    static final byte NODE_PAINLESS_FILTER = 45;
+    static final byte NODE_JOIN = 46;
+    static final byte NODE_PATTERN_PHRASE = 47;
+    /** {@code jvm_pattern_phrase.rs}'s {@code MAX_TERMS}. */
+    static final int MAX_PATTERN_TERMS = 1024;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -103,6 +139,15 @@ final class ExtendedEncoder {
             if (q instanceof FunctionScoreQuery fs) {
                 return functionScore(fs, out, fieldOk, child);
             }
+            if (q instanceof ScriptScoreQuery ss) {
+                return knnScore(ss, out, child);
+            }
+            if (q instanceof MaxSimQuery ms) {
+                return maxSim(ms, out, child);
+            }
+            if (q instanceof PatternPhraseQuery pp) {
+                return patternPhrase(pp, out);
+            }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
                 if (f == null) {
@@ -113,6 +158,12 @@ final class ExtendedEncoder {
             if (q.getClass() == ToParentBlockJoinQuery.class) {
                 return toParent((ToParentBlockJoinQuery) q, out, child);
             }
+            if (q.getClass() == ToChildBlockJoinQuery.class) {
+                return toChild((ToChildBlockJoinQuery) q, out, child);
+            }
+            if (q instanceof org.lucenerust.opensearch.join.DeferredJoinQuery dj) {
+                return join(dj, out, child);
+            }
             if (q instanceof SpanQuery sq) {
                 out.write(NODE_SPAN);
                 return span(sq, out, fieldOk);
@@ -122,6 +173,9 @@ final class ExtendedEncoder {
             }
             if (q instanceof CombinedFieldQuery cf) {
                 return combinedField(cf, out, fieldOk);
+            }
+            if (q.getClass().getName().equals("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery")) {
+                return painlessFilter(q, out);
             }
             return NOT_EXTENDED;
         } catch (ReflectiveOperationException | ClassCastException e) {
@@ -153,8 +207,47 @@ final class ExtendedEncoder {
         return child.node(q.getChildQuery());
     }
 
+    /**
+     * {@code has_child}/{@code has_parent}: the join field, score mode, {@code min_children} and
+     * {@code max_children}, the to side and the from side, both rewritten.
+     */
+    private static String join(org.lucenerust.opensearch.join.DeferredJoinQuery q, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        if (q.from() == null || q.to() == null) {
+            return "join_unrewritten";
+        }
+        out.write(NODE_JOIN);
+        writeString(out, q.joinField());
+        out.write((byte) q.scoreMode().ordinal());
+        writeInt(out, q.minChildren());
+        writeInt(out, q.maxChildren());
+        String reason = child.node(q.to());
+        if (reason != null) {
+            return reason;
+        }
+        return child.node(q.from());
+    }
+
+    private static String toChild(ToChildBlockJoinQuery q, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        Field parentsF = Reflect.declared(ToChildBlockJoinQuery.class, "parentsFilter");
+        if (parentsF == null) {
+            return "extended_reflect";
+        }
+        Query parents = parentsQuery((BitSetProducer) parentsF.get(q));
+        if (parents == null) {
+            return "join_parents";
+        }
+        out.write(NODE_TO_CHILD);
+        String reason = child.node(parents);
+        if (reason != null) {
+            return reason;
+        }
+        return child.node(q.getParentQuery());
+    }
+
     /** The query a parent filter's bit sets are built from, or null for a producer this cannot read. */
-    private static Query parentsQuery(BitSetProducer p) throws ReflectiveOperationException {
+    static Query parentsQuery(BitSetProducer p) throws ReflectiveOperationException {
         if (p instanceof QueryBitSetProducer qp) {
             return qp.getQuery();
         }
@@ -306,6 +399,13 @@ final class ExtendedEncoder {
     @SuppressWarnings("unchecked")
     private static String source(IntervalsSource s, ByteArrayOutputStream out) throws ReflectiveOperationException {
         String name = s.getClass().getName();
+        if (name.equals("org.opensearch.index.query.IntervalsSourceProvider$ScriptFilterSource")) {
+            out.write(6);
+            out.write(2);
+            writeString(out, (String) field(s, "name"));
+            String why = painlessInterval((IntervalFilterScript) field(s, "script"), out);
+            return why != null ? why : source((IntervalsSource) field(s, "in"), out);
+        }
         if (name.startsWith(INTERVALS) == false) {
             return "interval_" + s.getClass().getSimpleName();
         }
@@ -497,6 +597,487 @@ final class ExtendedEncoder {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // max_sim
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link MaxSimQuery}: the sub-query's documents, each scored by its {@code MaxSim} against the
+     * query's tokens (0 without a value), as {@code crates/lucene-ffi/src/jvm_max_sim.rs} reads it.
+     */
+    private static String maxSim(MaxSimQuery q, ByteArrayOutputStream out, Child child) {
+        out.write(NODE_MAX_SIM);
+        String reason = child.node(q.sub());
+        if (reason != null) {
+            return reason;
+        }
+        writeString(out, q.field());
+        float[][] tokens = q.tokens();
+        writeInt(out, tokens[0].length);
+        writeInt(out, tokens.length);
+        for (float[] t : tokens) {
+            for (float v : t) {
+                writeInt(out, Float.floatToIntBits(v));
+            }
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // pattern_text phrase
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link PatternPhraseQuery}, an exact phrase: its field, its index analyzer's spec, whether a
+     * template's static text may decide it, and its terms by position, as {@code
+     * crates/lucene-ffi/src/jvm_pattern_phrase.rs} reads them. A phrase with slop or a prefix, or an
+     * analyzer {@link AnalyzerSpec} cannot describe, runs in Java.
+     */
+    private static String patternPhrase(PatternPhraseQuery q, ByteArrayOutputStream out) {
+        if (q.positions() == null) {
+            return q.positional() instanceof PhraseQuery || q.positional() instanceof MultiPhraseQuery ? "pattern_phrase_slop" : "pattern_phrase_prefix";
+        }
+        int count = 0;
+        for (BytesRef[] t : q.terms()) {
+            count += t.length;
+        }
+        if (count > MAX_PATTERN_TERMS) {
+            return "pattern_phrase_terms";
+        }
+        AnalyzerSpec.Spec spec = AnalyzerSpec.cached(q.analyzer(), q.field());
+        if (spec.ok() == false) {
+            return "pattern_phrase_" + spec.reason();
+        }
+        out.write(NODE_PATTERN_PHRASE);
+        writeString(out, q.field());
+        writeBytes(out, spec.blob());
+        out.write(q.templateParts() ? 1 : 0);
+        int[] positions = q.positions();
+        BytesRef[][] terms = q.terms();
+        writeInt(out, positions.length);
+        for (int i = 0; i < positions.length; i++) {
+            writeInt(out, positions[i]);
+            writeInt(out, terms[i].length);
+            for (BytesRef t : terms[i]) {
+                writeBytes(out, t);
+            }
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // script_score with knn_score
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * OpenSearch's {@code ScriptScoreQuery} running k-NN's {@code knn_score} over a {@code
+     * knn_vector} space: the sub-query's documents, each scored by the script's distance (0 without
+     * a value), times the boost. Other scripts, {@code hammingbit} and {@code min_score} run in Java.
+     */
+    private static String knnScore(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
+        Object builder = field(q, "scriptBuilder");
+        if ((builder instanceof KnnScoringScriptEngine.KnnLeafFactory) == false) {
+            return painlessKnn(q, out, child);
+        }
+        KnnScoringScriptEngine.Native spec = ((KnnScoringScriptEngine.KnnLeafFactory) builder).nativeSpec();
+        if (spec == null) {
+            return "script_score_hammingbit";
+        }
+        if (field(q, "minScore") != null) {
+            return "script_score_min_score";
+        }
+        out.write(NODE_KNN_SCORE);
+        String reason = child.node((Query) field(q, "subQuery"));
+        if (reason != null) {
+            return reason;
+        }
+        writeString(out, spec.field());
+        out.write(spec.space());
+        out.write(spec.dataType());
+        out.write(spec.halfCosine() ? 1 : 0);
+        if (spec.floats() != null) {
+            out.write(0);
+            writeInt(out, spec.floats().length);
+            for (float v : spec.floats()) {
+                writeInt(out, Float.floatToIntBits(v));
+            }
+        } else {
+            out.write(1);
+            writeBytes(out, spec.bytes());
+        }
+        // knn_score's own formula.
+        out.write(0);
+        return null;
+    }
+
+    /**
+     * The field types of the index being searched, for scripts that name a field: set by the
+     * searcher around encoding ({@link #withFieldTypes}); without them such scripts run in Java.
+     */
+    private static final ThreadLocal<Function<String, MappedFieldType>> FIELD_TYPES = new ThreadLocal<>();
+
+    /** Runs {@code encode} with {@code fieldTypes} as the index's field types. */
+    static <T> T withFieldTypes(Function<String, MappedFieldType> fieldTypes, java.util.function.Supplier<T> encode) {
+        Function<String, MappedFieldType> previous = FIELD_TYPES.get();
+        FIELD_TYPES.set(fieldTypes);
+        try {
+            return encode.get();
+        } finally {
+            if (previous == null) {
+                FIELD_TYPES.remove();
+            } else {
+                FIELD_TYPES.set(previous);
+            }
+        }
+    }
+
+    /**
+     * A Painless {@code script_score} script made of one k-NN Painless function call inside
+     * arithmetic ({@link PainlessKnnScript}), as the {@code knn_score} node with the script's
+     * formula. Other scripts run in Java.
+     */
+    private static String painlessKnn(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
+        Script script = (Script) field(q, "script");
+        if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
+            return "script_score_script";
+        }
+        if (field(q, "minScore") != null) {
+            return "script_score_min_score";
+        }
+        PainlessKnnScript.Compiled c = PainlessKnnScript.compile(script.getIdOrCode(), script.getParams(), FIELD_TYPES.get());
+        if (c == null) {
+            return painlessScore(q, script, out, child);
+        }
+        out.write(NODE_KNN_SCORE);
+        String reason = child.node((Query) field(q, "subQuery"));
+        if (reason != null) {
+            return reason;
+        }
+        writeString(out, c.field());
+        // The space and cosine flag are unused under this formula.
+        out.write(0);
+        out.write(c.dataType());
+        out.write(0);
+        if (c.floats() != null) {
+            out.write(0);
+            writeInt(out, c.floats().length);
+            for (float v : c.floats()) {
+                writeInt(out, Float.floatToIntBits(v));
+            }
+        } else {
+            out.write(1);
+            writeBytes(out, c.bytes());
+        }
+        out.write(1);
+        out.write(c.function());
+        writeInt(out, Float.floatToRawIntBits(c.norm()));
+        out.writeBytes(c.program());
+        return null;
+    }
+
+    /**
+     * A Painless {@code script_score} script run by the native Painless runtime: its IR, params,
+     * and how each field it names by a constant reads in {@code doc} (node 43).
+     */
+    private static String painlessScore(ScriptScoreQuery q, Script script, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(q, "scriptBuilder");
+        Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        out.write(NODE_PAINLESS_SCORE);
+        String reason = child.node((Query) field(q, "subQuery"));
+        if (reason != null) {
+            return reason;
+        }
+        painlessScoreSpec(out, (Painless) prepared, factory, (String) field(q, "indexName"), (int) field(q, "shardId"), (org.opensearch.Version) field(q, "indexVersion"));
+        return null;
+    }
+
+    /** A score script's spec, registered as this request's next run for its errors. */
+    private static void painlessScoreSpec(
+        ByteArrayOutputStream out,
+        Painless p,
+        ScoreScript.LeafFactory factory,
+        String index,
+        int shard,
+        org.opensearch.Version version
+    ) {
+        int run = PainlessScore.run(factory, index, shard, version);
+        painlessSpec(out, p, index == null ? "" : index, shard, run);
+    }
+
+    /**
+     * A {@code script} query ({@code ScriptQuery}) with an inline Painless script run by the
+     * native runtime: node 45, its script's spec. Other scripts run in Java.
+     */
+    private static String painlessFilter(Query q, ByteArrayOutputStream out) throws ReflectiveOperationException {
+        Script script = (Script) field(q, "script");
+        if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
+            return "script_query_script";
+        }
+        Object prepared = painless(script, PainlessScore.FILTER, "script_query");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        out.write(NODE_PAINLESS_FILTER);
+        int run = PainlessScore.run((FilterScript.LeafFactory) field(q, "filterScript"));
+        painlessSpec(out, (Painless) prepared, "", 0, run);
+        return null;
+    }
+
+    /**
+     * A {@code _script} sort key's number sort script, made by {@code factory}, as the native
+     * runtime runs it: its spec (context {@link PainlessScore#SORT}), or why it stays in Java. A
+     * script reading {@code _score} stays in Java.
+     */
+    static String painlessSort(NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
+        if (factory.needs_score()) {
+            return "sort_script_score";
+        }
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "sort_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
+            return "sort_script_options";
+        }
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.SORT, "sort_script");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.run(factory));
+        return null;
+    }
+
+    /**
+     * An aggregation's script, made by {@code factory}, as the native runtime runs it: its spec
+     * (context {@link PainlessScore#AGGREGATION}), or why it stays in Java. A script reading
+     * {@code _score} stays in Java.
+     */
+    static String painlessAggregation(AggregationScript.LeafFactory factory, ByteArrayOutputStream out) {
+        if (factory == null || factory.needs_score()) {
+            return "aggregation_script_score";
+        }
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "aggregation_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
+            return "aggregation_script_options";
+        }
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.AGGREGATION, "aggregation_script");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.run(factory));
+        return null;
+    }
+
+    /**
+     * A {@code terms_set} query's {@code minimum_should_match_script}, made by {@code factory}, as
+     * the native runtime runs it: its spec (context {@link PainlessScore#TERMS_SET}), or why it
+     * stays in Java.
+     */
+    static String painlessTermsSet(TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "covering_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
+            return "covering_options";
+        }
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runTermsSet(factory));
+        return null;
+    }
+
+    /**
+     * An {@code intervals} query's script filter, as the native runtime runs it: its spec (context
+     * {@link PainlessScore#INTERVAL}), or why it stays in Java.
+     */
+    private static String painlessInterval(IntervalFilterScript script, ByteArrayOutputStream out) {
+        String source = PainlessScore.sourceOf(script);
+        if (source == null) {
+            return "interval_script";
+        }
+        if (PainlessScore.compiledWithDefaults(source) == false) {
+            return "interval_options";
+        }
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        if (((Painless) prepared).names().length != 0) {
+            return "interval_painless";
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runInterval(script));
+        return null;
+    }
+
+    /**
+     * OpenSearch's scripted similarity as the native runtime scores with it (similarity kind 9
+     * of {@code jvm_similarity.rs}, after the kind), or null when it stays in Java: a script that
+     * is not inline Painless compiled with no options or params of its own, or one the static
+     * check refuses. {@code similarity} is the scripted similarity, or the {@code
+     * NonNegativeScoresSimilarity} around it.
+     */
+    static byte[] painlessSimilarity(Similarity similarity) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            org.opensearch.index.similarity.ScriptedSimilarity sim;
+            int negative;
+            if (similarity instanceof org.opensearch.index.similarity.NonNegativeScoresSimilarity n) {
+                sim = (org.opensearch.index.similarity.ScriptedSimilarity) n.getDelegate();
+                Field enforce = org.opensearch.index.similarity.NonNegativeScoresSimilarity.class.getDeclaredField(
+                    "ENFORCE_POSITIVE_SCORES"
+                );
+                enforce.setAccessible(true);
+                negative = enforce.getBoolean(null) ? 1 : 2;
+            } else {
+                sim = (org.opensearch.index.similarity.ScriptedSimilarity) similarity;
+                negative = 0;
+            }
+            out.write(field(sim, "discountOverlaps") instanceof Boolean b && b ? 1 : 0);
+            out.write(negative);
+            writeString(out, sim.toString());
+            Object weightFactory = field(sim, "weightScriptFactory");
+            if (weightFactory == null) {
+                out.write(0);
+            } else {
+                out.write(1);
+                Object w = ((org.opensearch.script.SimilarityWeightScript.Factory) weightFactory).newInstance();
+                if (similarityScript(out, w, (String) field(sim, "weightScriptSource"), true, sim) == false) {
+                    return null;
+                }
+            }
+            Object script = ((org.opensearch.script.SimilarityScript.Factory) field(sim, "scriptFactory")).newInstance();
+            if (similarityScript(out, script, (String) field(sim, "scriptSource"), false, sim) == false) {
+                return null;
+            }
+            return out.toByteArray();
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Writes a scripted similarity's {@code script}, whose {@code Script} printed {@code printed}: false when it stays in Java. */
+    private static boolean similarityScript(
+        ByteArrayOutputStream out,
+        Object script,
+        String printed,
+        boolean weight,
+        org.opensearch.index.similarity.ScriptedSimilarity sim
+    ) {
+        String source = PainlessScore.sourceOf(script);
+        // Compiled as the native runtime compiles it: inline Painless, no options, no params.
+        if (source == null || new Script(ScriptType.INLINE, "painless", source, Map.of()).toString().equals(printed) == false) {
+            return false;
+        }
+        Object compiledOrWhy = PainlessScore.similarity(source, weight);
+        if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
+            return false;
+        }
+        // No docFields check: here `doc` is the typed ScriptedSimilarity.Doc, which Painless's
+        // DocFieldsPhase still lists by name (doc.freq) though no doc values are read.
+        PainlessIr.Compiled compiled = (PainlessIr.Compiled) compiledOrWhy;
+        byte[] params;
+        try {
+            params = PainlessIr.constant(Map.of());
+        } catch (PainlessIr.Unsupported e) {
+            return false;
+        }
+        byte context = weight ? PainlessScore.SIMILARITY_WEIGHT : PainlessScore.SIMILARITY;
+        Painless p = new Painless(context, compiled, params, new String[0], new byte[0]);
+        String refused = PainlessScore.check(compiled, context, params, new byte[0], () -> {
+            ByteArrayOutputStream checked = new ByteArrayOutputStream();
+            painlessSpec(checked, p, "", 0, 0);
+            return checked.toByteArray();
+        });
+        if (refused != null) {
+            return false;
+        }
+        painlessSpec(out, p, "", 0, PainlessScore.runSimilarity(sim, weight));
+        return true;
+    }
+
+    /** A script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
+    private record Painless(byte context, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {}
+
+    /**
+     * {@code script} in {@code context} ({@link PainlessScore#SCORE}, {@link
+     * PainlessScore#SCORE_WITH_SCORE} or {@link PainlessScore#FILTER}) as the native runtime runs
+     * it: a {@link Painless}, or why it stays in Java ({@code reason} and why).
+     */
+    private static Object painless(Script script, byte context, String reason) {
+        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+        if (types == null || script.getOptions().keySet().stream().anyMatch(k -> k.equals(Script.CONTENT_TYPE_OPTION) == false)) {
+            return reason + "_script";
+        }
+        Object compiledOrWhy = switch (context) {
+            case PainlessScore.FILTER -> PainlessScore.filter(script.getIdOrCode());
+            case PainlessScore.SORT -> PainlessScore.sort(script.getIdOrCode());
+            case PainlessScore.AGGREGATION -> PainlessScore.aggregation(script.getIdOrCode());
+            case PainlessScore.TERMS_SET -> PainlessScore.termsSet(script.getIdOrCode());
+            case PainlessScore.INTERVAL -> PainlessScore.interval(script.getIdOrCode());
+            default -> PainlessScore.score(script.getIdOrCode());
+        };
+        if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
+            return reason + "_painless";
+        }
+        PainlessIr.Compiled compiled = (PainlessIr.Compiled) compiledOrWhy;
+        byte[] params;
+        try {
+            params = PainlessIr.constant(script.getParams());
+        } catch (PainlessIr.Unsupported e) {
+            return reason + "_params";
+        }
+        byte[] kinds = new byte[compiled.docFields().size()];
+        // The doc values a field's name reads: an alias's are its target's.
+        String[] names = new String[kinds.length];
+        for (int i = 0; i < kinds.length; i++) {
+            MappedFieldType ft = types.apply(compiled.docFields().get(i));
+            kinds[i] = PainlessScore.fieldKind(ft);
+            names[i] = ft == null ? compiled.docFields().get(i) : ft.name();
+        }
+        // The whole script checked before anything runs: one the native runtime would not run
+        // exactly as Painless does stays in Java, never tried natively first.
+        Painless p = new Painless(context, compiled, params, names, kinds);
+        String refused = PainlessScore.check(compiled, context, params, kinds, () -> {
+            ByteArrayOutputStream checked = new ByteArrayOutputStream();
+            painlessSpec(checked, p, "", 0, 0);
+            return checked.toByteArray();
+        });
+        return refused != null ? reason + "_painless" : p;
+    }
+
+    /** A painless node's script, after any sub-query, as {@code jvm_painless_score.rs} reads it. */
+    private static void painlessSpec(ByteArrayOutputStream out, Painless p, String index, int shard, int run) {
+        out.write(p.context());
+        writeBytes(out, p.compiled().ir());
+        writeBytes(out, p.params());
+        writeString(out, index);
+        writeInt(out, shard);
+        writeInt(out, run);
+        writeInt(out, p.kinds().length);
+        for (int i = 0; i < p.kinds().length; i++) {
+            // The name the script reads it by, then the one its doc values are under.
+            writeString(out, p.compiled().docFields().get(i));
+            writeString(out, p.names()[i]);
+            out.write(p.kinds()[i]);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // function_score
     // ---------------------------------------------------------------------------------------------
 
@@ -573,6 +1154,8 @@ final class ExtendedEncoder {
             FieldValueFactorFunction.Modifier modifier = (FieldValueFactorFunction.Modifier) field(f, "modifier");
             out.write(2);
             writeString(out, ((IndexFieldData<?>) data).getFieldName());
+            // The requested name, an alias's own, as FieldValueFactorFunction's errors name it.
+            writeString(out, (String) field(f, "field"));
             out.write(numeric);
             writeInt(out, Float.floatToIntBits((float) field(f, "boostFactor")));
             out.write((byte) modifier.ordinal());
@@ -629,6 +1212,20 @@ final class ExtendedEncoder {
             writeLong(out, Double.doubleToRawLongBits((double) field(f, "scale")));
             writeLong(out, Double.doubleToRawLongBits((double) field(f, "offset")));
             out.write(m);
+            return null;
+        }
+        if (f.getClass() == ScriptScoreFunction.class) {
+            Script script = (Script) field(f, "sScript");
+            if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
+                return "function_score_script";
+            }
+            ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(f, "script");
+            Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
+            if (prepared instanceof String) {
+                return "function_score_script";
+            }
+            out.write(5);
+            painlessScoreSpec(out, (Painless) prepared, factory, (String) field(f, "indexName"), (int) field(f, "shardId"), (org.opensearch.Version) field(f, "indexVersion"));
             return null;
         }
         if (name.endsWith("ScriptScoreFunction")) {

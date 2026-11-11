@@ -92,6 +92,7 @@ use crate::segment_writer;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::norms;
 use lucene_codecs::per_field_doc_values;
+use lucene_codecs::per_field_postings;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorsDocument};
@@ -361,6 +362,114 @@ impl IndexingConfig {
         self.explicit
     }
 
+    /// `FreqProxTermsWriter.flush`: the buffered postings' files. A
+    /// block-tree segment takes each field's terms a batch at a time,
+    /// straight from the buffer ([`PendingPostings::stream_field_below`]); an
+    /// installed postings writer or another terms dictionary needs every
+    /// field laid out first.
+    fn write_pending_postings(
+        &self,
+        pending: &PendingPostings,
+        fields: &[(super::pending_postings::FieldToFlush, IndexOptions)],
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+        norms: &[postings_writer::FieldNorms<'_>],
+        state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
+    ) -> Result<super::PostingsGroups> {
+        let name_of = |n: i32| {
+            self.fields
+                .iter()
+                .find(|f| f.number == n)
+                .map(|f| f.name.clone())
+        };
+        let format_for = |name: &str| self.postings_format_for(name);
+        if !self.has_installed_postings_writer() {
+            let specs: Vec<per_field_postings::StreamedFieldSpec> = fields
+                .iter()
+                .map(|(f, options)| per_field_postings::StreamedFieldSpec {
+                    field_number: f.number,
+                    index_options: *options,
+                    has_payloads: f.payloads,
+                })
+                .collect();
+            let streamed = per_field_postings::write_streaming::<Error>(
+                None,
+                &specs,
+                state.field_infos,
+                &name_of,
+                &format_for,
+                state.id,
+                &mut |i, writer| {
+                    let (field, _) = fields[i];
+                    pending.stream_field_below(field.number, old_to_new, range, &mut |terms| {
+                        writer.add_terms(terms, norms)?;
+                        Ok(())
+                    })?;
+                    Ok(field.doc_count)
+                },
+            )?;
+            if let Some(groups) = streamed {
+                return Ok(groups);
+            }
+        }
+        let flushed = pending.flushed_below(old_to_new, range)?;
+        let term_lists = flushed.term_lists();
+        let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
+            .iter()
+            .filter_map(|(n, docs, terms)| {
+                let (f, options) = fields.iter().find(|(f, _)| f.number == *n)?;
+                Some((
+                    n,
+                    if range.is_some() { &f.doc_count } else { docs },
+                    terms,
+                    f,
+                    options,
+                ))
+            })
+            .map(|(n, docs, terms, f, options)| FieldPostingsInput {
+                field_number: *n,
+                index_options: *options,
+                doc_count: *docs,
+                has_payloads: f.payloads,
+                terms,
+            })
+            .collect();
+        self.write_postings_groups(&inputs, norms, state)
+    }
+
+    /// Whether the codec installs its own postings writer, which writes to
+    /// the directory and takes every field laid out whole.
+    fn has_installed_postings_writer(&self) -> bool {
+        self.codec
+            .as_deref()
+            .and_then(|c| c.postings_writer_factory())
+            .is_some()
+    }
+
+    /// Whether a flush sorts the buffered documents.
+    pub(crate) fn sorts_documents(&self) -> bool {
+        self.index_sort.is_some()
+    }
+
+    /// The stored-fields mode a buffer compresses its explicit documents'
+    /// stored values in as they arrive, or `None` when its flush needs them
+    /// as documents: an index sort reorders them, and an installed
+    /// stored-fields writer writes them itself.
+    pub(crate) fn streamed_stored_mode(&self) -> Option<lucene_codecs::stored_fields::Mode> {
+        if !self.explicit || self.index_sort.is_some() {
+            return None;
+        }
+        let codec = self.codec.as_deref();
+        if codec.is_some_and(|c| c.stored_fields_writer_factory().is_some()) {
+            return None;
+        }
+        Some(
+            codec.map_or(lucene_codecs::stored_fields::Mode::BestSpeed, |c| {
+                c.stored_fields_mode()
+            }),
+        )
+    }
+
     /// Checks an add of explicit documents against the registered schema and
     /// returns, per document and inverted field, the field's index options
     /// (`None` for a field with no terms).
@@ -400,7 +509,7 @@ impl IndexingConfig {
     }
 
     /// The registered vector field named `name`.
-    fn explicit_vector_field(&self, name: &str) -> Result<&FieldInfo> {
+    pub(crate) fn explicit_vector_field(&self, name: &str) -> Result<&FieldInfo> {
         self.fields
             .iter()
             .find(|f| f.name == name && f.vector_dimension > 0)
@@ -504,7 +613,7 @@ impl IndexingConfig {
             // document with equal hashes walks the set, which finds the
             // first real repeat in order (or none, for a collision).
             sorted.clear();
-            sorted.extend(inv.terms.iter().map(|t| t.hash));
+            sorted.extend_from_slice(inv.terms.hashes());
             sorted.sort_unstable();
             let repeats = sorted.windows(2).any(|w| w[0] == w[1]);
             let mut terms = BTreeSet::new();
@@ -714,25 +823,80 @@ impl IndexingConfig {
                 present.insert(self.explicit_vector_field(&v.field_name)?.number);
             }
         }
-        for (doc, fields) in buf.docs.iter().zip(explicit) {
-            doc.fields
-                .iter()
-                .for_each(|f| present.insert(f.field_number));
-            let roles = [&fields.doc_values, &fields.points];
-            fields
-                .inverted
-                .iter()
-                .for_each(|f| present.insert(f.field_number));
-            roles
-                .into_iter()
-                .flatten()
-                .for_each(|f| present.insert(f.field_number));
-            fields
-                .term_vectors
-                .iter()
-                .for_each(|f| present.insert(f.field_number));
-            fields.registered.iter().for_each(|&n| present.insert(n));
+        if let Some(stored) = buf.stored {
+            stored.fields.iter().for_each(|&n| present.insert(n));
         }
+        // One pass over the documents' fields, one document at a time:
+        // the fields present, the norms, and whether any term vectors are
+        // written (`TermVectorsConsumer.hasVectors`: some document inverts a
+        // field that stores them, even one that produced no term).
+        let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
+        let mut has_vectors = false;
+        let decoding = std::time::Instant::now();
+        let columns = buf.limit.and_then(|l| l.columns.as_ref());
+        let decode = |present: &mut FieldNumberSet,
+                      norm_values: &mut BTreeMap<i32, Vec<Option<i64>>>,
+                      has_vectors: &mut bool| {
+            explicit.for_each_with_roles(|i, fields| {
+                if let Some(doc) = buf.docs.get(i) {
+                    doc.fields
+                        .iter()
+                        .for_each(|f| present.insert(f.field_number));
+                }
+                let roles = [&fields.doc_values, &fields.points];
+                for inv in &fields.inverted {
+                    present.insert(inv.field_number);
+                    if let Some(norm) = inv.norm {
+                        norm_values
+                            .entry(inv.field_number)
+                            .or_insert_with(|| vec![None; max_doc])[i] = Some(norm);
+                    }
+                    *has_vectors |= self
+                        .explicit_field(inv.field_number)
+                        .is_ok_and(|info| info.store_term_vectors);
+                }
+                roles
+                    .into_iter()
+                    .flatten()
+                    .for_each(|f| present.insert(f.field_number));
+                fields
+                    .term_vectors
+                    .iter()
+                    .for_each(|f| present.insert(f.field_number));
+                *has_vectors |= !fields.term_vectors.is_empty();
+                fields.registered.iter().for_each(|&n| present.insert(n));
+                Ok(())
+            })
+        };
+        // A run kept as columns is not decoded: its fields, norms, doc
+        // values and points are read from them.
+        let roles = match columns {
+            Some(c) => {
+                for doc in buf.docs {
+                    doc.fields
+                        .iter()
+                        .for_each(|f| present.insert(f.field_number));
+                }
+                c.present.iter().for_each(|&n| present.insert(n));
+                norm_values.extend(c.norms.iter().cloned());
+                None
+            }
+            None => {
+                let roles = decode(&mut present, &mut norm_values, &mut has_vectors)?;
+                if buf.limit.is_some() {
+                    crate::live_timing::record(
+                        crate::live_timing::Phase::ChunkDecode,
+                        decoding.elapsed(),
+                    );
+                }
+                Some(roles)
+            }
+        };
+        let (mut dv_role, points_role) = match roles {
+            Some([dv, points]) => (Some(dv), Some(points)),
+            None => (None, None),
+        };
+        let chunk = buf.limit.is_some();
 
         // Postings: one term dictionary per field, terms in byte order. The
         // writer inverted them as each document was buffered
@@ -743,33 +907,44 @@ impl IndexingConfig {
             Some(p) => p,
             None => {
                 let mut p = PendingPostings::default();
-                for (doc_id, fields) in explicit.iter().enumerate() {
+                explicit.for_each(|doc_id, fields| {
                     let doc_id = i32::try_from(doc_id)
                         .map_err(|_| explicit_error("too many buffered documents"))?;
                     for inv in &fields.inverted {
                         let options = self.explicit_field(inv.field_number)?.index_options;
                         p.add_field(doc_id, inv, options)?;
                     }
-                }
-                inverted_here = p.into_flushed(buf.old_to_new)?;
+                    Ok(())
+                })?;
+                inverted_here = p;
                 &inverted_here
             }
         };
+        let mut flush_fields = pending.fields_to_flush();
+        if let Some(limit) = buf.limit {
+            if !limit.postings {
+                flush_fields.clear();
+            }
+            // The fields as the documents written hold them.
+            flush_fields.retain_mut(|f| {
+                f.doc_count = limit.doc_counts.get(&f.number).copied().unwrap_or(0);
+                f.doc_count > 0
+            });
+        }
+        let postings_fields: Vec<(super::pending_postings::FieldToFlush, IndexOptions)> =
+            flush_fields
+                .into_iter()
+                .map(|f| Ok((f, self.explicit_field(f.number)?.index_options)))
+                .collect::<Result<_>>()?;
         // `FieldInfo.setStorePayloads`: the fields a document of this segment
         // gave a non-empty payload. Every occurrence of such a field then
         // carries a payload length, zero where it has none -- what
         // `FreqProxTermsWriterPerField.writeProx` records once the flag is on.
-        let payload_fields: BTreeSet<i32> = pending.payload_fields().collect();
-        let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
-        for (doc_id, fields) in explicit.iter().enumerate() {
-            for inv in &fields.inverted {
-                if let Some(norm) = inv.norm {
-                    norm_values
-                        .entry(inv.field_number)
-                        .or_insert_with(|| vec![None; max_doc])[doc_id] = Some(norm);
-                }
-            }
-        }
+        let payload_fields: BTreeSet<i32> = postings_fields
+            .iter()
+            .filter(|(f, _)| f.payloads)
+            .map(|(f, _)| f.number)
+            .collect();
         // A present norms field still owns an empty sparse column when no
         // document supplied a value, as Java's norms flush does.
         for field in &self.fields {
@@ -787,15 +962,8 @@ impl IndexingConfig {
             .into_iter()
             .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
             .collect();
-        let term_lists: Vec<(i32, IndexOptions, i32, Vec<_>)> = pending
-            .term_lists()
-            .into_iter()
-            .map(|(n, docs, terms)| {
-                let options = self.explicit_field(n).map(|f| f.index_options)?;
-                Ok((n, options, docs, terms))
-            })
-            .collect::<Result<_>>()?;
-        let postings_fields: BTreeSet<i32> = term_lists.iter().map(|(n, ..)| *n).collect();
+        let postings_field_numbers: BTreeSet<i32> =
+            postings_fields.iter().map(|(f, _)| f.number).collect();
         // This segment's FieldInfos before the per-field attributes: the
         // present fields, with the payloads this segment holds. `.psm` frames
         // `.pos`/`.pay` from them, and the `.fnm` below is written from them.
@@ -864,106 +1032,14 @@ impl IndexingConfig {
             norms_output = build_norms()?;
         }
 
-        // Doc values and points through the native builders, each
-        // document's values read in place.
-        let in_place = |pick: fn(&ExplicitFields) -> &[StoredField]| -> Vec<&[StoredField]> {
-            explicit.iter().map(pick).collect()
-        };
-        let dv_configs: Vec<DocValuesFieldConfig> = self
-            .fields
-            .iter()
-            .filter(|f| present.contains(&f.number) && f.doc_values_type != DocValuesType::None)
-            .map(|f| DocValuesFieldConfig {
-                name: f.name.clone(),
-                field_number: f.number,
-                doc_values_type: f.doc_values_type,
-                skip_index: f.doc_values_skip_index_type != DocValuesSkipIndexType::None,
-            })
-            .collect();
-        let doc_values_output = if dv_configs.is_empty() {
-            None
-        } else {
-            let names: Vec<&str> = self
-                .fields
-                .iter()
-                .filter(|f| present.contains(&f.number))
-                .map(|f| f.name.as_str())
-                .collect();
-            Some(self.build_doc_values_groups(
-                &in_place(|f| &f.doc_values),
-                &dv_configs,
-                &names,
-                &segment_id,
-            )?)
-        };
-        let dv_suffix = |number: i32| {
-            doc_values_output
-                .as_deref()
-                .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
-                .map(|g| (g.format_name, g.suffix))
-        };
-        let point_configs: Vec<PointsFieldConfig> = self
-            .fields
-            .iter()
-            .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
-            .map(|f| PointsFieldConfig {
-                name: f.name.clone(),
-                field_number: f.number,
-                num_dims: f.point_dimension_count,
-                num_index_dims: f.point_index_dimension_count,
-                bytes_per_dim: f.point_num_bytes,
-            })
-            .collect();
-        let points_output = if point_configs.is_empty() {
-            None
-        } else {
-            IndexWriter::build_points_output(
-                self,
-                &in_place(|f| &f.points),
-                &point_configs,
-                &segment_id,
-                dir,
-                segment_name,
-            )?
-        };
-
-        let vector_configs: Vec<super::VectorFieldConfig> = self
-            .fields
-            .iter()
-            .filter(|f| present.contains(&f.number) && f.vector_dimension > 0)
-            .map(|f| super::VectorFieldConfig {
-                name: f.name.clone(),
-                field_number: f.number,
-                dimension: f.vector_dimension,
-                encoding: f.vector_encoding,
-                similarity: f.vector_similarity_function,
-            })
-            .collect();
-        let vectors_output = if vector_configs.is_empty() {
-            None
-        } else {
-            IndexWriter::build_vectors_output(
-                buf.vectors,
-                &vector_configs,
-                i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
-                &|name: &str| self.knn_vectors_format_for(name),
-                self.knn_vectors_direct(),
-                &segment_id,
-            )?
-        };
-        let postings_output = if term_lists.is_empty() {
-            None
-        } else {
-            let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
-                .iter()
-                .map(|(n, options, docs, terms)| FieldPostingsInput {
-                    field_number: *n,
-                    index_options: *options,
-                    doc_count: *docs,
-                    has_payloads: payload_fields.contains(n),
-                    terms,
-                })
-                .collect();
+        // The postings are the segment's largest build and need nothing
+        // the doc values, points and vectors builds make: when they are
+        // encoded in memory (no installed postings writer touches the
+        // directory) they are built beside those on a thread of their own.
+        let build_postings = || -> Result<Option<super::PostingsGroups>> {
+            if postings_fields.is_empty() {
+                return Ok(None);
+            }
             let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norm_columns
                 .iter()
                 .map(|(n, column)| postings_writer::FieldNorms {
@@ -971,8 +1047,11 @@ impl IndexingConfig {
                     values: &column.dense,
                 })
                 .collect();
-            Some(self.write_postings_groups(
-                &inputs,
+            Ok(Some(self.write_pending_postings(
+                pending,
+                &postings_fields,
+                buf.old_to_new,
+                buf.limit.map(|l| (l.start, l.docs)),
                 &norms_for_impacts,
                 lucene_codecs::postings_consumer::PostingsWriteState {
                     directory: dir,
@@ -983,7 +1062,174 @@ impl IndexingConfig {
                     field_infos: &segment_fields,
                     format: lucene_codecs::per_field_postings::Lucene104PostingsFormat::default(),
                 },
-            )?)
+            )?))
+        };
+        let postings_beside = !postings_fields.is_empty() && !self.has_installed_postings_writer();
+        let (doc_values_output, points_output, vectors_output, postings_output) =
+            std::thread::scope(|scope| -> Result<_> {
+                let postings = postings_beside.then(|| scope.spawn(build_postings));
+                // Doc values and points through the native builders, a role at a
+                // time: each document's values read in place, or taken out of the
+                // packed documents for that role alone and dropped once written.
+                let dv_configs: Vec<DocValuesFieldConfig> = self
+                    .fields
+                    .iter()
+                    .filter(|f| {
+                        buf.limit.is_none_or(|l| l.doc_values)
+                            && present.contains(&f.number)
+                            && f.doc_values_type != DocValuesType::None
+                    })
+                    .map(|f| DocValuesFieldConfig {
+                        name: f.name.clone(),
+                        field_number: f.number,
+                        doc_values_type: f.doc_values_type,
+                        skip_index: f.doc_values_skip_index_type != DocValuesSkipIndexType::None,
+                    })
+                    .collect();
+                let doc_values_output = if dv_configs.is_empty() {
+                    None
+                } else {
+                    let names: Vec<&str> = self
+                        .fields
+                        .iter()
+                        .filter(|f| present.contains(&f.number))
+                        .map(|f| f.name.as_str())
+                        .collect();
+                    let building = std::time::Instant::now();
+                    let prebuilt = columns.and_then(|c| {
+                        self.build_prebuilt_doc_values_groups(
+                            &c.doc_values,
+                            max_doc as i32,
+                            &dv_configs,
+                            &names,
+                            &segment_id,
+                        )
+                    });
+                    let (groups, phase) = match prebuilt {
+                        Some(groups) => (groups?, crate::live_timing::Phase::ChunkDocValuesColumns),
+                        None => {
+                            if dv_role.is_none() {
+                                let [dv, _] = explicit.for_each_with_roles(|_, _| Ok(()))?;
+                                dv_role = Some(dv);
+                            }
+                            let docs = dv_role
+                                .as_ref()
+                                .map(super::RoleValues::per_doc)
+                                .unwrap_or_default();
+                            let groups = self.build_doc_values_groups(
+                                &docs,
+                                &dv_configs,
+                                &names,
+                                &segment_id,
+                            )?;
+                            (groups, crate::live_timing::Phase::ChunkDocValuesDecoded)
+                        }
+                    };
+                    if chunk {
+                        crate::live_timing::record(phase, building.elapsed());
+                    }
+                    Some(groups)
+                };
+                // Each role's values are freed once written, not held while
+                // the points, vectors and postings builds run.
+                drop(dv_role);
+                let point_configs: Vec<PointsFieldConfig> = self
+                    .fields
+                    .iter()
+                    .filter(|f| {
+                        buf.limit.is_none_or(|l| l.points)
+                            && present.contains(&f.number)
+                            && f.point_dimension_count > 0
+                    })
+                    .map(|f| PointsFieldConfig {
+                        name: f.name.clone(),
+                        field_number: f.number,
+                        num_dims: f.point_dimension_count,
+                        num_index_dims: f.point_index_dimension_count,
+                        bytes_per_dim: f.point_num_bytes,
+                    })
+                    .collect();
+                let points_output = if point_configs.is_empty() {
+                    None
+                } else {
+                    let building = std::time::Instant::now();
+                    let out = match (columns, &points_role) {
+                        (_, Some(role)) => IndexWriter::build_points_output(
+                            self,
+                            &role.per_doc(),
+                            &point_configs,
+                            &segment_id,
+                            dir,
+                            segment_name,
+                        )?,
+                        (Some(c), None) => IndexWriter::build_prebuilt_points_output(
+                            self,
+                            &c.points,
+                            &point_configs,
+                            &segment_id,
+                            dir,
+                            segment_name,
+                            max_doc as i32,
+                        )?,
+                        (None, None) => None,
+                    };
+                    if chunk {
+                        crate::live_timing::record(
+                            crate::live_timing::Phase::ChunkPoints,
+                            building.elapsed(),
+                        );
+                    }
+                    out
+                };
+                drop(points_role);
+
+                let vector_configs: Vec<super::VectorFieldConfig> = self
+                    .fields
+                    .iter()
+                    .filter(|f| present.contains(&f.number) && f.vector_dimension > 0)
+                    .map(|f| super::VectorFieldConfig {
+                        name: f.name.clone(),
+                        field_number: f.number,
+                        dimension: f.vector_dimension,
+                        encoding: f.vector_encoding,
+                        similarity: f.vector_similarity_function,
+                    })
+                    .collect();
+                let vectors_output = if vector_configs.is_empty() {
+                    None
+                } else {
+                    let partition_starts = self.ivf_partition_starts(buf)?;
+                    IndexWriter::build_vectors_output(
+                        self.ivf_partitions(partition_starts.as_deref()),
+                        buf.vectors,
+                        &vector_configs,
+                        i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
+                        &|name: &str| self.knn_vectors_format_for(name),
+                        self.knn_vectors_direct(),
+                        buf.limit.is_none(),
+                        buf.graphs,
+                        &self.ivf_clusters,
+                        &segment_id,
+                    )?
+                };
+                let postings_output = match postings {
+                    Some(job) => job
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?,
+                    None => build_postings()?,
+                };
+                Ok((
+                    doc_values_output,
+                    points_output,
+                    vectors_output,
+                    postings_output,
+                ))
+            })?;
+        let dv_suffix = |number: i32| {
+            doc_values_output
+                .as_deref()
+                .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
+                .map(|g| (g.format_name, g.suffix))
         };
 
         // Term vectors: each document's fields in name order
@@ -991,31 +1237,25 @@ impl IndexingConfig {
         // name). Written when some document inverts a field that stores term
         // vectors, even one that produced no term: that is when
         // `TermVectorsConsumer.hasVectors` opens the writer.
-        let has_vectors = explicit.iter().any(|f| {
-            !f.term_vectors.is_empty()
-                || f.inverted.iter().any(|inv| {
-                    self.explicit_field(inv.field_number)
-                        .is_ok_and(|info| info.store_term_vectors)
-                })
-        });
         let term_vectors_output = if !has_vectors {
             None
         } else {
-            let docs = explicit
-                .iter()
-                .map(|f| {
-                    let mut fields = f.term_vectors.clone();
-                    let mut named = Vec::with_capacity(fields.len());
-                    for tv in fields.drain(..) {
-                        named.push((self.explicit_field(tv.field_number)?.name.as_str(), tv));
-                    }
-                    // `String.compareTo`: UTF-16 code units, not bytes.
-                    named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
-                    Ok(TermVectorsDocument {
-                        fields: named.into_iter().map(|(_, tv)| tv).collect(),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let mut docs = Vec::with_capacity(max_doc);
+            explicit.for_each(|_, f| {
+                let mut named = Vec::with_capacity(f.term_vectors.len());
+                for tv in &f.term_vectors {
+                    named.push((
+                        self.explicit_field(tv.field_number)?.name.as_str(),
+                        tv.clone(),
+                    ));
+                }
+                // `String.compareTo`: UTF-16 code units, not bytes.
+                named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+                docs.push(TermVectorsDocument {
+                    fields: named.into_iter().map(|(_, tv)| tv).collect(),
+                });
+                Ok(())
+            })?;
             Some(self.write_term_vectors_output(
                 &docs,
                 &segment_fields,
@@ -1050,7 +1290,7 @@ impl IndexingConfig {
                         .map(|g| (g.format_name, g.suffix))
                 });
                 if let (true, Some((format_name, suffix))) =
-                    (postings_fields.contains(&f.number), postings_suffix)
+                    (postings_field_numbers.contains(&f.number), postings_suffix)
                 {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
@@ -1092,6 +1332,7 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::FieldInfos,
         )?;
+        let fnm_fields = self.partition_fields(fnm_fields, buf.partition);
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -1102,7 +1343,12 @@ impl IndexingConfig {
             buf.docs,
             buf.has_blocks,
             self.codec.as_deref(),
-            None,
+            buf.stored.and_then(|s| {
+                s.bytes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            }),
         )?;
         let mut record = |names: Vec<String>| {
             flushed.info.files.extend(names);
@@ -1156,6 +1402,18 @@ impl IndexingConfig {
         if let Some(sort) = &self.index_sort {
             flushed.info.index_sort = Some(sort.clone());
         }
+        let extra = super::write_codec_segment_files(
+            self.codec.as_deref(),
+            lucene_codecs::codec::SegmentWrite {
+                directory: dir,
+                segment: segment_name,
+                id: &segment_id,
+                max_doc: flushed.info.doc_count,
+                field_infos: &fnm_fields,
+                files: &flushed.info.files,
+            },
+        )?;
+        flushed.info.files.extend(extra);
         if self.use_compound_file {
             super::before_write(
                 self.codec.as_deref(),
@@ -1167,7 +1425,137 @@ impl IndexingConfig {
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::SegmentInfo,
         )?;
+        self.partition_segment(&mut flushed.info.attributes, buf.partition);
+        self.record_list_attributes(&mut flushed.info.attributes);
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
+    }
+}
+
+/// What a reader of a run of buffered documents needs besides their doc
+/// values ([`super::LazyDocValues`]) and terms, built in memory without
+/// writing a segment: [`IndexingConfig::build_lean_parts`].
+#[derive(Debug, Clone)]
+pub struct LeanParts {
+    /// The fields the documents have, as a written segment of them lists
+    /// them.
+    pub field_infos: Vec<FieldInfo>,
+    /// How many documents there are.
+    pub max_doc: i32,
+    /// The norms as `.nvm` and `.nvd` bytes, when some field has norms.
+    pub norms: Option<(Vec<u8>, Vec<u8>)>,
+    /// The points as `.kdm`, `.kdi` and `.kdd` bytes, when they were asked
+    /// for and some document has one.
+    pub points: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// The segment id the norms and points are encoded for.
+    pub segment_id: [u8; ID_LENGTH],
+}
+
+impl IndexingConfig {
+    /// Whether a run kept as `columns` is read from
+    /// [`Self::build_lean_parts`]' parts: no codec of the caller's writes
+    /// its files and no document has a vector.
+    pub(crate) fn takes_lean_parts(&self, columns: &super::ChunkColumns) -> bool {
+        self.codec.is_none()
+            && !self
+                .fields
+                .iter()
+                .any(|f| f.vector_dimension > 0 && columns.present.contains(&f.number))
+    }
+
+    /// A run of `max_doc` buffered documents kept as `columns`, as the
+    /// parts of a segment without postings, doc values or stored fields:
+    /// what [`Self::build_and_write_explicit_segment`] writes of them,
+    /// without the files. For a run [`Self::takes_lean_parts`] takes.
+    pub(crate) fn build_lean_parts(
+        &self,
+        columns: &super::ChunkColumns,
+        max_doc: i32,
+        points: bool,
+        partition: Option<&str>,
+        segment_id: [u8; ID_LENGTH],
+    ) -> Result<LeanParts> {
+        let mut present = FieldNumberSet::default();
+        columns.present.iter().for_each(|&n| present.insert(n));
+        let docs = usize::try_from(max_doc).map_err(|_| explicit_error("a negative run"))?;
+        let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> =
+            columns.norms.iter().cloned().collect();
+        for field in &self.fields {
+            if present.contains(&field.number)
+                && field.index_options != IndexOptions::None
+                && !field.omit_norms
+            {
+                norm_values
+                    .entry(field.number)
+                    .or_insert_with(|| vec![None; docs]);
+            }
+        }
+        let norm_columns: Vec<_> = norm_values
+            .into_iter()
+            .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
+            .collect();
+        let norms = if norm_columns.is_empty() {
+            None
+        } else {
+            let fields: Vec<_> = norm_columns
+                .iter()
+                .map(|(number, column)| match &column.sparse {
+                    None => norms::NormsField::Dense(*number, &column.dense),
+                    Some(pairs) => norms::NormsField::Sparse(*number, pairs),
+                })
+                .collect();
+            Some(norms::write_fields(&fields, max_doc, &segment_id, "")?)
+        };
+        let points = if points {
+            let point_configs: Vec<PointsFieldConfig> = self
+                .fields
+                .iter()
+                .filter(|f| present.contains(&f.number) && f.point_dimension_count > 0)
+                .map(|f| PointsFieldConfig {
+                    name: f.name.clone(),
+                    field_number: f.number,
+                    num_dims: f.point_dimension_count,
+                    num_index_dims: f.point_index_dimension_count,
+                    bytes_per_dim: f.point_num_bytes,
+                })
+                .collect();
+            if point_configs.is_empty() {
+                None
+            } else {
+                // Without a codec the points are encoded in memory: the
+                // directory is not written to.
+                let unused = lucene_store::ByteBuffersDirectory::new();
+                IndexWriter::build_prebuilt_points_output(
+                    self,
+                    &columns.points,
+                    &point_configs,
+                    &segment_id,
+                    &unused,
+                    "",
+                    max_doc,
+                )?
+                .and_then(|o| o.bytes)
+            }
+        } else {
+            None
+        };
+        let field_infos: Vec<FieldInfo> = self
+            .fields
+            .iter()
+            .filter(|f| present.contains(&f.number))
+            .map(|f| {
+                let mut f = f.clone();
+                f.store_payloads = false;
+                f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
+                f
+            })
+            .collect();
+        Ok(LeanParts {
+            field_infos: self.partition_fields(field_infos, partition),
+            max_doc,
+            norms,
+            points,
+            segment_id,
+        })
     }
 }
 
@@ -1404,7 +1792,9 @@ impl<'d> IndexWriter<'d> {
         let mut info = info;
         info.number = number;
         info.doc_values_gen = -1;
-        info.attributes.clear();
+        // A field type's own attributes (`FieldType.putAttribute`) reach
+        // every segment's `.fnm`; the per-field format ones are the writer's.
+        info.attributes.retain(|(k, _)| !k.starts_with("PerField"));
         self.cfg_mut().push_field(info);
         Ok(number)
     }
@@ -3001,6 +3391,96 @@ mod tests {
         ));
     }
 
+    /// Merge hooks that keep every document the sources' hard deletes keep,
+    /// as hooks reading the sources through a reader do.
+    #[derive(Debug)]
+    struct KeepHardLive;
+
+    impl crate::merge_policy::MergeHooks for KeepHardLive {
+        fn prepare(
+            &self,
+            dir: &dyn Directory,
+            sources: &crate::segment_infos::SegmentInfos,
+            _may_reorder: bool,
+        ) -> std::result::Result<crate::merge_policy::PreparedMerge, String> {
+            let mut live_docs = Vec::new();
+            for sci in &sources.segments {
+                let si = dir
+                    .open(&format!("{}.si", sci.segment_name))
+                    .map_err(|e| e.to_string())?;
+                let max_doc = crate::segment_info::parse(&si, &sci.segment_id)
+                    .map_err(|e| e.to_string())?
+                    .doc_count;
+                let mut bits =
+                    lucene_util::fixed_bit_set::FixedBitSet::new(usize::try_from(max_doc).unwrap());
+                bits.set_range(0, bits.len());
+                live_docs.push(Some(bits));
+            }
+            Ok(crate::merge_policy::PreparedMerge {
+                live_docs,
+                new_to_old: None,
+                diagnostics: vec![("test.hooked".to_string(), "yes".to_string())],
+            })
+        }
+    }
+
+    /// A merge with hooks still drops the soft-deleted history retention no
+    /// longer keeps, though the hooks' own live documents keep it.
+    #[test]
+    fn hooked_merges_still_drop_unretained_soft_deletes() {
+        let tmp = TempDir::new("explicit-retention-hooks");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.set_max_buffered_docs(4).unwrap();
+        for i in 0..10 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        for i in 0..6 {
+            w.soft_update_explicit_documents(
+                id_term(i),
+                vec![doc_at(&f, i, 100 + i)],
+                &[soft_delete(i)],
+            )
+            .unwrap();
+        }
+        assert_eq!(counts(&mut w), (16, 6));
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 3,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        let names: Vec<String> = w
+            .commit()
+            .unwrap()
+            .segments
+            .iter()
+            .map(|s| s.segment_name.clone())
+            .collect();
+        w.execute_merge_hooked(&names, Some(std::sync::Arc::new(KeepHardLive)))
+            .unwrap();
+        assert_eq!(counts(&mut w), (13, 3));
+        let infos = w.commit().unwrap().clone();
+        assert_eq!(infos.segments.len(), 1);
+        let sci = &infos.segments[0];
+        let si = crate::segment_info::parse(
+            &dir.open(&format!("{}.si", sci.segment_name)).unwrap(),
+            &sci.segment_id,
+        )
+        .unwrap();
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, v)| k == "test.hooked" && v == "yes"));
+        assert!(si
+            .diagnostics
+            .iter()
+            .any(|(k, v)| k == "source" && v == "merge"));
+        check(&dir);
+    }
+
     /// The `_id` document frequency of each of `terms` in the index's only
     /// segment, or `None` when that segment writes no `_id` terms at all.
     fn id_doc_freqs(
@@ -3470,6 +3950,122 @@ mod tests {
         w.force_merge_deletes().unwrap();
         assert_eq!(counts(&mut w), (17, 0), "3 of 20 is above it");
         check(&dir);
+    }
+
+    /// The latest commit's segments, each with its parsed `.si`.
+    fn committed_infos(dir: &FsDirectory) -> Vec<crate::segment_info::SegmentInfo> {
+        crate::segment_infos::read_latest(dir)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|sci| {
+                let si = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+                crate::segment_info::parse(&si, &sci.segment_id).unwrap()
+            })
+            .collect()
+    }
+
+    /// Four committed segments of 1, 2, 3 and 4 documents.
+    fn four_segments(w: &mut IndexWriter<'_>, f: &Fields) {
+        let mut next = 0;
+        for n in 1..=4 {
+            let docs: Vec<ExplicitDocument> = (next..next + n).map(|i| doc(f, i)).collect();
+            next += n;
+            w.add_explicit_documents(docs).unwrap();
+            w.commit().unwrap();
+        }
+    }
+
+    /// With a merge policy set, `forceMergeDeletes` is the policy's
+    /// `findForcedDeletesMerges`, with its `forceMergeDeletesPctAllowed`.
+    #[test]
+    fn force_merge_deletes_takes_the_policys_pct_allowed() {
+        let tmp = TempDir::new("explicit-expunge-policy-pct");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig {
+            force_merge_deletes_pct_allowed: 20.0,
+            ..Default::default()
+        }));
+        let f = register(&mut w);
+        let docs: Vec<ExplicitDocument> = (0..20).map(|i| doc(&f, i)).collect();
+        w.add_explicit_documents(docs).unwrap();
+        w.commit().unwrap();
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: i64::MAX,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+        }));
+        for i in 0..3 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        let before = w.commit_generations();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(w.commit_generations(), before, "3 of 20 is not above 20%");
+        for i in 3..5 {
+            w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
+                .unwrap();
+        }
+        w.commit().unwrap();
+        w.force_merge_deletes().unwrap();
+        assert_eq!(counts(&mut w), (15, 0), "5 of 20 is above it");
+        check(&dir);
+    }
+
+    /// `ShuffleForcedMergePolicy`: a forced merge takes its sources
+    /// interleaved and says so in the merged segment's diagnostics; without
+    /// it the merged segment carries no such key.
+    #[test]
+    fn a_shuffled_forced_merge_is_marked_in_its_diagnostics() {
+        for shuffle in [false, true] {
+            let tmp = TempDir::new("explicit-shuffle");
+            let dir = FsDirectory::open(tmp.path());
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig::default()));
+            w.set_shuffle_forced_merges(shuffle);
+            assert_eq!(w.shuffle_forced_merges(), shuffle);
+            let f = register(&mut w);
+            four_segments(&mut w, &f);
+            w.force_merge(1).unwrap();
+            let infos = committed_infos(&dir);
+            assert_eq!(infos.len(), 1);
+            let marked = infos[0]
+                .diagnostics
+                .iter()
+                .any(|(k, v)| k == crate::merge::SHUFFLE_MERGE_KEY && v.is_empty());
+            assert_eq!(marked, shuffle);
+            assert_eq!(w.committed_doc_count().unwrap(), 10);
+            check(&dir);
+        }
+    }
+
+    /// The merge policy's `noCFSRatio` decides whether a merged segment is
+    /// compound, whatever `use_compound_file` (flushed segments only) says.
+    #[test]
+    fn the_merge_compound_file_settings_decide_merged_segments() {
+        for (ratio, compound) in [(1.0, true), (0.0, false)] {
+            let tmp = TempDir::new("explicit-merge-cfs");
+            let dir = FsDirectory::open(tmp.path());
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            w.set_merge_policy(Some(crate::merge_policy::MergePolicyConfig::default()));
+            w.set_use_compound_file(!compound);
+            let settings = crate::merge_policy::CompoundFileSettings::new(ratio, i64::MAX);
+            w.set_merge_compound_file_settings(Some(settings));
+            assert_eq!(w.merge_compound_file_settings(), Some(settings));
+            let f = register(&mut w);
+            four_segments(&mut w, &f);
+            assert!(committed_infos(&dir)
+                .iter()
+                .all(|si| si.is_compound_file == !compound));
+            w.force_merge(1).unwrap();
+            let infos = committed_infos(&dir);
+            assert_eq!(infos.len(), 1);
+            assert_eq!(infos[0].is_compound_file, compound, "noCFSRatio {ratio}");
+            check(&dir);
+        }
     }
 
     /// A soft-deleted document with no sequence number is never retained.

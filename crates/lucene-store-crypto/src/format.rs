@@ -310,6 +310,21 @@ impl ChunkCipher {
         Ok(plain)
     }
 
+    /// Opens the consecutive whole chunks in `sealed` (a page of the file's
+    /// body), the first of them chunk `first` of `total`, into `plain`,
+    /// which holds exactly their plaintext.
+    pub fn open_chunks(
+        &self,
+        sealed: &[u8],
+        first: usize,
+        total: usize,
+        plain: &mut [u8],
+        chunk_size: u32,
+        name: &str,
+    ) -> Result<()> {
+        self.open_run(sealed, first, total, plain, chunk_size as usize, name)
+    }
+
     /// Opens the consecutive chunks in `sealed`, the first of them chunk
     /// `first` of `total`, into `plain`. Each chunk's ciphertext and tag are
     /// copied into its place in `plain` and opened there (the tag's 16 bytes

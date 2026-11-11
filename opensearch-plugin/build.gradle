@@ -27,6 +27,8 @@ def cargoTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target"
 // module), bundled in the zip; SunJCE is never used (store/StoreCrypto.java).
 def fips = findProperty('fips') != null
 def accpVersion = '2.5.0'
+// The ONNX Runtime ml-commons' local models run on; lucene-ml needs its C API 17 or later.
+def onnxRuntimeVersion = '1.23.2'
 def fipsTarget = file(System.getenv('CARGO_TARGET_DIR') ?: "${repoRoot}/target/fips")
 // -PcargoProfile: the Cargo profile the native library is built with. `dist`
 // (whole-program LTO, the default) is what a plugin zip ships; CI's test jobs
@@ -86,11 +88,21 @@ tasks.withType(JavaCompile).configureEach {
 
 configurations {
     fipsProvider
+    onnxRuntime
 }
 
 dependencies {
     compileOnly fileTree(dir: opensearchLib, include: '*.jar')
     testImplementation fileTree(dir: opensearchLib, include: '*.jar')
+    // Painless's SPI, which the k-NN allowlist (knn/script/KnnAllowlistExtension) implements.
+    def painlessSpi = files("${opensearchLib}/../modules/lang-painless/opensearch-scripting-painless-spi-${opensearchVersion}.jar")
+    compileOnly painlessSpi
+    testImplementation painlessSpi
+    // Painless itself (and the jars its front end needs), whose IR the native Painless runtime
+    // runs (painless/PainlessIr): the plugin extends lang-painless, so the node provides them.
+    def painless = fileTree(dir: "${opensearchLib}/../modules/lang-painless", include: ['lang-painless-*.jar', 'antlr4-runtime-*.jar', 'asm-*.jar'])
+    compileOnly painless
+    testImplementation painless
     // kuromoji and nori, which OpenSearch ships as plugins rather than in lib/, at the
     // distribution's Lucene version: the self test describes their analyzers.
     def luceneVersion = providers.provider {
@@ -100,6 +112,8 @@ dependencies {
         def module = m
         testImplementation luceneVersion.map { "org.apache.lucene:lucene-analysis-${module}:${it}" }
     }
+    // The ONNX Runtime library ml-commons' local models run on, taken from Microsoft's jar.
+    onnxRuntime "com.microsoft.onnxruntime:onnxruntime:${onnxRuntimeVersion}@jar"
     if (fips) {
         // ACCP's classifier names the platform: linux-x86_64 or linux-aarch_64.
         def accpPlatform = hostPlatform == 'linux-aarch64' ? 'linux-aarch_64' : hostPlatform
@@ -153,6 +167,33 @@ def makeDataPacks = tasks.register('makeDataPacks', Exec) {
     commandLine 'scripts/make-data-packs.sh', dataPacks.absolutePath
 }
 
+// native/<platform>/libonnxruntime.so for this host, out of the ONNX Runtime jar, with
+// ONNX Runtime's licence and third-party notices.
+def onnxRuntimeLib = tasks.register('onnxRuntimeLib', Sync) {
+    description = 'Extracts this host\'s libonnxruntime.so and its notices from the ONNX Runtime jar.'
+    def ortPlatform = hostPlatform == 'linux-x86_64' ? 'linux-x64' : hostPlatform
+    def platformDir = "native/${hostPlatform}"
+    from({ zipTree(configurations.onnxRuntime.singleFile) }) {
+        include "ai/onnxruntime/native/${ortPlatform}/libonnxruntime.so", 'ThirdPartyNotices.txt'
+        eachFile { path = name == 'ThirdPartyNotices.txt' ? 'onnxruntime-ThirdPartyNotices.txt' : "${platformDir}/${name}" }
+        includeEmptyDirs = false
+    }
+    from(file("licenses/onnxruntime-LICENSE"))
+    into layout.buildDirectory.dir('onnxruntime')
+}
+
+// native/<platform>/liblucene_torch_{cxx11,precxx11}.so: the shim TorchScript models run through
+// on libtorch, which a node finds or downloads at first use as stock ml-commons does.
+def torchShimDir = file("${cargoTarget}/torch-shim")
+def torchShim = tasks.register('torchShim', Exec) {
+    description = 'Builds the TorchScript shim for this host, once per libtorch C++ ABI (scripts/build-torch-shim.sh).'
+    workingDir repoRoot
+    inputs.file("${repoRoot}/crates/lucene-ffi/torch/lucene_torch.cpp")
+    inputs.file("${repoRoot}/scripts/build-torch-shim.sh")
+    outputs.files(file("${torchShimDir}/liblucene_torch_cxx11.so"), file("${torchShimDir}/liblucene_torch_precxx11.so"))
+    commandLine 'scripts/build-torch-shim.sh', torchShimDir.absolutePath
+}
+
 tasks.register('bundlePlugin', Zip) {
     description = 'The installable plugin zip: jar, descriptor, and native/<platform>/liblucene_ffi.so.'
     dependsOn tasks.named('jar'), cargoBuild
@@ -163,6 +204,8 @@ tasks.register('bundlePlugin', Zip) {
         expand(version: version, opensearchVersion: opensearchVersion)
     }
     from(nativeLib) { into "native/${hostPlatform}" }
+    from(torchShim) { into "native/${hostPlatform}" }
+    from(onnxRuntimeLib)
     // The FIPS variant's JCE provider, on the plugin's class path.
     from(configurations.fipsProvider)
     // The licence and notices ship with the binary they cover.
@@ -195,6 +238,10 @@ def selfTest = tasks.register('selfTest', JavaExec) {
     mainClass = 'org.lucenerust.opensearch.NativeSelfTest'
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
     systemProperty 'lucene_rust.data_packs', dataPacks.absolutePath
+    // Rust's float kernels always fuse multiply-adds; Lucene's scalar kernels do
+    // only where Constants.HAS_FAST_SCALAR_FMA picks it for the CPU, so scores
+    // would differ in the last ulp on some runners.
+    systemProperty 'lucene.useScalarFMA', 'true'
     jvmArgs nativeAccess, '-ea'
     args "${repoRoot}/fixtures/data"
 }
@@ -241,6 +288,9 @@ tasks.register('indexingBench', JavaExec) {
     mainClass = 'org.lucenerust.opensearch.engine.IndexingBench'
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-Xms4g', '-Xmx4g'
+    systemProperty 'refresh.ms', findProperty('refreshMs') ?: '1000'
+    systemProperty 'merge_on_flush.ms', findProperty('mergeOnFlushMs') ?: '10000'
+    systemProperty 'force_merge', findProperty('forceMerge') ?: 'false'
     args findProperty('docs') ?: '200000', findProperty('threads') ?: '4', findProperty('modes') ?: 'encode,prepare,rust,lucene', findProperty('rounds') ?: '2'
 }
 

@@ -57,7 +57,9 @@ public final class NativeReaders {
      * 10.1-10.2, {@code Lucene103} for 10.3), and the completion formats OpenSearch's {@code
      * completion} fields are written in ({@code Completion104} since 3.x, the older ones by the
      * Lucene versions above): their postings are the default format's, which a query on
-     * the field reads, and the suggester itself stays OpenSearch's, on Lucene's reader. A field
+     * the field reads, and the suggester itself stays OpenSearch's, on Lucene's reader. {@code
+     * RustZstd104} ({@code index.lucene_rust.zstd_terms}) is the engine's own zstd term-block
+     * format over {@code Lucene104} postings, which the native reader decodes too. A field
      * written in any other format makes the whole reader fall back, rather than failing (and
      * falling back) on every query that opens it.
      */
@@ -68,6 +70,7 @@ public final class NativeReaders {
         "Lucene101",
         "Lucene103",
         "Lucene104",
+        "RustZstd104",
         "Completion90",
         "Completion99",
         "Completion912",
@@ -99,12 +102,14 @@ public final class NativeReaders {
      * handful of documents.
      */
     public long peek(IndexReader reader) {
+        reader = segmentsOf(reader);
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         Acquired cached = helper == null ? null : byReader.get(helper.getKey());
         return cached == null ? 0 : cached.handle();
     }
 
-    public Acquired acquire(IndexReader reader) {
+    public Acquired acquire(IndexReader searched) {
+        IndexReader reader = segmentsOf(searched);
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         if (helper == null) {
             return new Acquired(0, "reader_uncacheable");
@@ -130,6 +135,16 @@ public final class NativeReaders {
             }
             return a;
         });
+    }
+
+    /**
+     * The reader whose segments {@code reader} searches: the engine reader under a view of the
+     * writer's buffers ({@link LiveDirectoryReader}), whose native reader every such view shares, or
+     * {@code reader} itself.
+     */
+    private static IndexReader segmentsOf(IndexReader reader) {
+        IndexReader base = LiveDirectoryReader.baseOf(reader);
+        return base == null ? reader : base;
     }
 
     private void onClosed(IndexReader.CacheKey key) {

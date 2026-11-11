@@ -191,7 +191,13 @@ pub struct Lucene104PostingsFormat {
     /// Distinguishes equal formats Java holds as separate instances; see
     /// [`Lucene104PostingsFormat::as_instance`].
     pub instance: u32,
+    /// [`WriteOptions::zstd_term_blocks`]; see
+    /// [`Lucene104PostingsFormat::rust_zstd`].
+    pub zstd_term_blocks: Option<i32>,
 }
+
+/// The name of [`Lucene104PostingsFormat::rust_zstd`]'s format.
+pub const RUST_ZSTD_FORMAT_NAME: &str = "RustZstd104";
 
 impl Default for Lucene104PostingsFormat {
     fn default() -> Self {
@@ -203,6 +209,7 @@ impl Default for Lucene104PostingsFormat {
             direct: false,
             wrapper_name: None,
             instance: 0,
+            zstd_term_blocks: None,
         }
     }
 }
@@ -221,6 +228,7 @@ impl Lucene104PostingsFormat {
             direct: false,
             wrapper_name: None,
             instance: 0,
+            zstd_term_blocks: None,
         };
         format.write_options().validate()?;
         Ok(format)
@@ -295,6 +303,24 @@ impl Lucene104PostingsFormat {
         }
     }
 
+    /// `RustZstd104`: `Lucene104PostingsFormat()`'s postings under a terms
+    /// dictionary whose blocks are zstd-compressed at `level` where that
+    /// pays, a large field's against a dictionary trained on its own blocks
+    /// ([`WriteOptions::zstd_term_blocks`]). Stock Lucene cannot read it;
+    /// the plugin's Java side reads it as `RustZstd104`.
+    ///
+    /// # Errors
+    /// `level` is not a zstd level.
+    pub fn rust_zstd(level: i32) -> postings_writer::Result<Self> {
+        let format = Lucene104PostingsFormat {
+            wrapper_name: Some(RUST_ZSTD_FORMAT_NAME),
+            zstd_term_blocks: Some(level),
+            ..Self::default()
+        };
+        format.write_options().validate()?;
+        Ok(format)
+    }
+
     /// This format as Java's `instance`th separate object with equal
     /// settings (`RandomCodec`'s two `Lucene104` candidates):
     /// `PerFieldPostingsFormat` groups by identity, so its fields get their
@@ -321,6 +347,7 @@ impl Lucene104PostingsFormat {
         WriteOptions {
             min_items_in_block: self.min_term_block_size,
             max_items_in_block: self.max_term_block_size,
+            zstd_term_blocks: self.zstd_term_blocks,
             ..WriteOptions::default()
         }
     }
@@ -333,6 +360,9 @@ pub struct GroupOutput {
     /// Files already published by an installed consumer. The ordinary path
     /// leaves this empty and hands buffered bytes to the index layer instead.
     pub written_files: Vec<String>,
+    /// `.doc`/`.pos`/`.pay` already written by a [`write_streaming`] sink:
+    /// their buffers are empty and [`Self::files`] leaves them out.
+    pub streamed_files: Vec<String>,
     pub format_name: &'static str,
     pub suffix: u32,
     pub field_numbers: Vec<i32>,
@@ -361,11 +391,7 @@ impl GroupOutput {
     /// The group's file name for extension `ext` in segment `segment_name`:
     /// `_0_Lucene104_0.tim`, or `_0.tim` for a direct group.
     pub fn file_name(&self, segment_name: &str, ext: &str) -> String {
-        if self.direct {
-            format!("{segment_name}.{ext}")
-        } else {
-            format!("{segment_name}_{}.{ext}", self.codec_suffix())
-        }
+        group_file_name(segment_name, &self.codec_suffix(), ext)
     }
 
     /// Every file of the group by extension, for a caller that writes the
@@ -378,8 +404,10 @@ impl GroupOutput {
         }
         let output = &self.output;
         // A dictionary that keeps its own postings writes neither.
+        let streamed = !self.streamed_files.is_empty();
         let mut files: Vec<(&'static str, &[u8])> = [("doc", &output.doc), ("psm", &output.psm)]
             .into_iter()
+            .filter(|(ext, _)| !(streamed && *ext == "doc"))
             .filter(|(_, bytes)| self.dictionary.is_none() || !bytes.is_empty())
             .map(|(ext, bytes)| (ext, bytes.as_slice()))
             .collect();
@@ -507,6 +535,7 @@ pub fn write<T: TermSource>(
             ),
         };
         out.push(GroupOutput {
+            streamed_files: Vec::new(),
             written_files: Vec::new(),
             format_name: format.name(),
             suffix,
@@ -544,6 +573,7 @@ pub struct StreamedFieldSpec {
 /// # Errors
 /// What [`write()`] rejects, and what `fill` fails with.
 pub fn write_streaming<E: From<postings_writer::Error>>(
+    sink: Option<(&dyn lucene_store::Directory, &str)>,
     fields: &[StreamedFieldSpec],
     segment_fields: &[FieldInfo],
     name_of: &dyn Fn(i32) -> Option<String>,
@@ -585,6 +615,19 @@ pub fn write_streaming<E: From<postings_writer::Error>>(
             ..format.write_options()
         };
         let mut writer = StreamingFieldsWriter::new(&options, segment_id, &codec_suffix)?;
+        if let Some((dir, segment)) = sink {
+            let create = |ext: &str| -> Result<lucene_store::FsIndexOutput, E> {
+                dir.create_output(&group_file_name(segment, &codec_suffix, ext))
+                    .map_err(|e| E::from(postings_writer::Error::Store(e)))
+            };
+            let pos = if has_prox { Some(create("pos")?) } else { None };
+            let pay = if has_payloads_or_offsets {
+                Some(create("pay")?)
+            } else {
+                None
+            };
+            writer.stream_to(create("doc")?, pos, pay);
+        }
         for &i in &members {
             let field = fields[i];
             writer.start_field(field.field_number, field.index_options, field.has_payloads)?;
@@ -592,8 +635,21 @@ pub fn write_streaming<E: From<postings_writer::Error>>(
             writer.finish_field(doc_count)?;
         }
         let output = writer.finish()?;
+        // `.doc`/`.pos`/`.pay` went out as they were written; the dictionary
+        // and `.psm` stay buffered for the caller.
+        let streamed_files = sink.map_or_else(Vec::new, |(_, segment)| {
+            let mut names = vec![group_file_name(segment, &codec_suffix, "doc")];
+            if has_prox {
+                names.push(group_file_name(segment, &codec_suffix, "pos"));
+            }
+            if has_payloads_or_offsets {
+                names.push(group_file_name(segment, &codec_suffix, "pay"));
+            }
+            names
+        });
         out.push(GroupOutput {
             written_files: Vec::new(),
+            streamed_files,
             format_name: format.name(),
             suffix,
             field_numbers: members.iter().map(|&i| fields[i].field_number).collect(),
@@ -604,6 +660,16 @@ pub fn write_streaming<E: From<postings_writer::Error>>(
         });
     }
     Ok(Some(out))
+}
+
+/// A group's file for extension `ext` in `segment`: `_0_Lucene104_0.tim`,
+/// or `_0.tim` for a group with no codec suffix.
+fn group_file_name(segment: &str, codec_suffix: &str, ext: &str) -> String {
+    if codec_suffix.is_empty() {
+        format!("{segment}.{ext}")
+    } else {
+        format!("{segment}_{codec_suffix}.{ext}")
+    }
 }
 
 /// The codec suffix a group of `format` numbered `suffix` writes its files
@@ -776,6 +842,7 @@ pub fn write_installed<T: TermSource>(
                     None
                 };
                 groups.push(GroupOutput {
+                    streamed_files: Vec::new(),
                     written_files: Vec::new(),
                     format_name: format.name(),
                     suffix: *suffix,
@@ -817,6 +884,7 @@ pub fn write_installed<T: TermSource>(
                 consumer.write(&erased, norms)?;
             }
             groups.push(GroupOutput {
+                streamed_files: Vec::new(),
                 written_files: crate::postings_consumer::output_files(group_state),
                 format_name: format.name(),
                 suffix: *suffix,

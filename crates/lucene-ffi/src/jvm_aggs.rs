@@ -13,6 +13,9 @@
 //! nodes    := count:u8 node*                  (at most MAX_NODES in all)
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
+//!           | SCRIPT_METRIC needs:u8 script   (a metric over a Painless
+//!                                              script's doubles; the script in
+//!                                              `jvm_painless_score`'s layout)
 //!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
 //!                                              compression in (0, MAX_COMPRESSION])
@@ -141,6 +144,8 @@ const AGG_HDR_PERCENTILES: u8 = 14;
 const AGG_NESTED: u8 = 15;
 const AGG_REVERSE_NESTED: u8 = 16;
 const AGG_SIGNIFICANT_TEXT: u8 = 17;
+/// A metric over a Painless script's values ([`crate::jvm_painless_score::PainlessAggValues`]).
+const AGG_SCRIPT_METRIC: u8 = 18;
 /// The most source fields a `significant_text` may read.
 const MAX_SOURCE_FIELDS: i32 = 1024;
 /// The largest t-digest compression a tree may ask for: a digest holds
@@ -342,6 +347,22 @@ fn node_of(
                 kind,
                 source,
                 needs,
+                script: None,
+            }
+        }
+        AGG_SCRIPT_METRIC => {
+            let needs = c.u8()?;
+            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+                return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
+            }
+            let values = crate::jvm_painless_score::PainlessAggValues::decode(c)?;
+            AggNode::Metric {
+                missing: None,
+                field: String::new(),
+                kind: ValueKind::Double,
+                source: Source::DocValues,
+                needs,
+                script: Some(Arc::new(values)),
             }
         }
         AGG_PERCENTILES => {
@@ -1035,6 +1056,8 @@ pub(crate) fn aggregate_tree_blobs(
         handle,
         "ffi_jvm_reader_aggregate_tree: unknown or already-closed handle",
     )?;
+    let query =
+        crate::jvm_reader::similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1147,7 +1170,10 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             min.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        // A similarity script's error first: the search met it before
+        // anything that ended it.
+        let sliced = jvm_reader::similarity_checked(sim, sliced)?;
         for results in &sliced {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1167,14 +1193,15 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             global_min.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        let results = jvm_reader::similarity_checked(sim, results)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;
             }
         }
     }
-    Ok(out)
+    jvm_reader::similarity_checked(sim, Ok(out))
 }
 
 /// The aggregations of a tree blob over the live matches of the query blob:
@@ -1241,6 +1268,39 @@ pub(crate) mod tests {
     fn metric(b: &mut Vec<u8>, kind: u8, source: u8, field: &str) {
         b.extend_from_slice(&[AGG_METRIC, kind, source, lucene_search::aggs::NEED_ALL]);
         string(b, field);
+    }
+
+    /// `terms(field, size)` alone.
+    pub(crate) fn terms_tree(field: &str, size: i32) -> Vec<u8> {
+        let mut b = vec![1u8, AGG_TERMS];
+        string(&mut b, field);
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&[0, 0, 0]);
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
+    }
+
+    /// `histogram(field, interval) > filters(filter, other) > count(field)`
+    /// next to a top-level `count(field)`.
+    pub(crate) fn histogram_of_filters(field: &str, interval: f64, filter: &[u8]) -> Vec<u8> {
+        let mut b = vec![2u8, AGG_HISTOGRAM];
+        string(&mut b, field);
+        b.push(0);
+        f64s(&mut b, &[interval, 0.0]);
+        b.push(0);
+        b.push(1);
+        b.push(AGG_FILTERS);
+        b.extend_from_slice(&1i32.to_le_bytes());
+        b.extend_from_slice(&(filter.len() as i32).to_le_bytes());
+        b.extend_from_slice(filter);
+        b.push(1);
+        b.push(1);
+        metric(&mut b, 0, 0, field);
+        metric(&mut b, 0, 0, field);
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
     }
 
     /// A tree over the fixture's `n` (a long) and `body`: every node kind.

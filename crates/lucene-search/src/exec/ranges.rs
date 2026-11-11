@@ -80,9 +80,9 @@ impl Column<'_> {
 
 /// A two-phase leaf over every document of the segment: the approximation
 /// visits each one, `matches` asks `accept`. `DocValuesRangeIterator`'s
-/// shape without a skipper (this port's `SegmentReader` opens no `.dvs`), so
-/// its approximation is the whole segment where Java's is the column's
-/// documents -- the same matches, found by asking more documents.
+/// shape for a field without a skip index, except that its approximation is
+/// the whole segment where Java's is the column's documents -- the same
+/// matches, found by asking more documents.
 struct TwoPhaseDocs<F> {
     doc: i32,
     max_doc: i32,
@@ -483,6 +483,78 @@ pub(crate) fn index_sort_range<'a>(
     ))
 }
 
+/// Every document in `min..max` (`min < max`) as a constant-scored leaf.
+pub(crate) fn doc_range<'a>(min: i32, max: i32, boost: f32, mode: Mode) -> Option<BoxScorer<'a>> {
+    constant(Box::new(DocRange { doc: -1, min, max }), boost, mode)
+}
+
+/// The documents of `bits` in `min..max` (`min < max`) as a constant-scored
+/// leaf: a segment of document blocks' parents in a run of whole blocks.
+pub(crate) fn bits_range<'a>(
+    bits: &'a FixedBitSet,
+    min: i32,
+    max: i32,
+    boost: f32,
+    mode: Mode,
+) -> Option<BoxScorer<'a>> {
+    let cost = bits.cardinality_range(min as usize, max as usize) as i64;
+    if cost == 0 {
+        return None;
+    }
+    constant(
+        Box::new(BitsRange {
+            bits,
+            doc: -1,
+            min,
+            max,
+            cost,
+        }),
+        boost,
+        mode,
+    )
+}
+
+/// [`bits_range`]'s iterator.
+struct BitsRange<'a> {
+    bits: &'a FixedBitSet,
+    doc: i32,
+    min: i32,
+    max: i32,
+    cost: i64,
+}
+
+impl Scorer for BitsRange<'_> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.advance(self.doc.saturating_add(1))
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let from = target.max(self.min);
+        self.doc = if from >= self.max {
+            NO_MORE_DOCS
+        } else {
+            self.bits
+                .next_set_bit_in_range(from as usize, self.max as usize)
+                .map_or(NO_MORE_DOCS, |d| d as i32)
+        };
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        self.cost
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn contains(&self, doc: i32) -> Option<bool> {
+        Some((self.min..self.max).contains(&doc) && self.bits.get_doc(doc))
+    }
+}
+
 /// `DocIdSetIterator.range(min, max)`: every document in `min..max`
 /// (`min < max`).
 struct DocRange {
@@ -607,6 +679,8 @@ pub(crate) fn range_docs(
     lower: &[u8],
     upper: &[u8],
 ) -> Result<RangeDocs> {
+    #[cfg(test)]
+    RANGE_WALKS.with(|n| n.set(n.get() + 1));
     let len = usize::try_from(max_doc).unwrap_or(0);
     if len == 0 {
         return Ok(RangeDocs::Docs(
@@ -632,25 +706,21 @@ pub(crate) fn range_docs(
             matcher,
             words,
             len,
-            changed: 0,
         };
         v.words.fill(u64::MAX);
         if let Some(last) = v.words.last_mut() {
             *last &= tail_mask(len);
         }
         points.reader.intersect(number, &mut v)?;
-        let n = i64::from(max_doc) - v.changed;
-        Ok(RangeDocs::Bits(FixedBitSet::from_words(v.words, len), n))
+        Ok(bits_with_cardinality(v.words, len))
     } else {
         let mut v = BitsRangeVisitor::<false> {
             matcher,
             words,
             len,
-            changed: 0,
         };
         points.reader.intersect(number, &mut v)?;
-        let n = v.changed;
-        Ok(RangeDocs::Bits(FixedBitSet::from_words(v.words, len), n))
+        Ok(bits_with_cardinality(v.words, len))
     }
 }
 
@@ -727,16 +797,29 @@ fn tail_mask(len: usize) -> u64 {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times [`range_docs`] walked a field's tree on this thread,
+    /// for tests.
+    pub(crate) static RANGE_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The set a range walk filled and how many documents it holds, counted
+/// once over its words rather than bit by bit as the walk sets them.
+fn bits_with_cardinality(words: Vec<u64>, len: usize) -> RangeDocs {
+    let bits = FixedBitSet::from_words(words, len);
+    let n = i64::try_from(bits.cardinality()).unwrap_or(i64::MAX);
+    RangeDocs::Bits(bits, n)
+}
+
 /// A point range's visitor over a set's words. `INVERSE == false` sets every
-/// matching document (`changed` counts the bits it newly set);
-/// `INVERSE == true` starts from a full set, walks the cells outside the box
-/// and clears every document with a point outside it (`changed` counts the
-/// bits it cleared). Doc ids at or past `len` are ignored.
+/// matching document; `INVERSE == true` starts from a full set, walks the
+/// cells outside the box and clears every document with a point outside
+/// it. Doc ids at or past `len` are ignored.
 struct BitsRangeVisitor<const INVERSE: bool> {
     matcher: lucene_codecs::points::RangeMatcher,
     words: Vec<u64>,
     len: usize,
-    changed: i64,
 }
 
 impl<const INVERSE: bool> BitsRangeVisitor<INVERSE> {
@@ -745,10 +828,8 @@ impl<const INVERSE: bool> BitsRangeVisitor<INVERSE> {
     fn apply(&mut self, w: usize, mask: u64) {
         if let Some(word) = self.words.get_mut(w) {
             if INVERSE {
-                self.changed += i64::from((*word & mask).count_ones());
                 *word &= !mask;
             } else {
-                self.changed += i64::from((mask & !*word).count_ones());
                 *word |= mask;
             }
         }
@@ -782,8 +863,21 @@ impl<const INVERSE: bool> IntersectVisitor for BitsRangeVisitor<INVERSE> {
     }
 
     fn visit_many(&mut self, doc_ids: &[i32]) {
+        // One read-modify-write per id, nothing carried from one to the
+        // next: the count is taken once the walk is done.
+        let words = &mut self.words[..];
+        let len = self.len;
         for &d in doc_ids {
-            self.doc(d);
+            let i = d as u32 as usize;
+            if i < len {
+                if let Some(word) = words.get_mut(i >> 6) {
+                    if INVERSE {
+                        *word &= !(1u64 << (i & 63));
+                    } else {
+                        *word |= 1u64 << (i & 63);
+                    }
+                }
+            }
         }
     }
 
@@ -1121,28 +1215,65 @@ pub(crate) fn document<'a>(
         doc_in: ctx.doc_in,
         pos_in: ctx.pos_in,
         pay_in: ctx.pay_in,
-        // The tree applies deletions; the set is the segment core's.
-        live_docs: None,
+        // The tree applies deletions; the set is the segment core's. A
+        // query that searches for its best live documents sees them.
+        live_docs: if q.query.needs_live_docs() {
+            ctx.live_docs
+        } else {
+            None
+        },
         doc_base: 0,
         max_doc: Some(reader.max_doc),
         cache: None,
         points: ctx.points,
         reader: Some(reader),
         index_sort_prefix: false,
+        termless: None,
         similarity: None,
+    };
+    if let Some(fallback) = &q.fallback {
+        if !q.query.scores_leaf(&leaf)? {
+            return build::build(ctx, fallback, boost, mode, false);
+        }
+    }
+    let filter = match &q.filter {
+        None => None,
+        Some(filter) => match build::build(ctx, filter, 1.0, Mode::NoScores, false)? {
+            // `Weight.scorer` returned null: the query searches unfiltered,
+            // or, for a KNN query, finds nothing.
+            None if q.query.empty_filter_matches_nothing() => return Ok(None),
+            None => None,
+            Some(mut scorer) => {
+                let len = usize::try_from(reader.max_doc).unwrap_or(0);
+                let mut bits = FixedBitSet::new(len);
+                let mut doc = super::exact_advance(scorer.as_mut(), 0)?;
+                while doc != NO_MORE_DOCS {
+                    if ctx.live_docs.is_none_or(|live| live.get_doc(doc)) {
+                        if let Some(d) = usize::try_from(doc).ok().filter(|&d| d < bits.len()) {
+                            bits.set(d);
+                        }
+                    }
+                    doc = super::exact_advance(scorer.as_mut(), doc.saturating_add(1))?;
+                }
+                Some(bits)
+            }
+        },
     };
     if !q.query.constant_score() {
         let mut hits = ScoredCollector::default();
-        q.query.score_leaf(&leaf, boost, &mut hits)?;
+        q.query
+            .score_leaf_filtered(&leaf, boost, filter.as_ref(), &mut hits)?;
         if hits.docs.is_empty() {
             return Ok(None);
         }
+        // `boost` bounds a distance feature; other queries' scores can exceed it.
+        let max = hits.scores.iter().copied().fold(boost, f32::max);
         return Ok(Some(Box::new(ScoredDocs {
             docs: hits.docs,
             scores: hits.scores,
             at: 0,
             doc: -1,
-            max: boost,
+            max,
             min: 0.0,
             prune: mode == Mode::TopScores,
         })));
@@ -1152,7 +1283,8 @@ pub(crate) fn document<'a>(
         bits: crate::bit_set_pool::take(len).unwrap_or_else(|| FixedBitSet::new(len)),
         cardinality: 0,
     };
-    q.query.score_leaf(&leaf, boost, &mut hits)?;
+    q.query
+        .score_leaf_filtered(&leaf, boost, filter.as_ref(), &mut hits)?;
     let SetCollector { bits, cardinality } = hits;
     if cardinality == 0 {
         crate::bit_set_pool::give(bits);

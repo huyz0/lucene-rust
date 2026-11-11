@@ -146,6 +146,10 @@ extern "C" {
         path_len: usize,
         ram_buffer_mb: f64,
         fault_injection: u8,
+        index_sort: *const u8,
+        index_sort_len: usize,
+        parent_field: *const c_char,
+        parent_field_len: usize,
         max_docs: i32,
         out_handle: *mut u64,
     ) -> i32;
@@ -248,7 +252,9 @@ fn field(
         .i32(i32::from(point_bytes > 0))
         .i32(point_bytes)
         .i32(0)
-        .u8(soft);
+        .u8(soft)
+        // no field attributes
+        .i32(0);
     b.0
 }
 
@@ -363,7 +369,11 @@ fn main() {
         .nth(1)
         .map(|a| a.parse().expect("docs"))
         .unwrap_or(20_000);
-    let words = 120;
+    // `BIG_MB` gives each document a body of about that many megabytes.
+    let words = std::env::var("BIG_MB")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map_or(120, |mb| (mb * 1_048_576.0 / 6.5) as usize);
     let vocab: Vec<String> = (0..30_000).map(|i| format!("w{i}")).collect();
     let root = std::env::temp_dir().join(format!("alloc-profile-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
@@ -384,7 +394,18 @@ fn main() {
     // SAFETY: live string and out-pointer.
     check(
         unsafe {
-            ffi_engine_writer_open(path.as_ptr().cast(), path.len(), 64.0, 0, i32::MAX, &mut h)
+            ffi_engine_writer_open(
+                path.as_ptr().cast(),
+                path.len(),
+                64.0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                i32::MAX,
+                &mut h,
+            )
         },
         "open writer",
     );

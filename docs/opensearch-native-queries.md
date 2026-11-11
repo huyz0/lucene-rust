@@ -50,7 +50,9 @@ A request runs native when **all** of these hold:
   `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (M13 T13.6: a
   `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range`
   and `term` on every numeric type, `date` and `ip` (`PointRangeQuery` of
-  any width) and `terms` on them (`PointInSetQuery`), and `exists`
+  any width; a `long`, `date` or `double` range with doc values keeps its
+  `IndexOrDocValuesQuery`, which takes the doc-values side per segment when
+  a cheaper clause leads, as Lucene's does) and `terms` on them (`PointInSetQuery`), and `exists`
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
   (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
@@ -63,7 +65,8 @@ A request runs native when **all** of these hold:
   `TermStates`, as `multi_match` `cross_fields` builds);
 - every field in the index uses a default postings format some Lucene
   9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
-  `Lucene103`, `Lucene104`; M8 T8.5) or a completion format
+  `Lucene103`, `Lucene104`; M8 T8.5), the engine's zstd term-block format
+  `RustZstd104` (`index.lucene_rust.zstd_terms`), or a completion format
   (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
   an index an OpenSearch 2.x node wrote is served natively after the upgrade
   to 3.9.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
@@ -167,11 +170,11 @@ where the native call's fixed cost shows -- see
 |---|---|---|
 | `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
 | `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
-| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter but `script`) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a `script` filter falls back (`interval_ScriptFilterSource`) |
+| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`, `interval_options` for a script with compile options) |
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
-| `has_child`, `has_parent` | `JoinUtil`'s global-ordinal joins (package-private Lucene classes) | no (`query_*`, `clause_*`): the join's from side runs in Java during the rewrite |
+| `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`lucene_rust_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
 
 ### Lucene-side leaves (Track A, 2026-10-30)
@@ -183,7 +186,7 @@ where the native call's fixed cost shows -- see
 | any multi-term query on a `keyword` with `index: false` (`rewrite` over doc values) | `MultiTermQueryDocValuesWrapper` | yes: the automaton (node 27, doc-values rewrite) or a `terms` set (node 28) |
 | `range`/`term`/`terms` on a numeric or `date` field with `index: false` | `SortedNumericDocValuesRangeQuery`, `SortedNumericDocValuesSetQuery` | yes (nodes 29, 30) |
 | `range`/`term` on a `keyword` or `ip` with `index: false`; `terms` on such an `ip` | `SortedSetDocValuesRangeQuery`, the sandbox's `SortedSetDocValuesMultiRangeQuery` | yes (nodes 31, 32) |
-| `terms_set` with `minimum_should_match_field` or a constant | the sandbox's `CoveringQuery` | yes (node 33); a script minimum (`covering_script`) or a field that is not plain integral doc values (`covering_field_data`) falls back |
+| `terms_set` with `minimum_should_match_field`, a constant or a Painless `minimum_should_match_script` | the sandbox's `CoveringQuery` | yes (node 33); a script minimum that is not inline Painless (`covering_script`) or that the static check refuses (`covering_painless`), or a field that is not plain integral doc values (`covering_field_data`), falls back |
 | `distance_feature` on a `date` or `geo_point` | `LongDistanceFeatureQuery`, `LatLonPointDistanceFeatureQuery` | yes (nodes 34, 35); scored per document. Lucene's scorer narrows itself to the points near the origin once a threshold is set; the native one scores every document with a value and skips those below the threshold |
 | a `TermQuery` carrying `TermStates` built for another reader (`terms` lookup, `more_like_this`, percolate) or with no statistics | `TermQuery` | yes: rebuilt from the searcher's reader, or matching nothing, as `TermWeight` does |
 | any scoring query on a field mapped with `similarity`: `BM25` (any `k1`, `b`, `discount_overlaps`), `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet`, `LMJelinekMercer` | the same queries, under OpenSearch's per-field similarity | yes: each scored field's similarity sent in front of the query (`SimilarityEncoder`, `jvm_similarity.rs`), scored by the port of the same Lucene class |
@@ -211,7 +214,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |
 | `automaton_states`, `fuzzy_automaton` | a multi-term query whose automaton has more than 65,536 states, or a fuzzy query Lucene cannot build an automaton for |
-| `covering_script`, `covering_field_data` | `terms_set` whose minimum is a script, or field data other than plain integral doc values |
+| `covering_script`, `covering_painless`, `covering_options`, `covering_field_data` | `terms_set` whose minimum is a script other than inline Painless, a Painless script the static check refuses or compiled with options (`max_loop_counter`, `picky`) or stored, or field data other than plain integral doc values |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
@@ -226,14 +229,14 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `function_score_min_score`, `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | `function_score` with `min_score`; a script function; a function over field data other than plain sorted-numeric doc values (keyword for `random_score`; not `half_float`, `unsigned_long` or `date_nanos`); another decay or function class (geo decays) |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
-| `field_similarity` | a field scores with a similarity the native side does not compute (`scripted` or a plugin's: both run code the native side cannot), or `combined_fields` (BM25F) covers a field that is not default BM25 |
+| `field_similarity` | a field scores with a similarity the native side does not compute (a plugin's, or a `scripted` one whose script is not inline Painless or that the static check refuses), or `combined_fields` (BM25F) covers a field that is not default BM25 |
 | `term_states` | a `TermQuery` subclass, or a term query whose own statistics cannot be read (built without them, or with no document frequency while some leaf holds the term) |
 | `dfs` | `search_type=dfs_query_then_fetch`: scoring uses statistics aggregated across shards |
 | `collector_spec` | another plugin registered a replacement top-docs collector |
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `RustZstd104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
@@ -278,7 +281,13 @@ nodes.
 
 - **One `QueryPhaseSearcher` per node.** OpenSearch accepts exactly one plugin
   providing it. `neural-search` provides one too, so the two cannot be
-  installed together; the test image removes the bundled plugins.
+  installed together; the test image removes the bundled plugins. The plugin
+  serves neural-search itself: `sparse_vector`, `neural_sparse` by
+  `query_tokens` or `query_text`, the `neural` query, its ingest and search
+  processors (`scripts/check-sparse-plugin.py` and
+  `scripts/check-neural-plugin.py` compare them with stock neural-search). The
+  `neural` query runs as the `knn` query it wraps, natively. The `native`
+  sparse engine is refused.
 - **Compound segments are copied, not mapped.** The native reader reads a
   `.cfs` segment into memory (OpenSearch's small, freshly flushed segments are
   compound); only non-compound segments are memory-mapped. Released with the

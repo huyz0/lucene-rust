@@ -822,6 +822,11 @@ fn open_postings_file(
 }
 
 impl<'a> DocInput<'a> {
+    /// The file's bytes, header to footer.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// A buffer [`DocInput::open`] has already accepted: no header or footer is
     /// read again. For a reader that validates a segment's postings once and
     /// opens them per search. The generation is re-read from the header's
@@ -1511,6 +1516,11 @@ pub struct PosInput<'a> {
 }
 
 impl<'a> PosInput<'a> {
+    /// The file's bytes, header to footer.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// A buffer [`PosInput::open`] has already accepted: no header or footer is
     /// read again. For a reader that validates a segment's postings once and
     /// opens them per search.
@@ -3947,6 +3957,59 @@ fn wire_position_mismatch(position: usize, expected: usize, what: &str) -> Error
     corrupted(format!(
         "{what}: decode ended at {position} but the file's own length field claims {expected}"
     ))
+}
+
+/// Scratch for decoding doc blocks ([`Self::decode`]), reused across blocks.
+pub struct DocBlockDecoder {
+    scratch: Box<BlockScratch>,
+    docs: Box<[i32; BLOCK_SIZE as usize]>,
+    freqs: Box<[i32; BLOCK_SIZE as usize]>,
+}
+
+impl Default for DocBlockDecoder {
+    fn default() -> Self {
+        Self {
+            scratch: Box::new(BlockScratch::new()),
+            docs: Box::new([0; BLOCK_SIZE as usize]),
+            freqs: Box::new([0; BLOCK_SIZE as usize]),
+        }
+    }
+}
+
+impl DocBlockDecoder {
+    /// Appends the `(doc, freq)` pairs of a block
+    /// `crate::postings_writer::encode_doc_block` wrote from `prev_doc_id`
+    /// onto `out`, those from document `from` on; a frequency of 1 for each
+    /// without `index_has_freq`.
+    pub fn decode(
+        &mut self,
+        bytes: &[u8],
+        prev_doc_id: i32,
+        index_has_freq: bool,
+        from: i32,
+        out: &mut Vec<(i32, i32)>,
+    ) -> Result<()> {
+        let mut r = SliceInput::new(bytes);
+        decode_full_block_body(
+            &mut r,
+            prev_doc_id,
+            index_has_freq,
+            index_has_freq,
+            &mut self.scratch,
+            &mut self.docs,
+            &mut self.freqs,
+            false,
+            false,
+        )?;
+        let first = self.docs.partition_point(|&d| d < from);
+        out.extend(
+            self.docs[first..]
+                .iter()
+                .copied()
+                .zip(self.freqs[first..].iter().copied()),
+        );
+        Ok(())
+    }
 }
 
 /// What [`decode_full_block_body`] left behind for the block's doc ids.

@@ -111,6 +111,11 @@ impl TermHash {
         self.hashes.len()
     }
 
+    /// The bytes of every term held.
+    pub(crate) fn term_bytes(&self) -> usize {
+        self.arena.len()
+    }
+
     pub(crate) fn term(&self, id: u32) -> &[u8] {
         let (a, b) = (
             self.starts[id as usize],
@@ -149,6 +154,14 @@ impl TermHash {
     pub(crate) fn likely_id(&self, h: u64) -> Option<u32> {
         let entry = *self.table.get(home_slot(h, self.table.len()))?;
         (entry != 0 && entry >> 32 == tag(h)).then(|| (entry as u32).wrapping_sub(1))
+    }
+
+    /// Starts loading where term `id`'s bytes start, which
+    /// [`Self::prefetch_term`] and a lookup read: a stage ahead of
+    /// [`Self::prefetch_term`], whose own read of it would otherwise stall.
+    #[inline]
+    pub(crate) fn prefetch_start(&self, id: u32) {
+        lucene_util::simd::prefetch(&self.starts, id as usize);
     }
 
     /// Starts loading term `id`'s bytes, which a lookup compares.
@@ -191,6 +204,31 @@ impl TermHash {
         (id, true)
     }
 
+    /// The id of `bytes`, if held; adds nothing.
+    pub(crate) fn find(&self, bytes: &[u8]) -> Option<u32> {
+        let h = hash_bytes(bytes);
+        let mask = self.table.len().wrapping_sub(1);
+        let mut slot = home_slot(h, self.table.len());
+        loop {
+            let entry = *self.table.get(slot)?;
+            if entry == 0 {
+                return None;
+            }
+            if entry >> 32 == tag(h) {
+                let id = (entry as u32).wrapping_sub(1);
+                if self.term(id) == bytes {
+                    return Some(id);
+                }
+            }
+            slot = slot.wrapping_add(1) & mask;
+        }
+    }
+
+    /// How many terms are held.
+    pub(crate) fn count(&self) -> usize {
+        self.len()
+    }
+
     fn grow(&mut self) {
         self.rehash(self.table.len().saturating_mul(2));
     }
@@ -216,7 +254,14 @@ impl TermHash {
     /// terms differing there without touching the arena, and compares full
     /// bytes only within a run of equal prefixes.
     pub(crate) fn sorted_ids(&self) -> Vec<u32> {
+        self.sorted_ids_where(|_| true)
+    }
+
+    /// [`Self::sorted_ids`] of the terms `keep` takes, the others not
+    /// sorted at all.
+    pub(crate) fn sorted_ids_where(&self, keep: impl Fn(u32) -> bool) -> Vec<u32> {
         let mut keyed: Vec<(u64, u32)> = (0..self.len() as u32)
+            .filter(|&id| keep(id))
             .map(|id| (prefix_key(self.term(id)), id))
             .collect();
         keyed.sort_unstable();

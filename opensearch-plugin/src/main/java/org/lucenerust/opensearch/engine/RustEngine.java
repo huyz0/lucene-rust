@@ -197,7 +197,7 @@ public class RustEngine extends Engine {
     @Nullable
     protected final String historyUUID;
 
-    private final MergeStats mergeStats = new MergeStats();
+    private final RustMergeScheduler mergeScheduler;
     private final ExternalReaderManager externalReaderManager;
     private final RustReaderManager internalReaderManager;
 
@@ -226,6 +226,8 @@ public class RustEngine extends Engine {
     private final CounterMetric numDocAppends = new CounterMetric();
     private final CounterMetric numDocUpdates = new CounterMetric();
     private final LastRefreshedCheckpointListener lastRefreshedCheckpointListener;
+    /** Releases {@code wait_for} writes without a refresh when searches read the buffers; null otherwise. */
+    private volatile LiveWaitFor liveWaitFor;
     private final boolean isContextAwareEnabled;
 
     private final CompletionStatsCache completionStatsCache;
@@ -268,10 +270,16 @@ public class RustEngine extends Engine {
         DocumentIndexWriter writer = null;
         ExternalReaderManager externalReaderManager = null;
         RustReaderManager internalReaderManager = null;
+        EngineMergeScheduler scheduler = null;
         TranslogManager translogManagerRef = null;
         boolean success = false;
         try {
             this.lastDeleteVersionPruneTimeMSec = engineConfig.getThreadPool().relativeTimeInMillis();
+            mergeScheduler = scheduler = new EngineMergeScheduler(
+                engineConfig.getShardId(),
+                engineConfig.getIndexSettings(),
+                getMergedSegmentTransferTracker()
+            );
             throttle = new IndexingThrottler();
             try {
                 store.trimUnsafeCommits(engineConfig.getTranslogConfig().getTranslogPath());
@@ -319,6 +327,7 @@ public class RustEngine extends Engine {
                 historyUUID = loadHistoryUUID(commitData);
                 forceMergeUUID = commitData.get(FORCE_MERGE_UUID_KEY);
                 writer.setLiveCommitData(liveCommitData(translogUUID));
+                scheduler.attach((RustIndexWriter) writer);
                 documentIndexWriter = writer;
             } catch (IOException | TranslogCorruptedException e) {
                 throw new EngineCreationFailureException(shardId, "failed to create engine", e);
@@ -348,6 +357,9 @@ public class RustEngine extends Engine {
             this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker);
             this.internalReaderManager.addListener(lastRefreshedCheckpointListener);
             internalReaderManager.addListener(documentIndexWriter);
+            if (documentIndexWriter instanceof RustIndexWriter rustWriter) {
+                this.externalReaderManager.addListener(rustWriter.externalRefreshListener());
+            }
             maxSeqNoOfUpdatesOrDeletes = new AtomicLong(
                 SequenceNumbers.max(localCheckpointTracker.getMaxSeqNo(), translogManager.getMaxSeqNo())
             );
@@ -392,10 +404,11 @@ public class RustEngine extends Engine {
                 this::incrementVersionLookup
             );
             this.primaryOperationPolicy = engineConfig.getPrimaryOperationPolicy();
+            this.liveWaitFor = LiveWaitFor.start(engineConfig, documentIndexWriter);
             success = true;
         } finally {
             if (success == false) {
-                IOUtils.closeWhileHandlingException(writer, translogManagerRef, internalReaderManager, externalReaderManager);
+                IOUtils.closeWhileHandlingException(writer, translogManagerRef, internalReaderManager, externalReaderManager, scheduler);
                 if (isClosed.get() == false) {
                     // failure we need to dec the store reference
                     store.decRef();
@@ -525,6 +538,7 @@ public class RustEngine extends Engine {
                 internalReaderManager.release(newReader);
                 return null;
             } else {
+                internalReaderManager.searchesLeft(referenceToRefresh);
                 return newReader; // steal the reference
             }
         }
@@ -1517,7 +1531,10 @@ public class RustEngine extends Engine {
 
     @Override
     public void writeIndexingBuffer() throws EngineException {
-        refresh("write indexing buffer", SearcherScope.INTERNAL, false);
+        // Realtime searches see the buffered documents already, so moving them to the new segments
+        // changes no result, and lets the writer drop the buffers the new segments hold.
+        boolean live = documentIndexWriter instanceof RustIndexWriter w && w.liveSearch();
+        refresh("write indexing buffer", live ? SearcherScope.EXTERNAL : SearcherScope.INTERNAL, false);
     }
 
     @Override
@@ -2006,6 +2023,18 @@ public class RustEngine extends Engine {
         try (ReleasableLock lock = readLock.acquire()) {
             Segment[] segmentsArr = EngineAccess.segmentInfo(this, lastCommittedSegmentInfos, verbose);
 
+            // fill in the merges flag
+            Set<OnGoingMerge> onGoingMerges = mergeScheduler.onGoingMerges();
+            for (OnGoingMerge onGoingMerge : onGoingMerges) {
+                for (SegmentCommitInfo segmentInfoPerCommit : onGoingMerge.getMergedSegments()) {
+                    for (Segment segment : segmentsArr) {
+                        if (segment.getName().equals(segmentInfoPerCommit.info.name)) {
+                            segment.mergeId = onGoingMerge.getId();
+                            break;
+                        }
+                    }
+                }
+            }
             return Arrays.asList(segmentsArr);
         }
     }
@@ -2045,6 +2074,9 @@ public class RustEngine extends Engine {
             assert (isWriteLockHeld()) || failEngineLock.isHeldByCurrentThread()
                 : "Either the write lock must be held or the engine must be currently be failing itself";
             try {
+                if (liveWaitFor != null) {
+                    liveWaitFor.close();
+                }
                 this.versionMap.clear();
                 if (internalReaderManager != null) {
                     internalReaderManager.removeListener(versionMap);
@@ -2083,6 +2115,49 @@ public class RustEngine extends Engine {
 
     private boolean isWriteLockHeld() {
         return rwl.isWriteLockedByCurrentThread() && documentIndexWriter.isWriteLockedByCurrentThread();
+    }
+
+    /**
+     * A searcher taken on its own (segment stats, a point in time's segment list, a get) reads the
+     * reader alone, as a refresh left it: the buffered documents are for search requests, which take
+     * a {@link #acquireSearcherSupplier supplier}. A search's can-match check takes one on its own
+     * too, and rewrites the query by the reader's bounds: it reads the buffers as the search does, or
+     * a range over buffered documents alone would be rewritten to match nothing.
+     */
+    @Override
+    public Searcher acquireSearcher(String source, SearcherScope scope, java.util.function.Function<Searcher, Searcher> wrapper)
+        throws EngineException {
+        SearcherSupplier supplier = CAN_MATCH_SEARCH_SOURCE.equals(source)
+            ? acquireSearcherSupplier(wrapper, scope)
+            : super.acquireSearcherSupplier(wrapper, scope);
+        Searcher searcher = null;
+        try {
+            searcher = supplier.acquireSearcher(source);
+            Searcher acquired = searcher;
+            return new Searcher(
+                source,
+                acquired.getDirectoryReader(),
+                acquired.getSimilarity(),
+                acquired.getQueryCache(),
+                acquired.getQueryCachingPolicy(),
+                () -> org.opensearch.common.lease.Releasables.close(acquired, supplier)
+            );
+        } catch (RuntimeException e) {
+            org.opensearch.common.lease.Releasables.closeWhileHandlingException(searcher, supplier);
+            throw e;
+        }
+    }
+
+    /** External searchers also read the writer's buffered documents when the index asks for it (LiveSearchers). */
+    @Override
+    public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope) throws EngineException {
+        return LiveSearchers.supplier(
+            documentIndexWriter,
+            wrapper,
+            scope,
+            super::acquireSearcherSupplier,
+            engineConfig.getThreadPool() == null ? null : engineConfig.getThreadPool().generic()
+        );
     }
 
     @Override
@@ -2174,6 +2249,81 @@ public class RustEngine extends Engine {
         return documentIndexWriter.getConfig();
     }
 
+    private final class EngineMergeScheduler extends RustMergeScheduler {
+        private final AtomicInteger numMergesInFlight = new AtomicInteger(0);
+        private final AtomicBoolean isThrottling = new AtomicBoolean();
+
+        EngineMergeScheduler(ShardId shardId, IndexSettings indexSettings, MergedSegmentTransferTracker mergedSegmentTransferTracker) {
+            super(shardId, indexSettings, mergedSegmentTransferTracker);
+        }
+
+        @Override
+        public synchronized void beforeMerge(OnGoingMerge merge) {
+            int maxNumMerges = mergeScheduler.getMaxMergeCount();
+            if (numMergesInFlight.incrementAndGet() > maxNumMerges) {
+                if (isThrottling.getAndSet(true) == false) {
+                    logger.info("now throttling indexing: numMergesInFlight={}, maxNumMerges={}", numMergesInFlight, maxNumMerges);
+                    activateThrottling();
+                }
+            }
+        }
+
+        @Override
+        public synchronized void afterMerge(OnGoingMerge merge) {
+            int maxNumMerges = mergeScheduler.getMaxMergeCount();
+            if (numMergesInFlight.decrementAndGet() < maxNumMerges) {
+                if (isThrottling.getAndSet(false)) {
+                    logger.info("stop throttling indexing: numMergesInFlight={}, maxNumMerges={}", numMergesInFlight, maxNumMerges);
+                    deactivateThrottling();
+                }
+            }
+            if (documentIndexWriter.hasPendingMerges() == false
+                && System.nanoTime() - lastWriteNanos >= engineConfig.getFlushMergesAfter().nanos()) {
+                // NEVER do this on a merge thread since we acquire some locks blocking here and if we concurrently rollback the writer
+                // we deadlock on engine#close for instance.
+                engineConfig.getThreadPool().executor(ThreadPool.Names.FLUSH).execute(new AbstractRunnable() {
+                    @Override
+                    public void onFailure(Exception e) {
+                        if (isClosed.get() == false) {
+                            logger.warn("failed to flush after merge has finished");
+                        }
+                    }
+
+                    @Override
+                    protected void doRun() {
+                        // if we have no pending merges and we are supposed to flush once merges have finished to
+                        // free up transient disk usage of the (presumably biggish) segments that were just merged
+                        flush();
+                    }
+                });
+            } else if (merge.getTotalBytesSize() >= engineConfig.getIndexSettings().getFlushAfterMergeThresholdSize().getBytes()) {
+                // we hit a significant merge which would allow us to free up memory if we'd commit it hence on the next change
+                // we should execute a flush on the next operation if that's a flush after inactive or indexing a document.
+                // we could fork a thread and do it right away but we try to minimize forking and piggyback on outside events.
+                shouldPeriodicallyFlushAfterBigMerge.set(true);
+            }
+        }
+
+        @Override
+        protected void handleMergeException(final Throwable exc) {
+            engineConfig.getThreadPool().generic().execute(new AbstractRunnable() {
+                @Override
+                public void onFailure(Exception e) {
+                    logger.debug("merge failure action rejected", e);
+                }
+
+                @Override
+                protected void doRun() throws Exception {
+                    /*
+                     * We do this on another thread rather than the merge thread that we are initially called on so that we have complete
+                     * confidence that the call stack does not contain catch statements that would cause the error that might be thrown
+                     * here from being caught and never reaching the uncaught exception handler.
+                     */
+                    failEngine(MERGE_FAILED, new MergePolicy.MergeException(exc));
+                }
+            });
+        }
+    }
 
     /**
      * Commits the specified index writer.
@@ -2262,7 +2412,7 @@ public class RustEngine extends Engine {
     }
 
     public MergeStats getMergeStats() {
-        return mergeStats;
+        return mergeScheduler.stats();
     }
 
     @Override
@@ -2272,7 +2422,7 @@ public class RustEngine extends Engine {
 
     @Override
     public int getActiveMergeCount() {
-        return 0;
+        return mergeScheduler.onGoingMerges().size();
     }
 
     LocalCheckpointTracker getLocalCheckpointTracker() {

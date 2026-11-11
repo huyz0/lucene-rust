@@ -60,6 +60,9 @@ pub struct ScheduledMerge {
     progress: Arc<OneMergeProgress>,
     /// `OneMerge.mergeStartNS`, `-1` until the merge starts.
     start_ns: AtomicI64,
+    /// The `OneMerge` subclass's `wrapForMerge`/`reorder`, `None` for a
+    /// plain merge.
+    pub hooks: Option<Arc<dyn crate::merge_policy::MergeHooks>>,
 }
 
 impl fmt::Debug for ScheduledMerge {
@@ -68,6 +71,7 @@ impl fmt::Debug for ScheduledMerge {
             .field("segments", &self.segments)
             .field("estimated_merge_bytes", &self.estimated_merge_bytes)
             .field("max_num_segments", &self.max_num_segments)
+            .field("hooks", &self.hooks.is_some())
             .field("aborted", &self.is_aborted())
             .finish()
     }
@@ -83,7 +87,14 @@ impl ScheduledMerge {
             max_num_segments: -1,
             progress: Arc::new(OneMergeProgress::new()),
             start_ns: AtomicI64::new(-1),
+            hooks: None,
         }
+    }
+
+    /// The same merge, run with `hooks`.
+    pub fn with_hooks(mut self, hooks: Option<Arc<dyn crate::merge_policy::MergeHooks>>) -> Self {
+        self.hooks = hooks;
+        self
     }
 
     /// The same merge, as part of `forceMerge(max_num_segments)`.
@@ -227,6 +238,9 @@ struct CmsState {
     /// How many times a producer has waited in `maybeStall` (observability,
     /// and what the stall tests wait for).
     stall_waits: u64,
+    /// Whether `maybeStall` stalls producers; see
+    /// [`ConcurrentMergeScheduler::set_stall_producers`].
+    stall_producers: bool,
 }
 
 type Clock = Box<dyn Fn() -> i64 + Send + Sync>;
@@ -305,6 +319,7 @@ impl ConcurrentMergeScheduler {
                     force_merge_mb_per_sec: f64::INFINITY,
                     errors: Vec::new(),
                     stall_waits: 0,
+                    stall_producers: true,
                 }),
                 cond: Condvar::new(),
                 clock,
@@ -430,6 +445,19 @@ impl ConcurrentMergeScheduler {
             .iter()
             .filter(|t| t.thread != Some(current) && t.is_alive() && !t.merge.is_aborted())
             .count()
+    }
+
+    /// Whether producers stall while `max_merge_count` merges run (on by
+    /// default). OpenSearch's `OpenSearchConcurrentMergeScheduler.maybeStall`
+    /// never stalls: its engine throttles indexing itself.
+    pub fn set_stall_producers(&self, stall: bool) {
+        lock(&self.inner.state).stall_producers = stall;
+        self.inner.cond.notify_all();
+    }
+
+    /// See [`Self::set_stall_producers`].
+    pub fn stall_producers(&self) -> bool {
+        lock(&self.inner.state).stall_producers
     }
 
     /// How many times a producer thread has waited because too many merges
@@ -576,6 +604,9 @@ impl ConcurrentMergeScheduler {
         mut s: MutexGuard<'a, CmsState>,
         source: &Arc<dyn MergeSource>,
     ) -> (MutexGuard<'a, CmsState>, bool) {
+        if !s.stall_producers {
+            return (s, true);
+        }
         let current = std::thread::current().id();
         while source.has_pending_merges()
             && i64::try_from(Self::count_merge_threads(&s)).unwrap_or(i64::MAX)

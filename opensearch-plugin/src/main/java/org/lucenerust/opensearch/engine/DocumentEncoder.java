@@ -21,6 +21,8 @@ import org.apache.lucene.document.StoredValue;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.KnnByteVectorField;
+import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
 import org.lucenerust.opensearch.AnalyzerSpec;
@@ -55,6 +57,9 @@ import java.util.concurrent.atomic.AtomicLong;
 final class DocumentEncoder {
     static final int OP_ADD = 0;
     static final int OP_SOFT_UPDATE = 1;
+    /** {@link #OP_ADD} and {@link #OP_SOFT_UPDATE} carrying the documents' partition after the kind. */
+    static final int OP_ADD_PARTITIONED = 2;
+    static final int OP_SOFT_UPDATE_PARTITIONED = 3;
     static final int OP_PANIC = 0xFF;
 
     /** Answers whether the Rust writer lays out this field's formats; null means yes. */
@@ -169,7 +174,17 @@ final class DocumentEncoder {
 
     /** An add of {@code docs} as one block. */
     Blob add(List<? extends Iterable<? extends IndexableField>> docs) throws IOException {
-        Blob b = blob(docs.size(), 16).u8(OP_ADD);
+        return add(null, docs);
+    }
+
+    /** An add of {@code docs} as one block, in {@code partition} when it is not null. */
+    Blob add(String partition, List<? extends Iterable<? extends IndexableField>> docs) throws IOException {
+        Blob b = blob(docs.size(), 16);
+        if (partition == null) {
+            b.u8(OP_ADD);
+        } else {
+            b.u8(OP_ADD_PARTITIONED).string(partition);
+        }
         return sized(documents(b, docs), docs.size());
     }
 
@@ -177,12 +192,17 @@ final class DocumentEncoder {
      * {@code softUpdateDocuments(term, docs, softDeletes)}: live documents matching {@code term} get
      * {@code softDeletes}' value, and {@code docs} are added, atomically.
      */
-    Blob softUpdate(Term term, List<? extends Iterable<? extends IndexableField>> docs, IndexableField softDeletes)
+    Blob softUpdate(String partition, Term term, List<? extends Iterable<? extends IndexableField>> docs, IndexableField softDeletes)
         throws IOException {
         if (softDeletes.name().equals(softDeletesField) == false || softDeletes.numericValue() == null) {
             throw new IllegalArgumentException("a soft update needs a numeric [" + softDeletesField + "] value");
         }
-        Blob b = blob(docs.size(), 64).u8(OP_SOFT_UPDATE);
+        Blob b = blob(docs.size(), 64);
+        if (partition == null) {
+            b.u8(OP_SOFT_UPDATE);
+        } else {
+            b.u8(OP_SOFT_UPDATE_PARTITIONED).string(partition);
+        }
         b.string(term.field()).bytes(term.bytes());
         b.string(softDeletes.name()).i64(softDeletes.numericValue().longValue());
         return sized(documents(b, docs), docs.size());
@@ -193,10 +213,52 @@ final class DocumentEncoder {
             throw new IllegalArgumentException("no documents");
         }
         b.i32(docs.size());
-        for (Iterable<? extends IndexableField> doc : docs) {
-            document(b, doc);
+        List<List<IndexableField>> vectors = null;
+        for (int i = 0; i < docs.size(); i++) {
+            List<IndexableField> v = document(b, docs.get(i));
+            if (v != null) {
+                if (vectors == null) {
+                    vectors = new ArrayList<>(docs.size());
+                }
+                while (vectors.size() < i) {
+                    vectors.add(List.of());
+                }
+                vectors.add(v);
+            }
+        }
+        if (vectors != null) {
+            // engine_writer.rs's decode_op: each document's KNN vectors, after the documents.
+            while (vectors.size() < docs.size()) {
+                vectors.add(List.of());
+            }
+            for (List<IndexableField> v : vectors) {
+                b.i32(v.size());
+                for (IndexableField field : v) {
+                    vector(b, field);
+                }
+            }
         }
         return b;
+    }
+
+    /** One {@code KnnFloatVectorField} or {@code KnnByteVectorField}: engine_writer.rs's document_vector. */
+    private static void vector(Blob b, IndexableField field) {
+        b.string(field.name());
+        if (field instanceof KnnFloatVectorField f) {
+            float[] v = f.vectorValue();
+            b.u8(0).i32(v.length);
+            for (float x : v) {
+                b.i32(Float.floatToRawIntBits(x));
+            }
+        } else if (field instanceof KnnByteVectorField f) {
+            byte[] v = f.vectorValue();
+            b.u8(1).i32(v.length);
+            b.raw(v);
+        } else {
+            throw new IllegalArgumentException(
+                "field [" + field.name() + "]: a vector field must be a KnnFloatVectorField or a KnnByteVectorField"
+            );
+        }
     }
 
     /** One field name's state within one document. */
@@ -247,16 +309,17 @@ final class DocumentEncoder {
 
     private static final ThreadLocal<Workspace> WORKSPACE = ThreadLocal.withInitial(Workspace::new);
 
-    private void document(Blob b, Iterable<? extends IndexableField> doc) throws IOException {
+    /** Writes one document; returns its vector fields, written after the operation's documents, or null. */
+    private List<IndexableField> document(Blob b, Iterable<? extends IndexableField> doc) throws IOException {
         Workspace ws = WORKSPACE.get();
         try {
-            document(b, doc, ws);
+            return document(b, doc, ws);
         } finally {
             ws.release();
         }
     }
 
-    private void document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
+    private List<IndexableField> document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
         // Pass 1: the document's schema per field name, checked against (or registered as) the
         // shard's -- IndexingChain.processDocument's first loop.
         Map<String, PerField> fields = new LinkedHashMap<>();
@@ -297,9 +360,23 @@ final class DocumentEncoder {
         List<long[]> numericDv = new ArrayList<>();
         List<Object[]> binaryDv = new ArrayList<>();
         List<Object[]> points = new ArrayList<>();
+        List<IndexableField> vectors = null;
         for (IndexableField field : doc) {
             PerField pf = fields.get(field.name());
             IndexableFieldType type = field.fieldType();
+            if (type.vectorDimension() != 0) {
+                if (vectors == null) {
+                    vectors = new ArrayList<>(1);
+                }
+                for (IndexableField other : vectors) {
+                    if (other.name().equals(field.name())) {
+                        throw new IllegalArgumentException(
+                            "VectorValuesField \"" + field.name() + "\" appears more than once in this document (only one value is allowed per field)"
+                        );
+                    }
+                }
+                vectors.add(field);
+            }
             if (pf.nativeField != null) {
                 pf.texts.add(field.stringValue());
             } else if (type.indexOptions() != IndexOptions.NONE) {
@@ -368,6 +445,7 @@ final class DocumentEncoder {
         for (Object[] v : points) {
             b.i32((Integer) v[0]).bytes((BytesRef) v[1]);
         }
+        return vectors;
     }
 
     private static void storedValue(Blob b, int number, IndexableField field) throws IOException {

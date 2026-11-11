@@ -34,6 +34,9 @@ use std::sync::Arc;
 use lucene_util::{sloppy_math, strict_math};
 
 use super::Error as ExprError;
+
+#[path = "vector.rs"]
+mod vector;
 use lucene_search::values_source::BoxDoubleValues;
 
 /// `java.text.ParseException`.
@@ -92,6 +95,24 @@ type CustomFunction = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 pub struct ExprFunction {
     arity: usize,
     call: FunctionBody,
+    /// A default function the batch backend runs as its own loop.
+    pub(crate) fast: Option<Fast>,
+}
+
+/// The default functions [`Backend::Vector`] evaluates inline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Fast {
+    Abs,
+    Sqrt,
+    Floor,
+    Ceil,
+    Max,
+    Min,
+    Ln,
+    Exp,
+    Sin,
+    Cos,
+    Pow,
 }
 
 impl ExprFunction {
@@ -100,6 +121,7 @@ impl ExprFunction {
         Self {
             arity,
             call: FunctionBody::Any(Arc::new(call)),
+            fast: None,
         }
     }
 
@@ -197,9 +219,31 @@ fn defaults() -> &'static HashMap<String, ExprFunction> {
 
 fn build_defaults() -> HashMap<String, ExprFunction> {
     let mut m: HashMap<String, ExprFunction> = HashMap::new();
+    let fast = |name: &str| match name {
+        "abs" => Some(Fast::Abs),
+        "sqrt" => Some(Fast::Sqrt),
+        "floor" => Some(Fast::Floor),
+        "ceil" => Some(Fast::Ceil),
+        "max" => Some(Fast::Max),
+        "min" => Some(Fast::Min),
+        "ln" => Some(Fast::Ln),
+        "exp" => Some(Fast::Exp),
+        "sin" => Some(Fast::Sin),
+        "cos" => Some(Fast::Cos),
+        "pow" => Some(Fast::Pow),
+        _ => None,
+    };
     let mut put1 = |name: &str, f: fn(f64) -> f64| {
         let call = FunctionBody::F1(f);
-        m.insert(name.to_string(), ExprFunction { arity: 1, call });
+        let fast = fast(name);
+        m.insert(
+            name.to_string(),
+            ExprFunction {
+                arity: 1,
+                call,
+                fast,
+            },
+        );
     };
     put1("abs", f64::abs);
     put1("acos", strict_math::acos);
@@ -222,7 +266,15 @@ fn build_defaults() -> HashMap<String, ExprFunction> {
     put1("tanh", strict_math::tanh);
     let mut put2 = |name: &str, f: fn(f64, f64) -> f64| {
         let call = FunctionBody::F2(f);
-        m.insert(name.to_string(), ExprFunction { arity: 2, call });
+        let fast = fast(name);
+        m.insert(
+            name.to_string(),
+            ExprFunction {
+                arity: 2,
+                call,
+                fast,
+            },
+        );
     };
     put2("atan2", strict_math::atan2);
     put2("logn", logn);
@@ -237,7 +289,15 @@ fn build_defaults() -> HashMap<String, ExprFunction> {
         ("haversinMeters", haversin_meters),
     ] {
         let call = FunctionBody::F4(f);
-        m.insert(name.to_string(), ExprFunction { arity: 4, call });
+        let fast = None;
+        m.insert(
+            name.to_string(),
+            ExprFunction {
+                arity: 4,
+                call,
+                fast,
+            },
+        );
     }
     m
 }
@@ -1663,6 +1723,51 @@ pub struct Expression {
     /// `variables`: the distinct external names, in order of first use.
     pub variables: Vec<String>,
     root: Compiled<f64>,
+    node: Arc<Node>,
+    vector: Option<Arc<vector::Program>>,
+}
+
+/// `node`'s batch program under `backend`.
+fn vector_program(node: &Node, backend: Backend) -> Option<Arc<vector::Program>> {
+    match backend {
+        Backend::Vector => vector::compile(node).map(Arc::new),
+        Backend::Closure => None,
+    }
+}
+
+/// Scratch space for evaluating batches, kept by the caller from batch to
+/// batch.
+pub(crate) use vector::Scratch as BatchScratch;
+
+/// How an [`Expression`] is evaluated. Every backend gives the same values;
+/// one that cannot compile an expression leaves it to the closures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// A tree of closures, one per operation, for single documents and
+    /// batches alike.
+    Closure,
+    /// A batch evaluated one operation at a time over all its documents,
+    /// each a vectorised loop; a single document by the closures. An
+    /// expression calling a custom function stays on the closures. The
+    /// default.
+    #[default]
+    Vector,
+}
+
+static DEFAULT_BACKEND: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(Backend::Vector as u8);
+
+/// The [`Backend`] [`compile`] and its variants use from now on.
+pub fn set_default_backend(backend: Backend) {
+    DEFAULT_BACKEND.store(backend as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The [`Backend`] [`compile`] and its variants use.
+pub fn default_backend() -> Backend {
+    match DEFAULT_BACKEND.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => Backend::Closure,
+        _ => Backend::Vector,
+    }
 }
 
 impl std::fmt::Debug for Expression {
@@ -1675,6 +1780,47 @@ impl std::fmt::Debug for Expression {
 }
 
 impl Expression {
+    fn new(source_text: String, variables: Vec<String>, node: Node, backend: Backend) -> Self {
+        let root = to_double(&node);
+        let vector = vector_program(&node, backend);
+        Self {
+            source_text,
+            variables,
+            root,
+            node: Arc::new(node),
+            vector,
+        }
+    }
+
+    /// The same expression, evaluated by `backend`.
+    pub fn with_backend(&self, backend: Backend) -> Self {
+        Self {
+            vector: vector_program(&self.node, backend),
+            ..self.clone()
+        }
+    }
+
+    /// The backend that evaluates a batch: [`Backend::Closure`] also where
+    /// [`Backend::Vector`] was asked for and the expression calls a custom
+    /// function.
+    pub fn backend(&self) -> Backend {
+        if self.vector.is_some() {
+            Backend::Vector
+        } else {
+            Backend::Closure
+        }
+    }
+
+    /// The values at each of a batch's `out.len()` documents, `cols[i * n +
+    /// j]` the value of variable `i` at the `j`th.
+    ///
+    /// # Errors
+    /// As [`Self::evaluate_batch`].
+    #[doc(hidden)]
+    pub fn evaluate_columns(&self, cols: &[f64], out: &mut [f64]) -> lucene_search::Result<()> {
+        self.evaluate_batch(cols, out, &mut BatchScratch::default())
+    }
+
     /// `evaluate(functionValues)`: `values[i]` are the values of
     /// `variables[i]`.
     ///
@@ -1726,6 +1872,7 @@ impl Expression {
         &self,
         cols: &[f64],
         out: &mut [f64],
+        scratch: &mut BatchScratch,
     ) -> lucene_search::Result<()> {
         let n = out.len();
         if cols.len() < self.variables.len() * n || i32::try_from(n).is_err() {
@@ -1735,6 +1882,10 @@ impl Expression {
                 self.variables.len(),
                 self.source_text
             )));
+        }
+        if let Some(program) = &self.vector {
+            program.run(cols, out, scratch);
+            return Ok(());
         }
         let mut reads = Reads {
             values: Values::Columns { cols, n },
@@ -2029,12 +2180,13 @@ pub fn compile_with_max_nesting_depth(
         externals: Vec::new(),
         max_nesting_depth,
     };
-    let root = to_double(&lower.node(&ast, 1)?);
-    Ok(Expression {
-        source_text: source_text.to_string(),
-        variables: lower.externals,
-        root,
-    })
+    let node = lower.node(&ast, 1)?;
+    Ok(Expression::new(
+        source_text.to_string(),
+        lower.externals,
+        node,
+        default_backend(),
+    ))
 }
 
 #[cfg(test)]

@@ -1,0 +1,17 @@
+[package]
+name = "lucene-zstd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `experimental`: `ForceAttachDict`, for many small blocks against one dictionary.
+zstd-safe = { workspace = true, features = ["experimental"] }
+thiserror.workspace = true
+
+[features]
+# `train_dictionary`: builds a dictionary from samples (libzstd's ZDICT).
+dict-builder = ["zstd-safe/zdict_builder"]

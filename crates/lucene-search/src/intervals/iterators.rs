@@ -1863,25 +1863,40 @@ impl IntervalIterator for DuplicateIntervals<'_> {
 /// `IntervalFilter` with `FilteredIntervalsSource`'s `accept`.
 pub(crate) struct FilteredIntervals<'a> {
     inner: BoxIntervals<'a>,
-    filter: IntervalFilterKind,
+    filter: Filter,
+}
+
+/// A [`FilteredIntervals`]' filter, a script's ready to run.
+enum Filter {
+    MaxGaps(i32),
+    MaxWidth(i32),
+    Script(Box<dyn super::IntervalAccept>),
 }
 
 impl<'a> FilteredIntervals<'a> {
-    pub(crate) fn new(inner: BoxIntervals<'a>, filter: IntervalFilterKind) -> Self {
-        FilteredIntervals { inner, filter }
+    pub(crate) fn new(inner: BoxIntervals<'a>, filter: &IntervalFilterKind) -> Result<Self> {
+        let filter = match filter {
+            IntervalFilterKind::MaxGaps(n) => Filter::MaxGaps(*n),
+            IntervalFilterKind::MaxWidth(n) => Filter::MaxWidth(*n),
+            IntervalFilterKind::Script { script, .. } => Filter::Script(script.accepter()?),
+        };
+        Ok(FilteredIntervals { inner, filter })
     }
 
-    fn accept(&self) -> bool {
-        match self.filter {
-            IntervalFilterKind::MaxGaps(n) => self.inner.gaps() <= n,
-            IntervalFilterKind::MaxWidth(n) => {
+    fn accept(&mut self) -> Result<bool> {
+        Ok(match &mut self.filter {
+            Filter::MaxGaps(n) => self.inner.gaps() <= *n,
+            Filter::MaxWidth(n) => {
                 self.inner
                     .end()
                     .wrapping_sub(self.inner.start())
                     .wrapping_add(1)
-                    <= n
+                    <= *n
             }
-        }
+            Filter::Script(s) => {
+                s.accept(self.inner.start(), self.inner.end(), self.inner.gaps())?
+            }
+        })
     }
 }
 
@@ -1910,7 +1925,7 @@ impl IntervalIterator for FilteredIntervals<'_> {
     fn next_interval(&mut self) -> Result<i32> {
         loop {
             let next = self.inner.next_interval()?;
-            if next == NO_MORE_INTERVALS || self.accept() {
+            if next == NO_MORE_INTERVALS || self.accept()? {
                 return Ok(next);
             }
         }
@@ -2240,10 +2255,13 @@ pub(crate) fn root_intervals<'a, K: IntervalsSink<'a>>(
             count_shape(R::Unordered);
             sink.sink(unordered_of(s, None))
         }),
-        S::Filtered { source, filter } => intervals(source, field, ctx)?.map(|it| {
-            count_shape(R::Filtered);
-            sink.sink(FilteredIntervals::new(it, *filter))
-        }),
+        S::Filtered { source, filter } => match intervals(source, field, ctx)? {
+            Some(it) => {
+                count_shape(R::Filtered);
+                Some(sink.sink(FilteredIntervals::new(it, filter)?))
+            }
+            None => None,
+        },
         S::Containing { big, small } => pair(big, small, field, ctx)?.map(|(a, b)| {
             count_shape(R::Containing);
             sink.sink(filtering_of(FilteringKind::Containing, a, b))
@@ -2438,11 +2456,10 @@ pub(crate) fn intervals<'a>(
                 ))
             })
         }
-        S::Filtered { source, filter } => {
-            intervals(source, field, ctx)?.map(|it| -> BoxIntervals<'a> {
-                BoxIntervals::boxed(FilteredIntervals::new(it, *filter))
-            })
-        }
+        S::Filtered { source, filter } => match intervals(source, field, ctx)? {
+            Some(it) => Some(BoxIntervals::boxed(FilteredIntervals::new(it, filter)?)),
+            None => None,
+        },
         S::Extended {
             source,
             before,

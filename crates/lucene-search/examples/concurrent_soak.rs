@@ -192,7 +192,7 @@ fn main() {
         .expect("ram buffer");
     single.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 4,
-        segments_per_tier: 4,
+        segments_per_tier: 4.0,
         floor_segment_size: 1 << 30,
         ..MergePolicyConfig::default()
     }));

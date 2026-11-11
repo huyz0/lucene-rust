@@ -49,9 +49,19 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("library", libraryPath);
             b.field("abi_version", NativeBridge.abiVersion());
             b.field("native_queries", stats.nativeCount());
+            b.field("live_queries", stats.liveCount());
             b.field("native_errors", stats.errorCount());
+            b.field("script_errors", stats.scriptErrorCount());
             b.field("native_fetches", stats.fetchCount());
             b.field("native_sequential_fetches", stats.sequentialFetchCount());
+            b.field("native_doc_values", stats.docValuesCount());
+            b.field("native_sources_without_vectors", stats.sourcesWithoutVectorsCount());
+            // k-NN hits a request's later phases (fetch, scroll pages) took from its first rewrite.
+            b.startObject("knn_hits");
+            b.field("kept", org.lucenerust.opensearch.knn.KnnHitsMemo.keptCount());
+            b.field("reused", org.lucenerust.opensearch.knn.KnnHitsMemo.reusedCount());
+            b.field("contexts", org.lucenerust.opensearch.knn.KnnHitsMemo.contexts());
+            b.endObject();
             b.startObject("fallbacks");
             for (Map.Entry<String, Long> e : stats.fallbackCounts().entrySet()) {
                 b.field(e.getKey(), e.getValue());
@@ -67,6 +77,11 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native_count", stats.nativeCount());
             b.field("lucene", stats.luceneNanos());
             b.field("lucene_count", stats.luceneCount());
+            b.endObject();
+            // Realtime views' readers built for aggregations, sorts and the like (SearchStats.liveReaderTime).
+            b.startObject("live_view_reader_nanos");
+            b.field("total", stats.liveReaderNanos());
+            b.field("count", stats.liveReaderCount());
             b.endObject();
             // StoredFields.document's time per path (SearchStats.fetchTime).
             b.startObject("fetch_nanos");

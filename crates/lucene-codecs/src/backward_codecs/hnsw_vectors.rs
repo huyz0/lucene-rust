@@ -479,7 +479,7 @@ fn read_field(
     // `validateFieldEntry`: the dimension against `.fnm` is the caller's
     // check; the data-length identity is this one.
     check_vector_region(
-        encoding,
+        crate::vectors::element_bytes(encoding, false),
         dimension,
         size,
         vector_data_offset,

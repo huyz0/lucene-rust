@@ -101,18 +101,37 @@ public final class EngineWriterDiffTest {
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
         for (long seed : new long[] { 1, 2, 3 }) {
-            run(seed, 1500, new TestAnalyzer());
+            run(seed, 1500, new TestAnalyzer(), false);
         }
         // TestAnalyzer's own filters keep its analysis in Java.
         check(DocumentEncoder.ANALYZED_NATIVELY.get() == 0, "custom filters are analyzed in Java");
         // Analyzers made of Lucene's own components are analyzed and inverted in Rust: the
         // segments must still be Lucene's own, byte for byte where compare() looks.
         for (long seed : new long[] { 4, 5 }) {
-            run(seed, 1500, nativeAnalyzer());
+            run(seed, 1500, nativeAnalyzer(), false);
         }
+        // Under index.lucene_rust.adaptive_doc_values: the same documents read back through the
+        // RustAdaptive doc-values format's producer, from merged segments large enough for it.
+        run(6, 4000, nativeAnalyzer(), true);
+        // Under index.lucene_rust.zstd_terms: every terms dictionary read back through the
+        // RustZstd104 postings format's reader, zstd term blocks and trained dictionaries included.
+        run(9, 4000, nativeAnalyzer(), false, null, true, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
+        // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
+        // field: segments flushed and merged in the same order Lucene writes them.
+        org.apache.lucene.search.Sort sort = new org.apache.lucene.search.Sort(
+            new org.apache.lucene.search.SortedSetSortField("one", false),
+            new org.apache.lucene.search.SortedNumericSortField("@timestamp", org.apache.lucene.search.SortField.Type.LONG, true)
+        );
+        for (long seed : new long[] { 7, 8 }) {
+            run(seed, 2500, nativeAnalyzer(), false, sort);
+        }
+        // Under index.lucene_rust.stored_fields.paged_zstd: the documents read back through the
+        // plugin's ZstdPagedCodec, from flushed and merged segments.
+        run(9, 2500, nativeAnalyzer(), false, null, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED);
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
+        partitions();
         mappingFallback();
         System.out.printf("EngineWriterDiffTest: %d checks, %d failures%n", checks, failures);
         if (failures > 0) {
@@ -134,7 +153,8 @@ public final class EngineWriterDiffTest {
         };
         check(scan.apply("{\"properties\":{\"a\":{\"type\":\"keyword\"},\"t\":{\"type\":\"text\",\"term_vector\":\"no\"}}}") == null, "plain mapping is served");
         check("s (completion)".equals(scan.apply("{\"properties\":{\"s\":{\"type\":\"completion\"}}}")), "completion falls back");
-        check("o.v (knn_vector)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"v\":{\"type\":\"knn_vector\"}}}}}")), "nested object field falls back");
+        check("o.s (completion)".equals(scan.apply("{\"properties\":{\"o\":{\"properties\":{\"s\":{\"type\":\"completion\"}}}}}")), "nested object field falls back");
+        check(scan.apply("{\"properties\":{\"v\":{\"type\":\"knn_vector\",\"dimension\":4}}}") == null, "knn_vector is served");
         check("t.tv (term_vector)".equals(scan.apply("{\"properties\":{\"t\":{\"type\":\"text\",\"fields\":{\"tv\":{\"type\":\"text\",\"term_vector\":\"yes\"}}}}}")), "multi-field falls back");
         String dyn = scan.apply("{\"dynamic_templates\":[{\"sugg\":{\"match\":\"*_s\",\"mapping\":{\"type\":\"completion\"}}}]}");
         check(dyn != null && dyn.startsWith("dynamic template sugg"), "dynamic template falls back: " + dyn);
@@ -350,7 +370,24 @@ public final class EngineWriterDiffTest {
         return new org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper(plain, Map.of("body", english));
     }
 
-    private static void run(long seed, int ops, Analyzer analyzer) throws Exception {
+    private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive) throws Exception {
+        run(seed, ops, analyzer, adaptive, null);
+    }
+
+    private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive, org.apache.lucene.search.Sort sort)
+        throws Exception {
+        run(seed, ops, analyzer, adaptive, sort, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
+    }
+
+    private static void run(
+        long seed,
+        int ops,
+        Analyzer analyzer,
+        boolean adaptive,
+        org.apache.lucene.search.Sort sort,
+        boolean zstdTerms,
+        int storedFields
+    ) throws Exception {
         Path root = Files.createTempDirectory("engine-writer-diff");
         Path javaPath = root.resolve("java");
         Path rustPath = root.resolve("rust");
@@ -363,12 +400,26 @@ public final class EngineWriterDiffTest {
             IndexWriterConfig cfg = new IndexWriterConfig(analyzer).setSimilarity(similarity)
                 .setSoftDeletesField(SOFT)
                 .setMaxBufferedDocs(97);
+            String parent = sort == null ? null : org.opensearch.common.lucene.Lucene.PARENT_FIELD;
+            if (sort != null) {
+                cfg.setIndexSort(sort).setParentField(parent);
+            }
             RustIndexWriter rust = RustIndexWriter.open(
                 rustDir,
                 rustPath,
                 16,
                 false,
+                false,
+                false,
+                adaptive,
+                zstdTerms,
+                false,
+                null, false,
+                sort,
+                parent,
                 IndexWriter.MAX_DOCS,
+                storedFields,
+                3,
                 analyzer,
                 similarity,
                 10,
@@ -433,17 +484,108 @@ public final class EngineWriterDiffTest {
                 }
                 java.commit();
                 rust.commit();
+                // A background merge that finishes after the commit leaves the writer with
+                // uncommitted changes again, as IndexWriter's merges do; committing settles it.
+                // Settled means clean, with no merge queued, on three checks 100 ms apart: a
+                // running merge is not visible, so a single clean check can precede its finish.
+                long deadline = System.nanoTime() + 60_000_000_000L;
+                int clean = 0;
+                while (clean < 3 && System.nanoTime() < deadline) {
+                    Thread.sleep(100);
+                    if (rust.hasPendingMerges() || rust.hasUncommittedChanges()) {
+                        clean = 0;
+                        rust.commit();
+                    } else {
+                        clean++;
+                    }
+                }
+                check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             }
-            check(rust.hasUncommittedChanges() == false, "seed " + seed + ": nothing left uncommitted");
             rust.close();
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
             checkSkippers("seed " + seed, rustDir);
+            if (storedFields == org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED) {
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                        String codec = ((org.apache.lucene.index.SegmentReader) ctx.reader()).getSegmentInfo().info.getCodec().getName();
+                        check(codec.equals("LuceneRustZstdPaged104"), "seed " + seed + ": paged zstd segment codec " + codec);
+                    }
+                    check(reader.leaves().isEmpty() == false, "seed " + seed + ": paged zstd segments");
+                }
+            }
+            if (sort != null) {
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    int sorted = 0;
+                    for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                        sorted += sort.equals(ctx.reader().getMetaData().sort()) ? 1 : 0;
+                    }
+                    check(sorted == reader.leaves().size() && sorted > 0, "seed " + seed + ": " + sorted + " of " + reader.leaves().size() + " segments sorted");
+                }
+            }
+            int zstdFields = formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104");
+            check(zstdTerms ? zstdFields > 0 : zstdFields == 0, "seed " + seed + ": " + zstdFields + " RustZstd104 postings fields");
+            if (zstdTerms) {
+                // A Java merge rewrites the Rust index with Java's own postings format.
+                try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
+                    java.forceMerge(1);
+                    java.commit();
+                }
+                checkIndex("seed " + seed + " after a Java merge", rustDir);
+                check(
+                    formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104") == 0,
+                    "seed " + seed + ": the Java merge wrote stock postings"
+                );
+            }
+            int adaptiveFields = adaptiveFields(rustDir);
+            check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
+            if (adaptive) {
+                // A Java writer on the Rust index: a doc-values update to a RustAdaptive field is
+                // written under that format's name, then everything still reads and checks.
+                try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
+                    java.updateNumericDocValue(new Term("_id", "d0"), "_version", 7L);
+                    java.commit();
+                }
+                checkIndex("seed " + seed + " after a Java doc-values update", rustDir);
+                try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
+                    check(reader.numDocs() > 0, "seed " + seed + ": the updated index opens");
+                }
+            }
         } finally {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
             }
         }
+    }
+
+    /** How many segment fields of {@code dir} record {@code value} under the attribute {@code key}. */
+    private static int formatFields(FSDirectory dir, String key, String value) throws IOException {
+        int n = 0;
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                for (FieldInfo fi : ctx.reader().getFieldInfos()) {
+                    if (value.equals(fi.getAttribute(key))) {
+                        n++;
+                    }
+                }
+            }
+        }
+        return n;
+    }
+
+    /** How many segment fields the Rust index stores under the RustAdaptive doc-values format. */
+    private static int adaptiveFields(FSDirectory dir) throws IOException {
+        int n = 0;
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
+                for (FieldInfo fi : ctx.reader().getFieldInfos()) {
+                    if ("RustAdaptive".equals(fi.getAttribute("PerFieldDocValuesFormat.format"))) {
+                        n++;
+                    }
+                }
+            }
+        }
+        return n;
     }
 
     private static void checkIndex(String where, FSDirectory dir) throws IOException {
@@ -748,7 +890,17 @@ public final class EngineWriterDiffTest {
                 root,
                 16,
                 false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                null, false,
+                null,
+                null,
                 IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
                 10,
@@ -780,6 +932,105 @@ public final class EngineWriterDiffTest {
             check(w.getPendingNumDocs() == 2, "two documents indexed, got " + w.getPendingNumDocs());
             w.close();
             checkIndex("refusals", dir);
+        } finally {
+            try (Stream<Path> s = Files.walk(root)) {
+                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            }
+        }
+    }
+
+    /**
+     * index.lucene_rust.partition_field: each document lands in the segments of its partition (a
+     * keyword's value, a long's), every segment records it as OpenSearch's context-aware {@code bucket}
+     * attribute, documents without a value share the default partition, and a forced merge leaves one
+     * segment per partition that Lucene reads.
+     */
+    private static void partitions() throws Exception {
+        Path root = Files.createTempDirectory("engine-writer-partitions");
+        try (FSDirectory dir = FSDirectory.open(root)) {
+            try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
+                empty.commit();
+            }
+            RustIndexWriter w = RustIndexWriter.open(
+                dir,
+                root,
+                16,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                "tenant", false,
+                null,
+                null,
+                IndexWriter.MAX_DOCS,
+                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                3,
+                new TestAnalyzer(),
+                new BM25Similarity(),
+                10,
+                SOFT,
+                null,
+                new KeepOnlyLastCommitDeletionPolicy(),
+                null,
+                null,
+                null
+            );
+            w.setLiveCommitData(Map.<String, String>of().entrySet());
+            String[] partitions = { "a", "b", "c" };
+            for (int round = 0; round < 3; round++) {
+                for (int i = 0; i < 30; i++) {
+                    ParseContext.Document d = new ParseContext.Document();
+                    String p = partitions[i % 3];
+                    d.add(new StringField("id", p + "-" + round + "-" + i, Field.Store.YES));
+                    d.add(new StringField("tenant", p, Field.Store.NO));
+                    d.add(new SortedSetDocValuesField("tenant", new BytesRef(p)));
+                    check(p.equals(w.partition(List.of(d))), "a keyword's value is its partition");
+                    w.addDocument(d, null);
+                }
+                ParseContext.Document none = new ParseContext.Document();
+                none.add(new StringField("id", "none-" + round, Field.Store.YES));
+                check(w.partition(List.of(none)) == null, "no value, no partition");
+                w.addDocument(none, null);
+                w.commit();
+            }
+            ParseContext.Document numeric = new ParseContext.Document();
+            numeric.add(new SortedNumericDocValuesField("tenant", 42));
+            check("42".equals(w.partition(List.of(numeric))), "a long's value is its partition");
+            ParseContext.Document several = new ParseContext.Document();
+            several.add(new SortedSetDocValuesField("tenant", new BytesRef("z")));
+            several.add(new SortedSetDocValuesField("tenant", new BytesRef("m")));
+            check("m".equals(w.partition(List.of(several))), "with several values, the smallest");
+            ParseContext.Document ip = new ParseContext.Document();
+            ip.add(new SortedSetDocValuesField("tenant", new BytesRef(new byte[] { 10, 0, 0, (byte) 200 })));
+            check("0x0a0000c8".equals(w.partition(List.of(ip))), "bytes that are not UTF-8 as hex: " + w.partition(List.of(ip)));
+            ParseContext.Document text = new ParseContext.Document();
+            text.add(new TextField("tenant", "a b", Field.Store.NO));
+            check(refused(w, text, "must be a keyword"), "an analyzed value is refused");
+            w.forceMerge(1, true);
+            w.commit();
+            Map<String, Integer> docsPerBucket = new TreeMap<>();
+            try (DirectoryReader reader = DirectoryReader.open(dir)) {
+                for (LeafReaderContext leaf : reader.leaves()) {
+                    org.apache.lucene.index.SegmentReader segment = (org.apache.lucene.index.SegmentReader) leaf.reader();
+                    String bucket = segment.getSegmentInfo().info.getAttribute("bucket");
+                    check(bucket != null, "every segment records its partition");
+                    StoredFields stored = segment.storedFields();
+                    for (int doc = 0; doc < segment.maxDoc(); doc++) {
+                        String id = stored.document(doc).get("id");
+                        String expected = id.startsWith("none-") ? "-2" : id.substring(0, 1);
+                        check(expected.equals(bucket), "document " + id + " is in segment of partition " + bucket);
+                    }
+                    check(docsPerBucket.put(bucket, segment.maxDoc()) == null, "one segment per partition after a forced merge");
+                }
+            }
+            check(
+                docsPerBucket.equals(Map.of("a", 30, "b", 30, "c", 30, "-2", 3)),
+                "documents per partition: " + docsPerBucket
+            );
+            w.close();
+            checkIndex("partitions", dir);
         } finally {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());

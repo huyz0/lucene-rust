@@ -23,6 +23,193 @@ open an `MmapDirectory`; `niofs` and `simplefs` an `FsDirectory`.
 `encryption.key_provider` (a name given to `register_key_provider`) and
 optionally `encryption.chunk_size`.
 
+## Reading an object store by page
+
+`CachedBlobDirectory` reads the same `BlobStore` by range
+(`BlobStore::get_range`) through a `PageCache`, so a node holds the pages its
+queries touch, not whole files. The backend supplies only the `BlobStore`
+(list, whole and ranged reads, uploads, deletes); the cache is built in.
+
+```rust
+use std::sync::Arc;
+use lucene_store::{CachedBlobDirectory, PageCache, PageCacheConfig};
+
+let cache = Arc::new(PageCache::new(PageCacheConfig {
+    disk_dir: Some("/nvme/lucene-cache".into()),   // emptied on start
+    disk_budget: 200 << 30,
+    ..PageCacheConfig::default()                    // 256 KiB pages, auto window
+})?);
+let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "bucket/idx");
+```
+
+- Pages are fixed and whole (256 KiB by default): a read fetches every page
+  it touches, adjacent misses merged into one ranged read; the cache never
+  keeps part of a page. Concurrent misses on a page send one request.
+- A miss also fetches the other missing pages of its aligned download
+  window, each kept and evicted as its own page. The window is sized from
+  measured latency times throughput (a power of two between one page and
+  `max_request`), or fixed with `PageCacheConfig::download_window`.
+- The disk tier keeps pages in slots of a few large slab files, evicted by
+  CLOCK. Slots come in size classes from 4 KiB doubling up to a full page,
+  so a small file or a file's short last page takes the smallest class that
+  holds it; the budget counts the slots in use, and an evicted slot's space
+  is given back to the file system (hole punching on Linux). It holds about
+  24 bytes of RAM per page (2 TB of 256 KiB pages: about 200 MB).
+  `PageCacheStats` reports it, with `disk_footprint_bytes`.
+- File lengths come from the store's listing when it carries them
+  (`BlobStore::list_with_sizes`, as S3's `ListObjectsV2` does), so opening a
+  file sends no length request. Lucene writes each file once, so a length
+  is kept until the file is deleted, written or renamed.
+- Files read whole at open or on every query (metadata, terms index, norms,
+  the stored-fields and points indexes, live docs) are pinned on disk and
+  held in memory. Other files are mapped and filled on first touch (Linux
+  `userfaultfd`), within a process-wide memory budget
+  (`lucene_store::paged_input::Pager::set_budget`); elsewhere they are read
+  whole.
+- Readers announce their reads, as Lucene's `IndexInput.prefetch` does, so
+  a cold query waits for few round trips: a segment open fetches every file
+  it reads at once (`Directory::prefetch_files`), a search the terms
+  dictionary blocks of all its terms, then the start of their postings, and
+  `SegmentReader::prefetch_stored_documents` the stored-fields chunks of a
+  page of hits. `lucene_store::prefetch(&[&[u8]])` is the hint by address
+  for readers that hold byte slices, `Input::will_need` by offset; both
+  return the fetch error. A fault that still cannot be filled after retries
+  aborts the process, since a memory read cannot fail.
+- With `EncryptedDirectory` on top, pages are whole 64 KiB chunks after the
+  header: the disk tier holds ciphertext, and a page is authenticated and
+  decrypted once each time it is brought into memory. Only the header is
+  read when a file opens, once, and a segment open fetches every encrypted
+  file's header and decoded first and last pages together
+  (`Directory::prefetch_files_decoded`). Encryption stays opt-in; without
+  it, pages are copied through with no crypto.
+- In OpenSearch, the fetch phase reads its hits one at a time. The plugin
+  announces them first (`SearchOperationListener.onPreFetchPhase`), so a
+  segment read by range fetches the stored fields of the page of hits
+  together, as `prefetch_stored_documents` does.
+
+`cargo run --release -p lucene-search --example cold_range_reads` counts the
+requests and round trips of cold queries over a store with injected latency.
+At 30 ms and 100 MB/s per request, over one 1M-document segment, elapsed
+time in round trips (transfer included, length requests and listings
+costed as one round trip each): opening it about 4.5 in 19 requests (8.6 in
+34 when the listing carries no lengths), a term or boolean query about 2.5, a phrase 3.5 to 5.5, and
+fetching the top 10 hits' stored fields 2.5 to 5 (5 to 23 one hit at a
+time).
+
+## Reading local disk through the page cache
+
+`PagedFsDirectory` reads an index on local disk (EBS, NVMe) the way
+`CachedBlobDirectory` reads an object store: files open as anonymous
+mappings filled page by page (Linux `userfaultfd`), within the pager's
+process-wide budget, instead of `mmap`. The files are `MmapDirectory`'s, so
+either directory opens the same index.
+
+```rust
+use lucene_store::{PagedFsConfig, PagedFsDirectory};
+
+lucene_store::paged_input::Pager::global().unwrap().set_budget(2 << 30);
+let dir = PagedFsDirectory::open("/data/idx");                  // every file
+let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only());
+```
+
+- Reads use `O_DIRECT` where the file system takes it, so a page is held
+  once, in the budget, not again in the kernel's page cache. A read goes
+  into a reused per-thread buffer and from there straight into the mapping
+  (`UFFDIO_COPY`); each fault wakes one handler thread (`EPOLLEXCLUSIVE`).
+- Pages are 64 KiB. A file larger than half the budget gets 4 KiB pages
+  (vector data) or 16 KiB pages (the rest), since it cannot stay resident
+  and a large page would bring in bytes nobody reads
+  (`PagedFsConfig::page_size_for`). A format whose blocks start on fixed
+  boundaries opens its files with `Directory::open_aligned`; their pages
+  are then the block size times a power of two (`lucene_store::alignment`,
+  base 4 KiB).
+- Metadata, the terms index, norms, the stored-fields and points indexes and
+  live docs are read whole at open, outside the budget, as on an object
+  store. So are the HNSW graph (`.vex`), quantized vectors (`.veq`) and IVF
+  codes (`.ivp`) when each is at most an eighth of the budget
+  (`PagedFsConfig::pins`).
+- Faults that run in sequence read ahead, doubling up to 1 MiB. The window
+  after the faulting page is read on an I/O thread while the faulting page
+  is read alone, so the reader runs on as the rest arrives. A batch of
+  scattered pages (a prefetch) is read on the calling thread and 16 I/O
+  threads at once. HNSW asks for each expanded node's neighbours' vectors in
+  one batch, disk HNSW for each beam's records, IVF for its probed clusters
+  and its rerank candidates. A file whose pages are all resident costs a
+  prefetch one counter read.
+- Past the budget, pages are released in segmented FIFO order. New pages
+  start on probation. A page faulted in again within about a budget's worth
+  of evictions (the kernel's refault distance), or announced again by a
+  prefetch, is protected, and protected pages take at most three quarters of
+  the budget, so a scan cannot push out the working set.
+- In-flight reads and pinned files are outside the budget: leave headroom
+  under a hard memory limit (the bench needed about 15% at 256 MiB).
+- `Pager::stats` counts faults, refaults, fault time and evictions.
+
+In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
+default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
+mapped). `lucene_rust.store.page_cache.size` (default 1 GB) is the node's
+budget. A node where `userfaultfd` is blocked keeps every index mapped and
+says so at startup.
+
+### Against `mmap`
+
+`lucene-search/examples/local_store.rs` (full-text, and `build-tenants`) and
+`local_vectors.rs` (IVF, HNSW) measure both directories on one index, cold
+(page cache dropped, first pass) and hot (last pass), each run in a memory
+cgroup when a limit is given. Mean latency per query, one thread, 4 vCPUs,
+virtio disk; raw results under `perf/paged-local-store/` in the project
+files. Runs vary by about 10% from one to the next.
+
+| workload | memory limit | `mmap` cold / hot (us) | page cache cold / hot (us) | memory held | read per pass |
+|---|---|---|---|---|---|
+| full-text, 3M docs, 1 GiB | none | 7106 / 5699 | 6514 / 5867 | 798 / 774 MiB | |
+| full-text | 400 MiB | 6475 / 6422 | 6717 / 6586 | 400 / 377 MiB | 990 / 540 MiB |
+| IVF, 2M x 128, 1.1 GiB | none | 376 / 64 | 348 / 65 | 958 / 927 MiB | |
+| IVF | 256 MiB | 855 / 839 | 761 / 690 | 256 / 177 MiB | 1.9 / 0.5 GiB |
+| HNSW, 500k x 128, 265 MiB | none | 224 / 151 | 302 / 152 | 278 / 285 MiB | |
+| HNSW | 128 MiB | 35155 / 36705 | 11340 / 11164 | 128 / 101 MiB | 14.3 / 0.8 GiB |
+| 2000 tenants, 3M docs, 90% of queries on 20 | 300 MiB | 220 / 101 | 287 / 96 | 300 / 205 MiB | |
+| tenants | 150 MiB | 310 / 244 | 315 / 306 | 150 / 138 MiB | 310 / 170 MiB |
+
+What it shows:
+
+- When the index fits, hot queries cost the same, and the page cache holds
+  no more than `mmap`'s page cache did, a third less with tenants, since it
+  reads ahead only within runs of faults.
+- When the index does not fit, vector search wins. HNSW's graph walk under
+  `mmap` reads ahead around every random hop and re-reads the file over and
+  over; with 4 KiB pages, the graph pinned and each node's neighbours read
+  in one batch, it reads 18x less and runs 3.2x faster. IVF runs 10-18%
+  faster than `mmap` in a third less memory and a quarter of the reads.
+- A cold first touch costs 0-30% more than `mmap`, most with tenants:
+  - Every miss hands work between threads (query thread, fault handler, I/O
+    thread). On this VM a wake-up of another vCPU costs tens of
+    microseconds, where the kernel resolves a missing page on the faulting
+    thread itself. Removing the allocations, copies and herd wake-ups took
+    a 4 KiB fault from 120 to about 60 us against 43 us for a plain `pread`
+    and 95 us for an `mmap` fault (with its read-ahead).
+  - Small pages mean more device reads: tenants at 300 MiB use 16 KiB pages
+    and make 1.7x the requests `mmap` makes with its 128 KiB read-ahead, at
+    the same cost per request. With 64 KiB pages the gap halves, but the
+    memory saving goes. Reading 64-128 KiB around every miss, polling for
+    faults before sleeping, and starting prefetches in the background were
+    tried and did not help or made it slower.
+- Full-text under pressure is 3-5% slower than `mmap` at 400 MiB, and
+  tenants at 150 MiB about 25% slower hot. The kernel's LRU sees every
+  access through the page tables' accessed bits. The pager sees only faults
+  and prefetch hints, and Linux gives a process no way to read those bits
+  for its own pages, so a page in use but never faulted again looks cold.
+  Refault-distance protection keeps what is re-read soon after release,
+  which is most of what can be recovered. Hence `page_cache_vectors`, which
+  leaves full-text on `mmap`.
+- With an index sorted by tenant, each tenant's postings and stored fields
+  are one run inside each file, so a hot tenant's pages stay resident and a
+  cold tenant's age out. A per-tenant prefetch hint was not tried: postings
+  are cut by term, not tenant, and the readers already announce the blocks
+  a query reads. IVF clusters group vectors by similarity, so a tenant's
+  vectors spread over every cluster and sorting by tenant does not make
+  them contiguous.
+
 ## Example: BYOK on an object store
 
 ```rust

@@ -288,7 +288,8 @@ pub(crate) fn write_stored_only_segment_files_with_codec(
     )
 }
 
-/// The native stored-fields writer's `(.fdt, .fdx, .fdm)` bytes.
+/// The native stored-fields writer's `(.fdt, .fdx, .fdm)` bytes; an empty
+/// `.fdt` is already in its file.
 pub(crate) type StoredFieldsBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
 
 /// The bytes [`write_stored_only_segment_files_with_codec`] would build with
@@ -317,13 +318,45 @@ pub(crate) fn build_native_stored_fields(
     Some(writer.finish())
 }
 
+/// The `.si` attribute a segment whose `BEST_SPEED` stored fields were all
+/// written by the high-compression LZ4 match finder records (value
+/// [`LZ4_HC_VALUE`]). Readers ignore it; a merge that writes the same way
+/// copies such a segment's chunks instead of compressing them again.
+pub const LZ4_HC_ATTRIBUTE: &str = "lucene_rust.stored_fields.lz4";
+/// [`LZ4_HC_ATTRIBUTE`]'s value.
+pub const LZ4_HC_VALUE: &str = "hc";
+
+/// Whether `attributes` carry [`LZ4_HC_ATTRIBUTE`].
+pub(crate) fn has_lz4_hc_attribute(attributes: &[(String, String)]) -> bool {
+    attributes
+        .iter()
+        .any(|(k, v)| k == LZ4_HC_ATTRIBUTE && v == LZ4_HC_VALUE)
+}
+
+pub use lucene_codecs::stored_fields::{
+    ZSTD_PAGED_MODE_ATTRIBUTE as ZSTD_PAGED_ATTRIBUTE, ZSTD_PAGED_MODE_VALUE as ZSTD_PAGED_VALUE,
+};
+
 /// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
-/// mode; a `CompressingCodec` format records none.
+/// mode, or OpenSearch custom-codecs' `Lucene104CustomStoredFieldsFormat`
+/// one; a `CompressingCodec` format records none.
 pub(crate) fn stored_fields_mode_attribute(mode: stored_fields::Mode) -> Vec<(String, String)> {
     let value = match mode {
         stored_fields::Mode::BestSpeed => "BEST_SPEED",
         stored_fields::Mode::BestCompression => "BEST_COMPRESSION",
         stored_fields::Mode::Compressing(_) => return Vec::new(),
+        stored_fields::Mode::Zstd(z) => {
+            return vec![(
+                "Lucene104CustomStoredFieldsFormat.mode".to_string(),
+                z.mode_name().to_string(),
+            )]
+        }
+        stored_fields::Mode::ZstdPaged(_) => {
+            return vec![(
+                ZSTD_PAGED_ATTRIBUTE.to_string(),
+                ZSTD_PAGED_VALUE.to_string(),
+            )]
+        }
     };
     vec![(
         "Lucene90StoredFieldsFormat.mode".to_string(),
@@ -389,6 +422,7 @@ fn write_stored_only_segment_files_inner(
 
     let files = if let Some((fdt, fdx, fdm)) = native {
         if use_compound_file {
+            debug_assert!(!fdt.is_empty(), "a compound flush builds the .fdt itself");
             // Compound entries are file names without the segment name.
             let member = |ext| crate::index_writer::segment_file_name("", suffix, ext);
             let sub_files = vec![
@@ -404,7 +438,11 @@ fn write_stored_only_segment_files_inner(
             write_file(dir, &cfe_name, &cfe)?;
             vec![cfs_name, cfe_name]
         } else {
-            for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+            // An empty `.fdt` was written to its file as the buffer filled.
+            if !fdt.is_empty() {
+                write_file(dir, &fdt_name, &fdt)?;
+            }
+            for (name, bytes) in [(&fdx_name, &fdx), (&fdm_name, &fdm)] {
                 write_file(dir, name, bytes)?;
             }
             write_file(dir, &fnm_name, &fnm)?;

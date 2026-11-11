@@ -536,7 +536,7 @@ fn deletes_issued_while_merge_is_warmed_route_the_carried_generation_before_publ
     single.set_max_full_flush_merge_wait_millis(0);
     single.set_merge_policy(Some(MergePolicyConfig {
         max_merge_at_once: 2,
-        segments_per_tier: 2,
+        segments_per_tier: 2.0,
         floor_segment_size: 1 << 30,
         ..MergePolicyConfig::default()
     }));

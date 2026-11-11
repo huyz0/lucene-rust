@@ -5,8 +5,10 @@ resolver = "2"
 exclude = ["benchmarks/rust-runner", "crates/lucene-ffi/fuzz"]
 members = [
     "crates/lucene-util",
+    "crates/lucene-painless",
     "crates/lucene-store",
     "crates/lucene-store-crypto",
+    "crates/lucene-zstd",
     "crates/lucene-codecs",
     "crates/lucene-index",
     "crates/lucene-analysis",
@@ -23,6 +25,13 @@ members = [
     "crates/lucene-misc",
     "crates/lucene-sandbox",
     "crates/lucene-facet",
+    "crates/lucene-sparse",
+    "crates/lucene-tensor",
+    "crates/lucene-pattern-text",
+    "crates/lucene-ml",
+    "crates/lucene-vector-quant",
+    "crates/lucene-ivf",
+    "crates/lucene-disk-hnsw",
     "crates/lucene-expressions",
     "crates/lucene-grouping",
     "crates/lucene-classification",
@@ -42,6 +51,7 @@ members = [
 # equal to `members` minus `crates/lucene-test-framework`.
 default-members = [
     "crates/lucene-util",
+    "crates/lucene-painless",
     "crates/lucene-store",
     "crates/lucene-store-crypto",
     "crates/lucene-codecs",
@@ -60,6 +70,13 @@ default-members = [
     "crates/lucene-misc",
     "crates/lucene-sandbox",
     "crates/lucene-facet",
+    "crates/lucene-sparse",
+    "crates/lucene-tensor",
+    "crates/lucene-pattern-text",
+    "crates/lucene-ml",
+    "crates/lucene-vector-quant",
+    "crates/lucene-ivf",
+    "crates/lucene-disk-hnsw",
     "crates/lucene-expressions",
     "crates/lucene-grouping",
     "crates/lucene-classification",
@@ -96,7 +113,15 @@ crc32fast = "1"
 # other. Already in the tree through memmap2 (docs/licences.md).
 libc = "0.2"
 lz4_flex = "0.11"
+# Substring search over a block of values (`lucene-codecs`' `substring`).
+# Already in the tree through `regex` (docs/licences.md).
+memchr = "2"
 miniz_oxide = "0.9"
+# Zstandard, through the C library zstd-jni wraps on the JVM: the `zstd` and
+# `zstd_no_dict` stored fields of OpenSearch's custom-codecs plugin
+# (`lucene-zstd`). `default-features = false` drops the legacy and
+# multithreaded-compression parts nothing here uses.
+zstd-safe = { version = "7", default-features = false, features = ["std"] }
 unicode-segmentation = "1"
 rayon = "1"
 proptest = "1"

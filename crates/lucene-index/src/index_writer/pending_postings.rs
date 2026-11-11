@@ -1,24 +1,27 @@
 //! The buffered segment's postings, inverted as each document arrives --
-//! `FreqProxTermsWriter`'s per-field `BytesRefHash` and
-//! `ParallelPostingsArray`, filled by `IndexingChain.processDocument`.
+//! `FreqProxTermsWriter`'s per-field `BytesRefHash`, `ParallelPostingsArray`
+//! and byte slices, filled by `IndexingChain.processDocument`.
 //!
 //! A term is hashed once, into its field's [`TermHash`], and each occurrence
-//! is appended to the term's streams: `(doc, freq)` pairs, and for a field
-//! that indexes them, positions and `(start, end)` offsets. Every stream of
-//! a field lives in one [`IntPool`] as a chain of slices that grow by level,
-//! as Lucene's `IntBlockPool` and `ByteSlicePool` keep them, so a term costs
-//! no allocation of its own and the whole buffer is freed in a few large
-//! blocks. A document's positions count equals its frequency, so a stream
-//! of positions needs no per-document boundaries.
+//! is appended to the term's two byte streams as `FreqProxTermsWriterPerField`
+//! writes them: the documents as vInt deltas, a frequency of one folded into
+//! the delta's low bit, each written when the term's next document arrives
+//! (the newest is held in the term's [`TermRun`]); and for a field that
+//! indexes them, each occurrence's position delta, its payload and its
+//! offsets. Every stream of a field lives in one [`BytePool`] of 32 KB blocks
+//! as a chain of slices that grow by level, as Lucene's `ByteSlicePool` keeps
+//! them, so a term costs no allocation of its own and the whole buffer is a
+//! few large blocks. A document's positions count equals its frequency, so a
+//! stream of positions needs no per-document boundaries.
 //!
 //! A document (or block) that fails part-way leaves nothing behind:
 //! [`PendingPostings::rollback`] cuts every stream back to a [`Checkpoint`]
 //! taken before it. Java instead keeps the partial postings and marks the
 //! document deleted; this port never buffered a failed document.
 //!
-//! The flush lays each field's streams out contiguously, terms in byte
-//! order and documents renumbered into an index sort's order when there is
-//! one ([`PendingPostings::flushed`]), and hands the postings writer a
+//! The flush decodes each field's streams into contiguous columns, terms in
+//! byte order and documents renumbered into an index sort's order when there
+//! is one ([`PendingPostings::flushed_below`]), and hands the postings writer a
 //! [`TermView`] of each term, read in place.
 
 use std::collections::BTreeMap;
@@ -30,178 +33,424 @@ use super::explicit::{explicit_error, InvertedField};
 use super::Result;
 use crate::inverter::{hash_bytes, TermHash};
 
-/// Ints per slice at each level, the last repeating: `ByteBlockPool`'s
-/// `LEVEL_SIZE_ARRAY`. A slice's last int links the next slice.
-const LEVELS: [u32; 10] = [5, 14, 20, 30, 40, 40, 80, 80, 120, 200];
-const TOP_LEVEL: u8 = (LEVELS.len() - 1) as u8;
+mod live;
+pub(crate) use live::LiveFieldStats;
+
+/// Bytes per full pool block: `ByteBlockPool.BYTE_BLOCK_SIZE`. A field's
+/// first blocks are smaller (1, 2, 4, 8 and 16 KB), so a field with few
+/// terms does not hold a whole block: Lucene shares one pool across a
+/// buffer's fields, this port keeps one per field.
+const BLOCK_SHIFT: u32 = 15;
+const BLOCK_SIZE: usize = 1 << BLOCK_SHIFT;
+const BLOCK_MASK: u32 = (1 << BLOCK_SHIFT) - 1;
+const FIRST_SHIFT: u32 = 10;
+const SMALL_BLOCKS: usize = (BLOCK_SHIFT - FIRST_SHIFT) as usize;
+/// Bytes the small blocks span: `BLOCK_SIZE - 2^FIRST_SHIFT`.
+const SMALL_SPAN: u32 = (1 << BLOCK_SHIFT) - (1 << FIRST_SHIFT);
+
+/// Block `b`'s size.
+fn block_size(b: usize) -> usize {
+    if b < SMALL_BLOCKS {
+        1usize << (FIRST_SHIFT as usize).saturating_add(b)
+    } else {
+        BLOCK_SIZE
+    }
+}
+
+/// Block `b`'s first address.
+fn block_start(b: usize) -> usize {
+    if b < SMALL_BLOCKS {
+        ((1usize << b).saturating_sub(1)) << FIRST_SHIFT
+    } else {
+        (SMALL_SPAN as usize).saturating_add(b.saturating_sub(SMALL_BLOCKS) << BLOCK_SHIFT)
+    }
+}
+
+/// The block holding address `at`, and the offset in it.
+#[inline]
+fn locate(at: u32) -> (usize, usize) {
+    if at < SMALL_SPAN {
+        // block b spans [(2^b - 1) KB, (2^(b+1) - 1) KB)
+        let q = (at >> FIRST_SHIFT).wrapping_add(1);
+        let b = 31u32.wrapping_sub(q.leading_zeros());
+        let start = ((1u32 << b).wrapping_sub(1)) << FIRST_SHIFT;
+        (b as usize, at.wrapping_sub(start) as usize)
+    } else {
+        let rel = at.wrapping_sub(SMALL_SPAN);
+        (
+            SMALL_BLOCKS.wrapping_add((rel >> BLOCK_SHIFT) as usize),
+            (rel & BLOCK_MASK) as usize,
+        )
+    }
+}
+
+/// Bytes per slice at each level: `ByteSlicePool.LEVEL_SIZE_ARRAY`. A
+/// slice's last byte marks its end (`16 | level`) until the stream outgrows
+/// it; then its last four bytes link the next slice.
+const LEVEL_SIZES: [u32; 10] = [5, 14, 20, 30, 40, 40, 80, 80, 120, 200];
+/// `ByteSlicePool.NEXT_LEVEL_ARRAY`.
+const NEXT_LEVEL: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 
 /// A stream with no slice yet.
 const NONE: u32 = u32::MAX;
 
 fn level_size(level: u8) -> u32 {
-    LEVELS[usize::from(level.min(TOP_LEVEL))]
+    LEVEL_SIZES[usize::from(level).min(LEVEL_SIZES.len().saturating_sub(1))]
+}
+
+fn next_level(level: u8) -> u8 {
+    NEXT_LEVEL[usize::from(level).min(NEXT_LEVEL.len().saturating_sub(1))]
 }
 
 fn to_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// Where one stream's chain of slices starts and where its next int goes.
+/// One field's streams: `ByteBlockPool` with `ByteSlicePool`'s slices.
+#[derive(Debug, Default)]
+struct BytePool {
+    blocks: Vec<Box<[u8]>>,
+    /// Where the next slice goes in the last block.
+    used: usize,
+}
+
+/// Where a [`SliceReader`] stands: enough to cut its stream there, or to
+/// read on from there ([`BytePool::resume`]).
 #[derive(Debug, Clone, Copy)]
-struct Stream {
-    start: u32,
-    write: u32,
-    /// The current slice's link slot: the stream is full at it.
-    limit: u32,
+struct SlicePos {
+    upto: u32,
+    slice_start: u32,
     level: u8,
 }
 
-impl Stream {
-    const EMPTY: Stream = Stream {
-        start: NONE,
-        write: NONE,
-        limit: NONE,
-        level: 0,
-    };
-}
-
-/// One field's streams: chained slices in one growable block of ints.
-#[derive(Debug, Default)]
-struct IntPool {
-    buf: Vec<i32>,
-}
-
-impl IntPool {
-    /// Appends `v` to `s`; returns where it went.
+impl BytePool {
     #[inline]
-    fn push(&mut self, s: &mut Stream, v: i32) -> u32 {
-        if s.write == s.limit {
-            self.next_slice(s);
+    fn byte(&self, at: u32) -> u8 {
+        let (b, o) = locate(at);
+        self.blocks[b][o]
+    }
+
+    #[inline]
+    fn set(&mut self, at: u32, v: u8) {
+        let (b, o) = locate(at);
+        self.blocks[b][o] = v;
+    }
+
+    fn ram_bytes(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(|b| b.len())
+            .fold(0, usize::saturating_add)
+    }
+
+    /// Room for a slice of `size` bytes, zeroed, never across blocks. A
+    /// buffer flushes long before a field's pool nears 4 GB
+    /// (`HARD_MAX_BYTES_PER_SLOT`), so addresses fit a `u32`.
+    fn alloc(&mut self, size: u32) -> u32 {
+        let size = size as usize;
+        let full = self
+            .blocks
+            .last()
+            .is_none_or(|b| self.used.saturating_add(size) > b.len());
+        if full {
+            let len = block_size(self.blocks.len());
+            self.blocks.push(vec![0u8; len].into_boxed_slice());
+            self.used = 0;
         }
-        let at = s.write;
-        self.buf[at as usize] = v;
-        s.write = at.saturating_add(1);
+        let block = self.blocks.len().saturating_sub(1);
+        let at = block_start(block).saturating_add(self.used);
+        self.used = self.used.saturating_add(size);
+        to_u32(at)
+    }
+
+    /// A new stream's first slice: `ByteSlicePool.newSlice`. Returns where
+    /// it starts, which is where it writes first.
+    fn new_slice(&mut self) -> u32 {
+        let size = level_size(0);
+        let at = self.alloc(size);
+        self.set(at.wrapping_add(size).wrapping_sub(1), 16);
         at
     }
 
-    /// Starts `s`'s chain, or links a slice one level larger to its end.
+    /// Appends `b` at `upto`, moving to the next slice at an end marker.
+    #[inline]
+    fn write_byte(&mut self, upto: &mut u32, b: u8) {
+        if self.byte(*upto) != 0 {
+            *upto = self.next_slice(*upto);
+        }
+        self.set(*upto, b);
+        *upto = upto.wrapping_add(1);
+    }
+
+    /// `ByteSlicePool.allocSlice`: links a slice one level larger after the
+    /// one whose end marker is at `upto`, moving the three bytes before the
+    /// marker into it so the link fits. Returns where the stream continues.
     #[cold]
-    fn next_slice(&mut self, s: &mut Stream) {
-        let level = if s.start == NONE {
-            0
-        } else {
-            s.level.saturating_add(1).min(TOP_LEVEL)
-        };
+    fn next_slice(&mut self, upto: u32) -> u32 {
+        let level = next_level(self.byte(upto) & 15);
         let size = level_size(level);
-        let at = to_u32(self.buf.len());
-        self.buf
-            .resize(self.buf.len().saturating_add(size as usize), 0);
-        if s.start == NONE {
-            s.start = at;
-        } else {
-            self.buf[s.limit as usize] = i32::from_ne_bytes(at.to_ne_bytes());
+        let at = self.alloc(size);
+        let from = upto.wrapping_sub(3);
+        for i in 0..3u32 {
+            let b = self.byte(from.wrapping_add(i));
+            self.set(at.wrapping_add(i), b);
         }
-        s.write = at;
-        s.limit = at.saturating_add(size).saturating_sub(1);
-        s.level = level;
+        for (i, &b) in at.to_le_bytes().iter().enumerate() {
+            self.set(from.wrapping_add(i as u32), b);
+        }
+        self.set(at.wrapping_add(size).wrapping_sub(1), 16 | level);
+        at.wrapping_add(3)
     }
-
-    /// The first `n` ints of `s`.
-    fn read(&self, s: &Stream, n: u32) -> StreamReader<'_> {
-        StreamReader {
-            buf: &self.buf,
-            at: s.start,
-            limit: s.start.saturating_add(level_size(0)).saturating_sub(1),
-            level: 0,
-            left: if s.start == NONE { 0 } else { n },
-        }
-    }
-
-    /// `s` cut back to its first `n` ints.
-    fn cut(&self, s: &Stream, n: u32) -> Stream {
-        if s.start == NONE {
-            return *s;
-        }
-        let mut r = self.read(s, n);
-        while r.next().is_some() {}
-        Stream {
-            start: s.start,
-            write: r.at,
-            limit: r.limit,
-            level: r.level,
-        }
-    }
-}
-
-/// Reads a stream's ints in order, following its slice links.
-struct StreamReader<'a> {
-    buf: &'a [i32],
-    at: u32,
-    limit: u32,
-    level: u8,
-    left: u32,
-}
-
-impl Iterator for StreamReader<'_> {
-    type Item = i32;
 
     #[inline]
-    fn next(&mut self) -> Option<i32> {
-        if self.left == 0 {
-            return None;
+    fn write_vlong(&mut self, upto: &mut u32, mut v: u64) {
+        while v >= 0x80 {
+            self.write_byte(upto, (v as u8) | 0x80);
+            v >>= 7;
         }
-        if self.at == self.limit {
-            let link = self.buf[self.limit as usize];
-            self.at = u32::from_ne_bytes(link.to_ne_bytes());
-            self.level = self.level.saturating_add(1).min(TOP_LEVEL);
-            self.limit = self
-                .at
-                .saturating_add(level_size(self.level))
-                .saturating_sub(1);
+        self.write_byte(upto, v as u8);
+    }
+
+    /// The stream from `start` to `end` (its write position).
+    fn reader(&self, start: u32, end: u32) -> SliceReader<'_> {
+        let first = level_size(0);
+        let (upto, limit) = if start == NONE {
+            (end, end)
+        } else if start.saturating_add(first) >= end {
+            (start, end)
+        } else {
+            (start, start.wrapping_add(first).wrapping_sub(4))
+        };
+        SliceReader {
+            pool: self,
+            cur: self.span(upto, limit),
+            limit,
+            end,
+            level: 0,
+            slice_start: start,
         }
-        let v = self.buf[self.at as usize];
-        self.at = self.at.saturating_add(1);
-        self.left = self.left.saturating_sub(1);
-        Some(v)
+    }
+
+    /// The stream ending at `end` read on from `pos`, where a reader of it
+    /// stood when it ended earlier: the stream has only grown since.
+    fn resume(&self, pos: SlicePos, end: u32) -> SliceReader<'_> {
+        let mut pos = pos;
+        let limit = loop {
+            let size = level_size(pos.level);
+            if pos.slice_start.saturating_add(size) >= end {
+                break end;
+            }
+            let limit = pos.slice_start.wrapping_add(size).wrapping_sub(4);
+            if pos.upto <= limit {
+                break limit;
+            }
+            // The slice filled since: the bytes past its link moved to the
+            // start of the next ([`Self::next_slice`]).
+            let mut link = [0u8; 4];
+            link.copy_from_slice(
+                self.span(limit, limit.wrapping_add(4))
+                    .get(..4)
+                    .unwrap_or(&[0; 4]),
+            );
+            let next = u32::from_le_bytes(link);
+            pos = SlicePos {
+                upto: next.wrapping_add(pos.upto.wrapping_sub(limit)),
+                slice_start: next,
+                level: next_level(pos.level),
+            };
+        };
+        SliceReader {
+            pool: self,
+            cur: self.span(pos.upto, limit),
+            limit,
+            end,
+            level: pos.level,
+            slice_start: pos.slice_start,
+        }
+    }
+
+    /// The bytes `[from, to)`, which never cross a block: one slice's.
+    #[inline]
+    fn span(&self, from: u32, to: u32) -> &[u8] {
+        if from >= to {
+            return &[];
+        }
+        let (b, o) = locate(from);
+        let len = to.wrapping_sub(from) as usize;
+        &self.blocks[b][o..o.saturating_add(len)]
+    }
+
+    /// Cuts a stream back to `pos`: the rest of its slice is cleared and
+    /// marked as its end again, so the next write lands at `pos`. Returns
+    /// the stream's new write position.
+    fn cut(&mut self, pos: SlicePos) -> u32 {
+        let marker = pos
+            .slice_start
+            .wrapping_add(level_size(pos.level))
+            .wrapping_sub(1);
+        let mut at = pos.upto;
+        while at < marker {
+            self.set(at, 0);
+            at = at.wrapping_add(1);
+        }
+        self.set(marker, 16 | pos.level);
+        pos.upto
+    }
+
+    /// Starts loading the block bytes at `at`.
+    #[inline]
+    fn prefetch(&self, at: u32) {
+        let (b, o) = locate(at);
+        if let Some(block) = self.blocks.get(b) {
+            lucene_util::simd::prefetch(block, o);
+        }
     }
 }
 
-/// One term's streams and its newest document.
+/// `ByteSliceReader`: a stream's bytes in order, following its links.
+struct SliceReader<'a> {
+    pool: &'a BytePool,
+    /// The current slice's bytes still to read, up to `limit`.
+    cur: &'a [u8],
+    /// Where this slice's bytes stop: the link, or the stream's end.
+    limit: u32,
+    end: u32,
+    level: u8,
+    slice_start: u32,
+}
+
+impl SliceReader<'_> {
+    fn upto(&self) -> u32 {
+        self.limit.wrapping_sub(self.cur.len() as u32)
+    }
+
+    fn eof(&self) -> bool {
+        self.cur.is_empty() && self.limit == self.end
+    }
+
+    fn pos(&self) -> SlicePos {
+        SlicePos {
+            upto: self.upto(),
+            slice_start: self.slice_start,
+            level: self.level,
+        }
+    }
+
+    #[inline]
+    fn read_byte(&mut self) -> u8 {
+        if self.cur.is_empty() {
+            self.next_slice();
+        }
+        match self.cur.split_first() {
+            Some((&b, rest)) => {
+                self.cur = rest;
+                b
+            }
+            None => 0,
+        }
+    }
+
+    #[cold]
+    fn next_slice(&mut self) {
+        let mut link = [0u8; 4];
+        link.copy_from_slice(
+            self.pool
+                .span(self.limit, self.limit.wrapping_add(4))
+                .get(..4)
+                .unwrap_or(&[0; 4]),
+        );
+        let next = u32::from_le_bytes(link);
+        self.level = next_level(self.level);
+        let size = level_size(self.level);
+        self.slice_start = next;
+        self.limit = if next.saturating_add(size) >= self.end {
+            self.end
+        } else {
+            next.wrapping_add(size).wrapping_sub(4)
+        };
+        self.cur = self.pool.span(next, self.limit);
+    }
+
+    /// A vLong; read in place when the slice holds the longest one.
+    #[inline]
+    fn read_vlong(&mut self) -> u64 {
+        if let Some(head) = self.cur.get(..10) {
+            let mut v = 0u64;
+            for (i, &b) in head.iter().enumerate() {
+                v |= u64::from(b & 0x7f) << 7u32.wrapping_mul(i as u32);
+                if b < 0x80 {
+                    self.cur = self.cur.get(i.wrapping_add(1)..).unwrap_or_default();
+                    return v;
+                }
+            }
+        }
+        let mut v = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let b = self.read_byte();
+            v |= u64::from(b & 0x7f).checked_shl(shift).unwrap_or(0);
+            if b < 0x80 {
+                return v;
+            }
+            shift = shift.saturating_add(7);
+        }
+    }
+
+    /// A vInt written from an `i32`'s bits.
+    #[inline]
+    fn read_i32(&mut self) -> i32 {
+        self.read_vlong() as u32 as i32
+    }
+
+    /// A documents stream's next entry ([`FieldRuns::write_doc`]): moves
+    /// `doc` on by its delta and returns its frequency.
+    #[inline]
+    fn next_doc(&mut self, doc: &mut i32) -> i32 {
+        let code = self.read_vlong();
+        *doc = doc.wrapping_add((code >> 1) as u32 as i32);
+        if code & 1 != 0 {
+            1
+        } else {
+            self.read_i32()
+        }
+    }
+}
+
+/// One term's newest document and where its streams continue:
+/// `FreqProxPostingsArray`'s per-term ints, half a cache line, so adding a
+/// term touches one line. The streams' starts are in
+/// [`FieldRuns::starts`], read only at a flush or rollback.
 #[derive(Debug, Clone, Copy)]
+#[repr(C, align(32))]
 struct TermRun {
-    /// `(doc, freq)` pairs, doc ascending.
-    docs: Stream,
-    positions: Stream,
-    /// `(start, end)` pairs, one per position.
-    offsets: Stream,
+    /// Where the documents stream and the occurrences stream write next.
+    docs: u32,
+    prox: u32,
+    /// Documents, the newest included though not yet written.
     doc_count: u32,
     /// Positions written: the sum of the documents' frequencies.
     occurrences: u32,
     last_doc: i32,
-    /// `last_doc`'s frequency so far, and where the pool holds it.
+    /// `last_doc` minus the document before it: what the documents stream
+    /// gets for it once the term's next document arrives.
+    last_doc_code: i32,
+    /// `last_doc`'s frequency so far.
     freq: i32,
-    freq_at: u32,
+    /// The newest occurrence's position in `last_doc`.
+    last_pos: i32,
 }
 
 impl TermRun {
     const NEW: TermRun = TermRun {
-        docs: Stream::EMPTY,
-        positions: Stream::EMPTY,
-        offsets: Stream::EMPTY,
+        docs: NONE,
+        prox: NONE,
         doc_count: 0,
         occurrences: 0,
         last_doc: -1,
+        last_doc_code: 0,
         freq: 0,
-        freq_at: 0,
+        last_pos: 0,
     };
-}
-
-/// A term's payloads once its field has seen one: a length per position,
-/// zero where an occurrence has none, and their bytes concatenated.
-#[derive(Debug, Default)]
-struct TermPayloads {
-    lengths: Vec<u32>,
-    bytes: Vec<u8>,
 }
 
 /// What [`FieldRuns::occurrence`] found for a term in the current document.
@@ -220,89 +469,317 @@ pub(crate) struct TermSlot {
 pub(crate) struct FieldRuns {
     positions: bool,
     offsets: bool,
+    /// The field indexes frequencies.
+    freqs: bool,
+    /// Terms' full blocks are sealed as their documents arrive.
+    seal: bool,
     terms: TermHash,
     /// By term id (`TermHash` ids are dense, in insertion order).
     runs: Vec<TermRun>,
-    pool: IntPool,
-    /// By term id, once the field has seen a payload:
-    /// `FreqProxTermsWriterPerField.sawPayloads`.
-    payloads: Option<Vec<TermPayloads>>,
+    /// By term id: where the documents and occurrences streams start.
+    starts: Vec<[u32; 2]>,
+    /// By term id for a field with offsets, else empty: the newest
+    /// occurrence's start offset in its document (`lastOffsets`).
+    last_offsets: Vec<i32>,
+    pool: BytePool,
+    /// Some occurrence carried a payload: `sawPayloads`.
+    payloads: bool,
     /// Documents with at least one term in the field: the postings
     /// `docCount`.
     doc_count: i32,
     last_doc: i32,
-    /// What the runs and dictionary grew by, as `bytesUsed` counts it: the
-    /// RAM buffer's share of this field.
-    bytes: usize,
-    /// Scratch for [`PendingPostings::add_field`]: the document's term hashes.
-    hashes: Vec<u64>,
+    /// The field's `sumDocFreq` and `sumTotalTermFreq` so far, kept as
+    /// documents arrive for a search over the buffer.
+    sum_doc_freq: i64,
+    sum_total_term_freq: i64,
+    /// Where terms' streams stood at a few documents ranges were written up
+    /// to ([`FieldRuns::lay_out_range`]), newest last: a range from one of
+    /// them reads each term's streams from there on, not from the start.
+    cursors: std::sync::Mutex<Vec<(i32, std::sync::Arc<Cursors>)>>,
+    /// By term id, where a search's read of the term's documents stream
+    /// ended, newest last ([`FieldRuns::live_docs_of`]): a later read of the
+    /// documents from past one of them starts there.
+    live_cursors: std::sync::Mutex<std::collections::HashMap<u32, Vec<Cursor>>>,
+    /// By term id, the term's entry in `sealed`, [`NONE`] for a term whose
+    /// documents have not filled a block; shorter than `runs` past the
+    /// last term that has one.
+    sealed_of: Vec<u32>,
+    sealed: Vec<SealedTerm>,
+    /// What the sealed blocks hold.
+    sealed_bytes: usize,
+    /// Where [`FieldRuns::seal`] encodes a block.
+    seal_scratch: Vec<u8>,
 }
+
+/// A term's documents in full postings blocks, each sealed once its
+/// [`SEALED_DOCS`] documents are written to the documents stream: encoded
+/// as a flushed segment's block holds them and never changed after.
+#[derive(Debug, Default)]
+struct SealedTerm {
+    blocks: Vec<SealedBlock>,
+}
+
+#[derive(Debug)]
+struct SealedBlock {
+    /// [`lucene_codecs::postings_writer::encode_doc_block`]'s bytes.
+    bytes: std::sync::Arc<[u8]>,
+    last_doc: i32,
+    /// Where the documents stream stands after the block's documents.
+    end: SlicePos,
+}
+
+/// Whether terms' full blocks are sealed; `LUCENE_RUST_NO_SEAL` turns it
+/// off.
+fn sealing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LUCENE_RUST_NO_SEAL").is_none())
+}
+
+/// A sealed block's charge beside its bytes: its entry and `Arc` header.
+const SEALED_BLOCK_BYTES: usize = 48;
+
+/// Documents per sealed block: a postings block's.
+const SEALED_DOCS: u32 = lucene_codecs::for_util::BLOCK_SIZE as u32;
+
+/// By term id, where its streams stood at a document.
+type Cursors = std::collections::HashMap<u32, Cursor>;
+
+/// A term's streams just before its first document at or past some
+/// document `d`: everything before is of earlier documents.
+#[derive(Debug, Clone, Copy)]
+struct Cursor {
+    docs: SlicePos,
+    /// `None` for a field without positions.
+    prox: Option<SlicePos>,
+    /// The document the documents stream's next code is a delta from.
+    doc: i32,
+}
+
+/// A range layout's cursors: those at its start it reads from, and those
+/// at its end it keeps.
+struct RangeCursors {
+    range: (i32, i32),
+    from: Option<std::sync::Arc<Cursors>>,
+    next: Cursors,
+}
+
+fn lock_cursors(
+    m: &std::sync::Mutex<Vec<(i32, std::sync::Arc<Cursors>)>>,
+) -> std::sync::MutexGuard<'_, Vec<(i32, std::sync::Arc<Cursors>)>> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Terms with fewer documents are read from their start each range.
+const CURSOR_DOCS: u32 = if cfg!(test) { 2 } else { 64 };
+
+/// How many documents' cursors a field keeps at most, when its caller
+/// does not say which ([`PendingPostings::keep_cursors_at`]).
+const CURSOR_SETS: usize = 32;
 
 /// How many terms ahead of the one being added [`FieldRuns::prefetch_ahead`]
 /// starts loading the likely term's bytes and run, and (half as far) the pool
-/// ints that run appends to.
+/// bytes that run appends to.
 const PREFETCH_TERMS: usize = 8;
 
-/// A new term's fixed cost as `bytesUsed` counts it: its postings-array
-/// entries, its hash slot share, start and hash.
+/// How many terms ahead of the one being laid out [`FieldRuns::flushed`]
+/// starts loading a term's run and starts, and (half as far) its bytes and
+/// streams.
+const LAYOUT_PREFETCH: usize = 16;
+
+/// A streamed flush hands the writer a batch once it holds this many terms,
+/// or [`STREAM_ENTRIES`] documents or positions: small enough to stay in
+/// cache, large enough that a batch's fixed cost does not show.
+const STREAM_TERMS: usize = 1024;
+const STREAM_ENTRIES: usize = 1 << 15;
+
+/// One occurrence's decoded parts.
+#[derive(Debug, Clone, Copy, Default)]
+struct Occurrence {
+    position: i32,
+    offsets: (i32, i32),
+}
+
+/// A term's columns decoded from its streams: what [`TermView`] reads.
+#[derive(Debug, Default)]
+struct Columns {
+    docs: Vec<(i32, i32)>,
+    /// Per document, where its positions end within its term's: parallel
+    /// to `docs` for a field with positions, else empty.
+    ends: Vec<u32>,
+    positions: Vec<i32>,
+    offsets: Vec<(i32, i32)>,
+    payload_lengths: Vec<u32>,
+    payload_bytes: Vec<u8>,
+}
+
+impl Columns {
+    fn clear(&mut self) {
+        self.docs.clear();
+        self.ends.clear();
+        self.positions.clear();
+        self.offsets.clear();
+        self.payload_lengths.clear();
+        self.payload_bytes.clear();
+    }
+}
+
+/// A term's fixed charge: its `ParallelPostingsArray` entries, its hash
+/// slot's share, its start and hash.
 const TERM_BYTES: usize = 24 + 4 + 4 + 8;
 
 impl FieldRuns {
-    fn new(index_options: IndexOptions) -> Self {
+    fn new(index_options: IndexOptions, seal: bool) -> Self {
         FieldRuns {
+            seal: seal && sealing(),
             positions: index_options.subsumes_positions(),
             offsets: index_options.subsumes_offsets(),
+            freqs: !matches!(index_options, IndexOptions::None | IndexOptions::Docs),
             terms: TermHash::new(),
             runs: Vec::new(),
-            pool: IntPool::default(),
-            payloads: None,
+            starts: Vec::new(),
+            last_offsets: Vec::new(),
+            pool: BytePool::default(),
+            payloads: false,
             doc_count: 0,
             last_doc: -1,
-            bytes: 0,
-            hashes: Vec::new(),
+            sum_doc_freq: 0,
+            sum_total_term_freq: 0,
+            cursors: std::sync::Mutex::default(),
+            live_cursors: std::sync::Mutex::default(),
+            sealed_of: Vec::new(),
+            sealed: Vec::new(),
+            sealed_bytes: 0,
+            seal_scratch: Vec::new(),
+        }
+    }
+
+    /// The field's share of the RAM buffer, as `bytesUsed` counts it: the
+    /// pool blocks it took, and per term [`TERM_BYTES`] plus the term's
+    /// bytes. The run and dictionary arrays' spare capacity is not charged,
+    /// as Java charges its postings arrays by entry, so a buffer flushes
+    /// after the documents Java's would.
+    fn ram_bytes(&self) -> usize {
+        self.runs
+            .len()
+            .saturating_mul(TERM_BYTES)
+            .saturating_add(self.terms.term_bytes())
+            .saturating_add(self.pool.ram_bytes())
+            .saturating_add(self.sealed_bytes)
+            .saturating_add(self.sealed_of.capacity().saturating_mul(4))
+            .saturating_add(
+                self.sealed
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SealedTerm>()),
+            )
+    }
+
+    /// Term `id`'s sealed blocks.
+    fn sealed_blocks(&self, id: u32) -> &[SealedBlock] {
+        match self.sealed_of.get(id as usize) {
+            Some(&k) if k != NONE => self
+                .sealed
+                .get(k as usize)
+                .map_or(&[], |t| t.blocks.as_slice()),
+            _ => &[],
+        }
+    }
+
+    /// Seals term `id`'s next block: its documents stream holds a full
+    /// block's documents past its last sealed one.
+    fn seal(&mut self, id: usize) {
+        if self.sealed_of.len() <= id {
+            self.sealed_of.resize(id.saturating_add(1), NONE);
+        }
+        let k = match self.sealed_of[id] {
+            NONE => {
+                self.sealed.push(SealedTerm::default());
+                let k = to_u32(self.sealed.len().saturating_sub(1));
+                self.sealed_of[id] = k;
+                k
+            }
+            k => k,
+        };
+        let run = &self.runs[id];
+        let term = &self.sealed[k as usize];
+        let (mut r, prev) = match term.blocks.last() {
+            Some(b) => (self.pool.resume(b.end, run.docs), b.last_doc),
+            None => (self.pool.reader(self.starts[id][0], run.docs), -1),
+        };
+        let mut block = [(0i32, 0i32); SEALED_DOCS as usize];
+        // The stream's first code is its first document itself.
+        let mut doc = prev.max(0);
+        for (n, entry) in block.iter_mut().enumerate() {
+            if r.eof() {
+                debug_assert!(false, "a sealed block is short of documents at {n}");
+                return;
+            }
+            let freq = r.next_doc(&mut doc);
+            *entry = (doc, freq);
+        }
+        let end = r.pos();
+        let mut bytes = std::mem::take(&mut self.seal_scratch);
+        bytes.clear();
+        let last_doc =
+            lucene_codecs::postings_writer::encode_doc_block(&block, prev, self.freqs, &mut bytes);
+        self.sealed_bytes = self
+            .sealed_bytes
+            .saturating_add(bytes.len().saturating_add(SEALED_BLOCK_BYTES));
+        let sealed: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes.as_slice());
+        self.seal_scratch = bytes;
+        self.sealed[k as usize].blocks.push(SealedBlock {
+            bytes: sealed,
+            last_doc,
+            end,
+        });
+    }
+
+    /// Drops term `id`'s sealed blocks past its written documents, after a
+    /// rollback cut them.
+    fn unseal_past(&mut self, id: usize) {
+        let written = self.runs[id].doc_count.saturating_sub(1);
+        self.unseal(id, (written / SEALED_DOCS) as usize);
+    }
+
+    /// Keeps term `id`'s first `keep` sealed blocks.
+    fn unseal(&mut self, id: usize, keep: usize) {
+        let Some(&k) = self.sealed_of.get(id).filter(|&&k| k != NONE) else {
+            return;
+        };
+        if let Some(t) = self.sealed.get_mut(k as usize) {
+            for b in t.blocks.drain(keep.min(t.blocks.len())..) {
+                self.sealed_bytes = self
+                    .sealed_bytes
+                    .saturating_sub(b.bytes.len().saturating_add(SEALED_BLOCK_BYTES));
+            }
         }
     }
 
     /// Starts loading what adding the terms after `i` will read: for the
-    /// term [`PREFETCH_TERMS`] ahead, the bytes and run of the id its first
-    /// table slot names (that slot was prefetched with every hash); for the
-    /// term half as far ahead, whose run is in cache by now, the pool ints
-    /// its documents and positions go to next.
+    /// term [`PREFETCH_TERMS`] ahead, the run and term start of the id its
+    /// first table slot names (that slot was prefetched with every hash);
+    /// for the term half as far ahead, whose run and start are in cache by
+    /// now, its bytes and the pool bytes its occurrences go to next.
     #[inline]
     fn prefetch_ahead(&self, hashes: &[u64], i: usize) {
         if let Some(id) = hashes
             .get(i.saturating_add(PREFETCH_TERMS))
             .and_then(|&h| self.terms.likely_id(h))
         {
-            self.terms.prefetch_term(id);
+            self.terms.prefetch_start(id);
             lucene_util::simd::prefetch(&self.runs, id as usize);
         }
-        if let Some(run) = hashes
+        if let Some(id) = hashes
             .get(i.saturating_add(PREFETCH_TERMS / 2))
             .and_then(|&h| self.terms.likely_id(h))
-            .and_then(|id| self.runs.get(id as usize))
         {
-            lucene_util::simd::prefetch(&self.pool.buf, run.docs.write as usize);
-            if self.positions {
-                lucene_util::simd::prefetch(&self.pool.buf, run.positions.write as usize);
+            self.terms.prefetch_term(id);
+            if let Some(run) = self.runs.get(id as usize) {
+                self.pool.prefetch(run.docs);
+                if self.positions {
+                    self.pool.prefetch(run.prox);
+                }
             }
         }
-    }
-
-    /// The first non-empty payload: every occurrence buffered so far gets
-    /// its zero length, as `FreqProxTermsWriterPerField.writeProx` writes a
-    /// length for every occurrence of a field that stores payloads.
-    #[cold]
-    fn start_payloads(&mut self) {
-        self.payloads = Some(
-            self.runs
-                .iter()
-                .map(|r| TermPayloads {
-                    lengths: vec![0; r.occurrences as usize],
-                    bytes: Vec::new(),
-                })
-                .collect(),
-        );
     }
 
     /// `TermsHashPerField.add`'s lookup: `term`'s id, added to the
@@ -317,39 +794,77 @@ impl FieldRuns {
     fn occurrence_hashed(&mut self, doc: i32, term: &[u8], h: u64) -> TermSlot {
         let (id, new_to_segment) = self.terms.add_hashed(term, h);
         if new_to_segment {
-            self.runs.push(TermRun::NEW);
-            if let Some(p) = &mut self.payloads {
-                p.push(TermPayloads::default());
+            // `newTerm` starts both streams.
+            let docs = self.pool.new_slice();
+            let prox = if self.positions {
+                self.pool.new_slice()
+            } else {
+                NONE
+            };
+            self.runs.push(TermRun {
+                docs,
+                prox,
+                ..TermRun::NEW
+            });
+            self.starts.push([docs, prox]);
+            if self.offsets {
+                self.last_offsets.push(0);
             }
-            self.bytes = self
-                .bytes
-                .saturating_add(TERM_BYTES.saturating_add(term.len()));
         }
         let run = &self.runs[id as usize];
         TermSlot {
             id,
             new_to_segment,
-            freq: (run.last_doc == doc).then_some(run.freq),
+            freq: (run.last_doc == doc && run.doc_count > 0).then_some(run.freq),
         }
     }
 
     /// The term's first occurrence in `doc`, at `freq`: `newTerm` or
-    /// `addTerm`'s new-document half.
+    /// `addTerm`'s new-document half. The term's previous document goes to
+    /// its documents stream now that its frequency is final.
     #[inline]
     pub(crate) fn first_in_doc(&mut self, slot: TermSlot, doc: i32, freq: i32) {
         if self.last_doc != doc {
             self.last_doc = doc;
             self.doc_count = self.doc_count.saturating_add(1);
         }
-        let run = &mut self.runs[slot.id as usize];
-        self.pool.push(&mut run.docs, doc);
-        run.freq_at = self.pool.push(&mut run.docs, freq);
+        let id = slot.id as usize;
+        let run = &mut self.runs[id];
+        let mut full = false;
+        if run.doc_count > 0 {
+            Self::write_doc(&mut self.pool, run);
+            run.last_doc_code = doc.wrapping_sub(run.last_doc);
+            // Every document before this one is written now.
+            full = self.seal && run.doc_count.is_multiple_of(SEALED_DOCS);
+        } else {
+            run.last_doc_code = doc;
+        }
         run.last_doc = doc;
         run.freq = freq;
+        run.last_pos = 0;
         run.doc_count = run.doc_count.saturating_add(1);
-        self.bytes = self
-            .bytes
-            .saturating_add(if self.positions { 12 } else { 8 });
+        self.sum_doc_freq = self.sum_doc_freq.saturating_add(1);
+        self.sum_total_term_freq = self.sum_total_term_freq.saturating_add(i64::from(freq));
+        if let Some(o) = self.last_offsets.get_mut(id) {
+            *o = 0;
+        }
+        if full {
+            self.seal(id);
+        }
+    }
+
+    /// Appends the run's newest document to its documents stream: the doc
+    /// delta shifted left, its low bit set for a frequency of one, else the
+    /// frequency after it.
+    #[inline]
+    fn write_doc(pool: &mut BytePool, run: &mut TermRun) {
+        let code = u64::from(run.last_doc_code as u32) << 1;
+        if run.freq == 1 {
+            pool.write_vlong(&mut run.docs, code | 1);
+        } else {
+            pool.write_vlong(&mut run.docs, code);
+            pool.write_vlong(&mut run.docs, u64::from(run.freq as u32));
+        }
     }
 
     /// Sets the term's frequency in the current document, past its first
@@ -358,8 +873,11 @@ impl FieldRuns {
     pub(crate) fn set_freq(&mut self, slot: TermSlot, freq: i32) {
         let run = &mut self.runs[slot.id as usize];
         if run.doc_count > 0 {
+            self.sum_total_term_freq = self
+                .sum_total_term_freq
+                .saturating_add(i64::from(freq))
+                .saturating_sub(i64::from(run.freq));
             run.freq = freq;
-            self.pool.buf[run.freq_at as usize] = freq;
         }
     }
 
@@ -379,26 +897,237 @@ impl FieldRuns {
         if !self.positions {
             return;
         }
-        if !payload.is_empty() && self.payloads.is_none() {
-            self.start_payloads();
-        }
         let id = slot.id as usize;
         let run = &mut self.runs[id];
-        self.pool.push(&mut run.positions, position);
+        let code = u64::from(position.wrapping_sub(run.last_pos) as u32) << 1;
+        run.last_pos = position;
         run.occurrences = run.occurrences.saturating_add(1);
-        let mut bytes = 4usize;
+        if payload.is_empty() {
+            self.pool.write_vlong(&mut run.prox, code);
+        } else {
+            self.payloads = true;
+            self.pool.write_vlong(&mut run.prox, code | 1);
+            self.pool.write_vlong(&mut run.prox, payload.len() as u64);
+            for &b in payload {
+                self.pool.write_byte(&mut run.prox, b);
+            }
+        }
+        if let Some(last) = self.last_offsets.get_mut(id) {
+            let (start, end) = offsets;
+            self.pool
+                .write_vlong(&mut run.prox, u64::from(start.wrapping_sub(*last) as u32));
+            self.pool
+                .write_vlong(&mut run.prox, u64::from(end.wrapping_sub(start) as u32));
+            *last = start;
+        }
+    }
+
+    /// Reads one occurrence, its payload appended to `payload` (when given)
+    /// and its length returned.
+    #[inline]
+    fn read_occurrence(
+        &self,
+        r: &mut SliceReader<'_>,
+        last: &mut Occurrence,
+        payload: Option<&mut Vec<u8>>,
+    ) -> u32 {
+        let code = r.read_vlong();
+        last.position = last.position.wrapping_add((code >> 1) as u32 as i32);
+        let mut len = 0u32;
+        if code & 1 != 0 {
+            len = r.read_vlong() as u32;
+            match payload {
+                Some(out) => {
+                    for _ in 0..len {
+                        out.push(r.read_byte());
+                    }
+                }
+                None => {
+                    for _ in 0..len {
+                        r.read_byte();
+                    }
+                }
+            }
+        }
         if self.offsets {
-            self.pool.push(&mut run.offsets, offsets.0);
-            self.pool.push(&mut run.offsets, offsets.1);
-            bytes = bytes.saturating_add(8);
+            let start = last.offsets.0.wrapping_add(r.read_i32());
+            let end = start.wrapping_add(r.read_i32());
+            last.offsets = (start, end);
         }
-        if let Some(p) = &mut self.payloads {
-            let p = &mut p[id];
-            p.bytes.extend_from_slice(payload);
-            p.lengths.push(to_u32(payload.len()));
-            bytes = bytes.saturating_add(4).saturating_add(payload.len());
+        len
+    }
+
+    /// Term `id`'s documents and occurrences decoded onto `out`'s columns,
+    /// in buffered order.
+    fn decode(&self, id: u32, out: &mut Columns) -> Result<()> {
+        let run = &self.runs[id as usize];
+        let [docs_start, prox_start] = self.starts[id as usize];
+        let docs_from = out.docs.len();
+        let mut r = self.pool.reader(docs_start, run.docs);
+        let mut doc = 0i32;
+        while !r.eof() {
+            let freq = r.next_doc(&mut doc);
+            out.docs.push((doc, freq));
         }
-        self.bytes = self.bytes.saturating_add(bytes);
+        if run.doc_count > 0 {
+            out.docs.push((run.last_doc, run.freq));
+        }
+        if !self.positions {
+            return Ok(());
+        }
+        let pos_from = out.positions.len();
+        let mut r = self.pool.reader(prox_start, run.prox);
+        let mut seen = 0u32;
+        for i in docs_from..out.docs.len() {
+            let freq = u32::try_from(out.docs[i].1).unwrap_or(0);
+            let mut last = Occurrence::default();
+            for _ in 0..freq {
+                if r.eof() {
+                    return Err(explicit_error(
+                        "buffered positions disagree with the term frequencies",
+                    ));
+                }
+                let len = self.read_occurrence(
+                    &mut r,
+                    &mut last,
+                    self.payloads.then_some(&mut out.payload_bytes),
+                );
+                out.positions.push(last.position);
+                if self.offsets {
+                    out.offsets.push(last.offsets);
+                }
+                if self.payloads {
+                    out.payload_lengths.push(len);
+                }
+            }
+            seen = seen.saturating_add(freq);
+            out.ends
+                .push(to_u32(out.positions.len().saturating_sub(pos_from)));
+        }
+        // A document's positions are as many as its frequency.
+        if seen != run.occurrences || !r.eof() {
+            return Err(explicit_error(
+                "buffered positions disagree with the term frequencies",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Term `id`'s documents `start..end`, numbered from `start`, with their
+    /// positions, offsets and payloads, appended to `out`'s columns (unsorted
+    /// buffers): nothing when none holds the term. Its streams are read from
+    /// `from`, where they stood at `start`, when given, and only up to
+    /// `end`. Returns where they stand at `end`.
+    fn lay_out_range(
+        &self,
+        id: u32,
+        (start, end): (i32, i32),
+        from: Option<&Cursor>,
+        out: &mut FlushedField,
+    ) -> Result<Cursor> {
+        let docs_from = out.cols.docs.len();
+        let pos_from = out.cols.positions.len();
+        let len_from = out.cols.payload_lengths.len();
+        let bytes_from = out.cols.payload_bytes.len();
+        let run = &self.runs[id as usize];
+        let [docs_start, prox_start] = self.starts[id as usize];
+        let mut docs = match from {
+            Some(c) => self.pool.resume(c.docs, run.docs),
+            None => self.pool.reader(docs_start, run.docs),
+        };
+        let mut prox = self.positions.then(|| match from.and_then(|c| c.prox) {
+            Some(p) => self.pool.resume(p, run.prox),
+            None => self.pool.reader(prox_start, run.prox),
+        });
+        let mut doc = from.map_or(0, |c| c.doc);
+        let cursor = loop {
+            let here = Cursor {
+                docs: docs.pos(),
+                prox: prox.as_ref().map(SliceReader::pos),
+                doc,
+            };
+            if docs.eof() {
+                // The newest document is not in the stream yet: a range
+                // from `here` reads it once it is.
+                if run.doc_count > 0 && (start..end).contains(&run.last_doc) {
+                    self.take_doc(
+                        run.last_doc.wrapping_sub(start),
+                        run.freq,
+                        prox.as_mut(),
+                        pos_from,
+                        &mut out.cols,
+                    );
+                }
+                break here;
+            }
+            let code = docs.read_vlong();
+            doc = doc.wrapping_add((code >> 1) as u32 as i32);
+            let freq = if code & 1 != 0 { 1 } else { docs.read_i32() };
+            if doc >= end {
+                break here;
+            }
+            if doc < start {
+                if let Some(p) = prox.as_mut() {
+                    let mut last = Occurrence::default();
+                    for _ in 0..freq {
+                        self.read_occurrence(p, &mut last, None);
+                    }
+                }
+            } else {
+                self.take_doc(
+                    doc.wrapping_sub(start),
+                    freq,
+                    prox.as_mut(),
+                    pos_from,
+                    &mut out.cols,
+                );
+            }
+        };
+        if out.cols.docs.len() > docs_from {
+            out.term_bytes.extend_from_slice(self.terms.term(id));
+            out.terms.push(TermSpan {
+                term_end: to_u32(out.term_bytes.len()),
+                docs: (to_u32(docs_from), to_u32(out.cols.docs.len())),
+                positions: (to_u32(pos_from), to_u32(out.cols.positions.len())),
+                payload_lengths: (to_u32(len_from), to_u32(out.cols.payload_lengths.len())),
+                payload_bytes: (to_u32(bytes_from), to_u32(out.cols.payload_bytes.len())),
+            });
+        }
+        Ok(cursor)
+    }
+
+    /// One document of a term, `freq` occurrences read from `prox`, onto
+    /// `cols` (its `ends` relative to the term's first position, at
+    /// `pos_from`).
+    fn take_doc(
+        &self,
+        doc: i32,
+        freq: i32,
+        prox: Option<&mut SliceReader<'_>>,
+        pos_from: usize,
+        cols: &mut Columns,
+    ) {
+        cols.docs.push((doc, freq));
+        let Some(p) = prox else {
+            return;
+        };
+        let mut last = Occurrence::default();
+        for _ in 0..freq {
+            let len = self.read_occurrence(
+                p,
+                &mut last,
+                self.payloads.then_some(&mut cols.payload_bytes),
+            );
+            cols.positions.push(last.position);
+            if self.offsets {
+                cols.offsets.push(last.offsets);
+            }
+            if self.payloads {
+                cols.payload_lengths.push(len);
+            }
+        }
+        cols.ends
+            .push(to_u32(cols.positions.len().saturating_sub(pos_from)));
     }
 
     /// Term `id`'s documents, positions, offsets and payloads, appended to
@@ -411,43 +1140,21 @@ impl FieldRuns {
         scratch: &mut Scratch,
         out: &mut FlushedField,
     ) -> Result<()> {
-        let run = &self.runs[id as usize];
-        let payloads = self.payloads.as_ref().map(|p| &p[id as usize]);
-        let docs_from = out.docs.len();
-        let pos_from = out.positions.len();
-        let len_from = out.payload_lengths.len();
-        let bytes_from = out.payload_bytes.len();
-        let mut pairs = self.pool.read(&run.docs, run.doc_count.saturating_mul(2));
-        let mut freqs = 0u32;
+        let docs_from = out.cols.docs.len();
+        let pos_from = out.cols.positions.len();
+        let len_from = out.cols.payload_lengths.len();
+        let bytes_from = out.cols.payload_bytes.len();
         match old_to_new {
             None => {
-                while let (Some(doc), Some(freq)) = (pairs.next(), pairs.next()) {
-                    out.docs.push((doc, freq));
-                    if self.positions {
-                        freqs = freqs.saturating_add(u32::try_from(freq).unwrap_or(0));
-                        out.ends.push(freqs);
-                    }
-                }
-                if self.positions {
-                    out.positions
-                        .extend(self.pool.read(&run.positions, run.occurrences));
-                }
-                if self.offsets {
-                    let mut o = self
-                        .pool
-                        .read(&run.offsets, run.occurrences.saturating_mul(2));
-                    while let (Some(s), Some(e)) = (o.next(), o.next()) {
-                        out.offsets.push((s, e));
-                    }
-                }
-                if let Some(p) = payloads {
-                    out.payload_lengths.extend_from_slice(&p.lengths);
-                    out.payload_bytes.extend_from_slice(&p.bytes);
-                }
+                // `ends` are relative to the term's first position.
+                self.decode(id, &mut out.cols)?;
             }
             Some(map) => {
-                scratch.clear();
-                while let (Some(doc), Some(freq)) = (pairs.next(), pairs.next()) {
+                let t = &mut scratch.cols;
+                t.clear();
+                scratch.order.clear();
+                self.decode(id, t)?;
+                for (i, &(doc, _)) in t.docs.iter().enumerate() {
                     let new = usize::try_from(doc)
                         .ok()
                         .and_then(|d| map.get(d))
@@ -455,98 +1162,74 @@ impl FieldRuns {
                         .ok_or_else(|| {
                             explicit_error("a buffered document outside the sort map")
                         })?;
-                    let i = scratch.docs.len();
-                    scratch.docs.push((doc, freq));
                     scratch.order.push((new, i));
-                    let n = if self.positions {
-                        u32::try_from(freq).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    scratch.starts.push((freqs, scratch.payload_at));
-                    if let Some(p) = payloads {
-                        let lengths = p
-                            .lengths
-                            .get(freqs as usize..freqs.saturating_add(n) as usize)
-                            .unwrap_or_default();
-                        scratch.payload_at = lengths
-                            .iter()
-                            .fold(scratch.payload_at, |a, &l| a.saturating_add(l as usize));
-                    }
-                    freqs = freqs.saturating_add(n);
-                }
-                if self.positions {
-                    scratch
-                        .positions
-                        .extend(self.pool.read(&run.positions, run.occurrences));
-                }
-                if self.offsets {
-                    let mut o = self
-                        .pool
-                        .read(&run.offsets, run.occurrences.saturating_mul(2));
-                    while let (Some(s), Some(e)) = (o.next(), o.next()) {
-                        scratch.offsets.push((s, e));
-                    }
                 }
                 scratch.order.sort_unstable();
+                // Where each document's payload bytes start.
+                scratch.payload_at.clear();
+                if self.payloads {
+                    let mut at = 0usize;
+                    let mut from = 0usize;
+                    for &end in &t.ends {
+                        scratch.payload_at.push(at);
+                        at = t.payload_lengths[from..end as usize]
+                            .iter()
+                            .fold(at, |a, &l| a.saturating_add(l as usize));
+                        from = end as usize;
+                    }
+                }
                 let mut written = 0u32;
                 for &(new, i) in &scratch.order {
-                    out.docs.push((new, scratch.docs[i].1));
+                    out.cols.docs.push((new, t.docs[i].1));
                     if !self.positions {
                         continue;
                     }
-                    let (from, bytes_at) = scratch.starts[i];
-                    let to = scratch
-                        .starts
-                        .get(i.saturating_add(1))
-                        .map_or(freqs, |&(s, _)| s);
+                    let from = i.checked_sub(1).map_or(0, |p| t.ends[p]);
+                    let to = t.ends[i];
                     let span = from as usize..to as usize;
                     written = written.saturating_add(to.saturating_sub(from));
-                    out.ends.push(written);
-                    out.positions
-                        .extend_from_slice(scratch.positions.get(span.clone()).unwrap_or_default());
+                    out.cols.ends.push(written);
+                    out.cols
+                        .positions
+                        .extend_from_slice(t.positions.get(span.clone()).unwrap_or_default());
                     if self.offsets {
-                        out.offsets.extend_from_slice(
-                            scratch.offsets.get(span.clone()).unwrap_or_default(),
-                        );
+                        out.cols
+                            .offsets
+                            .extend_from_slice(t.offsets.get(span.clone()).unwrap_or_default());
                     }
-                    if let Some(p) = payloads {
-                        let lengths = p.lengths.get(span).unwrap_or_default();
+                    if self.payloads {
+                        let lengths = t.payload_lengths.get(span).unwrap_or_default();
+                        let at = scratch.payload_at.get(i).copied().unwrap_or(0);
                         let end = lengths
                             .iter()
-                            .fold(bytes_at, |a, &l| a.saturating_add(l as usize));
-                        out.payload_lengths.extend_from_slice(lengths);
-                        out.payload_bytes
-                            .extend_from_slice(p.bytes.get(bytes_at..end).unwrap_or_default());
+                            .fold(at, |a, &l| a.saturating_add(l as usize));
+                        out.cols.payload_lengths.extend_from_slice(lengths);
+                        out.cols
+                            .payload_bytes
+                            .extend_from_slice(t.payload_bytes.get(at..end).unwrap_or_default());
                     }
                 }
             }
         }
-        // A document's positions are as many as its frequency.
-        if self.positions && freqs != run.occurrences {
-            return Err(explicit_error(
-                "buffered positions disagree with the term frequencies",
-            ));
-        }
         out.term_bytes.extend_from_slice(self.terms.term(id));
         out.terms.push(TermSpan {
             term_end: to_u32(out.term_bytes.len()),
-            docs: (to_u32(docs_from), to_u32(out.docs.len())),
-            positions: (to_u32(pos_from), to_u32(out.positions.len())),
-            payload_lengths: (to_u32(len_from), to_u32(out.payload_lengths.len())),
-            payload_bytes: (to_u32(bytes_from), to_u32(out.payload_bytes.len())),
+            docs: (to_u32(docs_from), to_u32(out.cols.docs.len())),
+            positions: (to_u32(pos_from), to_u32(out.cols.positions.len())),
+            payload_lengths: (to_u32(len_from), to_u32(out.cols.payload_lengths.len())),
+            payload_bytes: (to_u32(bytes_from), to_u32(out.cols.payload_bytes.len())),
         });
         Ok(())
     }
 
-    /// The field laid out for the postings writer: [`PendingPostings::flushed`].
-    fn flushed(&self, number: i32, old_to_new: Option<&[usize]>) -> Result<FlushedField> {
-        let ids: Vec<u32> = self
-            .terms
-            .sorted_ids()
-            .into_iter()
-            .filter(|&id| self.runs[id as usize].doc_count > 0)
-            .collect();
+    /// The field laid out for the postings writer: [`PendingPostings::flushed_below`].
+    fn flushed(
+        &self,
+        number: i32,
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+    ) -> Result<FlushedField> {
+        let ids = self.ids_for(range);
         let (docs, occurrences) = ids.iter().fold((0usize, 0usize), |(d, o), &id| {
             let r = &self.runs[id as usize];
             (
@@ -561,100 +1244,269 @@ impl FieldRuns {
         let mut out = FlushedField {
             number,
             doc_count: self.doc_count,
-            payloads: self.payloads.is_some(),
             term_bytes: Vec::with_capacity(term_bytes),
             terms: Vec::with_capacity(ids.len()),
-            docs: Vec::with_capacity(docs),
-            ends: Vec::with_capacity(if self.positions { docs } else { 0 }),
-            positions: Vec::with_capacity(occurrences),
-            offsets: Vec::with_capacity(if self.offsets { occurrences } else { 0 }),
-            payload_lengths: Vec::new(),
-            payload_bytes: Vec::new(),
+            cols: Columns {
+                docs: Vec::with_capacity(docs),
+                ends: Vec::with_capacity(if self.positions { docs } else { 0 }),
+                positions: Vec::with_capacity(occurrences),
+                offsets: Vec::with_capacity(if self.offsets { occurrences } else { 0 }),
+                payload_lengths: Vec::with_capacity(if self.payloads { occurrences } else { 0 }),
+                payload_bytes: Vec::new(),
+            },
         };
         let mut scratch = Scratch::default();
-        for id in ids {
-            self.lay_out(id, old_to_new, &mut scratch, &mut out)?;
+        let mut cursors = self.cursors_for(range, old_to_new)?;
+        // Byte order visits the terms' runs and streams at random: start
+        // loading a term's run and stream starts a few terms ahead, and its
+        // bytes and streams' first bytes once those are in cache.
+        for (i, &id) in ids.iter().enumerate() {
+            self.prefetch_layout(&ids, i);
+            self.lay_out_any(id, old_to_new, &mut cursors, &mut scratch, &mut out)?;
         }
+        self.keep_cursors(cursors);
         Ok(out)
+    }
+
+    /// The field's terms in byte order, laid out a batch at a time into one
+    /// reused [`FlushedField`] and handed to `write` as views: the flush
+    /// never holds the whole field decoded.
+    fn stream(
+        &self,
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+        write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
+    ) -> Result<()> {
+        let ids = self.ids_for(range);
+        let mut out = FlushedField {
+            number: 0,
+            doc_count: self.doc_count,
+            term_bytes: Vec::new(),
+            terms: Vec::new(),
+            cols: Columns::default(),
+        };
+        let mut scratch = Scratch::default();
+        let mut cursors = self.cursors_for(range, old_to_new)?;
+        for (i, &id) in ids.iter().enumerate() {
+            self.prefetch_layout(&ids, i);
+            self.lay_out_any(id, old_to_new, &mut cursors, &mut scratch, &mut out)?;
+            if out.terms.len() >= STREAM_TERMS
+                || out.cols.docs.len().max(out.cols.positions.len()) >= STREAM_ENTRIES
+            {
+                write(&out.views())?;
+                out.clear();
+            }
+        }
+        if !out.terms.is_empty() {
+            write(&out.views())?;
+        }
+        self.keep_cursors(cursors);
+        Ok(())
+    }
+
+    /// The ids of the terms a layout writes, in byte order: those with a
+    /// document, and for a range `start..` only those with one at or past
+    /// `start`.
+    fn ids_for(&self, range: Option<(i32, i32)>) -> Vec<u32> {
+        let from = range.map_or(i32::MIN, |(start, _)| start);
+        self.terms.sorted_ids_where(|id| {
+            let r = &self.runs[id as usize];
+            r.doc_count > 0 && r.last_doc >= from
+        })
+    }
+
+    /// For a layout of `range`, the cursors at its start when kept, and the
+    /// set at its end to fill.
+    fn cursors_for(
+        &self,
+        range: Option<(i32, i32)>,
+        old_to_new: Option<&[usize]>,
+    ) -> Result<Option<RangeCursors>> {
+        let Some((start, end)) = range else {
+            return Ok(None);
+        };
+        if old_to_new.is_some() {
+            return Err(explicit_error(
+                "a document range applies to unsorted buffers only",
+            ));
+        }
+        let kept = lock_cursors(&self.cursors)
+            .iter()
+            .find(|(at, _)| *at == start)
+            .map(|(_, c)| std::sync::Arc::clone(c));
+        let next = kept.as_deref().cloned().unwrap_or_default();
+        Ok(Some(RangeCursors {
+            range: (start, end),
+            from: kept,
+            next,
+        }))
+    }
+
+    /// Keeps the cursors a range layout reached, dropping the oldest set
+    /// past [`CURSOR_SETS`].
+    fn keep_cursors(&self, cursors: Option<RangeCursors>) {
+        let Some(c) = cursors else {
+            return;
+        };
+        let mut sets = lock_cursors(&self.cursors);
+        sets.retain(|(at, _)| *at != c.range.1);
+        sets.push((c.range.1, std::sync::Arc::new(c.next)));
+        if sets.len() > CURSOR_SETS {
+            sets.remove(0);
+        }
+    }
+
+    /// [`Self::lay_out_range`] under `cursors`, else [`Self::lay_out`].
+    fn lay_out_any(
+        &self,
+        id: u32,
+        old_to_new: Option<&[usize]>,
+        cursors: &mut Option<RangeCursors>,
+        scratch: &mut Scratch,
+        out: &mut FlushedField,
+    ) -> Result<()> {
+        let Some(c) = cursors else {
+            return self.lay_out(id, old_to_new, scratch, out);
+        };
+        let from = c.from.as_ref().and_then(|f| f.get(&id));
+        let at = self.lay_out_range(id, c.range, from, out)?;
+        if self.runs[id as usize].doc_count >= CURSOR_DOCS {
+            c.next.insert(id, at);
+        }
+        Ok(())
+    }
+
+    /// Starts loading what laying out `ids[i]`'s successors reads: see
+    /// [`Self::flushed`].
+    #[inline]
+    fn prefetch_layout(&self, ids: &[u32], i: usize) {
+        if let Some(&ahead) = ids.get(i.saturating_add(LAYOUT_PREFETCH)) {
+            lucene_util::simd::prefetch(&self.runs, ahead as usize);
+            lucene_util::simd::prefetch(&self.starts, ahead as usize);
+            self.terms.prefetch_start(ahead);
+        }
+        if let Some(&near) = ids.get(i.saturating_add(LAYOUT_PREFETCH / 2)) {
+            self.terms.prefetch_term(near);
+            if let Some(&[docs, prox]) = self.starts.get(near as usize) {
+                self.pool.prefetch(docs);
+                if self.positions {
+                    self.pool.prefetch(prox);
+                }
+            }
+        }
     }
 
     /// `document`'s occurrences of `id`, as [`InvertedField`] holds them:
     /// what tests read back after inverting a document.
     #[cfg(test)]
     fn doc_term(&self, id: u32, doc: i32) -> Option<super::explicit::InvertedTerm> {
-        let run = &self.runs[id as usize];
-        let pairs: Vec<i32> = self
-            .pool
-            .read(&run.docs, run.doc_count.saturating_mul(2))
-            .collect();
-        let i = pairs.chunks(2).position(|c| c[0] == doc)?;
-        let freq = pairs[i.saturating_mul(2).saturating_add(1)];
-        let (from, n) = if self.positions {
-            let from: usize = pairs.chunks(2).take(i).map(|c| c[1] as usize).sum();
-            (from, freq as usize)
+        let mut cols = Columns::default();
+        self.decode(id, &mut cols).ok()?;
+        let i = cols.docs.iter().position(|&(d, _)| d == doc)?;
+        let freq = cols.docs[i].1;
+        let (from, to) = if self.positions {
+            (
+                i.checked_sub(1).map_or(0, |p| cols.ends[p] as usize),
+                cols.ends[i] as usize,
+            )
         } else {
             (0, 0)
         };
-        let positions: Vec<i32> = self
-            .pool
-            .read(&run.positions, run.occurrences)
-            .skip(from)
-            .take(n)
-            .collect();
-        let offsets: Vec<i32> = if self.offsets {
-            self.pool
-                .read(&run.offsets, run.occurrences.saturating_mul(2))
-                .skip(from.saturating_mul(2))
-                .take(n.saturating_mul(2))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let payloads = self.payloads.as_ref().map_or_else(Vec::new, |p| {
-            let p = &p[id as usize];
-            let mut at: usize = p.lengths[..from].iter().map(|&l| l as usize).sum();
-            p.lengths[from..from.saturating_add(n)]
+        let payloads = if self.payloads {
+            let mut at: usize = cols.payload_lengths[..from]
+                .iter()
+                .map(|&l| l as usize)
+                .sum();
+            cols.payload_lengths[from..to]
                 .iter()
                 .map(|&l| {
                     let end = at.saturating_add(l as usize);
-                    let b = p.bytes[at..end].to_vec();
+                    let b = cols.payload_bytes[at..end].to_vec();
                     at = end;
                     b
                 })
                 .collect()
-        });
+        } else {
+            Vec::new()
+        };
         Some(super::explicit::InvertedTerm {
             term: self.terms.term(id).to_vec(),
             freq,
-            positions,
-            offsets: offsets.chunks(2).map(|c| (c[0], c[1])).collect(),
+            positions: cols.positions[from..to].to_vec(),
+            offsets: cols.offsets.get(from..to).unwrap_or_default().to_vec(),
             payloads,
         })
+    }
+
+    /// Cuts term `id`, whose pending document is at or past `cut_at`, back
+    /// to its documents before `cut_at`: the newest of them becomes the
+    /// run's pending document again, taken back off the documents stream.
+    fn rollback_term(&mut self, id: usize, cut_at: i32) {
+        let run = self.runs[id];
+        let [docs_start, prox_start] = self.starts[id];
+        // The written documents before `cut_at`, each with where its entry
+        // starts and its delta.
+        let mut kept: Vec<(SlicePos, i32, i32, i32)> = Vec::new();
+        let mut r = self.pool.reader(docs_start, run.docs);
+        let mut doc = 0i32;
+        while !r.eof() {
+            let pos = r.pos();
+            let code = r.read_vlong();
+            let delta = (code >> 1) as u32 as i32;
+            doc = doc.wrapping_add(delta);
+            let freq = if code & 1 != 0 { 1 } else { r.read_i32() };
+            if doc >= cut_at {
+                break;
+            }
+            kept.push((pos, doc, delta, freq));
+        }
+        let occurrences: u32 = kept
+            .iter()
+            .map(|k| u32::try_from(k.3).unwrap_or(0))
+            .fold(0, u32::saturating_add);
+        let mut new = TermRun {
+            docs: docs_start,
+            prox: prox_start,
+            ..TermRun::NEW
+        };
+        let docs_cut = match kept.last() {
+            Some(&(pos, d, delta, freq)) => {
+                new.doc_count = to_u32(kept.len());
+                new.last_doc = d;
+                new.last_doc_code = delta;
+                new.freq = freq;
+                pos
+            }
+            None => self.pool.reader(docs_start, docs_start).pos(),
+        };
+        new.docs = self.pool.cut(docs_cut);
+        if self.positions {
+            let mut r = self.pool.reader(prox_start, run.prox);
+            let mut last = Occurrence::default();
+            for _ in 0..occurrences {
+                if r.eof() {
+                    break;
+                }
+                self.read_occurrence(&mut r, &mut last, None);
+            }
+            let pos = r.pos();
+            new.prox = self.pool.cut(pos);
+            new.occurrences = occurrences;
+        }
+        self.runs[id] = new;
+        self.unseal_past(id);
     }
 }
 
 /// Reused per term by [`FieldRuns::lay_out`] under an index sort.
 #[derive(Default)]
 struct Scratch {
-    docs: Vec<(i32, i32)>,
-    /// `(new doc, index into docs)`, sorted into the new order.
+    cols: Columns,
+    /// `(new doc, index into the term's documents)`, sorted into the new
+    /// order.
     order: Vec<(i32, usize)>,
-    /// Per document: where its positions and payload bytes start.
-    starts: Vec<(u32, usize)>,
-    payload_at: usize,
-    positions: Vec<i32>,
-    offsets: Vec<(i32, i32)>,
-}
-
-impl Scratch {
-    fn clear(&mut self) {
-        self.docs.clear();
-        self.order.clear();
-        self.starts.clear();
-        self.payload_at = 0;
-        self.positions.clear();
-        self.offsets.clear();
-    }
+    /// Per document: where its payload bytes start.
+    payload_at: Vec<usize>,
 }
 
 /// Where the buffered postings stood before a document or block: see
@@ -672,13 +1524,17 @@ struct FieldMark {
     doc_count: i32,
     last_doc: i32,
     payloads: bool,
-    bytes: usize,
+    /// `sumDocFreq` and `sumTotalTermFreq`.
+    sums: [i64; 2],
 }
 
 /// Every field's buffered postings: see the module doc.
 #[derive(Debug, Default)]
 pub(crate) struct PendingPostings {
     fields: BTreeMap<i32, FieldRuns>,
+    /// Whether fields created from now on seal their terms' full blocks,
+    /// for live search to read ([`PendingPostings::seal_blocks`]).
+    seal: bool,
 }
 
 impl PendingPostings {
@@ -687,7 +1543,7 @@ impl PendingPostings {
     pub(crate) fn field(&mut self, number: i32, index_options: IndexOptions) -> &mut FieldRuns {
         self.fields
             .entry(number)
-            .or_insert_with(|| FieldRuns::new(index_options))
+            .or_insert_with(|| FieldRuns::new(index_options, self.seal))
     }
 
     /// Inverts an explicit document's `field` for document `doc`, the
@@ -706,17 +1562,15 @@ impl PendingPostings {
         // the table outgrows the caches, and lookups waiting on their slots
         // were most of the cost of buffering a document. Then, a few terms
         // ahead of the one being added, the likely term's bytes and run, and
-        // a little later the pool ints its run appends to.
-        let mut hashes = std::mem::take(&mut f.hashes);
-        hashes.clear();
-        for t in field.terms.iter() {
-            f.terms.prefetch_slot(t.hash);
-            hashes.push(t.hash);
+        // a little later the pool bytes its run appends to.
+        let hashes = field.terms.hashes();
+        for &h in hashes {
+            f.terms.prefetch_slot(h);
         }
         for (i, t) in field.terms.iter().enumerate() {
-            f.prefetch_ahead(&hashes, i);
+            f.prefetch_ahead(hashes, i);
             // every term once: `validate_explicit` refused a repeat
-            let slot = f.occurrence_hashed(doc, t.term, hashes[i]);
+            let slot = f.occurrence_hashed(doc, t.term, t.hash);
             f.first_in_doc(slot, doc, t.freq);
             // the postings writer reads positions and offsets only for a
             // field that indexes positions
@@ -727,8 +1581,14 @@ impl PendingPostings {
                 }
             }
         }
-        f.hashes = hashes;
         Ok(())
+    }
+
+    /// Seals terms' full blocks from now on, for live search to read in
+    /// their flushed form; for fields created before only once the buffer
+    /// is new.
+    pub(crate) fn seal_blocks(&mut self) {
+        self.seal = true;
     }
 
     /// Marks where the postings stand before document `doc` (a block's
@@ -744,8 +1604,8 @@ impl PendingPostings {
                         terms: f.runs.len(),
                         doc_count: f.doc_count,
                         last_doc: f.last_doc,
-                        payloads: f.payloads.is_some(),
-                        bytes: f.bytes,
+                        payloads: f.payloads,
+                        sums: [f.sum_doc_freq, f.sum_total_term_freq],
                     };
                     (n, mark)
                 })
@@ -757,7 +1617,8 @@ impl PendingPostings {
     /// dropped, terms it did not know leave the dictionary, and every run
     /// loses its documents from the checkpoint's on. It walks every buffered
     /// term, where Java marks the failed document deleted in O(1): a stream
-    /// of refused documents against a large buffer pays per refusal.
+    /// of refused documents against a large buffer pays per refusal. The
+    /// pool keeps the slices the undone documents took.
     pub(crate) fn rollback(&mut self, checkpoint: Checkpoint) {
         let known: BTreeMap<i32, FieldMark> = checkpoint.fields.into_iter().collect();
         let cut_at = checkpoint.doc;
@@ -767,49 +1628,21 @@ impl PendingPostings {
             };
             if f.runs.len() > mark.terms {
                 f.runs.truncate(mark.terms);
+                f.starts.truncate(mark.terms);
+                f.last_offsets.truncate(mark.terms);
                 f.terms.truncate(mark.terms);
-                if let Some(p) = &mut f.payloads {
-                    p.truncate(mark.terms);
+                for id in mark.terms..f.sealed_of.len() {
+                    f.unseal(id, 0);
+                }
+                f.sealed_of.truncate(mark.terms);
+            }
+            for id in 0..f.runs.len() {
+                if f.runs[id].last_doc >= cut_at {
+                    f.rollback_term(id, cut_at);
                 }
             }
-            if !mark.payloads {
-                f.payloads = None;
-            }
-            for (id, run) in f.runs.iter_mut().enumerate() {
-                if run.last_doc < cut_at {
-                    continue;
-                }
-                let mut pairs = f.pool.read(&run.docs, run.doc_count.saturating_mul(2));
-                let (mut keep, mut occurrences, mut last) = (0u32, 0u32, None);
-                while let (Some(doc), Some(freq)) = (pairs.next(), pairs.next()) {
-                    if doc >= cut_at {
-                        break;
-                    }
-                    keep = keep.saturating_add(1);
-                    occurrences = occurrences.saturating_add(u32::try_from(freq).unwrap_or(0));
-                    last = Some((doc, freq));
-                }
-                run.docs = f.pool.cut(&run.docs, keep.saturating_mul(2));
-                run.doc_count = keep;
-                (run.last_doc, run.freq, run.freq_at) = match last {
-                    Some((doc, freq)) => (doc, freq, run.docs.write.saturating_sub(1)),
-                    None => (-1, 0, 0),
-                };
-                if f.positions {
-                    run.positions = f.pool.cut(&run.positions, occurrences);
-                    run.offsets = f.pool.cut(&run.offsets, occurrences.saturating_mul(2));
-                    run.occurrences = occurrences;
-                    if let Some(p) = f.payloads.as_mut().and_then(|p| p.get_mut(id)) {
-                        p.lengths.truncate(occurrences as usize);
-                        let bytes = p
-                            .lengths
-                            .iter()
-                            .fold(0usize, |a, &l| a.saturating_add(l as usize));
-                        p.bytes.truncate(bytes);
-                    }
-                }
-            }
-            (f.doc_count, f.last_doc, f.bytes) = (mark.doc_count, mark.last_doc, mark.bytes);
+            (f.doc_count, f.last_doc, f.payloads) = (mark.doc_count, mark.last_doc, mark.payloads);
+            [f.sum_doc_freq, f.sum_total_term_freq] = mark.sums;
             true
         });
     }
@@ -819,44 +1652,86 @@ impl PendingPostings {
     fn payload_fields(&self) -> impl Iterator<Item = i32> + '_ {
         self.fields
             .iter()
-            .filter(|(_, f)| f.payloads.is_some())
+            .filter(|(_, f)| f.payloads)
             .map(|(&n, _)| n)
+    }
+
+    /// The fields a flush writes postings for, field ascending.
+    pub(crate) fn fields_to_flush(&self) -> Vec<FieldToFlush> {
+        self.fields
+            .iter()
+            .filter(|(_, f)| f.doc_count > 0)
+            .map(|(&number, f)| FieldToFlush {
+                number,
+                doc_count: f.doc_count,
+                payloads: f.payloads,
+            })
+            .collect()
+    }
+
+    /// Field `number`'s postings handed to `write` in term order, a batch
+    /// at a time, renumbered by `old_to_new` as [`Self::flushed_below`] does.
+    ///
+    /// With `range` (`start..end`, unsorted buffers only), the documents in
+    /// it alone, numbered from `start`: the postings a flush of just those
+    /// documents writes.
+    pub(crate) fn stream_field_below(
+        &self,
+        number: i32,
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+        write: &mut dyn FnMut(&[TermView<'_>]) -> Result<()>,
+    ) -> Result<()> {
+        match self.fields.get(&number) {
+            Some(f) if f.doc_count > 0 => f.stream(old_to_new, range, write),
+            _ => Ok(()),
+        }
     }
 
     /// Every field's postings laid out for the postings writer, documents
     /// renumbered by `old_to_new` (buffered doc id to sorted) under an index
     /// sort. The buffer is left as it was.
+    #[cfg(test)]
     pub(crate) fn flushed(&self, old_to_new: Option<&[usize]>) -> Result<FlushedPostings> {
+        self.flushed_below(old_to_new, None)
+    }
+
+    /// Every field's postings laid out (see `flushed`), for the documents
+    /// in `range` only when given (see [`Self::stream_field_below`]). Each
+    /// field's `doc_count` stays the whole buffer's: the caller knows its own.
+    pub(crate) fn flushed_below(
+        &self,
+        old_to_new: Option<&[usize]>,
+        range: Option<(i32, i32)>,
+    ) -> Result<FlushedPostings> {
         let fields = self
             .fields
             .iter()
             .filter(|(_, f)| f.doc_count > 0)
-            .map(|(&n, f)| f.flushed(n, old_to_new))
+            .map(|(&n, f)| f.flushed(n, old_to_new, range))
             .collect::<Result<_>>()?;
         Ok(FlushedPostings { fields })
     }
 
-    /// [`Self::flushed`], freeing each field's buffer once it is laid out.
-    pub(crate) fn into_flushed(self, old_to_new: Option<&[usize]>) -> Result<FlushedPostings> {
-        let fields = self
-            .fields
-            .into_iter()
-            .filter(|(_, f)| f.doc_count > 0)
-            .map(|(n, f)| f.flushed(n, old_to_new))
-            .collect::<Result<_>>()?;
-        Ok(FlushedPostings { fields })
-    }
-
-    /// What the buffered postings count toward the RAM buffer.
+    /// What the buffered postings count toward the RAM buffer: the heap
+    /// they hold.
     pub(crate) fn bytes(&self) -> usize {
         self.fields
             .values()
-            .map(|f| f.bytes)
+            .map(FieldRuns::ram_bytes)
             .fold(0, usize::saturating_add)
     }
 
     pub(crate) fn clear(&mut self) {
         self.fields.clear();
+    }
+
+    /// Keeps only the cursors at the documents in `at` (the starts of the
+    /// ranges likely written next), in every field.
+    pub(crate) fn keep_cursors_at(&self, at: &[i32]) {
+        for f in self.fields.values() {
+            lock_cursors(&f.cursors).retain(|(d, _)| at.contains(d));
+        }
     }
 
     /// Field `number`'s terms of document `doc`, in no particular order.
@@ -868,6 +1743,16 @@ impl PendingPostings {
                 .collect()
         })
     }
+}
+
+/// A field with buffered postings: [`PendingPostings::fields_to_flush`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FieldToFlush {
+    pub(crate) number: i32,
+    /// `docsSeen`.
+    pub(crate) doc_count: i32,
+    /// `storePayloads`.
+    pub(crate) payloads: bool,
 }
 
 /// One term's place in a [`FlushedField`]'s columns.
@@ -889,84 +1774,59 @@ struct TermSpan {
 struct FlushedField {
     number: i32,
     doc_count: i32,
-    payloads: bool,
     term_bytes: Vec<u8>,
     terms: Vec<TermSpan>,
-    docs: Vec<(i32, i32)>,
-    /// Per document, where its positions end within its term's: parallel
-    /// to `docs` for a field with positions, else empty.
-    ends: Vec<u32>,
-    positions: Vec<i32>,
-    offsets: Vec<(i32, i32)>,
-    payload_lengths: Vec<u32>,
-    payload_bytes: Vec<u8>,
+    cols: Columns,
 }
 
-/// The buffered postings laid out for a flush: [`PendingPostings::flushed`].
+impl FlushedField {
+    /// Every term's postings as the writer reads them, in place.
+    fn views(&self) -> Vec<TermView<'_>> {
+        let mut term_start = 0usize;
+        self.terms
+            .iter()
+            .map(|s| {
+                let range = |(a, b): (u32, u32)| a as usize..b as usize;
+                let term = &self.term_bytes[term_start..s.term_end as usize];
+                term_start = s.term_end as usize;
+                let docs = range(s.docs);
+                let positions = range(s.positions);
+                let c = &self.cols;
+                TermView {
+                    term,
+                    docs: &c.docs[docs.clone()],
+                    ends: c.ends.get(docs).unwrap_or_default(),
+                    positions: &c.positions[positions.clone()],
+                    offsets: c.offsets.get(positions).unwrap_or_default(),
+                    payload_lengths: &c.payload_lengths[range(s.payload_lengths)],
+                    payload_bytes: &c.payload_bytes[range(s.payload_bytes)],
+                }
+            })
+            .collect()
+    }
+
+    /// Empties the field, keeping its capacity.
+    fn clear(&mut self) {
+        self.term_bytes.clear();
+        self.terms.clear();
+        self.cols.clear();
+    }
+}
+
+/// The buffered postings laid out for a flush: [`PendingPostings::flushed_below`].
 #[derive(Debug)]
 pub(crate) struct FlushedPostings {
     fields: Vec<FlushedField>,
 }
 
 impl FlushedPostings {
-    /// The fields that store payloads.
-    pub(crate) fn payload_fields(&self) -> impl Iterator<Item = i32> + '_ {
-        self.fields.iter().filter(|f| f.payloads).map(|f| f.number)
-    }
-
     /// Every field's postings as the writer takes them, `(field, docCount,
     /// terms in byte order)`, field ascending.
     pub(crate) fn term_lists(&self) -> Vec<(i32, i32, Vec<TermView<'_>>)> {
         self.fields
             .iter()
-            .map(|f| {
-                let mut term_start = 0usize;
-                let terms = f
-                    .terms
-                    .iter()
-                    .map(|s| {
-                        let range = |(a, b): (u32, u32)| a as usize..b as usize;
-                        let term = &f.term_bytes[term_start..s.term_end as usize];
-                        term_start = s.term_end as usize;
-                        let docs = range(s.docs);
-                        let positions = range(s.positions);
-                        TermView {
-                            term,
-                            docs: &f.docs[docs.clone()],
-                            ends: f.ends.get(docs).unwrap_or_default(),
-                            positions: &f.positions[positions.clone()],
-                            offsets: f.offsets.get(positions).unwrap_or_default(),
-                            payload_lengths: &f.payload_lengths[range(s.payload_lengths)],
-                            payload_bytes: &f.payload_bytes[range(s.payload_bytes)],
-                        }
-                    })
-                    .collect();
-                (f.number, f.doc_count, terms)
-            })
+            .map(|f| (f.number, f.doc_count, f.views()))
             .collect()
-    }
-
-    /// Heap bytes held.
-    pub(crate) fn ram_bytes(&self) -> usize {
-        self.fields
-            .iter()
-            .map(|f| {
-                [
-                    f.term_bytes.capacity(),
-                    f.terms
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<TermSpan>()),
-                    f.docs.capacity().saturating_mul(8),
-                    f.ends.capacity().saturating_mul(4),
-                    f.positions.capacity().saturating_mul(4),
-                    f.offsets.capacity().saturating_mul(8),
-                    f.payload_lengths.capacity().saturating_mul(4),
-                    f.payload_bytes.capacity(),
-                ]
-                .into_iter()
-                .fold(0, usize::saturating_add)
-            })
-            .fold(0, usize::saturating_add)
     }
 }
 
@@ -1072,28 +1932,210 @@ mod tests {
         *terms.iter().find(|v| v.term() == t.as_bytes()).unwrap()
     }
 
-    /// Streams interleave in one pool across many slice levels, read back
-    /// in order, and a cut at any length resumes appending from there.
+    /// Streams interleave in one pool across many slice levels and blocks,
+    /// read back in order, and a cut at any length resumes appending from
+    /// there.
+    /// Every posting of `f`: field, term, document (plus `base`), then its
+    /// positions, offsets and payloads.
+    #[allow(clippy::type_complexity)]
+    fn flat(
+        f: &FlushedPostings,
+        base: i32,
+    ) -> Vec<(i32, Vec<u8>, i32, Vec<i32>, Vec<(i32, i32)>, Vec<Vec<u8>>)> {
+        let mut out = Vec::new();
+        for (field, _, terms) in f.term_lists() {
+            for t in terms {
+                let mut at = 0usize;
+                for (i, &(doc, freq)) in t.docs.iter().enumerate() {
+                    let span = t.span(i);
+                    let mut payloads = Vec::new();
+                    for j in span.clone() {
+                        let len = t.payload_lengths.get(j).copied().unwrap_or(0) as usize;
+                        payloads.push(t.payload_bytes[at..at.saturating_add(len)].to_vec());
+                        at = at.saturating_add(len);
+                    }
+                    assert_eq!(
+                        span.len(),
+                        if t.ends.is_empty() { 0 } else { freq as usize }
+                    );
+                    out.push((
+                        field,
+                        t.term.to_vec(),
+                        doc.saturating_add(base),
+                        t.positions[span.clone()].to_vec(),
+                        t.offsets.get(span).map(<[_]>::to_vec).unwrap_or_default(),
+                        payloads,
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Ranges laid out one after the other, each from where the last
+    /// stopped (and some again from 0), hold what the whole buffer's
+    /// layout holds of their documents, while documents keep arriving.
+    #[test]
+    fn ranges_lay_out_their_documents_alone() {
+        let mut p = PendingPostings::default();
+        let words = ["a", "b", "c", "d"];
+        let mut x = 11u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let (mut doc, mut from) = (0i32, 0i32);
+        for round in 0..40 {
+            for _ in 0..1 + next() % 40 {
+                let mut terms = Vec::new();
+                for w in words {
+                    if next() % 3 != 0 {
+                        let n = 1 + (next() % 3) as i32;
+                        let positions: Vec<i32> = (0..n).map(|k| k * 3).collect();
+                        let payloads: Vec<Vec<u8>> = (0..n)
+                            .map(|k| {
+                                if (doc + k) % 5 == 0 {
+                                    vec![k as u8; 2]
+                                } else {
+                                    Vec::new()
+                                }
+                            })
+                            .collect();
+                        let refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+                        terms.push(term(w, &positions, &refs));
+                    }
+                }
+                add(&mut p, 0, doc, FULL, terms.clone());
+                // a field without positions too
+                let docs_only: Vec<InvertedTerm> = terms
+                    .iter()
+                    .map(|t| InvertedTerm {
+                        freq: 1,
+                        positions: Vec::new(),
+                        offsets: Vec::new(),
+                        payloads: Vec::new(),
+                        ..t.clone()
+                    })
+                    .collect();
+                add(&mut p, 1, doc, IndexOptions::DocsAndFreqs, docs_only);
+                doc += 1;
+            }
+            let start = if round % 7 == 6 { 0 } else { from };
+            let whole = flat(&p.flushed(None).unwrap(), 0);
+            let want: Vec<_> = whole
+                .into_iter()
+                .filter(|e| (start..doc).contains(&e.2))
+                .collect();
+            let got = flat(&p.flushed_below(None, Some((start, doc))).unwrap(), start);
+            assert_eq!(got, want, "round {round}: {start}..{doc}");
+            let mut streamed = Vec::new();
+            for field in [0, 1] {
+                p.stream_field_below(field, None, Some((start, doc)), &mut |terms| {
+                    for t in terms {
+                        for &(d, _) in t.docs {
+                            streamed.push((field, t.term.to_vec(), d + start));
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            }
+            streamed.sort();
+            let want: Vec<_> = want.iter().map(|e| (e.0, e.1.clone(), e.2)).collect();
+            assert_eq!(streamed, want, "round {round}: streamed");
+            from = doc;
+        }
+    }
+
     #[test]
     fn pool_streams_chain_slices_and_cut_anywhere() {
-        let mut pool = IntPool::default();
-        let (mut a, mut b) = (Stream::EMPTY, Stream::EMPTY);
-        for i in 0..2_000 {
-            pool.push(&mut a, i);
-            pool.push(&mut b, -i);
+        let mut pool = BytePool::default();
+        let (sa, sb) = (pool.new_slice(), pool.new_slice());
+        let (mut a, mut b) = (sa, sb);
+        let value = |i: u64| i.wrapping_mul(0x9e37_79b9) % (1 << (i % 40));
+        for i in 0..20_000u64 {
+            pool.write_vlong(&mut a, i);
+            pool.write_vlong(&mut b, value(i));
         }
-        assert!(pool.read(&a, 2_000).eq(0..2_000));
-        assert!(pool.read(&b, 2_000).eq((0..2_000).map(|i: i32| -i)));
+        assert!(pool.blocks.len() > 2);
+        let mut r = pool.reader(sa, a);
+        assert!((0..20_000u64).all(|i| r.read_vlong() == i));
+        assert!(r.eof());
+        let mut r = pool.reader(sb, b);
+        assert!((0..20_000u64).all(|i| r.read_vlong() == value(i)));
+        assert!(r.eof());
         // longest first: a cut overwrites what followed it
-        for keep in [2_000u32, 777, 19, 18, 5, 4, 1, 0] {
-            let mut c = pool.cut(&a, keep);
-            pool.push(&mut c, 9_999);
-            let got: Vec<i32> = pool.read(&c, keep + 1).collect();
-            assert_eq!(got.len() as u32, keep + 1);
-            assert!(got[..keep as usize].iter().copied().eq(0..keep as i32));
-            assert_eq!(got[keep as usize], 9_999);
+        for keep in [20_000u64, 7_777, 300, 129, 128, 127, 5, 4, 3, 1, 0] {
+            let mut r = pool.reader(sa, a);
+            for _ in 0..keep {
+                r.read_vlong();
+            }
+            let pos = r.pos();
+            let mut c = pool.cut(pos);
+            for v in [9_999u64, 1, 300] {
+                pool.write_vlong(&mut c, v);
+            }
+            let mut r = pool.reader(sa, c);
+            assert!((0..keep).all(|i| r.read_vlong() == i), "{keep}");
+            assert_eq!(
+                [r.read_vlong(), r.read_vlong(), r.read_vlong()],
+                [9_999, 1, 300]
+            );
+            assert!(r.eof(), "{keep}");
+            a = c;
         }
-        assert_eq!(pool.read(&Stream::EMPTY, 3).count(), 0);
+        let empty = pool.new_slice();
+        assert!(pool.reader(empty, empty).eof());
+        assert!(pool.reader(NONE, NONE).eof());
+    }
+
+    /// Every address maps into the block that holds it, small blocks first.
+    #[test]
+    fn addresses_locate_their_blocks() {
+        let mut at = 0usize;
+        for b in 0..12 {
+            assert_eq!(block_start(b), at);
+            assert_eq!(locate(at as u32), (b, 0));
+            let end = at + block_size(b) - 1;
+            assert_eq!(locate(end as u32), (b, block_size(b) - 1));
+            at += block_size(b);
+        }
+        let mut p = PendingPostings::default();
+        add(&mut p, 0, 0, IndexOptions::Docs, vec![term("a", &[], &[])]);
+        assert!(
+            p.bytes() < 16 * 1024,
+            "a one-term field holds {}",
+            p.bytes()
+        );
+    }
+
+    /// A term's documents and occurrences cost bytes, not structs: a frequent
+    /// term's document is a byte or two, its positions a byte each.
+    #[test]
+    fn buffered_postings_cost_bytes_per_occurrence() {
+        let mut p = PendingPostings::default();
+        let opts = IndexOptions::DocsAndFreqsAndPositions;
+        for doc in 0..200_000 {
+            add(
+                &mut p,
+                0,
+                doc,
+                opts,
+                vec![term("a", &[0, 2, 3], &[]), term("b", &[1], &[])],
+            );
+        }
+        let per_doc = p.bytes() / 200_000;
+        assert!(per_doc <= 8, "{per_doc} bytes per document");
+        let flushed = p.flushed(None).unwrap();
+        let lists = flushed.term_lists();
+        let a = view(&lists, 0, "a");
+        assert_eq!(a.docs().len(), 200_000);
+        assert_eq!(a.docs()[199_999], (199_999, 3));
+        assert_eq!(a.positions(123_456), [0, 2, 3]);
+        assert_eq!(view(&lists, 0, "b").positions(7), [1]);
     }
 
     /// A rollback across slice boundaries leaves every stream ready to
@@ -1152,7 +2194,8 @@ mod tests {
         let a = get(&p, 0, 0, "a").unwrap();
         assert_eq!((a.positions, a.payloads), (vec![0, 1], vec![]));
         assert_eq!(p.payload_fields().count(), 0);
-        assert_eq!(p.bytes(), bytes);
+        // the pool keeps what the undone document took
+        assert!(p.bytes() >= bytes);
         let flushed = p.flushed(None).unwrap();
         let lists = flushed.term_lists();
         assert_eq!(lists.len(), 1);

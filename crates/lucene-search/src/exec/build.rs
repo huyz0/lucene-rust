@@ -614,7 +614,7 @@ pub(crate) fn term_leg<'a>(
         Clause::Boost(b) => {
             let (chain, inner) = boost_chain(b);
             match inner {
-                Clause::Term(_) | Clause::ConstantScore(_) => {
+                Clause::Term(_) | Clause::ConstantScore(_) | Clause::Extended(_) => {
                     term_leg(ctx, inner, chain * boost, mode)
                 }
                 _ => Ok(TermForm::Other),
@@ -624,7 +624,72 @@ pub(crate) fn term_leg<'a>(
             Clause::Term(t) => term(ctx, t, Some(c.score * boost), boost, mode),
             _ => Ok(TermForm::Other),
         },
+        Clause::Extended(e) => match e.as_ref() {
+            crate::extended_query::ExtendedQuery::Document(d)
+                if d.filter.is_none() && d.fallback.is_none() =>
+            {
+                match d.query.sim_term(boost) {
+                    Some(t) => sim_term(ctx, &t, mode),
+                    None => Ok(TermForm::Other),
+                }
+            }
+            _ => Ok(TermForm::Other),
+        },
         _ => Ok(TermForm::Other),
+    }
+}
+
+/// A document query that scores one term's postings with a `SimScorer` of
+/// its own ([`crate::document::DocumentQuery::sim_term`]) as a term leg.
+fn sim_term<'a>(
+    ctx: &LeafContext<'a>,
+    t: &crate::document::SimTerm<'_>,
+    mode: Mode,
+) -> Result<TermForm<'a>> {
+    if ctx.reader.is_some_and(|reader| reader.simpletext.is_some()) {
+        return Ok(TermForm::Other);
+    }
+    let Some(doc_in) = ctx.doc_in else {
+        return Ok(TermForm::Other);
+    };
+    let Some(field_terms) = ctx.fields.field(t.field) else {
+        return Ok(TermForm::Absent);
+    };
+    let Some(seeked) = field_terms.seek_term_state(t.term)? else {
+        return Ok(TermForm::Absent);
+    };
+    let cost = i64::from(seeked.stats.doc_freq);
+    if !mode.needs_scores() {
+        let cursor = field_terms.lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)?;
+        return Ok(TermForm::Leg(Box::new(TermLeg::filter(cursor, cost))));
+    }
+    let flags = if mode == Mode::TopScores {
+        PostingsFlags::Freqs
+    } else {
+        PostingsFlags::FreqsNoImpacts
+    };
+    let cursor = field_terms.lazy_postings_for(&seeked, doc_in, flags)?;
+    Ok(TermForm::Leg(Box::new(TermLeg::scoring_sim(
+        cursor,
+        t.scorer.clone(),
+        None,
+        cost,
+    ))))
+}
+
+/// `t`'s term state in this segment: the statistics pass's seek when it
+/// made one here (`TermStates`), else a seek of its own.
+pub(super) fn seek_term(
+    ctx: &LeafContext<'_>,
+    field_terms: &lucene_codecs::blocktree::FieldTerms,
+    t: &TermQuery,
+) -> Result<Option<lucene_codecs::blocktree::SeekedTerm>> {
+    match ctx
+        .global
+        .and_then(|g| g.term_state(&t.field, &t.term, ctx.fields))
+    {
+        Some(found) => Ok(found),
+        None => Ok(field_terms.seek_term_state(&t.term)?),
     }
 }
 
@@ -644,15 +709,7 @@ fn term<'a>(
     let Some(field_terms) = ctx.fields.field(&t.field) else {
         return Ok(TermForm::Absent);
     };
-    // The statistics pass's seek, when it made one here (`TermStates`).
-    let seeked = match ctx
-        .global
-        .and_then(|g| g.term_state(&t.field, &t.term, ctx.fields))
-    {
-        Some(found) => found,
-        None => field_terms.seek_term_state(&t.term)?,
-    };
-    let Some(seeked) = seeked else {
+    let Some(seeked) = seek_term(ctx, field_terms, t)? else {
         return Ok(TermForm::Absent);
     };
     let stats = seeked.stats;
@@ -872,6 +929,31 @@ pub(crate) fn build_clauses<'a, 'q>(
     let flatten = mode.needs_scores() && q.minimum_should_match <= 1;
     // The lead cost the deferred `IndexOrDocValuesQuery`s were built with.
     let mut lead_cost = None;
+    // The required clauses that score nothing -- the filters, and the
+    // `MUST` clauses of a boolean built without scores -- on the segment's
+    // leading sort keys, matched as one run (`sort_prefix_run`), by group
+    // and position. A `MUST` clause's run never stands for a lone scoring
+    // clause rebuilt below.
+    let mut prefix_run: ((i32, i32), Vec<(usize, usize)>) = ((0, 0), Vec::new());
+    let mut run_parents = None;
+    {
+        let at: Vec<(usize, usize)> = (if mode == Mode::NoScores { 0..2 } else { 1..2 })
+            .flat_map(|g| (0..groups[g].0.len()).map(move |i| (g, i)))
+            .collect();
+        let clauses: Vec<&Clause> = at.iter().map(|&(g, i)| &groups[g].0[i]).collect();
+        if let Some(found) = super::sort_prefix::sort_prefix_run(ctx, &clauses)? {
+            let Some(run) = found.run else {
+                return Ok(None);
+            };
+            let mut used: Vec<(usize, usize)> = found.clauses.into_iter().map(|u| at[u]).collect();
+            // The run stands in a filter's place when one is among them.
+            if let Some(f) = used.iter().position(|&(g, _)| g == 1) {
+                used.swap(0, f);
+            }
+            prefix_run = (run, used);
+            run_parents = found.parents;
+        }
+    }
     for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
         for (i, c) in clauses.iter().enumerate() {
             if let (2, true, Clause::Fuzzy(f)) = (g, flatten, c) {
@@ -879,6 +961,26 @@ pub(crate) fn build_clauses<'a, 'q>(
                 costs[g].push(None);
                 built[g].push(None);
                 flattened[i] = Some(children);
+                continue;
+            }
+            // The filters on the segment's leading sort keys: one run of
+            // doc ids, standing in the first of them's place, the others
+            // dropped.
+            if let Some(at) = prefix_run.1.iter().position(|&p| p == (g, i)) {
+                let child = if at == 0 {
+                    let (min, max) = prefix_run.0;
+                    match run_parents {
+                        None => crate::exec::ranges::doc_range(min, max, boost, *m),
+                        Some(parents) => {
+                            crate::exec::ranges::bits_range(parents, min, max, boost, *m)
+                        }
+                    }
+                    .map(Child::Scorer)
+                } else {
+                    None
+                };
+                costs[g].push(child.as_ref().map(Child::cost));
+                built[g].push(child);
                 continue;
             }
             if deferred && index_or_doc_values_of(c).is_some() {
@@ -972,7 +1074,13 @@ pub(crate) fn build_clauses<'a, 'q>(
         }
     }
     let mut must_pairs = pair(must, &q.must);
-    if top_level && written > 1 && must_pairs.len() + should_pairs.len() == 1 && !from_fuzzy {
+    let run_in_must = prefix_run.1.first().is_some_and(|&(g, _)| g == 0);
+    if top_level
+        && written > 1
+        && must_pairs.len() + should_pairs.len() == 1
+        && !from_fuzzy
+        && !run_in_must
+    {
         let lone = must_pairs.first_mut().or(should_pairs.first_mut());
         if let Some((built, clause)) = lone {
             if !built.is_leg() {
@@ -988,6 +1096,64 @@ pub(crate) fn build_clauses<'a, 'q>(
         should_pairs,
         pair(must_not, &q.must_not),
     )))
+}
+
+/// The documents of term `t` as the run of doc ids `min..max` they fill,
+/// in a segment sorted first by `t`'s field as a string (a keyword's SORTED
+/// or SORTED_SET column), where a term's documents usually sit side by
+/// side. The run is checked, not assumed: the term's last posting must be
+/// `first + docFreq - 1`, which leaves no gap. `Some(None)`
+/// when the term is absent; `None` where there is no run, or a segment has
+/// document blocks, where only the parents follow the sort.
+pub(super) fn sorted_term_run(
+    ctx: &LeafContext<'_>,
+    t: &TermQuery,
+) -> Result<Option<Option<(i32, i32)>>> {
+    use lucene_index::segment_info::IndexSortKind;
+    let Some(reader) = ctx.reader else {
+        return Ok(None);
+    };
+    if reader.has_blocks() || reader.simpletext.is_some() {
+        return Ok(None);
+    }
+    let Some(sort) = reader.index_sort().and_then(|s| s.first()) else {
+        return Ok(None);
+    };
+    if sort.field != t.field
+        || !matches!(
+            sort.kind,
+            IndexSortKind::String(_) | IndexSortKind::SortedSet { .. }
+        )
+    {
+        return Ok(None);
+    }
+    let Some(doc_in) = ctx.doc_in else {
+        return Ok(None);
+    };
+    let Some(field_terms) = ctx.fields.field(&t.field) else {
+        return Ok(None);
+    };
+    let Some(seeked) = seek_term(ctx, field_terms, t)? else {
+        return Ok(Some(None));
+    };
+    let mut cursor = field_terms.lazy_postings_for(&seeked, doc_in, PostingsFlags::DocsOnly)?;
+    let first = cursor.next_doc()?;
+    let Some(end) = first.checked_add(seeked.stats.doc_freq) else {
+        return Ok(None);
+    };
+    if first < 0 || first == crate::exec::NO_MORE_DOCS || end > reader.max_doc {
+        return Ok(None);
+    }
+    // `docFreq` postings from `first` to `end - 1` and none past it fill
+    // every doc id between.
+    let last = end.saturating_sub(1);
+    if last > first && cursor.advance(last)? != last {
+        return Ok(None);
+    }
+    if cursor.next_doc()? != crate::exec::NO_MORE_DOCS {
+        return Ok(None);
+    }
+    Ok(Some(Some((first, end))))
 }
 
 /// [`child`] with the lead cost an `IndexOrDocValuesQuery` clause is built

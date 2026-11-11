@@ -46,6 +46,7 @@ indices that ask for it.
 | `index.lucene_rust.search.enabled` | index, dynamic | `true` | run this index's eligible searches natively. `false` sends every search to OpenSearch (counted as `disabled`) |
 | `index.lucene_rust.fetch.enabled` | index, dynamic | `true` | read stored fields (`_source`, `_id`, `stored_fields`, get/mget) natively |
 | `index.lucene_rust.search.native_shapes` | index, dynamic | `fast` | kept for compatibility; `fast` and `all` behave the same since every native shape measures faster |
+| `index.lucene_rust.search.native_approximate` | index, dynamic | `false` | `true`: a `match_all` or `range` that OpenSearch would answer with its approximation (sorted by the range's field, `track_total_hits` not `true`) runs natively and returns the exact top hits. They can differ from OpenSearch's only in which documents of the last hit's value are kept when that value is tied across a BKD leaf (see [benchmarks/newest-n.md](benchmarks/newest-n.md)) |
 | `lucene_rust.fetch.reader_wrapper` | node | `true`, `false` with the security plugin | install the reader wrapper native stored-field reads need. The security plugin needs the index's one reader wrapper slot for field- and document-level security, so with it installed the default is off |
 | `index.lucene_rust.engine` | index, final | the node default | `true`: the index's shards are written by the Rust engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
 | `lucene_rust.engine.default` | node | `false` | the default of the setting above. An index that only inherits it falls back to OpenSearch's engine where the Rust one would refuse it |
@@ -317,9 +318,12 @@ The rehearsal found two defects, both fixed before these numbers:
   update-heavy indices, scores can differ from OpenSearch's engine until a
   force merge. See
   [where it behaves differently](opensearch-engine.md#where-it-behaves-differently).
-- **Only Lucene 10.5's default codec** is read natively. Indices from older
-  Lucene majors, or with a custom per-field format, are answered by
-  OpenSearch.
+- **Only Lucene 10.5's default codec** is read natively, with any of its stored
+  fields: LZ4 (`default`), DEFLATE (`best_compression`), or the custom-codecs
+  plugin's `zstd` and `zstd_no_dict`. Indices from older Lucene majors, or
+  with a custom per-field format, are answered by OpenSearch. The Rust engine
+  writes those four codecs; `zstd` needs the bundled `opensearch-custom-codecs`
+  plugin installed, as it does for OpenSearch's own engine.
 
 ## Verifying a build
 

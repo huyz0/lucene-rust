@@ -135,6 +135,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// address and the set's offset in it.
 pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 
+/// By field, `(sumTotalTermFreq, sumDocFreq, docCount)`.
+type FieldStats = HashMap<String, (i64, i64, i32)>;
+
 /// One opened segment: everything [`OpenSegment`] needs, already decoded/
 /// validated, plus the bookkeeping ([`SegmentReader::doc_base`]) real
 /// `SegmentReader.docBase` carries. `fields`/`live_docs` are owned outright
@@ -145,6 +148,12 @@ pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 /// (re-)construct on demand -- see [`DirectoryReader::open_segments`].
 #[derive(Debug, Clone)]
 pub struct SegmentReader {
+    /// The files the segment's codec adds beside the native ones
+    /// ([`lucene_codecs::codecs::CodecFormats::extra_files`]), by extension.
+    codec_files: Arc<Vec<(&'static str, Arc<Input>)>>,
+    /// State other crates derive from this segment's core, one value per type
+    /// ([`Self::core_attachment`]), shared by every reopen that keeps the core.
+    attachments: Arc<Attachments>,
     /// The SimpleText codec's independently framed files and typed metadata.
     pub(crate) simpletext: Option<Arc<simpletext::SimpleTextCore>>,
     pub segment_name: String,
@@ -165,12 +174,17 @@ pub struct SegmentReader {
     /// read when the reader was opened, so it stays readable after the file
     /// is deleted.
     diagnostics: Arc<Vec<(String, String)>>,
+    /// The k-NN derived-source fields the segment's `.si` lists, whose vectors a read puts back
+    /// into `_source` ([`crate::derived_source`]).
+    derived_source: Option<Arc<crate::derived_source::DerivedFields>>,
     /// Each doc-values format instance's `.dvs`, with its codec suffix and
     /// the `.dvm` that locates its fields' skip indexes in it: every field's
     /// doc-values skip index, parsed on first use into
     /// [`Self::skip_indexes`].
     dvs: Vec<(Arc<Input>, String, Arc<doc_values::DocValuesMeta>)>,
     skip_indexes: Arc<OnceLock<HashMap<i32, doc_values::DocValuesSkipIndex>>>,
+    /// [`Self::block_parents`], found on first use.
+    block_parents: Arc<OnceLock<Option<Arc<BlockParents>>>>,
     /// Sparse doc-values fields' documents (their `IndexedDISI`), decoded on
     /// first use and shared by every iterator opened over them since, under
     /// the process-wide byte budget of [`crate::sparse_docs_cache`]. Shared
@@ -251,6 +265,10 @@ pub struct SegmentReader {
     /// Set once this segment's `.doc`/`.pos`/`.pay` headers and footers have
     /// been validated: later searches open them without reading either again.
     postings_validated: Arc<std::sync::atomic::AtomicBool>,
+    /// For postings put in by [`Self::with_postings`]: every requested
+    /// field's `(sumTotalTermFreq, sumDocFreq, docCount)` over the
+    /// segment, also for a field none of whose requested terms it holds.
+    postings_stats: Option<Arc<FieldStats>>,
     /// The segment's parsed `.dvm` (per-field entries -- `NumericEntry`,
     /// `SortedEntry`, etc., each already carrying whichever of the
     /// dense/sparse shapes `doc_values.rs`'s write side actually produced;
@@ -266,6 +284,9 @@ pub struct SegmentReader {
     /// still correct for every field the update did not touch, which is why
     /// both are kept rather than one replacing the other.
     dv_generations: Vec<DocValuesGeneration>,
+    /// A realtime segment's doc values kept as the buffer's columns, each
+    /// field encoded when first read ([`Self::with_lazy_doc_values`]).
+    lazy_doc_values: Option<Arc<LazyDocValues>>,
     /// The segment's `.nvm`-parsed norms entries and `.nvd` bytes, when it has
     /// them.
     ///
@@ -308,7 +329,63 @@ struct CodecFiles {
     /// `.tvx` for term vectors; the HNSW graph's `.vex` for vectors.
     index: Option<Arc<Input>>,
     meta: Arc<Input>,
+    /// The HNSW graph's `.vem`, beside its `.vex` in [`Self::index`].
+    graph_meta: Option<Arc<Input>>,
+    /// A `LuceneRustIvfVectorsFormat` instance's IVF index.
+    ivf: Option<IvfFiles>,
+    /// A `Lucene104(Hnsw)ScalarQuantizedVectorsFormat` instance's codes.
+    scalar_quantized: Option<ScalarQuantizedFiles>,
+    /// A `LuceneRustHnswQuantizedVectorsFormat` instance's codes.
+    hnsw_codes: Option<HnswCodesFiles>,
+    /// The vectors instance's flat reader, detached from its file: opened
+    /// (header, footer, metadata) on first use, then shared by every read.
+    flat_reader: OnceLock<lucene_codecs::vectors::FlatVectorsReader<'static>>,
+    /// The HNSW graph's reader, likewise; opened only by graph searches.
+    graph_reader: OnceLock<Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>>,
     suffix: String,
+}
+
+/// `.vemq`/`.veq` of a `Lucene104` scalar-quantized vectors instance, with
+/// the metadata parsed (and the files checked) on first use.
+#[derive(Debug)]
+struct ScalarQuantizedFiles {
+    meta: Arc<Input>,
+    data: Arc<Input>,
+    reader:
+        OnceLock<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'static>>,
+}
+
+/// Doc values encoded a field at a time from a buffer's columns.
+struct LazyDocValues {
+    source: lucene_index::index_writer::LazyDocValues,
+    built: Vec<(i32, OnceLock<Option<DocValuesGeneration>>)>,
+}
+
+impl std::fmt::Debug for LazyDocValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LazyDocValues")
+            .field("fields", &self.built.len())
+            .finish()
+    }
+}
+
+/// A quantized HNSW instance's `.vqm` and `.vqd`, and the reader over
+/// them, opened on first search and shared by every search after it.
+#[derive(Debug)]
+struct HnswCodesFiles {
+    meta: Arc<Input>,
+    data: Arc<Input>,
+    reader: OnceLock<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
+}
+
+/// An IVF index's `.ivm`, `.ivp` and `.ivv`, and the reader over them,
+/// opened on first search and shared by every search after it.
+#[derive(Debug)]
+struct IvfFiles {
+    meta: Arc<Input>,
+    postings: Arc<Input>,
+    vectors: Arc<Input>,
+    reader: OnceLock<Arc<lucene_ivf::IvfReader>>,
 }
 
 /// One field's doc-values **update generation** -- the rewritten column
@@ -338,7 +415,238 @@ fn dv_per_field_suffix(field: &lucene_codecs::field_infos::FieldInfo) -> Option<
     Some(format!("{format}_{suffix}"))
 }
 
+/// [`SegmentReader::core_attachment`]'s values.
+#[derive(Default)]
+struct Attachments(
+    std::sync::Mutex<HashMap<std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>>>,
+);
+
+impl std::fmt::Debug for Attachments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Attachments")
+    }
+}
+
+/// One document's vectors, for [`crate::derived_source::inject`]: each from the flat vectors
+/// alone (no graph is opened).
+struct SegmentVectors<'r> {
+    reader: &'r SegmentReader,
+    doc: i32,
+    /// [`Self::first_child`], once found.
+    first_child: Option<Option<i32>>,
+}
+
+impl<'r> SegmentVectors<'r> {
+    fn new(reader: &'r SegmentReader, doc: i32) -> Self {
+        Self {
+            reader,
+            doc,
+            first_child: None,
+        }
+    }
+
+    /// The document's vector of field `number`, by `read` from the field's flat vectors.
+    fn vector<T>(
+        &self,
+        number: i32,
+        read: impl FnOnce(
+            &lucene_codecs::vectors::FlatVectorsReader<'_>,
+            i32,
+        ) -> lucene_codecs::vectors::Result<Option<T>>,
+    ) -> lucene_codecs::stored_fields::Result<Option<T>> {
+        let flat = self
+            .reader
+            .flat_vectors_reader_for(number)
+            .map_err(derived_error)?;
+        match flat {
+            Some(flat) => read(&flat, self.doc).map_err(derived_error),
+            None => Ok(None),
+        }
+    }
+}
+
+impl SegmentVectors<'_> {
+    /// The first nested child of the document, `None` when it has none: the document after the
+    /// previous parent, a parent being a document with a `_primary_term` value. Searched from
+    /// windows that grow back from the document, as `DerivedSourceLuceneHelper.getFirstChild`.
+    fn first_child(&mut self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
+        if let Some(found) = self.first_child {
+            return Ok(found);
+        }
+        let found = self.find_first_child()?;
+        self.first_child = Some(found);
+        Ok(found)
+    }
+
+    fn find_first_child(&self) -> lucene_codecs::stored_fields::Result<Option<i32>> {
+        use crate::reader::{LeafReader, NO_MORE_DOCS};
+        let parent = self.doc;
+        if parent == 0 {
+            return Ok(None);
+        }
+        let mut last_start = -1;
+        for offset in [150, 1500, 6000, i32::MAX] {
+            let start = parent.saturating_sub(offset).max(0);
+            if start <= last_start {
+                break;
+            }
+            // Doc values iterate forward only: a wider window opens them again.
+            let Some(mut terms) = self
+                .reader
+                .numeric_doc_values("_primary_term")
+                .map_err(derived_error)?
+            else {
+                return Ok(None);
+            };
+            let mut previous = None;
+            let mut d = terms.advance(start).map_err(derived_error)?;
+            while d != NO_MORE_DOCS && d < parent {
+                previous = Some(d);
+                d = terms.next_doc().map_err(derived_error)?;
+            }
+            match previous {
+                Some(p) if parent - p <= 1 => return Ok(None),
+                Some(p) => return Ok(Some(p + 1)),
+                None if start == 0 => return Ok(Some(0)),
+                None => last_start = start,
+            }
+        }
+        Ok(None)
+    }
+
+    /// The vectors of field `number` held by the document's nested children, in document order.
+    fn children<T>(
+        &mut self,
+        number: i32,
+        read: impl Fn(
+            &lucene_codecs::vectors::FlatVectorsReader<'_>,
+            &mut dyn Iterator<Item = i32>,
+        ) -> lucene_codecs::vectors::Result<Vec<T>>,
+    ) -> lucene_codecs::stored_fields::Result<Vec<T>> {
+        let Some(first) = self.first_child()? else {
+            return Ok(Vec::new());
+        };
+        let flat = self
+            .reader
+            .flat_vectors_reader_for(number)
+            .map_err(derived_error)?;
+        match flat {
+            Some(flat) => read(&flat, &mut (first..self.doc)).map_err(derived_error),
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+fn derived_error(e: impl std::fmt::Display) -> lucene_codecs::stored_fields::Error {
+    lucene_codecs::stored_fields::Error::DerivedSource(e.to_string())
+}
+
+impl crate::derived_source::VectorSource for SegmentVectors<'_> {
+    fn float_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<f32>>> {
+        self.vector(number, |flat, doc| {
+            let values = flat.float_vector_values(number)?;
+            let ord = values.doc_to_ord()?.ordinal(doc)?;
+            ord.map(|ord| values.vector(ord)).transpose()
+        })
+    }
+
+    fn byte_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
+        self.vector(number, |flat, doc| {
+            let values = flat.byte_vector_values(number)?;
+            let ord = values.doc_to_ord()?.ordinal(doc)?;
+            ord.map(|ord| values.vector(ord).map(|v| v.to_vec()))
+                .transpose()
+        })
+    }
+
+    fn child_float_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<f32>>> {
+        self.children(number, |flat, docs| {
+            let values = flat.float_vector_values(number)?;
+            let mut ords = values.doc_to_ord()?;
+            let mut out = Vec::new();
+            for doc in docs {
+                if let Some(ord) = ords.ordinal(doc)? {
+                    out.push(values.vector(ord)?);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn child_byte_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<u8>>> {
+        self.children(number, |flat, docs| {
+            let values = flat.byte_vector_values(number)?;
+            let mut ords = values.doc_to_ord()?;
+            let mut out = Vec::new();
+            for doc in docs {
+                if let Some(ord) = ords.ordinal(doc)? {
+                    out.push(values.vector(ord)?.to_vec());
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
 impl SegmentReader {
+    /// The segment's file with extension `ext` that its codec adds beside the
+    /// native ones, when the codec declares it and the segment has it.
+    pub fn codec_file(&self, ext: &str) -> Option<&Arc<Input>> {
+        self.codec_files
+            .iter()
+            .find(|(e, _)| *e == ext)
+            .map(|(_, input)| input)
+    }
+
+    /// The value of type `T` derived from this segment's core: `init`'s, the
+    /// first time it succeeds, and the same `Arc` for every later call on this
+    /// reader or a reopen that keeps the core.
+    ///
+    /// # Errors
+    /// `init`'s error; nothing is kept then.
+    pub fn core_attachment<T, E>(
+        &self,
+        init: impl FnOnce(&Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<Arc<T>, E>
+    where
+        T: Send + Sync + 'static,
+    {
+        let key = std::any::TypeId::of::<T>();
+        let found = self
+            .attachments
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(found) = found.and_then(|v| v.downcast::<T>().ok()) {
+            return Ok(found);
+        }
+        let value = Arc::new(init(self)?);
+        let mut map = self
+            .attachments
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kept = map
+            .entry(key)
+            .or_insert_with(|| value.clone() as Arc<dyn std::any::Any + Send + Sync>)
+            .clone();
+        Ok(kept.downcast::<T>().unwrap_or(value))
+    }
+
     /// A cheap in-memory copy of an already-open reader, used by
     /// [`DirectoryReader::open_at_reusing`] to reuse a segment without
     /// re-reading any files. Every heavyweight member -- the term dictionary,
@@ -367,12 +675,104 @@ impl SegmentReader {
 }
 
 impl SegmentReader {
-    /// One segment of `dir` on its own, at document base 0.
-    pub(crate) fn open_one(
+    /// One segment of `dir` on its own, at document base 0 (for
+    /// [`DirectoryReader::with_readers_appended`]): it reads what it needs
+    /// as it opens, so it outlives `dir`'s handle.
+    pub fn open_one(
         dir: &dyn Directory,
         commit: &segment_infos::SegmentCommitInfo,
     ) -> Result<Self> {
         Self::open(dir, commit, 0)
+    }
+
+    /// A run of buffered documents as a segment without postings or
+    /// stored fields, built from `parts` in memory instead of read from
+    /// files: its norms and points as the writer encoded them, its doc
+    /// values taken from `lazy` a field at a time, at document base 0.
+    ///
+    /// # Errors
+    /// Norms that do not parse, which only a bug writes.
+    pub fn from_lean_parts(
+        name: String,
+        parts: lucene_index::index_writer::LeanParts,
+        lazy: lucene_index::index_writer::LazyDocValues,
+    ) -> Result<Self> {
+        let lucene_index::index_writer::LeanParts {
+            field_infos,
+            max_doc,
+            norms,
+            points,
+            segment_id,
+        } = parts;
+        let field_infos = Arc::new(FieldInfos {
+            fields: field_infos,
+        });
+        let (norms_meta, norms_data) = match norms {
+            Some((nvm, nvd)) => {
+                let (_, meta) = norms::parse_meta(&nvm, &segment_id, "")?;
+                norms::validate_fields(&meta, &field_infos)?;
+                (Some(Arc::new(meta)), Some(Arc::new(Input::Owned(nvd))))
+            }
+            None => (None, None),
+        };
+        let (kdm_buf, kdi_buf, kdd_buf) = match points {
+            Some((kdm, kdi, kdd)) => (
+                Some(Arc::new(Input::Owned(kdm))),
+                Some(Arc::new(Input::Owned(kdi))),
+                Some(Arc::new(Input::Owned(kdd))),
+            ),
+            None => (None, None, None),
+        };
+        let reader = SegmentReader {
+            codec_files: Arc::default(),
+            attachments: Arc::default(),
+            simpletext: None,
+            num_docs: max_doc,
+            term_vectors: None,
+            term_vectors_meta: Arc::default(),
+            vectors: Vec::new(),
+            completion: Vec::new(),
+            core_cache: crate::reader::CacheHelper::new(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            query_cache: Arc::default(),
+            segment_name: name,
+            index_sort: None,
+            has_blocks: false,
+            diagnostics: Arc::default(),
+            derived_source: None,
+            dvs: Vec::new(),
+            skip_indexes: Arc::default(),
+            block_parents: Arc::default(),
+            docs_with_field: Arc::default(),
+            max_doc,
+            doc_base: 0,
+            segment_id,
+            del_gen: -1,
+            field_infos_gen: -1,
+            doc_values_gen: -1,
+            segment_suffix: String::new(),
+            fields: Arc::new(BlockTreeFields::empty()),
+            doc_buf: None,
+            postings_files: Vec::new(),
+            pos_buf: None,
+            pay_buf: None,
+            live_docs: None,
+            field_infos,
+            dv_data: None,
+            kdm_buf,
+            kdi_buf,
+            kdd_buf,
+            stored: None,
+            points_meta: Arc::default(),
+            postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            postings_stats: None,
+            dv_meta: None,
+            dv_generations: Vec::new(),
+            lazy_doc_values: None,
+            norms_meta,
+            norms_data,
+        };
+        Ok(reader.with_lazy_doc_values(lazy))
     }
 
     /// Opens one segment: reads its `.si`, then whichever of `.fnm`/
@@ -397,12 +797,25 @@ impl SegmentReader {
         let si: SegmentInfo =
             segment_info::parse_for_codec(&si_bytes, &segment_id, &commit.codec_name)?;
 
+        // Every file the open below reads, fetched at once from a directory
+        // that reads by range. Only a hint: each open reports its own error.
+        let _ = dir.prefetch_files(&commit.files(&si.files));
+
         // Compound-file segments (`.cfs`/`.cfe`) pack every other codec file
         // into one archive -- see `open_segment_file`'s doc comment for how
         // every sub-file lookup below transparently reads from it instead of
         // `dir.open`-ing a loose file that wouldn't exist on disk.
+        // A page-aligned `.fdt` (paged zstd stored fields) is opened with its
+        // page size as the alignment hint, as is a `.cfs` holding one: the
+        // compound writer starts such an entry on a page boundary.
+        let stored_alignment = lucene_codecs::stored_fields::page_alignment(&si.attributes);
         let compound = if si.is_compound_file {
-            Some(CompoundArchive::open(dir, &segment_name, &segment_id)?)
+            Some(CompoundArchive::open(
+                dir,
+                &segment_name,
+                &segment_id,
+                stored_alignment,
+            )?)
         } else {
             None
         };
@@ -569,7 +982,7 @@ impl SegmentReader {
         // gives doc values their own codec suffix (`Lucene90_<n>`), independent
         // of the postings suffix.
         let stored = match (
-            open_segment_file(dir, compound.as_ref(), &si.files, ".fdt")?,
+            open_segment_file_aligned(dir, compound.as_ref(), &si.files, ".fdt", stored_alignment)?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdx")?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdm")?,
         ) {
@@ -757,6 +1170,12 @@ impl SegmentReader {
                     data,
                     index: Some(index),
                     meta,
+                    graph_meta: None,
+                    ivf: None,
+                    scalar_quantized: None,
+                    hnsw_codes: None,
+                    flat_reader: OnceLock::new(),
+                    graph_reader: OnceLock::new(),
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
                 }))
             }
@@ -783,7 +1202,7 @@ impl SegmentReader {
         // though this reader searches the flat vectors (`.vex` rides as the
         // pair's `index`).
         let mut vectors = Vec::new();
-        let mut graph_meta = Vec::new();
+
         for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".vemf") {
             // No suffix: a codec whose `knnVectorsFormat()` is the format
             // itself, not `PerFieldKnnVectorsFormat` (`ConfigurableMCodec`).
@@ -796,11 +1215,57 @@ impl SegmentReader {
                 )
             };
             if let (Some(data), Some(meta)) = (open(".vec")?, open(".vemf")?) {
-                graph_meta.extend(open(".vem")?);
+                let ivf = match (open(".ivm")?, open(".ivp")?, open(".ivv")?) {
+                    (Some(meta), Some(postings), Some(vectors)) => Some(IvfFiles {
+                        meta,
+                        postings,
+                        vectors,
+                        reader: OnceLock::new(),
+                    }),
+                    (None, None, None) => None,
+                    _ => {
+                        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                            "segment {segment_name}: an IVF index without all of its \
+                             .ivm, .ivp and .ivv files"
+                        ))))
+                    }
+                };
+                let scalar_quantized = match (open(".vemq")?, open(".veq")?) {
+                    (Some(meta), Some(data))
+                        if lucene_codecs::scalar_quantized_vectors::is_meta_file(&meta) =>
+                    {
+                        Some(ScalarQuantizedFiles {
+                            meta,
+                            data,
+                            reader: OnceLock::new(),
+                        })
+                    }
+                    _ => None,
+                };
+                let hnsw_codes = match (open(".vqm")?, open(".vqd")?) {
+                    (Some(meta), Some(data)) => Some(HnswCodesFiles {
+                        meta,
+                        data,
+                        reader: OnceLock::new(),
+                    }),
+                    (None, None) => None,
+                    _ => {
+                        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                            "segment {segment_name}: quantized HNSW codes without both of \
+                             their .vqm and .vqd files"
+                        ))))
+                    }
+                };
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
                     meta,
+                    graph_meta: open(".vem")?,
+                    ivf,
+                    scalar_quantized,
+                    hnsw_codes,
+                    flat_reader: OnceLock::new(),
+                    graph_reader: OnceLock::new(),
                     suffix,
                 }));
             }
@@ -868,7 +1333,7 @@ impl SegmentReader {
             .map(|s| &s.fdm)
             .chain(term_vectors.iter().chain(&vectors).map(|c| &c.meta))
             .chain(psm.iter().flatten())
-            .chain(&graph_meta)
+            .chain(vectors.iter().filter_map(|c| c.graph_meta.as_ref()))
             .chain(kdm_buf.iter())
         {
             let end = meta
@@ -877,7 +1342,20 @@ impl SegmentReader {
             lucene_store::codec_util::check_whole_file_footer(meta, end)?;
         }
 
+        let mut codec_files = Vec::new();
+        if let Some(codec) = lucene_codecs::codecs::for_name(&commit.codec_name) {
+            for ext in codec.extra_files {
+                if let Some(input) =
+                    open_segment_file(dir, compound.as_ref(), &si.files, &format!(".{ext}"))?
+                {
+                    codec_files.push((*ext, input));
+                }
+            }
+        }
+
         Ok(SegmentReader {
+            codec_files: Arc::new(codec_files),
+            attachments: Arc::default(),
             simpletext: None,
             num_docs: crate::reader::num_docs_of(si.doc_count, live_docs.as_deref()),
             term_vectors,
@@ -891,8 +1369,14 @@ impl SegmentReader {
             index_sort: si.index_sort.clone().map(Arc::new),
             has_blocks: si.has_blocks,
             diagnostics: Arc::new(si.diagnostics.clone()),
+            derived_source: crate::derived_source::DerivedFields::from_attributes(
+                &si.attributes,
+                &field_infos,
+            )
+            .map(Arc::new),
             dvs,
             skip_indexes: Arc::default(),
+            block_parents: Arc::default(),
             docs_with_field: Arc::default(),
             max_doc: si.doc_count,
             doc_base,
@@ -917,8 +1401,10 @@ impl SegmentReader {
             // A multi-format segment's postings were validated format by
             // format as they were opened and concatenated.
             postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(multi_format)),
+            postings_stats: None,
             dv_meta,
             dv_generations,
+            lazy_doc_values: None,
             norms_meta,
             norms_data,
         })
@@ -1012,6 +1498,51 @@ impl SegmentReader {
         Ok(Some(meta.rebind(&f.data, index)))
     }
 
+    /// One instance's flat vectors, each field's similarity taken from this
+    /// segment's `FieldInfos` where its `.vemf` records none.
+    fn open_flat_vectors<'s>(
+        &'s self,
+        f: &'s CodecFiles,
+    ) -> crate::Result<lucene_codecs::vectors::FlatVectorsReader<'s>> {
+        if let Some(flat) = f.flat_reader.get() {
+            return Ok(flat.attach(&f.data));
+        }
+        // A failed open is not kept: the next read tries again.
+        let mut flat = lucene_codecs::vectors::FlatVectorsReader::open(
+            &f.meta,
+            &f.data,
+            &self.segment_id,
+            &f.suffix,
+        )?;
+        flat.resolve_similarities_from(&self.field_infos.fields)?;
+        Ok(f.flat_reader
+            .get_or_init(|| flat.detached())
+            .attach(&f.data))
+    }
+
+    /// `f`'s HNSW graph reader, opened once; `None` without a graph.
+    fn graph_reader<'s>(
+        &self,
+        f: &'s CodecFiles,
+    ) -> crate::Result<Option<&'s lucene_codecs::hnsw_vectors::HnswVectorsReader<'static>>> {
+        if let Some(graph) = f.graph_reader.get() {
+            return Ok(graph.as_ref());
+        }
+        let graph = match (&f.graph_meta, &f.index) {
+            (Some(meta), Some(index)) => Some(
+                lucene_codecs::hnsw_vectors::HnswVectorsReader::open(
+                    meta,
+                    index,
+                    &self.segment_id,
+                    &f.suffix,
+                )?
+                .detached(),
+            ),
+            _ => None,
+        };
+        Ok(f.graph_reader.get_or_init(|| graph).as_ref())
+    }
+
     /// `SegmentReader.getVectorReader()`'s flat half: a reader over this
     /// segment's KNN vectors (`.vec`/`.vemf`), `None` when it has none.
     ///
@@ -1026,12 +1557,7 @@ impl SegmentReader {
         let Some(f) = self.vectors.first() else {
             return Ok(None);
         };
-        Ok(Some(lucene_codecs::vectors::FlatVectorsReader::open(
-            &f.meta,
-            &f.data,
-            &self.segment_id,
-            &f.suffix,
-        )?))
+        Ok(Some(self.open_flat_vectors(f)?))
     }
 
     /// `PerFieldKnnVectorsFormat.FieldsReader.getFieldReader`'s flat half:
@@ -1074,17 +1600,201 @@ impl SegmentReader {
             .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
             .chain(self.vectors.iter());
         for f in ordered {
-            let reader = lucene_codecs::vectors::FlatVectorsReader::open(
-                &f.meta,
-                &f.data,
-                &self.segment_id,
-                &f.suffix,
-            )?;
+            let reader = self.open_flat_vectors(f)?;
             if reader.field(field_number).is_some() {
                 return Ok(Some(reader));
             }
         }
         Ok(None)
+    }
+
+    /// `PerFieldKnnVectorsFormat.FieldsReader.getFieldReader` for a search:
+    /// the flat vectors of the instance field `field_number` was written with
+    /// and, when that instance has an HNSW graph with an entry for the field,
+    /// its graph reader (`Lucene99HnswVectorsReader`, which also holds the
+    /// graph of a `Lucene104HnswScalarQuantizedVectorsFormat` field). `None`
+    /// when no instance holds the field.
+    ///
+    /// # Errors
+    /// Vector files that do not decode.
+    pub fn knn_vectors_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<
+        Option<(
+            lucene_codecs::vectors::FlatVectorsReader<'_>,
+            Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'_>>,
+        )>,
+    > {
+        if self.simpletext.is_some() {
+            let reader = self.simpletext_flat_vectors()?;
+            return Ok(reader
+                .filter(|reader| reader.field(field_number).is_some())
+                .map(|r| (r, None)));
+        }
+        let named = self.vectors_instance_of(field_number);
+        let ordered = self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+            .chain(self.vectors.iter());
+        for f in ordered {
+            let flat = self.open_flat_vectors(f)?;
+            if flat.field(field_number).is_none() {
+                continue;
+            }
+            let graph = match (self.graph_reader(f)?, &f.index) {
+                (Some(g), Some(index)) => g.field(field_number).is_some().then(|| g.attach(index)),
+                _ => None,
+            };
+            return Ok(Some((flat, graph)));
+        }
+        Ok(None)
+    }
+
+    /// The IVF index of the instance field `field_number` was written with
+    /// (`LuceneRustIvfVectorsFormat`), opened once per segment; `None` when
+    /// that instance has none or the index does not hold the field (a byte
+    /// field).
+    ///
+    /// # Errors
+    /// IVF files that do not decode.
+    pub fn ivf_for(&self, field_number: i32) -> crate::Result<Option<Arc<lucene_ivf::IvfReader>>> {
+        // A field without per-field attributes (a codec whose format is the
+        // IVF one itself) is in whichever instance's index holds it.
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(ivf) = &f.ivf else {
+                continue;
+            };
+            let reader = match ivf.reader.get() {
+                Some(reader) => reader.clone(),
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = Arc::new(lucene_index::ivf_vectors::open(
+                        &ivf.meta,
+                        ivf.postings.clone(),
+                        ivf.vectors.clone(),
+                        &self.segment_id,
+                        &f.suffix,
+                    )?);
+                    ivf.reader.get_or_init(|| opened).clone()
+                }
+            };
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The quantized HNSW codes of the instance field `field_number` was
+    /// written with (`LuceneRustHnswQuantizedVectorsFormat`), opened once per
+    /// segment; `None` when that instance has none or holds no codes for the
+    /// field (a byte field).
+    ///
+    /// # Errors
+    /// Code files that do not decode.
+    pub fn hnsw_codes_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>> {
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(codes) = &f.hnsw_codes else {
+                continue;
+            };
+            let reader = match codes.reader.get() {
+                Some(reader) => reader.clone(),
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = Arc::new(lucene_index::hnsw_quant_vectors::HnswCodesReader::open(
+                        &codes.meta,
+                        codes.data.clone(),
+                        &self.segment_id,
+                        &f.suffix,
+                    )?);
+                    codes.reader.get_or_init(|| opened).clone()
+                }
+            };
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The scalar-quantized codes of the instance field `field_number` was
+    /// written with (`Lucene104(Hnsw)ScalarQuantizedVectorsFormat`), its
+    /// metadata parsed once per segment; `None` when that instance has none
+    /// or holds no codes for the field (a byte field).
+    ///
+    /// # Errors
+    /// Quantized vector files that do not decode.
+    pub fn scalar_quantized_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<
+        Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'_>>,
+    > {
+        use lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader;
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(sq) = &f.scalar_quantized else {
+                continue;
+            };
+            let detached = match sq.reader.get() {
+                Some(reader) => reader,
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = ScalarQuantizedVectorsReader::open(
+                        &sq.meta,
+                        &sq.data,
+                        &self.segment_id,
+                        &f.suffix,
+                    )?
+                    .detached();
+                    sq.reader.get_or_init(|| opened)
+                }
+            };
+            if detached.field(field_number).is_some() {
+                return Ok(Some(detached.attach(&sq.data)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The `{format}_{suffix}` instance a field's
+    /// `PerFieldKnnVectorsFormat` attributes name, if it has them.
+    fn vectors_instance_of(&self, field_number: i32) -> Option<String> {
+        let f = self
+            .field_infos
+            .fields
+            .iter()
+            .find(|f| f.number == field_number)?;
+        let attr = |key: &str| {
+            f.attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        Some(format!(
+            "{}_{}",
+            attr("PerFieldKnnVectorsFormat.format")?,
+            attr("PerFieldKnnVectorsFormat.suffix")?
+        ))
     }
 
     /// `getVectorReader().getVectorCount(fieldInfo)` (Lucene 10.6,
@@ -1162,6 +1872,9 @@ impl SegmentReader {
             if let Some(i) = &c.index {
                 files.push(i);
             }
+        }
+        for codes in self.vectors.iter().filter_map(|c| c.hnsw_codes.as_ref()) {
+            files.extend([&**codes.meta, &**codes.data]);
         }
         for g in &self.dv_generations {
             files.push(&g.data);
@@ -1263,21 +1976,82 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        let meta = match f.meta.get() {
-            Some(m) => m,
-            None => {
-                let opened = lucene_codecs::stored_fields::open(
-                    &f.fdt,
-                    &f.fdx,
-                    &f.fdm,
-                    &self.segment_id,
-                    &f.suffix,
-                )?;
-                f.meta.get_or_init(|| opened.rebind(&[], &[]))
-            }
-        };
-        meta.rebind(&f.fdt, &f.fdx).visit_document(doc, visitor)?;
+        f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
         Ok(true)
+    }
+
+    /// [`Self::visit_stored_document`] with `_source` as OpenSearch reads it: in a segment that
+    /// lists k-NN derived fields ([`crate::derived_source`]), with their vectors put back.
+    ///
+    /// # Errors
+    /// Those of [`Self::visit_stored_document`], and
+    /// [`lucene_codecs::stored_fields::Error::DerivedSource`] for a `_source` the vectors cannot
+    /// be spliced into, which Lucene's codec reads instead.
+    #[must_use = "`false` means the segment has no stored fields and the visitor saw nothing"]
+    pub fn visit_source_document(
+        &self,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<bool> {
+        // The gate [`Self::derived_source_number`] states, so the plugin's lazy `_source` and this
+        // splice agree on which segments splice.
+        let (true, Some(fields), Some(f)) = (
+            self.derived_source_number().is_some(),
+            self.derived_source.as_deref(),
+            self.stored.as_deref(),
+        ) else {
+            return self.visit_stored_document(doc, visitor);
+        };
+        let mut vectors = SegmentVectors::new(self, doc);
+        f.reader(&self.segment_id)?.visit_document(
+            doc,
+            &mut crate::derived_source::InjectingVisitor {
+                inner: visitor,
+                fields,
+                vectors: &mut vectors,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// The `_source` field number when [`Self::visit_source_document`] splices vectors into it
+    /// (a segment that lists k-NN derived fields), `None` when it reads `_source` as stored.
+    pub fn derived_source_number(&self) -> Option<i32> {
+        match (
+            self.derived_source.as_deref(),
+            &self.simpletext,
+            self.stored.as_deref(),
+        ) {
+            (Some(fields), None, Some(_)) => Some(fields.source_number()),
+            _ => None,
+        }
+    }
+
+    /// The k-NN derived-source fields this segment lists, if any.
+    pub fn derived_source(&self) -> Option<&crate::derived_source::DerivedFields> {
+        self.derived_source.as_deref()
+    }
+
+    /// `StoredFields.prefetch(docID)` for each of `docs`: announces the
+    /// documents a fetch phase is about to read, so their chunks of a file
+    /// read by range arrive in one round trip ([`lucene_store::prefetch`]).
+    /// A no-op for files in memory or mapped, and for a segment without
+    /// stored fields.
+    ///
+    /// # Errors
+    /// A chunk that could not be fetched.
+    pub fn prefetch_stored_documents(&self, docs: &[i32]) -> Result<()> {
+        if self.simpletext.is_some() {
+            return Ok(());
+        }
+        let Some(f) = self.stored.as_deref() else {
+            return Ok(());
+        };
+        if !lucene_store::is_prefetchable(&f.fdt) {
+            return Ok(());
+        }
+        f.reader(&self.segment_id)?.prefetch(docs)?;
+        Ok(())
     }
 
     /// This segment's 16-byte id, needed by any codec reader opened directly
@@ -1363,6 +2137,18 @@ impl SegmentReader {
         self.dv_data.as_ref().map(|d| &***d)
     }
 
+    /// Keyword field `field`'s values as they arrived, for a segment of
+    /// buffered documents whose doc values are kept as columns: read in
+    /// place, with no doc values encoded. `None` for any other segment.
+    pub fn keyword_run(
+        &self,
+        field: &str,
+    ) -> Option<lucene_index::concurrent_writer::KeywordRun<'_>> {
+        let lazy = self.lazy_doc_values.as_ref()?;
+        let info = self.field_infos.fields.iter().find(|f| f.name == field)?;
+        lazy.source.keyword_run(info.number)
+    }
+
     /// The `(meta, data)` pair holding **`field_number`'s current column**:
     /// `SegmentDocValuesProducer.dvProducersByField`. A field that has taken a
     /// doc-values update is served from the generation its newest `FieldInfo`
@@ -1379,6 +2165,11 @@ impl SegmentReader {
                 .built_doc_values()
                 .map(|form| (&form.meta, &*form.data));
         }
+        if let Some(lazy) = &self.lazy_doc_values {
+            let (_, built) = lazy.built.iter().find(|(n, _)| *n == field_number)?;
+            let gen = built.get_or_init(|| self.encode_lazy(&lazy.source, field_number));
+            return gen.as_ref().map(|g| (&*g.meta, &**g.data));
+        }
         if let Some(gen) = self
             .dv_generations
             .iter()
@@ -1390,6 +2181,54 @@ impl SegmentReader {
             (Some(meta), Some(data)) => Some((meta, &***data)),
             _ => None,
         }
+    }
+
+    /// This segment with its doc values taken from `source`, each field's
+    /// encoded when it is first read: a realtime segment written without
+    /// them, which most searches read a field or two of.
+    pub fn with_lazy_doc_values(
+        mut self,
+        source: lucene_index::index_writer::LazyDocValues,
+    ) -> Self {
+        let built = source.fields().map(|n| (n, OnceLock::new())).collect();
+        self.lazy_doc_values = Some(Arc::new(LazyDocValues { source, built }));
+        self
+    }
+
+    /// Field `field_number`'s doc values from `source`, `None` when it has
+    /// none. The writer gives a source only when every field's column
+    /// encodes as a written segment's would and no codec checks them, so the
+    /// in-memory encode and its parse fail only on a bug, which a debug
+    /// build stops at.
+    fn encode_lazy(
+        &self,
+        source: &lucene_index::index_writer::LazyDocValues,
+        field_number: i32,
+    ) -> Option<DocValuesGeneration> {
+        let encoded = source.encode(field_number, &self.segment_id);
+        debug_assert!(encoded.is_ok(), "encoding buffered doc values: {encoded:?}");
+        let encoded = encoded.ok()??;
+        let field = self
+            .field_infos
+            .fields
+            .iter()
+            .find(|f| f.number == field_number)?;
+        let only = FieldInfos {
+            fields: vec![field.clone()],
+        };
+        let parsed = doc_values::parse_meta(
+            &encoded.dvm,
+            &self.segment_id,
+            &encoded.segment_suffix,
+            &only,
+        );
+        debug_assert!(parsed.is_ok(), "parsing buffered doc values: {parsed:?}");
+        let (_, meta) = parsed.ok()?;
+        Some(DocValuesGeneration {
+            field_number,
+            meta: Arc::new(meta),
+            data: Arc::new(Input::Owned(encoded.dvd)),
+        })
     }
 
     /// `LeafReader.getDocValuesSkipper(field)`'s index: the field's
@@ -1456,6 +2295,54 @@ impl SegmentReader {
     /// document blocks.
     pub fn has_blocks(&self) -> bool {
         self.has_blocks
+    }
+
+    /// A segment of document blocks: its parent documents (those the
+    /// `IndexWriterConfig.setParentField` field marks) and, by index sort
+    /// key, whether only parents hold the key's values. `None` without
+    /// blocks or a parent field.
+    ///
+    /// # Errors
+    /// A corrupt docs-with-field region.
+    pub(crate) fn block_parents(&self) -> crate::Result<Option<&BlockParents>> {
+        if let Some(found) = self.block_parents.get() {
+            return Ok(found.as_deref());
+        }
+        let found = self.find_block_parents()?.map(Arc::new);
+        let _ = self.block_parents.set(found);
+        Ok(self.block_parents.get().and_then(|f| f.as_deref()))
+    }
+
+    fn find_block_parents(&self) -> crate::Result<Option<BlockParents>> {
+        if !self.has_blocks || self.simpletext.is_some() || self.max_doc <= 0 {
+            return Ok(None);
+        }
+        let Some(field) = self.field_infos.fields.iter().find(|f| f.parent_field) else {
+            return Ok(None);
+        };
+        let all = |n: i32| {
+            let mut b = FixedBitSet::new(n as usize);
+            b.set_range(0, n as usize);
+            b
+        };
+        let parents = match self.doc_values_exists_docs(&field.name)? {
+            Some(ExistsDocs::Bits(b)) => b,
+            Some(ExistsDocs::All) => all(self.max_doc),
+            Some(ExistsDocs::None) | None => return Ok(None),
+        };
+        let mut keys_on_parents = Vec::new();
+        for key in self.index_sort().unwrap_or_default() {
+            let only = match self.doc_values_exists_docs(&key.field)? {
+                Some(ExistsDocs::Bits(b)) => FixedBitSet::and_not_count(&b, &parents) == 0,
+                Some(ExistsDocs::All) => parents.cardinality() == self.max_doc as usize,
+                Some(ExistsDocs::None) | None => true,
+            };
+            keys_on_parents.push(only);
+        }
+        Ok(Some(BlockParents {
+            parents,
+            keys_on_parents,
+        }))
     }
 
     /// `SegmentReader.getSegmentInfo().info.getDiagnostics()`.
@@ -1625,7 +2512,58 @@ impl SegmentReader {
         Ok(self
             .fields
             .field(field)
-            .map(|terms| (terms.sum_total_term_freq, terms.doc_count)))
+            .map(|terms| (terms.sum_total_term_freq, terms.doc_count))
+            .or_else(|| {
+                let &(ttf, _, dc) = self.postings_stats.as_ref()?.get(field)?;
+                Some((ttf, dc))
+            }))
+    }
+
+    /// `(sumTotalTermFreq, sumDocFreq, docCount)` of a field these postings
+    /// ([`Self::with_postings`]) hold no term of, though its documents do:
+    /// what the reader-wide statistics count of this segment for it.
+    pub fn termless_field_stats(&self, field: &str) -> Option<(i64, i64, i32)> {
+        if self.fields.field(field).is_some() {
+            return None;
+        }
+        self.postings_stats.as_ref()?.get(field).copied()
+    }
+
+    /// This segment with `live`'s postings in place of its own: the same
+    /// documents, doc values, points, norms and stored fields, and only the
+    /// terms `live` encoded, with `live`'s field statistics. For a segment
+    /// written without postings whose documents' terms are read elsewhere
+    /// (the writer's buffers), one search at a time. `live` must number
+    /// the same documents.
+    ///
+    /// # Errors
+    /// When `live` holds other than this segment's number of documents, or
+    /// its postings files do not open.
+    pub fn with_postings(
+        &self,
+        live: crate::live_segment::LiveSegment,
+    ) -> crate::Result<SegmentReader> {
+        if live.max_doc() != self.max_doc {
+            return Err(crate::Error::IllegalArgument(format!(
+                "postings of {} documents for segment {} of {}",
+                live.max_doc(),
+                self.segment_name,
+                self.max_doc
+            )));
+        }
+        live.inputs()?;
+        let parts = live.into_postings();
+        let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
+        let mut reader = self.clone();
+        reader.fields = Arc::new(parts.terms);
+        reader.doc_buf = owned(parts.doc);
+        reader.pos_buf = owned(parts.pos);
+        reader.pay_buf = owned(parts.pay);
+        reader.postings_files = Vec::new();
+        reader.postings_validated = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        reader.query_cache = Arc::default();
+        reader.postings_stats = Some(Arc::new(parts.field_stats));
+        Ok(reader)
     }
 
     /// The name of this segment's soft-deletes field, if its `.fnm` marks one
@@ -1913,6 +2851,18 @@ impl SegmentReader {
     }
 }
 
+/// [`SegmentReader::block_parents`]: where the index sort puts a segment of
+/// document blocks' documents. Only the parents follow the sort, each
+/// after its block's children, which share its place.
+#[derive(Debug)]
+pub(crate) struct BlockParents {
+    /// The parent documents, a bit per document below `maxDoc`.
+    pub(crate) parents: FixedBitSet,
+    /// By index sort key, in order: whether no child holds a value of the
+    /// key's field, so the key orders the blocks by their parents' values.
+    pub(crate) keys_on_parents: Vec<bool>,
+}
+
 /// A segment's documents with a value for a field ([`SegmentReader::field_exists_docs`]).
 #[derive(Debug)]
 pub enum ExistsDocs {
@@ -2112,8 +3062,17 @@ struct CompoundArchive {
 }
 
 impl CompoundArchive {
-    fn open(dir: &dyn Directory, segment_name: &str, segment_id: &[u8; ID_LENGTH]) -> Result<Self> {
-        let cfs_bytes = Arc::new(dir.open(&format!("{segment_name}.cfs"))?);
+    fn open(
+        dir: &dyn Directory,
+        segment_name: &str,
+        segment_id: &[u8; ID_LENGTH],
+        alignment: Option<usize>,
+    ) -> Result<Self> {
+        let cfs_name = format!("{segment_name}.cfs");
+        let cfs_bytes = Arc::new(match alignment {
+            Some(alignment) => dir.open_aligned(&cfs_name, alignment)?,
+            None => dir.open(&cfs_name)?,
+        });
         let cfe_bytes = dir.open(&format!("{segment_name}.cfe"))?;
         let entries = compound_format::parse_entries(&cfe_bytes, segment_id)?;
         compound_format::check_data_header_footer(&cfs_bytes, segment_id, &entries)?;
@@ -2165,6 +3124,18 @@ fn open_segment_file(
     files: &[String],
     ext: &str,
 ) -> Result<Option<Arc<Input>>> {
+    open_segment_file_aligned(dir, compound, files, ext, None)
+}
+
+/// [`open_segment_file`], opening a loose file with `alignment` as its
+/// alignment hint (`Directory::open_aligned`) when one is given.
+fn open_segment_file_aligned(
+    dir: &dyn Directory,
+    compound: Option<&CompoundArchive>,
+    files: &[String],
+    ext: &str,
+    alignment: Option<usize>,
+) -> Result<Option<Arc<Input>>> {
     let name = match find_segment_file_name(files, compound, ext) {
         Some(name) => name,
         None => return Ok(None),
@@ -2181,7 +3152,10 @@ fn open_segment_file(
             let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
             Ok(Some(Arc::new(slice)))
         }
-        None => Ok(Some(Arc::new(dir.open(&name)?))),
+        None => Ok(Some(Arc::new(match alignment {
+            Some(alignment) => dir.open_aligned(&name, alignment)?,
+            None => dir.open(&name)?,
+        }))),
     }
 }
 
@@ -2195,6 +3169,29 @@ struct StoredFiles {
     /// rebinds it to `fdt`/`fdx` (the reader borrows its files, and these
     /// are owned beside it).
     meta: OnceLock<lucene_codecs::stored_fields::StoredFieldsReader<'static>>,
+}
+
+impl StoredFiles {
+    /// A reader over the files, the metadata parsed on first use and kept.
+    fn reader(
+        &self,
+        segment_id: &[u8; ID_LENGTH],
+    ) -> Result<lucene_codecs::stored_fields::StoredFieldsReader<'_>> {
+        let meta = match self.meta.get() {
+            Some(m) => m,
+            None => {
+                let opened = lucene_codecs::stored_fields::open(
+                    &self.fdt,
+                    &self.fdx,
+                    &self.fdm,
+                    segment_id,
+                    &self.suffix,
+                )?;
+                self.meta.get_or_init(|| opened.rebind(&[], &[]))
+            }
+        };
+        Ok(meta.rebind(&self.fdt, &self.fdx))
+    }
 }
 
 impl std::fmt::Debug for StoredFiles {
@@ -2220,6 +3217,9 @@ impl std::fmt::Debug for TermVectorsMeta {
     }
 }
 
+/// Per segment, each field's norms.
+pub type SegmentNorms<'a> = Vec<HashMap<String, crate::field_norms::FieldNorms<'a>>>;
+
 /// `DirectoryReader.open(Directory)`-equivalent: reads the latest
 /// `segments_N`, opens every listed segment (whichever files it actually
 /// has), and computes each segment's `doc_base` automatically as the running
@@ -2234,6 +3234,12 @@ pub struct DirectoryReader {
     /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
     global_ords:
         std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
+    /// Global ordinals of the readers made from this one with segments
+    /// appended ([`Self::with_readers_appended`]), which share its segments.
+    appended_ords: Arc<crate::terms_agg::GlobalOrdsCache>,
+    /// For a reader made with segments appended, its parent's
+    /// `appended_ords`, which its global ordinals are built through.
+    ords_cache: Option<Arc<crate::terms_agg::GlobalOrdsCache>>,
     /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
     norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
     /// Each field's norms across the segments, resolved once
@@ -2285,17 +3291,21 @@ impl DirectoryReader {
         let mut last_gen = -1i64;
         let mut first_err = None;
         loop {
-            let gen = dir
+            // One listing names the commit to open: a directory over an
+            // object store pays a round trip per listing.
+            let latest = dir
                 .list_all()
-                .and_then(|files| lucene_store::directory::last_commit_generation(&files))
-                .unwrap_or(-1);
+                .and_then(|files| lucene_store::directory::last_commit_generation(&files));
+            let gen = *latest.as_ref().unwrap_or(&-1);
             if gen <= last_gen {
                 if let Some(e) = first_err {
                     return Err(e);
                 }
             }
-            let opened = segment_infos::read_latest(dir)
+            let opened = latest
+                .and_then(|gen| Ok((gen, lucene_store::directory::open_commit_file(dir, gen)?)))
                 .map_err(Error::from)
+                .and_then(|(gen, bytes)| segment_infos::parse(&bytes, gen).map_err(Error::from))
                 .and_then(|segment_infos| Self::open_at(dir, segment_infos));
             match opened {
                 Ok(reader) => return Ok(reader),
@@ -2426,6 +3436,8 @@ impl DirectoryReader {
             segment_infos,
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: None,
@@ -2434,11 +3446,6 @@ impl DirectoryReader {
         })
     }
 
-    /// `field`'s global ordinals over this reader's segments, built on the
-    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
-    ///
-    /// # Errors
-    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
     /// The BM25 norm table for one average field length
     /// ([`crate::field_norms::inverse_table`]), built once per reader: every
     /// search scoring a field over this reader uses the same reader-wide
@@ -2452,6 +3459,51 @@ impl DirectoryReader {
             .clone()
     }
 
+    /// [`Self::global_ords`] leaving out the segments with a keyword run of
+    /// `field` ([`SegmentReader::keyword_run`]), whose documents a terms
+    /// aggregation counts from the run: the map stays the same while only
+    /// those segments change. The plain map when the terms are too many to
+    /// find the runs' terms in.
+    pub fn global_ords_skipping_runs(
+        &self,
+        field: &str,
+    ) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
+        if !self.segments.iter().any(|s| s.keyword_run(field).is_some()) {
+            return self.global_ords(field);
+        }
+        let slot = format!("\u{1}{field}");
+        if let Some(g) = self
+            .global_ords
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&slot)
+        {
+            return Ok(Arc::clone(g));
+        }
+        let built = match &self.ords_cache {
+            Some(cache) => cache.ords_with(&self.segments, field, true)?,
+            None => Arc::new(crate::terms_agg::GlobalOrds::build_keeping(
+                &self.segments,
+                field,
+                true,
+            )?),
+        };
+        // Too many terms to find the runs' in: the plain map, which the
+        // cache already built in their place.
+        let built = if built.has_terms() || self.ords_cache.is_some() {
+            built
+        } else {
+            self.global_ords(field)?
+        };
+        let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(map.entry(slot).or_insert(built).clone())
+    }
+
+    /// `field`'s global ordinals over this reader's segments, built on the
+    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
+    ///
+    /// # Errors
+    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
     pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
         let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
             m.get(field).cloned()
@@ -2463,7 +3515,10 @@ impl DirectoryReader {
         }
         // Built outside the lock: two threads may both build, and one's map
         // is kept -- the same map either way.
-        let built = Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?);
+        let built = match &self.ords_cache {
+            Some(cache) => cache.ords(&self.segments, field)?,
+            None => Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?),
+        };
         let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
         Ok(map.entry(field.to_string()).or_insert(built).clone())
     }
@@ -2571,12 +3626,55 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
             reader_cache: crate::reader::CacheHelper::new(),
             soft_deletes: Some(soft),
         }
+    }
+
+    /// This reader's segments, then `extra` (segments opened on their own:
+    /// [`SegmentReader::open_one`]), renumbered after them, as one reader
+    /// under a new cache key: the writer's buffered documents as segments,
+    /// searched after the reader's own. The extra segments are not part of
+    /// [`Self::segment_infos`].
+    pub fn with_readers_appended(&self, extra: Vec<SegmentReader>) -> Result<Self> {
+        let mut segments: Vec<SegmentReader> = self
+            .segments
+            .iter()
+            .map(SegmentReader::clone_reader)
+            .chain(extra)
+            .collect();
+        let mut doc_base = 0i64;
+        for reader in &mut segments {
+            reader.doc_base = i32::try_from(doc_base).unwrap_or(i32::MAX);
+            doc_base = doc_base.saturating_add(i64::from(reader.max_doc));
+            let limit = crate::reader::multi_reader::MAX_DOCS;
+            if doc_base > limit {
+                return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                    "Too many documents: an index cannot exceed {limit} with the buffered ones"
+                ))));
+            }
+        }
+        Ok(DirectoryReader {
+            segment_infos: self.segment_infos.clone(),
+            segments,
+            global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            // A view of a view shares its parent's: their segments are the
+            // same reader's.
+            ords_cache: Some(Arc::clone(
+                self.ords_cache.as_ref().unwrap_or(&self.appended_ords),
+            )),
+            norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
+            nrt_hold: self.nrt_hold.clone(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            soft_deletes: self.soft_deletes.clone(),
+        })
     }
 
     pub(crate) fn with_segment_order(&self, order: &[usize]) -> Self {
@@ -2595,6 +3693,8 @@ impl DirectoryReader {
             segment_infos: self.segment_infos.clone(),
             segments,
             global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
             norm_tables: std::sync::Mutex::default(),
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
@@ -2742,6 +3842,69 @@ impl DirectoryReader {
             .collect()
     }
 
+    /// [`Self::field_norms_by_field`] for a search over these segments and
+    /// documents outside them whose statistics `extra` gives per field
+    /// (`sumTotalTermFreq`, `docCount`): each field's average length is
+    /// over both. Also returns each field's average, for the other
+    /// documents' norms. The averages change with the other documents, so
+    /// nothing here is cached.
+    pub fn field_norms_by_field_with(
+        &self,
+        fields: &[String],
+        extra: &dyn Fn(&str) -> Option<(i64, i64)>,
+    ) -> Result<(SegmentNorms<'_>, HashMap<String, f32>)> {
+        let mut plans = Vec::new();
+        let mut averages = HashMap::new();
+        for field in fields {
+            let mut sum_total_term_freq = 0i64;
+            let mut doc_count = 0i64;
+            let mut seen = false;
+            for seg in &self.segments {
+                if let Some((stf, dc)) = seg.field_stats(field)? {
+                    seen = true;
+                    sum_total_term_freq = sum_total_term_freq.saturating_add(stf);
+                    doc_count = doc_count.saturating_add(i64::from(dc));
+                }
+            }
+            if let Some((stf, dc)) = extra(field) {
+                seen = true;
+                sum_total_term_freq = sum_total_term_freq.saturating_add(stf);
+                doc_count = doc_count.saturating_add(dc);
+            }
+            if !seen {
+                continue;
+            }
+            let avg = crate::field_norms::avg_field_length(sum_total_term_freq, doc_count);
+            averages.insert(field.clone(), avg);
+            let table = crate::field_norms::inverse_table(avg);
+            let sources = self
+                .segments
+                .iter()
+                .map(|seg| seg.norm_source(field))
+                .collect::<Result<Vec<_>>>()?;
+            plans.push((field, avg, table, sources));
+        }
+        let per_segment = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                let mut norms = HashMap::new();
+                for (field, avg, table, sources) in &plans {
+                    if let Some(source) = sources.get(i).copied().flatten() {
+                        if let Some(values) =
+                            seg.norms_from_source(field, source, *avg, table.clone())?
+                        {
+                            norms.insert((*field).clone(), values);
+                        }
+                    }
+                }
+                Ok(norms)
+            })
+            .collect::<Result<_>>()?;
+        Ok((per_segment, averages))
+    }
+
     /// Opens the per-segment `DocInput`/`PosInput`/`PayInput` values needed
     /// to build `OpenSegment`s -- see this module's doc comment for why this
     /// is a separate call from [`OpenedSegments::as_open_segments`].
@@ -2836,6 +3999,7 @@ impl SegmentReader {
             points: Some(&points),
             reader: Some(self),
             index_sort_prefix: false,
+            termless: None,
             similarity: None,
         };
         f(&seg)
@@ -2911,6 +4075,7 @@ impl<'a> OpenedSegments<'a> {
                 points: self.points_ins.get(i).and_then(Option::as_ref),
                 reader: Some(r),
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
             })
             .collect()
@@ -4442,7 +5607,7 @@ mod tests {
         fn tight_merge_policy() -> MergePolicyConfig {
             MergePolicyConfig {
                 max_merge_at_once: 10,
-                segments_per_tier: 2,
+                segments_per_tier: 2.0,
                 ..MergePolicyConfig::default()
             }
         }

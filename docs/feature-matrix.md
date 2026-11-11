@@ -59,15 +59,15 @@ OpenSearch's answer on the same shard:
 | `constant_score`, `dis_max`, `match_all` | ✅ | |
 | `match_phrase` | ✅ | exact and sloppy; a phrase with a gap (a removed stopword) falls back |
 | `prefix`, `wildcard`, `regexp`, `fuzzy` | ✅ | `regexp` with non-default flags (e.g. `case_insensitive`) and `wildcard` with a `\` escape fall back |
-| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) falls back |
+| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) falls back, unless `index.lucene_rust.search.native_approximate` asks for the exact native answer |
 | `exists` | ✅ | on a vector field it falls back |
 | any other query | ? | runs native when OpenSearch rewrites it into the Lucene queries the rows above produce (term, boolean, constant-score, boost, disjunction-max, match-all/none, phrase, prefix/wildcard/regexp/fuzzy/terms, 8-byte point range, exists) -- e.g. `simple_query_string`, `match_bool_prefix` -- and falls back otherwise, counted as `query_<Class>`/`clause_<Class>` (`nested`, `geo_*`, `knn`, `script_score`, `function_score`, `span_*`, `intervals`, ...). Not verified per query type: measure with the stats below |
 
 Each field scores with its mapping's similarity: `BM25` with any
 parameters, `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet` and
 `LMJelinekMercer`, `LegacyBM25` and Lucene's `ClassicSimilarity` run native
-(since 2026-10-30); `scripted` and a plugin's similarity run user or plugin
-code, so they fall back (`field_similarity`), as does
+(since 2026-10-30), and `scripted` in Painless when the static check passes
+it; a plugin's similarity or a refused script falls back (`field_similarity`), as does
 `search_type=dfs_query_then_fetch` (`dfs`).
 
 ### Request features
@@ -117,7 +117,7 @@ code, so they fall back (`field_similarity`), as does
 | segment replication | ✅ | Rust primary; replicas run OpenSearch's `NRTReplicationEngine` |
 | mixed clusters (some nodes with `lucene_rust.engine.node_enabled: false`) | ✅ | shards relocate and recover between the engines both ways |
 | field types | ✅ for what the Rust writer accepts | tested as the field types OpenSearch's own REST YAML suites index, which pass with every index on the Rust engine (`scripts/verify-opensearch.sh --engine --yaml`); a type those suites do not cover is not separately verified. Refused per document (400): term vectors, vector fields, `completion`, payloads, custom term frequencies, any other per-field postings or doc-values format |
-| index settings | | refused at creation: a codec other than `default`/`lucene_default`, index sorting, context-aware segments, remote-backed storage |
+| index settings | | refused at creation: a codec other than `default`/`lucene_default`, index sorting on indices created before 3.2.0 or with realtime search, context-aware segments, remote-backed storage |
 | `index.merge.policy.*`, `index.merge_on_flush` | ✗ | the writer's own merge policy; merges run inside commits, not reported in `_stats` merges |
 | compound segments | ✗ | writes non-compound segments only (reads compound ones) |
 
@@ -137,7 +137,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `points_width` | is a points range beyond Lucene's limits (more than 16 dimensions or 16 bytes per dimension) |
 | `phrase_positions`, `boolean_msm_negative`, `boost_invalid` | uses a variant of a supported query the native side does not take |
 | `query_too_deep`, `query_too_large` | nests deeper than 32 or has more than 1,024 query nodes |
-| `field_similarity` | scores a field with a `scripted` or plugin similarity (user or plugin code), or `combined_fields` over a field that is not default BM25 |
+| `field_similarity` | scores a field with a plugin similarity or a `scripted` one the static check refuses, or `combined_fields` over a field that is not default BM25 |
 | `term_states` | carries term statistics the native side cannot reproduce |
 | `dfs` | is `dfs_query_then_fetch` |
 | `aggregations`, `collectors` | has an aggregation or collector the native side does not run |
@@ -162,8 +162,13 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
   (OpenSearch 3.x cannot open them either), non-default postings formats
   (`completion`: `postings_format`), and segments the k-NN plugin wrote with
   `index.knn: true`, which name the plugin's codec (`KNN9120Codec` from 2.19)
-  and fall back as `native_open_failed`. The Rust engine refuses non-default
-  codecs.
+  and fall back as `native_open_failed`. The Rust engine writes `index.codec`
+  `default`, `lucene_default`, `best_compression`, and the bundled
+  custom-codecs plugin's `zstd` and `zstd_no_dict` (with
+  `index.codec.compression_level`) in that plugin's own format and codec names
+  (`ZSTD104`, `ZSTDNODICT104`), so OpenSearch's engine opens its segments and
+  native search reads OpenSearch's, back to the 2.9 names. It refuses other
+  codecs (`qat_*`), and any but the default on an `index.sparse` index.
 - **Remote-backed storage** (remote store, searchable snapshots): the Rust
   engine refuses it and native search falls back.
 - **Windows and macOS.**

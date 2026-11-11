@@ -40,14 +40,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  * on the same documents: {@code encode} ({@link DocumentEncoder} alone), {@code prepare} (encode plus
  * the native decode and analysis, outside the writer's lock), {@code rust} ({@link RustIndexWriter},
  * end to end with a final commit) and {@code lucene}; {@code rust-refresh} and {@code lucene-refresh}
- * also refresh once a second while indexing, as OpenSearch's default {@code refresh_interval} does
- * (a Rust refresh is a commit; Lucene's is an NRT reopen).
+ * also open a near-real-time view every {@code -Drefresh.ms} (default 1000, OpenSearch's default
+ * {@code refresh_interval}) while indexing and print the refresh times. Both writers are set up as
+ * an OpenSearch 3.9 shard sets its writer up; {@code -Dmerge_on_flush.ms} sets merge-on-flush's
+ * wait (default 10000, {@code 0} off) and {@code -Dforce_merge=true} times a final force merge.
  *
  * <p>The documents are shaped as OpenSearch's mappers build them for the 1M-document REST benchmark:
  * {@code _id}, {@code _source}, the sequence-number fields, two text fields, two keywords with doc
  * values, a long, a double, a date and {@code _field_names} for the text fields.
  *
- * <p>Usage: {@code gradle -p opensearch-plugin indexingBench [-Pdocs=N] [-Pthreads=T] [-Pmodes=a,b]}.
+ * <p>Usage: {@code gradle -p opensearch-plugin indexingBench [-Pdocs=N] [-Pthreads=T] [-Pmodes=a,b] [-PrefreshMs=M]
+ * [-PmergeOnFlushMs=M] [-PforceMerge=true]}.
  */
 public final class IndexingBench {
     private static final String SOFT = "__soft_deletes";
@@ -177,10 +180,22 @@ public final class IndexingBench {
             DocumentEncoder encoder = null;
             boolean refresh = mode.endsWith("-refresh");
             String base = refresh ? mode.substring(0, mode.length() - "-refresh".length()) : mode;
+            // As an OpenSearch 3.9 shard sets its writer up: its tiered merge policy, two merge
+            // threads, and merge-on-flush's 10 s wait at refresh.
+            long mergeOnFlush = Long.getLong("merge_on_flush.ms", 10_000);
+            org.apache.lucene.index.TieredMergePolicy tiered = new org.apache.lucene.index.TieredMergePolicy();
+            tiered.setSegmentsPerTier(10).setMaxMergeAtOnce(30).setFloorSegmentMB(16).setMaxMergedSegmentMB(5 * 1024);
             if (base.equals("lucene")) {
+                org.apache.lucene.index.ConcurrentMergeScheduler cms = new org.apache.lucene.index.ConcurrentMergeScheduler();
+                cms.setMaxMergesAndThreads(7, 2);
                 lucene = new IndexWriter(
                     dir,
-                    new IndexWriterConfig(analyzer).setSimilarity(similarity).setSoftDeletesField(SOFT).setRAMBufferSizeMB(256)
+                    new IndexWriterConfig(analyzer).setSimilarity(similarity)
+                        .setSoftDeletesField(SOFT)
+                        .setRAMBufferSizeMB(256)
+                        .setMergePolicy(tiered)
+                        .setMergeScheduler(cms)
+                        .setMaxFullFlushMergeWaitMillis(mergeOnFlush)
                 );
             } else {
                 rust = RustIndexWriter.open(
@@ -188,7 +203,17 @@ public final class IndexingBench {
                     root,
                     256,
                     false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    null, false,
+                    null,
+                    null,
                     IndexWriter.MAX_DOCS,
+                    org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                    3,
                     analyzer,
                     similarity,
                     10,
@@ -200,6 +225,9 @@ public final class IndexingBench {
                     null
                 );
                 rust.setLiveCommitData(Map.of("k", "v").entrySet());
+                rust.setMergePolicy(tiered);
+                rust.setMergeScheduler(7, 2, true, Double.POSITIVE_INFINITY);
+                rust.setMergeOnFlush(mergeOnFlush, false);
                 var f = RustIndexWriter.class.getDeclaredField("encoder");
                 f.setAccessible(true);
                 encoder = (DocumentEncoder) f.get(rust);
@@ -212,16 +240,21 @@ public final class IndexingBench {
             long t0 = System.nanoTime();
             java.util.concurrent.atomic.AtomicBoolean adding = new java.util.concurrent.atomic.AtomicBoolean(true);
             int[] refreshes = new int[1];
+            long refreshEvery = Long.getLong("refresh.ms", 1000);
+            List<Long> took = new ArrayList<>();
             Thread refresher = new Thread(() -> {
                 try {
                     org.apache.lucene.index.DirectoryReader nrt = lw == null ? null : org.apache.lucene.index.DirectoryReader.open(lw);
                     while (adding.get()) {
-                        Thread.sleep(1000);
+                        Thread.sleep(refreshEvery);
                         if (adding.get() == false) {
                             break;
                         }
+                        long r0 = System.nanoTime();
                         if (rw != null) {
-                            rw.releaseHold(rw.acquireLatest()[1]);
+                            long[] nrt2 = new long[2];
+                            rw.acquireNrt(nrt2);
+                            rw.releaseHold(nrt2[0]);
                         } else {
                             var newer = org.apache.lucene.index.DirectoryReader.openIfChanged(nrt);
                             if (newer != null) {
@@ -229,6 +262,7 @@ public final class IndexingBench {
                                 nrt = newer;
                             }
                         }
+                        took.add(System.nanoTime() - r0);
                         refreshes[0]++;
                     }
                     if (nrt != null) {
@@ -279,14 +313,33 @@ public final class IndexingBench {
             if (failure[0] != null) {
                 throw new RuntimeException(failure[0]);
             }
+            long fm = 0;
             if (rust != null) {
                 if (base.equals("rust")) {
                     rust.commit();
                 }
+                if (Boolean.getBoolean("force_merge")) {
+                    rust.commit();
+                    long f0 = System.nanoTime();
+                    rust.forceMerge(1, true);
+                    fm = System.nanoTime() - f0;
+                }
                 rust.close();
             } else {
                 lucene.commit();
+                if (Boolean.getBoolean("force_merge")) {
+                    long f0 = System.nanoTime();
+                    lucene.forceMerge(1, true);
+                    fm = System.nanoTime() - f0;
+                }
                 lucene.close();
+            }
+            if (fm > 0) {
+                long bytes = 0;
+                for (String f : dir.listAll()) {
+                    bytes += dir.fileLength(f);
+                }
+                System.out.printf("%-14s force merge %.2fs, index %.1f MB%n", mode, fm / 1e9, bytes / 1048576.0);
             }
             long done = System.nanoTime();
             double secs = (done - t0) / 1e9;
@@ -298,6 +351,23 @@ public final class IndexingBench {
                 (done - added) / 1e9,
                 refreshes[0]
             );
+            if (took.isEmpty() == false) {
+                List<Long> sorted = new ArrayList<>(took);
+                sorted.sort(null);
+                long total = 0;
+                for (long t : sorted) {
+                    total += t;
+                }
+                System.out.printf(
+                    "%-14s refresh total %.2fs  mean %.1fms  p50 %.1fms  p90 %.1fms  max %.1fms%n",
+                    mode,
+                    total / 1e9,
+                    total / 1e6 / sorted.size(),
+                    sorted.get(sorted.size() / 2) / 1e6,
+                    sorted.get(sorted.size() * 9 / 10) / 1e6,
+                    sorted.get(sorted.size() - 1) / 1e6
+                );
+            }
         } finally {
             try (var walk = Files.walk(root)) {
                 walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());

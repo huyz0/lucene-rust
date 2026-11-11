@@ -149,6 +149,11 @@ pub struct OpenSegment<'a> {
     /// the sort's order: set per request by a caller that knows both, and
     /// only a sorted search reads it.
     pub index_sort_prefix: bool,
+    /// By field, `[numTerms, sumTotalTermFreq, sumDocFreq, docCount]` of a
+    /// segment without a reader whose dictionary may lack a field its
+    /// documents have (a buffer's terms read for one request): what the
+    /// reader-wide statistics count of it for such a field.
+    pub termless: Option<&'a std::collections::HashMap<String, [i64; 4]>>,
     /// The searcher's similarity (`IndexSearcher.setSimilarity`), every
     /// segment of a search holding the same one: what scores the request
     /// when the search function is not handed one itself. `None` is
@@ -544,6 +549,7 @@ pub(crate) fn global_term_stats(
     for seg in segments {
         stats.add_segment(seg);
         let Some(ft) = seg.fields.field(field) else {
+            seen |= stats.add_termless(seg, field);
             continue;
         };
         seen = true;
@@ -571,10 +577,35 @@ impl FieldSums {
     }
 
     fn add_field(&mut self, ft: &lucene_codecs::blocktree::FieldTerms) {
+        self.add_stats(ft.sum_total_term_freq, ft.sum_doc_freq, ft.doc_count);
+    }
+
+    fn add_stats(&mut self, sum_total_term_freq: i64, sum_doc_freq: i64, doc_count: i32) {
         let s = &mut self.0;
-        s.doc_count = s.doc_count.saturating_add(i64::from(ft.doc_count));
-        s.sum_total_term_freq = s.sum_total_term_freq.saturating_add(ft.sum_total_term_freq);
-        s.sum_doc_freq = s.sum_doc_freq.saturating_add(ft.sum_doc_freq);
+        s.doc_count = s.doc_count.saturating_add(i64::from(doc_count));
+        s.sum_total_term_freq = s.sum_total_term_freq.saturating_add(sum_total_term_freq);
+        s.sum_doc_freq = s.sum_doc_freq.saturating_add(sum_doc_freq);
+    }
+
+    /// A segment holding none of the field's terms here though its
+    /// documents have the field ([`crate::directory_reader::SegmentReader::termless_field_stats`]):
+    /// its statistics count all the same. Whether it had any.
+    fn add_termless(&mut self, seg: &OpenSegment<'_>, field: &str) -> bool {
+        if let Some((ttf, sdf, dc)) = seg.reader.and_then(|r| r.termless_field_stats(field)) {
+            self.add_stats(ttf, sdf, dc);
+            return true;
+        }
+        match seg
+            .termless
+            .filter(|_| seg.fields.field(field).is_none())
+            .and_then(|m| m.get(field))
+        {
+            Some(&[_, ttf, sdf, dc]) => {
+                self.add_stats(ttf, sdf, i32::try_from(dc).unwrap_or(i32::MAX));
+                true
+            }
+            None => false,
+        }
     }
 
     fn add_term(&mut self, doc_freq: i32, total_term_freq: i64) {
@@ -601,6 +632,7 @@ pub(crate) fn global_term_stats_states(
     for seg in segments {
         stats.add_segment(seg);
         let Some(ft) = seg.fields.field(field) else {
+            seen |= stats.add_termless(seg, field);
             continue;
         };
         seen = true;
@@ -632,12 +664,16 @@ pub fn global_avg_field_length(segments: &[OpenSegment<'_>], field: &str) -> Opt
     let mut doc_count = 0i64;
     let mut seen = false;
     for seg in segments {
-        let Some(ft) = seg.fields.field(field) else {
-            continue;
+        let (ttf, dc) = match seg.fields.field(field) {
+            Some(ft) => (ft.sum_total_term_freq, ft.doc_count),
+            None => match seg.reader.and_then(|r| r.termless_field_stats(field)) {
+                Some((ttf, _, dc)) => (ttf, dc),
+                None => continue,
+            },
         };
         seen = true;
-        sum_total_term_freq += ft.sum_total_term_freq;
-        doc_count += ft.doc_count as i64;
+        sum_total_term_freq += ttf;
+        doc_count += dc as i64;
     }
     seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
 }
@@ -1245,6 +1281,53 @@ pub fn search_boolean_query_multi_segment_maxscore_counting(
         let seg_norms = norms.get(i).copied().flatten();
         crate::search_boolean_query_scored_segment(seg, query, seg_norms, Some(&global), local)
     })
+}
+
+/// A boolean query made ready to score leaf by leaf: rewritten as the
+/// searcher rewrites it (point ranges) and holding the statistics of every
+/// segment it was prepared over, as a `Weight` created over the whole
+/// searcher does whichever leaves it then scores.
+pub struct PreparedBoolean {
+    query: BooleanQuery,
+    global: crate::GlobalStats,
+}
+
+impl PreparedBoolean {
+    /// `query` over `segments`.
+    pub fn new(segments: &[OpenSegment<'_>], query: &BooleanQuery) -> Result<Self> {
+        let query = rewrite_points_ranges(query, segments).unwrap_or_else(|| query.clone());
+        let global = global_boolean_stats(segments, &query)?;
+        Ok(Self { query, global })
+    }
+
+    /// Every document of `segment` the query matches, with its score, in
+    /// ascending (segment-local) doc ID order: an exhaustive scorer, nothing
+    /// pruned.
+    pub fn score_all(
+        &self,
+        segment: &OpenSegment<'_>,
+        norms: Option<&HashMap<String, FieldNorms<'_>>>,
+    ) -> Result<Vec<ScoreDoc>> {
+        struct All(Vec<ScoreDoc>);
+        impl crate::collector::ScoringCollector for All {
+            fn collect(&mut self, doc_id: i32, score: f32) {
+                self.0.push(ScoreDoc { doc_id, score });
+            }
+        }
+        let mut all = All(Vec::new());
+        crate::search_boolean_query_scored_segment(
+            segment,
+            &self.query,
+            norms,
+            Some(&self.global),
+            &mut all,
+        )?;
+        let mut hits = all.0;
+        if hits.windows(2).any(|w| w[0].doc_id > w[1].doc_id) {
+            hits.sort_unstable_by_key(|h| h.doc_id);
+        }
+        Ok(hits)
+    }
 }
 
 /// [`search_boolean_query_multi_segment_maxscore`] under `similarity` --
@@ -2101,6 +2184,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2114,6 +2198,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2183,6 +2268,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2196,6 +2282,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2260,6 +2347,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2273,6 +2361,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2311,6 +2400,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2324,6 +2414,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2357,6 +2448,7 @@ mod tests {
             cache: None,
             reader: None,
             index_sort_prefix: false,
+            termless: None,
             similarity: None,
             points: None,
         }];
@@ -2735,6 +2827,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2748,6 +2841,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,
@@ -2784,6 +2878,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
             },
@@ -2797,6 +2892,7 @@ mod tests {
                 cache: None,
                 reader: None,
                 index_sort_prefix: false,
+                termless: None,
                 similarity: None,
                 points: None,
                 max_doc: None,

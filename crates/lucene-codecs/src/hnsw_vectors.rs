@@ -781,7 +781,7 @@ pub struct HnswFieldEntry {
 pub struct HnswVectorsReader<'a> {
     index: &'a [u8],
     version: i32,
-    fields: Vec<HnswFieldEntry>,
+    fields: std::sync::Arc<Vec<HnswFieldEntry>>,
 }
 
 impl<'a> HnswVectorsReader<'a> {
@@ -846,7 +846,7 @@ impl<'a> HnswVectorsReader<'a> {
         Ok(HnswVectorsReader {
             index: index_buf,
             version: version_meta,
-            fields,
+            fields: std::sync::Arc::new(fields),
         })
     }
 
@@ -859,7 +859,7 @@ impl<'a> HnswVectorsReader<'a> {
         HnswVectorsReader {
             index,
             version,
-            fields,
+            fields: std::sync::Arc::new(fields),
         }
     }
 
@@ -869,6 +869,27 @@ impl<'a> HnswVectorsReader<'a> {
 
     pub fn fields(&self) -> &[HnswFieldEntry] {
         &self.fields
+    }
+
+    /// This reader without its data file, to keep beside the segment's
+    /// files: [`Self::attach`] it to the same data for each search, so the
+    /// metadata is parsed and checked once and shared, not copied.
+    pub fn detached(&self) -> HnswVectorsReader<'static> {
+        HnswVectorsReader {
+            index: &[],
+            version: self.version,
+            fields: self.fields.clone(),
+        }
+    }
+
+    /// A detached reader ([`Self::detached`]) over `data`, which must be the
+    /// file the reader was opened on.
+    pub fn attach<'b>(&self, data: &'b [u8]) -> HnswVectorsReader<'b> {
+        HnswVectorsReader {
+            index: data,
+            version: self.version,
+            fields: self.fields.clone(),
+        }
     }
 
     pub fn field(&self, field_number: i32) -> Option<&HnswFieldEntry> {
@@ -1293,6 +1314,29 @@ impl HnswGraphView for OffHeapHnswGraph<'_> {
         Ok(())
     }
 
+    fn prefetch_neighbors(&self, level: i32, node: i32) {
+        // Level 0 only, where the walk spends its time; the node-offsets
+        // table is small enough to stay cached, the lists are not.
+        if level != 0 || node < 0 || node >= self.size {
+            return;
+        }
+        if let Ok(offset) =
+            direct_monotonic::get(self.offsets_data, &self.offsets_meta, i64::from(node))
+        {
+            if let Some(list) = usize::try_from(offset)
+                .ok()
+                .and_then(|start| self.data.get(start..))
+            {
+                // A vint count and up to `2 * M` group-varint deltas,
+                // budgeted at 3 bytes each; a longer list's tail just misses.
+                let len = (self.max_conn.max(0) as usize)
+                    .saturating_mul(6)
+                    .min(list.len());
+                lucene_util::simd::prefetch_bytes(&list[..len]);
+            }
+        }
+    }
+
     fn sorted_nodes_on_level(&self, level: i32) -> Result<Vec<i32>> {
         if level == 0 {
             return Ok((0..self.size).collect());
@@ -1649,6 +1693,30 @@ mod tests {
                 want.dedup();
                 off.neighbors_into(level, node, &mut got).unwrap();
                 assert_eq!(got, want, "level {level} node {node}");
+            }
+        }
+    }
+
+    /// The prefetch hints walk off no edge: every node, out-of-range ones,
+    /// upper levels, and a graph whose offsets point past its `.vex`.
+    #[test]
+    fn neighbor_prefetch_ignores_any_bad_target() {
+        let graph = build(300);
+        let (vex, vem) = write_hnsw_vectors(&[field(Some(&graph), 300)], &ID, "").unwrap();
+        let reader = HnswVectorsReader::open(&vem, &vex, &ID, "").unwrap();
+        let off = reader.graph(0).unwrap().unwrap();
+        for level in -1..=off.num_levels() {
+            for node in [-1, 0, 1, 150, 299, 300, i32::MAX, i32::MIN] {
+                off.prefetch_neighbors(level, node);
+                graph.prefetch_neighbors(level, node);
+            }
+        }
+        // The same graph over a `.vex` cut short: offsets now point past it.
+        let entry = reader.field(0).unwrap();
+        let cut = &vex[..entry.vector_index_offset as usize + 8];
+        if let Ok(short) = OffHeapHnswGraph::new(entry, cut, reader.version()) {
+            for node in 0..300 {
+                short.prefetch_neighbors(0, node);
             }
         }
     }

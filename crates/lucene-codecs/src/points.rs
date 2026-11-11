@@ -1208,6 +1208,14 @@ pub trait IntersectVisitor {
     fn grow(&mut self, count: usize) {
         let _ = count;
     }
+    /// A subtree of `count` points entirely inside the query, which
+    /// [`PointsReader::count_points`] counts by its size without visiting a
+    /// document. The cell is the one the last [`Self::compare`] saw, so a
+    /// visitor counting several intervals in one walk can tell which one the
+    /// points fall in. Ignored by default.
+    fn visit_inside_count(&mut self, count: i64) {
+        let _ = count;
+    }
 }
 
 /// One inner node's split descriptor, decoded the way
@@ -1905,7 +1913,11 @@ fn count_node<V: IntersectVisitor>(
 ) -> Result<i64> {
     match visitor.compare(&ctx.min, &ctx.max) {
         Relation::CellOutsideQuery => Ok(0),
-        Relation::CellInsideQuery => ctx.field.subtree_size(node_id),
+        Relation::CellInsideQuery => {
+            let count = ctx.field.subtree_size(node_id)?;
+            visitor.visit_inside_count(count);
+            Ok(count)
+        }
         Relation::CellCrossesQuery if node_id >= ctx.field.num_leaves => {
             let mut kdd_input = SliceInput::new(ctx.kdd);
             seek_leaf_block(&mut kdd_input, fp)?;
@@ -2941,6 +2953,12 @@ fn read_delta_bpv16(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) ->
     Ok(())
 }
 
+/// A little-endian `u32` from a four-byte chunk.
+#[inline(always)]
+fn le_u32(w: &[u8]) -> u32 {
+    u32::from_le_bytes([w[0], w[1], w[2], w[3]])
+}
+
 fn floor_to_multiple_of_16(n: usize) -> usize {
     n & !0xF
 }
@@ -2973,23 +2991,22 @@ fn read_bpv21(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Resul
     // into `out[num_ints..tail_start]` from them, and only then are the words
     // shifted down in place to the ids in their high bits.
     let words = take_bytes(input, num_ints.saturating_mul(4), "BPV_21 doc id words")?;
+    // Straight from the words, each pass a plain map the compiler unrolls
+    // and vectorises: their high 21 bits are the first `num_ints` ids, and
+    // the low 11 bits of word `i` and of word `i + one_third` make id
+    // `num_ints + i`.
     out.resize(count, 0);
-    for (slot, w) in out[..num_ints].iter_mut().zip(words.chunks_exact(4)) {
-        *slot = i32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+    let (high, low) = out.split_at_mut(num_ints);
+    for (slot, w) in high.iter_mut().zip(words.chunks_exact(4)) {
+        *slot = (le_u32(w) >> 11) as i32;
     }
-    for i in 0..one_third {
-        // ARITH: `i < one_third`, so `i + one_third < num_ints`
-        // (the packed words' count) and `i + num_ints < 3 * one_third = tail_start <=
-        // count = out.len()` (and `num_ints <= count` covers the plain
-        // `out[i]` loop above). `<< 11` is applied to a value masked to 11
-        // bits, so it cannot leave `i32`.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            out[i + num_ints] = (out[i] & 0x7FF) | ((out[i + one_third] & 0x7FF) << 11);
-        }
-    }
-    for slot in &mut out[..num_ints] {
-        *slot = ((*slot as u32) >> 11) as i32;
+    let (first, second) = words.split_at(one_third.saturating_mul(4));
+    for ((slot, a), b) in low
+        .iter_mut()
+        .zip(first.chunks_exact(4))
+        .zip(second.chunks_exact(4))
+    {
+        *slot = ((le_u32(a) & 0x7FF) | ((le_u32(b) & 0x7FF) << 11)) as i32;
     }
 
     let mut i = tail_start;
@@ -3093,24 +3110,24 @@ fn read_bpv24(input: &mut SliceInput, count: usize, out: &mut Vec<i32>) -> Resul
     // As for `BPV_21`: words into `out[..num_ints]`, the low-byte ids
     // assembled from them, then the words shifted down in place.
     let words = take_bytes(input, num_ints.saturating_mul(4), "BPV_24 doc id words")?;
+    // As for `BPV_21`, straight from the words: their high 24 bits are the
+    // first `num_ints` ids, and the low bytes of words `i`, `i + quarter`
+    // and `i + 2 * quarter` make id `num_ints + i`.
     out.resize(count, 0);
-    for (slot, w) in out[..num_ints].iter_mut().zip(words.chunks_exact(4)) {
-        *slot = i32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+    let (high, low) = out.split_at_mut(num_ints);
+    for (slot, w) in high.iter_mut().zip(words.chunks_exact(4)) {
+        *slot = (le_u32(w) >> 8) as i32;
     }
-    for i in 0..quarter {
-        // ARITH: `i < quarter`, so `i + quarter * 2 < 3 * quarter = num_ints`
-        // (the packed words' count) and `i + num_ints < 4 * quarter = tail_start <=
-        // count = out.len()`. Every shifted operand is masked to eight bits
-        // first, so no shift can leave `i32`.
-        #[allow(clippy::arithmetic_side_effects)]
-        {
-            out[i + num_ints] = (out[i] & 0xFF)
-                | ((out[i + quarter] & 0xFF) << 8)
-                | ((out[i + quarter * 2] & 0xFF) << 16);
-        }
-    }
-    for slot in &mut out[..num_ints] {
-        *slot = ((*slot as u32) >> 8) as i32;
+    let (first, rest) = words.split_at(quarter.saturating_mul(4));
+    let (second, third) = rest.split_at(quarter.saturating_mul(4));
+    for (((slot, a), b), c) in low
+        .iter_mut()
+        .zip(first.chunks_exact(4))
+        .zip(second.chunks_exact(4))
+        .zip(third.chunks_exact(4))
+    {
+        *slot =
+            ((le_u32(a) & 0xFF) | ((le_u32(b) & 0xFF) << 8) | ((le_u32(c) & 0xFF) << 16)) as i32;
     }
 
     let mut i = tail_start;

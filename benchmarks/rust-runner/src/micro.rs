@@ -416,7 +416,13 @@ mod counting_alloc {
     //! One counter every thread bumps on every allocation is a contended cache
     //! line: it made the four-thread `concurrent_index` cases spend a third of
     //! their time there, a cost of this harness, not of the engine.
-    use std::alloc::{GlobalAlloc, Layout, System};
+    //!
+    //! Blocks come from mimalloc, the plugin library's allocator: glibc's
+    //! `malloc` returns a freed block over its mmap threshold to the kernel,
+    //! so a case that allocates a `maxDoc`-bit bitset per query measured page
+    //! faults the engine does not take.
+    use mimalloc::MiMalloc as Inner;
+    use std::alloc::{GlobalAlloc, Layout};
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
     pub struct Counting;
@@ -432,19 +438,19 @@ mod counting_alloc {
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
             count(l.size() as isize);
-            unsafe { System.alloc(l) }
+            unsafe { Inner.alloc(l) }
         }
         unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
             count(-(l.size() as isize));
-            unsafe { System.dealloc(p, l) }
+            unsafe { Inner.dealloc(p, l) }
         }
         unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
             count(l.size() as isize);
-            unsafe { System.alloc_zeroed(l) }
+            unsafe { Inner.alloc_zeroed(l) }
         }
         unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
             count(new as isize - l.size() as isize);
-            unsafe { System.realloc(p, l, new) }
+            unsafe { Inner.realloc(p, l, new) }
         }
     }
 
@@ -1744,7 +1750,7 @@ fn bench_dv_merge(warmup: Duration, measure: Duration) {
         configure(&mut w);
         w.set_merge_policy(Some(MergePolicyConfig {
             max_merge_at_once: 10,
-            segments_per_tier: 2,
+            segments_per_tier: 2.0,
             max_merged_segment_size: u64::MAX / 4,
             floor_segment_size: 1 << 30,
             ..MergePolicyConfig::default()
@@ -1923,7 +1929,7 @@ fn bench_points_write(warmup: Duration, measure: Duration) {
             }
             w.set_merge_policy(Some(MergePolicyConfig {
                 max_merge_at_once: 10,
-                segments_per_tier: 2,
+                segments_per_tier: 2.0,
                 max_merged_segment_size: u64::MAX / 4,
                 floor_segment_size: 1 << 30,
                 ..MergePolicyConfig::default()

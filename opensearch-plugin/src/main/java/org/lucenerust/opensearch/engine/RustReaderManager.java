@@ -5,13 +5,14 @@ package org.lucenerust.opensearch.engine;
 
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FilterDirectoryReader;
-import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.StandardDirectoryReader;
 import org.apache.lucene.search.ReferenceManager;
+import org.apache.lucene.store.BufferedChecksumIndexInput;
 import org.apache.lucene.store.Directory;
+import org.opensearch.common.lucene.store.ByteArrayIndexInput;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.core.index.shard.ShardId;
@@ -23,11 +24,12 @@ import java.util.List;
 
 /**
  * The engine's internal reader manager: every reader is a Java {@link StandardDirectoryReader} on
- * one of the Rust writer's commits, with soft deletes applied as {@code IndexWriter}'s NRT readers
- * apply them ({@link SoftDeletesReader}) and wrapped for OpenSearch. A refresh asks the writer to commit whatever is buffered and opens the newest
- * commit, reusing the segment readers of every segment that did not change.
+ * the Rust writer's live segment list, with soft deletes applied as {@code IndexWriter}'s NRT readers
+ * apply them ({@link SoftDeletesReader}) and wrapped for OpenSearch. A refresh asks the writer to
+ * flush whatever is buffered (no commit) and opens its segment
+ * list, reusing the segment readers of every segment that did not change.
  *
- * <p>Each reader pins its commit's files on the Rust side for as long as it is open -- what {@code
+ * <p>Each reader pins its segments' files on the Rust side for as long as it is open -- what {@code
  * IndexWriter}'s NRT readers do through {@code IndexFileDeleter} -- so a merge or a dropped commit
  * never deletes a file a search, or a replica copying segments, still reads.
  */
@@ -46,9 +48,23 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
         this.current = open(null);
     }
 
-    /** The generation of the commit {@code reader} was opened on. */
-    static long generation(OpenSearchDirectoryReader reader) {
-        return standard(reader).getSegmentInfos().getGeneration();
+    /**
+     * Searches moved on from {@code previous} (the external reader before the one now searched):
+     * what its readers read from the writer's buffers is in the segments of the newer one. Not
+     * called for a refresh of the internal reader alone (a flush of the indexing buffer), which
+     * external searches, still on the older commit, do not see.
+     */
+    void searchesLeft(OpenSearchDirectoryReader previous) {
+        writer.releaseLive(version(previous));
+    }
+
+    /**
+     * The version of {@code reader}'s segment list: what live views of the buffers it lacks are
+     * opened and released by. The writer keys every segment list it hands a reader by it, an NRT
+     * snapshot's as a commit's.
+     */
+    static long version(OpenSearchDirectoryReader reader) {
+        return standard(reader).getVersion();
     }
 
     static StandardDirectoryReader standard(DirectoryReader reader) {
@@ -56,20 +72,31 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
     }
 
     private OpenSearchDirectoryReader open(OpenSearchDirectoryReader previous) throws IOException {
-        long[] latest = writer.acquireLatest();
-        long generation = latest[0];
-        long hold = latest[1];
+        long hold;
+        SegmentInfos infos;
+        long[] out = new long[2];
+        byte[] bytes = writer.acquireNrt(out);
+        hold = out[0];
+        try {
+            infos = SegmentInfos.readCommit(
+                directory,
+                new BufferedChecksumIndexInput(new ByteArrayIndexInput("nrt segment list", bytes)),
+                out[1]
+            );
+        } catch (IOException | RuntimeException e) {
+            writer.releaseHold(hold);
+            throw e;
+        }
+        // A commit since the last reader changes the generation and not always the version
+        // (Java's bumps it with the commit's user data): reopen so the reader names it.
+        if (previous != null
+            && standard(previous).getVersion() == infos.getVersion()
+            && standard(previous).getSegmentInfos().getGeneration() == infos.getGeneration()) {
+            writer.releaseHold(hold);
+            return null;
+        }
         boolean success = false;
         try {
-            if (previous != null && generation(previous) == generation) {
-                writer.releaseHold(hold);
-                success = true;
-                return null;
-            }
-            SegmentInfos infos = SegmentInfos.readCommit(
-                directory,
-                IndexFileNames.fileNameFromGeneration(IndexFileNames.SEGMENTS, "", generation)
-            );
             List<LeafReader> old = null;
             if (previous != null) {
                 old = new ArrayList<>();

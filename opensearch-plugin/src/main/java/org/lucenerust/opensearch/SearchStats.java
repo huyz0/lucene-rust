@@ -22,9 +22,37 @@ public final class SearchStats {
         nativeQueries.increment();
     }
 
+    private final LongAdder liveQueries = new LongAdder();
+
+    /** A native search that read the writer's buffered documents too; also counted as native. */
+    public void liveQuery() {
+        liveQueries.increment();
+    }
+
+    public long liveCount() {
+        return liveQueries.sum();
+    }
+
     /** A native search that failed and was re-run on Lucene; also counted as a fallback. */
     public void nativeError() {
         nativeErrors.increment();
+    }
+
+    private final LongAdder scriptErrors = new LongAdder();
+
+    /**
+     * A native search that a Painless script's own exception ended, failing as the script does in
+     * Java and never re-run; {@code counted} when it was first counted as a {@link #nativeError}.
+     */
+    public void scriptError(boolean counted) {
+        if (counted) {
+            nativeErrors.decrement();
+        }
+        scriptErrors.increment();
+    }
+
+    public long scriptErrorCount() {
+        return scriptErrors.sum();
     }
 
     private final LongAdder nativeSequentialFetches = new LongAdder();
@@ -38,6 +66,28 @@ public final class SearchStats {
         if (sequential) {
             nativeSequentialFetches.increment();
         }
+    }
+
+    private final LongAdder sourcesWithoutVectors = new LongAdder();
+
+    /** A derived {@code _source} read without its vectors, for a fetch whose filter drops them. */
+    public void sourceWithoutVectors() {
+        sourcesWithoutVectors.increment();
+    }
+
+    public long sourcesWithoutVectorsCount() {
+        return sourcesWithoutVectors.sum();
+    }
+
+    private final LongAdder nativeDocValues = new LongAdder();
+
+    /** A document's doc values read natively ({@link NativeDocValues}). */
+    public void nativeDocValues() {
+        nativeDocValues.increment();
+    }
+
+    public long docValuesCount() {
+        return nativeDocValues.sum();
     }
 
     public long sequentialFetchCount() {
@@ -104,6 +154,23 @@ public final class SearchStats {
 
     public long nativeNanos() {
         return nativeNanos.sum();
+    }
+
+    private final LongAdder liveReaderNanos = new LongAdder();
+    private final LongAdder liveReaders = new LongAdder();
+
+    /** Time spent building a realtime view's reader (its buffers written as segments). */
+    public void liveReaderTime(long nanos) {
+        liveReaderNanos.add(nanos);
+        liveReaders.increment();
+    }
+
+    public long liveReaderNanos() {
+        return liveReaderNanos.sum();
+    }
+
+    public long liveReaderCount() {
+        return liveReaders.sum();
     }
 
     public long luceneNanos() {

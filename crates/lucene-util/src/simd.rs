@@ -8,7 +8,10 @@
 //!
 //! Each kernel has an AVX2 path, compiled in when the build targets a CPU with
 //! AVX2 (this workspace's `.cargo/config.toml` builds Linux x86_64 for
-//! `x86-64-v3`), and a scalar path for every other target. The unsafe code is
+//! `x86-64-v3`); the float similarity kernels, the IVF query setup and the
+//! fast scan also have an aarch64 NEON path (NEON is that target's
+//! baseline), and a few take AVX-512 when [`crate::cpu`] finds it at run
+//! time. Every other target runs the scalar path. The unsafe code is
 //! confined to this module -- `lucene-util` is one of the three crates
 //! AGENTS.md invariant 4 allows it in -- and each `unsafe` block states the
 //! bounds it relies on; the public functions take fixed-size arrays or check
@@ -245,7 +248,8 @@ unsafe fn find_next_geq_avx2(buf: &[i32], target: i32) -> usize {
 // one more 8-element step into the first accumulator, then a scalar tail.
 // Every product is a fused multiply-add. The AVX2 path and the scalar
 // specification share that layout *and* the order the lanes are folded in, so
-// they agree bit for bit and the tests can demand exact equality.
+// they agree bit for bit and the tests can demand exact equality. The NEON
+// kernels keep the same layout, so the same holds on aarch64.
 //
 // Explicit intrinsics rather than an autovectorized loop: a `[f32; 32]`
 // accumulator array written lane by lane is what the scalar spec below is,
@@ -316,6 +320,417 @@ fn cosine_parts_f32_sequential(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
         })
 }
 
+/// Statistics of the residual `r = query - centroid` that scalar
+/// quantization of a query against a centroid starts from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResidualStats {
+    /// `sum(r)`.
+    pub sum: f64,
+    /// `sum(r^2)`.
+    pub sum_sq: f64,
+    /// The smallest `r_i` (`f32::MAX` when empty).
+    pub min: f32,
+    /// The largest `r_i` (`-f32::MAX` when empty).
+    pub max: f32,
+    /// `r . centroid`.
+    pub dot_centroid: f32,
+}
+
+/// [`ResidualStats`] of `query - centroid` over their common prefix. Sums
+/// run in eight lanes (`f64` for the two that a variance subtracts), so
+/// results match [`residual_stats_scalar`] only to rounding.
+#[inline]
+pub fn residual_stats(query: &[f32], centroid: &[f32]) -> ResidualStats {
+    let n = query.len().min(centroid.len());
+    let (query, centroid) = (&query[..n], &centroid[..n]);
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    ))]
+    {
+        // SAFETY: AVX2 and FMA are enabled for this whole build; both slices
+        // are `n` long and the kernel reads whole 8-lane chunks below `n`.
+        unsafe { residual_stats_avx2(query, centroid) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { residual_stats_neon(query, centroid) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
+    )))]
+    residual_stats_scalar(query, centroid)
+}
+
+/// The portable [`residual_stats`]: eight lanes, then their sum.
+pub fn residual_stats_scalar(query: &[f32], centroid: &[f32]) -> ResidualStats {
+    const L: usize = 8;
+    let (mut sum, mut sq) = ([0f64; L], [0f64; L]);
+    let (mut lo, mut hi) = ([f32::MAX; L], [-f32::MAX; L]);
+    let mut rc = [0f32; L];
+    for (i, (&q, &c)) in query.iter().zip(centroid).enumerate() {
+        let (j, r) = (i % L, q - c);
+        sum[j] += f64::from(r);
+        sq[j] += f64::from(r) * f64::from(r);
+        lo[j] = lo[j].min(r);
+        hi[j] = hi[j].max(r);
+        rc[j] += r * c;
+    }
+    ResidualStats {
+        sum: sum.iter().sum(),
+        sum_sq: sq.iter().sum(),
+        min: lo.iter().fold(f32::MAX, |m, &x| m.min(x)),
+        max: hi.iter().fold(-f32::MAX, |m, &x| m.max(x)),
+        dot_centroid: rc.iter().sum(),
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn residual_stats_avx2(query: &[f32], centroid: &[f32]) -> ResidualStats {
+    use std::arch::x86_64::*;
+    let n = query.len();
+    let whole = n - n % 8;
+    let (pq, pc) = (query.as_ptr(), centroid.as_ptr());
+    let (mut sum_lo, mut sum_hi) = (_mm256_setzero_pd(), _mm256_setzero_pd());
+    let (mut sq_lo, mut sq_hi) = (_mm256_setzero_pd(), _mm256_setzero_pd());
+    let mut lo = _mm256_set1_ps(f32::MAX);
+    let mut hi = _mm256_set1_ps(-f32::MAX);
+    let mut rc = _mm256_setzero_ps();
+    let mut i = 0;
+    while i < whole {
+        // SAFETY: `i + 8 <= whole <= n`, the length of both slices.
+        let (q, c) = unsafe { (_mm256_loadu_ps(pq.add(i)), _mm256_loadu_ps(pc.add(i))) };
+        let r = _mm256_sub_ps(q, c);
+        let r_lo = _mm256_cvtps_pd(_mm256_castps256_ps128(r));
+        let r_hi = _mm256_cvtps_pd(_mm256_extractf128_ps(r, 1));
+        sum_lo = _mm256_add_pd(sum_lo, r_lo);
+        sum_hi = _mm256_add_pd(sum_hi, r_hi);
+        sq_lo = _mm256_fmadd_pd(r_lo, r_lo, sq_lo);
+        sq_hi = _mm256_fmadd_pd(r_hi, r_hi, sq_hi);
+        lo = _mm256_min_ps(lo, r);
+        hi = _mm256_max_ps(hi, r);
+        rc = _mm256_fmadd_ps(r, c, rc);
+        i += 8;
+    }
+    // SAFETY (each): the vectors are plain lanes with no padding.
+    let sum = unsafe { std::mem::transmute::<[__m256d; 2], [f64; 8]>([sum_lo, sum_hi]) };
+    let sq = unsafe { std::mem::transmute::<[__m256d; 2], [f64; 8]>([sq_lo, sq_hi]) };
+    let lo = unsafe { std::mem::transmute::<__m256, [f32; 8]>(lo) };
+    let hi = unsafe { std::mem::transmute::<__m256, [f32; 8]>(hi) };
+    let rc = unsafe { std::mem::transmute::<__m256, [f32; 8]>(rc) };
+    let tail = residual_stats_scalar(&query[whole..], &centroid[whole..]);
+    ResidualStats {
+        sum: sum.iter().sum::<f64>() + tail.sum,
+        sum_sq: sq.iter().sum::<f64>() + tail.sum_sq,
+        min: lo.iter().fold(tail.min, |m, &x| m.min(x)),
+        max: hi.iter().fold(tail.max, |m, &x| m.max(x)),
+        dot_centroid: rc.iter().sum::<f32>() + tail.dot_centroid,
+    }
+}
+
+/// Scalar-quantizes `r = query - centroid` over their common prefix into
+/// `out` (which must be at least that long): `r_i` clamped to
+/// `[lower, upper]`, level `floor((r_i - lower) * step_inv + 0.5)` clamped
+/// to `0..=255` (a NaN level is 0), and returns the levels' sum and the
+/// squared norm of the error `r_i - (lower + level * step)`. The vector path
+/// fuses the multiply-add, so a level exactly at a half step may round the
+/// other way than in [`quantize_residual_scalar`], and its error sum runs in
+/// another order.
+///
+/// # Panics
+///
+/// When `out` is shorter than the common prefix.
+#[inline]
+pub fn quantize_residual(
+    query: &[f32],
+    centroid: &[f32],
+    interval: [f32; 2],
+    step_inv: f32,
+    step: f32,
+    out: &mut [u8],
+) -> (i32, f32) {
+    let n = query.len().min(centroid.len());
+    assert!(
+        out.len() >= n,
+        "quantize_residual: {} outputs for {n} dimensions",
+        out.len()
+    );
+    let (query, centroid, out) = (&query[..n], &centroid[..n], &mut out[..n]);
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        target_feature = "fma"
+    ))]
+    {
+        // SAFETY: AVX2 and FMA are enabled for this whole build; all three
+        // slices are `n` long and the kernel touches whole 8-lane chunks
+        // below `n`.
+        unsafe { quantize_residual_avx2(query, centroid, interval, step_inv, step, out) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; all three slices
+        // are `n` long and the kernel touches whole 8-lane chunks below `n`.
+        unsafe { quantize_residual_neon(query, centroid, interval, step_inv, step, out) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
+    )))]
+    quantize_residual_scalar(query, centroid, interval, step_inv, step, out)
+}
+
+/// The portable [`quantize_residual`].
+///
+/// # Panics
+///
+/// As [`quantize_residual`].
+// ARITH: lane indices are below 8; the level sum wraps.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn quantize_residual_scalar(
+    query: &[f32],
+    centroid: &[f32],
+    interval: [f32; 2],
+    step_inv: f32,
+    step: f32,
+    out: &mut [u8],
+) -> (i32, f32) {
+    const L: usize = 8;
+    let [lower, upper] = interval;
+    let mut errors = [0f32; L];
+    let mut levels = 0i32;
+    for (i, ((o, &q), &c)) in out.iter_mut().zip(query).zip(centroid).enumerate() {
+        let r = q - c;
+        let x = r.max(lower).min(upper);
+        // `max` first, so a NaN level becomes 0, as the vector path's
+        // (`clamp` would keep the NaN).
+        #[allow(clippy::manual_clamp)]
+        let level = ((x - lower) * step_inv + 0.5).floor().max(0.0).min(255.0);
+        let e = r - (lower + level * step);
+        errors[i % L] += e * e;
+        // In 0..=255: exact as an integer.
+        let level = level as i32;
+        levels = levels.wrapping_add(level);
+        *o = level as u8;
+    }
+    (levels, errors.iter().sum())
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
+#[target_feature(enable = "avx2,fma")]
+// ARITH: `i` steps by 8 up to `whole <= n`, the slices' length; the level
+// sums wrap.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn quantize_residual_avx2(
+    query: &[f32],
+    centroid: &[f32],
+    interval: [f32; 2],
+    step_inv: f32,
+    step: f32,
+    out: &mut [u8],
+) -> (i32, f32) {
+    use std::arch::x86_64::*;
+    let n = query.len();
+    let whole = n - n % 8;
+    let (pq, pc, po) = (query.as_ptr(), centroid.as_ptr(), out.as_mut_ptr());
+    let [lower, upper] = interval;
+    let (a, b) = (_mm256_set1_ps(lower), _mm256_set1_ps(upper));
+    let (inv, st, half) = (
+        _mm256_set1_ps(step_inv),
+        _mm256_set1_ps(step),
+        _mm256_set1_ps(0.5),
+    );
+    let (zero, top) = (_mm256_setzero_ps(), _mm256_set1_ps(255.0));
+    let mut err = _mm256_setzero_ps();
+    let mut sum = _mm256_setzero_si256();
+    let mut i = 0;
+    while i < whole {
+        // SAFETY: `i + 8 <= whole <= n`, the length of all three slices.
+        let (q, c) = unsafe { (_mm256_loadu_ps(pq.add(i)), _mm256_loadu_ps(pc.add(i))) };
+        let r = _mm256_sub_ps(q, c);
+        // `max` then `min`, as the scalar path, so a NaN residual becomes
+        // `lower` in both.
+        let x = _mm256_min_ps(_mm256_max_ps(r, a), b);
+        // Clamped to 0..=255; `max` returns its second operand, 0, for NaN.
+        let level = _mm256_floor_ps(_mm256_fmadd_ps(_mm256_sub_ps(x, a), inv, half));
+        let level = _mm256_min_ps(_mm256_max_ps(level, zero), top);
+        let e = _mm256_sub_ps(r, _mm256_fmadd_ps(level, st, a));
+        err = _mm256_fmadd_ps(e, e, err);
+        let li = _mm256_cvttps_epi32(level);
+        sum = _mm256_add_epi32(sum, li);
+        // Levels to bytes: 32 to 16 to 8 bits within each 128-bit half, so
+        // half `k`'s four bytes land in its lowest 32 bits.
+        let w = _mm256_packus_epi32(li, li);
+        let bytes = _mm256_packus_epi16(w, w);
+        let lo4 = _mm256_extract_epi32::<0>(bytes) as u32;
+        let hi4 = _mm256_extract_epi32::<4>(bytes) as u32;
+        let eight = u64::from(lo4) | (u64::from(hi4) << 32);
+        // SAFETY: as above, the 8 bytes at `i` are inside `out`.
+        unsafe { std::ptr::write_unaligned(po.add(i) as *mut [u8; 8], eight.to_le_bytes()) };
+        i += 8;
+    }
+    // SAFETY: the vectors are plain lanes with no padding.
+    let (err, sum): ([f32; 8], [i32; 8]) = unsafe {
+        (
+            std::mem::transmute::<__m256, [f32; 8]>(err),
+            std::mem::transmute::<__m256i, [i32; 8]>(sum),
+        )
+    };
+    let (tail_sum, tail_err) = quantize_residual_scalar(
+        &query[whole..],
+        &centroid[whole..],
+        interval,
+        step_inv,
+        step,
+        &mut out[whole..],
+    );
+    (
+        sum.iter().fold(tail_sum, |s, &x| s.wrapping_add(x)),
+        err.iter().sum::<f32>() + tail_err,
+    )
+}
+
+/// Fast-scan tables for one bit plane: for each group of four values
+/// `query[4g..4g + 4]`, 16 bytes at `out[16g..]` whose entry `v` sums the
+/// values whose bit is set in `v`. Every sum must fit a byte (values below
+/// 64 always do).
+///
+/// # Panics
+///
+/// When `query` is not whole groups of four or `out` is not 16 bytes per
+/// group.
+#[inline]
+pub fn nibble_luts(query: &[u8], out: &mut [u8]) {
+    assert!(
+        query.len().is_multiple_of(4) && out.len() == query.len() * 4,
+        "nibble_luts: {} values for {} table bytes",
+        query.len(),
+        out.len()
+    );
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; the lengths are
+        // checked above and the kernel touches whole groups inside them.
+        unsafe { nibble_luts_avx2(query, out) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the lengths are
+        // checked above and the kernel touches whole groups inside them.
+        unsafe { nibble_luts_neon(query, out) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx2"),
+        target_arch = "aarch64"
+    )))]
+    nibble_luts_scalar(query, out);
+}
+
+/// The specification [`nibble_luts`] must match.
+///
+/// # Panics
+///
+/// As [`nibble_luts`].
+// ARITH: the caller's values keep every sum within a byte.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn nibble_luts_scalar(query: &[u8], out: &mut [u8]) {
+    assert!(query.len().is_multiple_of(4) && out.len() == query.len() * 4);
+    for (q, lut) in query.chunks_exact(4).zip(out.chunks_exact_mut(16)) {
+        for (v, e) in lut.iter_mut().enumerate() {
+            *e = (0..4).filter(|k| v >> k & 1 == 1).map(|k| q[k]).sum();
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+// ARITH: `g` steps by 2 up to `groups`; offsets `4g` and `16g` are inside
+// `query` and `out`, whose lengths the caller checked.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn nibble_luts_avx2(query: &[u8], out: &mut [u8]) {
+    use std::arch::x86_64::*;
+    /// Shuffle indices broadcasting value `k` of a lane's group: lane 0
+    /// holds group `g` (bytes 0..4), lane 1 group `g + 1` (bytes 4..8).
+    const fn spread(k: i8) -> [i8; 32] {
+        let mut x = [0i8; 32];
+        let mut i = 0;
+        while i < 32 {
+            x[i] = if i < 16 { k } else { 4 + k };
+            i += 1;
+        }
+        x
+    }
+    /// All ones in entry `v` of both lanes when bit `k` of `v` is set.
+    const fn mask(k: usize) -> [i8; 32] {
+        let mut x = [0i8; 32];
+        let mut i = 0;
+        while i < 32 {
+            if (i % 16) >> k & 1 == 1 {
+                x[i] = -1;
+            }
+            i += 1;
+        }
+        x
+    }
+    const SPREAD: [[i8; 32]; 4] = [spread(0), spread(1), spread(2), spread(3)];
+    const MASK: [[i8; 32]; 4] = [mask(0), mask(1), mask(2), mask(3)];
+    // SAFETY: the constants are 32 bytes each.
+    let load = |x: &[i8; 32]| unsafe { _mm256_loadu_si256(x.as_ptr() as *const __m256i) };
+    let (s, m) = (
+        [
+            load(&SPREAD[0]),
+            load(&SPREAD[1]),
+            load(&SPREAD[2]),
+            load(&SPREAD[3]),
+        ],
+        [
+            load(&MASK[0]),
+            load(&MASK[1]),
+            load(&MASK[2]),
+            load(&MASK[3]),
+        ],
+    );
+    let groups = query.len() / 4;
+    let (pq, po) = (query.as_ptr(), out.as_mut_ptr());
+    let mut g = 0;
+    while g + 2 <= groups {
+        // SAFETY: groups `g` and `g + 1` are the 8 bytes at `4g` of `query`
+        // and the 32 at `16g` of `out`.
+        let q = unsafe { _mm_loadl_epi64(pq.add(4 * g) as *const __m128i) };
+        let q = _mm256_broadcastsi128_si256(q);
+        let mut lut = _mm256_and_si256(_mm256_shuffle_epi8(q, s[0]), m[0]);
+        for k in 1..4 {
+            lut = _mm256_add_epi8(lut, _mm256_and_si256(_mm256_shuffle_epi8(q, s[k]), m[k]));
+        }
+        unsafe { _mm256_storeu_si256(po.add(16 * g) as *mut __m256i, lut) };
+        g += 2;
+    }
+    if g < groups {
+        nibble_luts_scalar(&query[4 * g..], &mut out[16 * g..]);
+    }
+}
+
 /// Dot product of the common prefix of `a` and `b`.
 #[inline]
 pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
@@ -332,10 +747,19 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
         // reads only whole 8-lane chunks inside both slices.
         unsafe { dot_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { dot_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     dot_f32_scalar(a, b)
 }
@@ -384,10 +808,19 @@ pub fn square_distance_f32(a: &[f32], b: &[f32]) -> f32 {
         // SAFETY: as for `dot_f32`.
         unsafe { square_distance_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { square_distance_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
     square_distance_f32_scalar(a, b)
 }
@@ -440,12 +873,60 @@ pub fn cosine_parts_f32(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
         // SAFETY: as for `dot_f32`.
         unsafe { cosine_parts_f32_avx2(a, b) }
     }
-    #[cfg(not(all(
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { cosine_parts_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
+    )))]
+    cosine_parts_f32_scalar(a, b)
+}
+
+/// `(a . b, b . b)`: [`cosine_parts_f32`] without `a . a`, bit for bit the
+/// same two sums. A query scored against many vectors computes its own norm
+/// once instead of once per candidate.
+#[inline]
+pub fn dot_and_norm_f32(a: &[f32], b: &[f32]) -> (f32, f32) {
+    if a.len().min(b.len()) <= SHORT_VECTOR {
+        return a.iter().zip(b).fold((0.0, 0.0), |(s, n2), (&x, &y)| {
+            (fmadd(x, y, s), fmadd(y, y, n2))
+        });
+    }
+    #[cfg(all(
         target_arch = "x86_64",
         target_feature = "avx2",
         target_feature = "fma"
+    ))]
+    {
+        // SAFETY: as for `dot_f32`.
+        unsafe { dot_and_norm_f32_avx2(a, b) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; the kernel reads
+        // only whole 4-lane registers below the shorter slice's length.
+        unsafe { dot_and_norm_f32_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma"
+        ),
+        target_arch = "aarch64"
     )))]
-    cosine_parts_f32_scalar(a, b)
+    {
+        let (s, _, n2) = cosine_parts_f32_scalar(a, b);
+        (s, n2)
+    }
 }
 
 /// The specification [`cosine_parts_f32`] must match exactly: two 8-lane
@@ -562,6 +1043,43 @@ unsafe fn square_distance_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
     target_feature = "fma"
 ))]
 #[target_feature(enable = "avx2,fma")]
+unsafe fn dot_and_norm_f32_avx2(a: &[f32], b: &[f32]) -> (f32, f32) {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut s = [_mm256_setzero_ps(); 2];
+    let mut n2 = [_mm256_setzero_ps(); 2];
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..2 {
+            let (x, y) = unsafe {
+                (
+                    _mm256_loadu_ps(pa.add(i + 8 * k)),
+                    _mm256_loadu_ps(pb.add(i + 8 * k)),
+                )
+            };
+            s[k] = _mm256_fmadd_ps(x, y, s[k]);
+            n2[k] = _mm256_fmadd_ps(y, y, n2[k]);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm2) = (fold16(&spill2(&s)), fold16(&spill2(&n2)));
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm2)
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
+#[target_feature(enable = "avx2,fma")]
 unsafe fn cosine_parts_f32_avx2(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
     use std::arch::x86_64::*;
     let n = a.len().min(b.len());
@@ -634,6 +1152,336 @@ fn spill2(acc: &[std::arch::x86_64::__m256; 2]) -> [f32; 16] {
     out
 }
 
+// ---------------------------------------------------------------------------
+// aarch64 NEON versions of the float kernels and the per-probe query setup.
+// They keep the AVX2 kernels' lane layout -- 32 dot/L2 lanes as eight 4-lane
+// registers, 16 per cosine sum as four, 8 residual lanes as two -- so the
+// float kernels agree bit for bit with their scalar specifications, as the
+// AVX2 ones do. `vfmaq_f32(c, a, b)` is the fused `a * b + c`; the `nm`
+// min/max return the non-NaN operand, as `f32::min`/`max` do.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn spill_neon<const R: usize, const L: usize>(
+    acc: &[std::arch::aarch64::float32x4_t; R],
+) -> [f32; L] {
+    const { assert!(L == 4 * R) };
+    let mut out = [0.0f32; L];
+    for (k, v) in acc.iter().enumerate() {
+        // SAFETY: `L == 4 * R` (asserted above at compile time), so the four lanes at `4k` are inside `out`.
+        unsafe { std::arch::aarch64::vst1q_f32(out.as_mut_ptr().add(4 * k), *v) };
+    }
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: offsets stay below `n`, as each loop guard checks.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn dot_f32_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut acc = [vdupq_n_f32(0.0); 8];
+    let mut i = 0;
+    // SAFETY (every load below): the loop guards keep `i + 4 * k + 4 <= n`,
+    // and `n` is at most either slice's length.
+    while i + 32 <= n {
+        for (k, slot) in acc.iter_mut().enumerate() {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, x, y);
+        }
+        i += 32;
+    }
+    while i + 8 <= n {
+        for (k, slot) in acc[..2].iter_mut().enumerate() {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, x, y);
+        }
+        i += 8;
+    }
+    let mut sum = fold32(&spill_neon::<8, 32>(&acc));
+    while i < n {
+        sum = a[i].mul_add(b[i], sum);
+        i += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: as in `dot_f32_neon`.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn square_distance_f32_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let mut acc = [vdupq_n_f32(0.0); 8];
+    let mut i = 0;
+    // SAFETY (every load below): as in `dot_f32_neon`.
+    while i + 32 <= n {
+        for (k, slot) in acc.iter_mut().enumerate() {
+            let d =
+                unsafe { vsubq_f32(vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, d, d);
+        }
+        i += 32;
+    }
+    while i + 8 <= n {
+        for (k, slot) in acc[..2].iter_mut().enumerate() {
+            let d =
+                unsafe { vsubq_f32(vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            *slot = vfmaq_f32(*slot, d, d);
+        }
+        i += 8;
+    }
+    let mut sum = fold32(&spill_neon::<8, 32>(&acc));
+    while i < n {
+        let d = a[i] - b[i];
+        sum = d.mul_add(d, sum);
+        i += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: as in `dot_f32_neon`.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn cosine_parts_f32_neon(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let (mut s, mut n1, mut n2) = (
+        [vdupq_n_f32(0.0); 4],
+        [vdupq_n_f32(0.0); 4],
+        [vdupq_n_f32(0.0); 4],
+    );
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..4 {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            s[k] = vfmaq_f32(s[k], x, y);
+            n1[k] = vfmaq_f32(n1[k], x, x);
+            n2[k] = vfmaq_f32(n2[k], y, y);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm1, mut norm2) = (
+        fold16(&spill_neon::<4, 16>(&s)),
+        fold16(&spill_neon::<4, 16>(&n1)),
+        fold16(&spill_neon::<4, 16>(&n2)),
+    );
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm1 = x.mul_add(x, norm1);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm1, norm2)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: as in `dot_f32_neon`.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn dot_and_norm_f32_neon(a: &[f32], b: &[f32]) -> (f32, f32) {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let (pa, pb) = (a.as_ptr(), b.as_ptr());
+    let (mut s, mut n2) = ([vdupq_n_f32(0.0); 4], [vdupq_n_f32(0.0); 4]);
+    let mut i = 0;
+    // SAFETY (every load below): the guard keeps `i + 16 <= n`.
+    while i + 16 <= n {
+        for k in 0..4 {
+            let (x, y) = unsafe { (vld1q_f32(pa.add(i + 4 * k)), vld1q_f32(pb.add(i + 4 * k))) };
+            s[k] = vfmaq_f32(s[k], x, y);
+            n2[k] = vfmaq_f32(n2[k], y, y);
+        }
+        i += 16;
+    }
+    let (mut sum, mut norm2) = (
+        fold16(&spill_neon::<4, 16>(&s)),
+        fold16(&spill_neon::<4, 16>(&n2)),
+    );
+    while i < n {
+        let (x, y) = (a[i], b[i]);
+        sum = x.mul_add(y, sum);
+        norm2 = y.mul_add(y, norm2);
+        i += 1;
+    }
+    (sum, norm2)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: `i` steps by 8 up to `whole <= n`, the slices' length.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn residual_stats_neon(query: &[f32], centroid: &[f32]) -> ResidualStats {
+    use std::arch::aarch64::*;
+    let n = query.len();
+    let whole = n - n % 8;
+    let (pq, pc) = (query.as_ptr(), centroid.as_ptr());
+    // Lanes 0-3 in register 0, 4-7 in register 1; the f64 sums in pairs.
+    let mut sum = [vdupq_n_f64(0.0); 4];
+    let mut sq = [vdupq_n_f64(0.0); 4];
+    let mut lo = [vdupq_n_f32(f32::MAX); 2];
+    let mut hi = [vdupq_n_f32(-f32::MAX); 2];
+    let mut rc = [vdupq_n_f32(0.0); 2];
+    let mut i = 0;
+    while i < whole {
+        for h in 0..2 {
+            // SAFETY: `i + 4 * h + 4 <= whole <= n`, the length of both slices.
+            let (q, c) = unsafe { (vld1q_f32(pq.add(i + 4 * h)), vld1q_f32(pc.add(i + 4 * h))) };
+            let r = vsubq_f32(q, c);
+            let (r0, r1) = (vcvt_f64_f32(vget_low_f32(r)), vcvt_high_f64_f32(r));
+            sum[2 * h] = vaddq_f64(sum[2 * h], r0);
+            sum[2 * h + 1] = vaddq_f64(sum[2 * h + 1], r1);
+            sq[2 * h] = vfmaq_f64(sq[2 * h], r0, r0);
+            sq[2 * h + 1] = vfmaq_f64(sq[2 * h + 1], r1, r1);
+            lo[h] = vminnmq_f32(lo[h], r);
+            hi[h] = vmaxnmq_f32(hi[h], r);
+            rc[h] = vfmaq_f32(rc[h], r, c);
+        }
+        i += 8;
+    }
+    let spill_d = |v: &[float64x2_t; 4]| {
+        let mut out = [0f64; 8];
+        for (k, x) in v.iter().enumerate() {
+            // SAFETY: two lanes at `2k < 8`.
+            unsafe { vst1q_f64(out.as_mut_ptr().add(2 * k), *x) };
+        }
+        out
+    };
+    let (sum, sq) = (spill_d(&sum), spill_d(&sq));
+    let (lo, hi, rc) = (
+        spill_neon::<2, 8>(&lo),
+        spill_neon::<2, 8>(&hi),
+        spill_neon::<2, 8>(&rc),
+    );
+    let tail = residual_stats_scalar(&query[whole..], &centroid[whole..]);
+    ResidualStats {
+        sum: sum.iter().sum::<f64>() + tail.sum,
+        sum_sq: sq.iter().sum::<f64>() + tail.sum_sq,
+        min: lo.iter().fold(tail.min, |m, &x| m.min(x)),
+        max: hi.iter().fold(tail.max, |m, &x| m.max(x)),
+        dot_centroid: rc.iter().sum::<f32>() + tail.dot_centroid,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: `i` steps by 8 up to `whole <= n`, the slices' length; the level
+// sums wrap.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn quantize_residual_neon(
+    query: &[f32],
+    centroid: &[f32],
+    interval: [f32; 2],
+    step_inv: f32,
+    step: f32,
+    out: &mut [u8],
+) -> (i32, f32) {
+    use std::arch::aarch64::*;
+    let n = query.len();
+    let whole = n - n % 8;
+    let (pq, pc, po) = (query.as_ptr(), centroid.as_ptr(), out.as_mut_ptr());
+    let [lower, upper] = interval;
+    let (a, b) = (vdupq_n_f32(lower), vdupq_n_f32(upper));
+    let (inv, st, half) = (vdupq_n_f32(step_inv), vdupq_n_f32(step), vdupq_n_f32(0.5));
+    let (zero, top) = (vdupq_n_f32(0.0), vdupq_n_f32(255.0));
+    let mut err = [vdupq_n_f32(0.0); 2];
+    let mut sum = [vdupq_n_s32(0); 2];
+    let mut i = 0;
+    while i < whole {
+        let mut li = [vdupq_n_s32(0); 2];
+        for h in 0..2 {
+            // SAFETY: `i + 4 * h + 4 <= whole <= n`, the length of all three slices.
+            let (q, c) = unsafe { (vld1q_f32(pq.add(i + 4 * h)), vld1q_f32(pc.add(i + 4 * h))) };
+            let r = vsubq_f32(q, c);
+            // `max` then `min` as the scalar path, so a NaN residual becomes
+            // `lower`; a NaN level becomes 0.
+            let x = vminnmq_f32(vmaxnmq_f32(r, a), b);
+            let level = vrndmq_f32(vfmaq_f32(half, vsubq_f32(x, a), inv));
+            let level = vminnmq_f32(vmaxnmq_f32(level, zero), top);
+            let e = vsubq_f32(r, vfmaq_f32(a, level, st));
+            err[h] = vfmaq_f32(err[h], e, e);
+            li[h] = vcvtq_s32_f32(level);
+            sum[h] = vaddq_s32(sum[h], li[h]);
+        }
+        // Levels are in 0..=255: narrow 32 to 16 to 8 bits.
+        let w = vcombine_u16(
+            vmovn_u32(vreinterpretq_u32_s32(li[0])),
+            vmovn_u32(vreinterpretq_u32_s32(li[1])),
+        );
+        // SAFETY: as above, the 8 bytes at `i` are inside `out`.
+        unsafe { vst1_u8(po.add(i), vmovn_u16(w)) };
+        i += 8;
+    }
+    let mut lanes = [0i32; 8];
+    // SAFETY: four lanes each at 0 and 4 of an 8-lane array.
+    unsafe {
+        vst1q_s32(lanes.as_mut_ptr(), sum[0]);
+        vst1q_s32(lanes.as_mut_ptr().add(4), sum[1]);
+    }
+    let err = spill_neon::<2, 8>(&err);
+    let (tail_sum, tail_err) = quantize_residual_scalar(
+        &query[whole..],
+        &centroid[whole..],
+        interval,
+        step_inv,
+        step,
+        &mut out[whole..],
+    );
+    (
+        lanes.iter().fold(tail_sum, |s, &x| s.wrapping_add(x)),
+        err.iter().sum::<f32>() + tail_err,
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+// ARITH: offsets `4g` and `16g` are inside `query` and `out`, whose lengths
+// the caller checked.
+#[allow(clippy::arithmetic_side_effects)]
+unsafe fn nibble_luts_neon(query: &[u8], out: &mut [u8]) {
+    use std::arch::aarch64::*;
+    /// All ones in entry `v` when bit `k` of `v` is set.
+    const fn mask(k: usize) -> [u8; 16] {
+        let mut x = [0u8; 16];
+        let mut v = 0;
+        while v < 16 {
+            if v >> k & 1 == 1 {
+                x[v] = 0xff;
+            }
+            v += 1;
+        }
+        x
+    }
+    const MASK: [[u8; 16]; 4] = [mask(0), mask(1), mask(2), mask(3)];
+    // SAFETY: the constants are 16 bytes each.
+    let m = unsafe {
+        [
+            vld1q_u8(MASK[0].as_ptr()),
+            vld1q_u8(MASK[1].as_ptr()),
+            vld1q_u8(MASK[2].as_ptr()),
+            vld1q_u8(MASK[3].as_ptr()),
+        ]
+    };
+    let po = out.as_mut_ptr();
+    for (g, q) in query.chunks_exact(4).enumerate() {
+        let mut lut = vandq_u8(vdupq_n_u8(q[0]), m[0]);
+        for k in 1..4 {
+            lut = vaddq_u8(lut, vandq_u8(vdupq_n_u8(q[k]), m[k]));
+        }
+        // SAFETY: group `g`'s 16 table bytes are at `16g` of `out`.
+        unsafe { vst1q_u8(po.add(16 * g), lut) };
+    }
+}
+
 /// `dst[i] |= src[i]` over the common prefix -- `FixedBitSet.or`'s loop, which
 /// C2 vectorizes and unrolls. Written out as four 256-bit registers per step,
 /// because LLVM kept the chunked loop at one register and half Lucene's
@@ -696,6 +1544,298 @@ unsafe fn or_words_avx2(dst: &mut [u64], src: &[u64]) {
     }
 }
 
+/// Codes [`lut16_accumulate32`] scores per call.
+pub const FAST_SCAN_BLOCK: usize = 32;
+
+/// Groups [`lut16_accumulate32`] sums in 16-bit lanes before widening: 256
+/// table entries of at most 255 stay below `u16::MAX`.
+const FAST_SCAN_FLUSH: usize = 256;
+
+/// Fast-scan table lookup over a block of 32 codes of 4-bit sub-codes:
+/// `out[i] += luts[g][code_i[g]]` summed over the groups `g`.
+///
+/// `luts` holds one 16-entry table per group (`16 * groups` bytes). `codes`
+/// holds 16 bytes per group: byte `j` of group `g` carries code `j`'s
+/// sub-code `g` in its low nibble and code `j + 16`'s in its high nibble.
+/// The vector paths look up 32 entries per shuffle, one table held in a
+/// register, which is what makes scanning short codes cheaper than decoding
+/// them one at a time.
+///
+/// # Panics
+///
+/// When `luts` and `codes` are not the same whole number of 16-byte groups.
+#[inline]
+pub fn lut16_accumulate32(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    lut16_accumulate32_at(luts, codes, out, false);
+}
+
+/// The code length, in 16-byte groups, from which
+/// [`lut16_accumulate32_wide`] is faster than [`lut16_accumulate32`]: 64
+/// groups is 256 dimensions at four per group. Measured on Sapphire Rapids,
+/// 300-dimension blocks scan 11-25% faster on AVX-512 and 100-dimension
+/// ones up to 20% faster or not at all, which end to end is no gain.
+pub const FAST_SCAN_WIDE_GROUPS: usize = 64;
+
+/// [`lut16_accumulate32`], on AVX-512 where [`crate::cpu::level`] allows it:
+/// four groups per shuffle instead of two. The sums are the same. It pays
+/// only on long codes; the AVX2 kernel is as fast on short ones (about 25
+/// groups at 100 dimensions), so the caller picks by code length.
+///
+/// # Panics
+///
+/// As [`lut16_accumulate32`].
+#[inline]
+pub fn lut16_accumulate32_wide(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    lut16_accumulate32_at(
+        luts,
+        codes,
+        out,
+        crate::cpu::level() == crate::cpu::Level::Avx512,
+    );
+}
+
+#[inline]
+#[cfg_attr(not(target_arch = "x86_64"), allow(unused_variables))]
+fn lut16_accumulate32_at(
+    luts: &[u8],
+    codes: &[u8],
+    out: &mut [u32; FAST_SCAN_BLOCK],
+    avx512: bool,
+) {
+    assert!(
+        luts.len() == codes.len() && luts.len().is_multiple_of(16),
+        "lut16_accumulate32: {} table bytes for {} code bytes",
+        luts.len(),
+        codes.len()
+    );
+    for (l, c) in luts
+        .chunks(16 * FAST_SCAN_FLUSH)
+        .zip(codes.chunks(16 * FAST_SCAN_FLUSH))
+    {
+        #[cfg(target_arch = "x86_64")]
+        if avx512 {
+            // SAFETY: `crate::cpu::level` found AVX-512F and AVX-512BW on
+            // this CPU; bounds as for the AVX2 kernel below.
+            unsafe { lut16_accumulate32_avx512(l, c, out) };
+            continue;
+        }
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        {
+            // SAFETY: AVX2 is enabled for this whole build; `l` and `c` are
+            // the same whole number of 16-byte groups (asserted above), and
+            // the kernel reads only whole groups inside them.
+            unsafe { lut16_accumulate32_avx2(l, c, out) }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is part of the aarch64 baseline; as above for the
+            // bounds.
+            unsafe { lut16_accumulate32_neon(l, c, out) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "x86_64", target_feature = "avx2"),
+            target_arch = "aarch64"
+        )))]
+        lut16_accumulate32_scalar(l, c, out);
+    }
+}
+
+/// The specification [`lut16_accumulate32`] must match.
+///
+/// # Panics
+///
+/// As [`lut16_accumulate32`].
+pub fn lut16_accumulate32_scalar(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    assert!(luts.len() == codes.len() && luts.len().is_multiple_of(16));
+    for (lut, group) in luts.chunks_exact(16).zip(codes.chunks_exact(16)) {
+        for (j, &b) in group.iter().enumerate() {
+            out[j] += u32::from(lut[usize::from(b & 15)]);
+            out[j + 16] += u32::from(lut[usize::from(b >> 4)]);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    use std::arch::x86_64::*;
+    let groups = luts.len() / 16;
+    debug_assert!(groups <= FAST_SCAN_FLUSH);
+    let (pl, pc) = (luts.as_ptr(), codes.as_ptr());
+    let nibble = _mm256_set1_epi8(0x0f);
+    // Each looked-up byte pair is added as one 16-bit word, whose low byte
+    // is an even code's entry and high byte the next code's; a second sum
+    // of the high bytes alone separates them at the end. Each 16-bit lane
+    // sums at most 128 groups of byte entries, so the high-byte sums and the
+    // separated even sums stay below 2^16; the word sums wrap, but only
+    // modulo 2^16, which the subtraction cancels.
+    let (mut lo_words, mut lo_high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let (mut hi_words, mut hi_high) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let mut g = 0;
+    // SAFETY (every load): `g + 2 <= groups` keeps the 32 bytes at `16 * g`
+    // inside both slices.
+    while g + 2 <= groups {
+        let (t, c) = unsafe {
+            (
+                _mm256_loadu_si256(pl.add(16 * g) as *const __m256i),
+                _mm256_loadu_si256(pc.add(16 * g) as *const __m256i),
+            )
+        };
+        // Lane k of `t` is group g + k's table; the shuffle looks up within
+        // each 128-bit lane, so lane k of the results is group g + k's.
+        let a = _mm256_shuffle_epi8(t, _mm256_and_si256(c, nibble));
+        let b = _mm256_shuffle_epi8(t, _mm256_and_si256(_mm256_srli_epi16(c, 4), nibble));
+        lo_words = _mm256_add_epi16(lo_words, a);
+        lo_high = _mm256_add_epi16(lo_high, _mm256_srli_epi16(a, 8));
+        hi_words = _mm256_add_epi16(hi_words, b);
+        hi_high = _mm256_add_epi16(hi_high, _mm256_srli_epi16(b, 8));
+        g += 2;
+    }
+    if g < groups {
+        // SAFETY: group `g` is the last whole 16 bytes of both slices; the
+        // upper lane of the table and codes is zero, and entry 0 of a zero
+        // table is zero.
+        let (t, c) = unsafe {
+            (
+                _mm256_zextsi128_si256(_mm_loadu_si128(pl.add(16 * g) as *const __m128i)),
+                _mm256_zextsi128_si256(_mm_loadu_si128(pc.add(16 * g) as *const __m128i)),
+            )
+        };
+        let a = _mm256_shuffle_epi8(t, _mm256_and_si256(c, nibble));
+        let b = _mm256_shuffle_epi8(t, _mm256_and_si256(_mm256_srli_epi16(c, 4), nibble));
+        lo_words = _mm256_add_epi16(lo_words, a);
+        lo_high = _mm256_add_epi16(lo_high, _mm256_srli_epi16(a, 8));
+        hi_words = _mm256_add_epi16(hi_words, b);
+        hi_high = _mm256_add_epi16(hi_high, _mm256_srli_epi16(b, 8));
+    }
+    // Even codes' sums: the words less their high bytes' sums, shifted.
+    let lo_even = _mm256_sub_epi16(lo_words, _mm256_slli_epi16(lo_high, 8));
+    let hi_even = _mm256_sub_epi16(hi_words, _mm256_slli_epi16(hi_high, 8));
+    // Word `m` of lane `k` holds codes `2m` (even) and `2m + 1` (odd) of
+    // group `g + k`'s; the two lanes' groups add up, still within 16 bits
+    // (at most 256 entries of a byte), then even and odd interleave into
+    // code order and widen to 32 bits.
+    let lanes =
+        |x: __m256i| _mm_add_epi16(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
+    let po = out.as_mut_ptr() as *mut __m256i;
+    for (half, (even, odd)) in [(lo_even, lo_high), (hi_even, hi_high)]
+        .into_iter()
+        .enumerate()
+    {
+        let (e, o) = (lanes(even), lanes(odd));
+        let first = _mm256_cvtepu16_epi32(_mm_unpacklo_epi16(e, o));
+        let second = _mm256_cvtepu16_epi32(_mm_unpackhi_epi16(e, o));
+        // SAFETY: `out` is 32 `u32`s, four whole vectors; `half` is 0 or 1.
+        unsafe {
+            let at = po.add(2 * half);
+            _mm256_storeu_si256(at, _mm256_add_epi32(_mm256_loadu_si256(at), first));
+            let at = po.add(2 * half + 1);
+            _mm256_storeu_si256(at, _mm256_add_epi32(_mm256_loadu_si256(at), second));
+        }
+    }
+}
+
+/// The AVX2 kernel (`lut16_accumulate32_avx2`) four groups at a time: lane `k` of the
+/// 512-bit table and code registers is group `g + k`, and a masked load
+/// zeroes the lanes past the last group (entry 0 of a zero table is zero).
+/// Each 16-bit lane sums at most 64 of the 256 groups, and the four lanes
+/// fold into at most 256 byte entries, so the separated sums fit in 16 bits
+/// (the word sums wrap modulo 2^16, as in the AVX2 kernel, and the
+/// subtraction cancels that).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn lut16_accumulate32_avx512(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    use std::arch::x86_64::*;
+    let groups = luts.len() / 16;
+    debug_assert!(groups <= FAST_SCAN_FLUSH);
+    let (pl, pc) = (luts.as_ptr(), codes.as_ptr());
+    let nibble = _mm512_set1_epi8(0x0f);
+    let (mut lo_words, mut lo_high) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+    let (mut hi_words, mut hi_high) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+    let mut g = 0;
+    while g < groups {
+        let left = groups - g;
+        // SAFETY (both branches): `g < groups`, and the full load reads 64
+        // bytes only when four whole groups remain; the masked load reads
+        // the `16 * left` bytes that remain and no others.
+        let (t, c) = if left >= 4 {
+            unsafe {
+                (
+                    _mm512_loadu_si512(pl.add(16 * g).cast()),
+                    _mm512_loadu_si512(pc.add(16 * g).cast()),
+                )
+            }
+        } else {
+            let mask: __mmask64 = (1u64 << (16 * left)) - 1;
+            unsafe {
+                (
+                    _mm512_maskz_loadu_epi8(mask, pl.add(16 * g).cast()),
+                    _mm512_maskz_loadu_epi8(mask, pc.add(16 * g).cast()),
+                )
+            }
+        };
+        let a = _mm512_shuffle_epi8(t, _mm512_and_si512(c, nibble));
+        let b = _mm512_shuffle_epi8(t, _mm512_and_si512(_mm512_srli_epi16(c, 4), nibble));
+        lo_words = _mm512_add_epi16(lo_words, a);
+        lo_high = _mm512_add_epi16(lo_high, _mm512_srli_epi16(a, 8));
+        hi_words = _mm512_add_epi16(hi_words, b);
+        hi_high = _mm512_add_epi16(hi_high, _mm512_srli_epi16(b, 8));
+        g += 4;
+    }
+    let lo_even = _mm512_sub_epi16(lo_words, _mm512_slli_epi16(lo_high, 8));
+    let hi_even = _mm512_sub_epi16(hi_words, _mm512_slli_epi16(hi_high, 8));
+    let lanes = |x: __m512i| {
+        let y = _mm256_add_epi16(_mm512_castsi512_si256(x), _mm512_extracti64x4_epi64(x, 1));
+        _mm_add_epi16(_mm256_castsi256_si128(y), _mm256_extracti128_si256(y, 1))
+    };
+    let po = out.as_mut_ptr() as *mut __m256i;
+    for (half, (even, odd)) in [(lo_even, lo_high), (hi_even, hi_high)]
+        .into_iter()
+        .enumerate()
+    {
+        let (e, o) = (lanes(even), lanes(odd));
+        let first = _mm256_cvtepu16_epi32(_mm_unpacklo_epi16(e, o));
+        let second = _mm256_cvtepu16_epi32(_mm_unpackhi_epi16(e, o));
+        // SAFETY: `out` is 32 `u32`s, four whole vectors; `half` is 0 or 1.
+        unsafe {
+            let at = po.add(2 * half);
+            _mm256_storeu_si256(at, _mm256_add_epi32(_mm256_loadu_si256(at), first));
+            let at = po.add(2 * half + 1);
+            _mm256_storeu_si256(at, _mm256_add_epi32(_mm256_loadu_si256(at), second));
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn lut16_accumulate32_neon(luts: &[u8], codes: &[u8], out: &mut [u32; FAST_SCAN_BLOCK]) {
+    use std::arch::aarch64::*;
+    let groups = luts.len() / 16;
+    debug_assert!(groups <= FAST_SCAN_FLUSH);
+    let (pl, pc) = (luts.as_ptr(), codes.as_ptr());
+    let nibble = vdupq_n_u8(0x0f);
+    // 16-bit sums for codes 0..8, 8..16, 16..24 and 24..32.
+    let mut acc = [vdupq_n_u16(0); 4];
+    for g in 0..groups {
+        // SAFETY: group `g < groups` is 16 bytes inside both slices.
+        let (t, c) = unsafe { (vld1q_u8(pl.add(16 * g)), vld1q_u8(pc.add(16 * g))) };
+        let a = vqtbl1q_u8(t, vandq_u8(c, nibble));
+        let b = vqtbl1q_u8(t, vshrq_n_u8(c, 4));
+        acc[0] = vaddw_u8(acc[0], vget_low_u8(a));
+        acc[1] = vaddw_high_u8(acc[1], a);
+        acc[2] = vaddw_u8(acc[2], vget_low_u8(b));
+        acc[3] = vaddw_high_u8(acc[3], b);
+    }
+    for (k, v) in acc.iter().enumerate() {
+        let mut lanes = [0u16; 8];
+        // SAFETY: `lanes` is eight `u16`s.
+        unsafe { vst1q_u16(lanes.as_mut_ptr(), *v) };
+        for (j, x) in lanes.iter().enumerate() {
+            out[8 * k + j] += u32::from(*x);
+        }
+    }
+}
+
 /// For every byte value, the positions of its set bits, ascending, padded
 /// with zeros to eight.
 static BYTE_BITS: [[u8; 8]; 256] = {
@@ -728,8 +1868,21 @@ static BYTE_BITS: [[u8; 8]; 256] = {
 /// instead worked a byte at a time -- one table load gives up to eight
 /// positions, written as a fixed-width 8-lane store (which LLVM vectorizes)
 /// whose surplus lanes the next byte overwrites. Sparse words keep the bit
-/// loop, which touches only their set bits.
+/// loop, which touches only their set bits. On AVX-512, where
+/// [`crate::cpu::level`] allows it, a word is instead compressed sixteen
+/// ids at a time (see `expand_bitset_avx512`).
 pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    if crate::cpu::level() == crate::cpu::Level::Avx512 {
+        // SAFETY: `crate::cpu::level` found AVX-512F on this CPU; the kernel
+        // bounds its own reads and writes as below.
+        return unsafe { expand_bitset_avx512(words, base, out) };
+    }
+    expand_bitset_portable(words, base, out)
+}
+
+/// [`expand_bitset`] without AVX-512: the byte-table form described there.
+fn expand_bitset_portable(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     let cap = out.len().min(256);
     // Every write below happens before its `found >= cap` test, so an empty
     // output must not reach them.
@@ -799,6 +1952,66 @@ pub fn expand_bitset(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     found
 }
 
+/// [`expand_bitset`] on AVX-512, 1.25-1.75x the byte-table path on
+/// Sapphire Rapids at postings bit-set densities (1/8 to all bits set): a
+/// word with more than four bits set is four 16-bit halves, each one
+/// `vpcompressd` of the sixteen ids it covers by its bits, stored whole
+/// (the surplus lanes are overwritten by the next store or never kept).
+/// Sparse words keep the bit loop, as there.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn expand_bitset_avx512(words: &[u64], base: i32, out: &mut [i32]) -> usize {
+    use std::arch::x86_64::*;
+    let cap = out.len().min(256);
+    if cap == 0 {
+        return 0;
+    }
+    // Slack for the surplus of the last 16-lane store.
+    let mut buf = [0i32; 256 + 16];
+    let mut found = 0usize;
+    let iota = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    let sixteen = _mm512_set1_epi32(16);
+    'words: for (w, &word) in words.iter().enumerate() {
+        if word == 0 {
+            continue;
+        }
+        // Wrapping, like every doc id derived from on-disk deltas.
+        let word_base = base.wrapping_add((w * 64) as i32);
+        if word.count_ones() <= 4 {
+            let mut bits = word;
+            while bits != 0 {
+                buf[found] = word_base.wrapping_add(bits.trailing_zeros() as i32);
+                found += 1;
+                if found >= cap {
+                    break 'words;
+                }
+                bits &= bits - 1;
+            }
+            continue;
+        }
+        let mut ids = _mm512_add_epi32(iota, _mm512_set1_epi32(word_base));
+        for half in 0..4 {
+            let mask = (word >> (16 * half)) as u16;
+            // SAFETY: `found < cap <= 256` here (checked below), so the
+            // 16-lane store ends by `256 + 16`, inside `buf`.
+            unsafe {
+                _mm512_storeu_si512(
+                    buf.as_mut_ptr().add(found) as *mut _,
+                    _mm512_maskz_compress_epi32(mask, ids),
+                );
+            }
+            found += mask.count_ones() as usize;
+            if found >= cap {
+                found = cap;
+                break 'words;
+            }
+            ids = _mm512_add_epi32(ids, sixteen);
+        }
+    }
+    out[..found].copy_from_slice(&buf[..found]);
+    found
+}
+
 /// The specification [`expand_bitset`] must match: one bit at a time.
 pub fn expand_bitset_scalar(words: &[u64], base: i32, out: &mut [i32]) -> usize {
     let cap = out.len().min(256);
@@ -837,9 +2050,259 @@ pub fn prefetch<T>(slice: &[T], i: usize) {
     let _ = (slice, i);
 }
 
+/// Starts loading every cache line of `bytes`, so a scan that will read it
+/// soon overlaps its misses with other work instead of stalling on each one
+/// in turn. A hint only, like [`prefetch`].
+#[inline]
+pub fn prefetch_bytes(bytes: &[u8]) {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        prefetch(bytes, i);
+        i = i.saturating_add(64);
+    }
+    // The last line, when `bytes` starts mid-line and ends past a boundary
+    // the stride stepped over.
+    if let Some(last) = bytes.len().checked_sub(1) {
+        prefetch(bytes, last);
+    }
+}
+
+/// `sum(q[i] * c[i])` over the common prefix of `q` and `c`, with `q` read
+/// as unsigned bytes no greater than 127 and `c` as signed bytes: the
+/// 8-bit dot product a coarse ranker scores many codes with. Keeping the
+/// query to 7 bits lets AVX2 multiply 32 pairs per `maddubs` without
+/// saturating (two products sum to at most `2 * 127 * 128 < 2^15`); NEON
+/// widens pairs of products into 16 bits the same way.
+///
+/// Query bytes above 127 give unspecified (but memory-safe) results.
+#[inline]
+pub fn dot_u7_i8(q: &[u8], c: &[u8]) -> i32 {
+    let n = q.len().min(c.len());
+    let (q, c) = (&q[..n], &c[..n]);
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; both slices have
+        // length `n`.
+        unsafe { dot_u7_i8_avx2(q, c) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; both slices have
+        // length `n`.
+        unsafe { dot_u7_i8_neon(q, c) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx2"),
+        target_arch = "aarch64"
+    )))]
+    dot_u7_i8_scalar(q, c)
+}
+
+/// The specification [`dot_u7_i8`] matches for query bytes up to 127.
+pub fn dot_u7_i8_scalar(q: &[u8], c: &[u8]) -> i32 {
+    q.iter().zip(c).fold(0i32, |s, (&x, &y)| {
+        s.wrapping_add(i32::from(x) * i32::from(y as i8))
+    })
+}
+
+/// # Safety
+///
+/// AVX2 must be available and `q.len() == c.len()`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_u7_i8_avx2(q: &[u8], c: &[u8]) -> i32 {
+    use std::arch::x86_64::*;
+    let n = q.len();
+    let (pq, pc) = (q.as_ptr(), c.as_ptr());
+    let ones = _mm256_set1_epi16(1);
+    let (mut a0, mut a1) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+    let mut i = 0;
+    // SAFETY (every load): `i + 32 <= n` (or `i + 64 <= n`) keeps the loads
+    // inside both slices.
+    while i + 64 <= n {
+        let (x0, y0, x1, y1) = unsafe {
+            (
+                _mm256_loadu_si256(pq.add(i) as *const __m256i),
+                _mm256_loadu_si256(pc.add(i) as *const __m256i),
+                _mm256_loadu_si256(pq.add(i + 32) as *const __m256i),
+                _mm256_loadu_si256(pc.add(i + 32) as *const __m256i),
+            )
+        };
+        a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(_mm256_maddubs_epi16(x0, y0), ones));
+        a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(_mm256_maddubs_epi16(x1, y1), ones));
+        i += 64;
+    }
+    if i + 32 <= n {
+        let (x, y) = unsafe {
+            (
+                _mm256_loadu_si256(pq.add(i) as *const __m256i),
+                _mm256_loadu_si256(pc.add(i) as *const __m256i),
+            )
+        };
+        a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(_mm256_maddubs_epi16(x, y), ones));
+        i += 32;
+    }
+    let acc = _mm256_add_epi32(a0, a1);
+    let s = _mm_add_epi32(
+        _mm256_castsi256_si128(acc),
+        _mm256_extracti128_si256(acc, 1),
+    );
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b01_00_11_10));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b10_11_00_01));
+    _mm_cvtsi128_si32(s).wrapping_add(dot_u7_i8_scalar(&q[i..], &c[i..]))
+}
+
+/// # Safety
+///
+/// `q.len() == c.len()`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_u7_i8_neon(q: &[u8], c: &[u8]) -> i32 {
+    use std::arch::aarch64::*;
+    let n = q.len();
+    let (pq, pc) = (q.as_ptr(), c.as_ptr());
+    let (mut a0, mut a1) = (vdupq_n_s32(0), vdupq_n_s32(0));
+    let mut i = 0;
+    // SAFETY (every load): `i + 32 <= n` (or `i + 16 <= n`) keeps the loads
+    // inside both slices.
+    while i + 32 <= n {
+        let (x0, y0, x1, y1) = unsafe {
+            (
+                vreinterpretq_s8_u8(vld1q_u8(pq.add(i))),
+                vld1q_s8(pc.add(i) as *const i8),
+                vreinterpretq_s8_u8(vld1q_u8(pq.add(i + 16))),
+                vld1q_s8(pc.add(i + 16) as *const i8),
+            )
+        };
+        // Query bytes are at most 127, so they read the same as `i8`; two
+        // products of at most 127 * 128 fit an `i16`.
+        let p0 = vmlal_high_s8(vmull_s8(vget_low_s8(x0), vget_low_s8(y0)), x0, y0);
+        let p1 = vmlal_high_s8(vmull_s8(vget_low_s8(x1), vget_low_s8(y1)), x1, y1);
+        a0 = vpadalq_s16(a0, p0);
+        a1 = vpadalq_s16(a1, p1);
+        i += 32;
+    }
+    if i + 16 <= n {
+        let (x, y) = unsafe {
+            (
+                vreinterpretq_s8_u8(vld1q_u8(pq.add(i))),
+                vld1q_s8(pc.add(i) as *const i8),
+            )
+        };
+        a0 = vpadalq_s16(
+            a0,
+            vmlal_high_s8(vmull_s8(vget_low_s8(x), vget_low_s8(y)), x, y),
+        );
+        i += 16;
+    }
+    vaddvq_s32(vaddq_s32(a0, a1)).wrapping_add(dot_u7_i8_scalar(&q[i..], &c[i..]))
+}
+
+/// [`dot_u7_i8`] of one query against four code rows at once, sharing the
+/// query loads and the final horizontal sums. Each row uses its common
+/// prefix with `q`.
+#[inline]
+pub fn dot_u7_i8_x4(q: &[u8], c: [&[u8]; 4]) -> [i32; 4] {
+    let n = c.iter().fold(q.len(), |n, r| n.min(r.len()));
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; the kernel reads
+        // only the first `n` bytes of each slice, all at least `n` long.
+        unsafe { dot_u7_i8_x4_avx2(q, c, n) }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is part of the aarch64 baseline; as above for the
+        // bounds.
+        unsafe { dot_u7_i8_x4_neon(q, c, n) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "avx2"),
+        target_arch = "aarch64"
+    )))]
+    c.map(|r| dot_u7_i8_scalar(&q[..n], &r[..n]))
+}
+
+/// # Safety
+///
+/// AVX2 must be available, and `q` and every row at least `n` bytes long.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_u7_i8_x4_avx2(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
+    use std::arch::x86_64::*;
+    let pq = q.as_ptr();
+    let p = c.map(<[u8]>::as_ptr);
+    let ones = _mm256_set1_epi16(1);
+    let mut acc = [_mm256_setzero_si256(); 4];
+    let mut i = 0;
+    while i + 32 <= n {
+        // SAFETY: `i + 32 <= n` keeps every load inside its slice.
+        let x = unsafe { _mm256_loadu_si256(pq.add(i) as *const __m256i) };
+        for (a, &pr) in acc.iter_mut().zip(&p) {
+            // SAFETY: as above.
+            let y = unsafe { _mm256_loadu_si256(pr.add(i) as *const __m256i) };
+            *a = _mm256_add_epi32(*a, _mm256_madd_epi16(_mm256_maddubs_epi16(x, y), ones));
+        }
+        i += 32;
+    }
+    // Lanes 0..4 of `h` hold rows 0..4's sums over the low halves, lanes
+    // 4..8 over the high halves.
+    let h = _mm256_hadd_epi32(
+        _mm256_hadd_epi32(acc[0], acc[1]),
+        _mm256_hadd_epi32(acc[2], acc[3]),
+    );
+    let s = _mm_add_epi32(_mm256_castsi256_si128(h), _mm256_extracti128_si256(h, 1));
+    let mut out = [0i32; 4];
+    // SAFETY: `out` is 16 bytes.
+    unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, s) };
+    for (o, r) in out.iter_mut().zip(c) {
+        *o = o.wrapping_add(dot_u7_i8_scalar(&q[i..n], &r[i..n]));
+    }
+    out
+}
+
+/// # Safety
+///
+/// `q` and every row at least `n` bytes long.
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_u7_i8_x4_neon(q: &[u8], c: [&[u8]; 4], n: usize) -> [i32; 4] {
+    use std::arch::aarch64::*;
+    let pq = q.as_ptr();
+    let p = c.map(<[u8]>::as_ptr);
+    let mut acc = [vdupq_n_s32(0); 4];
+    let mut i = 0;
+    while i + 16 <= n {
+        // SAFETY: `i + 16 <= n` keeps every load inside its slice.
+        let x = unsafe { vreinterpretq_s8_u8(vld1q_u8(pq.add(i))) };
+        let xl = vget_low_s8(x);
+        for (a, &pr) in acc.iter_mut().zip(&p) {
+            // SAFETY: as above.
+            let y = unsafe { vld1q_s8(pr.add(i) as *const i8) };
+            *a = vpadalq_s16(*a, vmlal_high_s8(vmull_s8(xl, vget_low_s8(y)), x, y));
+        }
+        i += 16;
+    }
+    let s = vpaddq_s32(vpaddq_s32(acc[0], acc[1]), vpaddq_s32(acc[2], acc[3]));
+    let mut out = [0i32; 4];
+    // SAFETY: `out` is 16 bytes.
+    unsafe { vst1q_s32(out.as_mut_ptr(), s) };
+    for (o, r) in out.iter_mut().zip(c) {
+        *o = o.wrapping_add(dot_u7_i8_scalar(&q[i..n], &r[i..n]));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefetch_bytes_never_panics() {
+        let data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+        prefetch_bytes(&[]);
+        prefetch_bytes(&data[..1]);
+        prefetch_bytes(&data[3..403]);
+        prefetch_bytes(&data);
+    }
 
     /// The float kernels agree with their scalar specifications bit for bit
     /// at every length around the 8/16/32-lane steps, on unequal lengths
@@ -866,6 +2329,12 @@ mod tests {
                 (x.0.to_bits(), x.1.to_bits(), x.2.to_bits()),
                 (y.0.to_bits(), y.1.to_bits(), y.2.to_bits()),
                 "cos {len}"
+            );
+            let d = dot_and_norm_f32(&a, &b);
+            assert_eq!(
+                (d.0.to_bits(), d.1.to_bits()),
+                (y.0.to_bits(), y.2.to_bits()),
+                "dot and norm {len}"
             );
         }
         let a = [1.0f32, f32::INFINITY, 2.0];
@@ -980,6 +2449,17 @@ mod tests {
             let fb = expand_bitset_scalar(&words, base, &mut b);
             assert_eq!(fa, fb, "round {round}");
             assert_eq!(a[..fa], b[..fb], "round {round}");
+            // Both paths, whichever the dispatch picks on this CPU.
+            let mut c = [7i32; 256];
+            let fc = expand_bitset_portable(&words, base, &mut c);
+            assert_eq!((fc, &c[..fc]), (fb, &b[..fb]), "round {round} portable");
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx512f") {
+                let mut c = [7i32; 256];
+                // SAFETY: the CPU has AVX-512F (checked just above).
+                let fc = unsafe { expand_bitset_avx512(&words, base, &mut c) };
+                assert_eq!((fc, &c[..fc]), (fb, &b[..fb]), "round {round} avx512");
+            }
             // A partial output, as a decode that starts mid-block fills.
             let cap = (xorshift(&mut s) % 257) as usize;
             let (mut a, mut b) = ([7i32; 256], [7i32; 256]);
@@ -987,6 +2467,20 @@ mod tests {
             let fb = expand_bitset_scalar(&words, base, &mut b[..cap]);
             assert_eq!(fa, fb, "round {round} cap {cap}");
             assert_eq!(a[..fa], b[..fb], "round {round} cap {cap}");
+            let mut c = [7i32; 256];
+            let fc = expand_bitset_portable(&words, base, &mut c[..cap]);
+            assert_eq!(
+                (fc, &c[..]),
+                (fb, &b[..]),
+                "round {round} cap {cap} portable"
+            );
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx512f") {
+                let mut c = [7i32; 256];
+                // SAFETY: the CPU has AVX-512F (checked just above).
+                let fc = unsafe { expand_bitset_avx512(&words, base, &mut c[..cap]) };
+                assert_eq!((fc, &c[..]), (fb, &b[..]), "round {round} cap {cap} avx512");
+            }
         }
         // Full words (the 64-at-once path) between sparse and dense ones, cut
         // off at every kind of output length, including inside a full word.
@@ -1019,6 +2513,142 @@ mod tests {
         assert_eq!(out[255], 10 + 255);
     }
 
+    /// The fast-scan lookup matches its scalar specification for every
+    /// group count around the two- and four-group steps and the 16-bit
+    /// flush, on random tables and on all-0xFF ones, the largest sums a
+    /// flush can hold. The AVX-512 kernel is checked directly where the CPU
+    /// has it, whatever `LUCENE_RUST_SIMD` says.
+    #[test]
+    fn lut16_accumulate32_matches_the_scalar_specification() {
+        #[cfg(target_arch = "x86_64")]
+        let avx512 = std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512bw");
+        #[cfg(not(target_arch = "x86_64"))]
+        let avx512 = false;
+        if !avx512 {
+            eprintln!("lut16_accumulate32: no AVX-512 here, its kernel is not checked");
+        }
+        let mut s = 0x1234_5678_9ABC_DEF0u64;
+        let random = (0..40).chain([255, 256, 257, 600]).map(|g| (g, false));
+        for (groups, saturated) in random.chain([(64, true), (256, true), (257, true), (600, true)])
+        {
+            let luts: Vec<u8> = (0..16 * groups)
+                .map(|_| {
+                    if saturated {
+                        0xFF
+                    } else {
+                        xorshift(&mut s) as u8
+                    }
+                })
+                .collect();
+            let codes: Vec<u8> = (0..16 * groups).map(|_| xorshift(&mut s) as u8).collect();
+            let mut spec = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32_scalar(&luts, &codes, &mut spec);
+            let mut fast = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32(&luts, &codes, &mut fast);
+            assert_eq!(fast, spec, "groups {groups}");
+            let mut wide = [7u32; FAST_SCAN_BLOCK];
+            lut16_accumulate32_wide(&luts, &codes, &mut wide);
+            assert_eq!(wide, spec, "groups {groups}, wide");
+            if avx512 {
+                let mut forced = [7u32; FAST_SCAN_BLOCK];
+                lut16_accumulate32_at(&luts, &codes, &mut forced, true);
+                assert_eq!(forced, spec, "groups {groups}, AVX-512");
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "lut16_accumulate32")]
+    fn lut16_accumulate32_rejects_mismatched_lengths() {
+        lut16_accumulate32(&[0; 16], &[0; 32], &mut [0; FAST_SCAN_BLOCK]);
+    }
+
+    #[test]
+    fn nibble_luts_match_the_scalar_specification() {
+        let mut s = 0x0bad_cafe_f00d_1234u64;
+        for groups in 0..40 {
+            let query: Vec<u8> = (0..4 * groups)
+                .map(|_| (xorshift(&mut s) % 64) as u8)
+                .collect();
+            let mut fast = vec![0u8; 16 * groups];
+            let mut spec = vec![1u8; 16 * groups];
+            nibble_luts(&query, &mut fast);
+            nibble_luts_scalar(&query, &mut spec);
+            assert_eq!(fast, spec, "groups {groups}");
+        }
+    }
+
+    fn floats(s: &mut u64, n: usize, scale: f32) -> Vec<f32> {
+        (0..n)
+            .map(|_| ((xorshift(s) >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale)
+            .collect()
+    }
+
+    #[test]
+    fn residual_kernels_match_the_scalar_specification() {
+        let mut s = 0x5eed_1234_abcd_0001u64;
+        for n in (0..40).chain([100, 300, 768, 1021]) {
+            let q = floats(&mut s, n, 4.0);
+            let c = floats(&mut s, n, 2.0);
+            let (fast, spec) = (residual_stats(&q, &c), residual_stats_scalar(&q, &c));
+            assert_eq!((fast.min, fast.max), (spec.min, spec.max), "n {n}");
+            let close = |a: f64, b: f64| (a - b).abs() <= 1e-4 * (1.0 + b.abs());
+            assert!(
+                close(fast.sum, spec.sum) && close(fast.sum_sq, spec.sum_sq),
+                "n {n}"
+            );
+            assert!(
+                close(f64::from(fast.dot_centroid), f64::from(spec.dot_centroid)),
+                "n {n}"
+            );
+            for bits in [1u32, 2, 4, 7, 8] {
+                let (a, b) = (fast.min * 0.8, fast.max * 0.8);
+                let steps = ((1 << bits) - 1) as f32;
+                let (inv, step) = if b > a {
+                    (steps / (b - a), (b - a) / steps)
+                } else {
+                    (0.0, 0.0)
+                };
+                let (mut fo, mut so) = (vec![0u8; n], vec![0u8; n]);
+                let (fl, fe) = quantize_residual(&q, &c, [a, b], inv, step, &mut fo);
+                let (sl, se) = quantize_residual_scalar(&q, &c, [a, b], inv, step, &mut so);
+                // Fused and separate rounding can split a level at a half
+                // step; anything else must agree.
+                let differ = fo.iter().zip(&so).filter(|(x, y)| x != y).count();
+                assert!(
+                    differ <= n / 50,
+                    "n {n} bits {bits}: {differ} levels differ"
+                );
+                assert!(fo.iter().zip(&so).all(|(x, y)| x.abs_diff(*y) <= 1));
+                assert!(
+                    (fl - sl).unsigned_abs() as usize <= differ,
+                    "n {n} bits {bits}"
+                );
+                assert!(
+                    close(f64::from(fe), f64::from(se)) || differ > 0,
+                    "n {n} bits {bits}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn residual_kernels_skip_nan_like_the_scalar_specification() {
+        let mut q: Vec<f32> = (0..19).map(|i| i as f32 * 0.25 - 2.0).collect();
+        q[3] = f32::NAN;
+        q[12] = f32::NAN;
+        let c = vec![0.1f32; q.len()];
+        let (fast, spec) = (residual_stats(&q, &c), residual_stats_scalar(&q, &c));
+        assert_eq!((fast.min, fast.max), (spec.min, spec.max));
+        let (mut fo, mut so) = (vec![9u8; q.len()], vec![9u8; q.len()]);
+        let (fl, fe) = quantize_residual(&q, &c, [-1.0, 1.0], 7.5, 1.0 / 7.5, &mut fo);
+        let (sl, se) = quantize_residual_scalar(&q, &c, [-1.0, 1.0], 7.5, 1.0 / 7.5, &mut so);
+        assert_eq!((fo[3], fo[12]), (0, 0));
+        assert_eq!((fo, fl), (so, sl));
+        assert!(fe.is_nan() && se.is_nan());
+    }
+
     fn xorshift(s: &mut u64) -> u64 {
         *s ^= *s << 13;
         *s ^= *s >> 7;
@@ -1045,6 +2675,14 @@ mod tests {
             prefix_sum_256(base, &deltas, &mut fast);
             prefix_sum_256_scalar(base, &deltas, &mut spec);
             assert_eq!(fast, spec, "round {round}");
+            // Each kernel the dispatch may pick, whichever it picks here.
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            {
+                let mut v = [0i32; 256];
+                // SAFETY: AVX2 is enabled for this whole build.
+                unsafe { prefix_sum_256_avx2(base, &deltas, &mut v) };
+                assert_eq!(v, spec, "round {round} avx2");
+            }
         }
     }
 
@@ -1071,5 +2709,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn dot_u7_i8_matches_scalar() {
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut byte = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 56) as u8
+        };
+        for n in [
+            0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 128, 300, 1000,
+        ] {
+            let q: Vec<u8> = (0..n).map(|_| byte() & 0x7f).collect();
+            let c: Vec<u8> = (0..n).map(|_| byte()).collect();
+            assert_eq!(dot_u7_i8(&q, &c), dot_u7_i8_scalar(&q, &c), "{n}");
+        }
+        // Extremes: every product at its largest magnitude.
+        let q = vec![127u8; 1000];
+        for v in [0x80u8, 0x7f] {
+            let c = vec![v; 1000];
+            assert_eq!(dot_u7_i8(&q, &c), dot_u7_i8_scalar(&q, &c));
+        }
+        assert_eq!(dot_u7_i8(&q, &[0x80; 1000]), -127 * 128 * 1000);
+        // Unequal lengths use the common prefix.
+        assert_eq!(dot_u7_i8(&[2, 3, 5], &[1, 0xff]), 2 - 3);
+        // Four rows at once match one at a time.
+        for n in [0, 5, 16, 31, 32, 48, 100, 320] {
+            let q: Vec<u8> = (0..n).map(|_| byte() & 0x7f).collect();
+            let rows: Vec<Vec<u8>> = (0..4)
+                .map(|_| (0..n + 3).map(|_| byte()).collect())
+                .collect();
+            let got = dot_u7_i8_x4(&q, [&rows[0], &rows[1], &rows[2], &rows[3]]);
+            for (g, r) in got.iter().zip(&rows) {
+                assert_eq!(*g, dot_u7_i8_scalar(&q, &r[..n]), "{n}");
+            }
+        }
+        let short = [1u8, 0xff];
+        assert_eq!(dot_u7_i8_x4(&[2, 3, 5], [&short; 4]), [-1; 4]);
     }
 }

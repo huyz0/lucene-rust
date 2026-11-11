@@ -17,6 +17,7 @@ import org.apache.lucene.util.NumericUtils;
 import org.opensearch.index.fielddata.IndexFieldData;
 import org.opensearch.index.fielddata.IndexNumericFieldData;
 import org.opensearch.index.fielddata.plain.NonPruningSortedSetOrdinalsIndexFieldData;
+import org.opensearch.script.NumberSortScript;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
@@ -67,6 +68,8 @@ public final class SortEncoder {
     static final byte HALF_FLOAT = 9;
     /** An {@code unsigned_long} field ({@code UnsignedLongValuesComparatorSource}). */
     static final byte UNSIGNED_LONG = 10;
+    /** A Painless {@code _script} key of type {@code number} ({@link ExtendedEncoder#painlessSort}). */
+    static final byte SCRIPT = 11;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
     /** Key flags' mode field: OpenSearch's {@code MultiValueMode} for its own comparator sources. */
@@ -140,10 +143,10 @@ public final class SortEncoder {
     }
 
     /**
-     * {@link #encode(Sort, FieldDoc, boolean, int[][], int, boolean)} with, per segment, whether
-     * the sort is a prefix of its index sort ({@link #indexSorted}; null for none): such a
-     * segment's documents come in the sort's order, and the collector ends it at the first one that
-     * does not compete, as {@code TopFieldCollector} does.
+     * {@link #encode(Sort, FieldDoc, boolean, int[][], int, boolean)} with, per segment, where the
+     * sort sits in its index sort ({@link #indexSorted}; null for none): where the segment's
+     * documents come in the sort's order, the collector ends it at the first one that does not
+     * compete, as {@code TopFieldCollector} does.
      */
     @SuppressWarnings("deprecation")
     public static Encoded encode(
@@ -153,7 +156,7 @@ public final class SortEncoder {
         int[][] slices,
         int terminateAfter,
         boolean countSegments,
-        boolean[] indexSorted
+        byte[] indexSorted
     ) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
@@ -173,6 +176,13 @@ public final class SortEncoder {
             }
             if (type == GEO) {
                 String reason = geoKey(f, out);
+                if (reason != null) {
+                    return new Encoded(null, reason);
+                }
+                continue;
+            }
+            if (type == SCRIPT) {
+                String reason = scriptKey(key, f, out);
                 if (reason != null) {
                     return new Encoded(null, reason);
                 }
@@ -267,9 +277,7 @@ public final class SortEncoder {
         NativeAggregations.writeSlices(out, slices);
         if (indexSorted != null) {
             writeInt(out, indexSorted.length);
-            for (boolean b : indexSorted) {
-                out.write(b ? 1 : 0);
-            }
+            out.write(indexSorted, 0, indexSorted.length);
         }
         return new Encoded(out.toByteArray(), null);
     }
@@ -320,6 +328,9 @@ public final class SortEncoder {
                 case CUSTOM -> {
                     if (shardKeyPrefix(f) != null) {
                         yield SHARD_DOC;
+                    }
+                    if (numberSortScript(f) != null) {
+                        yield SCRIPT;
                     }
                     Mode mode = mode(f);
                     yield mode == null ? -1 : mode.type();
@@ -372,6 +383,37 @@ public final class SortEncoder {
      */
     static Mode mode(SortField f) {
         return modeOrReason(f) instanceof Mode m ? m : null;
+    }
+
+    /** {@code ScriptSortBuilder}'s comparator source for a {@code number} script sort. */
+    private static final String SCRIPT_SORT_SOURCE = "org.opensearch.search.sort.ScriptSortBuilder$";
+
+    /** The number sort script a {@code _script} key of type {@code number} runs, or null for any other key. */
+    static NumberSortScript.LeafFactory numberSortScript(SortField f) {
+        Object src = f.getComparatorSource();
+        if (f.getClass() != SortField.class || src == null || src.getClass().getName().startsWith(SCRIPT_SORT_SOURCE) == false) {
+            return null;
+        }
+        try {
+            Field script = Reflect.declared(src.getClass(), "val$numberSortScript");
+            return script == null ? null : (NumberSortScript.LeafFactory) script.get(src);
+        } catch (ReflectiveOperationException | ClassCastException e) {
+            return null;
+        }
+    }
+
+    /** A {@code _script} key: its type, flags and script, or why it runs in Java. */
+    private static String scriptKey(SortField key, SortField f, ByteArrayOutputStream out) {
+        try {
+            if (NESTED == null || NESTED.get(f.getComparatorSource()) != null) {
+                return "sort_script_nested";
+            }
+        } catch (ReflectiveOperationException e) {
+            return "sort_script_nested";
+        }
+        out.write(SCRIPT);
+        out.write(key == f && f.getReverse() ? REVERSE : 0);
+        return ExtendedEncoder.painlessSort(numberSortScript(f), out);
     }
 
     /**
@@ -508,22 +550,31 @@ public final class SortEncoder {
     }
 
     /**
-     * Per leaf of {@code reader}, whether {@code sort} is a prefix of the leaf's index sort --
-     * {@code TopFieldCollector.canEarlyTerminateOnPrefix}, field by field with {@link
-     * SortField#equals} -- or null when no leaf's is.
+     * Per leaf of {@code reader}, where {@code sort} sits in the leaf's index sort: {@code 1} when
+     * it is a prefix of it -- {@code TopFieldCollector.canEarlyTerminateOnPrefix}, field by field
+     * with {@link SortField#equals} -- {@code 1 + p} when it is the index sort's keys from the
+     * {@code p}th on, {@code 0} when neither; null when no leaf's is either. A search whose
+     * required clauses pin the first {@code p} keys to one value each sees its matches in its
+     * sort's order there too, which the native side checks per segment.
      */
-    static boolean[] indexSorted(IndexReader reader, Sort sort) {
+    static byte[] indexSorted(IndexReader reader, Sort sort) {
         List<LeafReaderContext> leaves = reader.leaves();
-        boolean[] out = new boolean[leaves.size()];
+        byte[] out = new byte[leaves.size()];
         boolean any = false;
-        SortField[] search = sort.getSort();
+        List<SortField> search = Arrays.asList(sort.getSort());
         for (int i = 0; i < out.length; i++) {
             Sort index = leaves.get(i).reader().getMetaData().sort();
-            if (index == null || search.length > index.getSort().length) {
+            if (index == null) {
                 continue;
             }
-            out[i] = Arrays.asList(search).equals(Arrays.asList(index.getSort()).subList(0, search.length));
-            any |= out[i];
+            List<SortField> keys = Arrays.asList(index.getSort());
+            for (int p = 0; p + search.size() <= keys.size() && p < Byte.MAX_VALUE; p++) {
+                if (search.equals(keys.subList(p, p + search.size()))) {
+                    out[i] = (byte) (p + 1);
+                    any = true;
+                    break;
+                }
+            }
         }
         return any ? out : null;
     }
@@ -622,7 +673,7 @@ public final class SortEncoder {
             case SCORE -> Float.floatToIntBits(((Number) v).floatValue());
             case DOC, INT -> ((Number) v).intValue();
             case LONG -> ((Number) v).longValue();
-            case DOUBLE, GEO -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
+            case DOUBLE, GEO, SCRIPT -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
             case FLOAT, HALF_FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
             case SHARD_DOC, UNSIGNED_LONG -> ((Number) v).longValue();
             default -> throw new IllegalArgumentException("sort type " + type);
@@ -635,7 +686,7 @@ public final class SortEncoder {
             case SCORE -> Float.intBitsToFloat((int) v);
             case DOC, INT -> (int) v;
             case LONG -> v;
-            case DOUBLE -> NumericUtils.sortableLongToDouble(v);
+            case DOUBLE, SCRIPT -> NumericUtils.sortableLongToDouble(v);
             case FLOAT, HALF_FLOAT -> NumericUtils.sortableIntToFloat((int) v);
             case SHARD_DOC -> v;
             case UNSIGNED_LONG -> new java.math.BigInteger(Long.toUnsignedString(v));

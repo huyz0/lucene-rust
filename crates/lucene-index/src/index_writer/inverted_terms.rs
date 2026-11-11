@@ -17,6 +17,45 @@ struct TermEnds {
     freq: i32,
 }
 
+impl TermEnds {
+    const ZERO: TermEnds = TermEnds {
+        bytes: 0,
+        positions: 0,
+        offsets: 0,
+        payloads: 0,
+        freq: 0,
+    };
+}
+
+/// [`InvertedTerms::iter`].
+#[derive(Debug, Clone)]
+pub struct InvertedTermsIter<'a> {
+    terms: &'a InvertedTerms,
+    i: usize,
+    prev: TermEnds,
+}
+
+impl<'a> Iterator for InvertedTermsIter<'a> {
+    type Item = TermRef<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<TermRef<'a>> {
+        let e = *self.terms.ends.get(self.i)?;
+        let t = self.terms.term_between(self.i, self.prev, e);
+        self.prev = e;
+        self.i = self.i.saturating_add(1);
+        Some(t)
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.terms.len().saturating_sub(self.i);
+        (n, Some(n))
+    }
+}
+
+impl ExactSizeIterator for InvertedTermsIter<'_> {}
+
 /// One document's terms of one field, each distinct term once, in the order
 /// they were pushed: see the module doc.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -178,17 +217,14 @@ impl InvertedTerms {
     /// When `i >= self.len()`.
     #[inline]
     pub fn get(&self, i: usize) -> TermRef<'_> {
-        let e = self.ends[i];
-        let s = i.checked_sub(1).map_or(
-            TermEnds {
-                bytes: 0,
-                positions: 0,
-                offsets: 0,
-                payloads: 0,
-                freq: 0,
-            },
-            |p| self.ends[p],
-        );
+        let s = i.checked_sub(1).map_or(TermEnds::ZERO, |p| self.ends[p]);
+        self.term_between(i, s, self.ends[i])
+    }
+
+    /// Term `i`, whose data ends at `e` in each array and starts at `s`
+    /// (the previous term's ends).
+    #[inline]
+    fn term_between(&self, i: usize, s: TermEnds, e: TermEnds) -> TermRef<'_> {
         let payload_start = (s.payloads as usize)
             .checked_sub(1)
             .map_or(0, |p| self.payload_ends[p]);
@@ -206,9 +242,20 @@ impl InvertedTerms {
         }
     }
 
+    /// The terms in push order; each step reuses the previous term's ends.
     #[inline]
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = TermRef<'_>> + '_ {
-        (0..self.len()).map(|i| self.get(i))
+    pub fn iter(&self) -> InvertedTermsIter<'_> {
+        InvertedTermsIter {
+            terms: self,
+            i: 0,
+            prev: TermEnds::ZERO,
+        }
+    }
+
+    /// Each term's [`hash_bytes`], in push order.
+    #[inline]
+    pub fn hashes(&self) -> &[u64] {
+        &self.hashes
     }
 
     /// The terms as owned [`InvertedTerm`]s.

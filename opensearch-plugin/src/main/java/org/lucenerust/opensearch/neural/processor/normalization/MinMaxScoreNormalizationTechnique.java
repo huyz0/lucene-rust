@@ -1,0 +1,309 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor.normalization;
+
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
+import org.lucenerust.opensearch.neural.processor.CompoundTopDocs;
+import org.lucenerust.opensearch.neural.processor.dto.ExplainDTO;
+import org.lucenerust.opensearch.neural.processor.dto.NormalizeScoresDTO;
+import org.lucenerust.opensearch.neural.processor.explain.DocIdAtSearchShard;
+import org.lucenerust.opensearch.neural.processor.explain.ExplanationDetails;
+import org.lucenerust.opensearch.neural.processor.explain.ExplainableTechnique;
+import org.lucenerust.opensearch.neural.processor.normalization.bounds.BoundMode;
+import org.lucenerust.opensearch.neural.processor.normalization.bounds.LowerBound;
+import org.lucenerust.opensearch.neural.processor.normalization.bounds.UpperBound;
+import static org.lucenerust.opensearch.neural.processor.explain.ExplanationUtils.getDocIdAtQueryForNormalization;
+import static org.lucenerust.opensearch.neural.processor.normalization.bounds.ScoreBound.MAX_BOUND_SCORE;
+import static org.lucenerust.opensearch.neural.processor.normalization.bounds.ScoreBound.MIN_BOUND_SCORE;
+import static org.lucenerust.opensearch.neural.processor.util.ProcessorUtils.getNumOfSubqueries;
+import static org.lucenerust.opensearch.neural.query.HybridQueryBuilder.MAX_NUMBER_OF_SUB_QUERIES;
+
+/**
+ * Abstracts normalization of scores based on min-max method
+ */
+@SuppressWarnings("this-escape")
+public class MinMaxScoreNormalizationTechnique implements ScoreNormalizationTechnique, ExplainableTechnique {
+    public static final String TECHNIQUE_NAME = "min_max";
+    protected static final float MIN_SCORE = 0.001F;
+    protected static final float MAX_SCORE = 1.0F;
+    private static final float SINGLE_RESULT_SCORE = 1.0F;
+    private static final String PARAM_NAME_LOWER_BOUNDS = "lower_bounds";
+    private static final String PARAM_NAME_BOUND_MODE = "mode";
+    private static final String PARAM_NAME_LOWER_BOUND_MIN_SCORE = "min_score";
+    private static final String PARAM_NAME_UPPER_BOUNDS = "upper_bounds";
+    private static final String PARAM_NAME_UPPER_BOUND_MAX_SCORE = "max_score";
+    private static final Set<String> SUPPORTED_PARAMETERS = Set.of(PARAM_NAME_LOWER_BOUNDS, PARAM_NAME_UPPER_BOUNDS);
+    private static final Map<String, Set<String>> NESTED_PARAMETERS = Map.of(PARAM_NAME_LOWER_BOUNDS, Set.of(PARAM_NAME_BOUND_MODE, PARAM_NAME_LOWER_BOUND_MIN_SCORE), PARAM_NAME_UPPER_BOUNDS, Set.of(PARAM_NAME_BOUND_MODE, PARAM_NAME_UPPER_BOUND_MAX_SCORE));
+    private final Optional<List<Map<String, Object>>> lowerBoundsParamsOptional;
+    private final Optional<List<Map<String, Object>>> upperBoundsParamsOptional;
+
+    public MinMaxScoreNormalizationTechnique() {
+        this(Map.of(), new ScoreNormalizationUtil());
+    }
+
+    public MinMaxScoreNormalizationTechnique(final Map<String, Object> params, final ScoreNormalizationUtil scoreNormalizationUtil) {
+        scoreNormalizationUtil.validateParameters(params, SUPPORTED_PARAMETERS, NESTED_PARAMETERS);
+        lowerBoundsParamsOptional = getBoundsParams(params, PARAM_NAME_LOWER_BOUNDS);
+        upperBoundsParamsOptional = getBoundsParams(params, PARAM_NAME_UPPER_BOUNDS);
+    }
+
+    /**
+     * Min-max normalization method.
+     * nscore = (score - min_score)/(max_score - min_score)
+     * Main algorithm steps:
+     * - calculate min and max scores for each sub query
+     * - iterate over each result and update score as per formula above where "score" is raw score returned by Hybrid query
+     */
+    @Override
+    public void normalize(final NormalizeScoresDTO normalizeScoresDTO) {
+        final List<CompoundTopDocs> queryTopDocs = normalizeScoresDTO.getQueryTopDocs();
+        MinMaxScores minMaxScores = getMinMaxScoresResult(queryTopDocs);
+        // do normalization using actual score and min and max scores for corresponding sub query
+        for (CompoundTopDocs compoundQueryTopDocs : queryTopDocs) {
+            if (Objects.isNull(compoundQueryTopDocs)) {
+                continue;
+            }
+            List<TopDocs> topDocsPerSubQuery = compoundQueryTopDocs.getTopDocs();
+            if (isBoundsAndSubQueriesCountMismatched(topDocsPerSubQuery)) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "expected bounds array to contain %d elements matching the number of sub-queries, but found a mismatch", topDocsPerSubQuery.size()));
+            }
+            for (int j = 0; j < topDocsPerSubQuery.size(); j++) {
+                TopDocs subQueryTopDoc = topDocsPerSubQuery.get(j);
+                LowerBound lowerBound = getLowerBound(j);
+                UpperBound upperBound = getUpperBound(j);
+                for (ScoreDoc scoreDoc : subQueryTopDoc.scoreDocs) {
+                    scoreDoc.score = normalizeSingleScore(scoreDoc.score, minMaxScores.getMinScoresPerSubquery()[j], minMaxScores.getMaxScoresPerSubquery()[j], lowerBound, upperBound);
+                }
+            }
+        }
+    }
+
+    private boolean isBoundsAndSubQueriesCountMismatched(List<TopDocs> topDocsPerSubQuery) {
+        boolean lowerBoundsMismatch = lowerBoundsParamsOptional.isPresent() && !topDocsPerSubQuery.isEmpty() && lowerBoundsParamsOptional.get().size() != topDocsPerSubQuery.size();
+        boolean upperBoundsMismatch = upperBoundsParamsOptional.isPresent() && !topDocsPerSubQuery.isEmpty() && upperBoundsParamsOptional.get().size() != topDocsPerSubQuery.size();
+        return lowerBoundsMismatch || upperBoundsMismatch;
+    }
+
+    private LowerBound getLowerBound(int subQueryIndex) {
+        return lowerBoundsParamsOptional.map(bounds -> bounds.get(subQueryIndex)).map(LowerBound::new).orElseGet(LowerBound::new);
+    }
+
+    private UpperBound getUpperBound(int subQueryIndex) {
+        return upperBoundsParamsOptional.map(bounds -> bounds.get(subQueryIndex)).map(UpperBound::new).orElseGet(UpperBound::new);
+    }
+
+    private MinMaxScores getMinMaxScoresResult(final List<CompoundTopDocs> queryTopDocs) {
+        int numOfSubqueries = getNumOfSubqueries(queryTopDocs);
+        // get min scores for each sub query
+        float[] minScoresPerSubquery = getMinScores(queryTopDocs, numOfSubqueries);
+        // get max scores for each sub query
+        float[] maxScoresPerSubquery = getMaxScores(queryTopDocs, numOfSubqueries);
+        return new MinMaxScores(minScoresPerSubquery, maxScoresPerSubquery);
+    }
+
+    @Override
+    public String techniqueName() {
+        return TECHNIQUE_NAME;
+    }
+
+    @Override
+    public String describe() {
+        StringBuilder description = new StringBuilder(TECHNIQUE_NAME);
+        description.append(buildBoundDescription(lowerBoundsParamsOptional, "lower", LowerBound.DEFAULT_LOWER_BOUND_SCORE));
+        description.append(buildBoundDescription(upperBoundsParamsOptional, "upper", UpperBound.DEFAULT_UPPER_BOUND_SCORE));
+        return description.toString();
+    }
+
+    private String buildBoundDescription(Optional<List<Map<String, Object>>> boundsOptional, String label, double defaultScore) {
+        return boundsOptional.map(bounds -> {
+            String formatted = bounds.stream().map(boundMap -> {
+                BoundMode mode = BoundMode.fromString(Objects.toString(boundMap.get("mode"), ""));
+                String score = Objects.toString(boundMap.get(label.equals("lower") ? "min_score" : "max_score"), String.valueOf(defaultScore));
+                return String.format(Locale.ROOT, "(%s, %s)", mode, score);
+            }).collect(Collectors.joining(", ", "[", "]"));
+            return String.format(Locale.ROOT, ", %s bounds %s", label, formatted);
+        }).orElse("");
+    }
+
+    @Override
+    public Map<DocIdAtSearchShard, ExplanationDetails> explain(final ExplainDTO explainDTO) {
+        final List<CompoundTopDocs> queryTopDocs = explainDTO.getQueryTopDocs();
+        MinMaxScores minMaxScores = getMinMaxScoresResult(queryTopDocs);
+        Map<DocIdAtSearchShard, List<Float>> normalizedScores = new HashMap<>();
+        for (CompoundTopDocs compoundQueryTopDocs : queryTopDocs) {
+            if (Objects.isNull(compoundQueryTopDocs)) {
+                continue;
+            }
+            List<TopDocs> topDocsPerSubQuery = compoundQueryTopDocs.getTopDocs();
+            int numberOfSubQueries = topDocsPerSubQuery.size();
+            for (int subQueryIndex = 0; subQueryIndex < numberOfSubQueries; subQueryIndex++) {
+                TopDocs subQueryTopDoc = topDocsPerSubQuery.get(subQueryIndex);
+                for (ScoreDoc scoreDoc : subQueryTopDoc.scoreDocs) {
+                    DocIdAtSearchShard docIdAtSearchShard = new DocIdAtSearchShard(scoreDoc.doc, compoundQueryTopDocs.getSearchShard());
+                    LowerBound lowerBound = getLowerBound(subQueryIndex);
+                    UpperBound upperBound = getUpperBound(subQueryIndex);
+                    float normalizedScore = normalizeSingleScore(scoreDoc.score, minMaxScores.getMinScoresPerSubquery()[subQueryIndex], minMaxScores.getMaxScoresPerSubquery()[subQueryIndex], lowerBound, upperBound);
+                    ScoreNormalizationUtil.setNormalizedScore(normalizedScores, docIdAtSearchShard, subQueryIndex, numberOfSubQueries, normalizedScore);
+                    scoreDoc.score = normalizedScore;
+                }
+            }
+        }
+        return getDocIdAtQueryForNormalization(normalizedScores, this);
+    }
+
+    private float[] getMaxScores(final List<CompoundTopDocs> queryTopDocs, final int numOfSubqueries) {
+        float[] maxScores = new float[numOfSubqueries];
+        Arrays.fill(maxScores, Float.MIN_VALUE);
+        for (CompoundTopDocs compoundQueryTopDocs : queryTopDocs) {
+            if (Objects.isNull(compoundQueryTopDocs)) {
+                continue;
+            }
+            List<TopDocs> topDocsPerSubQuery = compoundQueryTopDocs.getTopDocs();
+            for (int j = 0; j < topDocsPerSubQuery.size(); j++) {
+                maxScores[j] = Math.max(maxScores[j], Arrays.stream(topDocsPerSubQuery.get(j).scoreDocs).map(scoreDoc -> scoreDoc.score).max(Float::compare).orElse(Float.MIN_VALUE));
+            }
+        }
+        return maxScores;
+    }
+
+    private float[] getMinScores(final List<CompoundTopDocs> queryTopDocs, final int numOfScores) {
+        float[] minScores = new float[numOfScores];
+        Arrays.fill(minScores, Float.MAX_VALUE);
+        for (CompoundTopDocs compoundQueryTopDocs : queryTopDocs) {
+            if (Objects.isNull(compoundQueryTopDocs)) {
+                continue;
+            }
+            List<TopDocs> topDocsPerSubQuery = compoundQueryTopDocs.getTopDocs();
+            for (int j = 0; j < topDocsPerSubQuery.size(); j++) {
+                minScores[j] = Math.min(minScores[j], Arrays.stream(topDocsPerSubQuery.get(j).scoreDocs).map(scoreDoc -> scoreDoc.score).min(Float::compare).orElse(Float.MAX_VALUE));
+            }
+        }
+        return minScores;
+    }
+
+    private float normalizeSingleScore(final float score, final float minScore, final float maxScore, final LowerBound lowerBound, final UpperBound upperBound) {
+        // edge case when there is only one score and min and max scores are same
+        if (isSingleScore(score, minScore, maxScore)) {
+            return SINGLE_RESULT_SCORE;
+        }
+        float effectiveMinScore = lowerBound.determineEffectiveScore(score, minScore, maxScore);
+        float effectiveMaxScore = upperBound.determineEffectiveScore(score, minScore, maxScore);
+        if (lowerBound.shouldClipToBound(score, effectiveMinScore)) {
+            return MIN_SCORE;
+        }
+        if (upperBound.shouldClipToBound(score, effectiveMaxScore)) {
+            return MAX_SCORE;
+        }
+        return calculateNormalizedScore(score, effectiveMinScore, effectiveMaxScore);
+    }
+
+    private boolean isSingleScore(float score, float minScore, float maxScore) {
+        return Float.compare(maxScore, minScore) == 0 && Float.compare(maxScore, score) == 0;
+    }
+
+    protected float calculateNormalizedScore(float score, float effectiveMinScore, float effectiveMaxScore) {
+        if (Float.compare(effectiveMaxScore, effectiveMinScore) == 0) {
+            return SINGLE_RESULT_SCORE;
+        }
+        float normalizedScore = (score - effectiveMinScore) / (effectiveMaxScore - effectiveMinScore);
+        return normalizedScore == 0.0F ? MIN_SCORE : normalizedScore;
+    }
+
+    protected Optional<List<Map<String, Object>>> getBoundsParams(final Map<String, Object> params, String paramName) {
+        if (Objects.isNull(params) || !params.containsKey(paramName)) {
+            return Optional.empty();
+        }
+        List<?> boundsParams = Optional.ofNullable(params.get(paramName)).filter(List.class::isInstance).map(List.class::cast).orElseThrow(() -> new IllegalArgumentException(paramName + " must be a List"));
+        if (boundsParams.size() > MAX_NUMBER_OF_SUB_QUERIES) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "%s size %d should be less than or equal to %d", paramName, boundsParams.size(), MAX_NUMBER_OF_SUB_QUERIES));
+        }
+        String scoreParamName;
+        float defaultScore;
+        switch (paramName) {
+        case PARAM_NAME_LOWER_BOUNDS: 
+            scoreParamName = PARAM_NAME_LOWER_BOUND_MIN_SCORE;
+            defaultScore = LowerBound.DEFAULT_LOWER_BOUND_SCORE;
+            break;
+        case PARAM_NAME_UPPER_BOUNDS: 
+            scoreParamName = PARAM_NAME_UPPER_BOUND_MAX_SCORE;
+            defaultScore = UpperBound.DEFAULT_UPPER_BOUND_SCORE;
+            break;
+        default: 
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "Unsupported bounds parameter name: %s", paramName));
+        }
+        return Optional.of(
+        // Validate mode
+        // Validate score
+        boundsParams.stream().map(item -> {
+            if (!(item instanceof Map)) {
+                throw new IllegalArgumentException("each bound must be a map");
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> boundMap = (Map<String, Object>) item;
+            String modeString = Objects.toString(boundMap.get(PARAM_NAME_BOUND_MODE), "");
+            if (!modeString.isEmpty()) {
+                BoundMode.fromString(modeString);
+            }
+            validateBoundScore(boundMap, scoreParamName, defaultScore);
+            return boundMap;
+        }).collect(Collectors.toList()));
+    }
+
+    private void validateBoundScore(Map<String, Object> bound, String scoreParamName, float defaultScore) {
+        Object scoreObj = bound.get(scoreParamName);
+        if (scoreObj == null) {
+            return;
+        }
+        try {
+            float score = Float.parseFloat(String.valueOf(scoreObj));
+            if ((score >= MIN_BOUND_SCORE && score <= MAX_BOUND_SCORE) == false) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "%s must be a valid finite number between %f and %f", scoreParamName, MIN_BOUND_SCORE, MAX_BOUND_SCORE));
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "invalid format for %s: must be a valid float value", scoreParamName), e);
+        }
+    }
+
+
+    /**
+     * Result class to hold min and max scores for each sub query
+     */
+    private static class MinMaxScores {
+        float[] minScoresPerSubquery;
+        float[] maxScoresPerSubquery;
+
+        @java.lang.SuppressWarnings("all")
+        public MinMaxScores(final float[] minScoresPerSubquery, final float[] maxScoresPerSubquery) {
+            this.minScoresPerSubquery = minScoresPerSubquery;
+            this.maxScoresPerSubquery = maxScoresPerSubquery;
+        }
+
+        @java.lang.SuppressWarnings("all")
+        public float[] getMinScoresPerSubquery() {
+            return this.minScoresPerSubquery;
+        }
+
+        @java.lang.SuppressWarnings("all")
+        public float[] getMaxScoresPerSubquery() {
+            return this.maxScoresPerSubquery;
+        }
+    }
+
+    @java.lang.Override
+    @java.lang.SuppressWarnings("all")
+    public java.lang.String toString() {
+        return "MinMaxScoreNormalizationTechnique(TECHNIQUE_NAME=" + MinMaxScoreNormalizationTechnique.TECHNIQUE_NAME + ")";
+    }
+}

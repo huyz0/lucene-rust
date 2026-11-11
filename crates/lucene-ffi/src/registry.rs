@@ -70,6 +70,10 @@ pub struct JvmReaderHandle {
     /// kept alongside the mask so total-hits lower bounds need not recount it
     /// per query.
     pub deleted: Vec<i64>,
+    /// `live_docs` with the deletes issued since the reader's commit
+    /// applied, as far as the last live search read them
+    /// ([`crate::live::CommitLive`]).
+    pub commit_live: std::sync::Mutex<Option<crate::live::CommitLive>>,
 }
 
 /// Handles are `Arc`s so a search clones one out and runs with no lock held.

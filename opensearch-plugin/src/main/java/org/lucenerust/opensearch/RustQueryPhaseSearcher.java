@@ -5,6 +5,11 @@ package org.lucenerust.opensearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lucenerust.opensearch.knn.KnnHitsQuery;
+import org.lucenerust.opensearch.neural.query.HybridQuery;
+import org.lucenerust.opensearch.neural.search.query.HybridAggregationProcessor;
+import org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher;
+import org.lucenerust.opensearch.painless.PainlessScore;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
@@ -103,7 +108,25 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Whether a match-all or range OpenSearch resolved to its approximation (a sort on the
+     * range's field, {@code track_total_hits} not exact) runs native: the exact top hits, by
+     * the native bounded newest-N search. OpenSearch's approximation collects whole BKD leaves
+     * in value order and keeps the top hits of those, so where the last hit's value is tied
+     * across a leaf boundary it may keep other documents of that value than the exact answer
+     * does (the same values, other ties). Off by default: such an index keeps OpenSearch's
+     * answer.
+     */
+    public static final Setting<Boolean> NATIVE_APPROXIMATE = Setting.boolSetting(
+        "index.lucene_rust.search.native_approximate",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
+    /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
+    private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
     private final NativeReaders readers;
     private final SearchStats stats;
 
@@ -114,11 +137,81 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     @Override
     public AggregationProcessor aggregationProcessor(SearchContext searchContext) {
-        return fallback.aggregationProcessor(searchContext);
+        AggregationProcessor processor = fallback.aggregationProcessor(searchContext);
+        Query query = searchContext.query();
+        DeferredAggregationProcessor deferred = new DeferredAggregationProcessor(processor);
+        return query != null && containsHybrid(query) ? new HybridAggregationProcessor(deferred) : deferred;
     }
 
     @Override
     public boolean searchWith(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout
+    ) throws IOException {
+        PainlessScore.beginRequest(() -> ctx.request().source() == null ? null : ctx.request().source().toString());
+        try {
+            return containsHybrid(query)
+                ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
+                : searchPlain(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        } finally {
+            PainlessScore.endRequest();
+        }
+    }
+
+    /**
+     * Whether the native search failed because a Painless script of this request threw (or
+     * scored invalidly): the search then fails as the script does in Java, never re-run there.
+     * Any other native failure falls back to Lucene as before.
+     */
+    private static boolean scriptFailed() {
+        return PainlessScore.ran() && PainlessScore.scriptFailed(NativeBridge.lastError());
+    }
+
+    /**
+     * The exception a script's failure ({@link #scriptFailed}) raises ({@link
+     * PainlessScore#failure}); {@code counted} when the failure was already counted as a native
+     * error.
+     */
+    private RuntimeException scriptFailure(IndexReader reader, boolean counted) {
+        stats.scriptError(counted);
+        return PainlessScore.failure(NativeBridge.lastError(), reader);
+    }
+
+    private boolean searchHybridOrLucene(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout
+    ) throws IOException {
+        long nativeStart = System.nanoTime();
+        String why = searchHybrid(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        if (why == null) {
+            stats.nativeQuery();
+            stats.nativeTime(System.nanoTime() - nativeStart);
+            return false;
+        }
+        if ("native_error".equals(why) && scriptFailed()) {
+            throw scriptFailure(searcher.getIndexReader(), false);
+        }
+        stats.fallback(why);
+        long luceneStart = System.nanoTime();
+        LiveDirectoryReader view = LiveDirectoryReader.find(searcher.getIndexReader());
+        if (view != null) {
+            // The sub-queries' rewrites are neural-search's own, kept as they are.
+            readByLucene(ctx, searcher, view);
+        }
+        boolean rescore = hybrid.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        stats.luceneTime(System.nanoTime() - luceneStart);
+        return rescore;
+    }
+
+    private boolean searchPlain(
         SearchContext ctx,
         ContextIndexSearcher searcher,
         Query query,
@@ -133,7 +226,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
-            : NativeAggregationTree.plan(ctx, field -> true);
+            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
@@ -144,7 +237,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // Each scored field's similarity, sent in front of the blobs when
             // one is not the default.
             SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
-            QueryEncoder.Encoded enc = QueryEncoder.encode(query, similarities, searcher.getTopReaderContext());
+            Query encoding = query;
+            QueryEncoder.Encoded enc = ExtendedEncoder.withFieldTypes(
+                ctx.mapperService()::fieldType,
+                () -> QueryEncoder.encode(encoding, similarities, searcher.getTopReaderContext())
+            );
             reason = enc.fallbackReason();
             blob = enc.blob();
             boolean fast = enc.fast();
@@ -156,14 +253,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // filter narrower than the range, which the native engine would not
             // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
-            if (postFilter != null && approximated(postFilter)) {
+            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) {
                 reason = "approximate";
             }
             if (reason == null && postFilter != null) {
-                QueryEncoder.Encoded filtered = QueryEncoder.encode(
-                    postFiltered(query, postFilter),
-                    similarities,
-                    searcher.getTopReaderContext()
+                Query filteredQuery = postFiltered(query, postFilter);
+                QueryEncoder.Encoded filtered = ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> QueryEncoder.encode(filteredQuery, similarities, searcher.getTopReaderContext())
                 );
                 reason = filtered.fallbackReason();
                 hitsBlob = filtered.blob();
@@ -192,8 +289,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
         // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
-        // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's.
-        if (reason == null && approximated(query)) {
+        // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's,
+        // unless the index asks for the exact answer (NATIVE_APPROXIMATE).
+        // Not over buffered documents: the approximation walks the reader's points alone, where
+        // they have none, so only the native engine finds them.
+        if (reason == null && approximated(query) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
             reason = "approximate";
         }
         // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
@@ -250,10 +350,19 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int[][] slices = NativeAggregations.slices(ctx);
             // TopFieldCollector ends a segment whose index sort begins with the
             // search's sort at its first non-competitive document; the native
-            // collector does too, told which segments.
-            boolean[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            // collector does too, told which segments -- and where the query
+            // pins the index sort's first keys and sorts by the ones after.
+            byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            Sort keys = sort;
+            FieldDoc from = after;
+            boolean counts = countSegments(ctx, terminateAfter);
+            int limit = terminateAfter;
+            // A script key's script reads fields by the index's mappings.
             SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
-                : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter), indexSorted);
+                : ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted)
+                );
             reason = sorted.fallbackReason();
             sortBlob = sorted.blob();
         }
@@ -270,7 +379,54 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else if (hasTimeout && deadlinePassed(ctx)) {
                 reason = "timeout";
             } else {
-                reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree);
+                // The writer's buffered documents too, when the searcher has a view of them and
+                // the request is one the buffers answer; otherwise the reader's documents alone.
+                LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+                boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
+                    && rescores == null && sort == null && terminateAfter == 0;
+                if (live == null) {
+                    reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
+                } else if (liveIneligible(ctx) != null) {
+                    // Lucene sees the view's documents as deleted and answers from the reader's.
+                    reason = "realtime_view";
+                } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
+                    // A k-NN search's hits, found when the query was rewritten: nothing of the
+                    // buffers is read again.
+                    storeKnnHits(ctx, hits);
+                } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
+                    // Everything else reads the buffers written as segments, one per leaf of the
+                    // view: aggregations, sorts, collapse, rescore, and what the plain path's
+                    // buffers cannot answer.
+                    if (ctx.mapperService().hasNested()) {
+                        // The fetch phase finds a buffered hit's root document by doc values the
+                        // view's leaves read only from the buffers given to Lucene as segments.
+                        readByLucene(ctx, searcher, live);
+                    }
+                    long[] whole = new long[1];
+                    long built = System.nanoTime();
+                    // The request's terms only: the hits query's (the post_filter's terms with the
+                    // query's), the rescore queries' and the aggregation tree's.
+                    byte[] request = hitsBlob;
+                    byte[][] rescoreBlobs = rescores == null ? null : rescores.stream().map(NativeRescore::blob).toArray(byte[][]::new);
+                    int[][] treeSlices = tree == null ? null : NativeAggregations.slices(ctx);
+                    byte[] treeBlob = treeSlices == null ? null : tree.blob(treeSlices);
+                    if (tree != null && treeBlob == null) {
+                        request = null;
+                    }
+                    int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
+                    if (rc == NativeBridge.OK) {
+                        stats.liveReaderTime(System.nanoTime() - built);
+                    }
+                    if (rc != NativeBridge.OK) {
+                        logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
+                        reason = "realtime_view";
+                    } else {
+                        reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
+                        if (reason == null) {
+                            stats.liveQuery();
+                        }
+                    }
+                }
             }
             if (reason == null) {
                 stats.nativeQuery();
@@ -281,12 +437,269 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return false;
             }
         }
+        // A native search that ran a Painless script fails as the script did: running it again in
+        // Java would run the script twice.
+        if ("native_error".equals(reason) && scriptFailed()) {
+            throw scriptFailure(searcher.getIndexReader(), true);
+        }
         stats.fallback(reason);
         // Lucene's own time only: not the plugin's checks, nor a native attempt that fell back.
         long luceneStart = System.nanoTime();
+        LiveDirectoryReader view = LiveDirectoryReader.find(searcher.getIndexReader());
+        if (view != null && readByLucene(ctx, searcher, view) && query == ctx.query() && ctx.parsedQuery() != null) {
+            // Rewritten again as SearchContext.preProcess rewrote it: a rewrite that read the
+            // reader's terms (a scoring multi-term query, blended term statistics) read them
+            // without the buffered documents'.
+            query = searcher.rewrite(ctx.buildFilteredQuery(ctx.parsedQuery().query()));
+        }
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /** How long a search Lucene answers waits for a buffer being flushed to be published. */
+    private static final long FLUSH_WAIT_MILLIS = 30_000;
+
+    /**
+     * Gives Lucene the buffered documents of the searcher's view before it answers, so it finds
+     * them as the native engine would: the buffers as segments, and the reader's documents deleted
+     * since its commit left out. The aggregators built so far are built again over them. True when
+     * Lucene reads them.
+     */
+    private boolean readByLucene(SearchContext ctx, ContextIndexSearcher searcher, LiveDirectoryReader view) throws IOException {
+        if (view.readsLucene()) {
+            // Another search gave them to Lucene, perhaps after this one rewrote its query or
+            // built its aggregators: they are rebuilt over them all the same.
+            DeferredAggregationProcessor.rebuild(ctx);
+            return true;
+        }
+        NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
+        if (acquired.fallbackReason() != null) {
+            // No native reader of the commit: nothing reads the buffers, natively or not.
+            logger.debug("lucene-rust: the buffers cannot be read without a native reader ({})", acquired.fallbackReason());
+            return false;
+        }
+        boolean read;
+        try {
+            read = view.readByLucene(acquired.handle(), FLUSH_WAIT_MILLIS, searcher.getIndexReader());
+        } catch (IOException | RuntimeException e) {
+            // Not the index's own files that could not be read: the search fails, the shard stays
+            // (OpenSearch fails a shard whose search reports a corrupt index anywhere in its causes).
+            logger.warn("lucene-rust: the buffered documents cannot be read by Lucene", e);
+            throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + e);
+        }
+        if (read == false) {
+            throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + NativeBridge.lastError());
+        }
+        DeferredAggregationProcessor.rebuild(ctx);
+        return true;
+    }
+
+    /**
+     * A hybrid query's shard phase run natively ({@link NativeHybrid}), or why it cannot be: the
+     * stock checks first (search type, sub-queries), which fail the request as they do in
+     * Java.
+     */
+    private String searchHybrid(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout
+    ) throws IOException {
+        if (flags(ctx).enabled() == false) return "disabled";
+        String reason = NativeHybrid.ineligible(ctx, query, collectors, hasFilterCollector);
+        if (reason != null) return reason;
+        HybridQuery hybrid = (HybridQuery) query;
+        org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
+        org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuery(hybrid);
+        int[][] slices = NativeAggregations.slices(ctx);
+        if (slices == null) return "intra_segment";
+        if (LiveDirectoryReader.find(searcher.getIndexReader()) != null) return "realtime_view";
+        NativeHybrid.Encoded enc = NativeHybrid.encode(hybrid, new SimilarityEncoder(searcher.getSimilarity()), searcher, flags(ctx).allShapes());
+        if (enc.fallbackReason() != null) return enc.fallbackReason();
+        NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
+        if (acquired.fallbackReason() != null) return acquired.fallbackReason();
+        if (ctx.isCancelled()) return "cancelled";
+        if (hasTimeout && deadlinePassed(ctx)) return "timeout";
+        // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
+        int topN = NativeHybrid.numHits(ctx, hybrid);
+        if (topN <= 0) return "hybrid_no_hits";
+        byte[][] out = new byte[1][];
+        int rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices), out);
+        if (rc != NativeBridge.OK) {
+            logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
+            return "native_error";
+        }
+        NativeHybrid.store(ctx, out[0], enc.blobs().size());
+        if (hasTimeout && deadlinePassed(ctx)) {
+            timedOut(ctx);
+        }
+        return null;
+    }
+
+    /** Whether {@code query} is or holds a {@link HybridQuery}. */
+    static boolean containsHybrid(Query query) {
+        return org.lucenerust.opensearch.neural.util.HybridQueryUtil.containsHybridQuery(query);
+    }
+
+    /**
+     * Why a search cannot read the writer's buffered documents, or null when it can: what the
+     * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
+     * was expanded or given term statistics over the reader's terms alone (a multi-term query under
+     * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested k-NN hits.
+     */
+    static String liveIneligible(SearchContext ctx) {
+        if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
+        if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
+            && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
+        // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
+        if (ctx.mapperService().hasNested() && holdsKnnHits(ctx.query())) return "nested";
+        boolean[] expands = new boolean[1];
+        org.apache.lucene.search.QueryVisitor visitor = new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public void consumeTerms(Query query, org.apache.lucene.index.Term... terms) {
+                // Statistics a blended query computed from the reader's terms: the buffers' are not in them.
+                if (query instanceof org.opensearch.lucene.queries.BlendedTermQuery
+                    || query instanceof org.apache.lucene.search.TermQuery tq && tq.getTermStates() != null) {
+                    expands[0] = true;
+                }
+            }
+
+            @Override
+            public void consumeTermsMatching(
+                Query query,
+                String field,
+                java.util.function.Supplier<org.apache.lucene.util.automaton.ByteRunAutomaton> automaton
+            ) {
+                // A multi-term query the native search expands over every segment, the buffers'
+                // too; one a rewrite expands over the reader's terms alone is not.
+                if (!(query instanceof org.apache.lucene.search.MultiTermQuery m) || expandsNatively(m) == false) {
+                    expands[0] = true;
+                }
+            }
+
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
+                return this;
+            }
+        };
+        // The query as parsed too: a scoring rewrite expanded its terms already, maybe to nothing.
+        if (ctx.parsedQuery() != null) {
+            ctx.parsedQuery().query().visit(visitor);
+        }
+        ctx.query().visit(visitor);
+        return expands[0] ? "multi_term" : null;
+    }
+
+    /** Whether {@code query} is or holds a {@link KnnHitsQuery}, under any wrapper. */
+    private static boolean holdsKnnHits(Query query) {
+        boolean[] found = new boolean[1];
+        query.visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public void visitLeaf(Query q) {
+                if (q instanceof KnnHitsQuery) {
+                    found[0] = true;
+                }
+            }
+
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(org.apache.lucene.search.BooleanClause.Occur occur, Query parent) {
+                return this;
+            }
+        });
+        return found[0] || query instanceof KnnHitsQuery;
+    }
+
+    /** Whether {@code q}'s rewrite leaves its terms to the search: a constant-score or doc-values one. */
+    private static boolean expandsNatively(org.apache.lucene.search.MultiTermQuery q) {
+        org.apache.lucene.search.MultiTermQuery.RewriteMethod m = q.getRewriteMethod();
+        return m == org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_REWRITE
+            || m == org.apache.lucene.search.MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE
+            || m == org.apache.lucene.search.MultiTermQuery.DOC_VALUES_REWRITE;
+    }
+
+    /**
+     * Whether a plain scored search goes to the buffers written as segments rather than the view's
+     * own postings: {@code min_score}, a concurrent count's per-slice early termination, and a
+     * scroll or {@code search_after} page, which the view's search does not do, and an index with
+     * nested documents, whose blocks the view's postings do not tell apart (the buffers written as
+     * segments keep each block whole, its root last). A scroll's or point in time's pages share one
+     * searcher supplier, so one view and one numbering of its documents.
+     */
+    private static boolean plainIneligible(SearchContext ctx) {
+        return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch()
+            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested();
+    }
+
+    /**
+     * A plain scored search over the reader's segments and the writer's buffered documents of
+     * {@code live}: the hits and total the reader and the buffers give together, a buffered hit
+     * numbered after the reader's documents. False when the buffers cannot answer the query, or the
+     * native search failed; nothing is stored then.
+     */
+    private boolean searchLive(SearchContext ctx, long handle, LiveDirectoryReader live, byte[] blob) {
+        int size = ctx.size();
+        int numDocs = size == 0 ? 0
+            : Math.min(ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs() + live.view().maxDoc()));
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        long countLimit = trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED ? 0
+            : trackUpTo == SearchContext.TRACK_TOTAL_HITS_ACCURATE ? Long.MAX_VALUE
+            : Math.max(trackUpTo, numDocs);
+        int[] docs = new int[numDocs];
+        float[] scores = new float[numDocs];
+        long[] counts = new long[4];
+        int rc = NativeBridge.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
+        if (rc != NativeBridge.OK) {
+            stats.nativeError();
+            if (scriptFailed()) {
+                throw scriptFailure(ctx.searcher().getIndexReader(), true);
+            }
+            logger.warn("lucene-rust: live search failed ({}), searching the reader alone: {}", rc, NativeBridge.lastError());
+            return false;
+        }
+        if (counts[3] == 0) {
+            return false;
+        }
+        int n = (int) counts[0];
+        ScoreDoc[] hits = new ScoreDoc[n];
+        for (int i = 0; i < n; i++) {
+            hits[i] = new ScoreDoc(docs[i], scores[i]);
+        }
+        TotalHits total = countLimit == 0 ? new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO)
+            : new TotalHits(counts[1], counts[2] != 0 ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO);
+        store(ctx, new TopDocsAndMaxScore(new TopDocs(total, hits), n == 0 ? Float.NaN : scores[0]), null);
+        stats.liveQuery();
+        return true;
+    }
+
+    /**
+     * The top hits and total of {@code hits} alone, as the native plain search gives them: best
+     * score first, the lower doc on a tie, {@code from + size} of them, counted up to
+     * {@code track_total_hits}.
+     */
+    private void storeKnnHits(SearchContext ctx, KnnHitsQuery hits) {
+        int[] docs = hits.docs();
+        float[] scores = hits.scores();
+        ScoreDoc[] all = new ScoreDoc[docs.length];
+        for (int i = 0; i < docs.length; i++) {
+            all[i] = new ScoreDoc(docs[i], scores[i]);
+        }
+        java.util.Arrays.sort(all, (a, b) -> a.score != b.score ? Float.compare(b.score, a.score) : Integer.compare(a.doc, b.doc));
+        int n = ctx.size() == 0 ? 0 : Math.min(all.length, ctx.from() + ctx.size());
+        ScoreDoc[] top = java.util.Arrays.copyOf(all, n);
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        TotalHits total;
+        if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED) {
+            total = new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        } else if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_ACCURATE && all.length > Math.max(trackUpTo, n)) {
+            total = new TotalHits(Math.max(trackUpTo, n), TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        } else {
+            total = new TotalHits(all.length, TotalHits.Relation.EQUAL_TO);
+        }
+        store(ctx, new TopDocsAndMaxScore(new TopDocs(total, top), n == 0 ? Float.NaN : top[0].score), null);
+        stats.liveQuery();
     }
 
     /** Why this request cannot run native, or null when it can. */
@@ -507,7 +920,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** The plugin's index settings as last read, and the settings version they were read at. */
-    private record Flags(long version, boolean enabled, boolean allShapes) {}
+    private record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate) {}
 
     private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -522,7 +935,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         String uuid = settings.getUUID();
         Flags f = FLAGS.get(uuid);
         if (f == null || f.version() != version) {
-            f = new Flags(version, settings.getValue(ENABLED), "all".equals(settings.getValue(NATIVE_SHAPES)));
+            f = new Flags(
+                version,
+                settings.getValue(ENABLED),
+                "all".equals(settings.getValue(NATIVE_SHAPES)),
+                settings.getValue(NATIVE_APPROXIMATE)
+            );
             FLAGS.put(uuid, f);
         }
         return f;
@@ -550,7 +968,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Sort sort,
         boolean scoreDocs,
         NativeAggregations.Plan aggs,
-        NativeAggregationTree.Tree tree
+        NativeAggregationTree.Tree tree,
+        boolean live
     ) {
         int size = ctx.size();
         ScrollContext scroll = ctx.scrollContext();
@@ -561,8 +980,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // A scroll page is "size" hits whatever "from" says, and counts them on its first page only
         // (TopDocsCollectorContext.createTopDocsCollectorContext).
+        // With the buffers (live), the searcher's reader counts none of their documents.
+        int readerDocs = live ? ctx.searcher().getIndexReader().maxDoc() : ctx.searcher().getIndexReader().numDocs();
         int numDocs = size == 0 ? 0
-            : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, ctx.searcher().getIndexReader().numDocs()));
+            : Math.min(scroll != null ? size : ctx.from() + size, Math.max(1, readerDocs));
         // A rescored search collects at least each rescorer's window
         // (createTopDocsCollectorContext).
         if (rescores != null) {
@@ -589,7 +1010,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Term shortcutTerm = null;
         // TopDocsCollectorContext: "hasFilterCollector ? -1 : shortcutTotalHitCount(...)".
         // (A collapsed search counts every match itself, whatever track_total_hits says.)
+        // The shortcuts read the searcher's reader, to which the buffered documents are deleted:
+        // with them (live), every total is counted.
         if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED
+            && live == false
             && collapseBlob == null
             && ctx.parsedPostFilter() == null
             && terminating == false
@@ -1191,6 +1615,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         } catch (ReflectiveOperationException | RuntimeException e) {
             return null;
         }
+    }
+
+    /** Whether the searcher reads a view of the writer's buffered documents that holds some. */
+    private static boolean buffered(ContextIndexSearcher searcher) {
+        LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+        return live != null && live.view().maxDoc() > 0;
     }
 
     /**

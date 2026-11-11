@@ -481,10 +481,13 @@ impl SegmentReader {
                 .then(|| Arc::new(core.info.index_sort.clone())),
             has_blocks: core.info.has_blocks,
             diagnostics: Arc::new(core.info.diagnostics.clone()),
+            derived_source: None,
             max_doc: core.info.doc_count,
             num_docs: crate::reader::num_docs_of(core.info.doc_count, live_docs.as_deref()),
             field_infos: core.field_infos.clone(),
             simpletext: Some(core),
+            codec_files: Arc::default(),
+            attachments: Arc::default(),
             segment_name: commit.segment_name.clone(),
             segment_id: commit.segment_id,
             doc_base,
@@ -497,6 +500,7 @@ impl SegmentReader {
             query_cache: Arc::default(),
             dvs: Vec::new(),
             skip_indexes: Arc::default(),
+            block_parents: Arc::default(),
             docs_with_field: Arc::default(),
             segment_suffix: String::new(),
             fields: Arc::new(BlockTreeFields::empty()),
@@ -507,6 +511,7 @@ impl SegmentReader {
             dv_data: None,
             dv_meta: None,
             dv_generations: Vec::new(),
+            lazy_doc_values: None,
             kdm_buf: None,
             kdi_buf: None,
             kdd_buf: None,
@@ -519,6 +524,7 @@ impl SegmentReader {
             vectors: Vec::new(),
             completion: Vec::new(),
             postings_validated: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            postings_stats: None,
         })
     }
 }

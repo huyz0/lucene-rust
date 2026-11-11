@@ -1,0 +1,440 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.query;
+
+import org.opensearch.Version;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.ListIterator;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+import org.apache.lucene.search.BooleanClause.Occur;
+import org.apache.lucene.search.Query;
+import org.opensearch.common.lucene.search.Queries;
+import org.opensearch.core.ParseField;
+import org.opensearch.core.common.ParsingException;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.core.xcontent.XContentParser;
+import org.opensearch.index.IndexSettings;
+import org.opensearch.index.query.AbstractQueryBuilder;
+import org.opensearch.index.query.InnerHitContextBuilder;
+import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.index.query.QueryRewriteContext;
+import org.opensearch.index.query.QueryShardContext;
+import org.opensearch.index.query.QueryShardException;
+import org.opensearch.index.query.QueryBuilderVisitor;
+import org.lucenerust.opensearch.neural.stats.events.EventStatName;
+import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
+
+/**
+ * Class abstract creation of a Query type "hybrid". Hybrid query will allow execution of multiple sub-queries and
+ * collects score for each of those sub-query.
+ */
+public final class HybridQueryBuilder extends AbstractQueryBuilder<HybridQueryBuilder> {
+    @java.lang.SuppressWarnings("all")
+    private static final org.apache.logging.log4j.Logger log = org.apache.logging.log4j.LogManager.getLogger(HybridQueryBuilder.class);
+    public static final String NAME = "hybrid";
+    private static final ParseField QUERIES_FIELD = new ParseField("queries");
+    private static final ParseField FILTER_FIELD = new ParseField("filter");
+    private static final ParseField PAGINATION_DEPTH_FIELD = new ParseField("pagination_depth");
+    private final List<QueryBuilder> queries = new ArrayList<>();
+    private Integer paginationDepth;
+    public static final int MAX_NUMBER_OF_SUB_QUERIES = 5;
+    private static final int LOWER_BOUND_OF_PAGINATION_DEPTH = 0;
+    // Error message templates for reuse across REST and gRPC paths
+    public static final String ERROR_MSG_QUERIES_REQUIRED = "[%s] requires \'queries\' field with at least one clause";
+    public static final String ERROR_MSG_MAX_QUERIES_EXCEEDED = "Number of sub-queries exceeds maximum supported by [%s] query";
+    public static final String ERROR_MSG_BOOST_NOT_SUPPORTED = "[%s] query does not support [%s]";
+    public static final String ERROR_MSG_FILTER_MUST_BE_QUERY_OBJECT = "[%s] query\'s [%s] field must be a query object";
+
+    public HybridQueryBuilder(StreamInput in) throws IOException {
+        super(in);
+        queries.addAll(readQueries(in));
+        if (in.getVersion().onOrAfter(Version.V_2_19_0)) {
+            paginationDepth = in.readOptionalInt();
+        }
+    }
+
+    /**
+     * Serialize this query object into input stream
+     * @param out stream that we'll be used for serialization
+     * @throws IOException
+     */
+    @Override
+    protected void doWriteTo(StreamOutput out) throws IOException {
+        writeQueries(out, queries);
+        if (out.getVersion().onOrAfter(Version.V_2_19_0)) {
+            out.writeOptionalInt(paginationDepth);
+        }
+    }
+
+    /**
+     * Add one sub-query
+     * @param queryBuilder
+     * @return
+     */
+    public HybridQueryBuilder add(QueryBuilder queryBuilder) {
+        if (queryBuilder == null) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "inner %s query clause cannot be null", NAME));
+        }
+        queries.add(queryBuilder);
+        return this;
+    }
+
+    /**
+     * Function to support filter on HybridQueryBuilder filter.
+     * If the filter is null, then we do nothing and return.
+     * Otherwise, we push down the filter to queries list.
+     * @param filter the filter parameter
+     * @return HybridQueryBuilder itself
+     */
+    public QueryBuilder filter(QueryBuilder filter) {
+        if (validateFilterParams(filter) == false) {
+            return this;
+        }
+        ListIterator<QueryBuilder> iterator = queries.listIterator();
+        while (iterator.hasNext()) {
+            QueryBuilder query = iterator.next();
+            // set the query again because query.filter(filter) can return new query.
+            iterator.set(query.filter(filter));
+        }
+        return this;
+    }
+
+    /**
+     * Create builder object with a content of this hybrid query
+     * @param builder
+     * @param params
+     * @throws IOException
+     */
+    @Override
+    protected void doXContent(XContentBuilder builder, Params params) throws IOException {
+        builder.startObject(NAME);
+        builder.startArray(QUERIES_FIELD.getPreferredName());
+        for (QueryBuilder queryBuilder : queries) {
+            queryBuilder.toXContent(builder, params);
+        }
+        builder.endArray();
+        // TODO https://github.com/opensearch-project/neural-search/issues/1097
+        if (Objects.nonNull(paginationDepth)) {
+            builder.field(PAGINATION_DEPTH_FIELD.getPreferredName(), paginationDepth);
+        }
+        printBoostAndQueryName(builder);
+        builder.endObject();
+    }
+
+    /**
+     * Create query object for current hybrid query using shard context
+     * @param queryShardContext context object that used to create hybrid query
+     * @return hybrid query object
+     * @throws IOException
+     */
+    @Override
+    protected Query doToQuery(QueryShardContext queryShardContext) throws IOException {
+        Collection<Query> queryCollection = toQueries(queries, queryShardContext);
+        if (queryCollection.isEmpty()) {
+            return Queries.newMatchNoDocsQuery(String.format(Locale.ROOT, "no clauses for %s query", NAME));
+        }
+        validatePaginationDepth(paginationDepth, queryShardContext);
+        HybridQueryContext hybridQueryContext = HybridQueryContext.builder().paginationDepth(paginationDepth).build();
+        return new HybridQuery(queryCollection, hybridQueryContext);
+    }
+
+    /**
+     * Creates HybridQueryBuilder from xContent.
+     * Example of a json for Hybrid Query:
+     * {
+     *      "query": {
+     *          "hybrid": {
+     *              "queries": [
+     *                  {
+     *                      "neural": {
+     *                          "text_knn": {
+     *                                    "query_text": "Hello world",
+     *                                    "model_id": "dcsdcasd",
+     *                                    "k": 10
+     *                                }
+     *                            }
+     *                   },
+     *                   {
+     *                      "term": {
+     *                          "text": "keyword"
+     *                       }
+     *                    }
+     *               ],
+     *               "filter": {
+     *                  "term": {
+     *                      "text": "keyword"
+     *                  }
+     *               }
+     *          }
+     *     }
+     * }
+     *
+     * To combine multiple filter clauses, wrap them in a bool query:
+     * {
+     *     "filter": {
+     *         "bool": {
+     *             "must": [
+     *                 {"term": {"field1": "value1"}},
+     *                 {"term": {"field2": "value2"}}
+     *             ]
+     *         }
+     *     }
+     * }
+     *
+     * @param parser parser that has been initialized with the query content
+     * @return new instance of HybridQueryBuilder
+     * @throws IOException
+     */
+    public static HybridQueryBuilder fromXContent(XContentParser parser) throws IOException {
+        float boost = AbstractQueryBuilder.DEFAULT_BOOST;
+        Integer paginationDepth = null;
+        final List<QueryBuilder> queries = new ArrayList<>();
+        QueryBuilder filter = null;
+        String queryName = null;
+        String currentFieldName = null;
+        XContentParser.Token token;
+        while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
+            if (token == XContentParser.Token.FIELD_NAME) {
+                currentFieldName = parser.currentName();
+            } else if (token == XContentParser.Token.START_OBJECT) {
+                if (QUERIES_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    queries.add(parseInnerQueryBuilder(parser));
+                } else if (FILTER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    filter = parseInnerQueryBuilder(parser);
+                } else {
+                    throwUnsupportedFieldParsingException(parser, currentFieldName);
+                }
+            } else if (token == XContentParser.Token.START_ARRAY) {
+                if (QUERIES_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    while (token != XContentParser.Token.END_ARRAY) {
+                        if (queries.size() == MAX_NUMBER_OF_SUB_QUERIES) {
+                            throw new ParsingException(parser.getTokenLocation(), String.format(Locale.ROOT, ERROR_MSG_MAX_QUERIES_EXCEEDED, NAME));
+                        }
+                        queries.add(parseInnerQueryBuilder(parser));
+                        token = parser.nextToken();
+                    }
+                } else if (FILTER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    throwUnsupportedFilterParsingException(parser);
+                } else {
+                    throwUnsupportedFieldParsingException(parser, currentFieldName);
+                }
+            } else {
+                if (AbstractQueryBuilder.BOOST_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    boost = parser.floatValue();
+                    // regular boost functionality is not supported, user should use score normalization methods to manipulate with scores
+                    if (boost != DEFAULT_BOOST) {
+                        log.error("[{}] query does not support provided value {} for [{}]", NAME, boost, BOOST_FIELD);
+                        throw new ParsingException(parser.getTokenLocation(), "[{}] query does not support [{}]", NAME, BOOST_FIELD);
+                    }
+                } else if (AbstractQueryBuilder.NAME_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    queryName = parser.text();
+                } else if (PAGINATION_DEPTH_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    paginationDepth = parser.intValue();
+                } else if (FILTER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    throwUnsupportedFilterParsingException(parser);
+                } else {
+                    throwUnsupportedFieldParsingException(parser, currentFieldName);
+                }
+            }
+        }
+        if (queries.isEmpty()) {
+            throw new ParsingException(parser.getTokenLocation(), String.format(Locale.ROOT, ERROR_MSG_QUERIES_REQUIRED, NAME));
+        }
+        HybridQueryBuilder compoundQueryBuilder = new HybridQueryBuilder();
+        compoundQueryBuilder.queryName(queryName);
+        compoundQueryBuilder.boost(boost);
+        compoundQueryBuilder.paginationDepth(paginationDepth);
+        boolean hasInnerHits = false;
+        for (QueryBuilder query : queries) {
+            if (filter == null) {
+                compoundQueryBuilder.add(query);
+            } else {
+                compoundQueryBuilder.add(query.filter(filter));
+            }
+            // Check if children have inner hits for stats
+            if (hasInnerHits == false) {
+                Map<String, InnerHitContextBuilder> innerHits = new HashMap<>();
+                InnerHitContextBuilder.extractInnerHits(query, innerHits);
+                hasInnerHits = innerHits.isEmpty() == false;
+            }
+        }
+        boolean hasFilter = filter != null;
+        boolean hasPagination = paginationDepth != null;
+        updateQueryStats(hasFilter, hasPagination, hasInnerHits);
+        return compoundQueryBuilder;
+    }
+
+    protected QueryBuilder doRewrite(QueryRewriteContext queryShardContext) throws IOException {
+        HybridQueryBuilder newBuilder = new HybridQueryBuilder();
+        boolean changed = false;
+        for (QueryBuilder query : queries) {
+            QueryBuilder result = query.rewrite(queryShardContext);
+            if (result != query) {
+                changed = true;
+            }
+            newBuilder.add(result);
+        }
+        if (changed) {
+            newBuilder.queryName(queryName);
+            newBuilder.boost(boost);
+            newBuilder.paginationDepth(paginationDepth);
+            return newBuilder;
+        } else {
+            return this;
+        }
+    }
+
+    /**
+     * Indicates whether some other QueryBuilder object of the same type is "equal to" this one.
+     * @param obj
+     * @return true if objects are equal
+     */
+    @Override
+    protected boolean doEquals(HybridQueryBuilder obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null) {
+            return false;
+        }
+        return Objects.equals(queries, obj.queries) && Objects.equals(paginationDepth, obj.paginationDepth);
+    }
+
+    /**
+     * Create hash code for current hybrid query builder object
+     * @return hash code
+     */
+    @Override
+    protected int doHashCode() {
+        return Objects.hash(queries, paginationDepth);
+    }
+
+    /**
+     * Returns the name of the writeable object
+     * @return
+     */
+    @Override
+    public String getWriteableName() {
+        return NAME;
+    }
+
+    private List<QueryBuilder> readQueries(StreamInput in) throws IOException {
+        return in.readNamedWriteableList(QueryBuilder.class);
+    }
+
+    private void writeQueries(StreamOutput out, List<? extends QueryBuilder> queries) throws IOException {
+        out.writeNamedWriteableList(queries);
+    }
+
+    private Collection<Query> toQueries(Collection<QueryBuilder> queryBuilders, QueryShardContext context) throws QueryShardException {
+        List<Query> queries = queryBuilders.stream().map(qb -> {
+            try {
+                return qb.rewrite(context).toQuery(context);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }).filter(Objects::nonNull).collect(Collectors.toList());
+        return queries;
+    }
+
+    private static void validatePaginationDepth(final Integer paginationDepth, final QueryShardContext queryShardContext) {
+        if (Objects.isNull(paginationDepth)) {
+            return;
+        }
+        if (paginationDepth < LOWER_BOUND_OF_PAGINATION_DEPTH) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "pagination_depth should be greater than %s", LOWER_BOUND_OF_PAGINATION_DEPTH));
+        }
+        // compare pagination depth with OpenSearch setting index.max_result_window
+        // see https://opensearch.org/docs/latest/install-and-configure/configuring-opensearch/index-settings/
+        int maxResultWindowIndexSetting = queryShardContext.getIndexSettings().getMaxResultWindow();
+        if (paginationDepth > maxResultWindowIndexSetting) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "pagination_depth should be less than or equal to %s setting", IndexSettings.MAX_RESULT_WINDOW_SETTING.getKey()));
+        }
+    }
+
+    /**
+     * visit method to parse the HybridQueryBuilder by a visitor
+     */
+    @Override
+    public void visit(QueryBuilderVisitor visitor) {
+        visitor.accept(this);
+        // getChildVisitor of NeuralSearchQueryVisitor return this.
+        // therefore any argument can be passed. Here we have used Occcur.MUST as an argument.
+        QueryBuilderVisitor subVisitor = visitor.getChildVisitor(Occur.MUST);
+        for (QueryBuilder subQueryBuilder : queries) {
+            subQueryBuilder.visit(subVisitor);
+        }
+    }
+
+    /**
+     * Extracts the inner hits from the hybrid query tree structure.
+     * While it extracts inner hits, child inner hits are inlined into the inner hit builder they belong to.
+     * This implementation handles inner hits for all sub-queries within the hybrid query.
+     *
+     * @param innerHits the map to collect inner hit contexts, where the key is the inner hit name
+     *                   and the value is the corresponding inner hit context builder
+     */
+    @Override
+    protected void extractInnerHitBuilders(Map<String, InnerHitContextBuilder> innerHits) {
+        for (QueryBuilder queryBuilder : queries) {
+            InnerHitContextBuilder.extractInnerHits(queryBuilder, innerHits);
+        }
+    }
+
+    public static void updateQueryStats(boolean hasFilter, boolean hasPagination, boolean hasInnerHits) {
+        EventStatsManager.increment(EventStatName.HYBRID_QUERY_REQUESTS);
+        if (hasFilter) {
+            EventStatsManager.increment(EventStatName.HYBRID_QUERY_FILTER_REQUESTS);
+        }
+        if (hasPagination) {
+            EventStatsManager.increment(EventStatName.HYBRID_QUERY_PAGINATION_REQUESTS);
+        }
+        if (hasInnerHits) {
+            EventStatsManager.increment(EventStatName.HYBRID_QUERY_INNER_HITS_REQUESTS);
+        }
+    }
+
+    private static void throwUnsupportedFilterParsingException(XContentParser parser) {
+        throw new ParsingException(parser.getTokenLocation(), String.format(Locale.ROOT, ERROR_MSG_FILTER_MUST_BE_QUERY_OBJECT, NAME, FILTER_FIELD.getPreferredName()));
+    }
+
+    private static void throwUnsupportedFieldParsingException(XContentParser parser, String fieldName) {
+        log.error(String.format(Locale.ROOT, "[%s] query does not support [%s]", NAME, fieldName));
+        throw new ParsingException(parser.getTokenLocation(), String.format(Locale.ROOT, "Field is not supported by [%s] query", NAME));
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public List<QueryBuilder> queries() {
+        return this.queries;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public Integer paginationDepth() {
+        return this.paginationDepth;
+    }
+
+    /**
+     * @return {@code this}.
+     */
+    @java.lang.SuppressWarnings("all")
+    public HybridQueryBuilder paginationDepth(final Integer paginationDepth) {
+        this.paginationDepth = paginationDepth;
+        return this;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public HybridQueryBuilder() {
+    }
+}

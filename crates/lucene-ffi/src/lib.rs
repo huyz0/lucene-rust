@@ -34,12 +34,32 @@ mod jvm_analysis;
 mod jvm_fetch;
 mod jvm_function_score;
 mod jvm_invert;
+mod jvm_join;
+mod jvm_knn;
+mod jvm_knn_painless;
+mod jvm_knn_score;
+mod jvm_max_sim;
 mod jvm_nodes;
+mod jvm_painless_score;
+mod jvm_pattern_phrase;
 mod jvm_queries;
 mod jvm_reader;
 mod jvm_similarity;
+mod live;
+mod ml;
+mod ml_torch;
 mod raw;
 mod registry;
 mod store;
+mod zstd_dictionary;
+mod zstd_terms;
 
 pub use error::FfiStatus;
+
+/// Makes the codecs beyond Lucene's own readable: segments of an
+/// `index.sparse` index record [`lucene_sparse::CODEC_NAME`]. Every exported
+/// function's [`error::guard`] runs it once.
+fn register_codecs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(lucene_sparse::register_codec);
+}

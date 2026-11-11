@@ -55,6 +55,9 @@ pub enum ExtendedQuery {
     GlobalOrdinals(crate::join::GlobalOrdinalsQuery),
     GlobalOrdinalsWithScore(crate::join::GlobalOrdinalsWithScoreQuery),
     PointInSetIncludingScore(crate::join::PointInSetIncludingScoreQuery),
+    /// OpenSearch's `has_child`/`has_parent` join, searched only once
+    /// [`crate::join::resolve_late_joins`] has made it a global-ordinals one.
+    LateJoin(crate::join::LateJoinQuery),
     /// `lucene-queries`' function queries ([`crate::function`]).
     Function(crate::function::FunctionQuery),
     FunctionRange(crate::function::FunctionRangeQuery),
@@ -81,6 +84,9 @@ pub enum ExtendedQuery {
     /// [`ExtendedQuery::PhraseWildcardWeight`] before it is searched.
     PhraseWildcard(crate::sandbox::search::PhraseWildcardQuery),
     PhraseWildcardWeight(crate::sandbox::search::ResolvedPhraseWildcard),
+    /// A substring, wildcard or regexp search over a `RustSubstring`
+    /// doc-values field ([`SubstringQuery`]).
+    Substring(SubstringQuery),
     /// A query only tests build ([`crate::test_support::TestQuery`]).
     #[cfg(any(test, feature = "asserting"))]
     Test(crate::test_support::TestQuery),
@@ -114,6 +120,7 @@ into_clause! {
     PointInSetQuery => PointInSet,
     IndexOrDocValuesQuery => IndexOrDocValues,
     DocumentClause => Document,
+    SubstringQuery => Substring,
 }
 
 impl From<crate::function::FunctionQuery> for Clause {
@@ -178,6 +185,7 @@ impl ExtendedQuery {
             ExtendedQuery::BayesianScore(_) => "BayesianScoreQuery",
             ExtendedQuery::DocAndScore(_) => "DocAndScoreQuery",
             ExtendedQuery::NumericDocValuesRange(_) => "SortedNumericDocValuesRangeQuery",
+            ExtendedQuery::Substring(_) => "SubstringQuery",
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
@@ -192,6 +200,7 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinals(_) => "GlobalOrdinalsQuery",
             ExtendedQuery::GlobalOrdinalsWithScore(_) => "GlobalOrdinalsWithScoreQuery",
             ExtendedQuery::PointInSetIncludingScore(_) => "PointInSetIncludingScoreQuery",
+            ExtendedQuery::LateJoin(_) => "LateParsingQuery",
             ExtendedQuery::Function(_) => "FunctionQuery",
             ExtendedQuery::FunctionRange(_) => "FunctionRangeQuery",
             ExtendedQuery::FunctionMatch(_) => "FunctionMatchQuery",
@@ -228,6 +237,12 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
             ExtendedQuery::Covering(q) => q.queries.iter().collect(),
+            ExtendedQuery::Document(q) => q
+                .filter
+                .iter()
+                .chain(&q.fallback)
+                .map(AsRef::as_ref)
+                .collect(),
             #[cfg(any(test, feature = "asserting"))]
             ExtendedQuery::Test(q) => vec![q.query()],
             _ => Vec::new(),
@@ -829,6 +844,74 @@ impl NumericDocValuesRangeQuery {
     }
 }
 
+/// How a [`SubstringQuery`]'s pattern reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubstringKind {
+    /// `WildcardQuery` syntax over the whole value.
+    Wildcard,
+    /// Lucene `RegExp` syntax over the whole value.
+    Regexp,
+    /// The pattern anywhere in the value.
+    Contains,
+    /// The whole value.
+    Exact,
+}
+
+/// A search over a BINARY doc-values field of the `RustSubstring` format
+/// ([`lucene_codecs::substring`]) -- OpenSearch's `wildcard` field
+/// queries: the field's trigram index narrows the blocks, the values settle
+/// each document. On a segment where the field's doc values are plain
+/// BINARY, every value is tested. Constant-scored.
+#[derive(Debug, Clone)]
+pub struct SubstringQuery {
+    pub field: String,
+    pub kind: SubstringKind,
+    pub pattern: String,
+    pub case_insensitive: bool,
+    matcher: Arc<lucene_codecs::substring::SubstringMatcher>,
+}
+
+impl PartialEq for SubstringQuery {
+    fn eq(&self, o: &Self) -> bool {
+        self.field == o.field
+            && self.kind == o.kind
+            && self.pattern == o.pattern
+            && self.case_insensitive == o.case_insensitive
+    }
+}
+
+impl SubstringQuery {
+    /// A query of `kind` for `pattern`; a malformed regexp is an error.
+    pub fn new(
+        field: impl Into<String>,
+        kind: SubstringKind,
+        pattern: impl Into<String>,
+        case_insensitive: bool,
+    ) -> Result<Self> {
+        use lucene_codecs::substring::SubstringMatcher;
+        let pattern = pattern.into();
+        let matcher = match kind {
+            SubstringKind::Wildcard => SubstringMatcher::wildcard(&pattern, case_insensitive),
+            SubstringKind::Contains => SubstringMatcher::contains(&pattern, case_insensitive),
+            SubstringKind::Exact => SubstringMatcher::exact(&pattern, case_insensitive),
+            SubstringKind::Regexp => SubstringMatcher::regexp(&pattern, case_insensitive)
+                .map_err(|e| Error::InvalidQuery(format!("regexp [{pattern}]: {e}")))?,
+        };
+        Ok(SubstringQuery {
+            field: field.into(),
+            kind,
+            pattern,
+            case_insensitive,
+            matcher: Arc::new(matcher),
+        })
+    }
+
+    /// The compiled pattern.
+    pub fn matcher(&self) -> &Arc<lucene_codecs::substring::SubstringMatcher> {
+        &self.matcher
+    }
+}
+
 /// `IndexSortSortedNumericDocValuesRangeQuery`: a range over the field the
 /// segment is sorted by, answered by two binary searches over the doc
 /// values; any segment it cannot take runs `fallback`.
@@ -1058,15 +1141,21 @@ pub fn inet_bytes(v: std::net::IpAddr) -> [u8; 16] {
 /// scorer does), every one scored the boost.
 ///
 /// `key` is the query's identity, which Java's `Query.equals` is: two
-/// clauses are equal exactly when their keys are, and the key is what
-/// [`std::fmt::Debug`] prints, so the query cache (which keys a clause by its
-/// debug form) tells two geo queries apart by it. The caller builds it from
+/// clauses are equal exactly when their keys, filters and fallbacks are, and
+/// those are what [`std::fmt::Debug`] prints, so the query cache (which keys
+/// a clause by its debug form) tells two geo queries apart by them. The caller builds it from
 /// everything the query depends on -- the FFI decoder uses the query's own
 /// wire bytes.
 #[derive(Clone)]
 pub struct DocumentClause {
     pub key: String,
     pub query: Arc<dyn crate::document::DocumentQuery>,
+    /// Documents the query is restricted to, as a KNN query's filter is: each
+    /// segment's live matches reach [`crate::document::DocumentQuery::score_leaf_filtered`].
+    pub filter: Option<Box<Clause>>,
+    /// What runs on a segment the query does not score itself
+    /// ([`crate::document::DocumentQuery::scores_leaf`]).
+    pub fallback: Option<Box<Clause>>,
 }
 
 impl DocumentClause {
@@ -1075,19 +1164,42 @@ impl DocumentClause {
         Self {
             key: key.into(),
             query,
+            filter: None,
+            fallback: None,
         }
+    }
+
+    /// This clause restricted to `filter`'s documents.
+    #[must_use]
+    pub fn with_filter(mut self, filter: Clause) -> Self {
+        self.filter = Some(Box::new(filter));
+        self
+    }
+
+    /// This clause running `fallback` on the segments its query does not score.
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: Clause) -> Self {
+        self.fallback = Some(Box::new(fallback));
+        self
     }
 }
 
 impl std::fmt::Debug for DocumentClause {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DocumentClause({})", self.key)
+        write!(f, "DocumentClause({}", self.key)?;
+        if let Some(filter) = &self.filter {
+            write!(f, ", filter {filter:?}")?;
+        }
+        if let Some(fallback) = &self.fallback {
+            write!(f, ", fallback {fallback:?}")?;
+        }
+        f.write_str(")")
     }
 }
 
 impl PartialEq for DocumentClause {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        self.key == other.key && self.filter == other.filter && self.fallback == other.fallback
     }
 }
 

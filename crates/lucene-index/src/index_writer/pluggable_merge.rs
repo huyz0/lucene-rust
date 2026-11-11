@@ -17,6 +17,37 @@ use super::{Error, IndexWriter, Result};
 use crate::merge_policy::{self, MergeContext, MergePolicy, MergeSegment, MergeTrigger};
 use crate::segment_info;
 
+/// A merge policy's `useCompoundFile` with the segments it measures a merged
+/// segment against, taken when the merge started, so the merge thread can
+/// decide before it warms the merged segment, as `mergeMiddle` does.
+pub(crate) struct CompoundFileDecider {
+    policy: Arc<dyn MergePolicy>,
+    infos: Vec<MergeSegment>,
+    ctx: WriterContext,
+}
+
+impl CompoundFileDecider {
+    pub(crate) fn decide(
+        &self,
+        dir: &dyn lucene_store::directory::Directory,
+        merged: &crate::merge::MergedSegment,
+    ) -> Result<bool> {
+        let name = &merged.info.segment_name;
+        let si_bytes = dir.open(&format!("{name}.si"))?.to_vec();
+        let si = segment_info::parse(&si_bytes, &merged.info.segment_id)?;
+        let size = merge_policy::segment_byte_size(dir, &si);
+        let segment = MergeSegment::new(
+            name.clone(),
+            si.doc_count,
+            0,
+            i64::try_from(size).unwrap_or(i64::MAX),
+        );
+        self.policy
+            .use_compound_file(&self.infos, &segment, &self.ctx)
+            .map_err(policy_error)
+    }
+}
+
 /// The writer's answers to a policy's `MergeContext` questions, computed once
 /// per consultation.
 pub(super) struct WriterContext {
@@ -46,6 +77,13 @@ fn policy_error(e: merge_policy::api::Error) -> Error {
     Error::Explicit(format!("merge policy: {e}"))
 }
 
+/// The merges a full flush runs, each with its estimated merge bytes, and how
+/// long the flush waits for them.
+pub(crate) type FullFlushMerges = (
+    Vec<(merge_policy::api::RunnableMerge, u64)>,
+    std::time::Duration,
+);
+
 impl IndexWriter<'_> {
     /// `IndexWriterConfig.setMergePolicy(policy)`: from here on the writer's
     /// merges -- after every commit, and in [`IndexWriter::force_merge`] --
@@ -68,6 +106,69 @@ impl IndexWriter<'_> {
     /// The policy [`IndexWriter::set_pluggable_merge_policy`] installed.
     pub fn pluggable_merge_policy(&self) -> Option<&Arc<dyn MergePolicy>> {
         self.pluggable_merge_policy.as_ref()
+    }
+
+    /// `IndexWriter.updatePendingMerges(trigger)`'s selection for a writer
+    /// whose merges run on merge threads: every merge the installed policy
+    /// specifies that takes no segment in `merging`, with its hooks and its
+    /// `OneMerge.estimatedMergeBytes` (the sources' sizes pro-rated by their
+    /// live documents). The pluggable policy decides when one is installed,
+    /// else `TieredMergePolicy` over the [`super::MergePolicyConfig`]; with
+    /// neither there is nothing to merge.
+    pub(crate) fn find_scheduled_merges(
+        &self,
+        trigger: MergeTrigger,
+        merging: &HashSet<String>,
+    ) -> Result<Vec<(merge_policy::api::RunnableMerge, u64)>> {
+        let Some(policy) = self.pluggable_merge_policy.clone() else {
+            let Some(config) = self.merge_policy.clone() else {
+                return Ok(Vec::new());
+            };
+            return Ok(self
+                .find_merges_sized(&config, merging)?
+                .into_iter()
+                .map(|(names, bytes)| ((names, None), bytes))
+                .collect());
+        };
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = self
+            .per_partition_spec(&infos, |part| policy.find_merges(trigger, part, &ctx))?
+            .map_err(policy_error)?
+        else {
+            return Ok(Vec::new());
+        };
+        // `registerMerge`: a merge taking a segment already merging, or one an
+        // earlier merge of this spec takes, is refused.
+        let mut claimed: HashSet<String> = HashSet::new();
+        Ok(spec
+            .runnable()
+            .into_iter()
+            .filter(|(group, _)| {
+                let free = !group.is_empty()
+                    && !group
+                        .iter()
+                        .any(|n| merging.contains(n) || claimed.contains(n));
+                if free {
+                    claimed.extend(group.iter().cloned());
+                }
+                free
+            })
+            .map(|merge| {
+                let bytes = infos
+                    .iter()
+                    .filter(|i| merge.0.contains(&i.name))
+                    .map(|i| {
+                        super::live_pro_rated_bytes(
+                            u64::try_from(i.size_in_bytes).unwrap_or(0),
+                            i.max_doc,
+                            i.del_count,
+                        )
+                    })
+                    .fold(0u64, u64::saturating_add);
+                (merge, bytes)
+            })
+            .collect())
     }
 
     /// The committed segments as a policy sees them, and the context that
@@ -113,27 +214,34 @@ impl IndexWriter<'_> {
         &self,
         merged: &crate::merge::MergedSegment,
     ) -> Result<bool> {
-        if self.pluggable_merge_policy.is_none() && !self.cfg.use_compound_file {
-            return Ok(false);
+        match self.compound_file_decider()? {
+            Some(decider) => decider.decide(self.dir, merged),
+            None => Ok(false),
         }
-        let name = &merged.info.segment_name;
-        let si_bytes = self.dir.open(&format!("{name}.si"))?.to_vec();
-        let si = segment_info::parse(&si_bytes, &merged.info.segment_id)?;
-        let size = merge_policy::segment_byte_size(self.dir, &si);
-        let segment = MergeSegment::new(
-            name.clone(),
-            si.doc_count,
-            0,
-            i64::try_from(size).unwrap_or(i64::MAX),
-        );
-        let (infos, ctx) = self.merge_inputs()?;
-        let decision = match &self.pluggable_merge_policy {
-            Some(policy) => policy.use_compound_file(&infos, &segment, &ctx),
+    }
+
+    /// What [`Self::merged_segment_uses_compound_file`] decides with, taken
+    /// now: the policy and the segments it measures against. `None` when no
+    /// merged segment can be compound.
+    pub(super) fn compound_file_decider(&self) -> Result<Option<CompoundFileDecider>> {
+        if self.pluggable_merge_policy.is_none()
+            && self.cfg.merge_compound_file.is_none()
+            && !self.cfg.use_compound_file
+        {
+            return Ok(None);
+        }
+        let policy = match &self.pluggable_merge_policy {
+            Some(policy) => Arc::clone(policy),
             None => {
-                merge_policy::TieredMergePolicy::default().use_compound_file(&infos, &segment, &ctx)
+                let mut tiered = merge_policy::TieredMergePolicy::default();
+                if let Some(settings) = self.cfg.merge_compound_file {
+                    *tiered.compound_file_settings_mut() = settings;
+                }
+                Arc::new(tiered) as Arc<dyn MergePolicy>
             }
         };
-        decision.map_err(policy_error)
+        let (infos, ctx) = self.merge_inputs()?;
+        Ok(Some(CompoundFileDecider { policy, infos, ctx }))
     }
 
     /// `IndexWriter.maybeMerge(FULL_FLUSH)` under a pluggable policy: runs
@@ -145,8 +253,10 @@ impl IndexWriter<'_> {
         let mut last: Option<Vec<Vec<String>>> = None;
         loop {
             let (infos, ctx) = self.merge_inputs()?;
-            let Some(spec) = policy
-                .find_merges(MergeTrigger::FullFlush, &infos, &ctx)
+            let Some(spec) = self
+                .per_partition_spec(&infos, |part| {
+                    policy.find_merges(MergeTrigger::FullFlush, part, &ctx)
+                })?
                 .map_err(policy_error)?
             else {
                 return Ok(());
@@ -210,47 +320,15 @@ impl IndexWriter<'_> {
         trigger: MergeTrigger,
         merging: &HashSet<String>,
     ) -> Result<usize> {
-        self.write_pending_try_changes()?;
-        let wait = self.max_full_flush_merge_wait_millis;
-        if wait <= 0 {
+        let Some((merges, deadline)) = self.full_flush_merges(trigger, merging)? else {
             return Ok(0);
-        }
-        let policy: Arc<dyn MergePolicy> = match (
-            &self.full_flush_merge_policy,
-            &self.pluggable_merge_policy,
-            &self.merge_policy,
-        ) {
-            (Some(policy), _, _) | (None, Some(policy), _) => Arc::clone(policy),
-            (None, None, Some(config)) => {
-                Arc::new(merge_policy::TieredMergePolicy::new(config.clone()))
-            }
-            (None, None, None) => return Ok(0),
         };
         let start = std::time::Instant::now();
-        let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));
-        // Java's `segmentInfos` already holds every flushed segment; this
-        // writer keeps them apart until a commit folds them in, so fold them
-        // in now -- in memory, as the merges below are published.
-        if !self.flushed_segments.is_empty() {
-            let flushed = std::mem::take(&mut self.flushed_segments);
-            self.segment_infos.segments.extend(flushed);
-        }
-        let (infos, mut ctx) = self.merge_inputs()?;
-        ctx.merging = merging.clone();
-        let Some(spec) = policy
-            .find_full_flush_merges(trigger, &infos, &ctx)
-            .map_err(policy_error)?
-        else {
-            return Ok(0);
-        };
         let by_caller = self.merges_by_caller;
         self.merges_by_caller = true;
         let mut ran = 0usize;
         let mut result = Ok(());
-        for (group, hooks) in spec.runnable() {
-            if group.iter().any(|name| merging.contains(name)) {
-                continue;
-            }
+        for ((group, hooks), _) in merges {
             if start.elapsed() >= deadline {
                 break;
             }
@@ -264,6 +342,71 @@ impl IndexWriter<'_> {
         result.map(|()| ran)
     }
 
+    /// Moves the segments flushed since the last commit into `segment_infos`,
+    /// in memory: Java's `segmentInfos` holds every flushed segment, so its
+    /// merge policy sees them before any commit names them.
+    pub(crate) fn fold_flushed_segments(&mut self) {
+        if !self.flushed_segments.is_empty() {
+            let flushed = std::mem::take(&mut self.flushed_segments);
+            self.segment_infos.segments.extend(flushed);
+        }
+    }
+
+    /// `preparePointInTimeMerge`'s selection: the merges
+    /// `findFullFlushMerges` specifies over every flushed segment, each with
+    /// its estimated merge bytes, and how long merge-on-commit/refresh waits
+    /// for them (`maxFullFlushMergeWaitMillis`). `None` with a wait of `0` or
+    /// no policy. A merge including a segment in `merging` is left out, as
+    /// `registerMerge` rejects it.
+    pub(crate) fn full_flush_merges(
+        &mut self,
+        trigger: MergeTrigger,
+        merging: &HashSet<String>,
+    ) -> Result<Option<FullFlushMerges>> {
+        self.write_pending_try_changes()?;
+        let wait = self.max_full_flush_merge_wait_millis;
+        if wait <= 0 {
+            return Ok(None);
+        }
+        let policy: Arc<dyn MergePolicy> = match (
+            &self.full_flush_merge_policy,
+            &self.pluggable_merge_policy,
+            &self.merge_policy,
+        ) {
+            (Some(policy), _, _) | (None, Some(policy), _) => Arc::clone(policy),
+            (None, None, Some(config)) => {
+                Arc::new(merge_policy::TieredMergePolicy::new(config.clone()))
+            }
+            (None, None, None) => return Ok(None),
+        };
+        let deadline = std::time::Duration::from_millis(u64::try_from(wait).unwrap_or(0));
+        self.fold_flushed_segments();
+        let (infos, mut ctx) = self.merge_inputs()?;
+        ctx.merging = merging.clone();
+        let Some(spec) = self
+            .per_partition_spec(&infos, |part| {
+                policy.find_full_flush_merges(trigger, part, &ctx)
+            })?
+            .map_err(policy_error)?
+        else {
+            return Ok(Some((Vec::new(), deadline)));
+        };
+        let merges = spec
+            .runnable()
+            .into_iter()
+            .filter(|(group, _)| !group.iter().any(|name| merging.contains(name)))
+            .map(|merge| {
+                let bytes = infos
+                    .iter()
+                    .filter(|i| merge.0.contains(&i.name))
+                    .map(|i| u64::try_from(i.size_in_bytes).unwrap_or(0))
+                    .fold(0u64, u64::saturating_add);
+                (merge, bytes)
+            })
+            .collect();
+        Ok(Some((merges, deadline)))
+    }
+
     /// `IndexWriter.forceMergeDeletes()` under a pluggable policy: one round
     /// of `findForcedDeletesMerges`, every merge it specifies run.
     pub(super) fn force_merge_deletes_pluggable(
@@ -271,8 +414,8 @@ impl IndexWriter<'_> {
         policy: &Arc<dyn MergePolicy>,
     ) -> Result<()> {
         let (infos, ctx) = self.merge_inputs()?;
-        let Some(spec) = policy
-            .find_forced_deletes_merges(&infos, &ctx)
+        let Some(spec) = self
+            .per_partition_spec(&infos, |part| policy.find_forced_deletes_merges(part, &ctx))?
             .map_err(policy_error)?
         else {
             return Ok(());
@@ -301,8 +444,10 @@ impl IndexWriter<'_> {
         let mut last: Option<Vec<Vec<String>>> = None;
         loop {
             let (infos, ctx) = self.merge_inputs()?;
-            let Some(spec) = policy
-                .find_forced_merges(&infos, max_segment_count, &to_merge, &ctx)
+            let Some(spec) = self
+                .per_partition_spec(&infos, |part| {
+                    policy.find_forced_merges(part, max_segment_count, &to_merge, &ctx)
+                })?
                 .map_err(policy_error)?
             else {
                 return Ok(());
@@ -312,8 +457,17 @@ impl IndexWriter<'_> {
                 return Ok(());
             }
             let before: HashSet<String> = infos.into_iter().map(|i| i.name).collect();
+            // `ShuffleForcedMergePolicy` wraps the merges a policy forces.
+            let stats = if self.cfg.shuffle_forced_merges {
+                self.segment_stats()?
+            } else {
+                Vec::new()
+            };
             for (group, hooks) in spec.runnable() {
-                self.execute_merge_hooked(&group, hooks)?;
+                match hooks {
+                    None => self.execute_forced_merge(group, &stats)?,
+                    Some(_) => self.execute_merge_hooked(&group, hooks)?,
+                }
             }
             // `IndexWriter.updatePendingMerges`: a merged segment replaces its
             // sources in `segmentsToMerge`, marked "not original".
@@ -443,10 +597,12 @@ mod tests {
                 Answer::Readers(k) => Ok(crate::merge_policy::PreparedMerge {
                     live_docs: vec![None; *k],
                     new_to_old: None,
+                    diagnostics: Vec::new(),
                 }),
                 Answer::Order(o) => Ok(crate::merge_policy::PreparedMerge {
                     live_docs: vec![None; n],
                     new_to_old: Some(o.clone()),
+                    diagnostics: Vec::new(),
                 }),
                 Answer::HideFirst => {
                     let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(1);
@@ -459,6 +615,7 @@ mod tests {
                     Ok(crate::merge_policy::PreparedMerge {
                         live_docs: all,
                         new_to_old: Some((0..n as i32).rev().collect()),
+                        diagnostics: Vec::new(),
                     })
                 }
             }

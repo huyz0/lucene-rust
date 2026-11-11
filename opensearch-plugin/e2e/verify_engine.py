@@ -21,7 +21,15 @@ swapped), every observable result must be identical:
     no other shard notices;
   * the writer's circuit breaker trips (HTTP 429) instead of the node running out of memory;
   * the rust_encrypted store (encryption at rest) on both engines: plaintext-equal results, every
-    shard file encrypted on disk, recovery after SIGKILL.
+    shard file encrypted on disk, recovery after SIGKILL;
+  * index.codec best_compression, zstd and zstd_no_dict (the bundled custom-codecs plugin's) on
+    the Rust engine: the same results and _source as the default codec, and segments recorded
+    under the codec names OpenSearch's own engine records.
+  * index.derived_source.enabled (and its translog form): _source rebuilt from doc values and
+    stored fields the same on both engines, through searches, gets, top_hits, updates and
+    SIGKILL, and on realtime search's buffered hits.
+  * the logs preset's component templates: registered, and an index composed of them answering log
+    searches as an OpenSearch-engine index with the stock mapping does.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -168,14 +176,14 @@ def source(r, i):
     return doc
 
 
-def create(index, rust, extra=None):
+def create(index, rust, extra=None, mapping=None):
     # Explicit both ways: on a node whose lucene_rust.engine.default is true, an index that says
     # nothing is a Rust one.
     settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.lucene_rust.engine": bool(rust)}
     settings["analysis"] = ANALYSIS
     settings.update(extra or {})
-    must("PUT", f"/{index}", {"settings": settings, "mappings": MAPPING})
+    must("PUT", f"/{index}", {"settings": settings, "mappings": mapping or MAPPING})
 
 
 def comparable_item(item):
@@ -430,6 +438,353 @@ def insert_only_scoring():
         must("DELETE", f"/{idx}")
 
 
+def realtime_shared():
+    """index.lucene_rust.realtime_search with the default realtime_max_staleness: searches share
+    a view the writer opens every few milliseconds, with the reads of the requests that repeat
+    made ahead. A write is found within the bound, and after a refresh=wait_for write every search
+    reads it; the results equal a refreshed index's, repeated requests included."""
+    rt, ref = "rt_shared", "rt_shared_ref"
+    for idx in (rt, ref):
+        req("DELETE", f"/{idx}")
+    flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
+    create(rt, True, {"index.lucene_rust.realtime_search": True, "refresh_interval": "30s"}, flat)
+    create(ref, True, None, flat)
+    wait_green(f"{rt},{ref}")
+    r = random.Random(23)
+    words = ["fox", "quick", "brown", "dogs", "alpha", "beta", "gamma", "delta"]
+
+    def bulk(start, n, wait):
+        lines = []
+        for i in range(start, start + n):
+            lines += [{"index": {"_id": f"s{i % 500}"}},
+                      {"body": " ".join(r.choice(words) for _ in range(r.randint(2, 9))), "tag": f"t{r.randrange(10)}",
+                       "n": r.randrange(100000), "price": round(r.uniform(0, 1000), 2), "@timestamp": i}]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        must("POST", f"/{rt}/_bulk" + ("?refresh=wait_for" if wait else ""), body, ndjson=True)
+        must("POST", f"/{ref}/_bulk?refresh=true", body, ndjson=True)
+
+    bodies = [{"query": {"match": {"body": "fox"}}, "size": 10000, "track_total_hits": True},
+              {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"term": {"tag": "t3"}}]}},
+               "size": 10000, "track_total_hits": True},
+              {"query": {"match": {"body": "quick"}}, "size": 20, "sort": [{"price": "asc"}, {"@timestamp": "asc"}]},
+              {"query": {"match": {"body": "dogs"}}, "size": 0, "track_total_hits": True,
+               "aggs": {"tags": {"terms": {"field": "tag", "size": 20}}, "n": {"stats": {"field": "n"}}}}]
+
+    def seen(out):
+        # Hits of equal score come in segment order, which differs between the two indexes.
+        hits = [(h["_id"], h.get("sort"), round(h["_score"], 4) if h.get("_score") else None) for h in out["hits"]["hits"]]
+        if not any(s for _, s, _ in hits):
+            hits.sort(key=lambda h: (-(h[2] or 0), h[0]))
+        return out["hits"]["total"]["value"], hits, json.dumps(out.get("aggregations"), sort_keys=True)
+
+    for rnd, (start, n) in enumerate([(0, 300), (300, 200), (500, 400)]):
+        bulk(start, n, wait=True)
+        # Each request three times: the later ones read what the writer made ahead.
+        for body in bodies:
+            b = seen(must("POST", f"/{ref}/_search?request_cache=false", body))
+            for k in range(3):
+                a = seen(must("POST", f"/{rt}/_search?request_cache=false", body))
+                check(a == b, f"realtime shared view, round {rnd}, try {k}: {json.dumps(body)[:120]}: "
+                              f"{str(a)[:200]} vs {str(b)[:200]}")
+    # A write with no wait_for is found within the bound, without a refresh.
+    must("PUT", f"/{rt}/_doc/late", {"body": "zebra late", "tag": "t1", "n": 1, "@timestamp": 1})
+    t0 = time.time()
+    while time.time() - t0 < 5:
+        out = must("POST", f"/{rt}/_search?request_cache=false", {"query": {"match": {"body": "zebra"}}})
+        if out["hits"]["total"]["value"] == 1:
+            break
+        time.sleep(0.002)
+    took = (time.time() - t0) * 1000
+    check(out["hits"]["total"]["value"] == 1 and took < 1000, f"realtime shared view: a write is visible in {took:.0f} ms")
+    for idx in (rt, ref):
+        must("DELETE", f"/{idx}")
+
+
+def realtime():
+    """index.lucene_rust.realtime_search: a plain scored search sees what was indexed before it,
+    with no refresh, and scores it as a refreshed index scores the same documents. Aggregations
+    and sorted searches see the same documents too, through the buffers written as segments."""
+    rt, ref = "rt_live", "rt_ref"
+    for idx in (rt, ref):
+        req("DELETE", f"/{idx}")
+    # Nested documents stay on the last refresh: no nested field here.
+    flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
+    create(rt, True, {"index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms"}, flat)
+    create(ref, True, None, flat)
+    wait_green(f"{rt},{ref}")
+    before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    r = random.Random(11)
+    queries = [{"match": {"body": "fox"}}, {"match": {"title": "quick dogs"}},
+               {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"term": {"tag": "t3"}}]}},
+               {"match_phrase": {"body": "quick brown"}}, {"term": {"tag": "t3"}},
+               # Expanded natively, over the buffers' terms too.
+               {"prefix": {"title": "qu"}}, {"wildcard": {"tag": "t1*"}}]
+
+    def scored(index, q):
+        out = must("POST", f"/{index}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
+        return out["hits"]["total"]["value"], sorted((round(h["_score"], 4), h["_id"], json.dumps(h["_source"], sort_keys=True))
+                                                      for h in out["hits"]["hits"])
+
+    aggs = {"tags": {"terms": {"field": "tag", "size": 20}},
+            "n": {"stats": {"field": "n"}},
+            "range": {"range": {"field": "n", "ranges": [{"to": 0}, {"from": 0, "to": 50000}, {"from": 50000}]}},
+            "obj": {"terms": {"field": "obj.a"}, "aggs": {"b": {"avg": {"field": "obj.b"}}}},
+            "price": {"histogram": {"field": "price", "interval": 100}},
+            "when": {"date_histogram": {"field": "d", "calendar_interval": "month"}}}
+    # Aggregations the native pass answers alone: their aggregators are built only when Lucene
+    # collects them (a script query, which runs on Lucene, over the buffered documents too).
+    flat_aggs = {"tags": {"terms": {"field": "tag", "size": 20}}, "n": {"stats": {"field": "n"}},
+                 "top": {"max": {"field": "price"}}}
+    on_lucene = {"bool": {"filter": [{"script": {"script": "doc['n'].size() > 0 && doc['n'].value % 3 == 0"}}]}}
+    sorts = [[{"n": "desc"}, {"@timestamp": "asc"}], [{"price": "asc"}, {"@timestamp": "asc"}],
+             [{"tag": "asc"}, {"d": "desc"}, {"@timestamp": "asc"}]]
+
+    def pages(index, body, first):
+        """Every page of a scroll (first) or a point in time's search_after pages, as (id, sort)."""
+        out = []
+        if first == "scroll":
+            page = must("POST", f"/{index}/_search?scroll=1m&request_cache=false", body)
+            yield page
+            while page["hits"]["hits"]:
+                out += page["hits"]["hits"]
+                page = must("POST", "/_search/scroll", {"scroll": "1m", "scroll_id": page["_scroll_id"]})
+            req("DELETE", "/_search/scroll", {"scroll_id": page["_scroll_id"]})
+        else:
+            pit = must("POST", f"/{index}/_search/point_in_time?keep_alive=1m")["pit_id"]
+            b = dict(body, pit={"id": pit, "keep_alive": "1m"})
+            page = must("POST", "/_search?request_cache=false", b)
+            yield page
+            while page["hits"]["hits"]:
+                out += page["hits"]["hits"]
+                b["search_after"] = page["hits"]["hits"][-1]["sort"]
+                page = must("POST", "/_search?request_cache=false", b)
+            req("DELETE", "/_search/point_in_time", {"pit_id": [pit]})
+        yield [(h["_id"], h.get("sort")) for h in out]
+
+    def paged(where):
+        """A scroll and a point in time read the documents as of their first page, buffered ones
+        too: documents written meanwhile are in neither."""
+        body = {"query": {"match": {"body": "fox"}}, "size": 37, "sort": [{"n": "desc"}, {"@timestamp": "asc"}],
+                "track_total_hits": True}
+        for kind in ("scroll", "pit"):
+            a, b = pages(rt, body, kind), pages(ref, body, kind)
+            first_a, first_b = next(a), next(b)
+            check(first_a["hits"]["total"]["value"] == first_b["hits"]["total"]["value"], f"{where}: {kind} total")
+            for idx in (rt, ref):
+                lines = []
+                for i in range(20):
+                    lines += [{"index": {"_id": f"{kind}{i}"}}, {"body": "fox mid page", "n": 50000 + i, "@timestamp": i}]
+                must("POST", f"/{idx}/_bulk", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
+            must("POST", f"/{ref}/_refresh")
+            got_a, got_b = next(a), next(b)
+            check(len(got_a) == first_a["hits"]["total"]["value"], f"{where}: {kind} pages hold the first page's total")
+            check(got_a == got_b, f"{where}: {kind} pages: {got_a[:3]} vs {got_b[:3]} ({len(got_a)} vs {len(got_b)})")
+
+    def pit_flushed(where):
+        """A point in time keeps its view after a flush publishes the buffers it read: a search
+        Lucene answers through it then reads them as their published segments."""
+        pits = {idx: must("POST", f"/{idx}/_search/point_in_time?keep_alive=1m")["pit_id"] for idx in (rt, ref)}
+        for idx in (rt, ref):
+            lines = []
+            for i in range(30):
+                lines += [{"index": {"_id": f"pf{i}"}}, {"body": "fox after pit", "n": 60000 + i * 3, "@timestamp": i}]
+            must("POST", f"/{idx}/_bulk", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
+        must("POST", f"/{rt}/_flush")
+        must("POST", f"/{ref}/_refresh")
+        body = {"query": on_lucene, "size": 100, "track_total_hits": True, "sort": [{"n": "desc"}, {"@timestamp": "asc"}]}
+        out = {idx: must("POST", "/_search?request_cache=false", dict(body, pit={"id": pit, "keep_alive": "1m"}))
+               for idx, pit in pits.items()}
+        req("DELETE", "/_search/point_in_time", {"pit_id": list(pits.values())})
+        a, b = out[rt], out[ref]
+        check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"],
+              f"{where}: script query through a flushed point in time: {a['hits']['total']} vs {b['hits']['total']}")
+        ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
+        hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
+        check(ha == hb, f"{where}: script query hits through a flushed point in time: {ha[:3]} vs {hb[:3]}")
+
+    def same_views(where):
+        """Aggregations and sorted searches on the realtime index equal the refreshed index's."""
+        for q in queries + [{"match_all": {}}]:
+            body = {"query": q, "size": 0, "track_total_hits": True, "aggs": aggs}
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: aggregation total {q}")
+            check(json.dumps(a["aggregations"], sort_keys=True) == json.dumps(b["aggregations"], sort_keys=True),
+                  f"{where}: aggregations {q}: {json.dumps(a['aggregations'])[:300]} vs {json.dumps(b['aggregations'])[:300]}")
+        for q in [{"match": {"body": "fox"}}, {"match_all": {}}]:
+            body = {"query": q, "size": 0, "track_total_hits": True, "aggs": flat_aggs}
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: native aggregation total {q}")
+            check(json.dumps(a["aggregations"], sort_keys=True) == json.dumps(b["aggregations"], sort_keys=True),
+                  f"{where}: native aggregations {q}: {json.dumps(a['aggregations'])[:300]} vs {json.dumps(b['aggregations'])[:300]}")
+        # Searches Lucene answers (a script query, a highlight, versions) read the buffered
+        # documents too, and the documents updated since the commit once.
+        by_n = [{"n": "desc"}, {"@timestamp": "asc"}]
+        fox = {"match": {"body": "fox"}}
+        for body in [{"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": flat_aggs},
+                     {"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": aggs},
+                     {"query": on_lucene, "size": 100, "track_total_hits": True, "sort": by_n},
+                     {"query": fox, "size": 100, "track_total_hits": True, "version": True, "sort": by_n},
+                     {"query": fox, "size": 20, "track_total_hits": True, "sort": by_n,
+                      "highlight": {"fields": {"body": {}}}},
+                     # Rewritten again once Lucene reads the buffers: its terms are theirs too.
+                     {"query": {"prefix": {"title": {"value": "qu", "rewrite": "scoring_boolean"}}}, "size": 50,
+                      "track_total_hits": True, "sort": by_n, "track_scores": True},
+                     {"query": fox, "size": 10, "track_total_hits": True, "sort": by_n, "explain": True}]:
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            what = f"{where}: on Lucene {json.dumps(body)[:120]}"
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"],
+                  f"{what}: total {a['hits']['total']} vs {b['hits']['total']}")
+            check(json.dumps(a.get("aggregations"), sort_keys=True) == json.dumps(b.get("aggregations"), sort_keys=True),
+                  f"{what}: aggregations {json.dumps(a.get('aggregations'))[:300]} vs {json.dumps(b.get('aggregations'))[:300]}")
+            def seen(h):
+                score = None if h.get("_score") is None else round(h["_score"], 4)
+                explained = h.get("_explanation", {}).get("value")
+                return (h["_id"], h.get("sort"), h.get("_version"), h.get("highlight"), score,
+                        None if explained is None else round(explained, 4))
+            ha = [seen(h) for h in a["hits"]["hits"]]
+            hb = [seen(h) for h in b["hits"]["hits"]]
+            check(ha == hb, f"{what}: hits {ha[:2]} vs {hb[:2]}")
+        # A sorted match_all that counts at most the default hits is one OpenSearch approximates
+        # over the points, which buffered documents do not have yet.
+        cases = [({"match": {"body": "fox"}}, s, True) for s in sorts]
+        cases.append(({"match_all": {}}, [{"@timestamp": "desc"}], 10000))
+        for q, sort, total in cases:
+            body = {"query": q, "size": 50, "sort": sort, "track_total_hits": total}
+            a = must("POST", f"/{rt}/_search?request_cache=false", body)
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)
+            ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
+            hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
+            check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: sorted total {sort}")
+            check(ha == hb, f"{where}: sorted hits {sort}: {ha[:3]} vs {hb[:3]}")
+        # A range past what the searcher's segments hold is one OpenSearch would rewrite to match
+        # nothing by their bounds, which buffered documents are not in yet. Shards searched one
+        # at a time: each after the first is checked first (can-match), on a searcher of its own.
+        newest = must("POST", f"/{ref}/_search?request_cache=false",
+                      {"size": 20, "sort": [{"@timestamp": "desc"}], "query": {"match_all": {}}})["hits"]["hits"]
+        if newest:
+            body = {"size": 0, "track_total_hits": True,
+                    "query": {"range": {"@timestamp": {"gte": newest[-1]["sort"][0]}}}}
+            a = must("POST", f"/{rt}/_search?request_cache=false&max_concurrent_shard_requests=1",
+                     body)["hits"]["total"]["value"]
+            b = must("POST", f"/{ref}/_search?request_cache=false", body)["hits"]["total"]["value"]
+            check(a == b, f"{where}: newest range total: {a} vs {b}")
+
+    for rnd in range(3):
+        lines = []
+        for i in range(300):
+            n = rnd * 300 + i
+            lines += [{"index": {"_id": f"r{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        must("POST", f"/{rt}/_bulk", body, ndjson=True)
+        must("POST", f"/{ref}/_bulk", body, ndjson=True)
+        must("POST", f"/{ref}/_refresh")
+        for q in queries:
+            a, b = scored(rt, q), scored(ref, q)
+            check(a[0] == b[0], f"realtime round {rnd}: total {q}: {a[0]} vs {b[0]}")
+            check(a[1] == b[1], f"realtime round {rnd}: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
+        same_views(f"realtime round {rnd}")
+        if rnd == 2:
+            paged(f"realtime round {rnd}")
+            pit_flushed(f"realtime round {rnd}")
+        if rnd == 0:
+            # A flush publishes the buffers without refreshing the searcher: its view reads
+            # them as their segments.
+            must("POST", f"/{rt}/_flush")
+            same_views("realtime after a flush")
+        if rnd == 1:
+            must("POST", f"/{rt}/_refresh")
+    after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    check(after - before >= 12 + 3 * (len(queries) + 1 + len(sorts)), f"realtime: live searches counted ({after - before})")
+    # Updates and deletes of refreshed documents, and of buffered ones: the live search sees the
+    # new versions only, as a refreshed index does.
+    for idx in (rt, ref):
+        must("POST", f"/{idx}/_doc/r5", {"body": "fox fox fox", "tag": "t3"})
+        must("POST", f"/{idx}/_doc/r700", {"body": "fox alpha", "tag": "t3"})
+        must("DELETE", f"/{idx}/_doc/r6")
+        must("DELETE", f"/{idx}/_doc/r701")
+    must("POST", f"/{ref}/_refresh")
+    before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    for q in queries:
+        a, b = scored(rt, q), scored(ref, q)
+        check(a[0] == b[0], f"realtime after updates: total {q}: {a[0]} vs {b[0]}")
+        check(a[1] == b[1], f"realtime after updates: scored hits {q}: {a[1][:2]} vs {b[1][:2]}")
+        ids = [h[1] for h in a[1]]
+        check(ids.count("r5") <= 1 and "r6" not in ids, f"realtime after updates: {q} finds r5 once, r6 never")
+    same_views("realtime after updates")
+    # refresh=wait_for answers once the write is searchable, with no refresh: none is scheduled.
+    must("PUT", f"/{rt}/_settings", {"index": {"refresh_interval": "-1"}})
+    start = time.time()
+    must("PUT", f"/{rt}/_doc/w1?refresh=wait_for", {"body": "zebra wait", "tag": "t1"})
+    lines = [{"index": {"_id": f"w{i}"}} if i % 2 == 0 else {"body": "zebra bulk", "tag": "t2"} for i in range(2, 42)]
+    out = must("POST", f"/{rt}/_bulk?refresh=wait_for", "\n".join(json.dumps(l) for l in lines) + "\n", ndjson=True)
+    took = time.time() - start
+    check(out.get("errors") is False, "realtime: wait_for bulk indexed")
+    check(took < 5, f"realtime: wait_for answered without a refresh ({took:.2f}s)")
+    zebra = must("POST", f"/{rt}/_search?request_cache=false", {"query": {"match": {"body": "zebra"}}, "track_total_hits": True})
+    check(zebra["hits"]["total"]["value"] == 21, f"realtime: wait_for writes are searchable ({zebra['hits']['total']})")
+    after = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    check(after - before >= 4 + len(queries) + 1 + len(sorts), f"realtime: searches after updates stay live ({after - before})")
+    for idx in (rt, ref):
+        must("DELETE", f"/{idx}")
+    # Segment replication: replicas copy segments and have no buffers, so searches go to the
+    # primary (the replica here is unassigned: the search must still answer from the primary).
+    seg = "rt_segrep"
+    req("DELETE", f"/{seg}")
+    create(seg, True, {"index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms", "index.replication.type": "SEGMENT",
+                       "number_of_replicas": 1}, flat)
+    must("GET", f"/_cluster/health/{seg}?wait_for_status=yellow&timeout=60s")
+    must("PUT", f"/{seg}/_doc/s1", {"body": "segrep fox", "tag": "t1"})
+    out = must("POST", f"/{seg}/_search?request_cache=false", {"query": {"match": {"body": "segrep"}}, "track_total_hits": True})
+    check(out["hits"]["total"]["value"] == 1, f"realtime under segment replication: {out['hits']['total']}")
+    must("DELETE", f"/{seg}")
+
+
+def bp_reorder():
+    """index.lucene_rust.bp_reorder.*: a forced merge renumbers the documents, and searches find and
+    score the same documents as on an index merged in order."""
+    bp, ref = "bp_on", "bp_ref"
+    for idx in (bp, ref):
+        req("DELETE", f"/{idx}")
+    flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
+    create(bp, True, {"index.lucene_rust.bp_reorder.enabled": True, "index.lucene_rust.bp_reorder.min_doc_freq": 2,
+                      "index.lucene_rust.bp_reorder.min_partition_size": 4,
+                      "index.lucene_rust.bp_reorder.min_merge_docs": 1}, flat)
+    create(ref, True, None, flat)
+    wait_green(f"{bp},{ref}")
+    r = random.Random(23)
+    for rnd in range(4):
+        lines = []
+        for i in range(400):
+            n = rnd * 400 + i
+            lines += [{"index": {"_id": f"b{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx in (bp, ref):
+            must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            must("POST", f"/{idx}/_refresh")
+    for idx in (bp, ref):
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{idx}/_refresh")
+    queries = [{"match": {"body": "fox"}}, {"match": {"title": "quick dogs"}}, {"match_phrase": {"body": "quick brown"}},
+               {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"term": {"tag": "t3"}}]}}]
+    for q in queries:
+        a = must("POST", f"/{bp}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
+        b = must("POST", f"/{ref}/_search?request_cache=false", {"query": q, "size": 10000, "track_total_hits": True})
+        check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"bp_reorder: total {q}")
+        hits = lambda out: sorted((round(h["_score"], 4), h["_id"]) for h in out["hits"]["hits"])
+        check(hits(a) == hits(b), f"bp_reorder: scored hits {q}")
+    order = lambda idx: [h["_id"] for h in must("POST", f"/{idx}/_search?request_cache=false",
+                                                    {"size": 10000, "sort": ["_doc"], "query": {"match_all": {}}})["hits"]["hits"]]
+    on, off = order(bp), order(ref)
+    check(sorted(on) == sorted(off) and len(on) == 1600, "bp_reorder: every document survives the merge")
+    check(on != off, "bp_reorder: the forced merge renumbered the documents")
+    must("PUT", f"/{bp}/_settings", {"index.lucene_rust.bp_reorder.enabled": False})
+    for idx in (bp, ref):
+        must("DELETE", f"/{idx}")
+
+
 def wait_green(index, timeout=180):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -552,20 +907,45 @@ def breaker():
     must("DELETE", "/breaker_rust")
 
 
+def merge_policies():
+    """index.merge.policy: log_byte_size decides the Rust writer's merges as it decides Lucene's.
+    (index.merge.enabled is a private setting a REST client cannot set.)"""
+    for index, extra, merged in (("lbs_rust", {"index.merge.policy": "log_byte_size"}, True),):
+        create(index, True, {"number_of_shards": 1, **extra})
+        for batch in range(4):
+            lines = []
+            for i in range(25):
+                lines.append(json.dumps({"index": {"_id": f"{batch}-{i}"}}))
+                lines.append(json.dumps({"title": f"doc {batch} {i}"}))
+            must("POST", f"/{index}/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            must("POST", f"/{index}/_refresh")
+        must("POST", f"/{index}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{index}/_refresh")
+        count = must("GET", f"/{index}/_stats/segments")["_all"]["primaries"]["segments"]["count"]
+        check((count == 1) == merged, f"{index}: {count} segments after a force merge")
+        must("DELETE", f"/{index}")
+
+
 def unsupported():
     """What the Rust writer cannot produce is refused, never written differently."""
-    status, out = req("PUT", "/bad_codec", {"settings": {"index.lucene_rust.engine": True,
-                                                          "index.codec": "best_compression",
-                                                          "number_of_replicas": 0}})
-    if status in (200, 201):
-        time.sleep(3)
-        health = must("GET", "/_cluster/health/bad_codec?timeout=10s")
-        check(health["status"] == "red", f"an unsupported codec does not start: {health['status']}")
-        explain = must("GET", "/_cluster/allocation/explain", {"index": "bad_codec", "shard": 0, "primary": True})
-        check("default codec" in json.dumps(explain), "the refusal names the codec")
-        must("DELETE", "/bad_codec")
-    else:
-        check("codec" in json.dumps(out), f"the refusal names the codec: {out}")
+    refused = (("bad_codec", {"index.sparse": True, "index.codec": "zstd"}, "default codec"),
+               ("bad_fuzzy_set", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True}, "fuzzy_set"))
+    for index, extra, named in refused:
+        status, out = req("PUT", f"/{index}", {"settings": {"index.lucene_rust.engine": True,
+                                                            "number_of_replicas": 0, **extra}})
+        if status in (200, 201):
+            time.sleep(3)
+            health = must("GET", f"/_cluster/health/{index}?timeout=10s")
+            check(health["status"] == "red", f"{index}: an unsupported setting does not start: {health['status']}")
+            explain = must("GET", "/_cluster/allocation/explain", {"index": index, "shard": 0, "primary": True})
+            check(named in json.dumps(explain), f"{index}: the refusal names [{named}]")
+            must("DELETE", f"/{index}")
+        else:
+            check(named in json.dumps(out), f"{index}: the refusal names [{named}]: {out}")
+    create("fuzzy_later", True)
+    status, out = req("PUT", "/fuzzy_later/_settings", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True})
+    check(status == 400 and "fuzzy_set" in json.dumps(out), f"turning fuzzy_set on later is refused: {status} {out}")
+    must("DELETE", "/fuzzy_later")
     create("tv_rust", True)
     must("PUT", "/tv_rust/_mapping", {"properties": {"tv": {"type": "text", "term_vector": "with_positions"}}})
     status, out = req("PUT", "/tv_rust/_doc/1", {"tv": "some text"})
@@ -577,11 +957,329 @@ def unsupported():
     if any(n["settings"].get("lucene_rust.engine.default") == "true" for n in nodes):
         # Only asked-for is strict: an index that merely inherits the node default and needs what
         # the Rust writer cannot produce is served by OpenSearch's engine.
-        must("PUT", "/fallback_codec", {"settings": {"index.codec": "best_compression", "number_of_replicas": 0}})
+        must("PUT", "/fallback_codec", {"settings": {"index.sparse": True, "index.codec": "zstd",
+                                                      "number_of_replicas": 0}})
         wait_green("fallback_codec")
         status, _ = req("PUT", "/fallback_codec/_doc/1?refresh=true", {"n": 1})
         check(status in (200, 201), "an inherited-default index the Rust writer cannot serve falls back")
         must("DELETE", "/fallback_codec")
+
+
+DS_MAPPING = {"properties": {
+    "kw": {"type": "keyword"}, "kws": {"type": "keyword", "doc_values": False, "store": True},
+    "txt": {"type": "text"}, "l": {"type": "long"}, "i": {"type": "integer"},
+    "d": {"type": "double"}, "f": {"type": "float"}, "hf": {"type": "half_float"},
+    "ul": {"type": "unsigned_long"}, "ls": {"type": "long", "doc_values": False, "store": True},
+    "b": {"type": "boolean"}, "dt": {"type": "date"},
+    "dtf": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss"}, "ip": {"type": "ip"},
+    "geo": {"type": "geo_point"}, "wc": {"type": "wildcard"}, "bin": {"type": "binary", "store": True},
+    "bdv": {"type": "binary", "doc_values": True, "store": True},
+    "obj": {"properties": {"a": {"type": "keyword"}, "deep": {"properties": {"x": {"type": "double"}}}}},
+}}
+
+
+def ds_doc(r, i):
+    doc = {"kw": [f"k{r.randrange(40)}" for _ in range(1 + r.randrange(3))], "kws": f"s{i}",
+           "txt": words(r, 1 + r.randrange(20)), "l": r.randrange(-10**12, 10**12),
+           "i": r.randrange(-10**6, 10**6), "d": r.uniform(-1e6, 1e6), "f": round(r.uniform(-1e3, 1e3), 3),
+           "hf": round(r.uniform(-100, 100), 1), "ul": r.randrange(2**64), "ls": [i, i * 3],
+           "b": r.random() < 0.5, "dt": f"2026-0{1 + r.randrange(9)}-1{r.randrange(10)}T0{r.randrange(10)}:00:00.250Z",
+           "dtf": f"2025-0{1 + r.randrange(9)}-2{r.randrange(9)} 1{r.randrange(10)}:00:00",
+           "ip": f"10.{r.randrange(256)}.0.{r.randrange(256)}" if i % 5 else "2001:db8::7",
+           "geo": {"lat": round(r.uniform(-60, 60), 4), "lon": round(r.uniform(-170, 170), 4)},
+           "wc": f"w-{r.randrange(10**6)}", "bin": "aGVsbG8=", "bdv": "d29ybGQ=", "obj": {"a": f"a{r.randrange(5)}", "deep": {"x": r.random()}}}
+    for k in ("txt", "ip", "geo", "obj"):
+        if r.random() < 0.1:
+            del doc[k]
+    return doc
+
+
+def derived_source(container):
+    """index.derived_source.enabled: OpenSearch rebuilds _source from doc values and stored
+    fields; the Rust engine's segments (read natively) give back what OpenSearch's own engine's
+    give back, before and after updates, a merge and SIGKILL (translog replay)."""
+    java, rust = "ds_java", "ds_rust"
+    for idx, on_rust in ((java, False), (rust, True)):
+        req("DELETE", f"/{idx}")
+        must("PUT", f"/{idx}", {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.lucene_rust.engine": on_rust,
+                                            "index.derived_source.enabled": True,
+                                            "index.derived_source.translog.enabled": True},
+                               "mappings": DS_MAPPING})
+    wait_green(f"{java},{rust}")
+    r = random.Random(7)
+    lines = []
+    for i in range(3000):
+        lines += [json.dumps({"index": {"_id": f"d{i}"}}), json.dumps(ds_doc(r, i))]
+    body = "\n".join(lines) + "\n"
+    for idx in (java, rust):
+        out = must("POST", f"/{idx}/_bulk?refresh=true", body, ndjson=True)
+        check(not out["errors"], f"derived source: bulk into {idx}")
+    queries = [
+        {"query": {"match_all": {}}, "size": 100, "sort": [{"l": "asc"}]},
+        {"query": {"match": {"txt": words(random.Random(1), 2)}}, "size": 20, "sort": [{"i": "desc"}]},
+        {"query": {"range": {"l": {"gte": 0}}}, "size": 30, "sort": ["_id"], "_source": ["kw", "obj.*"]},
+        {"query": {"match_all": {}}, "size": 25, "sort": [{"i": "asc"}], "_source": False,
+         "docvalue_fields": ["kw", "l", "d", "hf", "ul", "b", "dt", {"field": "dtf", "format": "epoch_millis"}, "ip", "geo", "wc", "bdv"]},
+        {"query": {"match_all": {}}, "size": 0, "aggs": {"t": {"terms": {"field": "kw", "size": 3},
+            "aggs": {"h": {"top_hits": {"size": 3, "sort": [{"l": "asc"}]}}}}}},
+        # Adjacent documents: the fetch phase's sequential stored-fields reader.
+        {"query": {"ids": {"values": [f"d{i}" for i in range(200, 260)]}}, "size": 60, "sort": ["_id"]},
+    ]
+
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k not in ("_index", "took", "_shards")}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+
+    def same(label):
+        for q in queries:
+            a = must("POST", f"/{java}/_search?request_cache=false", q)
+            b = must("POST", f"/{rust}/_search?request_cache=false", q)
+            check(strip(a) == strip(b), f"{label}: {json.dumps(q)[:120]}: {json.dumps(strip(a))[:300]} vs {json.dumps(strip(b))[:300]}")
+        for i in list(range(0, 3000, 97)) + [2999]:
+            for realtime in ("true", "false"):
+                a = req("GET", f"/{java}/_doc/d{i}?realtime={realtime}")[1]
+                b = req("GET", f"/{rust}/_doc/d{i}?realtime={realtime}")[1]
+                check(strip(a) == strip(b), f"{label}: get d{i} realtime={realtime}: {json.dumps(strip(a))[:300]} vs {json.dumps(strip(b))[:300]}")
+        ids = {"ids": [f"d{i}" for i in range(0, 3000, 151)]}
+        check(strip(must("POST", f"/{java}/_mget", ids)) == strip(must("POST", f"/{rust}/_mget", ids)), f"{label}: mget")
+
+    before = must("GET", "/_plugins/lucene_rust/stats").get("native_doc_values", 0)
+    same("derived source")
+    after = must("GET", "/_plugins/lucene_rust/stats").get("native_doc_values", 0)
+    check(after > before, f"derived source: doc values read natively: {before} -> {after}")
+    # Updates (partial ones read the derived _source), deletes, then a realtime get from the translog.
+    for idx in (java, rust):
+        for i in range(0, 3000, 13):
+            must("POST", f"/{idx}/_update/d{i}", {"doc": {"l": i, "kw": "updated"}})
+        for i in range(5, 3000, 211):
+            must("DELETE", f"/{idx}/_doc/d{i}")
+    same("derived source, updated (translog)")
+    for idx in (java, rust):
+        must("POST", f"/{idx}/_refresh")
+    same("derived source, updated")
+    for idx in (java, rust):
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+        must("POST", f"/{idx}/_refresh")
+    same("derived source, merged")
+    sizes = [must("GET", f"/{idx}/_stats/store")["_all"]["primaries"]["store"]["size_in_bytes"] for idx in (java, rust)]
+    check(sizes[1] <= sizes[0] * 1.1, f"derived source: the Rust index is no bigger than Java's: {sizes}")
+    for idx in (java, rust):
+        for i in range(1, 3000, 17):
+            # Some of these were deleted above: a 404 on both.
+            req("POST", f"/{idx}/_update/d{i}", {"doc": {"i": -i}}, ok=(200, 201, 404))
+    subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
+    subprocess.run(["docker", "start", container], check=True, capture_output=True)
+    check(wait_green(f"{java},{rust}", 300), "derived source: green after SIGKILL")
+    same("derived source, after SIGKILL")
+    # Realtime search: buffered hits, never refreshed, rebuild their _source (and give their
+    # docvalue_fields) from the writer's buffers, as the refreshed Java index gives them.
+    rt = "ds_realtime"
+    req("DELETE", f"/{rt}")
+    must("PUT", f"/{rt}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                                       "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms",
+                                       "index.derived_source.enabled": True}, "mappings": DS_MAPPING})
+    req("DELETE", "/ds_rt_java")
+    must("PUT", "/ds_rt_java", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.lucene_rust.engine": False, "index.derived_source.enabled": True},
+                               "mappings": DS_MAPPING})
+    wait_green(f"{rt},ds_rt_java")
+    live_before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    r = random.Random(9)
+    lines = []
+    for i in range(400):
+        lines += [json.dumps({"index": {"_id": f"r{i}"}}), json.dumps(ds_doc(r, i))]
+    body = "\n".join(lines) + "\n"
+    check(not must("POST", f"/{rt}/_bulk", body, ndjson=True)["errors"], "derived source realtime: bulk")
+    check(not must("POST", "/ds_rt_java/_bulk?refresh=true", body, ndjson=True)["errors"], "derived source realtime: java bulk")
+    # Not match_all under a sort: OpenSearch rewrites that to an approximate range query, which
+    # Lucene answers from the reader's documents alone.
+    every = {"exists": {"field": "kws"}}
+    for q in ({**queries[0], "query": every}, queries[1], {**queries[3], "query": every}, queries[4]):
+        a = must("POST", "/ds_rt_java/_search?request_cache=false", q)
+        b = must("POST", f"/{rt}/_search?request_cache=false", q)
+        check(strip(a["hits"]) == strip(b["hits"]),
+              f"derived source realtime: {json.dumps(q)[:120]}: {json.dumps(strip(a['hits']))[:300]} vs {json.dumps(strip(b['hits']))[:300]}")
+    live = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
+    check(live > live_before, f"derived source realtime: the buffers were searched: {live_before} -> {live}")
+    for idx in (java, rust, rt, "ds_rt_java"):
+        req("DELETE", f"/{idx}")
+    print("derived source: compared", flush=True)
+
+
+def codecs(container):
+    """index.codec best_compression, zstd and zstd_no_dict on the Rust engine: the same answers and
+    _source as the default codec through flushes and a force merge, and each shard's commit
+    naming the codec OpenSearch's own engine names (custom-codecs' ZSTD104/ZSTDNODICT104), so
+    either engine opens the other's segments."""
+    names = (("codec_plain", False, None, "Lucene104"),
+             ("codec_java_zstd", False, {"index.codec": "zstd"}, "ZSTD104"),
+             ("codec_rust_zstd", True, {"index.codec": "zstd"}, "ZSTD104"),
+             ("codec_rust_zstd_nd", True, {"index.codec": "zstd_no_dict", "index.codec.compression_level": 6},
+              "ZSTDNODICT104"),
+             ("codec_rust_best", True, {"index.codec": "best_compression"}, "Lucene104"))
+    # The stored fields mode each segment's .si records: what tells best_compression from default.
+    modes = {"codec_plain": "BEST_SPEED", "codec_java_zstd": "ZSTD", "codec_rust_zstd": "ZSTD",
+             "codec_rust_zstd_nd": "ZSTD_NO_DICT", "codec_rust_best": "BEST_COMPRESSION"}
+    for idx, rust, extra, _ in names:
+        req("DELETE", f"/{idx}")
+        create(idx, rust, extra)
+    check(wait_green(",".join(n[0] for n in names)), "codec indices start green")
+    r = random.Random(13)
+    for batch in range(8):
+        lines = []
+        for i in range(250):
+            n = batch * 250 + i
+            lines += [{"index": {"_id": f"c{n}"}}, source(r, n)]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx, _, _, _ in names:
+            out = must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            check(not out["errors"], f"{idx}: bulk {batch} applies every operation")
+            if batch % 3 == 2:
+                must("POST", f"/{idx}/_flush")
+    ids = {"ids": [f"c{i}" for i in range(0, 2000, 3)]}
+
+    def same(label):
+        for idx, _, _, _ in names:
+            must("POST", f"/{idx}/_refresh")
+        plain = [{k: v for k, v in d.items() if k != "_index"} for d in must("POST", "/codec_plain/_mget", ids)["docs"]]
+        for idx, _, _, _ in names[1:]:
+            compare_searches(f"{label}, {idx}", scores=False, java="codec_plain", rust=idx)
+            docs = [{k: v for k, v in d.items() if k != "_index"} for d in must("POST", f"/{idx}/_mget", ids)["docs"]]
+            check(docs == plain, f"{label}, {idx}: _source and metadata of {len(ids['ids'])} documents")
+
+    same("codecs")
+    for idx, _, _, _ in names:
+        must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+    same("codecs, force-merged")
+    for idx, _, _, codec in names:
+        uuid = must("GET", f"/{idx}/_settings")[idx]["settings"]["index"]["uuid"]
+        script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
+                  f"for f in */index/segments_*; do grep -c -a '{codec}' \"$f\" || true; done")
+        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
+                             capture_output=True, text=True, errors="replace").stdout.split()
+        check(len(out) == 2 and all(int(c) > 0 for c in out), f"{idx}: every shard's commit names {codec}: {out}")
+        script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
+                  f"for d in */index; do grep -l -a -- '{modes[idx]}' \"$d\"/*.si | wc -l; done")
+        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
+                             capture_output=True, text=True, errors="replace").stdout.split()
+        check(len(out) == 2 and all(int(c) > 0 for c in out),
+              f"{idx}: every shard's segment records stored fields mode {modes[idx]}: {out}")
+    stats = must("GET", "/_plugins/lucene_rust/stats")
+    check(stats.get("native_errors", 0) == 0, f"no native errors on codec indices: {stats.get('native_errors')}")
+    for idx, _, _, _ in names:
+        must("DELETE", f"/{idx}")
+
+
+def logs_preset():
+    """The logs preset's component templates: registered by the cluster manager, inert until an
+    index template names them, and an index composed of them answers log searches (terms, phrases,
+    windows, newest first, stats and timecharts) exactly as an OpenSearch-engine index with the
+    stock mapping does, with its small fields kept as doc values only."""
+    names = ("lucene_rust_logs@settings", "lucene_rust_logs@mappings")
+    have = {}
+    for _ in range(30):
+        have = {t["name"]: t["component_template"] for t in
+                req("GET", "/_component_template/lucene_rust_logs*")[1].get("component_templates", [])}
+        if len(have) == 2:
+            break
+        time.sleep(1)
+    check(sorted(have) == sorted(names) and all(t.get("version", 0) >= 1 for t in have.values()),
+          f"logs preset component templates registered: {sorted(have)}")
+    for idx in ("logs_java", "logs_preset"):
+        req("DELETE", f"/{idx}")
+    must("PUT", "/_index_template/logs_preset_e2e", {"index_patterns": ["logs_preset"], "composed_of": list(names),
+         "template": {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1}}})
+    must("PUT", "/logs_preset")
+    must("PUT", "/logs_java", {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.lucene_rust.engine": False},
+                               "mappings": {"properties": {"@timestamp": {"type": "date"}, "message": {"type": "text"},
+                                                           "host": {"properties": {"name": {"type": "keyword"}}},
+                                                           "service": {"properties": {"name": {"type": "keyword"}}},
+                                                           "log": {"properties": {"level": {"type": "keyword"}}},
+                                                           "http": {"properties": {"response": {"properties": {
+                                                               "status_code": {"type": "integer"}}}}},
+                                                           "event": {"properties": {"duration": {"type": "long"}}},
+                                                           "trace": {"properties": {"id": {"type": "keyword"}}},
+                                                           "user": {"type": "keyword"}, "bytes": {"type": "long"}}}})
+    settings = must("GET", "/logs_preset/_settings")["logs_preset"]["settings"]["index"]
+    check(settings.get("lucene_rust", {}).get("engine") == "true" and settings.get("sort", {}).get("field") in ("@timestamp", ["@timestamp"]),
+          f"logs preset settings applied: {settings.get('sort')}")
+    props = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
+    check(props["@timestamp"].get("skip_list") is True and props["event"]["properties"]["duration"].get("index") is False
+          and props["host"]["properties"]["name"].get("index") is False and props["message"].get("norms") is False
+          and props["trace"]["properties"]["id"]["type"] == "hex_id",
+          f"logs preset mapping applied: {json.dumps(props)[:300]}")
+    r = random.Random(17)
+    t0 = 1_760_000_000_000
+    msgs = ("connection reset by peer", "GET /api/v1/cart HTTP/1.1 200", "java.net.SocketTimeoutException: timed out",
+            "user logged in from 10.0.0.1", "block blk_123 replicated", "cache miss for key session")
+    for batch in range(6):
+        lines = []
+        for i in range(500):
+            n = batch * 500 + i
+            doc = {"@timestamp": t0 + n * 1000 + r.randrange(1000), "message": f"{r.choice(msgs)} {r.choice(WORDS)} {n}",
+                   "host": {"name": f"h{r.randrange(12)}"}, "service": {"name": r.choice(("cart", "auth", "search"))},
+                   "log": {"level": r.choice(("INFO",) * 8 + ("WARN", "ERROR"))},
+                   "http": {"response": {"status_code": r.choice((200, 200, 200, 404, 500, 503))}},
+                   "event": {"duration": r.randrange(1, 5000)}, "trace": {"id": f"{r.randrange(40):032x}"}, "user": f"u{r.randrange(50)}", "bytes": r.randrange(10**6)}
+            lines += [{"index": {"_id": f"l{n}"}}, doc]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx in ("logs_java", "logs_preset"):
+            out = must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            check(not out["errors"], f"{idx}: bulk {batch} applies every operation")
+            if batch % 2 == 1:
+                must("POST", f"/{idx}/_flush")
+    dyn = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
+    check(dyn["bytes"].get("index") is False and dyn["user"]["type"] == "keyword",
+          f"logs preset dynamic templates: bytes {dyn['bytes']}, user {dyn['user']}")
+    end = t0 + 3000 * 1000
+    win = lambda a: {"range": {"@timestamp": {"gte": end - a, "lt": end}}}
+    desc = [{"@timestamp": "desc"}, {"_id": "asc"}]
+    shapes = [
+        {"size": 20, "sort": desc, "query": {"match": {"message": "timed"}}},
+        {"size": 20, "sort": desc, "query": {"bool": {"must": {"match_phrase": {"message": "connection reset by peer"}},
+                                                      "filter": win(1_200_000)}}},
+        {"size": 20, "sort": desc, "query": {"bool": {"filter": [{"term": {"host.name": "h3"}},
+                                                                 {"term": {"log.level": "ERROR"}}, win(1_800_000)]}}},
+        {"size": 30, "sort": desc, "query": {"match_all": {}}},
+        {"size": 0, "query": {"bool": {"filter": [{"term": {"log.level": "ERROR"}}, win(2_000_000)]}},
+         "aggs": {"s": {"terms": {"field": "service.name"}}}},
+        {"size": 0, "query": {"bool": {"filter": win(600_000)}},
+         "aggs": {"t": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1m"},
+                        "aggs": {"l": {"terms": {"field": "log.level"}}}}}},
+        {"size": 0, "track_total_hits": True, "query": {"range": {"http.response.status_code": {"gte": 500}}},
+         "aggs": {"p": {"max": {"field": "event.duration"}}, "b": {"sum": {"field": "bytes"}}}},
+        {"size": 0, "track_total_hits": True, "query": {"terms": {"service.name": ["cart", "auth"]}}},
+        {"size": 10, "sort": desc, "query": {"term": {"trace.id": f"{7:032x}"}},
+         "aggs": {"t": {"terms": {"field": "trace.id", "size": 5}}}},
+        {"size": 10, "sort": desc, "query": {"bool": {"filter": [{"term": {"user": "u7"}}, {"range": {"bytes": {"lt": 500000}}}]}}},
+    ]
+
+    def answers(idx):
+        out = []
+        for body in shapes:
+            res = must("POST", f"/{idx}/_search?request_cache=false", body)
+            out.append((res["hits"]["total"], [(h["_id"], h.get("_source"), h.get("sort")) for h in res["hits"]["hits"]],
+                        res.get("aggregations")))
+        return out
+
+    for label in ("logs preset", "logs preset, force-merged"):
+        for idx in ("logs_java", "logs_preset"):
+            must("POST", f"/{idx}/_refresh")
+        java, preset = answers("logs_java"), answers("logs_preset")
+        for i, (a, b) in enumerate(zip(java, preset)):
+            check(a == b, f"{label}: search {i} answers as the stock mapping does: {json.dumps(a)[:200]} vs {json.dumps(b)[:200]}")
+        for idx in ("logs_java", "logs_preset"):
+            must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+    stats = must("GET", "/_plugins/lucene_rust/stats")
+    check(stats.get("native_errors", 0) == 0, f"no native errors on logs preset indices: {stats.get('native_errors')}")
+    must("DELETE", "/_index_template/logs_preset_e2e")
+    for idx in ("logs_java", "logs_preset"):
+        must("DELETE", f"/{idx}")
 
 
 def encrypted(container):
@@ -679,6 +1377,10 @@ def main():
     # title (english), body (standard), note and code (custom) are all Lucene components.
     check(analyzed.get("native", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
     compare_all("after the stream", stream.ids)
+    # Merges run in the Rust writer and are reported back, as OpenSearch's merge scheduler reports them.
+    merges = must("GET", f"/{RUST}/_stats/merge")["_all"]["primaries"]["merges"]
+    check(merges["total"] > 0 and merges["total_docs"] > 0 and merges["total_size_in_bytes"] > 0,
+          f"merge stats are populated: {merges}")
     # Recovery: a graceful restart replays nothing; SIGKILL replays the translog into the writer.
     run_stream(600, seed=43)
     restart(a.container, kill=False)
@@ -687,9 +1389,16 @@ def main():
     restart(a.container, kill=True)
     compare_all("after SIGKILL", stream.ids)
     insert_only_scoring()
+    realtime()
+    realtime_shared()
+    bp_reorder()
     fault_containment()
     breaker()
+    merge_policies()
     unsupported()
+    codecs(a.container)
+    derived_source(a.container)
+    logs_preset()
     encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)

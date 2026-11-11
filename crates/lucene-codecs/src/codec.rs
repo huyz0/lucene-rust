@@ -134,6 +134,49 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     fn check_doc_values(&self, _write: &DocValuesWrite<'_>) -> std::io::Result<()> {
         Ok(())
     }
+
+    /// The writer of files a `FilterCodec`'s wrapping format adds to every
+    /// flushed and merged segment besides the native ones (neural-search's
+    /// `SparsePostingsFormat` adds `.sit`/`.sip`). `None` adds nothing.
+    fn segment_files_writer(&self) -> Option<&dyn SegmentFilesWriter> {
+        None
+    }
+}
+
+/// A flushed or merged segment as [`SegmentFilesWriter::write`] is shown it:
+/// every native file is written, and the compound file and `.si` are not yet.
+#[derive(Clone, Copy)]
+pub struct SegmentWrite<'a> {
+    pub directory: &'a dyn lucene_store::Directory,
+    pub segment: &'a str,
+    pub id: &'a [u8; lucene_store::codec_util::ID_LENGTH],
+    pub max_doc: i32,
+    /// The segment's fields, as its `.fnm` records them.
+    pub field_infos: &'a [crate::field_infos::FieldInfo],
+    /// The segment's files written so far.
+    pub files: &'a [String],
+}
+
+impl fmt::Debug for SegmentWrite<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SegmentWrite")
+            .field("segment", &self.segment)
+            .field("max_doc", &self.max_doc)
+            .finish_non_exhaustive()
+    }
+}
+
+/// See [`Lucene104Codec::segment_files_writer`].
+pub trait SegmentFilesWriter: Send + Sync + fmt::Debug {
+    /// The extensions of the files [`Self::write`] writes. A merge writes
+    /// them afresh for the merged segment rather than merging the sources'.
+    fn extensions(&self) -> &'static [&'static str];
+
+    /// Writes this format's files for `segment` and returns their names.
+    ///
+    /// # Errors
+    /// A file cannot be read or written.
+    fn write(&self, segment: SegmentWrite<'_>) -> std::io::Result<Vec<String>>;
 }
 
 /// One doc-values instance's files, as [`Lucene104Codec::check_doc_values`]
@@ -173,11 +216,162 @@ pub enum WritePoint {
     Compound,
 }
 
+/// `new Lucene104Codec(Mode.BEST_COMPRESSION)` (`index.codec:
+/// best_compression`): DEFLATE stored fields under the `Lucene104` name.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BestCompressionLucene104Codec;
+
+impl Lucene104Codec for BestCompressionLucene104Codec {
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        crate::stored_fields::Mode::BestCompression
+    }
+}
+
+/// OpenSearch custom-codecs' `Zstd104Codec` and `ZstdNoDict104Codec`
+/// (`index.codec: zstd`, `zstd_no_dict`): `Lucene104` with zstd stored
+/// fields, recorded as [`crate::codecs::ZSTD_CODEC`] or
+/// [`crate::codecs::ZSTD_NO_DICT_CODEC`] so a stock reader with the plugin
+/// installed opens it with the plugin's own codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZstdLucene104Codec {
+    mode: crate::stored_fields::ZstdMode,
+}
+
+impl ZstdLucene104Codec {
+    /// The codec for `mode`.
+    ///
+    /// # Errors
+    /// `mode.level` is not a zstd level.
+    pub fn new(mode: crate::stored_fields::ZstdMode) -> Result<Self, lucene_zstd::Error> {
+        lucene_zstd::check_level(mode.level)?;
+        Ok(Self { mode })
+    }
+
+    /// The stored-fields settings.
+    pub fn mode(&self) -> crate::stored_fields::ZstdMode {
+        self.mode
+    }
+}
+
+impl Lucene104Codec for ZstdLucene104Codec {
+    fn name(&self) -> &str {
+        if self.mode.dictionary {
+            crate::codecs::ZSTD_CODEC
+        } else {
+            crate::codecs::ZSTD_NO_DICT_CODEC
+        }
+    }
+
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        crate::stored_fields::Mode::Zstd(self.mode)
+    }
+}
+
+/// [`crate::codecs::ZSTD_PAGED_CODEC`]: `Lucene104` with
+/// [`crate::stored_fields::Mode::ZstdPaged`] stored fields at a zstd level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZstdPagedLucene104Codec {
+    level: i32,
+}
+
+impl ZstdPagedLucene104Codec {
+    /// The codec at `level`.
+    ///
+    /// # Errors
+    /// `level` is not a zstd level.
+    pub fn new(level: i32) -> Result<Self, lucene_zstd::Error> {
+        lucene_zstd::check_level(level)?;
+        Ok(Self { level })
+    }
+}
+
+impl Lucene104Codec for ZstdPagedLucene104Codec {
+    fn name(&self) -> &str {
+        crate::codecs::ZSTD_PAGED_CODEC
+    }
+
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        crate::stored_fields::Mode::ZstdPaged(self.level)
+    }
+}
+
 /// `new Lucene104Codec()`: every field on the default formats.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultLucene104Codec;
 
 impl Lucene104Codec for DefaultLucene104Codec {}
+
+/// A `FilterCodec` that writes its delegate's files under its own name (OpenSearch k-NN's
+/// `KNN1040Codec` over `Lucene104` or a custom-codecs codec): every answer is the delegate's but
+/// [`Lucene104Codec::name`].
+#[derive(Debug, Clone)]
+pub struct NamedLucene104Codec {
+    name: &'static str,
+    delegate: std::sync::Arc<dyn Lucene104Codec>,
+}
+
+impl NamedLucene104Codec {
+    /// `delegate`'s files recorded as `name`.
+    pub fn new(name: &'static str, delegate: std::sync::Arc<dyn Lucene104Codec>) -> Self {
+        Self { name, delegate }
+    }
+
+    /// The codec whose files this one writes.
+    pub fn delegate(&self) -> &dyn Lucene104Codec {
+        &*self.delegate
+    }
+}
+
+impl Lucene104Codec for NamedLucene104Codec {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn stored_fields_writer_factory(&self) -> Option<&dyn StoredFieldsWriterFactory> {
+        self.delegate.stored_fields_writer_factory()
+    }
+    fn live_docs_writer(&self) -> Option<&dyn LiveDocsWriter> {
+        self.delegate.live_docs_writer()
+    }
+    fn norms_writer_factory(&self) -> Option<&dyn NormsWriterFactory> {
+        self.delegate.norms_writer_factory()
+    }
+    fn points_writer_factory(&self) -> Option<&dyn PointsWriterFactory> {
+        self.delegate.points_writer_factory()
+    }
+    fn postings_writer_factory(&self) -> Option<&dyn PostingsWriterFactory> {
+        self.delegate.postings_writer_factory()
+    }
+    fn term_vectors_writer_factory(&self) -> Option<&dyn TermVectorsWriterFactory> {
+        self.delegate.term_vectors_writer_factory()
+    }
+    fn compressing_format(&self) -> Option<&'static CompressingFormat> {
+        self.delegate.compressing_format()
+    }
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        self.delegate.stored_fields_mode()
+    }
+    fn postings_format_for_field(&self, field: &str) -> Lucene104PostingsFormat {
+        self.delegate.postings_format_for_field(field)
+    }
+    fn doc_values_format_for_field(&self, field: &str) -> Lucene90DocValuesFormat {
+        self.delegate.doc_values_format_for_field(field)
+    }
+    fn knn_vectors_format_for_field(&self, field: &str) -> KnnVectorsFormat {
+        self.delegate.knn_vectors_format_for_field(field)
+    }
+    fn knn_vectors_format_is_direct(&self) -> bool {
+        self.delegate.knn_vectors_format_is_direct()
+    }
+    fn before_write(&self, point: WritePoint) -> std::io::Result<()> {
+        self.delegate.before_write(point)
+    }
+    fn check_doc_values(&self, write: &DocValuesWrite<'_>) -> std::io::Result<()> {
+        self.delegate.check_doc_values(write)
+    }
+    fn segment_files_writer(&self) -> Option<&dyn SegmentFilesWriter> {
+        self.delegate.segment_files_writer()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -197,6 +391,26 @@ mod tests {
     }
 
     #[test]
+    fn the_zstd_codecs_are_opensearchs() {
+        use crate::stored_fields::{Mode, ZstdMode};
+        let z = ZstdLucene104Codec::new(ZstdMode::zstd(3)).unwrap();
+        assert_eq!(z.name(), "ZSTD104");
+        assert_eq!(z.mode(), ZstdMode::zstd(3));
+        assert_eq!(z.stored_fields_mode(), Mode::Zstd(ZstdMode::zstd(3)));
+        assert!(z.compressing_format().is_none());
+        let n = ZstdLucene104Codec::new(ZstdMode::zstd_no_dict(6)).unwrap();
+        assert_eq!(n.name(), "ZSTDNODICT104");
+        assert_eq!(
+            n.stored_fields_mode().data_codec(),
+            "CustomStoredFieldsZstdNoDict"
+        );
+        assert!(ZstdLucene104Codec::new(ZstdMode::zstd(1000)).is_err());
+        let b = BestCompressionLucene104Codec;
+        assert_eq!(b.name(), "Lucene104");
+        assert_eq!(b.stored_fields_mode(), Mode::BestCompression);
+    }
+
+    #[test]
     fn the_defaults_are_lucene104codecs() {
         let c = DefaultLucene104Codec;
         assert_eq!(c.name(), "Lucene104");
@@ -206,6 +420,7 @@ mod tests {
         assert!(c.points_writer_factory().is_none());
         assert!(c.postings_writer_factory().is_none());
         assert!(c.term_vectors_writer_factory().is_none());
+        assert!(c.segment_files_writer().is_none());
         assert!(!c.knn_vectors_format_is_direct());
         assert!(c.before_write(WritePoint::SegmentInfo).is_ok());
         assert_eq!(

@@ -150,7 +150,7 @@ fn writer(dir: &FsDirectory, wait_millis: Option<i64>) -> IndexWriter<'_> {
     };
     let mut w = IndexWriter::open(dir, vec![id_field()], "Lucene104", version).unwrap();
     let mut tmp = TieredMergePolicy::new(MergePolicyConfig {
-        segments_per_tier: 2,
+        segments_per_tier: 2.0,
         max_merge_at_once: 2,
         ..MergePolicyConfig::default()
     });

@@ -3708,7 +3708,7 @@ fn check_doc_values(
                     expected_docs_with_value = Some(entry.num_docs_with_field as i64);
                     let mut reader = doc_values::BinaryReader::new(dvd, entry);
                     for doc in 0..si.doc_count {
-                        match reader.value(doc) {
+                        match reader.value_ref(doc) {
                             Ok(Some(v)) => {
                                 docs_with_value = docs_with_value.saturating_add(1);
                                 let len = v.len() as i32;
@@ -5713,7 +5713,15 @@ fn check_current_vector_group(
     // is this subsystem's own failure to report.
     let flat = match vectors::FlatVectorsReader::open(&vemf, &vec, &commit.segment_id, suffix)
         .and_then(|r| r.check_integrity().map(|()| r))
-    {
+        .and_then(|mut r| {
+            r.resolve_similarities(|number| {
+                fields
+                    .iter()
+                    .find(|f| f.number == number)
+                    .map(|f| f.vector_similarity_function)
+            })
+            .map(|()| r)
+        }) {
         Ok(r) => r,
         Err(e) => {
             checks.push(Check::fail("vectors.open", e.to_string()));

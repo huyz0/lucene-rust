@@ -8,10 +8,9 @@
 //! .readDocValueSkipperMeta`) pointing at a run of per-interval min/max/doc-
 //! count summaries in `.dvs`, decoded eagerly here by [`parse_skip_index`]
 //! into a [`DocValuesSkipIndex`] -- see that function's doc comment for the
-//! on-disk level structure. This is decode-only: nothing in this crate or
-//! `lucene-search`'s `doc_value_query.rs` yet consults a decoded skip index
-//! to prune a range scan (see `docs/parity.md` and the follow-up tracked as
-//! "Doc-values skip index in range query scan").
+//! on-disk level structure. Range queries (`lucene-search`'s
+//! `SkipBlockRange`) and sorts (the numeric and keyword competitive
+//! iterators) skip whole intervals with it.
 //!
 //! `SORTED` fields store a per-doc ordinal (reusing the exact NUMERIC entry
 //! layout — see [`NumericEntry`]) into a terms dictionary
@@ -49,6 +48,12 @@
 //!
 //! As with [`crate::norms`], docs-with-a-value is one of empty/dense/sparse
 //! (dense: implicit by doc id; sparse: via [`crate::indexed_disi`]).
+//!
+//! The `RustAdaptive` format ([`Lucene90DocValuesFormat::rust_adaptive`])
+//! writes these same files, except that a NUMERIC or SORTED_NUMERIC value
+//! array may instead be [`crate::adaptive_values`] blocks where those are
+//! smaller (see [`AdaptiveEntry`]). Stock Lucene does not know the format
+//! name, so it refuses such a field rather than misreading it.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -69,6 +74,16 @@ const SKIP_INDEX_META_CODEC: &str = "Lucene90DocValuesSkipIndex";
 const DATA_META_CODEC: &str = "Lucene90DocValuesData";
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
+/// The `tableSize` that marks a value array of [`crate::adaptive_values`]
+/// blocks, which only the `RustAdaptive` format writes: below every
+/// `-2 - blockShift` Lucene90 writes. The rest of such an entry keeps
+/// Lucene90's shape, so Lucene's own `.dvm` parser walks past it; the
+/// format's name in the field's `PerFieldDocValuesFormat.format` attribute is
+/// what keeps a stock reader from opening the field.
+const ADAPTIVE_TABLE_SIZE: i32 = -1000;
+/// `DirectMonotonicWriter` block shift of an adaptive value array's block
+/// addresses.
+const ADAPTIVE_ADDRESS_BLOCK_SHIFT: u32 = 16;
 const VERSION_START: i32 = 0;
 const VERSION_SKIPPER_SEPARATE_FILE: i32 = 1;
 const VERSION_SKIPPER_MAX_VALUE_COUNT: i32 = 2;
@@ -149,6 +164,10 @@ pub enum Error {
         "doc-values skip index offset/length ({0}, {1}) is out of range for a {2}-byte .dvs slice"
     )]
     SkipIndexOutOfRange(i64, i64, usize),
+    /// A `RustSubstring` entry's values are compressed blocks, read through
+    /// [`BinaryReader::value_ref`] rather than sliced in place.
+    #[error("field {0}'s values are compressed blocks; read them with BinaryReader::value_ref")]
+    CompressedBinary(i32),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -181,6 +200,73 @@ pub struct NumericEntry {
     /// block, plus one trailing self-referential entry) -- only meaningful
     /// when [`block_shift`](Self::block_shift) is `Some`.
     pub value_jump_table_offset: i64,
+    /// `Some` when the values are [`crate::adaptive_values`] blocks (only in
+    /// a `RustAdaptive` file); `bits_per_value`, `min_value`, `gcd` and
+    /// `table` then describe nothing.
+    pub adaptive: Option<Box<AdaptiveEntry>>,
+}
+
+/// Where a `RustAdaptive` value array's blocks are. The blocks fill the
+/// entry's `values_offset`/`values_length` region (padding included); the
+/// entry's `valueJumpTableOffset` points at a descriptor in `.dvd` --
+/// `vint blockShift`, the `DirectMonotonic` metadata, `i64 offset` and
+/// `i64 length` -- of each block's start within that region, with one
+/// trailing end offset. The descriptor is read once, on first use.
+#[derive(Debug, Clone)]
+pub struct AdaptiveEntry {
+    /// Offset in `.dvd` of the block-address descriptor.
+    pub descriptor_offset: i64,
+    addresses: std::sync::OnceLock<AdaptiveAddresses>,
+}
+
+/// An adaptive value array's block addresses, decoded from its descriptor.
+#[derive(Debug, Clone)]
+pub struct AdaptiveAddresses {
+    pub offset: i64,
+    pub length: i64,
+    pub meta: direct_monotonic::Meta,
+}
+
+impl AdaptiveEntry {
+    /// An entry whose descriptor sits at `descriptor_offset` in `.dvd`.
+    pub fn new(descriptor_offset: i64) -> Self {
+        AdaptiveEntry {
+            descriptor_offset,
+            addresses: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The block addresses of a value array of `num_values` values, read
+    /// from `data` (the whole `.dvd` file) the first time.
+    pub fn addresses(&self, data: &[u8], num_values: i64) -> Result<&AdaptiveAddresses> {
+        if let Some(a) = self.addresses.get() {
+            return Ok(a);
+        }
+        let start = usize::try_from(self.descriptor_offset)
+            .map_err(|_| lucene_store::Error::Eof { offset: 0 })?;
+        let mut input = SliceInput::new(data);
+        input.seek(start)?;
+        let block_shift = input.read_vint()?;
+        if num_values < 0 {
+            return Err(Error::InvalidTableSize(ADAPTIVE_TABLE_SIZE));
+        }
+        let num_blocks = num_values
+            .saturating_add(crate::adaptive_values::BLOCK_SIZE as i64)
+            .saturating_sub(1)
+            >> crate::adaptive_values::BLOCK_SHIFT;
+        let meta = direct_monotonic::load_meta(
+            &mut input,
+            num_blocks.saturating_add(1),
+            u32::try_from(block_shift).map_err(|_| Error::InvalidTableSize(ADAPTIVE_TABLE_SIZE))?,
+        )?;
+        let offset = input.read_i64()?;
+        let length = input.read_i64()?;
+        Ok(self.addresses.get_or_init(|| AdaptiveAddresses {
+            offset,
+            length,
+            meta,
+        }))
+    }
 }
 
 impl NumericEntry {
@@ -208,6 +294,9 @@ pub struct BinaryEntry {
     /// `None` for fixed-length fields (`min_length == max_length`), where an
     /// entry's offset is computed directly as `ordinal * max_length`.
     pub addresses: Option<BinaryAddresses>,
+    /// The `RustSubstring` format's blocks and gram index, in place of one
+    /// byte run ([`crate::substring`]).
+    pub substring: Option<Box<crate::substring::SubstringEntry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +530,7 @@ pub fn parse_meta(
         }
     }
 
+    check_adaptive_entries(&meta)?;
     if header.version < VERSION_SKIPPER_MAX_VALUE_COUNT {
         infer_max_value_counts(&mut meta, field_infos);
     }
@@ -510,6 +600,23 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
     let min_length = input.read_i32()?;
     let max_length = input.read_i32()?;
 
+    if min_length == crate::substring::MIN_LENGTH_MARKER {
+        let substring = crate::substring::read_meta(input)?;
+        return Ok(BinaryEntry {
+            field_number,
+            docs_with_field_offset,
+            docs_with_field_length,
+            jump_table_entry_count,
+            dense_rank_power,
+            num_docs_with_field,
+            min_length,
+            max_length,
+            data_offset,
+            data_length,
+            addresses: None,
+            substring: Some(Box::new(substring)),
+        });
+    }
     let addresses = if min_length < max_length {
         let addresses_offset = input.read_i64()?;
         // ARITH: `num_docs_with_field` is an `i32` widened to `i64`, so the
@@ -543,6 +650,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
         data_offset,
         data_length,
         addresses,
+        substring: None,
     })
 }
 
@@ -616,6 +724,17 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
     if table_size > 256 {
         return Err(Error::InvalidTableSize(table_size));
     }
+    if table_size == ADAPTIVE_TABLE_SIZE {
+        return read_adaptive_numeric_entry(
+            input,
+            field_number,
+            docs_with_field_offset,
+            docs_with_field_length,
+            jump_table_entry_count,
+            dense_rank_power,
+            num_values,
+        );
+    }
     // `tableSize < -1` means this field's values are split into varying-
     // bits-per-value blocks (`blockShift = -2 - tableSize`) rather than a
     // lookup table; `bits_per_value` below is then a meaningless `0xFF`
@@ -670,7 +789,63 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
         values_length,
         block_shift,
         value_jump_table_offset,
+        adaptive: None,
     })
+}
+
+/// The rest of a NUMERIC entry whose `tableSize` is
+/// [`ADAPTIVE_TABLE_SIZE`]: Lucene90's fields (`valueJumpTableOffset` holding
+/// the block addresses' offset), then the addresses' `DirectMonotonic`
+/// metadata and length.
+#[allow(clippy::too_many_arguments)]
+fn read_adaptive_numeric_entry(
+    input: &mut SliceInput,
+    field_number: i32,
+    docs_with_field_offset: i64,
+    docs_with_field_length: i64,
+    jump_table_entry_count: i16,
+    dense_rank_power: u8,
+    num_values: i64,
+) -> Result<NumericEntry> {
+    let bits_per_value = input.read_byte()?;
+    let min_value = input.read_i64()?;
+    let gcd = input.read_i64()?;
+    let values_offset = input.read_i64()?;
+    let values_length = input.read_i64()?;
+    let descriptor_offset = input.read_i64()?;
+    Ok(NumericEntry {
+        field_number,
+        docs_with_field_offset,
+        docs_with_field_length,
+        jump_table_entry_count,
+        dense_rank_power,
+        num_values,
+        table: None,
+        bits_per_value,
+        min_value,
+        gcd,
+        values_offset,
+        values_length,
+        block_shift: None,
+        value_jump_table_offset: descriptor_offset,
+        adaptive: Some(Box::new(AdaptiveEntry::new(descriptor_offset))),
+    })
+}
+
+/// [`parse_meta`]'s check that adaptive value arrays appear only where the
+/// `RustAdaptive` format writes them: NUMERIC and SORTED_NUMERIC values,
+/// never SORTED or SORTED_SET ordinals.
+fn check_adaptive_entries(meta: &DocValuesMeta) -> Result<()> {
+    let adaptive = |e: &NumericEntry| e.adaptive.is_some();
+    let in_ords = meta.sorted.iter().any(|e| adaptive(&e.ords))
+        || meta.sorted_set.iter().any(|e| match &e.kind {
+            SortedSetKind::Single(s) => adaptive(&s.ords),
+            SortedSetKind::Multi { ords, .. } => adaptive(&ords.numeric),
+        });
+    if in_ords {
+        return Err(Error::InvalidTableSize(ADAPTIVE_TABLE_SIZE));
+    }
+    Ok(())
 }
 
 /// Validates a whole `.dvd` data file's header/footer, mirroring
@@ -685,7 +860,7 @@ pub fn check_data_header_footer(
     let mut input = SliceInput::new(buf);
     let header = codec_util::check_index_header(
         &mut input,
-        "Lucene90DocValuesData",
+        DATA_META_CODEC,
         VERSION_START,
         VERSION_CURRENT,
         segment_id,
@@ -1165,6 +1340,8 @@ pub struct NumericReader<'a> {
     /// The currently decoded varying-bits-per-value block, if any:
     /// `(block index, bits per value, delta, values slice range)`.
     block: Option<VaryingBlock>,
+    /// The last decoded adaptive delta block, if any.
+    adaptive_block: Option<Box<AdaptiveBlock>>,
     /// A dense single-width field, resolved once -- see [`FastDense`].
     fast: Option<FastDense<'a>>,
     /// A sparse single-width field's values, by ordinal.
@@ -1206,7 +1383,7 @@ impl<'a> FastDense<'a> {
     /// ordinal: what a sparse field's reads use once its `IndexedDISI` has
     /// turned the document into an ordinal.
     fn values(data: &'a [u8], entry: &'a NumericEntry) -> Option<Self> {
-        if entry.is_empty_field() || entry.block_shift.is_some() {
+        if entry.is_empty_field() || entry.block_shift.is_some() || entry.adaptive.is_some() {
             return None;
         }
         if entry.bits_per_value == 0 {
@@ -1348,6 +1525,7 @@ impl<'a> NumericReader<'a> {
             entry,
             docs,
             block: None,
+            adaptive_block: None,
             fast: FastDense::new(data, entry),
             sparse_fast: if entry.is_dense() {
                 None
@@ -1434,6 +1612,15 @@ impl<'a> NumericReader<'a> {
 
     /// The value at `ordinal` in the values array.
     fn decode_at(&mut self, ordinal: i64) -> Result<i64> {
+        if let Some(adaptive) = &self.entry.adaptive {
+            return adaptive_value(
+                self.data,
+                self.entry,
+                adaptive,
+                ordinal,
+                &mut self.adaptive_block,
+            );
+        }
         match self.entry.block_shift {
             Some(shift) => self.decode_varying(shift, ordinal),
             None => decode_value(self.data, self.entry, ordinal),
@@ -1503,9 +1690,33 @@ impl<'a> NumericReader<'a> {
             // ARITH: `doc < end`, so the difference is positive and fits.
             #[allow(clippy::arithmetic_side_effects)]
             let want = ((end - doc) as usize).min(CHUNK);
-            let n = match &self.fast {
-                Some(fast) => fast.fill(doc, &mut buf[..want]),
-                None => 0,
+            let n = match (&self.fast, &self.entry.adaptive) {
+                (Some(fast), _) => fast.fill(doc, &mut buf[..want]),
+                (None, Some(adaptive)) if self.entry.is_dense() => {
+                    let have =
+                        usize::try_from(self.entry.num_values.saturating_sub(i64::from(doc)))
+                            .unwrap_or(0)
+                            .min(want);
+                    adaptive_run(
+                        self.data,
+                        self.entry,
+                        adaptive,
+                        i64::from(doc),
+                        &mut buf[..have],
+                        &mut self.adaptive_block,
+                    )?;
+                    have
+                }
+                (None, None) if self.entry.is_dense() && self.entry.block_shift.is_some() => {
+                    let have =
+                        usize::try_from(self.entry.num_values.saturating_sub(i64::from(doc)))
+                            .unwrap_or(0)
+                            .min(want);
+                    let shift = self.entry.block_shift.unwrap_or_default();
+                    self.decode_varying_run(shift, i64::from(doc), &mut buf[..have])?;
+                    have
+                }
+                _ => 0,
             };
             if n == 0 {
                 if let Some(v) = self.value(doc)? {
@@ -1572,6 +1783,20 @@ impl<'a> NumericReader<'a> {
                     done += n;
                 }
                 set_first_bits(present, done);
+            } else if let (true, Some(adaptive)) = (self.entry.is_dense(), &self.entry.adaptive) {
+                let have = usize::try_from(self.entry.num_values.saturating_sub(i64::from(start)))
+                    .unwrap_or(0)
+                    .min(len);
+                adaptive_run(
+                    self.data,
+                    self.entry,
+                    adaptive,
+                    i64::from(start),
+                    &mut values[..have],
+                    &mut self.adaptive_block,
+                )?;
+                set_first_bits(present, have);
+                return Ok(());
             } else if let (true, Some(shift)) = (self.entry.is_dense(), self.entry.block_shift) {
                 // Dense, varying bits per value: the documents are the
                 // ordinals.
@@ -1778,7 +2003,11 @@ fn decode_value_cached(
     entry: &NumericEntry,
     ordinal: i64,
     cache: &mut Option<VaryingBlock>,
+    adaptive_cache: &mut Option<Box<AdaptiveBlock>>,
 ) -> Result<i64> {
+    if let Some(adaptive) = &entry.adaptive {
+        return adaptive_value(data, entry, adaptive, ordinal, adaptive_cache);
+    }
     match entry.block_shift {
         Some(shift) => decode_varying_cached(data, entry, shift, ordinal, cache),
         None => decode_value(data, entry, ordinal),
@@ -1854,10 +2083,176 @@ fn read_varying_block(data: &[u8], entry: &NumericEntry, index: i64) -> Result<V
     })
 }
 
+/// One decoded [`crate::adaptive_values`] block, kept by a reader so the
+/// other values of the block cost nothing, and the block it read last.
+#[derive(Debug, Clone)]
+struct AdaptiveBlock {
+    index: i64,
+    last: i64,
+    values: [i64; crate::adaptive_values::BLOCK_SIZE],
+}
+
+/// Block `block` of an adaptive value array: its bytes (to the end of the
+/// region, padding included) and how many values it holds.
+fn adaptive_block<'d>(
+    data: &'d [u8],
+    entry: &NumericEntry,
+    adaptive: &AdaptiveEntry,
+    block: i64,
+) -> Result<(&'d [u8], usize)> {
+    use crate::adaptive_values::{BLOCK_SHIFT, BLOCK_SIZE};
+    let first = block
+        .checked_shl(BLOCK_SHIFT)
+        .filter(|&f| f >= 0 && f < entry.num_values)
+        .ok_or(Error::DocOutOfRange(i32::MAX, entry.num_values))?;
+    let len = usize::try_from(entry.num_values.wrapping_sub(first))
+        .unwrap_or(BLOCK_SIZE)
+        .min(BLOCK_SIZE);
+    let values = region(data, entry.values_offset, entry.values_length)?;
+    let resolved = adaptive.addresses(data, entry.num_values)?;
+    let addresses = region(data, resolved.offset, resolved.length)?;
+    let start = direct_monotonic::get(addresses, &resolved.meta, block)?;
+    let Some(bytes) = usize::try_from(start).ok().and_then(|s| values.get(s..)) else {
+        return Err(lucene_store::Error::Eof { offset: 0 }.into());
+    };
+    Ok((bytes, len))
+}
+
+/// The value at `ordinal` of an adaptive value array. A reader walking
+/// forward (its first read, a second read in one block, or a read in the
+/// block after the last) decodes the block whole into `cache` and answers
+/// from it while it stays there; a jump elsewhere answers the one value
+/// directly.
+fn adaptive_value(
+    data: &[u8],
+    entry: &NumericEntry,
+    adaptive: &AdaptiveEntry,
+    ordinal: i64,
+    cache: &mut Option<Box<AdaptiveBlock>>,
+) -> Result<i64> {
+    use crate::adaptive_values::{self as av, BLOCK_SHIFT};
+    if ordinal < 0 || ordinal >= entry.num_values {
+        return Err(Error::DocOutOfRange(
+            i32::try_from(ordinal).unwrap_or(i32::MAX),
+            entry.num_values,
+        ));
+    }
+    let block = ordinal >> BLOCK_SHIFT;
+    let within = (ordinal & low_bits_mask(BLOCK_SHIFT)) as usize;
+    // A second read in the block last read, or a read in the block after it,
+    // is a reader walking forward.
+    let sequential = match cache.as_deref_mut() {
+        Some(c) if c.index == block => return Ok(c.values[within]),
+        Some(c) => {
+            let forward = c.last == block || c.last.wrapping_add(1) == block;
+            c.last = block;
+            forward
+        }
+        None => true,
+    };
+    let (bytes, len) = adaptive_block(data, entry, adaptive, block)?;
+    if within >= len {
+        return Err(Error::DocOutOfRange(
+            i32::try_from(ordinal).unwrap_or(i32::MAX),
+            entry.num_values,
+        ));
+    }
+    if !sequential {
+        return Ok(av::get_one(bytes, within)?);
+    }
+    let c = cache.get_or_insert_with(|| {
+        Box::new(AdaptiveBlock {
+            index: -1,
+            last: -1,
+            values: [0; av::BLOCK_SIZE],
+        })
+    });
+    c.index = -1;
+    av::decode_block(bytes, &mut c.values[..len])?;
+    c.index = block;
+    c.last = block;
+    Ok(c.values[within])
+}
+
+/// The values at ordinals `first..first + out.len()` of an adaptive value
+/// array, a block at a time.
+fn adaptive_run(
+    data: &[u8],
+    entry: &NumericEntry,
+    adaptive: &AdaptiveEntry,
+    first: i64,
+    out: &mut [i64],
+    cache: &mut Option<Box<AdaptiveBlock>>,
+) -> Result<()> {
+    use crate::adaptive_values::{self as av, BLOCK_SHIFT};
+    let mut done = 0usize;
+    while done < out.len() {
+        let ordinal = first.saturating_add(done as i64);
+        let block = ordinal >> BLOCK_SHIFT;
+        let within = (ordinal & low_bits_mask(BLOCK_SHIFT)) as usize;
+        let cached = cache.as_deref().filter(|c| c.index == block);
+        let (src, len): (&[i64], usize) = match cached {
+            Some(c) => {
+                let len = usize::try_from(entry.num_values.saturating_sub(block << BLOCK_SHIFT))
+                    .unwrap_or(0)
+                    .min(av::BLOCK_SIZE);
+                (&c.values[..], len)
+            }
+            None => {
+                let (bytes, len) = adaptive_block(data, entry, adaptive, block)?;
+                let rest = out.len().saturating_sub(done);
+                if within == 0 && rest >= len {
+                    // The whole block lands in `out`: decode it in place.
+                    let end = done.saturating_add(len);
+                    av::decode_block(bytes, &mut out[done..end])?;
+                    done = end;
+                    continue;
+                }
+                let c = cache.get_or_insert_with(|| {
+                    Box::new(AdaptiveBlock {
+                        index: -1,
+                        last: -1,
+                        values: [0; av::BLOCK_SIZE],
+                    })
+                });
+                c.index = -1;
+                av::decode_block(bytes, &mut c.values[..len])?;
+                c.index = block;
+                c.last = block;
+                (&c.values[..], len)
+            }
+        };
+        if within >= len {
+            return Err(Error::DocOutOfRange(
+                i32::try_from(ordinal).unwrap_or(i32::MAX),
+                entry.num_values,
+            ));
+        }
+        let n = (len.saturating_sub(within)).min(out.len().saturating_sub(done));
+        let end = done.saturating_add(n);
+        out[done..end].copy_from_slice(&src[within..within.saturating_add(n)]);
+        done = end;
+    }
+    Ok(())
+}
+
 /// Decodes the raw bit-packed value at `ordinal` (doc id for dense fields,
 /// rank-among-present-docs for sparse ones) and applies the table or
 /// GCD-delta transform to get the final value.
 fn decode_value(data: &[u8], entry: &NumericEntry, ordinal: i64) -> Result<i64> {
+    if let Some(adaptive) = &entry.adaptive {
+        // One value, no reader to keep a block for: decode just it.
+        use crate::adaptive_values::{self as av, BLOCK_SHIFT};
+        if ordinal < 0 || ordinal >= entry.num_values {
+            return Err(Error::DocOutOfRange(
+                i32::try_from(ordinal).unwrap_or(i32::MAX),
+                entry.num_values,
+            ));
+        }
+        let (bytes, _) = adaptive_block(data, entry, adaptive, ordinal >> BLOCK_SHIFT)?;
+        let within = (ordinal & low_bits_mask(BLOCK_SHIFT)) as usize;
+        return Ok(av::get_one(bytes, within)?);
+    }
     if let Some(shift) = entry.block_shift {
         return decode_value_varying_bpv(data, entry, shift, ordinal);
     }
@@ -1914,6 +2309,9 @@ fn decode_value_varying_bpv(
 /// (fixed/variable). `data` is the whole `.dvd` file's bytes. `Ok(None)`
 /// means `doc` legitimately has no value.
 pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result<Option<&'d [u8]>> {
+    if entry.substring.is_some() {
+        return Err(Error::CompressedBinary(entry.field_number));
+    }
     if doc < 0 {
         return Err(Error::DocOutOfRange(doc, entry.num_docs_with_field as i64));
     }
@@ -2010,6 +2408,13 @@ pub struct BinaryReader<'a> {
     /// `None` when a region is not inside `data`, and each lookup then takes
     /// [`binary_value_at_ordinal`], which reports it.
     resolved: Option<ResolvedBinary<'a>>,
+    /// A `RustSubstring` entry's index and its last decompressed block.
+    substring: Option<
+        Box<(
+            crate::substring::SubstringIndex<'a>,
+            crate::substring::Block,
+        )>,
+    >,
 }
 
 /// [`BinaryReader`]'s per-iterator state.
@@ -2074,7 +2479,12 @@ impl<'a> BinaryReader<'a> {
                     )
                 })
         };
-        let resolved = if entry.is_empty_field() {
+        let substring = entry.substring.as_deref().and_then(|e| {
+            crate::substring::SubstringIndex::new(data, e)
+                .ok()
+                .map(|index| Box::new((index, crate::substring::Block::new())))
+        });
+        let resolved = if entry.is_empty_field() || entry.substring.is_some() {
             None
         } else {
             ResolvedBinary::new(data, entry)
@@ -2084,6 +2494,24 @@ impl<'a> BinaryReader<'a> {
             entry,
             docs,
             resolved,
+            substring,
+        }
+    }
+
+    /// This document's value, or `None` when it has none: [`Self::value`],
+    /// and for a `RustSubstring` entry the value decompressed into this
+    /// reader (so it lives until the next call).
+    pub fn value_ref(&mut self, doc: i32) -> Result<Option<&[u8]>> {
+        if self.entry.substring.is_none() {
+            return self.value(doc);
+        }
+        match self.substring.as_deref_mut() {
+            Some((index, block)) => index.value(doc, block),
+            // The index did not open: its error.
+            None => match self.entry.substring.as_deref() {
+                Some(e) => crate::substring::SubstringIndex::new(self.data, e).map(|_| None),
+                None => Ok(None),
+            },
         }
     }
 
@@ -2092,6 +2520,9 @@ impl<'a> BinaryReader<'a> {
     /// rederivation. Ascending `doc` walks the region once; going backwards
     /// rewinds the cursor, which costs a re-walk and still allocates nothing.
     pub fn value(&mut self, doc: i32) -> Result<Option<&'a [u8]>> {
+        if self.entry.substring.is_some() {
+            return Err(Error::CompressedBinary(self.entry.field_number));
+        }
         if doc < 0 {
             return Err(Error::DocOutOfRange(
                 doc,
@@ -2248,6 +2679,8 @@ pub struct SortedNumericReader<'a> {
     /// [`NumericReader`] keeps it: a document's values, and the next
     /// document's, sit in one block.
     block: Option<VaryingBlock>,
+    /// The last decoded adaptive delta block, if any.
+    adaptive_block: Option<Box<AdaptiveBlock>>,
 }
 
 impl<'a> SortedNumericReader<'a> {
@@ -2286,6 +2719,7 @@ impl<'a> SortedNumericReader<'a> {
             addresses,
             next_address: None,
             block: None,
+            adaptive_block: None,
         }
     }
 
@@ -2360,7 +2794,13 @@ impl<'a> SortedNumericReader<'a> {
                     .and_then(|i| self.fast.as_ref()?.get(i));
                 out.push(match fast {
                     Some(v) => v,
-                    None => decode_value_cached(self.data, numeric, rank, &mut self.block)?,
+                    None => decode_value_cached(
+                        self.data,
+                        numeric,
+                        rank,
+                        &mut self.block,
+                        &mut self.adaptive_block,
+                    )?,
                 });
             }
             Some(addrs) => {
@@ -2407,15 +2847,25 @@ impl<'a> SortedNumericReader<'a> {
                         for i in start..end {
                             out.push(match fast.get(i as i32) {
                                 Some(v) => v,
-                                None => {
-                                    decode_value_cached(self.data, numeric, i, &mut self.block)?
-                                }
+                                None => decode_value_cached(
+                                    self.data,
+                                    numeric,
+                                    i,
+                                    &mut self.block,
+                                    &mut self.adaptive_block,
+                                )?,
                             });
                         }
                     }
                     _ => {
                         for i in start..end {
-                            out.push(decode_value_cached(self.data, numeric, i, &mut self.block)?);
+                            out.push(decode_value_cached(
+                                self.data,
+                                numeric,
+                                i,
+                                &mut self.block,
+                                &mut self.adaptive_block,
+                            )?);
                         }
                     }
                 }
@@ -2546,7 +2996,13 @@ impl<'a> SortedNumericReader<'a> {
                 let at = first + done as i64;
                 let got = i32::try_from(at).map_or(0, |a| fast.fill(a, &mut values[done..]));
                 if got == 0 {
-                    values[done] = decode_value_cached(self.data, numeric, at, &mut self.block)?;
+                    values[done] = decode_value_cached(
+                        self.data,
+                        numeric,
+                        at,
+                        &mut self.block,
+                        &mut self.adaptive_block,
+                    )?;
                     done += 1;
                 } else {
                     done += got;
@@ -2730,7 +3186,9 @@ impl<'a> SortedNumericReader<'a> {
                     // cannot answer: decode them one by one.
                     long.clear();
                     for i in lo..hi {
-                        long.push(decode_value_cached(self.data, numeric, i, &mut block)?);
+                        long.push(decode_value_cached(
+                            self.data, numeric, i, &mut block, &mut None,
+                        )?);
                     }
                     f(doc, &long);
                 }
@@ -3142,6 +3600,14 @@ pub struct Lucene90DocValuesFormat {
     /// one without changing its files (`AssertingDocValuesFormat`'s
     /// `Asserting`).
     name: &'static str,
+    /// Whether NUMERIC and SORTED_NUMERIC values may be written as
+    /// [`crate::adaptive_values`] blocks: the `RustAdaptive` format
+    /// ([`Self::rust_adaptive`]), which Lucene cannot read.
+    adaptive: bool,
+    /// The block shift BINARY values are written in as
+    /// [`crate::substring`] blocks: the `RustSubstring` format
+    /// ([`Self::rust_substring`]), which Lucene cannot read.
+    substring: Option<u8>,
 }
 
 impl Lucene90DocValuesFormat {
@@ -3162,7 +3628,52 @@ impl Lucene90DocValuesFormat {
             skip_index_interval_size,
             instance: 0,
             name: Self::NAME,
+            adaptive: false,
+            substring: None,
         })
+    }
+
+    /// `getName()` of [`Self::rust_adaptive`].
+    pub const RUST_ADAPTIVE_NAME: &'static str = "RustAdaptive";
+
+    /// The `RustAdaptive` format: Lucene90's files, with each NUMERIC or
+    /// SORTED_NUMERIC value array written as [`crate::adaptive_values`]
+    /// blocks whenever that is smaller. Stock Lucene has no format by this
+    /// name, so it refuses such a field rather than misreading it; the
+    /// plugin registers a reader for it on the JVM side.
+    pub fn rust_adaptive() -> Self {
+        Lucene90DocValuesFormat {
+            name: Self::RUST_ADAPTIVE_NAME,
+            adaptive: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether this is the `RustAdaptive` format.
+    pub fn is_adaptive(&self) -> bool {
+        self.adaptive
+    }
+
+    /// `getName()` of [`Self::rust_substring`].
+    pub const RUST_SUBSTRING_NAME: &'static str = "RustSubstring";
+
+    /// The `RustSubstring` format: Lucene90's files, with each BINARY field
+    /// written as [`crate::substring`] blocks of `2^block_shift` documents
+    /// (capped at [`crate::substring::MAX_BLOCK_SHIFT`]) with a trigram
+    /// index, searchable by substring, wildcard and regexp. Stock Lucene has
+    /// no format by this name, so it refuses such a field rather than
+    /// misreading it.
+    pub fn rust_substring(block_shift: u8) -> Self {
+        Lucene90DocValuesFormat {
+            name: Self::RUST_SUBSTRING_NAME,
+            substring: Some(block_shift.min(crate::substring::MAX_BLOCK_SHIFT)),
+            ..Self::default()
+        }
+    }
+
+    /// The block shift of the `RustSubstring` format, `None` for any other.
+    pub fn substring_block_shift(&self) -> Option<u8> {
+        self.substring
     }
 
     /// The interval size this format writes skip indexes with.
@@ -3196,6 +3707,8 @@ impl Default for Lucene90DocValuesFormat {
             skip_index_interval_size: Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
             instance: 0,
             name: Self::NAME,
+            adaptive: false,
+            substring: None,
         }
     }
 }
@@ -3283,7 +3796,7 @@ pub fn write_fields_with_format(
             // (its type byte leads it) and spliced around the skip index.
             let stream = field.skip_index_stream(max_doc)?;
             let mut entry = Vec::new();
-            write_field_entry(&mut entry, &mut data, field, max_doc)?;
+            write_field_entry(&mut entry, &mut data, field, max_doc, &format)?;
             meta.push(entry[0]);
             write_skip_index(
                 &mut meta,
@@ -3293,7 +3806,7 @@ pub fn write_fields_with_format(
             );
             meta.extend_from_slice(&entry[1..]);
         } else {
-            write_field_entry(&mut meta, &mut data, field, max_doc)?;
+            write_field_entry(&mut meta, &mut data, field, max_doc, &format)?;
         }
     }
 
@@ -3325,12 +3838,52 @@ fn write_field_entry(
     data: &mut Vec<u8>,
     field: &DenseField<'_>,
     max_doc: i32,
+    format: &Lucene90DocValuesFormat,
 ) -> WriteResult<()> {
+    let adaptive = format.adaptive;
+    if let Some(shift) = format.substring {
+        match field {
+            DenseField::Binary(_, values) => {
+                let docs: Vec<i32> = (0..values.len() as i32).collect();
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_substring_entry_body(meta, data, &docs, |i| &values[i], max_doc, shift);
+                return Ok(());
+            }
+            DenseField::SparseBinary(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                let docs: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_substring_entry_body(meta, data, &docs, |i| &sorted[i].1, max_doc, shift);
+                return Ok(());
+            }
+            DenseField::BinaryColumn(_, column) => {
+                check_ascending_docs(&column.docs, max_doc)?;
+                let mut starts = Vec::with_capacity(column.lengths.len() + 1);
+                let mut at = 0usize;
+                for &l in &column.lengths {
+                    starts.push(at);
+                    at = at.saturating_add(l as usize);
+                }
+                starts.push(at);
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_substring_entry_body(
+                    meta,
+                    data,
+                    &column.docs,
+                    |i| &column.bytes[starts[i]..starts[i + 1]],
+                    max_doc,
+                    shift,
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
     {
         match field {
             DenseField::Numeric(_, values) => {
                 meta.push(DOC_VALUES_TYPE_NUMERIC);
-                write_dense_numeric_entry_body(meta, data, values);
+                write_dense_numeric_entry_body_with(meta, data, values, adaptive);
             }
             DenseField::SparseNumeric(_, pairs) => {
                 let mut sorted: Vec<(i32, i64)> = pairs.to_vec();
@@ -3351,6 +3904,8 @@ fn write_field_entry(
                 if doc_ids.is_empty() {
                     write_empty_docs_with_field(meta);
                     write_numeric_values_body(meta, data, &values);
+                } else if adaptive {
+                    write_numeric_entry_body_with(meta, data, &doc_ids, &values, max_doc, true);
                 } else if doc_ids.len() == max_doc as usize {
                     // `Lucene90DocValuesConsumer.writeValues` writes the
                     // `[-1, 0]` dense marker when `docsWithField.cardinality()
@@ -3377,7 +3932,7 @@ fn write_field_entry(
             }
             DenseField::SortedNumeric(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-                write_dense_sorted_numeric_entry_body(meta, data, values);
+                write_dense_sorted_numeric_entry_body(meta, data, values, adaptive);
             }
             DenseField::SortedSet(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
@@ -3409,7 +3964,7 @@ fn write_field_entry(
                 let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
                 let per_doc: Vec<Vec<i64>> = sorted.into_iter().map(|(_, v)| v).collect();
                 meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-                write_sorted_numeric_entry_body(meta, data, &doc_ids, &per_doc, max_doc);
+                write_sorted_numeric_entry_body(meta, data, &doc_ids, &per_doc, max_doc, adaptive);
             }
             DenseField::SparseSortedSet(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
@@ -3443,7 +3998,14 @@ fn write_field_entry(
                     return Err(WriteError::EmptyMultiValuedDoc(column.docs[k]));
                 }
                 meta.push(DOC_VALUES_TYPE_SORTED_NUMERIC);
-                write_numeric_entry_body(meta, data, &column.docs, &column.values, max_doc);
+                write_numeric_entry_body_with(
+                    meta,
+                    data,
+                    &column.docs,
+                    &column.values,
+                    max_doc,
+                    adaptive,
+                );
                 meta.write_i32(column.docs.len() as i32); // numDocsWithField
                 if column.docs.len() != column.values.len() {
                     write_address_array(
@@ -3744,6 +4306,117 @@ fn write_numeric_entry_body(
     write_numeric_values_body(meta, data, values);
 }
 
+/// [`write_numeric_entry_body`], its values as adaptive blocks when
+/// `adaptive` and that is smaller.
+fn write_numeric_entry_body_with(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    values: &[i64],
+    max_doc: i32,
+    adaptive: bool,
+) {
+    write_docs_with_field(meta, data, doc_ids, max_doc);
+    write_numeric_values_body_with(meta, data, values, adaptive);
+}
+
+/// [`write_dense_numeric_entry_body`], its values as adaptive blocks when
+/// `adaptive` and that is smaller.
+fn write_dense_numeric_entry_body_with(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    values: &[i64],
+    adaptive: bool,
+) {
+    if adaptive {
+        meta.write_i64(DOCS_WITH_FIELD_DENSE);
+        meta.write_i64(0);
+        meta.write_i16(-1); // jumpTableEntryCount
+        meta.push(0xFF); // denseRankPower (-1 as u8)
+        write_numeric_values_body_with(meta, data, values, true);
+    } else {
+        write_dense_numeric_entry_body(meta, data, values);
+    }
+}
+
+/// [`write_numeric_values_body`], or -- when `adaptive` and smaller -- the
+/// same values as [`crate::adaptive_values`] blocks behind an
+/// [`ADAPTIVE_TABLE_SIZE`] entry. Both are written and the larger dropped:
+/// Lucene90's table and constant encodings still win on columns with few
+/// distinct values.
+// ARITH: lengths and offsets of in-memory, append-only buffers.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_numeric_values_body_with(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    values: &[i64],
+    adaptive: bool,
+) {
+    let (meta_start, data_start) = (meta.len(), data.len());
+    write_numeric_values_body(meta, data, values);
+    if !adaptive || values.len() < crate::adaptive_values::BLOCK_SIZE {
+        return;
+    }
+    let lucene90 = (meta.len() - meta_start) + (data.len() - data_start);
+    let (blocks, addresses) = crate::adaptive_values::encode(values);
+    let (addr_meta, addr_data) = direct_monotonic::write(&addresses, ADAPTIVE_ADDRESS_BLOCK_SHIFT);
+    // numValues, tableSize, bpv, min, gcd, offsets and lengths, block shift.
+    let fixed = 8 + 4 + 1 + 8 * 5 + 5 + 16;
+    if fixed + addr_meta.len() + blocks.len() + addr_data.len() >= lucene90 {
+        return;
+    }
+    meta.truncate(meta_start);
+    data.truncate(data_start);
+    meta.write_i64(values.len() as i64);
+    meta.write_i32(ADAPTIVE_TABLE_SIZE);
+    meta.push(0xFF); // bitsPerValue: per block
+    meta.write_i64(values.iter().copied().min().unwrap_or(0));
+    meta.write_i64(1); // gcd: per block
+    let values_offset = data.len() as i64;
+    data.extend_from_slice(&blocks);
+    meta.write_i64(values_offset);
+    meta.write_i64(data.len() as i64 - values_offset);
+    let addresses_offset = data.len() as i64;
+    data.extend_from_slice(&addr_data);
+    let addresses_length = data.len() as i64 - addresses_offset;
+    // The block-address descriptor (see `AdaptiveEntry`), where Lucene90
+    // keeps a varying-width field's jump table.
+    meta.write_i64(data.len() as i64);
+    data.write_vint(ADAPTIVE_ADDRESS_BLOCK_SHIFT as i32);
+    data.extend_from_slice(&addr_meta);
+    data.write_i64(addresses_offset);
+    data.write_i64(addresses_length);
+}
+
+/// A BINARY entry body in the `RustSubstring` layout: Lucene90's prefix
+/// (data region, docs with a value, value count) with
+/// [`crate::substring::MIN_LENGTH_MARKER`] as `minLength`, then the
+/// substring metadata.
+// ARITH: lengths and offsets of in-memory, append-only buffers.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_substring_entry_body<'v>(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    value: impl Fn(usize) -> &'v [u8],
+    max_doc: i32,
+    block_shift: u8,
+) {
+    let max_length = (0..doc_ids.len())
+        .map(|i| value(i).len())
+        .max()
+        .unwrap_or(0) as i32;
+    let data_offset = data.len() as i64;
+    let substring_meta = crate::substring::write_data(data, doc_ids, value, max_doc, block_shift);
+    meta.write_i64(data_offset);
+    meta.write_i64(data.len() as i64 - data_offset);
+    write_docs_with_field(meta, data, doc_ids, max_doc);
+    meta.write_i32(doc_ids.len() as i32);
+    meta.write_i32(crate::substring::MIN_LENGTH_MARKER);
+    meta.write_i32(max_length);
+    meta.extend_from_slice(&substring_meta);
+}
+
 /// A BINARY entry body for a column that may be sparse -- the sparse
 /// counterpart of [`write_dense_binary_entry_body`], sharing every decision
 /// it makes except the docs-with-field header.
@@ -3831,9 +4504,10 @@ fn write_sorted_numeric_entry_body(
     doc_ids: &[i32],
     per_doc: &[Vec<i64>],
     max_doc: i32,
+    adaptive: bool,
 ) {
     let flat: Vec<i64> = per_doc.iter().flatten().copied().collect();
-    write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
+    write_numeric_entry_body_with(meta, data, doc_ids, &flat, max_doc, adaptive);
 
     let num_docs_with_field = per_doc.len() as i32;
     meta.write_i32(num_docs_with_field);
@@ -4019,11 +4693,12 @@ fn write_dense_sorted_numeric_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
     values: &[Vec<i64>],
+    adaptive: bool,
 ) {
     let num_docs_with_field = values.len() as i32;
     let flat: Vec<i64> = values.iter().flatten().copied().collect();
 
-    write_dense_numeric_entry_body(meta, data, &flat);
+    write_dense_numeric_entry_body_with(meta, data, &flat, adaptive);
 
     meta.write_i32(num_docs_with_field);
     if num_docs_with_field as i64 != flat.len() as i64 {
@@ -6629,6 +7304,7 @@ mod tests {
             data_offset,
             data_length,
             addresses: None,
+            substring: None,
         }
     }
 
@@ -6691,6 +7367,7 @@ mod tests {
                 length: addr_bytes.len() as i64,
                 meta: addr_meta,
             }),
+            substring: None,
         };
         let mut data = addr_bytes.to_vec();
         data.extend_from_slice(blob);
@@ -7581,6 +8258,7 @@ mod tests {
             values_length: 0,
             block_shift: None,
             value_jump_table_offset: 0,
+            adaptive: None,
         };
         let mut reader = NumericReader::new(&[0u8; 8], &entry);
         assert!(reader.value(0).is_err());
@@ -8532,6 +9210,7 @@ mod tests {
                 values_length: 0,
                 block_shift: None,
                 value_jump_table_offset: -1,
+                adaptive: None,
             },
             num_docs_with_field: 1,
             addresses: Some(MultiValueAddresses {

@@ -333,6 +333,16 @@ pub fn write_footer(buf: &mut Vec<u8>) {
     buf.write_be_u64(checksum);
 }
 
+/// [`write_footer`] on a streaming output, its checksum the output's running
+/// CRC over every byte written to it.
+pub fn write_footer_to(out: &mut crate::index_output::FsIndexOutput) {
+    use crate::index_output::IndexOutput;
+    out.write_bytes(&FOOTER_MAGIC.to_be_bytes());
+    out.write_bytes(&0u32.to_be_bytes());
+    let checksum = out.checksum();
+    out.write_bytes(&checksum.to_be_bytes());
+}
+
 /// Port of `CodecUtil.checkFooter`: `input` must be positioned at the start of the
 /// footer (i.e. at `total_len - FOOTER_LENGTH`), and `total_len` is the full file
 /// length (footer's CRC covers everything before the checksum field itself).
