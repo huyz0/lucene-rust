@@ -150,6 +150,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
+        if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (pattern_text only): %d phrases compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestPatternText.encoded, checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
         if ("similarity".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -183,6 +189,8 @@ public final class NativeSelfTest {
         check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
         NativeSelfTestTensor.run(new Random(37), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
+        NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);

@@ -35,6 +35,7 @@ lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-misc = { path = "../lucene-misc" }
 lucene-sparse = { path = "../lucene-sparse" }
 lucene-tensor = { path = "../lucene-tensor" }
+lucene-pattern-text = { path = "../lucene-pattern-text" }
 # The ml-commons port's local model inference (`ml.rs`).
 lucene-ml = { path = "../lucene-ml" }
 # libtorch and the TorchScript shim (`ml_torch.rs`), opened at run time.
