@@ -63,7 +63,8 @@ A request runs native when **all** of these hold:
   `TermStates`, as `multi_match` `cross_fields` builds);
 - every field in the index uses a default postings format some Lucene
   9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
-  `Lucene103`, `Lucene104`; M8 T8.5) or a completion format
+  `Lucene103`, `Lucene104`; M8 T8.5), the engine's zstd term-block format
+  `RustZstd104` (`index.lucene_rust.zstd_terms`), or a completion format
   (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
   an index an OpenSearch 2.x node wrote is served natively after the upgrade
   to 3.9.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
@@ -233,7 +234,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `RustZstd104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
