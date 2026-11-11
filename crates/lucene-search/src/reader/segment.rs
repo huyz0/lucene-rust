@@ -61,7 +61,10 @@ impl SparseDocs {
     /// the documents come off disk, and one near `i32::MAX` in a ten-document
     /// segment would otherwise size a ~400 MB bit set. A document outside
     /// `0..max_doc`, or not strictly above the one before it, is corruption.
-    pub(crate) fn new(docs: Vec<i32>, max_doc: i32) -> Result<Self> {
+    pub(crate) fn new(mut docs: Vec<i32>, max_doc: i32) -> Result<Self> {
+        // The cache counts capacity: a list grown by doubling would cost up
+        // to twice what [`Self::heap_bytes_for`] predicts.
+        docs.shrink_to_fit();
         let mut last = -1i32;
         for &d in &docs {
             if d <= last || d >= max_doc {
@@ -93,6 +96,17 @@ impl SparseDocs {
 
     fn len(&self) -> usize {
         self.docs.len()
+    }
+
+    /// What [`Self::heap_bytes`] comes to for `count` documents in a segment
+    /// of `max_doc`, before decoding anything.
+    pub(crate) fn heap_bytes_for(count: i64, max_doc: i32) -> usize {
+        let words = usize::try_from(max_doc).unwrap_or(0).div_ceil(64);
+        usize::try_from(count)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4)
+            .saturating_add(words.saturating_mul(12))
+            .saturating_add(std::mem::size_of::<Self>())
     }
 
     /// The bytes this set holds on the heap, which the cache's budget counts.
@@ -144,15 +158,7 @@ impl DocSet {
             -2 => Ok(DocSet::Empty),
             -1 => Ok(DocSet::Dense(max_doc)),
             _ => {
-                let region = usize::try_from(offset)
-                    .ok()
-                    .zip(usize::try_from(length).ok())
-                    .and_then(|(o, l)| data.get(o..o.checked_add(l)?))
-                    .ok_or_else(|| {
-                        lucene_store::Error::Corrupted(format!(
-                            "docs-with-field region {offset}+{length} outside its file"
-                        ))
-                    })?;
+                let region = Self::region(data, offset, length)?;
                 // Bounded by the segment as it decodes: a corrupt region
                 // cannot grow the list past `max_doc` entries.
                 let docs = lucene_codecs::indexed_disi::decode_doc_ids_below(
@@ -163,6 +169,20 @@ impl DocSet {
                 Ok(DocSet::Sparse(Arc::new(SparseDocs::new(docs, max_doc)?)))
             }
         }
+    }
+
+    /// The bytes `[offset, offset + length)` of `data`, or corruption when
+    /// they are not all there.
+    fn region(data: &[u8], offset: i64, length: i64) -> Result<&[u8]> {
+        Ok(usize::try_from(offset)
+            .ok()
+            .zip(usize::try_from(length).ok())
+            .and_then(|(o, l)| data.get(o..o.checked_add(l)?))
+            .ok_or_else(|| {
+                lucene_store::Error::Corrupted(format!(
+                    "docs-with-field region {offset}+{length} outside its file"
+                ))
+            })?)
     }
 
     /// [`Self::read`] through `reader`'s cache of decoded sets: a sparse
@@ -211,26 +231,208 @@ impl DocSet {
     }
 }
 
+/// Where a doc-values (or norms) field records its documents with a value,
+/// and how many there are: what [`DvCursor::open`] needs to choose between
+/// the cached set, decoding it, and walking it in place.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DocsRegion {
+    offset: i64,
+    length: i64,
+    jump_table_entry_count: i16,
+    dense_rank_power: u8,
+    /// Documents with a value.
+    count: i64,
+}
+
+impl DocsRegion {
+    /// The `IndexedDISI` of `count` documents at `[offset, offset + length)`
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn at(offset: i64, length: i64, jump_table_entry_count: i16, count: i64) -> Self {
+        Self {
+            offset,
+            length,
+            jump_table_entry_count,
+            dense_rank_power: lucene_codecs::indexed_disi::DEFAULT_DENSE_RANK_POWER,
+            count,
+        }
+    }
+
+    /// A NUMERIC field, or a SORTED one's ordinals: `numValues` is its
+    /// documents with a value.
+    fn numeric(e: &NumericEntry) -> Self {
+        Self {
+            offset: e.docs_with_field_offset,
+            length: e.docs_with_field_length,
+            jump_table_entry_count: e.jump_table_entry_count,
+            dense_rank_power: e.dense_rank_power,
+            count: e.num_values,
+        }
+    }
+
+    /// A SORTED_NUMERIC field, or a multi-valued SORTED_SET's ordinals,
+    /// whose `numValues` counts values rather than documents.
+    fn multi(e: &doc_values::SortedNumericEntry) -> Self {
+        Self {
+            count: i64::from(e.num_docs_with_field),
+            ..Self::numeric(&e.numeric)
+        }
+    }
+
+    fn binary(e: &doc_values::BinaryEntry) -> Self {
+        Self {
+            offset: e.docs_with_field_offset,
+            length: e.docs_with_field_length,
+            jump_table_entry_count: e.jump_table_entry_count,
+            dense_rank_power: e.dense_rank_power,
+            count: i64::from(e.num_docs_with_field),
+        }
+    }
+
+    fn norms(e: &lucene_codecs::norms::NormsEntry) -> Self {
+        Self {
+            offset: e.docs_with_field_offset,
+            length: e.docs_with_field_length,
+            jump_table_entry_count: e.jump_table_entry_count,
+            dense_rank_power: e.dense_rank_power,
+            count: i64::from(e.num_docs_with_field),
+        }
+    }
+}
+
+/// A sparse field's documents walked in place through their `IndexedDISI`
+/// and its jump table, as Java's iterators do: for a set too large for the
+/// cache, which would otherwise be decoded whole by every iterator --
+/// milliseconds per iterator on a multi-million-document segment, for an
+/// `advanceExact` that needs one block.
+#[derive(Debug, Clone)]
+struct LazyDocs<'a> {
+    disi: lucene_codecs::indexed_disi::DisiCursor<'a>,
+    region: &'a [u8],
+    dense_rank_power: u8,
+    max_doc: i32,
+    count: i64,
+    /// The current document's position among the field's documents, when
+    /// the last `advance_exact` found it.
+    index: Option<usize>,
+}
+
 /// A forward cursor over a [`DocSet`]: the `DocIdSetIterator` half every
 /// segment doc-values iterator shares.
 #[derive(Debug, Clone)]
-pub(crate) struct DvCursor {
+pub(crate) struct DvCursor<'a> {
     docs: DocSet,
+    /// `Some` while a sparse set is walked in place (`docs` is then unused):
+    /// `advance_exact` reads it block by block, and the first `next_doc` or
+    /// `advance` decodes it into `docs`.
+    lazy: Option<LazyDocs<'a>>,
     /// Sparse: the index of the next entry past the current document.
     next: usize,
     doc: i32,
 }
 
-impl DvCursor {
+impl<'a> DvCursor<'a> {
     pub(crate) fn new(docs: DocSet) -> Self {
         Self {
             docs,
+            lazy: None,
             next: 0,
             doc: -1,
         }
     }
 
-    pub(crate) fn next_doc(&mut self) -> i32 {
+    /// The cursor over `region` of `reader`'s `data`: the core's cached set
+    /// when it holds one; a set decoded now and kept when the cache would
+    /// keep it; otherwise the region walked in place ([`LazyDocs`]).
+    pub(crate) fn open(reader: &SegmentReader, data: &'a [u8], region: DocsRegion) -> Result<Self> {
+        Self::open_in(&reader.docs_with_field, reader.max_doc, data, region)
+    }
+
+    /// [`Self::open`] for a segment of `max_doc` documents whose core keeps
+    /// its sets in `cache`.
+    pub(crate) fn open_in(
+        cache: &crate::directory_reader::DocsWithFieldCache,
+        max_doc: i32,
+        data: &'a [u8],
+        region: DocsRegion,
+    ) -> Result<Self> {
+        let DocsRegion {
+            offset,
+            length,
+            jump_table_entry_count,
+            dense_rank_power,
+            count,
+        } = region;
+        if offset < 0 {
+            return Ok(Self::new(DocSet::read(
+                data,
+                offset,
+                length,
+                dense_rank_power,
+                max_doc,
+            )?));
+        }
+        let key = (data.as_ptr() as usize, offset);
+        if let Some(docs) = cache.get(key) {
+            return Ok(Self::new(DocSet::Sparse(docs)));
+        }
+        if cache.keeps(SparseDocs::heap_bytes_for(count, max_doc)) {
+            let set = DocSet::read(data, offset, length, dense_rank_power, max_doc)?;
+            if let DocSet::Sparse(docs) = &set {
+                cache.insert(key, docs);
+            }
+            return Ok(Self::new(set));
+        }
+        let bytes = DocSet::region(data, offset, length)?;
+        Ok(Self {
+            docs: DocSet::Empty,
+            lazy: Some(LazyDocs {
+                disi: lucene_codecs::indexed_disi::DisiCursor::new(
+                    bytes,
+                    dense_rank_power,
+                    jump_table_entry_count,
+                ),
+                region: bytes,
+                dense_rank_power,
+                max_doc,
+                count,
+                index: None,
+            }),
+            next: 0,
+            doc: -1,
+        })
+    }
+
+    /// How many documents have a value (the iterator's `cost`).
+    pub(crate) fn cost(&self) -> i64 {
+        match &self.lazy {
+            Some(l) => l.count,
+            None => self.docs.len(),
+        }
+    }
+
+    /// Decodes a set walked in place, for `next_doc` and `advance`, which
+    /// visit documents rather than test them; positioned where the walk is.
+    fn decode(&mut self) -> Result<()> {
+        let Some(lazy) = self.lazy.take() else {
+            return Ok(());
+        };
+        let docs = lucene_codecs::indexed_disi::decode_doc_ids_below(
+            lazy.region,
+            lazy.dense_rank_power,
+            lazy.max_doc,
+        )?;
+        let docs = Arc::new(SparseDocs::new(docs, lazy.max_doc)?);
+        if self.doc >= 0 {
+            let (at, found) = docs.rank(self.doc);
+            self.next = if found { at + 1 } else { at };
+        }
+        self.docs = DocSet::Sparse(docs);
+        Ok(())
+    }
+
+    pub(crate) fn next_doc(&mut self) -> Result<i32> {
+        self.decode()?;
         self.doc = match &self.docs {
             DocSet::Empty => NO_MORE_DOCS,
             DocSet::Dense(n) => {
@@ -249,10 +451,11 @@ impl DvCursor {
                 None => NO_MORE_DOCS,
             },
         };
-        self.doc
+        Ok(self.doc)
     }
 
-    pub(crate) fn advance(&mut self, target: i32) -> i32 {
+    pub(crate) fn advance(&mut self, target: i32) -> Result<i32> {
+        self.decode()?;
         self.doc = match &self.docs {
             DocSet::Empty => NO_MORE_DOCS,
             DocSet::Dense(n) => {
@@ -277,22 +480,38 @@ impl DvCursor {
                 }
             }
         };
-        self.doc
+        Ok(self.doc)
     }
 
     /// The current document's position among a sparse field's documents
     /// (the `IndexedDISI` rank the cursor already found); `None` for a
     /// dense field, whose readers index by document.
-    fn sparse_index(&self) -> Option<i64> {
+    pub(crate) fn sparse_index(&self) -> Option<i64> {
+        if let Some(l) = &self.lazy {
+            return l.index.and_then(|i| i64::try_from(i).ok());
+        }
         match &self.docs {
             DocSet::Sparse(_) => i64::try_from(self.next.checked_sub(1)?).ok(),
             _ => None,
         }
     }
 
-    pub(crate) fn advance_exact(&mut self, target: i32) -> bool {
+    pub(crate) fn advance_exact(&mut self, target: i32) -> Result<bool> {
         self.doc = target;
-        match &self.docs {
+        if let Some(l) = &mut self.lazy {
+            if target < 0 || target >= l.max_doc {
+                l.index = None;
+                return Ok(false);
+            }
+            // A step back is outside the contract; answer it from the
+            // region's start rather than refusing it.
+            if target < l.disi.doc_id() {
+                l.disi.reset();
+            }
+            l.index = l.disi.advance_exact(target)?;
+            return Ok(l.index.is_some());
+        }
+        Ok(match &self.docs {
             DocSet::Empty => false,
             DocSet::Dense(n) => target < *n,
             DocSet::Sparse(v) => {
@@ -300,7 +519,7 @@ impl DvCursor {
                 self.next = if found { at + 1 } else { at };
                 found
             }
-        }
+        })
     }
 }
 
@@ -315,26 +534,26 @@ macro_rules! dv_iterator {
                 self.cur.doc
             }
             fn next_doc(&mut self) -> Result<i32> {
-                let d = self.cur.next_doc();
+                let d = self.cur.next_doc()?;
                 if d != NO_MORE_DOCS {
                     self.load()?;
                 }
                 Ok(d)
             }
             fn advance(&mut self, target: i32) -> Result<i32> {
-                let d = self.cur.advance(target);
+                let d = self.cur.advance(target)?;
                 if d != NO_MORE_DOCS {
                     self.load()?;
                 }
                 Ok(d)
             }
             fn cost(&self) -> i64 {
-                self.cur.docs.len()
+                self.cur.cost()
             }
         }
         impl DocValuesIterator for $ty<'_> {
             fn advance_exact(&mut self, target: i32) -> Result<bool> {
-                let found = self.cur.advance_exact(target);
+                let found = self.cur.advance_exact(target)?;
                 if found {
                     self.load()?;
                 } else {
@@ -347,7 +566,7 @@ macro_rules! dv_iterator {
 }
 
 struct SegNumeric<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     reader: NumericReader<'a>,
     value: i64,
 }
@@ -374,7 +593,7 @@ impl NumericDocValues for SegNumeric<'_> {
 }
 
 struct SegNorms<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     reader: lucene_codecs::norms::NormsReader<'a>,
     value: i64,
 }
@@ -398,7 +617,7 @@ impl NumericDocValues for SegNorms<'_> {
 }
 
 struct SegBinary<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     reader: BinaryReader<'a>,
     value: &'a [u8],
 }
@@ -424,7 +643,7 @@ impl BinaryDocValues for SegBinary<'_> {
 /// BINARY values of the `RustSubstring` format, decompressed a block at a
 /// time.
 struct SegSubstring<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     index: lucene_codecs::substring::SubstringIndex<'a>,
     block: lucene_codecs::substring::Block,
     at: Option<usize>,
@@ -452,7 +671,7 @@ impl BinaryDocValues for SegSubstring<'_> {
 }
 
 struct SegSorted<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     ords: NumericReader<'a>,
     terms: TermsDict<'a>,
     ord: i32,
@@ -508,7 +727,7 @@ fn dict_lookup_term(terms: &mut TermsDict<'_>, key: &[u8]) -> Result<i64> {
 }
 
 struct SegSortedNumeric<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     reader: SortedNumericReader<'a>,
     values: Vec<i64>,
     upto: usize,
@@ -564,7 +783,7 @@ enum SetOrds<'a> {
 }
 
 struct SegSortedSet<'a> {
-    cur: DvCursor,
+    cur: DvCursor<'a>,
     ords: SetOrds<'a>,
     terms: TermsDict<'a>,
     values: Vec<i64>,
@@ -1214,6 +1433,28 @@ impl SegmentReader {
         }
     }
 
+    /// Where the doc-values field `field` records its documents, with the
+    /// column's data (tests).
+    #[cfg(test)]
+    pub(crate) fn docs_region(&self, field: &str) -> Option<(DocsRegion, &[u8])> {
+        let fi = self.field_infos().field_by_name(field)?;
+        let (meta, data) = self.doc_values_for_field(fi.number)?;
+        let region = match fi.doc_values_type {
+            DocValuesType::Numeric => DocsRegion::numeric(meta.numeric_entry(fi.number)?),
+            DocValuesType::Binary => DocsRegion::binary(meta.binary_entry(fi.number)?),
+            DocValuesType::Sorted => DocsRegion::numeric(&meta.sorted_entry(fi.number)?.ords),
+            DocValuesType::SortedNumeric => {
+                DocsRegion::multi(meta.sorted_numeric_entry(fi.number)?)
+            }
+            DocValuesType::SortedSet => match &meta.sorted_set_entry(fi.number)?.kind {
+                SortedSetKind::Single(s) => DocsRegion::numeric(&s.ords),
+                SortedSetKind::Multi { ords, .. } => DocsRegion::multi(ords),
+            },
+            _ => return None,
+        };
+        Some((region, data))
+    }
+
     fn dv_field<'s, E>(
         &'s self,
         field: &str,
@@ -1280,7 +1521,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegNumeric {
-            cur: DvCursor::new(DocSet::of_numeric(self, data, e)?),
+            cur: DvCursor::open(self, data, DocsRegion::numeric(e))?,
             reader: NumericReader::new(data, e),
             value: 0,
         })))
@@ -1300,23 +1541,16 @@ impl LeafReader for SegmentReader {
         else {
             return Ok(None);
         };
-        let docs = DocSet::cached(
-            self,
-            data,
-            e.docs_with_field_offset,
-            e.docs_with_field_length,
-            e.dense_rank_power,
-        )?;
         if let Some(sub) = e.substring.as_deref() {
             return Ok(Some(Box::new(SegSubstring {
-                cur: DvCursor::new(docs),
+                cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
                 index: lucene_codecs::substring::SubstringIndex::new(data, sub)?,
                 block: lucene_codecs::substring::Block::new(),
                 at: None,
             })));
         }
         Ok(Some(Box::new(SegBinary {
-            cur: DvCursor::new(docs),
+            cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
             reader: BinaryReader::new(data, e),
             value: &[],
         })))
@@ -1337,7 +1571,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSorted {
-            cur: DvCursor::new(DocSet::of_numeric(self, data, &e.ords)?),
+            cur: DvCursor::open(self, data, DocsRegion::numeric(&e.ords))?,
             ords: NumericReader::new(data, &e.ords),
             terms: TermsDict::open(data, &e.terms)?,
             ord: -1,
@@ -1365,7 +1599,7 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         Ok(Some(Box::new(SegSortedNumeric {
-            cur: DvCursor::new(DocSet::of_numeric(self, data, &e.numeric)?),
+            cur: DvCursor::open(self, data, DocsRegion::multi(e))?,
             reader: SortedNumericReader::new(data, e),
             values: Vec::new(),
             upto: 0,
@@ -1392,18 +1626,18 @@ impl LeafReader for SegmentReader {
         };
         let (docs, ords, terms) = match &e.kind {
             SortedSetKind::Single(s) => (
-                DocSet::of_numeric(self, data, &s.ords)?,
+                DvCursor::open(self, data, DocsRegion::numeric(&s.ords))?,
                 SetOrds::Single(NumericReader::new(data, &s.ords)),
                 &s.terms,
             ),
             SortedSetKind::Multi { ords, terms } => (
-                DocSet::of_numeric(self, data, &ords.numeric)?,
+                DvCursor::open(self, data, DocsRegion::multi(ords))?,
                 SetOrds::Multi(SortedNumericReader::new(data, ords)),
                 terms,
             ),
         };
         Ok(Some(Box::new(SegSortedSet {
-            cur: DvCursor::new(docs),
+            cur: docs,
             ords,
             terms: TermsDict::open(data, terms)?,
             values: Vec::new(),
@@ -1433,15 +1667,8 @@ impl LeafReader for SegmentReader {
         // Norms record their documents exactly as doc values do, and share
         // their cache: `.nvd` is a buffer of its own, so its sets cannot
         // collide with `.dvd`'s.
-        let docs = DocSet::cached(
-            self,
-            data,
-            e.docs_with_field_offset,
-            e.docs_with_field_length,
-            e.dense_rank_power,
-        )?;
         Ok(Some(Box::new(SegNorms {
-            cur: DvCursor::new(docs),
+            cur: DvCursor::open(self, data, DocsRegion::norms(e))?,
             reader: lucene_codecs::norms::NormsReader::new(data, e),
             value: 0,
         })))
