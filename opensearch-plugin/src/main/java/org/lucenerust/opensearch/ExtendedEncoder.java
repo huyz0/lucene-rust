@@ -57,6 +57,7 @@ import org.opensearch.search.MultiValueMode;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.lucenerust.opensearch.patterntext.PatternPhraseQuery;
+import org.lucenerust.opensearch.substring.RustWildcardQuery;
 import org.apache.lucene.search.MultiPhraseQuery;
 import org.apache.lucene.search.PhraseQuery;
 import java.io.ByteArrayOutputStream;
@@ -117,6 +118,11 @@ final class ExtendedEncoder {
     static final byte NODE_PAINLESS_FILTER = 45;
     static final byte NODE_JOIN = 46;
     static final byte NODE_PATTERN_PHRASE = 47;
+    static final byte NODE_SUBSTRING = 49;
+    static final byte SUBSTRING_WILDCARD = 0;
+    static final byte SUBSTRING_REGEXP = 1;
+    static final byte SUBSTRING_CONTAINS = 2;
+    static final byte SUBSTRING_EXACT = 3;
     /** {@code jvm_pattern_phrase.rs}'s {@code MAX_TERMS}. */
     static final int MAX_PATTERN_TERMS = 1024;
 
@@ -147,6 +153,9 @@ final class ExtendedEncoder {
             }
             if (q instanceof PatternPhraseQuery pp) {
                 return patternPhrase(pp, out);
+            }
+            if (q instanceof RustWildcardQuery rw) {
+                return substring(rw, out);
             }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
@@ -619,6 +628,32 @@ final class ExtendedEncoder {
                 writeInt(out, Float.floatToIntBits(v));
             }
         }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // rust_wildcard
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link RustWildcardQuery}: its field, kind, case flag and pattern, as {@code NODE_SUBSTRING} in
+     * {@code crates/lucene-ffi/src/jvm_queries.rs} reads them. A regexp with other than {@code
+     * RegExp.ALL} syntax runs in Java.
+     */
+    private static String substring(RustWildcardQuery q, ByteArrayOutputStream out) {
+        if (q.nativePattern() == false) {
+            return "substring_regexp_flags";
+        }
+        out.write(NODE_SUBSTRING);
+        writeString(out, q.field());
+        out.write(switch (q.kind()) {
+            case WILDCARD -> SUBSTRING_WILDCARD;
+            case REGEXP -> SUBSTRING_REGEXP;
+            case CONTAINS -> SUBSTRING_CONTAINS;
+            case EXACT -> SUBSTRING_EXACT;
+        });
+        out.write(q.caseInsensitive() ? 1 : 0);
+        writeBytes(out, new BytesRef(q.pattern()));
         return null;
     }
 

@@ -633,6 +633,10 @@ public class RustSearchPlugin extends Plugin implements
         mappers.put(org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.CONTENT_TYPE, org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.PARSER);
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
         mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
+        mappers.put(
+            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.CONTENT_TYPE,
+            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.PARSER
+        );
         if (stockKnn == false) {
             mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }

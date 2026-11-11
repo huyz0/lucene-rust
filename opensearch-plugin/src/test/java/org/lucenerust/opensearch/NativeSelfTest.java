@@ -150,6 +150,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
+        if ("substring".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (substring only): %d queries compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSubstring.encoded, checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
         if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -191,6 +197,8 @@ public final class NativeSelfTest {
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
         NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
+        NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSubstring.encoded >= 150, "rust_wildcard queries compared: " + NativeSelfTestSubstring.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
