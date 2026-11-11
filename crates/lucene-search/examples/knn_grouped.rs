@@ -31,6 +31,9 @@ use lucene_search::ScoreDoc;
 use lucene_store::FsDirectory;
 
 const K: usize = 10;
+
+/// A search of query `q`: the grouped rows, and the groups its hits cover.
+type Run<'a> = Box<dyn Fn(usize) -> (Vec<usize>, usize) + 'a>;
 const SEGMENTS: usize = 4;
 
 fn read_bin(path: &str) -> (usize, usize, Vec<f32>) {
@@ -228,7 +231,7 @@ fn main() {
             per_group: size,
         };
         // (method, setting, search returning the grouped rows).
-        let mut runs: Vec<(String, String, Box<dyn Fn(usize) -> (Vec<usize>, usize)>)> = Vec::new();
+        let mut runs: Vec<(String, String, Run<'_>)> = Vec::new();
         for &ef in &efs {
             let segs = &segs;
             let groups = &groups;
