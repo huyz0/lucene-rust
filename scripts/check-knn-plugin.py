@@ -394,6 +394,7 @@ def ivf_check(failures):
                                  ("ivf_f16", {"rerank_encoding": "half_float"}, {}),
                                  ("ivf_osq2", {"rerank_encoding": "float", "quantizer": "osq2"}, {}),
                                  ("ivf_erq4", {"quantizer": "erq4"}, {}),
+                                 ("ivf_auto", {"quantizer": "auto"}, {}),
                                  ("ivf_tenants", {"rerank_encoding": "float"}, tenants)):
         rng = random.Random(f"{SEED}-{index}")
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "tenant": i % 3,
@@ -496,6 +497,7 @@ def ivf_check(failures):
         ("ivf on_disk", {**ivf_mapping(), "mode": "on_disk"}),
         ("lucene_rust hnsw osq", rust_hnsw_mapping(quantizer="osq2")),
         ("lucene_rust hnsw bbq", rust_hnsw_mapping(quantizer="bbq")),
+        ("lucene_rust hnsw auto", rust_hnsw_mapping(quantizer="auto")),
         ("lucene_rust hnsw quantizer", rust_hnsw_mapping(quantizer="pq")),
         ("lucene_rust hnsw byte", {**rust_hnsw_mapping(), "data_type": "byte"}),
         ("lucene_rust hnsw on_disk", {**rust_hnsw_mapping(), "mode": "on_disk"}),

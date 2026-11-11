@@ -427,6 +427,37 @@ cargo run --release -p lucene-search --example knn_formats -- <prefix> l2 \
   --formats ivf-f16,ivf-osq2,ivf-erq2,ivf-erq4 --nprobes 64,128,192
 ```
 
+### Picking the quantizer per segment (`auto`)
+
+Which codes are cheapest at a given recall depends on the data. GloVe-100
+390k and fastText-300 1M, **cosine** truth, one segment, f16 rerank vectors,
+calibrated depth (recall@10 / mean µs, 1000 queries):
+
+| quantizer | GloVe-100 | fastText-300 |
+|---|---|---|
+| bbq | 0.955 / 348 | 0.949 / 1243 |
+| osq2 | 0.965 / 296 | 0.937 / 1660 |
+| erq2 | 0.973 / 355 | 0.968 / 1763 |
+| erq3 | 0.970 / 563 | 0.982 / 2522 |
+| erq4 | 0.982 / 710 | 0.983 / 3151 |
+| **auto** | **0.973 / 317** (erq2) | **0.949 / 1073** (bbq) |
+
+OSQ at 2 bits beats BBQ on GloVe and loses to it on fastText; erq3 matches
+erq4 on fastText at 0.8x the time. `quantizer: auto`
+(`lucene_ivf::AutoQuantizer`) encodes each field of at least 10,000
+vectors with bbq, osq2 and erq2 to erq4 at every flush and merge,
+calibrates each against the same 64 sampled queries, and keeps the one that
+reaches the calibration recall (0.95) touching the fewest bytes per query:
+the codes its probes scan plus a disk page (`IvfParams::auto_rerank_read_bytes`)
+per reranked vector. Each segment records the quantizer it picked, so
+readers need nothing new. Builds took 1.2x (fastText) to 1.6x (GloVe) as
+long as one quantizer's.
+
+```text
+cargo run --release -p lucene-search --example knn_formats -- <prefix> cosine \
+  --formats ivf-f16,ivf-osq2,ivf-erq2,ivf-erq3,ivf-erq4,ivf-auto --nprobes 0,64,128,192
+```
+
 ## Through the OpenSearch plugin
 
 `benchmarks/ivf/plugin_knn_bench.py` loads GloVe-100 (390k, cosine) into one

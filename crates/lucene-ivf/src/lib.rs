@@ -55,6 +55,7 @@
 //! Readers take the postings and vectors files as a [`RangeSource`], which a
 //! caching blob reader can implement directly.
 
+pub mod auto;
 pub mod calibrate;
 pub mod encoding;
 pub mod kmeans;
@@ -63,6 +64,7 @@ pub mod reader;
 pub mod routing;
 pub mod writer;
 
+pub use auto::{AutoQuantizer, AUTO_MIN_VECTORS};
 pub use calibrate::{Calibration, DEFAULT_CALIBRATION_RECALL};
 pub use encoding::VectorEncoding;
 pub use merge::{merge_field, merge_field_with_vectors, MergeClustering, MergeSource};

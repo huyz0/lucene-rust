@@ -561,6 +561,12 @@ impl IvfField {
         self.quantizer.as_ref()
     }
 
+    /// Consumes an in-memory field built for calibration and returns its
+    /// quantizer.
+    pub(crate) fn into_quantizer(self) -> Box<dyn Quantizer> {
+        self.quantizer
+    }
+
     /// Cluster `c`'s centroid.
     ///
     /// # Panics
