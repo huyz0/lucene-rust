@@ -68,6 +68,7 @@ import org.opensearch.painless.PainlessScriptEngine;
 import org.opensearch.painless.spi.Allowlist;
 import org.opensearch.painless.spi.AllowlistLoader;
 import org.opensearch.script.FilterScript;
+import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptException;
 import org.opensearch.script.Script;
@@ -82,11 +83,13 @@ import org.opensearch.search.lookup.SearchLookup;
  *
  * <p>Layout (little-endian): {@code PSC2}, count, then per script: source, sub-query kind
  * ({@code u8}: 0 {@code body:alpha}, 1 match all, 2 none: a filter script's {@code script}
- * query), boost {@code f32}, native {@code u8}; when native, the IR, params, the context {@code
- * u8} (0 score, 1 score reading {@code _score}, 2 filter) and the fields (count, then name and
+ * query, 3 none: a number sort script over every document, the boost's sign its order), boost
+ * {@code f32}, native {@code u8}; when native, the IR, params, the context {@code u8} (0 score, 1
+ * score reading {@code _score}, 2 filter, 3 number sort) and the fields (count, then name and
  * kind);
  * then the outcome {@code u8}: 0 the hits (count, then doc {@code i32} and score {@code f32}, by
- * doc), 1 the script's exception, 2 another exception: the class (the one Painless's {@code
+ * doc), 1 the script's exception, 2 another exception, 3 a sort script's values (count, then doc
+ * {@code i32} and the value's raw bits {@code i64}, by doc): the class (the one Painless's {@code
  * ScriptException} wraps), its message ({@code
  * u8} 1 then the string, or 0 for none) and the script offset it points at ({@code i32}, -1 none).
  *
@@ -249,6 +252,22 @@ public class ScoreCorpus {
             c.add(new Case(s, p, 2, 1f));
         }
         c.add(new Case("doc['likes'].value < 500", p, 2, 3f));
+        String[] sorts = {
+            "doc['likes'].value * params.w",
+            "doc['price'].size() == 0 ? -1 : doc['price'].value",
+            "doc['tag'].value.length() + doc['ratio'].value",
+            "double s = 0; for (def v : doc['vals']) { s += v; } return s;",
+            "Math.sqrt(doc['neg'].value)",
+            "doc['flag'].value ? 1 : 0",
+            "params.m.getOrDefault(doc['tag'].value, 0.5)",
+            // Errors: a missing value, the script's own.
+            "doc['price'].value",
+            "doc['likes'].value > 900 ? Integer.parseInt('x') : 1",
+        };
+        for (String s : sorts) {
+            c.add(new Case(s, p, 3, 1f));
+        }
+        c.add(new Case("doc['likes'].value - doc['neg'].value", p, 3, -1f));
         return c;
     }
 
@@ -257,7 +276,14 @@ public class ScoreCorpus {
         allowlists.add(AllowlistLoader.loadFromResourceFiles(Allowlist.class, "org.opensearch.score.txt"));
         PainlessScriptEngine engine = new PainlessScriptEngine(
             Settings.EMPTY,
-            Map.of(ScoreScript.CONTEXT, allowlists, FilterScript.CONTEXT, Allowlist.BASE_ALLOWLISTS)
+            Map.of(
+                ScoreScript.CONTEXT,
+                allowlists,
+                FilterScript.CONTEXT,
+                Allowlist.BASE_ALLOWLISTS,
+                NumberSortScript.CONTEXT,
+                Allowlist.BASE_ALLOWLISTS
+            )
         );
         var scriptQuery = Class.forName("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery")
             .getDeclaredConstructor(Script.class, FilterScript.LeafFactory.class, String.class);
@@ -294,11 +320,18 @@ public class ScoreCorpus {
                 rec.u8(c.sub());
                 rec.i32(Float.floatToIntBits(c.boost()));
                 boolean filter = c.sub() == 2;
-                Object compiled = filter ? PainlessScore.filter(c.source()) : PainlessScore.score(c.source());
+                boolean sort = c.sub() == 3;
+                Object compiled = filter ? PainlessScore.filter(c.source())
+                    : sort ? PainlessScore.sort(c.source())
+                    : PainlessScore.score(c.source());
                 Script script = new Script(ScriptType.INLINE, "painless", c.source(), c.params());
-                Query q;
+                Query q = null;
                 int context;
-                if (filter) {
+                NumberSortScript.LeafFactory sortScript = null;
+                if (sort) {
+                    sortScript = engine.compile("fixture", c.source(), NumberSortScript.CONTEXT, Map.of()).newFactory(c.params(), lookup);
+                    context = PainlessScore.SORT;
+                } else if (filter) {
                     FilterScript.Factory factory = engine.compile("fixture", c.source(), FilterScript.CONTEXT, Map.of());
                     q = (Query) scriptQuery.newInstance(script, factory.newFactory(script.getParams(), lookup), null);
                     context = PainlessScore.FILTER;
@@ -324,8 +357,40 @@ public class ScoreCorpus {
                     refused++;
                     System.err.println("refused: " + c.source() + ": " + compiled);
                 }
-                if (c.boost() != 1f) {
+                if (c.boost() != 1f && sort == false) {
                     q = new BoostQuery(q, c.boost());
+                }
+                if (sort) {
+                    try {
+                        ByteArrayOutputStream vals = new ByteArrayOutputStream();
+                        int n = 0;
+                        for (var leaf : reader.leaves()) {
+                            NumberSortScript s = sortScript.newInstance(leaf);
+                            for (int d = 0; d < leaf.reader().maxDoc(); d++) {
+                                s.setDocument(d);
+                                long bits = Double.doubleToRawLongBits(s.execute());
+                                int doc = leaf.docBase + d;
+                                for (int k = 0; k < 4; k++) {
+                                    vals.write(doc >>> (8 * k));
+                                }
+                                for (int k = 0; k < 8; k++) {
+                                    vals.write((int) (bits >>> (8 * k)));
+                                }
+                                n++;
+                            }
+                        }
+                        rec.u8(3);
+                        rec.i32(n);
+                        rec.out.writeBytes(vals.toByteArray());
+                        matched++;
+                        continue;
+                    } catch (Exception e) {
+                        // Recorded below as the search's exception would be.
+                        q = null;
+                        threwOutcome(rec, e);
+                        threw++;
+                        continue;
+                    }
                 }
                 try {
                     TopDocs td = searcher.search(q, 1000);
@@ -339,25 +404,7 @@ public class ScoreCorpus {
                     }
                     matched++;
                 } catch (Exception e) {
-                    Throwable t = e;
-                    ScriptException.Position pos = null;
-                    boolean wrapped = false;
-                    while (t.getCause() != null && t.getClass().getName().startsWith("org.opensearch.script")) {
-                        if (t instanceof ScriptException se) {
-                            wrapped = true;
-                            pos = se.getPos();
-                        }
-                        t = t.getCause();
-                    }
-                    rec.u8(wrapped ? 1 : 2);
-                    rec.str(t.getClass().getName());
-                    if (t.getMessage() == null) {
-                        rec.u8(0);
-                    } else {
-                        rec.u8(1);
-                        rec.str(t.getMessage());
-                    }
-                    rec.i32(pos == null ? -1 : pos.offset);
+                    threwOutcome(rec, e);
                     threw++;
                 }
             }
@@ -366,6 +413,29 @@ public class ScoreCorpus {
             rec.out.writeTo(f);
         }
         System.err.printf("%d scored, %d threw, %d not native%n", matched, threw, refused);
+    }
+
+    /** The outcome of a search that threw {@code e}: the exception Painless's wraps, as above. */
+    static void threwOutcome(Rec rec, Exception e) {
+        Throwable t = e;
+        ScriptException.Position pos = null;
+        boolean wrapped = false;
+        while (t.getCause() != null && t.getClass().getName().startsWith("org.opensearch.script")) {
+            if (t instanceof ScriptException se) {
+                wrapped = true;
+                pos = se.getPos();
+            }
+            t = t.getCause();
+        }
+        rec.u8(wrapped ? 1 : 2);
+        rec.str(t.getClass().getName());
+        if (t.getMessage() == null) {
+            rec.u8(0);
+        } else {
+            rec.u8(1);
+            rec.str(t.getMessage());
+        }
+        rec.i32(pos == null ? -1 : pos.offset);
     }
 
     static final class Rec {
