@@ -867,11 +867,40 @@ fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
     }
 }
 
+/// The field attribute of a `rust_wildcard` field: its BINARY doc values are
+/// written in the `RustSubstring` format, in blocks of `2^value` documents
+/// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_substring`]).
+/// Kept in the segments' `FieldInfos`, so a writer reopened on the index
+/// routes the field to the format before it merges a segment, and a merge
+/// never rewrites the field as plain BINARY.
+pub(crate) const SUBSTRING_ATTRIBUTE: &str = "lucene_rust.substring";
+
+/// The doc-values format [`SUBSTRING_ATTRIBUTE`] names on `info`, if any.
+fn substring_format(
+    info: &FieldInfo,
+) -> Option<lucene_codecs::doc_values::Lucene90DocValuesFormat> {
+    let shift = info
+        .attributes
+        .iter()
+        .find(|(k, _)| k == SUBSTRING_ATTRIBUTE)
+        .and_then(|(_, v)| v.parse::<u8>().ok())?;
+    Some(lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_substring(shift))
+}
+
+/// Routes every `rust_wildcard` field of `writer`'s existing segments to the
+/// `RustSubstring` format their [`SUBSTRING_ATTRIBUTE`] names.
+fn restore_substring_formats(writer: &mut IndexWriter<'_>, fields: &[FieldInfo]) {
+    for f in fields {
+        if let Some(format) = substring_format(f) {
+            writer.set_doc_values_format_for_field(&f.name, format);
+        }
+    }
+}
+
 /// Routes every vector field of `writer`'s existing segments to the format
 /// its [`VECTORS_FORMAT_ATTRIBUTE`] names.
-fn restore_vectors_formats(writer: &mut IndexWriter<'_>) {
-    let found: Vec<(String, KnnVectorsFormat)> = writer
-        .fields()
+fn restore_vectors_formats(writer: &mut IndexWriter<'_>, fields: &[FieldInfo]) {
+    let found: Vec<(String, KnnVectorsFormat)> = fields
         .iter()
         .filter(|f| f.vector_dimension > 0)
         .filter_map(|f| {
@@ -1404,7 +1433,12 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
                 }
             }
             writer.enable_explicit_documents()?;
-            restore_vectors_formats(&mut writer);
+            // The segments' own fields: the writer's list starts empty, and a
+            // merge before any document registers a field again must still
+            // write it in the format its mapping chose.
+            let existing = writer.segment_fields()?;
+            restore_vectors_formats(&mut writer, &existing);
+            restore_substring_formats(&mut writer, &existing);
             if knn {
                 derived_source_attributes(&mut writer);
             }
@@ -1537,11 +1571,15 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         let number = with_writer(handle, |w| {
             let name = info.name.clone();
             let derived = derived_source_list(&info);
+            let substring = substring_format(&info);
             w.writer()
                 .with_writer(|iw| {
                     let number = iw.register_field(info)?;
                     if let Some(format) = format {
                         iw.set_knn_vectors_format_for_field(&name, format);
+                    }
+                    if let Some(format) = substring {
+                        iw.set_doc_values_format_for_field(&name, format);
                     }
                     // Only a k-NN index's codec reads the list back.
                     if let Some(list) = derived {
@@ -7726,6 +7764,110 @@ mod tests {
         fdt.sort_unstable();
         eprintln!("stored MB per segment: {fdt:?}");
         ffi_engine_writer_close(h);
+    }
+
+    /// **A `rust_wildcard` field keeps its format.** A field registered with
+    /// [`SUBSTRING_ATTRIBUTE`] flushes in the `RustSubstring` format, and a
+    /// writer reopened on the index -- which no document has registered the
+    /// field with yet -- force-merges it in that format too, so the merged
+    /// segment keeps its gram index; a substring search finds the same
+    /// documents before and after.
+    #[test]
+    fn a_substring_field_keeps_its_format_through_reopen_and_merge() {
+        use lucene_search::extended_query::{SubstringKind, SubstringQuery};
+        use lucene_search::query::{BooleanQuery, Clause};
+        let tmp = empty_index("engine-writer-substring");
+        let spec = Blob::default()
+            .bytes(b"msg")
+            .u8(0)
+            .u8(1)
+            .u8(0)
+            .u8(0)
+            .u8(2)
+            .u8(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .i32(0)
+            .u8(0)
+            .i32(1)
+            .bytes(SUBSTRING_ATTRIBUTE.as_bytes())
+            .bytes(b"3")
+            .0;
+        let h = open(&tmp, 0);
+        let msg = register(h, &spec).unwrap();
+        for seg in 0..3 {
+            for i in 0..40 {
+                let v = if i % 7 == 0 {
+                    format!("{seg}-{i} ERROR read timed out")
+                } else {
+                    format!("{seg}-{i} info ok")
+                };
+                let b = Blob::default()
+                    .u8(OP_ADD)
+                    .i32(1)
+                    .i32(0)
+                    .i32(0)
+                    .i32(1)
+                    .i32(msg)
+                    .u8(1)
+                    .bytes(v.as_bytes())
+                    .i32(0);
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+            commit(h, &[]);
+        }
+        assert_eq!(ffi_engine_writer_close(h), 0);
+        let files = || -> Vec<String> {
+            std::fs::read_dir(tmp.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        };
+        let substring_files = |names: &[String]| {
+            names
+                .iter()
+                .filter(|n| n.contains("RustSubstring") && n.ends_with(".dvd"))
+                .count()
+        };
+        let hits = || -> usize {
+            let dir = FsDirectory::open(tmp.path());
+            let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
+            let opened = reader.open_segments().unwrap();
+            let segments = opened.as_open_segments();
+            let norms: Vec<lucene_search::index_searcher::SegmentNorms<'_, '_>> =
+                segments.iter().map(|_| None).collect();
+            let searcher =
+                lucene_search::index_searcher::IndexSearcher::new(&segments, &norms).unwrap();
+            let q =
+                SubstringQuery::new("msg", SubstringKind::Wildcard, "*timed out", true).unwrap();
+            let query = BooleanQuery {
+                must: vec![Clause::from(q)],
+                ..BooleanQuery::default()
+            };
+            searcher.count(&query).unwrap() as usize
+        };
+        let before = files();
+        assert!(substring_files(&before) >= 3, "{before:?}");
+        assert_eq!(hits(), 18);
+        let h = open(&tmp, 0);
+        let mut gen = 0;
+        let rc = unsafe { ffi_engine_writer_force_merge(h, 1, 0, &mut gen) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        commit(h, &[]);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+        let dir = FsDirectory::open(tmp.path());
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), 1);
+        let after = files();
+        let merged = &infos.segments[0].segment_name;
+        assert!(
+            after
+                .iter()
+                .any(|n| n.starts_with(&format!("{merged}_RustSubstring")) && n.ends_with(".dvd")),
+            "the merged segment {merged} lost the RustSubstring format: {after:?}"
+        );
+        assert_eq!(hits(), 18);
     }
 
     fn knn_vector(i: usize) -> [f32; 4] {
