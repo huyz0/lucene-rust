@@ -1539,12 +1539,19 @@ public final class NativeSelfTest {
                 DirectoryReader plain = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, false);
                 org.apache.lucene.index.LeafReader leaf0 = plain.leaves().get(0).reader();
                 check(leaf0.getSortedNumericDocValues("num") instanceof NativeDocValues.Numbers == false, "plain index: Lucene's doc values");
-                NativeStoredFieldsReader.fetchStarted();
+                NativeStoredFieldsReader.fetchStarted(true);
                 try {
                     check(leaf0.getSortedSetDocValues("kw") instanceof NativeDocValues.Terms, "fetch phase: native doc values");
+                    check(NativeStoredFieldsReader.vectorsDropped(), "a fetch phase dropping vectors");
+                    // A fetch phase run inside another (inner hits, top hits) has its own filter.
+                    NativeStoredFieldsReader.fetchStarted(false);
+                    check(NativeStoredFieldsReader.vectorsDropped() == false, "an inner fetch phase keeping vectors");
+                    NativeStoredFieldsReader.fetchEnded();
+                    check(NativeStoredFieldsReader.vectorsDropped(), "the outer fetch phase again");
                 } finally {
                     NativeStoredFieldsReader.fetchEnded();
                 }
+                check(NativeStoredFieldsReader.vectorsDropped() == false, "outside a fetch phase, vectors are read");
                 check(leaf0.getSortedSetDocValues("missing") == null, "an absent field has none");
                 check(leaf0.getSortedSetDocValues("num") == null, "a field of another doc-values type has none");
             }
