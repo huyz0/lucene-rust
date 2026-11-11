@@ -409,7 +409,7 @@ public class RustSearchPlugin extends Plugin implements
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
-                        NativeStoredFieldsReader.fetchStarted();
+                        NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
                         if (flag.enabled() == false) {
                             return;
                         }
