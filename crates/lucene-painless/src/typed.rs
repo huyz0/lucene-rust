@@ -80,8 +80,10 @@ pub struct Typed {
     code: Box<[I]>,
     init: Vec<Init>,
     /// Whether [`Typed::run_batch`] can run it: straight-line code on
-    /// numbers, ending in one `double` return.
+    /// numbers, ending in `double` returns or `boolean` ones.
     batchable: bool,
+    /// [`Typed::returns_bool`].
+    returns_bool: bool,
     regs: usize,
     max_loop_counter: i32,
     /// Each instruction's source offset, as the class's line table maps it.
@@ -111,8 +113,15 @@ pub fn lower(prog: &Program, fields: &[(&str, Option<DocKind>)]) -> Option<Typed
     l.block(&f.body)?;
     l.code.push(I::RetNull);
     let (code, init, locs) = fold_moves(l.code);
-    let batchable = batchable(&code);
+    let returns_bool = code
+        .iter()
+        .any(|i| matches!(i, I::Ret(_, Ty::P(Prim::Bool))));
+    let returns_double = code
+        .iter()
+        .any(|i| matches!(i, I::Ret(_, Ty::P(Prim::Double))));
+    let batchable = batchable(&code) && !(returns_bool && returns_double);
     Some(Typed {
+        returns_bool,
         code: code.into_boxed_slice(),
         init,
         batchable,
@@ -127,7 +136,7 @@ pub fn lower(prog: &Program, fields: &[(&str, Option<DocKind>)]) -> Option<Typed
 fn batchable(code: &[I]) -> bool {
     code.iter().enumerate().all(|(at, i)| match i {
         I::Jmp(t) | I::JmpF(_, t) => *t as usize > at,
-        I::Ret(_, t) => *t == Ty::P(Prim::Double),
+        I::Ret(_, t) => matches!(t, Ty::P(Prim::Double | Prim::Bool)),
         I::DocLong(_, _, x) | I::DocDouble(_, _, x) => *x == FIRST,
         I::Mov(..)
         | I::Int(..)
@@ -1124,11 +1133,18 @@ impl Typed {
         self.batchable
     }
 
+    /// Whether the script returns a `boolean`: [`Typed::run_batch`]'s
+    /// results are then `1.0` or `0.0`.
+    pub fn returns_bool(&self) -> bool {
+        self.returns_bool
+    }
+
     /// Runs a [batchable](Typed::batchable) script for `out.len()`
     /// documents at once, each instruction over the documents whose path
-    /// reaches it: `out[k]` is document `k`'s result. A document that throws
-    /// stops alone; the first one (`k`, the exception, its source offset)
-    /// is returned, and only the documents before it have results. `Err`
+    /// reaches it: `out[k]` is document `k`'s result (a `boolean` as `1.0`
+    /// or `0.0`). A document that throws stops alone; the first one (`k`,
+    /// the exception, its source offset) is returned, and only the
+    /// documents before it have results. `Err`
     /// is the runtime's own failure, not a script's.
     pub fn run_batch<E: BatchEnv + ?Sized>(
         &self,
@@ -1372,11 +1388,17 @@ impl Typed {
                     waiting.push((*t as usize, std::mem::replace(&mut active, vec![false; n])));
                     count = 0;
                 }
-                I::Ret(s, _) => {
+                I::Ret(s, t) => {
                     let s = *s as usize * w;
+                    let bool = *t == Ty::P(Prim::Bool);
                     for k in 0..n {
                         if active[k] {
-                            out[k] = f(cols[s + k]);
+                            let b = cols[s + k];
+                            out[k] = if bool {
+                                f64::from(u8::from(b != 0))
+                            } else {
+                                f(b)
+                            };
                             active[k] = false;
                         }
                     }

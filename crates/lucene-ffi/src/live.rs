@@ -40,7 +40,8 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{Clause, TermQuery};
 use lucene_search::similarities::Similarity;
 use lucene_search::{
-    search_boolean_query_multi_segment_maxscore_counting, search_term_query, TotalHitsRelation,
+    search_boolean_query_multi_segment_maxscore_counting, search_term_query,
+    search_term_query_multi_segment_counting, TotalHitsRelation,
 };
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -48,7 +49,7 @@ use crate::clauses::map_search_error;
 use crate::engine_writer::{self, EngineWriter};
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
-use crate::jvm_reader::{boolean_of, decode_request, lookup};
+use crate::jvm_reader::{boolean_of, decode_request, lookup, JvmQuery};
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
 use lucene_index::concurrent_writer::{FieldTotals, LeanSegment, LiveRequest, ViewBuffer};
@@ -1578,7 +1579,10 @@ pub unsafe extern "C" fn ffi_live_view_knn(
                 None => (None, None),
             }
         };
-        let id = view_reader(handle, &v, request, key)?;
+        let id =
+            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnReader, || {
+                view_reader(handle, &v, request, key)
+            })?;
         let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
         let base = lookup(handle, "ffi_live_view_knn: unknown or closed reader")?
             .reader
@@ -1589,7 +1593,10 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         } else {
             buffer_graphs(&v, &h, base, &knn.field)
         };
-        let hits = crate::jvm_knn::search(&h, &knn, &buffers)?;
+        let hits =
+            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnSearch, || {
+                crate::jvm_knn::search(&h, &knn, &buffers)
+            })?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
@@ -2431,11 +2438,14 @@ pub unsafe extern "C" fn ffi_live_view_document_alloc(
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
         let h = view(view_id)?;
         let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
-        let fields = h
+        let mut fields = h
             .writer
             .writer()
             .live_document(&h.view, buffer, doc)
             .map_err(live_error)?;
+        if let Some(derived) = h.writer.live_derived() {
+            derived.inject(&h.writer, &h.view, buffer, doc, &mut fields)?;
+        }
         let mut out = len_i32(fields.len())?.to_le_bytes().to_vec();
         for f in &fields {
             out.extend_from_slice(&f.field_number.to_le_bytes());
@@ -2736,13 +2746,31 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             .map(|m| (!m.is_empty()).then_some(m))
             .collect();
         let threshold = u64::try_from(count_limit).unwrap_or(0);
-        let (hits, total) = search_boolean_query_multi_segment_maxscore_counting(
-            &segments,
-            &q,
-            &norms,
-            top_n.max(1),
-            threshold,
-        )
+        // A lone term is scored as the plain reader scores it, with the term
+        // scorer: Lucene rewrites a one-clause boolean to that clause, so the
+        // hits are the same, without a boolean scorer per leaf.
+        let (hits, total) = match &query {
+            JvmQuery::Term(t) => {
+                let term_norms: Vec<_> = norms
+                    .iter()
+                    .map(|m| m.and_then(|m| m.get(&t.field)))
+                    .collect();
+                search_term_query_multi_segment_counting(
+                    &segments,
+                    t,
+                    &term_norms,
+                    top_n.max(1),
+                    threshold,
+                )
+            }
+            JvmQuery::Boolean(_) => search_boolean_query_multi_segment_maxscore_counting(
+                &segments,
+                &q,
+                &norms,
+                top_n.max(1),
+                threshold,
+            ),
+        }
         .map_err(map_search_error)?;
         laps.lap(lucene_index::live_timing::Phase::PlainQuery);
         let hits = if top_n == 0 { Vec::new() } else { hits };
@@ -2992,4 +3020,160 @@ fn commit_masks(
         });
     }
     Ok(Some(masks))
+}
+
+/// k-NN derived source over buffered documents: their `_source` is stored
+/// with each derived field's values masked, as a flushed segment's is, and a
+/// fetch puts the vectors the buffer holds back in place, as a segment's
+/// reader does from its vector files.
+pub(crate) struct LiveDerived {
+    fields: lucene_search::derived_source::DerivedFields,
+    /// Each derived field's name, by number.
+    names: HashMap<i32, String>,
+    /// `_primary_term`'s number, which marks a block's root document; `None`
+    /// before it is registered (no document has nested children yet).
+    parent_marker: Option<i32>,
+}
+
+impl LiveDerived {
+    /// The derived fields among `infos` ([`engine_writer::derived_source_list`]),
+    /// `None` when there are none.
+    pub(crate) fn of(infos: Vec<lucene_codecs::field_infos::FieldInfo>) -> Option<Self> {
+        let mut lists: Vec<(String, String)> = Vec::new();
+        let mut names = HashMap::new();
+        for f in &infos {
+            let Some(list) = engine_writer::derived_source_list(f) else {
+                continue;
+            };
+            names.insert(f.number, f.name.clone());
+            match lists.iter_mut().find(|(k, _)| k == list) {
+                Some((_, v)) => {
+                    v.push(',');
+                    v.push_str(&f.name);
+                }
+                None => lists.push((list.to_string(), f.name.clone())),
+            }
+        }
+        if names.is_empty() {
+            return None;
+        }
+        let parent_marker = infos
+            .iter()
+            .find(|f| f.name == "_primary_term")
+            .map(|f| f.number);
+        let infos = lucene_codecs::field_infos::FieldInfos { fields: infos };
+        let fields = lucene_search::derived_source::DerivedFields::from_attributes(&lists, &infos)?;
+        Some(Self {
+            fields,
+            names,
+            parent_marker,
+        })
+    }
+
+    /// `fields`, document `doc` of `view`'s buffer `buffer`'s stored fields,
+    /// with the vectors put back in its `_source`.
+    fn inject(
+        &self,
+        writer: &EngineWriter,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+        fields: &mut [lucene_codecs::stored_fields::StoredField],
+    ) -> Result<(), FfiStatus> {
+        let number = self.fields.source_number();
+        let refused = |e: lucene_codecs::stored_fields::Error| {
+            set_last_error(format!("derived _source of buffered document {doc}: {e}"));
+            FfiStatus::InvalidArgument
+        };
+        for f in fields.iter_mut().filter(|f| f.field_number == number) {
+            let FieldValue::Binary(source) = &f.value else {
+                continue;
+            };
+            // A _source in another content type is stored whole while buffered.
+            if !lucene_search::derived_source::needs_injection(source).unwrap_or(false) {
+                continue;
+            }
+            let vectors = writer
+                .writer()
+                .live_document_vectors(view, buffer, doc, self.parent_marker.unwrap_or(-1))
+                .map_err(live_error)?;
+            let mut from = BufferVectors {
+                names: &self.names,
+                vectors: &vectors,
+            };
+            let injected = lucene_search::derived_source::inject(&self.fields, source, &mut from)
+                .map_err(refused)?;
+            f.value = FieldValue::Binary(injected);
+        }
+        Ok(())
+    }
+}
+
+/// A buffered document's vectors, for [`lucene_search::derived_source::inject`].
+struct BufferVectors<'a> {
+    names: &'a HashMap<i32, String>,
+    vectors: &'a lucene_index::concurrent_writer::LiveDocumentVectors,
+}
+
+impl BufferVectors<'_> {
+    fn of<'v>(
+        &self,
+        doc: &'v [lucene_index::index_writer::DocumentVector],
+        number: i32,
+    ) -> Option<&'v lucene_index::index_writer::VectorValue> {
+        let name = self.names.get(&number)?;
+        doc.iter().find(|v| &v.field_name == name).map(|v| &v.value)
+    }
+}
+
+impl lucene_search::derived_source::VectorSource for BufferVectors<'_> {
+    fn float_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<f32>>> {
+        Ok(match self.of(&self.vectors.own, number) {
+            Some(lucene_index::index_writer::VectorValue::Float32(v)) => Some(v.to_vec()),
+            _ => None,
+        })
+    }
+
+    fn byte_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
+        Ok(match self.of(&self.vectors.own, number) {
+            Some(lucene_index::index_writer::VectorValue::Byte(v)) => Some(v.to_vec()),
+            _ => None,
+        })
+    }
+
+    fn child_float_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<f32>>> {
+        Ok(self
+            .vectors
+            .children
+            .iter()
+            .filter_map(|c| match self.of(c, number) {
+                Some(lucene_index::index_writer::VectorValue::Float32(v)) => Some(v.to_vec()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    fn child_byte_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .vectors
+            .children
+            .iter()
+            .filter_map(|c| match self.of(c, number) {
+                Some(lucene_index::index_writer::VectorValue::Byte(v)) => Some(v.to_vec()),
+                _ => None,
+            })
+            .collect())
+    }
 }

@@ -66,7 +66,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 29 |
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
 | [expressions.md](parity/expressions.md) | `lucene-expressions`: JavaScript expressions as `DoubleValuesSource`s (M14 T14.2) | 6 |
-| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score` over them | 6 |
+| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter scripts over them | 11 |
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [sandbox.md](parity/sandbox.md) | `lucene-sandbox` (M14.f): half-float, big-integer and bounding-box points, nearest neighbours, multi-range point and doc-values queries, combined-field, covering, term-automaton and phrase-wildcard queries, the large-hits collector and the collector profilers, `PayloadSpanUtil`, `MergeOnFlushMergePolicy`, the `IDVersion` postings format, k-means clustering, the facet package (collectors, cutters, recorders, builders, orchestrators, histograms) | 19 |
@@ -85,9 +85,9 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [joins.md](parity/joins.md) | Document blocks and block joins, `lucene-join` (M10) | 11 |
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 13 |
 | [facet.md](parity/facet.md) | `lucene-facet`'s taxonomy index (T13.4a), counting (T13.4b), drill-down (T13.4c), value, range and facet-set counting (T13.4d1), and sorted-set counts, sampling and taxonomy utilities (T13.4d2) | 40 |
-| [neural-sparse.md](parity/neural-sparse.md) | `lucene-sparse`: OpenSearch neural-search's Seismic sparse index (reader, writer and approximate query), its hybrid search and stats API | 8 |
-| [ml-commons.md](parity/ml-commons.md) | `lucene-ml`: ml-commons' local model inference (text embedding, sparse encoding, sparse tokenize, cross-encoder; ONNX and TorchScript) for the lucene-rust plugin | 10 |
-| [knn-vector.md](parity/knn-vector.md) | the k-NN plugin's `knn_vector` field and `knn` query, and its `_plugins/_knn` REST endpoints, served by the lucene-rust plugin | 6 |
+| [neural-sparse.md](parity/neural-sparse.md) | `lucene-sparse`: OpenSearch neural-search's Seismic sparse index (reader, writer and approximate query), its hybrid search, stats API, `neural` query, `query_text`, ingest processors, rerank, two-phase and the semantic field | 11 |
+| [ml-commons.md](parity/ml-commons.md) | `lucene-ml`: ml-commons' local model inference (text embedding, sparse encoding, sparse tokenize, cross-encoder; ONNX and TorchScript) for the lucene-rust plugin, and its Hugging Face analyzers | 11 |
+| [knn-vector.md](parity/knn-vector.md) | the k-NN plugin's `knn_vector` field and `knn` query, its `_plugins/_knn` REST endpoints and MMR, served by the lucene-rust plugin | 7 |
 | [vector-ivf.md](parity/vector-ivf.md) | `lucene-vector-quant`, `lucene-ivf`: the IVF vector index and its pluggable quantizers (this port's own format) | 14 |
 | [tensor.md](parity/tensor.md) | `lucene-tensor`: opt-in multi-vector (late-interaction) fields in binary doc values and `MaxSim` rescoring (this port's own encodings beside Lucene's) | 6 |
 | [vector-disk-hnsw.md](parity/vector-disk-hnsw.md) | `lucene-disk-hnsw`: an opt-in HNSW layout with one read per hop (this port's own format, the stock graph) | 5 |

@@ -13,6 +13,19 @@ import org.lucenerust.opensearch.ml.MlSettings;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
 import org.opensearch.indices.SystemIndexDescriptor;
 import org.opensearch.plugins.SystemIndexPlugin;
+import org.lucenerust.opensearch.knn.search.extension.MMRSearchExtBuilder;
+import org.lucenerust.opensearch.knn.search.processor.KNNSourceExcludesProcessor;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMRKnnQueryTransformer;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMROverSampleProcessor;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMRQueryTransformer;
+import org.lucenerust.opensearch.knn.search.processor.mmr.MMRRerankProcessor;
+import org.lucenerust.opensearch.neural.processor.mmr.MMRNeuralQueryTransformer;
+import org.lucenerust.opensearch.neural.mapper.SemanticFieldMapper;
+import org.lucenerust.opensearch.neural.mappingtransformer.SemanticMappingTransformer;
+import org.lucenerust.opensearch.neural.ml.resolver.DefaultSemanticModelResolver;
+import org.lucenerust.opensearch.neural.ml.resolver.SemanticModelResolver;
+import org.lucenerust.opensearch.neural.processor.factory.SemanticFieldProcessorFactory;
+import org.lucenerust.opensearch.neural.settings.SemanticModelSelectionSettingsAccessor;
 import org.lucenerust.opensearch.neural.HybridSearch;
 import org.lucenerust.opensearch.neural.NeuralSearchSettings;
 import org.opensearch.plugins.SearchPipelinePlugin;
@@ -65,7 +78,27 @@ import org.lucenerust.opensearch.knn.rest.KnnShardsTransport;
 import org.lucenerust.opensearch.knn.rest.KnnStatsTransport;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.core.action.ActionResponse;
-import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
+import org.lucenerust.opensearch.neural.ml.MLCommonsClientAccessor;
+import org.lucenerust.opensearch.neural.processor.NeuralQueryEnricherProcessor;
+import org.lucenerust.opensearch.neural.processor.NeuralSparseTwoPhaseProcessor;
+import org.lucenerust.opensearch.neural.processor.factory.RerankProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.rerank.RerankProcessor;
+import org.lucenerust.opensearch.neural.query.ext.RerankSearchExtBuilder;
+import org.lucenerust.opensearch.neural.processor.SparseEncodingProcessor;
+import org.lucenerust.opensearch.neural.processor.TextChunkingProcessor;
+import org.lucenerust.opensearch.neural.processor.TextEmbeddingProcessor;
+import org.lucenerust.opensearch.neural.processor.TextImageEmbeddingProcessor;
+import org.lucenerust.opensearch.neural.processor.factory.SparseEncodingProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.factory.TextChunkingProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.factory.TextEmbeddingProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.factory.TextImageEmbeddingProcessorFactory;
+import org.lucenerust.opensearch.neural.query.NeuralKNNQueryBuilder;
+import org.lucenerust.opensearch.neural.query.NeuralQueryBuilder;
+import org.lucenerust.opensearch.neural.query.NeuralSparseQueryBuilder;
+import org.lucenerust.opensearch.ml.HfAnalysis;
+import org.opensearch.index.analysis.PreBuiltAnalyzerProviderFactory;
+import org.opensearch.index.analysis.PreConfiguredTokenizer;
+import org.opensearch.plugins.IngestPlugin;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
@@ -85,6 +118,7 @@ import org.opensearch.common.SetOnce;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -111,6 +145,7 @@ public class RustSearchPlugin extends Plugin implements
     AnalysisPlugin,
     IndexStorePlugin,
     MapperPlugin,
+    IngestPlugin,
     ScriptPlugin,
     SearchPipelinePlugin,
     SystemIndexPlugin {
@@ -188,6 +223,11 @@ public class RustSearchPlugin extends Plugin implements
     /** Whether the stock ml-commons plugin is installed beside this one: it then serves {@code _plugins/_ml}. */
     private final boolean stockMl;
 
+    private MLCommonsClientAccessor mlClient;
+    private org.opensearch.core.xcontent.NamedXContentRegistry xContentRegistry;
+    private SemanticMappingTransformer semanticMappingTransformer;
+    private volatile SemanticModelResolver modelResolver;
+
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
         this.stockKnn = stockKnnInstalled();
@@ -196,7 +236,17 @@ public class RustSearchPlugin extends Plugin implements
             logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
             org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
         } else {
-            KnnTopVectorQuery.setNative((searcher, q) -> KnnEncoder.topHits(readers, searcher, q));
+            KnnTopVectorQuery.setNative(new KnnTopVectorQuery.NativeSearch() {
+                @Override
+                public org.lucenerust.opensearch.knn.KnnHitsQuery search(org.apache.lucene.search.IndexSearcher searcher, KnnTopVectorQuery q) {
+                    return KnnEncoder.topHits(readers, searcher, q);
+                }
+
+                @Override
+                public void readBuffersByLucene(org.apache.lucene.search.IndexSearcher searcher) throws java.io.IOException {
+                    KnnEncoder.readBuffersByLucene(readers, searcher);
+                }
+            });
         }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
@@ -331,7 +381,7 @@ public class RustSearchPlugin extends Plugin implements
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
         if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
-            indexModule.addIndexOperationListener(new DerivedSource.Listener());
+            indexModule.addIndexOperationListener(new DerivedSource.Listener(RustEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
         }
         // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
         // setting is dynamic, so turning it on later is refused too, rather than ignored.
@@ -442,8 +492,10 @@ public class RustSearchPlugin extends Plugin implements
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
         // that only inherits the node default falls back to OpenSearch's engine where the Rust
-        // writer cannot serve it.
-        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings());
+        // writer cannot serve it. Realtime search is the Rust engine's alone, so asking for it
+        // asks for the engine: it is never dropped silently.
+        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings())
+            || indexSettings.getValue(RustEngineSupport.REALTIME_SEARCH);
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
             if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
@@ -491,12 +543,34 @@ public class RustSearchPlugin extends Plugin implements
     /** The {@code rust_*} tokenizers ({@link RustAnalysis#TOKENIZERS}): Rust on the index and query side alike. */
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> getTokenizers() {
-        return RustAnalysis.tokenizers();
+        if (stockMl) {
+            return RustAnalysis.tokenizers();
+        }
+        Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> tokenizers = new java.util.HashMap<>(RustAnalysis.tokenizers());
+        tokenizers.putAll(HfAnalysis.tokenizers());
+        return tokenizers;
+    }
+
+    /** ml-commons' pre-built {@code bert-uncased} and {@code mbert-uncased} tokenizers. */
+    @Override
+    public List<PreConfiguredTokenizer> getPreConfiguredTokenizers() {
+        return stockMl ? List.of() : HfAnalysis.preConfiguredTokenizers();
+    }
+
+    /** ml-commons' pre-built {@code bert-uncased} and {@code mbert-uncased} analyzers. */
+    @Override
+    public List<PreBuiltAnalyzerProviderFactory> getPreBuiltAnalyzerProviderFactories() {
+        return stockMl ? List.of() : HfAnalysis.preBuiltAnalyzers();
     }
 
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> getAnalyzers() {
-        return RustAnalysis.analyzers();
+        if (stockMl) {
+            return RustAnalysis.analyzers();
+        }
+        Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> analyzers = new java.util.HashMap<>(RustAnalysis.analyzers());
+        analyzers.putAll(HfAnalysis.analyzers());
+        return analyzers;
     }
 
     @Override
@@ -549,21 +623,38 @@ public class RustSearchPlugin extends Plugin implements
      */
     @Override
     public Map<String, Mapper.TypeParser> getMappers() {
-        if (stockKnn) {
-            return Map.of(
-                SparseVectorFieldMapper.CONTENT_TYPE,
-                new SparseVectorFieldMapper.TypeParser(),
-                MultiVectorFieldMapper.CONTENT_TYPE,
-                new MultiVectorFieldMapper.TypeParser()
-            );
+        Map<String, Mapper.TypeParser> mappers = new HashMap<>();
+        mappers.put(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
+        mappers.put(MultiVectorFieldMapper.CONTENT_TYPE, new MultiVectorFieldMapper.TypeParser());
+        mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
+        if (stockKnn == false) {
+            mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }
+        return mappers;
+    }
+
+    /** neural-search's semantic field: adds the {@code semantic_info} fields its model needs to the mapping. */
+    @Override
+    public List<org.opensearch.index.mapper.MappingTransformer> getMappingTransformers() {
+        semanticMappingTransformer = new SemanticMappingTransformer(mlClient(), xContentRegistry);
+        if (modelResolver != null) {
+            semanticMappingTransformer.setModelResolver(modelResolver);
+        }
+        return List.of(semanticMappingTransformer);
+    }
+
+    /** neural-search's system ingest processor, which writes a semantic field's embeddings. */
+    @Override
+    public Map<String, org.opensearch.ingest.Processor.Factory> getSystemIngestProcessors(org.opensearch.ingest.Processor.Parameters parameters) {
         return Map.of(
-            SparseVectorFieldMapper.CONTENT_TYPE,
-            new SparseVectorFieldMapper.TypeParser(),
-            MultiVectorFieldMapper.CONTENT_TYPE,
-            new MultiVectorFieldMapper.TypeParser(),
-            KnnVectorFieldMapper.CONTENT_TYPE,
-            new KnnVectorFieldMapper.TypeParser()
+            SemanticFieldProcessorFactory.PROCESSOR_FACTORY_TYPE,
+            new SemanticFieldProcessorFactory(
+                mlClient(),
+                parameters.env,
+                parameters.ingestService.getClusterService(),
+                parameters.analysisRegistry,
+                parameters.client
+            )
         );
     }
 
@@ -582,20 +673,112 @@ public class RustSearchPlugin extends Plugin implements
         );
     }
 
-    /** neural-search's {@code neural_sparse} query, by {@code query_tokens}, and k-NN's {@code knn}. */
+    /**
+     * neural-search's {@code neural_sparse}, {@code hybrid}, and, over the plugin's k-NN,
+     * {@code neural} and {@code neural_knn_query}; k-NN's {@code knn}.
+     */
     @Override
     public List<QuerySpec<?>> getQueries() {
-        QuerySpec<?> sparse = new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent);
-        QuerySpec<?> maxSim = new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent);
-        if (stockKnn) {
-            return List.of(sparse, maxSim, HybridSearch.query());
+        List<QuerySpec<?>> queries = new ArrayList<>();
+        queries.add(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
+        queries.add(new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent));
+        queries.add(HybridSearch.query());
+        if (stockKnn == false) {
+            queries.add(new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
+            queries.add(new QuerySpec<>(NeuralQueryBuilder.NAME, NeuralQueryBuilder::new, NeuralQueryBuilder::fromXContent));
+            queries.add(new QuerySpec<>(NeuralKNNQueryBuilder.NAME, NeuralKNNQueryBuilder::new, NeuralKNNQueryBuilder::fromXContent));
         }
-        return List.of(
-            sparse,
-            maxSim,
-            HybridSearch.query(),
-            new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent)
+        return queries;
+    }
+
+    /** neural-search's model-backed ingest processors and {@code text_chunking}. */
+    @Override
+    public Map<String, org.opensearch.ingest.Processor.Factory> getProcessors(org.opensearch.ingest.Processor.Parameters parameters) {
+        MLCommonsClientAccessor accessor = mlClient();
+        org.opensearch.cluster.service.ClusterService cs = parameters.ingestService.getClusterService();
+        return Map.of(
+            TextEmbeddingProcessor.TYPE,
+            new TextEmbeddingProcessorFactory(parameters.client, accessor, parameters.env, cs),
+            SparseEncodingProcessor.TYPE,
+            new SparseEncodingProcessorFactory(parameters.client, accessor, parameters.env, cs),
+            TextImageEmbeddingProcessor.TYPE,
+            new TextImageEmbeddingProcessorFactory(parameters.client, accessor, parameters.env, cs),
+            TextChunkingProcessor.TYPE,
+            new TextChunkingProcessorFactory(parameters.env, cs, parameters.analysisRegistry)
         );
+    }
+
+    /** neural-search's {@code ext.rerank}, the query context a rerank processor reads. */
+    @Override
+    public List<SearchExtSpec<?>> getSearchExts() {
+        List<SearchExtSpec<?>> exts = new ArrayList<>();
+        exts.add(new SearchExtSpec<>(RerankSearchExtBuilder.PARAM_FIELD_NAME, RerankSearchExtBuilder::new, RerankSearchExtBuilder::parse));
+        if (stockKnn == false) {
+            exts.add(new SearchExtSpec<>(MMRSearchExtBuilder.NAME, MMRSearchExtBuilder::new, MMRSearchExtBuilder::parse));
+        }
+        return exts;
+    }
+
+    /**
+     * k-NN's system search processors: {@code knn_default_excludes}, which leaves knn_vector fields out
+     * of a search's {@code _source} unless asked for, and MMR's oversampling request processor.
+     */
+    @Override
+    public Map<String, org.opensearch.search.pipeline.SystemGeneratedProcessor.SystemGeneratedFactory<org.opensearch.search.pipeline.SearchRequestProcessor>> getSystemGeneratedRequestProcessors(
+        Parameters parameters
+    ) {
+        if (stockKnn) {
+            return Map.of();
+        }
+        Map<String, MMRQueryTransformer<? extends org.opensearch.index.query.QueryBuilder>> transformers = Map.of(
+            KnnQueryBuilder.NAME,
+            new MMRKnnQueryTransformer(),
+            NeuralQueryBuilder.NAME,
+            new MMRNeuralQueryTransformer()
+        );
+        return Map.of(
+            KNNSourceExcludesProcessor.Factory.TYPE,
+            new KNNSourceExcludesProcessor.Factory(clusterService.get(), resolver.get()),
+            MMROverSampleProcessor.MMROverSampleProcessorFactory.TYPE,
+            new MMROverSampleProcessor.MMROverSampleProcessorFactory(parameters.client, transformers)
+        );
+    }
+
+    /** k-NN's MMR rerank response processor. */
+    @Override
+    public Map<String, org.opensearch.search.pipeline.SystemGeneratedProcessor.SystemGeneratedFactory<org.opensearch.search.pipeline.SearchResponseProcessor>> getSystemGeneratedResponseProcessors(
+        Parameters parameters
+    ) {
+        return stockKnn ? Map.of() : Map.of(MMRRerankProcessor.MMRRerankProcessorFactory.TYPE, new MMRRerankProcessor.MMRRerankProcessorFactory());
+    }
+
+    /** neural-search's {@code neural_query_enricher} and {@code neural_sparse_two_phase_processor}. */
+    @Override
+    public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchRequestProcessor>> getRequestProcessors(
+        Parameters parameters
+    ) {
+        org.lucenerust.opensearch.neural.util.NeuralSearchClusterUtil.instance().setSearchPipelineService(parameters.searchPipelineService);
+        return Map.of(
+            NeuralQueryEnricherProcessor.TYPE,
+            new NeuralQueryEnricherProcessor.Factory(),
+            NeuralSparseTwoPhaseProcessor.TYPE,
+            new NeuralSparseTwoPhaseProcessor.Factory()
+        );
+    }
+
+    /** The node's neural-search view of ml-commons; one per node, made on first use. */
+    private synchronized MLCommonsClientAccessor mlClient() {
+        if (mlClient == null) {
+            mlClient = new MLCommonsClientAccessor(() -> {
+                if (stockMl) {
+                    throw new IllegalStateException(
+                        "neural search runs models through the lucene-rust plugin's ml-commons, which stands down when opensearch-ml is installed; remove opensearch-ml to use model inference"
+                    );
+                }
+                return MlCommons.get();
+            });
+        }
+        return mlClient;
     }
 
     @Override
@@ -615,6 +798,13 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
+        NeuralQueryBuilder.initialize(mlClient());
+        NeuralSparseQueryBuilder.initialize(mlClient());
+        this.xContentRegistry = xContentRegistry;
+        modelResolver = new DefaultSemanticModelResolver(new SemanticModelSelectionSettingsAccessor(clusterService));
+        if (semanticMappingTransformer != null) {
+            semanticMappingTransformer.setModelResolver(modelResolver);
+        }
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
@@ -632,6 +822,19 @@ public class RustSearchPlugin extends Plugin implements
     public List<org.opensearch.threadpool.ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
         List<org.opensearch.threadpool.ExecutorBuilder<?>> builders = new ArrayList<>();
         builders.add(HybridSearch.executorBuilder(settings));
+        if (stockKnn == false) {
+            builders.add(new org.opensearch.threadpool.FixedExecutorBuilder(settings, "training", 1, 1, "knn", false));
+        }
+        builders.add(
+            new org.opensearch.threadpool.FixedExecutorBuilder(
+                settings,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.THREAD_POOL,
+                org.lucenerust.opensearch.neural.NeuralSearchSettings.SPARSE_ALGO_PARAM_INDEX_THREAD_QTY.getDefault(Settings.EMPTY),
+                -1,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.THREAD_POOL,
+                false
+            )
+        );
         if (stockMl == false) {
             builders.addAll(MlCommons.executorBuilders(settings));
         }
@@ -660,7 +863,10 @@ public class RustSearchPlugin extends Plugin implements
     public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchResponseProcessor>> getResponseProcessors(
         Parameters parameters
     ) {
-        return HybridSearch.responseProcessors();
+        Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchResponseProcessor>> processors =
+            new java.util.HashMap<>(HybridSearch.responseProcessors());
+        processors.put(RerankProcessor.TYPE, new RerankProcessorFactory(mlClient(), parameters.searchPipelineService.getClusterService()));
+        return processors;
     }
 
     @Override
@@ -676,6 +882,8 @@ public class RustSearchPlugin extends Plugin implements
         List<RestHandler> handlers = new ArrayList<>();
         handlers.add(new RestStatsAction(stats, readers, libraryPath));
         handlers.add(org.lucenerust.opensearch.neural.NeuralStats.restHandler());
+        handlers.add(new org.lucenerust.opensearch.sparse.SparseShardsTransport.Rest(true));
+        handlers.add(new org.lucenerust.opensearch.sparse.SparseShardsTransport.Rest(false));
         if (stockKnn == false) {
             handlers.addAll(KnnRestHandlers.all(clusterService::get, indexNameExpressionResolver));
             handlers.addAll(KnnModelHandlers.all(clusterService::get));
@@ -690,6 +898,18 @@ public class RustSearchPlugin extends Plugin implements
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
         List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> actions = new ArrayList<>();
         actions.add(org.lucenerust.opensearch.neural.NeuralStats.actionHandler());
+        actions.add(
+            new ActionHandler<>(
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.WarmupAction.INSTANCE,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.WarmupTransportAction.class
+            )
+        );
+        actions.add(
+            new ActionHandler<>(
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.ClearCacheAction.INSTANCE,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.ClearCacheTransportAction.class
+            )
+        );
         if (stockKnn == false) {
             actions.add(new ActionHandler<>(KnnStatsTransport.Action.INSTANCE, KnnStatsTransport.TransportAction.class));
             actions.add(new ActionHandler<>(KnnShardsTransport.WarmupAction.INSTANCE, KnnShardsTransport.WarmupTransportAction.class));

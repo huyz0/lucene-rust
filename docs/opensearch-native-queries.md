@@ -167,7 +167,7 @@ where the native call's fixed cost shows -- see
 |---|---|---|
 | `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
 | `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
-| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter but `script`) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a `script` filter falls back (`interval_ScriptFilterSource`) |
+| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`, `interval_options` for a script with compile options) |
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
@@ -183,7 +183,7 @@ where the native call's fixed cost shows -- see
 | any multi-term query on a `keyword` with `index: false` (`rewrite` over doc values) | `MultiTermQueryDocValuesWrapper` | yes: the automaton (node 27, doc-values rewrite) or a `terms` set (node 28) |
 | `range`/`term`/`terms` on a numeric or `date` field with `index: false` | `SortedNumericDocValuesRangeQuery`, `SortedNumericDocValuesSetQuery` | yes (nodes 29, 30) |
 | `range`/`term` on a `keyword` or `ip` with `index: false`; `terms` on such an `ip` | `SortedSetDocValuesRangeQuery`, the sandbox's `SortedSetDocValuesMultiRangeQuery` | yes (nodes 31, 32) |
-| `terms_set` with `minimum_should_match_field` or a constant | the sandbox's `CoveringQuery` | yes (node 33); a script minimum (`covering_script`) or a field that is not plain integral doc values (`covering_field_data`) falls back |
+| `terms_set` with `minimum_should_match_field`, a constant or a Painless `minimum_should_match_script` | the sandbox's `CoveringQuery` | yes (node 33); a script minimum that is not inline Painless (`covering_script`) or that the static check refuses (`covering_painless`), or a field that is not plain integral doc values (`covering_field_data`), falls back |
 | `distance_feature` on a `date` or `geo_point` | `LongDistanceFeatureQuery`, `LatLonPointDistanceFeatureQuery` | yes (nodes 34, 35); scored per document. Lucene's scorer narrows itself to the points near the origin once a threshold is set; the native one scores every document with a value and skips those below the threshold |
 | a `TermQuery` carrying `TermStates` built for another reader (`terms` lookup, `more_like_this`, percolate) or with no statistics | `TermQuery` | yes: rebuilt from the searcher's reader, or matching nothing, as `TermWeight` does |
 | any scoring query on a field mapped with `similarity`: `BM25` (any `k1`, `b`, `discount_overlaps`), `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet`, `LMJelinekMercer` | the same queries, under OpenSearch's per-field similarity | yes: each scored field's similarity sent in front of the query (`SimilarityEncoder`, `jvm_similarity.rs`), scored by the port of the same Lucene class |
@@ -211,7 +211,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |
 | `automaton_states`, `fuzzy_automaton` | a multi-term query whose automaton has more than 65,536 states, or a fuzzy query Lucene cannot build an automaton for |
-| `covering_script`, `covering_field_data` | `terms_set` whose minimum is a script, or field data other than plain integral doc values |
+| `covering_script`, `covering_painless`, `covering_options`, `covering_field_data` | `terms_set` whose minimum is a script other than inline Painless, a Painless script the static check refuses or compiled with options (`max_loop_counter`, `picky`) or stored, or field data other than plain integral doc values |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
@@ -279,9 +279,12 @@ nodes.
 - **One `QueryPhaseSearcher` per node.** OpenSearch accepts exactly one plugin
   providing it. `neural-search` provides one too, so the two cannot be
   installed together; the test image removes the bundled plugins. The plugin
-  serves `sparse_vector` and `neural_sparse` by `query_tokens` itself
-  (`scripts/check-sparse-plugin.py` compares it with stock neural-search);
-  `query_text` (model inference) and the `native` sparse engine are refused.
+  serves neural-search itself: `sparse_vector`, `neural_sparse` by
+  `query_tokens` or `query_text`, the `neural` query, its ingest and search
+  processors (`scripts/check-sparse-plugin.py` and
+  `scripts/check-neural-plugin.py` compare them with stock neural-search). The
+  `neural` query runs as the `knn` query it wraps, natively. The `native`
+  sparse engine is refused.
 - **Compound segments are copied, not mapped.** The native reader reads a
   `.cfs` segment into memory (OpenSearch's small, freshly flushed segments are
   compound); only non-compound segments are memory-mapped. Released with the
