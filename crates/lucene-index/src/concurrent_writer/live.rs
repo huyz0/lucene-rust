@@ -701,15 +701,22 @@ pub(super) struct Flushing {
     /// flush), for reading one document's doc values
     /// ([`ConcurrentIndexWriter::live_doc_values`]).
     pub(super) explicit: PackedFields,
+    /// Each document's vectors (their values shared with the flush), for
+    /// the chunks written from `lean`; empty when no document has one.
+    pub(super) vectors: Vec<Vec<crate::index_writer::DocumentVector>>,
 }
 
 /// What a chunk without postings is written from, copied out of its
 /// buffer so the buffer's lock is not held while it is written.
 struct Copied {
+    /// A flushing buffer's postings, for a chunk written with them (the
+    /// flush only reads them).
+    postings: Option<Arc<PendingPostings>>,
     explicit: PackedFields,
     /// Documents `start..end` of the chunk; empty for a flushing buffer.
     docs: Vec<lucene_codecs::stored_fields::Document>,
     custom: Vec<Vec<(String, i32)>>,
+    /// Documents `start..end`'s vectors; empty when none has one.
     vectors: Vec<Vec<crate::index_writer::DocumentVector>>,
     has_blocks: bool,
     partition: Option<Arc<str>>,
@@ -720,12 +727,13 @@ impl Flushing {
     fn drop_lean(&mut self) {
         self.columns.drop_chunk_columns();
         self.lean = None;
+        self.vectors = Vec::new();
     }
 }
 
 /// What a chunk of a flushing buffer without postings is written from,
-/// beside its packed fields ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only for a buffer
-/// whose documents carry no fields or vectors of their own.
+/// beside its packed fields and vectors ([`ConcurrentIndexWriter::live_lean_segment`]). Kept only
+/// for a buffer whose documents carry no fields of their own.
 pub(super) struct LeanSource {
     pub(super) has_blocks: bool,
     pub(super) partition: Option<Arc<str>>,
@@ -1523,7 +1531,6 @@ impl ConcurrentIndexWriter<'_> {
                 );
                 (slot.num_docs(), columns_of(&slot.live), None)
             }
-            None if postings => return Err(flushed()),
             None => {
                 let live = self.live_flushes();
                 let f = live
@@ -1534,10 +1541,11 @@ impl ConcurrentIndexWriter<'_> {
                     .ok_or_else(flushed)?;
                 let source = f.lean.as_ref().ok_or_else(flushed)?;
                 let copied = Copied {
+                    postings: postings.then(|| Arc::clone(&f.postings)),
                     explicit: f.explicit.snapshot(),
                     docs: Vec::new(),
                     custom: Vec::new(),
-                    vectors: Vec::new(),
+                    vectors: padded_or_empty(&f.vectors, start, end).into_owned(),
                     has_blocks: source.has_blocks,
                     partition: source.partition.clone(),
                 };
@@ -1684,6 +1692,7 @@ impl ConcurrentIndexWriter<'_> {
                 // indexing.
                 let c = match (slot, copied.take()) {
                     (Some(slot), _) => Copied {
+                        postings: None,
                         explicit: slot.explicit.snapshot(),
                         docs: padded(&slot.docs, start, end).into_owned(),
                         custom: padded_or_empty(&slot.custom_freq_terms, start, end).into_owned(),
@@ -1696,9 +1705,10 @@ impl ConcurrentIndexWriter<'_> {
                 };
                 // A flushing buffer keeps no documents: they are all empty.
                 let docs = padded(&c.docs, 0, end.saturating_sub(start));
+                let none = PendingPostings::default();
                 write(
                     &c.explicit,
-                    &PendingPostings::default(),
+                    c.postings.as_deref().unwrap_or(&none),
                     &docs,
                     &c.custom,
                     &c.vectors,

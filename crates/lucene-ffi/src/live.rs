@@ -1538,7 +1538,10 @@ pub unsafe extern "C" fn ffi_live_view_knn(
                 None => (None, None),
             }
         };
-        let id = view_reader(handle, &v, request, key)?;
+        let id =
+            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnReader, || {
+                view_reader(handle, &v, request, key)
+            })?;
         let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
         let base = lookup(handle, "ffi_live_view_knn: unknown or closed reader")?
             .reader
@@ -1549,7 +1552,10 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         } else {
             buffer_graphs(&v, &h, base, &knn.field)
         };
-        let hits = crate::jvm_knn::search(&h, &knn, &buffers)?;
+        let hits =
+            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnSearch, || {
+                crate::jvm_knn::search(&h, &knn, &buffers)
+            })?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })

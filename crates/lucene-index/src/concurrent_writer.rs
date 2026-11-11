@@ -1762,6 +1762,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
             return None;
         }
         dwpt.fill_docs();
+        // Copied before the locks: the values are shared, only the lists are new.
+        let vectors = if self.live() {
+            dwpt.vectors.clone()
+        } else {
+            Vec::new()
+        };
         let mut core = lock(&self.core);
         let mut live = self.live_flushes();
         // One read of the log for both, so the slice and the published
@@ -1791,7 +1797,6 @@ impl<'d> ConcurrentIndexWriter<'d> {
         // columns and packed fields is still read as chunks without
         // postings; any other goes as one segment once published.
         let lean = (self.live()
-            && dwpt.vectors.is_empty()
             && dwpt.custom_freq_terms.is_empty()
             && dwpt.docs.iter().all(|d| d.fields.is_empty()))
         .then(|| live::LeanSource {
@@ -1808,6 +1813,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
                 max_doc: i32::try_from(dwpt.docs.len()).unwrap_or(i32::MAX),
                 segment: None,
                 held_files: Vec::new(),
+                vectors: if lean.is_some() { vectors } else { Vec::new() },
                 lean,
                 explicit: dwpt.explicit.snapshot(),
             };

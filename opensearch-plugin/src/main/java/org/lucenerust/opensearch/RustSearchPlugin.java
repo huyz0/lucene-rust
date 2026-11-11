@@ -196,7 +196,17 @@ public class RustSearchPlugin extends Plugin implements
             logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
             org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
         } else {
-            KnnTopVectorQuery.setNative((searcher, q) -> KnnEncoder.topHits(readers, searcher, q));
+            KnnTopVectorQuery.setNative(new KnnTopVectorQuery.NativeSearch() {
+                @Override
+                public org.lucenerust.opensearch.knn.KnnHitsQuery search(org.apache.lucene.search.IndexSearcher searcher, KnnTopVectorQuery q) {
+                    return KnnEncoder.topHits(readers, searcher, q);
+                }
+
+                @Override
+                public void readBuffersByLucene(org.apache.lucene.search.IndexSearcher searcher) throws java.io.IOException {
+                    KnnEncoder.readBuffersByLucene(readers, searcher);
+                }
+            });
         }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
@@ -442,8 +452,10 @@ public class RustSearchPlugin extends Plugin implements
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
         // that only inherits the node default falls back to OpenSearch's engine where the Rust
-        // writer cannot serve it.
-        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings());
+        // writer cannot serve it. Realtime search is the Rust engine's alone, so asking for it
+        // asks for the engine: it is never dropped silently.
+        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings())
+            || indexSettings.getValue(RustEngineSupport.REALTIME_SEARCH);
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
             if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {

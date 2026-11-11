@@ -15,6 +15,7 @@ import org.lucenerust.opensearch.knn.KnnTarget;
 import org.lucenerust.opensearch.knn.KnnTopVectorQuery;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -154,6 +155,26 @@ final class KnnEncoder {
             hits[i] = new ScoreDoc(docs[i], scores[i]);
         }
         return KnnHitsQuery.of(reader, hits);
+    }
+
+    /** How long a k-NN search Lucene answers waits for a buffer being flushed to be published. */
+    private static final long FLUSH_WAIT_MILLIS = 30_000;
+
+    /**
+     * Gives Lucene the buffered documents of the searcher's realtime view (if it reads one), for a
+     * k-NN search the native engine could not answer: without them Lucene would miss the buffered
+     * vectors. Throws when they cannot be read.
+     */
+    static void readBuffersByLucene(NativeReaders readers, IndexSearcher searcher) throws IOException {
+        IndexReader reader = searcher.getIndexReader();
+        LiveDirectoryReader live = LiveDirectoryReader.find(reader);
+        if (live == null || live.readsLucene()) {
+            return;
+        }
+        NativeReaders.Acquired acquired = readers.acquire(reader);
+        if (acquired.handle() == 0 || live.readByLucene(acquired.handle(), FLUSH_WAIT_MILLIS, reader) == false) {
+            throw new IllegalStateException("realtime search: the buffered documents cannot be read by Lucene: " + NativeBridge.lastError());
+        }
     }
 
     private static int knn(long handle, LiveDirectoryReader live, byte[] blob, int room, int[] docs, float[] scores, int[] count) {
