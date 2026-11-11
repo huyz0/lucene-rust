@@ -3709,7 +3709,15 @@ pub(crate) fn count_boolean_query_shortcut(
     // (`FieldExistsQuery.count`) when they are exact for this segment, a term
     // from its `docFreq` when the segment has no deletions (`TermWeight.count`
     // -- the dictionary's own, whatever statistics the term scores with).
-    match (lone_leaf(query), seg.reader) {
+    // `IndexOrDocValuesQuery`'s weight counts with its index side's.
+    let lone = lone_leaf(query).map(|c| match c {
+        Clause::Extended(e) => match &**e {
+            extended_query::ExtendedQuery::IndexOrDocValues(q) => &*q.index_query,
+            _ => c,
+        },
+        c => c,
+    });
+    match (lone, seg.reader) {
         (Some(Clause::Exists(e)), Some(reader)) => {
             let mut leaf = reader.field_exists_leaf(&e.field, None)?;
             // The deletions the searcher sees, not the commit's.
