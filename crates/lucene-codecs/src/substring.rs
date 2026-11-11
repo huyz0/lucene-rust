@@ -395,7 +395,8 @@ pub fn read_meta(input: &mut SliceInput) -> Result<SubstringEntry> {
         return Err(corrupt("block shift out of range"));
     }
     let num_blocks = input.read_vlong()?;
-    if !(0..=i64::from(i32::MAX)).contains(&num_blocks) {
+    // Every block's first doc id is an `i32`.
+    if !(0..=(i64::from(i32::MAX) >> block_shift) + 1).contains(&num_blocks) {
         return Err(corrupt("block count out of range"));
     }
     let blocks_offset = input.read_i64()?;
@@ -593,13 +594,16 @@ impl<'a> SubstringIndex<'a> {
                     word &= word - 1;
                 }
             }
+            if out.last().is_some_and(|&b| b >= nb) {
+                return Err(corrupt("block id past the block count"));
+            }
             return Ok(());
         }
         if tag != POSTINGS_LIST {
             return Err(corrupt("unknown postings encoding"));
         }
         let mut pos = 0usize;
-        let mut prev: u32 = u32::MAX; // -1
+        let mut prev: i64 = -1;
         let mut left = df as usize;
         while left > 0 {
             let n = left.min(CHUNK);
@@ -630,8 +634,9 @@ impl<'a> SubstringIndex<'a> {
                     ((u64::from_le_bytes(word) >> (bit & 7)) & mask) as u32
                 };
                 bit += width as usize;
-                prev = prev.wrapping_add(d).wrapping_add(1);
-                out.push(prev);
+                prev += i64::from(d) + 1;
+                // Ascending by construction; past `u32` is corruption.
+                out.push(u32::try_from(prev).map_err(|_| corrupt("block id overflows"))?);
             }
             left -= n;
         }
@@ -732,6 +737,10 @@ impl<'a> SubstringIndex<'a> {
             let mut input = SliceInput::new(bytes);
             let len = input.read_vint()?;
             let len = usize::try_from(len).map_err(|_| corrupt("negative block length"))?;
+            // LZ4 expands a byte to at most 255.
+            if len > bytes.len().saturating_mul(255).saturating_add(16) {
+                return Err(corrupt("block length past what its bytes can hold"));
+            }
             buf.raw.resize(len, 0);
             lz4::decompress_slice(&mut input, len, &mut buf.raw, 0)?;
             let raw = &buf.raw;
@@ -1101,13 +1110,21 @@ impl SubstringMatcher {
     }
 
     /// A Lucene `RegExp` over the whole value; with `case_insensitive`,
-    /// `RegExp.ASCII_CASE_INSENSITIVE`.
+    /// `RegExp.ASCII_CASE_INSENSITIVE`, which Lucene 10.5 folds like
+    /// `CASE_INSENSITIVE` (see [`RegexpPattern::ascii_case_insensitive`]).
     pub fn regexp(pattern: &str, case_insensitive: bool) -> std::result::Result<Self, RegexpError> {
         let parsed = RegexpPattern::parse(pattern)?;
+        // Case insensitive, a non-ASCII byte or an `s` (long s, U+017F, is
+        // its equivalent and indexed as itself) may stand for another
+        // character in the value: such grams are not required.
+        let free = |x: u32| {
+            !case_insensitive || x == BOUNDARY || (x < 0x80 && fold(x as u8) != u32::from(b's'))
+        };
         let mut grams: Vec<u32> = parsed
             .required_grams()
             .into_iter()
             .filter_map(gram_symbols)
+            .filter(|s| s.iter().all(|&x| free(x)))
             .map(|s| {
                 let f = |x: u32| if x < 0x80 { fold(x as u8) } else { x };
                 gram_key(&[f(s[0]), f(s[1]), f(s[2])])
@@ -1117,7 +1134,14 @@ impl SubstringMatcher {
         grams.dedup();
         let mut literal = parsed.required_literal();
         if case_insensitive {
+            // The longest piece an ASCII-lower-cased value holds as is: no
+            // non-ASCII byte, no `k` (the Kelvin sign) and no `s`.
             literal.make_ascii_lowercase();
+            literal = literal
+                .split(|&b| b >= 0x80 || b == b'k' || b == b's')
+                .max_by_key(|p| p.len())
+                .unwrap_or_default()
+                .to_vec();
         }
         let prefilter =
             (!literal.is_empty()).then(|| memchr::memmem::Finder::new(&literal).into_owned());
@@ -1406,6 +1430,35 @@ mod tests {
         assert_eq!(lit("(ab)+cde.*"), b"cde");
         assert_eq!(lit(".*(x|y)"), b"");
         assert_eq!(lit("ab&abc"), b"abc");
+    }
+
+    /// A case-insensitive regexp folds like Lucene 10.5's `CaseFolding`:
+    /// class characters, non-ASCII letters and the Kelvin and long-s signs,
+    /// through the index as through a scan.
+    #[test]
+    fn case_insensitive_regexp_folds_beyond_ascii() {
+        let values: &[Option<&str>] = &[
+            Some("TIMEOUT now"),
+            Some("\u{212A}elvin scale"),
+            Some("caf\u{C9} CAF\u{C9} open"),
+            Some("STRA\u{1E9E}E 5"),
+            Some("pa\u{17F}\u{17F}word failed"),
+            Some("nothing here"),
+        ];
+        let cases = [
+            (".*[t]imeout.*", vec![0]),
+            ("kelvin.*", vec![1]),
+            (".*caf\u{E9}.*", vec![2]),
+            ("stra\u{DF}e.*", vec![3]),
+            (".*password.*", vec![4]),
+        ];
+        for (p, want) in cases {
+            let m = SubstringMatcher::regexp(p, true).unwrap();
+            for shift in [0u8, 2] {
+                assert_eq!(search(values, shift, &m), want, "{p} shift {shift}");
+            }
+            assert_eq!(brute(values, &m), want, "{p}");
+        }
     }
 
     #[test]

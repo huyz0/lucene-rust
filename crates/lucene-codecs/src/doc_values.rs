@@ -2507,7 +2507,11 @@ impl<'a> BinaryReader<'a> {
         }
         match self.substring.as_deref_mut() {
             Some((index, block)) => index.value(doc, block),
-            None => Err(lucene_store::Error::Eof { offset: 0 }.into()),
+            // The index did not open: its error.
+            None => match self.entry.substring.as_deref() {
+                Some(e) => crate::substring::SubstringIndex::new(self.data, e).map(|_| None),
+                None => Ok(None),
+            },
         }
     }
 

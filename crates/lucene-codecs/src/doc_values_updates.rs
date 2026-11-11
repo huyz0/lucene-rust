@@ -491,7 +491,7 @@ pub fn merge_binary_column(
             // `binary_value` re-derivation per document.
             let mut reader = doc_values::BinaryReader::new(data, entry);
             (0..max_doc)
-                .map(|doc| reader.value(doc).map(|v| v.map(<[u8]>::to_vec)))
+                .map(|doc| reader.value_ref(doc).map(|v| v.map(<[u8]>::to_vec)))
                 .collect::<doc_values::Result<Vec<_>>>()?
         }
         None => vec![None; max_doc.max(0) as usize],

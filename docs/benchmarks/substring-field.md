@@ -38,9 +38,18 @@ the test only on the values that hold it. Wildcards match their
 the cached DFA and stop at a dead or all-accepting state.
 
 Case-insensitive search follows OpenSearch. A wildcard lower-cases both
-the pattern and the value; a regexp uses `ASCII_CASE_INSENSITIVE`.
+the pattern and the value. A regexp uses `ASCII_CASE_INSENSITIVE`, which
+Lucene 10.5 folds by full case equivalence (`CaseFolding`), including
+characters inside a class, the Kelvin sign and long s. Grams and needles
+that such a fold could change are not required.
 `BinaryDocValues` still returns every value, and merges, CheckIndex and
-deletes go through the usual doc values paths.
+deletes go through the usual doc values paths. The format is set per writer, like any
+per-field doc values format. A writer opened without
+`set_doc_values_format_for_field(field, rust_substring(..))` merges the
+field into plain BINARY. Searches stay correct, because they fall back to
+scanning the values, but the index is gone, so whoever opens the writer
+(the engine, for a `wildcard` mapping) must always register the format.
+Sorting on the field (`STRING_VAL`) is refused with a typed error.
 
 ## Size and write cost
 
