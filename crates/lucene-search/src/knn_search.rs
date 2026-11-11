@@ -510,16 +510,22 @@ fn top_hits(
             KnnTarget::Float(t) => BufferQuery::Float32(t.clone()),
             KnnTarget::Byte(t) => BufferQuery::Byte(t.clone()),
         };
-        for b in buffers {
-            hits.extend(buffer_hits(
-                b,
-                segments,
-                filters.as_deref(),
-                &query,
-                candidates,
-                ivf_nprobes,
-            )?);
-        }
+        lucene_index::live_timing::timed(
+            lucene_index::live_timing::Phase::KnnBuffers,
+            || -> Result<()> {
+                for b in buffers {
+                    hits.extend(buffer_hits(
+                        b,
+                        segments,
+                        filters.as_deref(),
+                        &query,
+                        candidates,
+                        ivf_nprobes,
+                    )?);
+                }
+                Ok(())
+            },
+        )?;
         // `TopDocs.merge`'s order: the better score first, the lower doc on
         // a tie.
         hits.sort_by(|a, b| {

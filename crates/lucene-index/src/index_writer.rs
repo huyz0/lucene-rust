@@ -1699,6 +1699,11 @@ impl IndexingConfig {
             .and_then(|&at| self.fields.get(at))
     }
 
+    /// The configured fields, in the order they were added.
+    pub(crate) fn field_list(&self) -> &[FieldInfo] {
+        &self.fields
+    }
+
     /// The configured soft-deletes field, if any.
     pub(crate) fn soft_deletes_field(&self) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.soft_deletes_field)

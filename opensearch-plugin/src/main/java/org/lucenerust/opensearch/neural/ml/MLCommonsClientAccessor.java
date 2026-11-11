@@ -194,7 +194,7 @@ public class MLCommonsClientAccessor {
 
     private void fetchModel(String modelId, ActionListener<MLModel> listener) {
         try {
-            ml.get().getModel(modelId, ActionListener.wrap(source -> listener.onResponse(new MLModel(source)), listener::onFailure));
+            ml.get().getModel(modelId, ActionListener.wrap(source -> listener.onResponse(new MLModel(modelId, source)), listener::onFailure));
         } catch (Exception e) {
             listener.onFailure(e);
         }
