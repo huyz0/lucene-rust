@@ -92,7 +92,7 @@ def rows():
                                                           {"field_value_factor": {"field": "qty", "missing": 1}}], score_mode="sum", boost_mode="max"), "native")
     add("function_score script loop", fs([{"script_score": {"script": {"source": "double s = 0.5; for (def v : doc['m']) { s += v / 1000.0; } return s;"}}}],
                                          score_mode="first"), "native")
-    add("function_score script refused", fs([{"script_score": {"script": {"source": "doc['tag'].size() > 0 && doc['tag'].value =~ /a/ ? 2 : 1"}}}]), "function_score_script")
+    add("function_score script refused", fs([{"script_score": {"script": {"source": "doc['m'].stream().mapToLong(x -> x).sum() + 1"}}}]), "function_score_script")
     add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "native")
     # Painless scripts the native runtime runs (checked statically first, see docs/parity/painless.md).
     add("script_score painless doc values", {"query": {"script_score": {"query": {"match": {"body": "beta"}}, "script": {
