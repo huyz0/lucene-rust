@@ -38,7 +38,7 @@ use lucene_search::top_field::{
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
+    count_boolean_query_segment_with, search_boolean_query_multi_segment_maxscore_counting,
     search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
 use lucene_store::Directory;
@@ -2891,11 +2891,19 @@ fn total_hits_with(
     if bound > count_limit {
         return Ok((bound, true));
     }
+    // A function query's reader-wide preparation, once for every segment.
+    let counted = (0..segments.len()).all(|i| known.get(i).copied().flatten().is_some());
+    let global = match query {
+        JvmQuery::Boolean(q) if !counted => {
+            lucene_search::count_preparation(segments, q).map_err(map_search_error)?
+        }
+        _ => None,
+    };
     let mut total = 0i64;
     for (i, seg) in segments.iter().enumerate() {
         let n = match known.get(i).copied().flatten() {
             Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
-            None => count_segment(seg, query)?,
+            None => count_segment(seg, query, global.as_ref())?,
         };
         total = total.saturating_add(n);
         if total > count_limit {
@@ -2970,14 +2978,17 @@ fn lower_bound(seg: &OpenSegment<'_>, deleted: i64, clause: &Clause) -> Result<i
 }
 
 /// `IndexSearcher.count` for one segment.
-fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStatus> {
+fn count_segment(
+    seg: &OpenSegment<'_>,
+    query: &JvmQuery,
+    global: Option<&lucene_search::GlobalStats>,
+) -> Result<i64, FfiStatus> {
     Ok({
         match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
             // The scored search's scorer tree, in `COMPLETE_NO_SCORES`.
-            JvmQuery::Boolean(q) => {
-                count_boolean_query_segment(seg, q).map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            }
+            JvmQuery::Boolean(q) => count_boolean_query_segment_with(seg, q, global)
+                .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
         }
         .map_err(map_search_error)?
     })
