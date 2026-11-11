@@ -66,7 +66,10 @@ queries on `knn_vector` fields; the `text_embedding`, `sparse_encoding`,
 `neural_query_enricher` and `neural_sparse_two_phase_processor` request
 processors; the `rerank` response processor (`ml_opensearch` cross-encoder
 and `by_field`) with its `ext.rerank` context; neural-search's settings and
-`_plugins/_neural/warmup` and `clear_cache` for sparse indexes; ml-commons' `bert-uncased` and
+`_plugins/_neural/warmup` and `clear_cache` for sparse indexes; the `semantic`
+field, whose mapping gains the `knn_vector` or `rank_features` field its model
+needs and whose documents are embedded at ingest without a pipeline (chunking,
+`model_selection`, `dense_embedding_config`, `sparse_encoding_config`); ml-commons' `bert-uncased` and
 `mbert-uncased` analyzers and `hf_model_tokenizer` type; and learned sparse
 search: the `sparse_vector` field (`seismic` method, `lucene` engine) on an
 `index.sparse` index, whose segments the Rust engine writes in neural-search's
