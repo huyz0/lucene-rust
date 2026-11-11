@@ -4,6 +4,7 @@
 
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
+use lucene_index::buffered_updates::Term;
 use lucene_index::index_writer::{
     ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerm,
 };
@@ -16,7 +17,10 @@ use lucene_search::extended_query::{
     IndexOrDocValuesQuery, IndexSortSortedNumericDocValuesRangeQuery, NumericDocValuesRangeQuery,
 };
 use lucene_search::query::PointsRangeQuery;
-use lucene_search::{search_boolean_query_multi_segment, BooleanQuery, Clause, TermQuery};
+use lucene_search::{
+    count_boolean_query_segment, search_boolean_query_multi_segment, BooleanQuery, Clause,
+    TermQuery,
+};
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
@@ -186,6 +190,11 @@ fn index(dir: &FsDirectory, sort: Option<&[IndexSortField]>) {
         if i % 150 == 149 {
             w.commit().unwrap();
         }
+        if i == 300 {
+            // Deleted documents inside the runs.
+            w.delete_documents_by_term(&[Term::new("body", b"b2".as_slice())])
+                .unwrap();
+        }
     }
     w.commit().unwrap();
 }
@@ -221,6 +230,19 @@ fn hits(dir: &FsDirectory, q: &BooleanQuery) -> Vec<(i32, u32)> {
         .collect();
     out.sort_unstable();
     out
+}
+
+/// How many live documents `q` matches, counted without scores: the top
+/// boolean's own required clauses fold into the run.
+fn count(dir: &FsDirectory, q: &BooleanQuery) -> u64 {
+    let reader = DirectoryReader::open(dir).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    opened
+        .as_open_segments()
+        .iter()
+        .map(|seg| count_boolean_query_segment(seg, q).unwrap())
+        .sum()
 }
 
 /// The filter shapes a tenant, sub-partition and time conjunction comes in.
@@ -304,6 +326,20 @@ fn queries() -> Vec<BooleanQuery> {
             }))],
             ..BooleanQuery::default()
         });
+        // Counted without scores, `MUST` clauses alone and beside others.
+        out.push(BooleanQuery {
+            must: f.clone(),
+            ..BooleanQuery::default()
+        });
+        out.push(BooleanQuery {
+            must: f[..1].to_vec(),
+            filter: f[1..].to_vec(),
+            ..BooleanQuery::default()
+        });
+        out.push(BooleanQuery {
+            must: vec![t("body", "b1")].into_iter().chain(f.clone()).collect(),
+            ..BooleanQuery::default()
+        });
         out.push(BooleanQuery {
             must: vec![t("body", "all")],
             must_not: vec![Clause::Boolean(Box::new(BooleanQuery {
@@ -330,6 +366,11 @@ fn check(name: &str, sort: &[IndexSortField]) {
         let expected = hits(&plain_dir, q);
         matched += expected.len();
         assert_eq!(hits(&sorted_dir, q), expected, "{name}: {q:?}");
+        assert_eq!(
+            count(&sorted_dir, q),
+            expected.len() as u64,
+            "{name} count: {q:?}"
+        );
     }
     assert!(matched > 0);
 }

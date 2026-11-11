@@ -15,9 +15,16 @@
 //! long points range (`long` and `date` fields) or a doc-values range. The
 //! first key's term run is proved from the term's postings alone
 //! ([`super::build::sorted_term_run`]); the runs of the keys after it are
-//! found in the doc values and checked against the clause at both ends. As
-//! with Lucene's `IndexSortSortedNumericDocValuesRangeQuery`, a points range
-//! is answered from the field's doc values, which carry the same values.
+//! found in the doc values and checked against the clause at both ends.
+//!
+//! Like Lucene's `IndexSortSortedNumericDocValuesRangeQuery`, which
+//! OpenSearch puts in front of a sorted field's range, this answers a
+//! clause from the sort key's doc values, so it relies on the field's
+//! terms or points holding the same values as its doc values -- as a
+//! keyword, `long` or `date` field indexes them. The folded clauses are not
+//! looked up in the query cache: the run costs two binary searches a key.
+//! This is no Lucene class; Lucene matches only a range on the first key
+//! this way.
 
 use lucene_codecs::doc_values::{self, NumericEntry, SortedNumericEntry, SortedSetKind};
 use lucene_codecs::postings::PostingsFlags;
