@@ -79,6 +79,8 @@ struct ViewHandle {
     /// once it gave one: searches sharing it get the same handle, so the
     /// caller can tell they read the same documents.
     id: OnceLock<u64>,
+    /// Whether a search took it as the shared view ([`Warmer::shared_view`]).
+    served: std::sync::atomic::AtomicBool,
 }
 
 impl ViewHandle {
@@ -342,7 +344,11 @@ impl Warmer {
             drop(old);
             return None;
         }
-        shared.as_ref().filter(|h| h.commit == commit).cloned()
+        let h = shared.as_ref().filter(|h| h.commit == commit).cloned();
+        if let Some(h) = &h {
+            h.served.store(true, Ordering::Relaxed);
+        }
+        h
     }
 
     /// Forgets a shared view of a commit before `generation`, which the
@@ -420,8 +426,13 @@ impl Warmer {
     }
 
     /// Whether the warmer should open a new shared view: the shared one is
-    /// missing, of another commit, half its bound old, or lacks documents
-    /// added since.
+    /// missing or of another commit; or it lacks documents added since and
+    /// a search took it, or it is three quarters of its bound old while
+    /// searches come; or it is half its bound old (renewed, as nothing
+    /// was written). A view no search took is not replaced by one with
+    /// more documents: under a steady stream of writes the warmer would
+    /// open one every [`WARM_EVERY`], and write chunks and make reads for
+    /// each, however rarely searches come.
     fn needs_view(&self, w: &EngineWriter, commit: Option<i64>) -> bool {
         let Some(max) = self.max_staleness() else {
             return false;
@@ -434,16 +445,24 @@ impl Warmer {
         let Some(h) = shared else {
             return true;
         };
-        if h.commit != commit || h.opened().elapsed() >= max / 2 {
+        if h.commit != commit {
             return true;
         }
+        let age = h.opened().elapsed();
         let now = w.writer().live_slot_buffers();
-        now.iter().any(|b| {
+        let grown = now.iter().any(|b| {
             !h.view
                 .buffers
                 .iter()
                 .any(|v| v.id == b.id && v.max_doc == b.max_doc)
-        })
+        });
+        if !grown {
+            return age >= max / 2;
+        }
+        let searched =
+            u128::from(epoch_ms().saturating_sub(self.last_lean.load(Ordering::Relaxed)))
+                <= max.as_millis();
+        h.served.load(Ordering::Relaxed) || (age >= max / 4 * 3 && searched)
     }
 
     fn asked(&self, commit: Option<i64>) {
@@ -824,6 +843,19 @@ fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bo
             "warming the buffers panicked".into(),
         ))
     })
+}
+
+/// Whether `w`'s warmer would open a new shared view of `commit` now.
+#[cfg(test)]
+pub(crate) fn needs_shared_view(w: &EngineWriter, commit: Option<i64>) -> bool {
+    w.live_warmer().needs_view(w, commit)
+}
+
+/// Opens a view of `commit` as `w`'s warmer does, and shares it.
+#[cfg(test)]
+pub(crate) fn warm_shared_view(w: &Arc<EngineWriter>, commit: Option<i64>) {
+    let h = open_view(w, commit, true).expect("a view");
+    w.live_warmer().share_view(&h);
 }
 
 /// Whether `w`'s warming thread runs.
@@ -1287,6 +1319,8 @@ fn open_handle(
     warm: bool,
 ) -> Result<Arc<ViewHandle>, FfiStatus> {
     let h = open_view(w, commit, warm)?;
+    // The search that opened it reads it.
+    h.served.store(true, Ordering::Relaxed);
     w.live_warmer().share_view(&h);
     Ok(h)
 }
@@ -1345,6 +1379,7 @@ fn open_view(
         whole: Mutex::new(Whole::default()),
         prepared: Mutex::new(Vec::new()),
         id: OnceLock::new(),
+        served: std::sync::atomic::AtomicBool::new(false),
     });
     Ok(h)
 }

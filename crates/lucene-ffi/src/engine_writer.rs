@@ -5929,6 +5929,64 @@ mod tests {
         assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
+    /// Under a staleness bound the warmer replaces the shared view with one
+    /// holding later writes only once a search took it: a view no search
+    /// read is not reopened as documents arrive.
+    #[test]
+    fn the_warmer_reopens_a_shared_view_only_once_searched() {
+        use crate::live::{
+            ffi_engine_writer_live_view_open, ffi_engine_writer_set_live_staleness,
+            ffi_live_view_close, needs_shared_view, warm_shared_view,
+        };
+        let tmp = empty_index("engine-writer-live-reopen");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let f = setup(h);
+        let add = |i: usize| {
+            let b = doc(
+                Blob::default().u8(OP_ADD).i32(1),
+                &f,
+                &format!("d{i}"),
+                &["alpha"],
+                i as i64,
+                false,
+            );
+            assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+        };
+        let open = || {
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, -1, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, read then freed once.
+            let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            (view, blob)
+        };
+        let ew = lookup(h).unwrap();
+        (0..5).for_each(add);
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 60_000), 0);
+        // A search's own view: it read it, so a later write calls for a new one.
+        let (a, _) = open();
+        add(5);
+        assert!(needs_shared_view(&ew, None));
+        // The warmer's view, read by no search: more writes leave it shared.
+        warm_shared_view(&ew, None);
+        add(6);
+        assert!(!needs_shared_view(&ew, None));
+        let (b, first) = open();
+        assert_ne!(a, b);
+        // Once a search took it, the next one holds the later write.
+        let (c, second) = open();
+        assert!(c != b || needs_shared_view(&ew, None));
+        assert!(c == b && first == second || first != second);
+        for v in [a, b, c] {
+            assert_eq!(ffi_live_view_close(v), 0);
+        }
+        drop(ew);
+        assert_eq!(ffi_engine_writer_close(h), 0);
+    }
+
     /// [`crate::live::ffi_live_view_reader`]: a reader handle over the
     /// reader and the view's buffers as segments finds what the live search
     /// finds, numbered alike, reads the buffered documents' doc values, and
@@ -7142,10 +7200,20 @@ mod tests {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
+        // LIVE_INDEX=1: the buffering pass below runs with live search on.
+        let live_index = std::env::var("LIVE_INDEX").is_ok_and(|v| v == "1");
+        let ram_mb: f64 = std::env::var("RAM_MB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4096.0);
         let h = open_with(
             &tmp,
-            4096.0,
-            if live_rounds > 0 { OPEN_LIVE_SEARCH } else { 0 },
+            ram_mb,
+            if live_rounds > 0 || live_index {
+                OPEN_LIVE_SEARCH
+            } else {
+                0
+            },
             i32::MAX,
         );
         let id = register(h, &spec("_id", 1, 1, 0, 0, 0)).unwrap();
@@ -7442,9 +7510,156 @@ mod tests {
             ffi_engine_writer_close(h);
             return;
         }
+        // REFRESH_MS: a thread refreshes every that many ms while the
+        // documents arrive (a commit with live search on, as the plugin
+        // refreshes then; an NRT snapshot without). SEARCH_MS (live only):
+        // another thread opens a view and runs a plain term search and an
+        // aggregation's reader every that many ms, as searches keep the
+        // warmer running. LIVE_STALENESS_MS (default 20) is the bound.
+        let env_ms = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&v| v > 0)
+        };
+        let refresh_ms = env_ms("REFRESH_MS");
+        let search_ms = env_ms("SEARCH_MS").filter(|_| live_index);
+        if live_index {
+            let ms = std::env::var("LIVE_STALENESS_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20);
+            assert_eq!(crate::live::ffi_engine_writer_set_live_staleness(h, ms), 0);
+        }
+        fn thread_cpu_ms() -> f64 {
+            let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap_or_default();
+            let f: Vec<u64> = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .map(|v| v.parse().unwrap_or(0))
+                .collect();
+            // utime, stime after the state field, in 10 ms ticks.
+            f.get(11..13).map_or(0.0, |t| (t[0] + t[1]) as f64 * 10.0)
+        }
+        fn proc_cpu_ms() -> f64 {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+            let f: Vec<u64> = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .map(|v| v.parse().unwrap_or(0))
+                .collect();
+            f.get(11..13).map_or(0.0, |t| (t[0] + t[1]) as f64 * 10.0)
+        }
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let latest = std::sync::atomic::AtomicI64::new(if search_ms.is_some() {
+            commit(h, &[])
+        } else {
+            0
+        });
+        let cpu0 = proc_cpu_ms();
         let start = std::time::Instant::now();
-        buffer(0, docs);
+        let (refreshes, refresh_wall, search_cpu, searches) = std::thread::scope(|s| {
+            let refresher = s.spawn(|| {
+                let (mut n, mut wall) = (0u32, std::time::Duration::ZERO);
+                let Some(ms) = refresh_ms else {
+                    return (n, wall);
+                };
+                let mut held = Vec::new();
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    let t = std::time::Instant::now();
+                    if live_index {
+                        latest.store(commit(h, &[]), std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        let (mut ptr, mut len, mut hold, mut gen) =
+                            (std::ptr::null_mut(), 0usize, 0u64, 0i64);
+                        // SAFETY: live out-pointers.
+                        let rc = unsafe {
+                            ffi_engine_writer_nrt_snapshot(
+                                h, &mut ptr, &mut len, &mut hold, &mut gen,
+                            )
+                        };
+                        assert_eq!(rc, 0, "{}", crate::error::last_error());
+                        // SAFETY: the buffer the call gave, freed once.
+                        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                        held.push(hold);
+                    }
+                    wall += t.elapsed();
+                    n += 1;
+                }
+                (n, wall)
+            });
+            let searcher = s.spawn(|| {
+                let Some(ms) = search_ms else {
+                    return (0.0, 0u32);
+                };
+                use crate::live::{
+                    ffi_engine_writer_live_view_open, ffi_live_view_close, ffi_live_view_reader,
+                };
+                let term_q = crate::jvm_reader::tests::term_blob("body", "t0");
+                let tags = crate::jvm_aggs::tests::terms_tree("tag", 10);
+                let c0 = thread_cpu_ms();
+                let mut n = 0u32;
+                // A reader per commit, as the plugin's per refresh.
+                let mut readers: Vec<(i64, u64)> = Vec::new();
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    let gen = latest.load(std::sync::atomic::Ordering::Relaxed);
+                    if readers.last().is_none_or(|&(g, _)| g != gen) {
+                        readers.push((gen, open_reader(&tmp, gen)));
+                    }
+                    let reader = readers.last().map(|&(_, r)| r).unwrap();
+                    let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+                    // SAFETY: live out-pointers.
+                    let rc = unsafe {
+                        ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len)
+                    };
+                    assert_eq!(rc, 0, "{}", crate::error::last_error());
+                    // SAFETY: the buffer the call gave, freed once.
+                    unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+                    std::hint::black_box(super::tests::search_live(reader, view, &term_q));
+                    let mut lean = 0u64;
+                    // SAFETY: live slices and out-pointer.
+                    let rc = unsafe {
+                        ffi_live_view_reader(
+                            reader,
+                            view,
+                            term_q.as_ptr(),
+                            term_q.len(),
+                            tags.as_ptr(),
+                            tags.len(),
+                            std::ptr::null(),
+                            0,
+                            &mut lean,
+                        )
+                    };
+                    assert_eq!(rc, 0, "{}", crate::error::last_error());
+                    assert_eq!(ffi_live_view_close(view), 0);
+                    n += 1;
+                }
+                let cpu = thread_cpu_ms() - c0;
+                for (_, r) in readers {
+                    assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(r), 0);
+                }
+                (cpu, n)
+            });
+            buffer(0, docs);
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            let (r, w) = refresher.join().unwrap();
+            let (c, n) = searcher.join().unwrap();
+            (r, w, c, n)
+        });
         let buffered = start.elapsed();
+        let index_cpu = proc_cpu_ms() - cpu0 - search_cpu;
+        eprintln!(
+            "docs {docs} live {live_index}: buffered in {buffered:?}, index cpu {:.1} s (searcher {:.1} s over {searches} searches), {refreshes} refreshes {refresh_wall:?}",
+            index_cpu / 1000.0,
+            search_cpu / 1000.0,
+        );
         let s = stats(h);
         fn cpu_ticks() -> u64 {
             let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
