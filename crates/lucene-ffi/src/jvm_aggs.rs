@@ -1056,7 +1056,8 @@ pub(crate) fn aggregate_tree_blobs(
         handle,
         "ffi_jvm_reader_aggregate_tree: unknown or already-closed handle",
     )?;
-    let query = crate::jvm_join::resolve(&h, query, sim)?;
+    let query =
+        crate::jvm_reader::similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1169,7 +1170,10 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             min.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        // A similarity script's error first: the search met it before
+        // anything that ended it.
+        let sliced = jvm_reader::similarity_checked(sim, sliced)?;
         for results in &sliced {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1189,14 +1193,15 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             global_min.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        let results = jvm_reader::similarity_checked(sim, results)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;
             }
         }
     }
-    Ok(out)
+    jvm_reader::similarity_checked(sim, Ok(out))
 }
 
 /// The aggregations of a tree blob over the live matches of the query blob:

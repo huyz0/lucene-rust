@@ -42,6 +42,8 @@ UNVERIFIABLE = []
 # Similarities the e2e index maps on `tuned.*`. OpenSearch 2.x has no `LegacyBM25` type, so
 # verify_upgrade.py, whose indices 2.x creates, drops it.
 SIMILARITIES = ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "legacy")
+# Scripted similarities: native, weighted, throwing, and one the static check refuses.
+SCRIPTED = ("scr", "scrw", "scrx", "scrs", "scrn")
 
 
 def req(method, path, body=None, ndjson=False):
@@ -108,9 +110,16 @@ def create(index, shards, index_sort=None):
             "bool": {"type": "boolean"},
             "legacy": {"type": "LegacyBM25", "k1": 1.5, "b": 0.6},
             "scr": {"type": "scripted", "script": {"source": "return query.boost * doc.freq;"}},
+            "scrw": {"type": "scripted",
+                     "weight_script": {"source": "return query.boost * Math.log((field.docCount + 1.0) / (term.docFreq + 1.0));"},
+                     "script": {"source": "double tf = Math.sqrt(doc.freq); double norm = 1 / Math.sqrt(doc.length); return weight * tf * norm;"}},
+            "scrs": {"type": "scripted", "script": {"source": "return [doc.freq, 1.0].stream().mapToDouble(x -> x).sum();"}},
+            # Index creation validates every similarity at boost 2: these fail only below it.
+            "scrx": {"type": "scripted", "script": {"source": "if (query.boost < 1.5 && doc.length > 3) { throw new IllegalStateException('length ' + doc.length); } return doc.freq;"}},
+            "scrn": {"type": "scripted", "script": {"source": "return query.boost < 1.5 ? doc.freq - 1.5 : doc.freq;"}},
         },
     }
-    settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned", "scr")}
+    settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned",) + SCRIPTED}
     # A hunspell analyzer over config/hunspell/en_US
     # (opensearch-plugin/e2e/hunspell), on the nodes verify-opensearch.sh mounts
     # it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
@@ -129,7 +138,7 @@ def create(index, shards, index_sort=None):
             "hun": {"type": "text", "analyzer": "hun"} if HUNSPELL else {"type": "text"},
             "title": {"type": "text", "store": True},
             "tuned": {"type": "text", "similarity": "tuned", "fields": {
-                k: {"type": "text", "similarity": k} for k in SIMILARITIES + ("scr",)
+                k: {"type": "text", "similarity": k} for k in SIMILARITIES + SCRIPTED
             }},
             "tag": {"type": "keyword"},
             "mtag": {"type": "keyword"},
@@ -334,10 +343,13 @@ def matrix():
     for k in SIMILARITIES:
         add(f"similarity {k}", {"query": {"bool": {"should": [{"match": {f"tuned.{k}": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
     add("similarity dfr phrase", {"query": {"match_phrase": {"tuned.dfr": {"query": "alpha beta", "slop": 2}}}}, "native")
-    # A scripted similarity runs the user's script, which stays on the JVM.
+    # Scripted similarities run natively when the static check passes them.
     # (`classic` is native too, but OpenSearch refuses it in a mapping now, so
     # only the self-test reaches it.)
-    add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "field_similarity")
+    add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "native")
+    add("similarity scripted weight", {"query": {"bool": {"should": [{"match": {"tuned.scrw": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
+    add("similarity scripted phrase", {"query": {"match_phrase": {"tuned.scrw": "beta alpha"}}}, "native")
+    add("similarity scripted refused", {"query": {"match": {"tuned.scrs": "alpha"}}}, "field_similarity")
     # Sorted searches: numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.
     add("sort long desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
@@ -989,6 +1001,11 @@ def script_errors(index, shards):
     queries += [
         ("interval filter division by zero", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
                                               "filter": {"script": {"source": "1 / (interval.start - interval.start) > 0"}}}}}}}),
+    ]
+    # A scripted similarity's exception.
+    queries += [
+        ("similarity script throws", {"query": {"match": {"tuned.scrx": "alpha"}}}),
+        ("similarity negative score", {"query": {"match": {"tuned.scrn": "alpha"}}}),
     ]
     # terms_set: a minimum_should_match_script's exception.
     queries += [

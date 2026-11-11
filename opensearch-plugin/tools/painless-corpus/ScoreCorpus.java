@@ -104,6 +104,13 @@ public class ScoreCorpus {
     public static void main(String[] args) throws Exception {
         Path out = Path.of(args[0]);
         Path indexDir = out.resolve("index");
+        if (args.length > 1 && args[1].equals("similarity")) {
+            // Over the index as it is: the similarity fixture alone.
+            try (FSDirectory dir = FSDirectory.open(indexDir)) {
+                writeSimilarity(dir, out.resolve("similarity.bin"));
+            }
+            return;
+        }
         if (Files.exists(indexDir)) {
             try (var s = Files.list(indexDir)) {
                 for (Path p : (Iterable<Path>) s::iterator) {
@@ -413,6 +420,115 @@ public class ScoreCorpus {
             rec.out.writeTo(f);
         }
         System.err.printf("%d scored, %d threw, %d not native%n", matched, threw, refused);
+    }
+
+    /** A scripted similarity's script, and its weight script or null. */
+    record SimCase(String script, String weight) {}
+
+    static List<SimCase> simCases() {
+        return List.of(
+            new SimCase("return query.boost * doc.freq / Math.sqrt(doc.length);", null),
+            new SimCase(
+                "double tf = doc.freq; return weight * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * doc.length / (field.sumTotalTermFreq / (double) field.docCount)));",
+                "return Math.log(1 + (field.docCount - term.docFreq + 0.5) / (term.docFreq + 0.5));"
+            ),
+            new SimCase("double x = doc.getFreq(); for (int i = 0; i < term.getDocFreq(); i++) { x += 0.001; } return x * query.getBoost();", null),
+            new SimCase("def d = doc; def t = term; return d.freq * t.docFreq + field.sumDocFreq % 7;", null),
+            new SimCase("return Long.toString(term.totalTermFreq).length() + doc.freq;", "return query.boost + field.getSumTotalTermFreq();"),
+            // Errors: the script's own, the weight script's.
+            new SimCase("if (doc.length > 4) { throw new IllegalArgumentException('long doc ' + doc.length); } return doc.freq;", null),
+            new SimCase("return weight;", "return 1 / (term.totalTermFreq - term.totalTermFreq);"),
+            // A runtime exception thrown again keeps where it was raised.
+            new SimCase("try { return 1 / (doc.length - doc.length); } catch (ArithmeticException e) { throw e; }", null),
+            // Negative scores, which NonNegativeScoresSimilarity refuses; -0.0 passes.
+            new SimCase("return doc.freq - 1.5;", null),
+            new SimCase("return weight * (4 - doc.length);", "return term.docFreq - 1.0;"),
+            new SimCase("return -0.0 * doc.freq;", null)
+        );
+    }
+
+    /** The queries each similarity scores, by kind: what the Rust test builds for each. */
+    static Query simQuery(int kind) {
+        return switch (kind) {
+            case 0 -> new TermQuery(new Term("body", "alpha"));
+            case 1 -> new org.apache.lucene.search.BooleanQuery.Builder()
+                .add(new TermQuery(new Term("body", "alpha")), org.apache.lucene.search.BooleanClause.Occur.SHOULD)
+                .add(new TermQuery(new Term("body", "beta")), org.apache.lucene.search.BooleanClause.Occur.SHOULD)
+                .add(new TermQuery(new Term("body", "gamma")), org.apache.lucene.search.BooleanClause.Occur.SHOULD)
+                .build();
+            case 2 -> new BoostQuery(new TermQuery(new Term("body", "delta")), 2.5f);
+            default -> new org.apache.lucene.search.PhraseQuery("body", "beta", "alpha");
+        };
+    }
+
+    /**
+     * Writes the scripted similarity fixture: per case, the score script's source and IR, the
+     * weight script's ({@code u8} 1 then source and IR, or 0), {@code ScriptedSimilarity.toString()},
+     * then for each query kind of {@link #simQuery} the outcome as {@link #write} records it (0
+     * the hits by doc, 1 the script's exception, 2 another). Layout {@code PSS1}, count, cases.
+     */
+    static void writeSimilarity(FSDirectory dir, Path expected) throws Exception {
+        PainlessScriptEngine engine = new PainlessScriptEngine(
+            Settings.EMPTY,
+            Map.of(
+                org.opensearch.script.SimilarityScript.CONTEXT,
+                Allowlist.BASE_ALLOWLISTS,
+                org.opensearch.script.SimilarityWeightScript.CONTEXT,
+                Allowlist.BASE_ALLOWLISTS
+            )
+        );
+        PainlessScore.initialize(engine);
+        Rec rec = new Rec();
+        List<SimCase> cases = simCases();
+        rec.out.writeBytes("PSS1".getBytes(StandardCharsets.US_ASCII));
+        rec.i32(cases.size());
+        int scored = 0, threw = 0;
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (SimCase c : cases) {
+                Script script = new Script(ScriptType.INLINE, "painless", c.script(), Map.of());
+                Script weight = c.weight() == null ? null : new Script(ScriptType.INLINE, "painless", c.weight(), Map.of());
+                org.opensearch.script.SimilarityScript.Factory sf = engine.compile(
+                    "fixture", c.script(), org.opensearch.script.SimilarityScript.CONTEXT, Map.of());
+                org.opensearch.script.SimilarityWeightScript.Factory wf = weight == null ? null : engine.compile(
+                    "fixture", c.weight(), org.opensearch.script.SimilarityWeightScript.CONTEXT, Map.of());
+                org.opensearch.index.similarity.ScriptedSimilarity sim = new org.opensearch.index.similarity.ScriptedSimilarity(
+                    weight == null ? null : weight.toString(), wf, script.toString(), sf, true);
+                rec.str(c.script());
+                rec.bytes(((PainlessIr.Compiled) PainlessScore.similarity(c.script(), false)).ir());
+                if (weight == null) {
+                    rec.u8(0);
+                } else {
+                    rec.u8(1);
+                    rec.str(c.weight());
+                    rec.bytes(((PainlessIr.Compiled) PainlessScore.similarity(c.weight(), true)).ir());
+                }
+                rec.str(sim.toString());
+                IndexSearcher searcher = new IndexSearcher(reader);
+                searcher.setQueryCache(null);
+                // As SimilarityService builds every scripted similarity.
+                searcher.setSimilarity(new org.opensearch.index.similarity.NonNegativeScoresSimilarity(sim));
+                for (int kind = 0; kind < 4; kind++) {
+                    try {
+                        ScoreDoc[] hits = searcher.search(simQuery(kind), 1000).scoreDocs.clone();
+                        Arrays.sort(hits, (a, b) -> Integer.compare(a.doc, b.doc));
+                        rec.u8(0);
+                        rec.i32(hits.length);
+                        for (ScoreDoc h : hits) {
+                            rec.i32(h.doc);
+                            rec.i32(Float.floatToIntBits(h.score));
+                        }
+                        scored++;
+                    } catch (Exception e) {
+                        threwOutcome(rec, e);
+                        threw++;
+                    }
+                }
+            }
+        }
+        try (FileOutputStream f = new FileOutputStream(expected.toFile())) {
+            rec.out.writeTo(f);
+        }
+        System.err.printf("similarity: %d scored, %d threw%n", scored, threw);
     }
 
     /** The outcome of a search that threw {@code e}: the exception Painless's wraps, as above. */
