@@ -3734,7 +3734,7 @@ fn merge_binary_doc_values(
             let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
             };
-            if let Some(value) = reader.value(doc_id)? {
+            if let Some(value) = reader.value_ref(doc_id)? {
                 column.docs.push(merged_doc_id as i32);
                 column.lengths.push(value.len() as u32);
                 column.bytes.extend_from_slice(value);
