@@ -121,10 +121,10 @@ final class LiveSearchers {
     }
 
     private OpenSearchDirectoryReader open(OpenSearchDirectoryReader reader) {
-        long generation = RustReaderManager.generation(reader);
-        // A search on this commit asks: the buffers older commits lacked can go.
-        writer.releaseLive(generation);
-        RustIndexWriter.LiveViewHandle handle = writer.openLiveView(generation);
+        long version = RustReaderManager.version(reader);
+        // A search on this segment list asks: the buffers older lists lacked can go.
+        writer.releaseLive(version);
+        RustIndexWriter.LiveViewHandle handle = writer.openLiveView(version);
         if (handle == null) {
             return null;
         }
