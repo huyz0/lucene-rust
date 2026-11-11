@@ -850,6 +850,8 @@ final class ExtendedEncoder {
             FieldValueFactorFunction.Modifier modifier = (FieldValueFactorFunction.Modifier) field(f, "modifier");
             out.write(2);
             writeString(out, ((IndexFieldData<?>) data).getFieldName());
+            // The requested name, an alias's own, as FieldValueFactorFunction's errors name it.
+            writeString(out, (String) field(f, "field"));
             out.write(numeric);
             writeInt(out, Float.floatToIntBits((float) field(f, "boostFactor")));
             out.write((byte) modifier.ordinal());
@@ -901,6 +903,8 @@ final class ExtendedEncoder {
             out.write(4);
             out.write(decay);
             writeString(out, ((IndexFieldData<?>) data).getFieldName());
+            // The requested name, an alias's own, as FieldValueFactorFunction's errors name it.
+            writeString(out, (String) field(f, "field"));
             out.write(numeric);
             writeLong(out, Double.doubleToRawLongBits((double) field(f, "origin")));
             writeLong(out, Double.doubleToRawLongBits((double) field(f, "scale")));
