@@ -1,0 +1,288 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor;
+
+import org.lucenerust.opensearch.neural.util.lang.Multimap;
+import org.opensearch.action.search.SearchRequest;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.index.query.BoolQueryBuilder;
+import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.ingest.ConfigurationUtils;
+import org.lucenerust.opensearch.neural.query.AbstractNeuralQueryBuilder;
+import org.lucenerust.opensearch.neural.query.NeuralQueryBuilder;
+import org.lucenerust.opensearch.sparse.SparseFieldUtils;
+import org.lucenerust.opensearch.neural.stats.events.EventStatName;
+import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
+import org.lucenerust.opensearch.neural.util.NeuralSearchClusterUtil;
+import org.lucenerust.opensearch.neural.util.prune.PruneType;
+import org.lucenerust.opensearch.neural.util.prune.PruneUtils;
+import org.opensearch.search.builder.SearchSourceBuilder;
+import org.opensearch.search.pipeline.AbstractProcessor;
+import org.opensearch.search.pipeline.Processor;
+import org.opensearch.search.pipeline.SearchRequestProcessor;
+import org.opensearch.search.rescore.QueryRescorerBuilder;
+import org.opensearch.search.rescore.RescorerBuilder;
+import org.opensearch.search.sort.ScoreSortBuilder;
+import org.opensearch.search.sort.SortBuilder;
+import org.opensearch.search.sort.SortOrder;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * A SearchRequestProcessor to generate two-phase NeuralSparseQueryBuilder,
+ * and add it to the Rescore of a searchRequest.
+ */
+public class NeuralSparseTwoPhaseProcessor extends AbstractProcessor implements SearchRequestProcessor {
+    public static final String TYPE = "neural_sparse_two_phase_processor";
+    private boolean enabled;
+    private float pruneRatio;
+    private PruneType pruneType;
+    private float windowExpansion;
+    private int maxWindowSize;
+    private ClusterService clusterService;
+    private static final String PARAMETER_KEY = "two_phase_parameter";
+    private static final String ENABLE_KEY = "enabled";
+    private static final String EXPANSION_KEY = "expansion_rate";
+    private static final String MAX_WINDOW_SIZE_KEY = "max_window_size";
+    private static final boolean DEFAULT_ENABLED = true;
+    private static final float DEFAULT_RATIO = 0.4F;
+    private static final PruneType DEFAULT_PRUNE_TYPE = PruneType.MAX_RATIO;
+    private static final float DEFAULT_WINDOW_EXPANSION = 5.0F;
+    private static final int DEFAULT_MAX_WINDOW_SIZE = 10000;
+    private static final int DEFAULT_BASE_QUERY_SIZE = 10;
+    private static final int MAX_WINDOWS_SIZE_LOWER_BOUND = 50;
+    private static final float WINDOW_EXPANSION_LOWER_BOUND = 1.0F;
+
+    protected NeuralSparseTwoPhaseProcessor(String tag, String description, boolean ignoreFailure, boolean enabled, float pruneRatio, PruneType pruneType, float windowExpansion, int maxWindowSize) {
+        super(tag, description, ignoreFailure);
+        this.enabled = enabled;
+        this.pruneRatio = pruneRatio;
+        this.pruneType = pruneType;
+        if (windowExpansion < WINDOW_EXPANSION_LOWER_BOUND) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "The two_phase_parameter.expansion_rate must >= 1.0. Received: %f", windowExpansion));
+        }
+        this.windowExpansion = windowExpansion;
+        if (maxWindowSize < MAX_WINDOWS_SIZE_LOWER_BOUND) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "The two_phase_parameter.max_window_size must >= 50. Received: %n" + maxWindowSize));
+        }
+        this.maxWindowSize = maxWindowSize;
+        this.clusterService = NeuralSearchClusterUtil.instance().getClusterService();
+    }
+
+    /**
+     * Process the search request of neural_sparse_two_phase_processor
+     * @param request the search request (which may have been modified by an earlier processor)
+     * @return request the search request that add the two-phase rescore query of neural sparse query.
+     */
+    @Override
+    public SearchRequest processRequest(final SearchRequest request) {
+        EventStatsManager.increment(EventStatName.NEURAL_SPARSE_TWO_PHASE_PROCESSOR_EXECUTIONS);
+        if (!enabled || pruneRatio == 0.0F) {
+            return request;
+        }
+        // Two-phase rescore is incompatible with explicit sort (other than _score DESC).
+        // OpenSearch rejects sort + rescore in DefaultSearchContext.preProcess(), so when the
+        // request already has a non-_score-DESC sort, skip the optimization and let the full
+        // neural_sparse query run as a single phase. Correctness over latency.
+        if (hasIncompatibleSort(request.source())) {
+            return request;
+        }
+        QueryBuilder queryBuilder = request.source().query();
+        // Collect the nested NeuralSparseQueryBuilder in the whole query.
+        Multimap<AbstractNeuralQueryBuilder<?>, Float> queryBuilderMap = collectNeuralQueryBuilderWithSparseEmbedding(queryBuilder, 1.0F, request);
+        if (queryBuilderMap.isEmpty()) {
+            return request;
+        }
+        validateSeismicQuery(request.indices(), queryBuilderMap);
+        // Make a nestedQueryBuilder which includes all the two-phase QueryBuilder.
+        QueryBuilder nestedTwoPhaseQueryBuilder = getNestedQueryBuilderFromNeuralSparseQueryBuilderMap(queryBuilderMap);
+        nestedTwoPhaseQueryBuilder.boost(getOriginQueryWeightAfterRescore(request.source()));
+        // Add it to the rescorer.
+        RescorerBuilder<QueryRescorerBuilder> twoPhaseRescorer = buildRescoreQueryBuilderForTwoPhase(nestedTwoPhaseQueryBuilder, request);
+        request.source().addRescorer(twoPhaseRescorer);
+        return request;
+    }
+
+    @Override
+    public String getType() {
+        return TYPE;
+    }
+
+    private QueryBuilder getNestedQueryBuilderFromNeuralSparseQueryBuilderMap(final Multimap<AbstractNeuralQueryBuilder<?>, Float> queryBuilderFloatMap) {
+        BoolQueryBuilder boolQueryBuilder = new BoolQueryBuilder();
+        queryBuilderFloatMap.asMap().forEach((neuralQueryBuilderWithSparseEmbedding, boosts) -> {
+            float reduceBoost = boosts.stream().reduce(0.0F, Float::sum);
+            boolQueryBuilder.should(neuralQueryBuilderWithSparseEmbedding.boost(reduceBoost));
+        });
+        return boolQueryBuilder;
+    }
+
+    /**
+     * Returns true when the request specifies a sort that OpenSearch will treat as an explicit
+     * sort at execution time, in which case adding a rescore would cause
+     * {@code DefaultSearchContext.preProcess()} to throw
+     * "Cannot use [sort] option in conjunction with [rescore]".
+     *
+     * Mirrors the optimization in {@code SortBuilder.buildSort}: a single {@code _score DESC}
+     * is collapsed to "no sort" and is therefore compatible. Anything else (a field sort, a
+     * non-default _score order, or a multi-element sort list) is incompatible.
+     */
+    static boolean hasIncompatibleSort(final SearchSourceBuilder searchSourceBuilder) {
+        List<SortBuilder<?>> sorts = searchSourceBuilder.sorts();
+        if (sorts == null || sorts.isEmpty()) {
+            return false;
+        }
+        if (sorts.size() == 1) {
+            SortBuilder<?> only = sorts.get(0);
+            return !(only instanceof ScoreSortBuilder) || only.order() != SortOrder.DESC;
+        }
+        return true;
+    }
+
+    private float getOriginQueryWeightAfterRescore(final SearchSourceBuilder searchSourceBuilder) {
+        if (Objects.isNull(searchSourceBuilder.rescores())) {
+            return 1.0F;
+        }
+        return searchSourceBuilder.rescores().stream().map(rescorerBuilder -> ((QueryRescorerBuilder) rescorerBuilder).getQueryWeight()).reduce(1.0F, (a, b) -> a * b);
+    }
+
+    private Multimap<AbstractNeuralQueryBuilder<?>, Float> collectNeuralQueryBuilderWithSparseEmbedding(final QueryBuilder queryBuilder, float baseBoost, final SearchRequest request) {
+        Multimap<AbstractNeuralQueryBuilder<?>, Float> result = Multimap.create();
+        if (queryBuilder instanceof BoolQueryBuilder) {
+            BoolQueryBuilder boolQueryBuilder = (BoolQueryBuilder) queryBuilder;
+            float updatedBoost = baseBoost * boolQueryBuilder.boost();
+            for (QueryBuilder subQuery : boolQueryBuilder.should()) {
+                Multimap<AbstractNeuralQueryBuilder<?>, Float> subResult = collectNeuralQueryBuilderWithSparseEmbedding(subQuery, updatedBoost, request);
+                result.putAll(subResult);
+            }
+        } else if (queryBuilder instanceof AbstractNeuralQueryBuilder<?> abstractNeuralQueryBuilder) {
+            // If this is a neuralQueryBuilder then we need to check if the target is sparse embedding.
+            // If the target is not the sparse embedding we do nothing.
+            if (abstractNeuralQueryBuilder instanceof NeuralQueryBuilder neuralQueryBuilder && neuralQueryBuilder.isTargetSparseEmbedding(request) == false) {
+                return result;
+            }
+            float updatedBoost = baseBoost * abstractNeuralQueryBuilder.boost();
+            /*
+             * We obtain a copied modifiedQueryBuilder from the valid origin NeuralSparseQueryBuilder. After this,
+             * when the original NeuralSparseQueryBuilder starts to rewrite, it will only retain the tokens that
+             * have higher scores (controlled by the maxScore * ratio). The tokens with lower scores will be
+             * passed to the modifiedQueryBuilder's queryTokenSupplier.
+             *
+             * By doing this, we reduce the score computation time for the original NeuralSparseQueryBuilder,
+             * and use the modifiedQueryBuilder to make a score increment on TopDocs.
+             *
+             * When 2-phase is enabled:
+             *     - Docs besides TopDocs: Score = HighScoreToken's score
+             *     - Final TopDocs: Score = HighScoreToken's score + LowScoreToken's score
+             */
+            AbstractNeuralQueryBuilder<?> modifiedQueryBuilder = abstractNeuralQueryBuilder.prepareTwoPhaseQuery(pruneRatio, pruneType);
+            result.put(modifiedQueryBuilder, updatedBoost);
+        }
+        // We only support BoostQuery, BooleanQuery and NeuralSparseQuery now. For other compound query type which are not support now, will
+        // do nothing and just quit.
+        return result;
+    }
+
+    private RescorerBuilder<QueryRescorerBuilder> buildRescoreQueryBuilderForTwoPhase(final QueryBuilder nestedTwoPhaseQueryBuilder, final SearchRequest searchRequest) {
+        RescorerBuilder<QueryRescorerBuilder> twoPhaseRescorer = new QueryRescorerBuilder(nestedTwoPhaseQueryBuilder);
+        int requestSize = searchRequest.source().size();
+        int windowSize = (int) ((requestSize == -1 ? DEFAULT_BASE_QUERY_SIZE : requestSize) * windowExpansion);
+        if (windowSize > maxWindowSize || windowSize < 0) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "The two-phase window size of neural_sparse_two_phase_processor should be [0,%d], but get the value of %d", maxWindowSize, windowSize));
+        }
+        twoPhaseRescorer.windowSize(windowSize);
+        return twoPhaseRescorer;
+    }
+
+    private void validateSeismicQuery(String[] indices, Multimap<AbstractNeuralQueryBuilder<?>, Float> queryBuilderMap) {
+        for (String index : indices) {
+            Set<String> sparseAnnFields = SparseFieldUtils.getSparseAnnFields(index, getClusterService());
+            for (Map.Entry<AbstractNeuralQueryBuilder<?>, Float> entry : queryBuilderMap.entries()) {
+                AbstractNeuralQueryBuilder<?> queryBuilder = entry.getKey();
+                String fieldName = queryBuilder.fieldName();
+                if (sparseAnnFields.contains(fieldName)) {
+                    throw new IllegalArgumentException(String.format(Locale.ROOT, "Two phase search processor is not compatible with [%s] field for now", "seismic"));
+                }
+            }
+        }
+    }
+
+
+    /**
+     * Factory to create NeuralSparseTwoPhaseProcessor, provide default parameter,
+     */
+    public static class Factory implements Processor.Factory<SearchRequestProcessor> {
+        @Override
+        public NeuralSparseTwoPhaseProcessor create(Map<String, Processor.Factory<SearchRequestProcessor>> processorFactories, String tag, String description, boolean ignoreFailure, Map<String, Object> config, PipelineContext pipelineContext) throws IllegalArgumentException {
+            boolean enabled = ConfigurationUtils.readBooleanProperty(TYPE, tag, config, ENABLE_KEY, DEFAULT_ENABLED);
+            Map<String, Object> twoPhaseConfigMap = ConfigurationUtils.readOptionalMap(TYPE, tag, config, PARAMETER_KEY);
+            float pruneRatio = DEFAULT_RATIO;
+            float windowExpansion = DEFAULT_WINDOW_EXPANSION;
+            int maxWindowSize = DEFAULT_MAX_WINDOW_SIZE;
+            PruneType pruneType = DEFAULT_PRUNE_TYPE;
+            if (Objects.nonNull(twoPhaseConfigMap)) {
+                pruneRatio = ((Number) twoPhaseConfigMap.getOrDefault(PruneUtils.PRUNE_RATIO_FIELD, pruneRatio)).floatValue();
+                windowExpansion = ((Number) twoPhaseConfigMap.getOrDefault(EXPANSION_KEY, windowExpansion)).floatValue();
+                maxWindowSize = ((Number) twoPhaseConfigMap.getOrDefault(MAX_WINDOW_SIZE_KEY, maxWindowSize)).intValue();
+                pruneType = PruneType.fromString(twoPhaseConfigMap.getOrDefault(PruneUtils.PRUNE_TYPE_FIELD, pruneType.getValue()).toString());
+            }
+            if (!PruneUtils.isValidPruneRatio(pruneType, pruneRatio)) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "Illegal prune_ratio %f for prune_type: %s. %s", pruneRatio, pruneType.getValue(), PruneUtils.getValidPruneRatioDescription(pruneType)));
+            }
+            return new NeuralSparseTwoPhaseProcessor(tag, description, ignoreFailure, enabled, pruneRatio, pruneType, windowExpansion, maxWindowSize);
+        }
+    }
+
+    public void setEnabled(final boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public void setPruneRatio(final float pruneRatio) {
+        this.pruneRatio = pruneRatio;
+    }
+
+    public void setPruneType(final PruneType pruneType) {
+        this.pruneType = pruneType;
+    }
+
+    public void setWindowExpansion(final float windowExpansion) {
+        this.windowExpansion = windowExpansion;
+    }
+
+    public void setMaxWindowSize(final int maxWindowSize) {
+        this.maxWindowSize = maxWindowSize;
+    }
+
+    public void setClusterService(final ClusterService clusterService) {
+        this.clusterService = clusterService;
+    }
+
+    public boolean isEnabled() {
+        return this.enabled;
+    }
+
+    public float getPruneRatio() {
+        return this.pruneRatio;
+    }
+
+    public PruneType getPruneType() {
+        return this.pruneType;
+    }
+
+    public float getWindowExpansion() {
+        return this.windowExpansion;
+    }
+
+    public int getMaxWindowSize() {
+        return this.maxWindowSize;
+    }
+
+    public ClusterService getClusterService() {
+        return this.clusterService;
+    }
+}

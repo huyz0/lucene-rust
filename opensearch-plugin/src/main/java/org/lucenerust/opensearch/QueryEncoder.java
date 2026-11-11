@@ -789,11 +789,17 @@ public final class QueryEncoder {
         return c.getSimpleName();
     }
 
+    /** {@code q} without unit boosts and the neural query's wrapper, which scores as the k-NN query it holds. */
     private static Query unwrapUnitBoost(Query q) {
-        while (q instanceof BoostQuery b && b.getBoost() == 1f) {
-            q = b.getQuery();
+        while (true) {
+            if (q instanceof BoostQuery b && b.getBoost() == 1f) {
+                q = b.getQuery();
+            } else if (q instanceof org.lucenerust.opensearch.neural.query.NeuralKNNQuery n) {
+                q = n.getKnnQuery();
+            } else {
+                return q;
+            }
         }
-        return q;
     }
 
     private static byte[] toArray(BytesRef b) {

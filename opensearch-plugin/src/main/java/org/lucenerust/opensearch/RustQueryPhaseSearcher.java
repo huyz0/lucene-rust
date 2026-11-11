@@ -5,6 +5,7 @@ package org.lucenerust.opensearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lucenerust.opensearch.knn.KnnHitsQuery;
 import org.lucenerust.opensearch.neural.query.HybridQuery;
 import org.lucenerust.opensearch.neural.search.query.HybridAggregationProcessor;
 import org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher;
@@ -135,7 +136,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        PainlessScore.beginRequest();
+        PainlessScore.beginRequest(() -> ctx.request().source() == null ? null : ctx.request().source().toString());
         try {
             return containsHybrid(query)
                 ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
@@ -209,7 +210,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
-            : NativeAggregationTree.plan(ctx, field -> true);
+            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
@@ -332,10 +333,19 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int[][] slices = NativeAggregations.slices(ctx);
             // TopFieldCollector ends a segment whose index sort begins with the
             // search's sort at its first non-competitive document; the native
-            // collector does too, told which segments.
-            boolean[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            // collector does too, told which segments -- and where the query
+            // pins the index sort's first keys and sorts by the ones after.
+            byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            Sort keys = sort;
+            FieldDoc from = after;
+            boolean counts = countSegments(ctx, terminateAfter);
+            int limit = terminateAfter;
+            // A script key's script reads fields by the index's mappings.
             SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
-                : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter), indexSorted);
+                : ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> SortEncoder.encode(keys, from, trackMaxScore, slices, limit, counts, indexSorted)
+                );
             reason = sorted.fallbackReason();
             sortBlob = sorted.blob();
         }
@@ -362,6 +372,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 } else if (liveIneligible(ctx) != null) {
                     // Lucene sees the view's documents as deleted and answers from the reader's.
                     reason = "realtime_view";
+                } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
+                    // A k-NN search's hits, found when the query was rewritten: nothing of the
+                    // buffers is read again.
+                    storeKnnHits(ctx, hits);
                 } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
                     // Everything else reads the buffers written as segments, one per leaf of the
                     // view: aggregations, sorts, collapse, rescore, and what the plain path's
@@ -615,6 +629,34 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         store(ctx, new TopDocsAndMaxScore(new TopDocs(total, hits), n == 0 ? Float.NaN : scores[0]), null);
         stats.liveQuery();
         return true;
+    }
+
+    /**
+     * The top hits and total of {@code hits} alone, as the native plain search gives them: best
+     * score first, the lower doc on a tie, {@code from + size} of them, counted up to
+     * {@code track_total_hits}.
+     */
+    private void storeKnnHits(SearchContext ctx, KnnHitsQuery hits) {
+        int[] docs = hits.docs();
+        float[] scores = hits.scores();
+        ScoreDoc[] all = new ScoreDoc[docs.length];
+        for (int i = 0; i < docs.length; i++) {
+            all[i] = new ScoreDoc(docs[i], scores[i]);
+        }
+        java.util.Arrays.sort(all, (a, b) -> a.score != b.score ? Float.compare(b.score, a.score) : Integer.compare(a.doc, b.doc));
+        int n = ctx.size() == 0 ? 0 : Math.min(all.length, ctx.from() + ctx.size());
+        ScoreDoc[] top = java.util.Arrays.copyOf(all, n);
+        int trackUpTo = ctx.trackTotalHitsUpTo();
+        TotalHits total;
+        if (trackUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED) {
+            total = new TotalHits(0, TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        } else if (trackUpTo != SearchContext.TRACK_TOTAL_HITS_ACCURATE && all.length > Math.max(trackUpTo, n)) {
+            total = new TotalHits(Math.max(trackUpTo, n), TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO);
+        } else {
+            total = new TotalHits(all.length, TotalHits.Relation.EQUAL_TO);
+        }
+        store(ctx, new TopDocsAndMaxScore(new TopDocs(total, top), n == 0 ? Float.NaN : top[0].score), null);
+        stats.liveQuery();
     }
 
     /** Why this request cannot run native, or null when it can. */

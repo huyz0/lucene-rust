@@ -48,6 +48,10 @@ CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
 # reads (lucene-codecs' doc_values.rs and adaptive_values.rs), and the
 # RustZstd104 terms dictionary its terms/ package reads (blocktree.rs).
 CODECS_DIR = os.path.join(ROOT, "crates", "lucene-codecs", "src")
+# The multi-vector encodings, which the plugin's tensor/ package writes
+# (lucene-tensor's encoding.rs, lucene-util's max_sim.rs block width).
+TENSOR_DIR = os.path.join(ROOT, "crates", "lucene-tensor", "src")
+MAX_SIM_RS = os.path.join(ROOT, "crates", "lucene-util", "src", "max_sim.rs")
 
 # Rust files a Java file encodes for without naming them.
 EXTRA_FILES = {
@@ -56,6 +60,7 @@ EXTRA_FILES = {
     "NativeTopHits.java": ["jvm_aggs.rs"],
     "NativeSignificantTerms.java": ["jvm_aggs.rs"],
     "QueryEncoder.java": ["jvm_nodes.rs"],
+    "MultiVectorEncoding.java": ["max_sim.rs"],
 }
 
 # The prefix the Rust side puts in front of a Java file's names.
@@ -92,6 +97,8 @@ RENAMES = {
     ("ExtendedEncoder.java", "NODE_TO_CHILD"): ("jvm_queries.rs", "NODE_TO_CHILD"),
     ("ExtendedEncoder.java", "NODE_KNN_SCORE"): ("jvm_knn_score.rs", "NODE_KNN_SCORE"),
     ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("jvm_painless_score.rs", "NODE_PAINLESS_SCORE"),
+    ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("jvm_max_sim.rs", "NODE_MAX_SIM"),
+    ("ExtendedEncoder.java", "NODE_PAINLESS_FILTER"): ("jvm_painless_score.rs", "NODE_PAINLESS_FILTER"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
@@ -99,6 +106,13 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE_INDICATOR"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
+    ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
+    ("MMROverSampleProcessor.java", "DEFAULT_OVERSAMPLE_SCALE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
+    ("SemanticFieldProcessorFactory.java", "DEFAULT_BATCH_SIZE"): "the semantic ingest processor's inference batch, run in Java before indexing",
+    ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_MAX_WINDOW_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
+    ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_BASE_QUERY_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
+    ("NeuralSparseTwoPhaseProcessor.java", "MAX_WINDOWS_SIZE_LOWER_BOUND"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
     ("KnnFieldConfig.java", "DEFAULT_M"): "k-NN's mapping default, resolved into the field's format attribute",
     ("KnnFieldConfig.java", "DEFAULT_EF_CONSTRUCTION"): "k-NN's mapping default, resolved into the field's format attribute",
     ("KnnFieldConfig.java", "DEFAULT_CLUSTER_SIZE"): "the ivf mapping's default, resolved into the field's format attribute",
@@ -111,6 +125,7 @@ JAVA_ONLY = {
     ("VectorsFormatSpec.java", "SINGLE_BIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
     ("VectorsFormatSpec.java", "DIBIT"): "ScalarEncoding::wire_number in quantization.rs, an enum's numbers",
     ("VectorsFormatSpec.java", "IVF_QUANTIZERS"): "IVF_QUANTIZERS.len() in per_field_knn_vectors.rs, an array's length",
+    ("VectorsFormatSpec.java", "IVF_AUTO_QUANTIZER"): "IVF_AUTO_QUANTIZER in per_field_knn_vectors.rs, outside lucene-ffi",
     ("NativeBridge.java", "WARM_FAILED"): "any answer but WARM_OK fails the merge; Rust names none",
     ("QueryEncoder.java", "REGEXP_CACHE_SIZE"): "the Java side's parsed-regexp cache",
     ("NativeDocValues.java", "POINT_READS"): "when a Java iterator hands over to the segment's own for a scan",
@@ -119,8 +134,14 @@ JAVA_ONLY = {
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
     ("ExtendedEncoder.java", "MAX_REPEATS"): "Java refuses earlier than Rust's clause limit",
-    ("NeuralSparseQueryBuilder.java", "DEFAULT_TOP_N"): "neural-search's query default, resolved before encoding",
-    ("NeuralSparseQueryBuilder.java", "DEFAULT_K"): "neural-search's query default, resolved before encoding",
+    ("SparseAnnQueryBuilder.java", "DEFAULT_TOP_K"): "neural-search's query default, resolved before encoding",
+    ("SparseAnnQueryBuilder.java", "DEFAULT_QUERY_CUT"): "neural-search's query default, resolved before encoding",
+    ("NeuralQueryBuilder.java", "DEFAULT_K"): "neural-search's query default, resolved before encoding",
+    ("RetryUtil.java", "DEFAULT_MAX_RETRY"): "neural-search's inference retry policy",
+    ("RetryUtil.java", "DEFAULT_BASE_DELAY_MS"): "neural-search's inference retry policy",
+    ("SemanticMappingUtils.java", "MAX_DEPTH_OF_INDEX_MAPPING"): "neural-search's mapping walk limit",
+    ("FixedCharLengthChunker.java", "DEFAULT_CHAR_LIMIT"): "neural-search's text_chunking default, applied in Java",
+    ("FixedTokenLengthChunker.java", "DEFAULT_TOKEN_LIMIT"): "neural-search's text_chunking default, applied in Java",
     ("SparseMethod.java", "DEFAULT_N_POSTINGS"): "neural-search's mapping default, written as a field attribute",
     ("SparseMethod.java", "DEFAULT_APPROXIMATE_THRESHOLD"): "neural-search's mapping default, written as a field attribute",
     ("SparseMethod.java", "DEFAULT_CLUSTERING_BATCH_SIZE"): "neural-search's mapping default, written as a field attribute",
@@ -139,6 +160,10 @@ JAVA_ONLY = {
     ("RestNeuralStatsAction.java", "MAX_PARAM_LENGTH"): "the neural stats API's request checks",
     ("MemoryStat.java", "BYTES_PER_KILOBYTES"): "the neural stats API's memory units",
     ("TimestampedEventStat.java", "TRAILING_NUMBER_OF_INTERVALS"): "the neural stats API's trailing event window",
+    ("MultiVectorFieldMapper.java", "MAX_DIMENSION"): "the mapping's validation, at the k-NN plugin's limit",
+    ("MultiVectorFieldMapper.java", "MAX_POOLED_DIMENSION"): "the mapping's validation, at Lucene's KnnVectorsFormat limit",
+    ("MaxSimQueryBuilder.java", "MIN_SEARCH_WIDTH"): "the query's HNSW width, k-NN's default ef_search",
+    ("MaxSimQueryBuilder.java", "MAX_CANDIDATES"): "the query's validation, at k-NN's limit on k",
 }
 
 JAVA_CONST = re.compile(
@@ -167,7 +192,9 @@ def snake(camel):
 
 def load_rust():
     consts = {}
-    for d, name in [(d, n) for d in (RUST_DIR, CRYPTO_DIR, CODECS_DIR) for n in sorted(os.listdir(d))]:
+    files = [(d, n) for d in (RUST_DIR, CRYPTO_DIR, CODECS_DIR, TENSOR_DIR) for n in sorted(os.listdir(d))]
+    files.append(os.path.split(MAX_SIM_RS))
+    for d, name in files:
         if not name.endswith(".rs") or name in consts:
             continue
         with open(os.path.join(d, name), encoding="utf-8") as f:

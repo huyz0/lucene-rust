@@ -13,6 +13,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.List;
 
+import org.opensearch.script.TermsSetQueryScript;
+
 /**
  * The Lucene queries OpenSearch builds over doc values, as the nodes {@code
  * crates/lucene-ffi/src/jvm_queries.rs} reads:
@@ -32,8 +34,10 @@ import java.util.List;
  *
  * <p>Every class is Lucene's own, matched by name (most are package-private) and read through
  * {@link Reflect}: the fields their constructors were given, which their {@code equals} compares.
- * Falls back: a {@code terms_set} minimum from a script ({@code covering_script}) or from field
- * data other than plain integral doc values ({@code covering_field_data}).
+ * A {@code terms_set} minimum from a Painless script runs natively when the static check passes it
+ * ({@link ExtendedEncoder#painlessTermsSet}). Falls back: a script minimum the check refuses
+ * ({@code covering_painless}) or that is not inline Painless ({@code covering_script}), and one
+ * from field data other than plain integral doc values ({@code covering_field_data}).
  */
 final class DocValuesEncoder {
     static final byte NODE_DV_NUMERIC_RANGE = 29;
@@ -169,21 +173,28 @@ final class DocValuesEncoder {
         Collection<?> queries = (Collection<?>) ExtendedEncoder.field(q, "queries");
         LongValuesSource min = (LongValuesSource) ExtendedEncoder.field(q, "minimumNumberMatch");
         String field = null;
+        byte[] script = null;
         if (min instanceof LongValuesSource.ConstantLongValuesSource == false) {
             String name = min.getClass().getName();
             if (name.equals("org.opensearch.index.query.TermsSetQueryBuilder$ScriptLongValueSource")) {
-                return "covering_script";
+                ByteArrayOutputStream spec = new ByteArrayOutputStream();
+                String why = ExtendedEncoder.painlessTermsSet((TermsSetQueryScript.LeafFactory) ExtendedEncoder.field(min, "leafFactory"), spec);
+                if (why != null) {
+                    return why;
+                }
+                script = spec.toByteArray();
+            } else {
+                if (name.equals("org.opensearch.index.query.TermsSetQueryBuilder$FieldValuesSource") == false) {
+                    return "covering_" + min.getClass().getSimpleName();
+                }
+                Object data = ExtendedEncoder.field(min, "fieldData");
+                // Plain sorted-numeric doc values of an integral type, which getLongValues hands over
+                // as they are stored.
+                if (ExtendedEncoder.numericType(data) != 0) {
+                    return "covering_field_data";
+                }
+                field = (String) ExtendedEncoder.field(min, "fieldName");
             }
-            if (name.equals("org.opensearch.index.query.TermsSetQueryBuilder$FieldValuesSource") == false) {
-                return "covering_" + min.getClass().getSimpleName();
-            }
-            Object data = ExtendedEncoder.field(min, "fieldData");
-            // Plain sorted-numeric doc values of an integral type, which getLongValues hands over
-            // as they are stored.
-            if (ExtendedEncoder.numericType(data) != 0) {
-                return "covering_field_data";
-            }
-            field = (String) ExtendedEncoder.field(min, "fieldName");
         }
         out.write(NODE_COVERING);
         writeInt(out, queries.size());
@@ -193,7 +204,10 @@ final class DocValuesEncoder {
                 return reason;
             }
         }
-        if (field == null) {
+        if (script != null) {
+            out.write(2);
+            out.writeBytes(script);
+        } else if (field == null) {
             out.write(0);
             writeLong(out, ((LongValuesSource.ConstantLongValuesSource) min).getValue());
         } else {

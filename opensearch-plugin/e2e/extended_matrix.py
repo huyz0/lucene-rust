@@ -50,7 +50,15 @@ def rows():
     add("intervals prefix", {"query": {"intervals": {"body": {"prefix": {"prefix": "ga"}}}}}, "native")
     add("intervals wildcard", {"query": {"intervals": {"body": {"wildcard": {"pattern": "*ta"}}}}}, "native")
     add("intervals fuzzy", {"query": {"intervals": {"body": {"fuzzy": {"term": "alpah"}}}}}, "native")
-    add("intervals script filter", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "filter": {"script": {"source": "interval.start > 1"}}}}}}}, "interval_*")
+    add("intervals script filter", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "filter": {"script": {"source": "interval.start > 1"}}}}}}}, "native")
+    add("intervals script filter gaps", {"query": {"intervals": {"body": {"match": {"query": "gamma delta epsilon", "max_gaps": 10,
+        "filter": {"script": {"source": "interval.getGaps() <= 2 && interval.getEnd() - interval.getStart() < 6"}}}}}}}, "native")
+    add("intervals script filter loop", {"query": {"intervals": {"body": {"all_of": {"ordered": True, "intervals": [{"match": {"query": "alpha"}}, {"match": {"query": "beta"}}],
+        "filter": {"script": {"source": "int w = 0; for (int i = interval.start; i <= interval.end; i++) { w++; } return w % 2 == 0;"}}}}}}}, "native")
+    add("intervals script filter refused", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+        "filter": {"script": {"source": "[interval.start, interval.end].stream().allMatch(x -> x > 0)"}}}}}}}, "interval_painless")
+    add("intervals script filter options", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+        "filter": {"script": {"source": "interval.start >= 0", "options": {"max_loop_counter": "100"}}}}}}}}, "interval_options")
 
     # combined_fields (`CombinedFieldQuery`, node 23).
     add("combined_fields", {"query": {"combined_fields": {"query": "alpha beta", "fields": ["body", "title^2"]}}}, "native")
@@ -84,7 +92,15 @@ def rows():
     add("function_score in bool", {"query": {"bool": {"must": [{"match": {"title": "alpha"}}],
                                                       "should": [{"function_score": {"query": {"match": {"body": "beta"}}, "functions": [{"field_value_factor": {"field": "qty", "missing": 2}}]}}]}}}, "native")
     add("function_score min_score", fs([{"weight": 2}], min_score=1), "function_score_min_score")
-    add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].value + 1"}}}]), "function_score_script")
+    # Painless script_score functions the native runtime runs (checked first, see docs/parity/painless.md).
+    add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].size() == 0 ? 1 : doc['qty'].value + 1"}}}]), "native")
+    add("function_score script _score replace", fs([{"script_score": {"script": {"source": "_score * params.f + 1", "params": {"f": 0.5}}}}],
+                                                    boost_mode="replace"), "native")
+    add("function_score script filtered weight sum", fs([{"filter": {"term": {"tag": "alpha"}}, "script_score": {"script": {"source": "Math.log(2 + doc['n'].value)"}}, "weight": 2},
+                                                          {"field_value_factor": {"field": "qty", "missing": 1}}], score_mode="sum", boost_mode="max"), "native")
+    add("function_score script loop", fs([{"script_score": {"script": {"source": "double s = 0.5; for (def v : doc['m']) { s += v / 1000.0; } return s;"}}}],
+                                         score_mode="first"), "native")
+    add("function_score script refused", fs([{"script_score": {"script": {"source": "doc['m'].stream().mapToLong(x -> x).sum() + 1"}}}]), "function_score_script")
     add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "native")
     # Painless scripts the native runtime runs (checked statically first, see docs/parity/painless.md).
     add("script_score painless doc values", {"query": {"script_score": {"query": {"match": {"body": "beta"}}, "script": {
@@ -97,6 +113,23 @@ def rows():
         "source": "doc['qa'].size() == 0 ? _score : _score + doc['qa'].value"}}}}, "native")
     add("script_score painless refused", {"query": {"script_score": {"query": {"match": {"body": "gamma"}}, "script": {
         "source": "String t = doc['tag'].size() == 0 ? '' : doc['tag'].value; return t =~ /a$/ ? 2 : 1;"}}}}, "script_score_painless")
+
+    # Painless script queries (filter scripts), checked the same way.
+    def sq(source, **params):
+        return {"script": {"script": {"source": source, "params": params}}}
+    add("script query", {"query": {"bool": {"filter": [sq("doc['qty'].size() > 0 && doc['qty'].value > params.t", t=3)]}}}, "native")
+    add("script query beside match", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
+                                                        "filter": [sq("doc['tag'].size() > 0 && doc['tag'].value == params.t", t="alpha")]}}}, "native")
+    add("script query loop", {"query": {"bool": {"filter": [sq("long s = 0; for (def v : doc['m']) { s += v; } return s % 3 == 0;")]}}, "size": 20}, "native")
+    add("script query refused", {"query": {"bool": {"filter": [sq("doc['m'].stream().anyMatch(x -> x > 3)")]}}}, "script_query_painless")
+
+    # Painless number sort scripts.
+    def ss(source, order="asc", **params):
+        return [{"_script": {"type": "number", "order": order, "script": {"source": source, "params": params}}}]
+    add("script sort", {"query": {"match": {"body": "alpha"}}, "sort": ss("doc['qty'].size() == 0 ? -1 : doc['qty'].value * params.f", "desc", f=2)}, "native")
+    add("script sort then doc", {"query": {"match_all": {}}, "size": 20,
+                                 "sort": ss("doc['tag'].size() == 0 ? 0 : doc['tag'].value.length()") + [{"n": "asc"}]}, "native")
+    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "sort_script_score")
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.

@@ -324,7 +324,7 @@ const MAX_AUTOMATON_STATES: usize = 1 << 16;
 /// | `2` | `DisjunctionIntervalsSource` | `pull_up: u8`, sources |
 /// | `3` / `4` | `Ordered`/`UnorderedIntervalsSource` | sources |
 /// | `5` | `RepeatingIntervalsSource` | `count: i32` (at least 1), `name: u8` (`0` none, `1` `ORDERED`, `2` `UNORDERED`), source |
-/// | `6` | `FilteredIntervalsSource` | `kind: u8` (`0` `MaxGaps`, `1` `MaxWidth`), `n: i32`, source |
+/// | `6` | `FilteredIntervalsSource` | `kind: u8`, then `0` `MaxGaps` / `1` `MaxWidth`: `n: i32`; `2` OpenSearch's `ScriptFilterSource`: `name` (bytes), a checked Painless interval filter script ([`crate::jvm_painless_score::PainlessInterval`]); then the source |
 /// | `7` | `ExtendedIntervalsSource` | `before: i32`, `after: i32`, source |
 /// | `8` | `OffsetIntervalsSource` | `before: u8`, source |
 /// | `9` | `FixedFieldIntervalsSource` | `field`, source |
@@ -397,14 +397,18 @@ pub(crate) fn decode_source(
             }
         }
         SOURCE_FILTERED => {
-            let kind = c.u8()?;
-            let n = c.i32()?;
-            let filter = match kind {
-                0 => IntervalFilterKind::MaxGaps(n),
-                1 => IntervalFilterKind::MaxWidth(n),
+            let filter = match c.u8()? {
+                0 => IntervalFilterKind::MaxGaps(c.i32()?),
+                1 => IntervalFilterKind::MaxWidth(c.i32()?),
+                2 => IntervalFilterKind::Script {
+                    name: std::str::from_utf8(c.bytes()?)
+                        .map_err(|_| FfiStatus::InvalidUtf8)?
+                        .to_string(),
+                    script: Arc::new(crate::jvm_painless_score::PainlessInterval::decode(c)?),
+                },
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown interval filter {other} (expected 0 or 1)"
+                        "query tree: unknown interval filter {other} (expected 0..=2)"
                     )))
                 }
             };

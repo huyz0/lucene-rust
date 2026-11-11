@@ -66,8 +66,8 @@ OpenSearch's answer on the same shard:
 Each field scores with its mapping's similarity: `BM25` with any
 parameters, `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet` and
 `LMJelinekMercer`, `LegacyBM25` and Lucene's `ClassicSimilarity` run native
-(since 2026-10-30); `scripted` and a plugin's similarity run user or plugin
-code, so they fall back (`field_similarity`), as does
+(since 2026-10-30), and `scripted` in Painless when the static check passes
+it; a plugin's similarity or a refused script falls back (`field_similarity`), as does
 `search_type=dfs_query_then_fetch` (`dfs`).
 
 ### Request features
@@ -137,7 +137,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 | `points_width` | is a points range beyond Lucene's limits (more than 16 dimensions or 16 bytes per dimension) |
 | `phrase_positions`, `boolean_msm_negative`, `boost_invalid` | uses a variant of a supported query the native side does not take |
 | `query_too_deep`, `query_too_large` | nests deeper than 32 or has more than 1,024 query nodes |
-| `field_similarity` | scores a field with a `scripted` or plugin similarity (user or plugin code), or `combined_fields` over a field that is not default BM25 |
+| `field_similarity` | scores a field with a plugin similarity or a `scripted` one the static check refuses, or `combined_fields` over a field that is not default BM25 |
 | `term_states` | carries term statistics the native side cannot reproduce |
 | `dfs` | is `dfs_query_then_fetch` |
 | `aggregations`, `collectors` | has an aggregation or collector the native side does not run |

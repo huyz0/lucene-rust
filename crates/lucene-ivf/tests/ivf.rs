@@ -559,6 +559,7 @@ fn clustering_params_are_honoured() {
             merge_clustering: MergeClustering::Recluster,
             routing_tree_min: usize::MAX,
             partition_min_vectors: 20_000,
+            auto_rerank_read_bytes: 4096,
         },
     )
     .unwrap();

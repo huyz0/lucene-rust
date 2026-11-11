@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 110;
+    public static final int EXPECTED_ABI_VERSION = 120;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -410,6 +410,14 @@ public final class NativeBridge {
         );
         static final MethodHandle ML_SPARSE_TOKENIZE = bind(
             "ffi_ml_sparse_tokenize_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_HF_ANALYZER_OPEN = bind(
+            "ffi_ml_hf_analyzer_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_HF_ANALYZE = bind(
+            "ffi_ml_hf_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_SPARSE_ENCODING_OPEN = bind(
@@ -1928,6 +1936,44 @@ public final class NativeBridge {
         try (Scratch s = Scratch.open()) {
             MemorySegment slot = ownedSlot(s);
             int rc = (int) H.ML_SPARSE_TOKENIZE.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a {@code bert-uncased}-style analyzer from its {@code tokenizer.json} bytes and its
+     * {@code idf.json} bytes ({@code null} when it has none); its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlHfAnalyzerOpen(byte[] tokenizer, byte[] idf, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            MemorySegment idfBytes = idf == null ? MemorySegment.NULL : s.bytes(idf);
+            long idfLength = idf == null ? 0L : idf.length;
+            int rc = (int) H.ML_HF_ANALYZER_OPEN.invokeExact(s.bytes(tokenizer), (long) tokenizer.length, idfBytes, idfLength, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The token stream of the UTF-8 {@code text} from analyzer {@code handle}: a {@code u32} count,
+     * then per token its {@code u32} id, {@code u32} start and end offsets in code points,
+     * {@code u32} byte length, UTF-8 token and {@code f32} weight, all little endian. {@code null}
+     * on failure, with the reason in {@link #lastError}.
+     */
+    public static byte[] mlHfAnalyze(long handle, byte[] text) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_HF_ANALYZE.invokeExact(handle, s.bytes(text), (long) text.length, ptrOf(slot), lenOf(slot));
             return rc == OK ? take(slot) : null;
         } catch (Throwable t) {
             throw rethrow(t);

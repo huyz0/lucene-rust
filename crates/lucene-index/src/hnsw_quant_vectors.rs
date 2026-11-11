@@ -109,9 +109,11 @@ pub(crate) fn write(
     let Some(quantizer) = format.hnsw_quantizer() else {
         return Ok(None);
     };
-    let factory = quantizer_factory(quantizer).ok_or_else(|| {
-        lucene_ivf::Error::IllegalArgument(format!("unknown HNSW quantizer {quantizer}"))
-    })?;
+    let factory = quantizer_factory(quantizer)
+        .filter(|f| f.candidates().is_none())
+        .ok_or_else(|| {
+            lucene_ivf::Error::IllegalArgument(format!("unknown HNSW quantizer {quantizer}"))
+        })?;
     let mut meta = Vec::new();
     let mut data = Vec::new();
     codec_util::write_index_header(&mut meta, META_CODEC, VERSION_CURRENT, segment_id, suffix);
@@ -585,6 +587,12 @@ mod tests {
             beam_width: 100,
         };
         assert!(write(unknown, &[], &ID, SUFFIX).is_err());
+        let auto = KnnVectorsFormat::HnswQuantized {
+            quantizer: lucene_codecs::per_field_knn_vectors::IVF_AUTO_QUANTIZER,
+            max_conn: 16,
+            beam_width: 100,
+        };
+        assert!(write(auto, &[], &ID, SUFFIX).is_err());
     }
 
     #[test]
