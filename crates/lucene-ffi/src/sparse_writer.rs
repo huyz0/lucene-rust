@@ -13,7 +13,7 @@ use lucene_store::codec_util::ID_LENGTH;
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::ffm_bridge::{clear_out, give};
 use crate::handle::{RegistryTag, SlotMap};
-use crate::raw::{bytes_from_raw, str_from_raw};
+use crate::raw::{bytes_from_raw, str_from_raw, try_to_vec, try_with_capacity};
 use crate::registry::{lock_recovering, read_recovering};
 
 /// The open clusterers, by handle.
@@ -45,10 +45,10 @@ fn decode_attributes(mut bytes: &[u8]) -> Result<Vec<(String, String)>, FfiStatu
     }
     fn string(bytes: &mut &[u8]) -> Result<String, FfiStatus> {
         let n = len(bytes)?;
-        String::from_utf8(take(bytes, n)?.to_vec()).map_err(|_| FfiStatus::InvalidUtf8)
+        String::from_utf8(try_to_vec(take(bytes, n)?)?).map_err(|_| FfiStatus::InvalidUtf8)
     }
     let count = len(&mut bytes)?;
-    let mut out = Vec::with_capacity(count.min(64));
+    let mut out = try_with_capacity(count.min(64))?;
     for _ in 0..count {
         let k = string(&mut bytes)?;
         let v = string(&mut bytes)?;
@@ -176,12 +176,12 @@ pub unsafe extern "C" fn ffi_sparse_postings_write_alloc(
         // SAFETY: caller contract.
         let id = unsafe { bytes_from_raw(segment_id, ID_LENGTH) }?;
         let id: &[u8; ID_LENGTH] = id.try_into().map_err(|_| invalid("bad segment id"))?;
-        let mut fields: Vec<FieldClusters> = Vec::with_capacity(taken.len());
+        let mut fields: Vec<FieldClusters> = try_with_capacity(taken.len())?;
         for clusterer in taken {
             fields.push(clusterer.ok_or(FfiStatus::InvalidHandle)?.finish(id));
         }
         let (sit, sip) = lucene_sparse::postings::write(id, &fields);
-        let mut out = Vec::with_capacity(8 + sit.len() + sip.len());
+        let mut out = try_with_capacity(8 + sit.len() + sip.len())?;
         out.extend_from_slice(&(sit.len() as u64).to_le_bytes());
         out.extend_from_slice(&sit);
         out.extend_from_slice(&sip);
