@@ -280,6 +280,12 @@ def matrix():
         "minimum_should_match_script": {"source": "def m = null; if (doc['qty'].size() > 0 && doc['qty'].value <= 20) { m = 1; } return m;"}}}}}, "native")
     add("terms_set script refused", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
         "minimum_should_match_script": {"source": "doc['m'].stream().count() > 1 ? 2 : 1"}}}}}, "covering_painless")
+    add("terms_set script options", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+        "minimum_should_match_script": {"source": "int s = 0; for (int i = 0; i < 3; i++) { s++; } return s - 2;", "options": {"max_loop_counter": "100"}}}}}}, "covering_options")
+    # Two minimums over the same terms are two clauses: the rewrite keeps both.
+    add("terms_set two scripts", {"query": {"bool": {"filter": [
+        {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}},
+        {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "2"}}}}]}}}, "native")
     add("distance_feature date", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "7d"}}]}}}, "native")
     add("distance_feature date alone", {"track_total_hits": True, "query": {"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "1d"}}}, "native")
     add("terms keyword", {"query": {"terms": {"tag": ["alpha", "beta", "omega"]}}}, "native")

@@ -186,7 +186,7 @@ pub enum IntervalFilterKind {
     /// `MaxWidth`: `(it.end() - it.start()) + 1 <= n`.
     MaxWidth(i32),
     /// OpenSearch's `ScriptFilterSource`: a script over each interval's
-    /// start, end and gaps. `name` is the filter's name (`FILTER(name)`),
+    /// start, end and gaps. `name` is `FilteredIntervalsSource`'s name (`FILTER(source)`),
     /// which equality compares, as Java's does.
     Script {
         name: String,
@@ -511,7 +511,7 @@ impl fmt::Display for IntervalsSource {
             S::Filtered { source, filter } => match filter {
                 IntervalFilterKind::MaxGaps(n) => write!(f, "MAXGAPS/{n}({source})"),
                 IntervalFilterKind::MaxWidth(n) => write!(f, "MAXWIDTH/{n}({source})"),
-                IntervalFilterKind::Script { name, .. } => write!(f, "FILTER({name})({source})"),
+                IntervalFilterKind::Script { name, .. } => write!(f, "{name}({source})"),
             },
             S::Extended {
                 source,

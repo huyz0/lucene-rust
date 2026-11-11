@@ -135,7 +135,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
-        PainlessScore.beginRequest();
+        PainlessScore.beginRequest(() -> ctx.request().source() == null ? null : ctx.request().source().toString());
         try {
             return containsHybrid(query)
                 ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
