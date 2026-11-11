@@ -440,9 +440,6 @@ pub fn search(
                 for &d in docs.iter().take(2 * PREFETCH_AHEAD) {
                     f.prefetch_start(usize::try_from(d).unwrap_or(usize::MAX));
                 }
-                for &d in docs.iter().take(PREFETCH_AHEAD) {
-                    f.prefetch_vector(usize::try_from(d).unwrap_or(usize::MAX));
-                }
             }
             for (i, &doc) in docs.iter().enumerate() {
                 if let Some(f) = segment.forward {

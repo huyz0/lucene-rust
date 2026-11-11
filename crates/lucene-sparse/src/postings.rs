@@ -79,7 +79,7 @@ fn vlong_len(input: &mut SliceInput, file: &str, what: &str) -> Result<usize> {
 }
 
 impl ClusteredPostings {
-    /// Reads `.sit` and keeps `.sip` for [`Self::clusters`]. Both files'
+    /// Reads `.sit` and keeps `.sip` for [`Self::cursor`]. Both files'
     /// headers are checked against `segment_id`; as in neural-search, the
     /// checksums are not verified on open.
     pub fn open(sit: &[u8], sip: Arc<Input>, segment_id: &[u8; ID_LENGTH]) -> Result<Self> {
@@ -151,57 +151,36 @@ impl ClusteredPostings {
     /// The clusters of `term` in `field_number`, in stored order; `None`
     /// when the term is absent or has no clusters.
     pub fn clusters(&self, field_number: i32, term: &[u8]) -> Result<Option<Vec<Cluster>>> {
-        let Some(&offset) = self.fields.get(&field_number).and_then(|t| t.get(term)) else {
+        let Some(mut cursor) = self.cursor(field_number, term)? else {
             return Ok(None);
         };
-        let end = self.sip.len().saturating_sub(codec_util::FOOTER_LENGTH + 8);
-        let offset = usize::try_from(offset)
-            .ok()
-            .filter(|&o| o < end)
-            .ok_or_else(|| corrupt(POSTINGS_EXTENSION, "postings offset out of range"))?;
-        let mut input = SliceInput::new(&self.sip[..end]);
-        input.seek(offset)?;
-        let count = vlong_len(&mut input, POSTINGS_EXTENSION, "cluster count")?;
-        if count == 0 {
-            return Ok(None);
-        }
         let mut clusters = Vec::new();
-        for _ in 0..count {
-            let docs_len = vlong_len(&mut input, POSTINGS_EXTENSION, "doc count")?;
-            // Each doc takes at least two bytes, which bounds the allocation.
-            if docs_len > input.remaining() / 2 {
-                return Err(corrupt(POSTINGS_EXTENSION, "doc count past the end"));
-            }
-            let mut docs = Vec::with_capacity(docs_len);
-            let mut weights = Vec::with_capacity(docs_len);
-            for _ in 0..docs_len {
-                docs.push(input.read_vint()?);
+        while let Some(c) = cursor.next()? {
+            let mut docs = Vec::new();
+            c.docs_into(&mut docs)?;
+            let mut weights = Vec::with_capacity(c.doc_count);
+            let mut input = SliceInput::new(c.docs);
+            for _ in 0..c.doc_count {
+                input.read_vint()?;
                 weights.push(input.read_byte()?);
             }
-            let should_not_skip = input.read_byte()? != 0;
-            let summary_len = vlong_len(&mut input, POSTINGS_EXTENSION, "summary size")?;
-            if summary_len > input.remaining() / 2 {
-                return Err(corrupt(POSTINGS_EXTENSION, "summary past the end"));
-            }
-            let summary =
-                if summary_len == 0 {
-                    None
-                } else {
-                    let mut tokens = Vec::with_capacity(summary_len);
-                    let mut ws = Vec::with_capacity(summary_len);
-                    for _ in 0..summary_len {
-                        let t = input.read_vint()?;
-                        tokens.push(u16::try_from(t).map_err(|_| {
-                            corrupt(POSTINGS_EXTENSION, "summary token out of range")
-                        })?);
-                        ws.push(input.read_byte()?);
-                    }
-                    Some(SparseVector::from_sorted(tokens, ws))
-                };
+            let summary = if c.summary_len == 0 {
+                None
+            } else {
+                let mut tokens = Vec::with_capacity(c.summary_len);
+                let mut ws = Vec::with_capacity(c.summary_len);
+                let mut input = SliceInput::new(c.summary);
+                for _ in 0..c.summary_len {
+                    // `next` checked every summary token fits.
+                    tokens.push(u16::try_from(input.read_vint()?).unwrap_or(u16::MAX));
+                    ws.push(input.read_byte()?);
+                }
+                Some(SparseVector::from_sorted(tokens, ws))
+            };
             clusters.push(Cluster {
                 docs,
                 weights,
-                should_not_skip,
+                should_not_skip: c.should_not_skip,
                 summary,
             });
         }
