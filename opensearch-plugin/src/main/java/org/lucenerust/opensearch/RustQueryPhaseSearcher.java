@@ -121,6 +121,22 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Whether a match-all or range OpenSearch resolved to its approximation (a sort on the
+     * range's field, {@code track_total_hits} not exact) runs native: the exact top hits, by
+     * the native bounded newest-N search. OpenSearch's approximation collects whole BKD leaves
+     * in value order and keeps the top hits of those, so where the last hit's value is tied
+     * across a leaf boundary it may keep other documents of that value than the exact answer
+     * does (the same values, other ties). Off by default: such an index keeps OpenSearch's
+     * answer.
+     */
+    public static final Setting<Boolean> NATIVE_APPROXIMATE = Setting.boolSetting(
+        "index.lucene_rust.search.native_approximate",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
     /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
     private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
@@ -286,10 +302,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
         // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
-        // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's.
+        // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's,
+        // unless the index asks for the exact answer (NATIVE_APPROXIMATE).
         // Not over buffered documents: the approximation walks the reader's points alone, where
         // they have none, so only the native engine finds them.
-        if (reason == null && approximated(query) && buffered(searcher) == false) {
+        if (reason == null && approximated(query) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
             reason = "approximate";
         }
         // A sorted search: the sort blob, unless the hits are not asked for at all (size 0 has no
@@ -916,7 +933,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** The plugin's index settings as last read, and the settings version they were read at. */
-    private record Flags(long version, boolean enabled, boolean allShapes, boolean aggCache) {}
+    private record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate, boolean aggCache) {}
 
     private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -935,6 +952,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 version,
                 settings.getValue(ENABLED),
                 "all".equals(settings.getValue(NATIVE_SHAPES)),
+                settings.getValue(NATIVE_APPROXIMATE),
                 settings.getValue(AGG_SEGMENT_CACHE)
             );
             FLAGS.put(uuid, f);

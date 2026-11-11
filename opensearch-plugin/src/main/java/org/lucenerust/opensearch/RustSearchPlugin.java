@@ -609,6 +609,7 @@ public class RustSearchPlugin extends Plugin implements
             FETCH_ENABLED,
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
+            RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
             RustQueryPhaseSearcher.AGG_SEGMENT_CACHE,
             NODE_AGG_SEGMENT_CACHE_SIZE,
             RustEngineSupport.ENGINE_ENABLED,

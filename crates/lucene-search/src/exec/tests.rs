@@ -2886,6 +2886,12 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
     let points = || Clause::from(PointRangeQuery::long_range("num", &[-1000], &[1000]).unwrap());
     let dv = || Clause::from(NumericDocValuesRangeQuery::new("num", -1000, 1000));
     let iodv = || Clause::from(IndexOrDocValuesQuery::new(points(), dv()));
+    let iodv_native = || {
+        Clause::from(IndexOrDocValuesQuery::new(
+            Clause::PointsRange(crate::query::PointsRangeQuery::new("num", -1000, 1000)),
+            dv(),
+        ))
+    };
     let hits = |filter: Clause, lead: bool| {
         let mut q = BooleanQuery::new();
         if lead {
@@ -2912,18 +2918,40 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
         let (by_points, none) = hits(points(), lead);
         assert!(none.is_empty());
         let (by_dv, _) = hits(dv(), lead);
-        let (either, plans) = hits(iodv(), lead);
-        assert!(!either.is_empty());
-        assert_eq!(either, by_points);
-        assert_eq!(either, by_dv);
         let want = if lead {
             IndexOrDocValuesPlan::DocValues
         } else {
             IndexOrDocValuesPlan::Index
         };
-        assert!(!plans.is_empty());
-        assert!(plans.iter().all(|&p| p == want), "lead {lead}: {plans:?}");
+        // The index side as `PointRangeQuery`, and as the native long range
+        // the plugin sends for one (`NODE_POINT_RANGE_OR_DV`), whose cost is
+        // the same estimate.
+        for either in [iodv(), iodv_native()] {
+            let (either, plans) = hits(either, lead);
+            assert!(!either.is_empty());
+            assert_eq!(either, by_points);
+            assert_eq!(either, by_dv);
+            assert!(!plans.is_empty());
+            assert!(plans.iter().all(|&p| p == want), "lead {lead}: {plans:?}");
+        }
     }
+    // Counted as its index side counts (`Weight.count`), alone or not.
+    for q in [iodv(), iodv_native()] {
+        let lone = |c: Clause| BooleanQuery {
+            filter: vec![c],
+            ..BooleanQuery::default()
+        };
+        assert_eq!(
+            searcher.count(&lone(q)).unwrap(),
+            searcher.count(&lone(points())).unwrap()
+        );
+    }
+    // An empty native range has no index side, so no scorer.
+    let empty = Clause::from(IndexOrDocValuesQuery::new(
+        Clause::PointsRange(crate::query::PointsRangeQuery::new("num", 5, 4)),
+        NumericDocValuesRangeQuery::new("num", 5, 4),
+    ));
+    assert!(hits(empty, true).0.is_empty());
     // A segment without the field's doc values (or points): no scorer, as
     // Java's `null` supplier.
     let no_dv = Clause::from(IndexOrDocValuesQuery::new(
