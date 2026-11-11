@@ -21,6 +21,7 @@ import org.apache.lucene.search.CombinedFieldQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.join.QueryBitSetProducer;
+import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.search.join.ScoreMode;
 import org.apache.lucene.search.join.ToChildBlockJoinQuery;
 import org.apache.lucene.search.join.ToParentBlockJoinQuery;
@@ -849,12 +850,27 @@ final class ExtendedEncoder {
      * OpenSearch's scripted similarity as the native runtime scores with it (similarity kind 9
      * of {@code jvm_similarity.rs}, after the kind), or null when it stays in Java: a script that
      * is not inline Painless compiled with no options or params of its own, or one the static
-     * check refuses.
+     * check refuses. {@code similarity} is the scripted similarity, or the {@code
+     * NonNegativeScoresSimilarity} around it.
      */
-    static byte[] painlessSimilarity(org.opensearch.index.similarity.ScriptedSimilarity sim) {
+    static byte[] painlessSimilarity(Similarity similarity) {
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
+            org.opensearch.index.similarity.ScriptedSimilarity sim;
+            int negative;
+            if (similarity instanceof org.opensearch.index.similarity.NonNegativeScoresSimilarity n) {
+                sim = (org.opensearch.index.similarity.ScriptedSimilarity) n.getDelegate();
+                Field enforce = org.opensearch.index.similarity.NonNegativeScoresSimilarity.class.getDeclaredField(
+                    "ENFORCE_POSITIVE_SCORES"
+                );
+                enforce.setAccessible(true);
+                negative = enforce.getBoolean(null) ? 1 : 2;
+            } else {
+                sim = (org.opensearch.index.similarity.ScriptedSimilarity) similarity;
+                negative = 0;
+            }
             out.write(field(sim, "discountOverlaps") instanceof Boolean b && b ? 1 : 0);
+            out.write(negative);
             writeString(out, sim.toString());
             Object weightFactory = field(sim, "weightScriptFactory");
             if (weightFactory == null) {
