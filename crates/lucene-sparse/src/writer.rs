@@ -195,7 +195,7 @@ impl FieldClusterer {
             )?,
             params: ClusteringParams::from_field_info(info)?,
             postings: BTreeMap::new(),
-            forward: Vec::with_capacity(usize::try_from(max_doc).unwrap_or(0)),
+            forward: Vec::new(),
         })
     }
 
