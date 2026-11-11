@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 115;
+pub const JVM_ABI_VERSION: u32 = 116;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -651,6 +651,11 @@ const SORT_HALF_FLOAT: u8 = 9;
 /// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
 /// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
 const SORT_UNSIGNED_LONG: u8 = 10;
+/// A Painless `_script` key of type `number`
+/// ([`crate::jvm_painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
+/// only, then the script ([`crate::jvm_painless_score`]'s layout, context
+/// `3` or `4`).
+pub(crate) const SORT_SCRIPT: u8 = 11;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -766,6 +771,19 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if ty == SORT_SCRIPT {
+            if flags & !SORT_REVERSE != 0 {
+                return Err(bad(format!("sort blob: _script key flags {flags:#x}")));
+            }
+            let source = crate::jvm_painless_score::PainlessSort::decode(&mut c)?;
+            keys.push(SortField::with_source(
+                "_script",
+                Arc::new(source),
+                flags & SORT_REVERSE != 0,
+            ));
+            lucene_geo.push(false);
+            continue;
+        }
         if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             lucene_geo.push(false);
@@ -3936,9 +3954,9 @@ pub(crate) mod tests {
     }
 
     /// `(hits as (doc, values), total, lower_bound)`, or the status.
-    type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
+    pub(crate) type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
 
-    fn run_sorted(
+    pub(crate) fn run_sorted(
         handle: u64,
         query: &[u8],
         sort: &[u8],

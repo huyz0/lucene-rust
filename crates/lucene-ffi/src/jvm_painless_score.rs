@@ -23,7 +23,7 @@
 //! | field | layout |
 //! |---|---|
 //! | sub-query | a node |
-//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter |
+//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter, `3` number sort, `4` number sort reading `_score` |
 //! | IR | `i32` length, then the `PIR2` blob |
 //! | params | `i32` length, then a map constant ([`lucene_painless::ir::decode_constant`]) |
 //! | index | string: `_getIndex()` |
@@ -61,6 +61,9 @@ use lucene_search::reader::doc_values::{
     direct_numeric, direct_sorted_numeric_singleton, get_sorted_numeric, get_sorted_set,
 };
 use lucene_search::reader::{SortedNumericDocValues, SortedSetDocValues};
+use lucene_search::top_field::{
+    FieldComparator, FieldComparatorSource, LeafCtx, LeafFieldComparator, SortValue,
+};
 use lucene_search::values_source::{
     BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
 };
@@ -135,6 +138,8 @@ struct Spec {
     needs_score: bool,
     /// A `FilterScript`: `execute()` returns whether the document matches.
     filter: bool,
+    /// A `NumberSortScript`: `execute()` returns the document's sort value.
+    sort: bool,
     index: String,
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
@@ -149,9 +154,9 @@ pub(crate) fn decode(
 ) -> std::result::Result<Clause, FfiStatus> {
     let sub = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
     let spec = decode_spec(c)?;
-    if spec.filter {
+    if !spec.is_score() {
         return Err(invalid(
-            "query tree: painless score node with a filter script",
+            "query tree: painless score node with another context's script",
         ));
     }
     // The plugin checked it before sending it: a refusal here is a plugin
@@ -169,7 +174,7 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
     let spec = decode_spec(c)?;
     if !spec.filter {
         return Err(invalid(
-            "query tree: painless filter node with a score script",
+            "query tree: painless filter node with another context's script",
         ));
     }
     spec.check()
@@ -186,13 +191,15 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
 
 /// The node's script, after its sub-query.
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
-    let (needs_score, filter) = match c.u8()? {
-        0 => (false, false),
-        1 => (true, false),
-        2 => (false, true),
+    let (needs_score, filter, sort) = match c.u8()? {
+        0 => (false, false, false),
+        1 => (true, false, false),
+        2 => (false, true, false),
+        3 => (false, false, true),
+        4 => (true, false, true),
         other => {
             return Err(invalid(format!(
-                "query tree: painless script context {other} (expected 0..=2)"
+                "query tree: painless script context {other} (expected 0..=4)"
             )))
         }
     };
@@ -237,6 +244,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         params_blob,
         needs_score,
         filter,
+        sort,
         index,
         shard,
         script_id,
@@ -256,11 +264,29 @@ pub(crate) fn check(blob: &[u8]) -> std::result::Result<Option<String>, FfiStatu
     Ok(spec.check().err().map(|r| r.0))
 }
 
+/// A segment, in a script's error: by its number in the reader, or (where
+/// only the segment is known, as to a sort key's comparator) by its doc
+/// base, written `b<base>`.
+#[derive(Clone, Copy)]
+enum Leaf {
+    Ord(usize),
+    Base(i32),
+}
+
+impl std::fmt::Display for Leaf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Leaf::Ord(n) => write!(f, "{n}"),
+            Leaf::Base(b) => write!(f, "b{b}"),
+        }
+    }
+}
+
 /// Where a script threw: the segment, the document and the score it ran
 /// with.
 #[derive(Clone, Copy)]
 struct At {
-    leaf: usize,
+    leaf: Leaf,
     doc: i32,
     score: f32,
 }
@@ -359,6 +385,11 @@ impl JObject for Unavailable {
 }
 
 impl Spec {
+    /// Whether the script is a `ScoreScript`.
+    fn is_score(&self) -> bool {
+        !self.filter && !self.sort
+    }
+
     /// The script class's own methods the score context serves.
     fn internals(&self) -> &'static [&'static str] {
         const WITHOUT_SCORE: &[&str] = &[
@@ -379,8 +410,11 @@ impl Spec {
             "_getShardId",
         ];
         const FILTER: &[&str] = &["getParams", "getDoc"];
-        if self.filter {
+        const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
+        if self.filter || (self.sort && !self.needs_score) {
             FILTER
+        } else if self.sort {
+            SORT_WITH_SCORE
         } else if self.needs_score {
             WITH_SCORE
         } else {
@@ -522,8 +556,8 @@ struct Current {
 struct ScoreEnv<'c> {
     source: Arc<Spec>,
     reader: &'c lucene_search::directory_reader::SegmentReader,
-    /// The segment's number in the reader.
-    leaf: usize,
+    /// The segment, for errors.
+    leaf: Leaf,
     /// Per field of `source.fields`: its doc values once read.
     opened: Vec<Option<Opened<'c>>>,
     /// Per field: its values in the document last read.
@@ -1118,7 +1152,12 @@ impl DoubleValuesSource for PainlessScoreSource {
         leaf: usize,
         scores: Option<BoxDoubleValues<'c>>,
     ) -> Result<BoxDoubleValues<'c>> {
-        Ok(Box::new(scripts(&self.0, ctx, leaf, scores)?))
+        Ok(Box::new(scripts(
+            &self.0,
+            ctx.leaf_reader(leaf)?,
+            Leaf::Ord(leaf),
+            scores,
+        )?))
     }
 
     fn needs_scores(&self) -> bool {
@@ -1162,11 +1201,10 @@ impl DoubleValuesSource for PainlessScoreSource {
 /// The script compiled, specialised and ready to run on segment `leaf`.
 fn scripts<'c>(
     spec: &Arc<Spec>,
-    ctx: &ValuesContext<'c>,
-    leaf: usize,
+    reader: &'c lucene_search::directory_reader::SegmentReader,
+    leaf: Leaf,
     scores: Option<BoxDoubleValues<'c>>,
 ) -> Result<ScriptScores<'c>> {
-    let reader = ctx.leaf_reader(leaf)?;
     let mut prog = lucene_painless::compile::compile(&spec.script)
         .map_err(|e| Error::IllegalArgument(format!("painless script: {e}")))?;
     let arity = prog.funcs[prog.entry as usize].arity as usize;
@@ -1241,9 +1279,9 @@ impl ScriptFunction {
     /// The function's fields ([`decode_spec`]'s layout).
     pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
         let spec = decode_spec(c)?;
-        if spec.filter {
+        if !spec.is_score() {
             return Err(invalid(
-                "query tree: painless score function with a filter script",
+                "query tree: painless score function with another context's script",
             ));
         }
         spec.check()
@@ -1263,7 +1301,12 @@ impl ScriptFunction {
 
     /// The script on segment `leaf`.
     pub(crate) fn leaf<'c>(&self, ctx: &ValuesContext<'c>, leaf: usize) -> Result<LeafScript<'c>> {
-        Ok(LeafScript(scripts(&self.0, ctx, leaf, None)?))
+        Ok(LeafScript(scripts(
+            &self.0,
+            ctx.leaf_reader(leaf)?,
+            Leaf::Ord(leaf),
+            None,
+        )?))
     }
 }
 
@@ -1294,6 +1337,74 @@ impl LeafScript<'_> {
     }
 }
 
+/// A `_script` sort key of type `number`: `ScriptSortBuilder`'s
+/// `DoubleValuesComparatorSource` over a `NumberSortScript`, the script's
+/// `double` for every document (never missing), compared as
+/// `Double.compare` compares them. A hit's value is the double's sortable
+/// long ([`lucene_util::numeric_utils::double_to_sortable_long`]).
+#[derive(Debug)]
+pub(crate) struct PainlessSort(Arc<Spec>);
+
+impl PainlessSort {
+    /// The key's script ([`decode_spec`]'s layout), checked.
+    pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
+        let spec = decode_spec(c)?;
+        if !spec.sort {
+            return Err(invalid(
+                "sort blob: painless sort key with another context's script",
+            ));
+        }
+        spec.check()
+            .map_err(|r| invalid(format!("sort blob: painless script not checked: {r}")))?;
+        Ok(PainlessSort(Arc::new(spec)))
+    }
+}
+
+impl FieldComparatorSource for PainlessSort {
+    fn new_comparator(&self, _: &str, _: usize, _: bool) -> Box<dyn FieldComparator> {
+        Box::new(SortComparator(Arc::clone(&self.0)))
+    }
+
+    fn value_string(&self, value: i64) -> String {
+        lucene_painless::number::double_to_string(sortable_long_to_double(value))
+    }
+}
+
+struct SortComparator(Arc<Spec>);
+
+impl FieldComparator for SortComparator {
+    fn leaf<'a>(&self, ctx: LeafCtx<'a>) -> Result<Box<dyn LeafFieldComparator + 'a>> {
+        let leaf = scripts(&self.0, ctx.reader, Leaf::Base(ctx.doc_base), None)?;
+        Ok(Box::new(SortLeaf(leaf)))
+    }
+
+    fn compare_values(&self, a: &SortValue, b: &SortValue) -> std::cmp::Ordering {
+        match (a, b) {
+            (SortValue::Long(a), SortValue::Long(b)) => a.cmp(b),
+            _ => unreachable!("a script sort key's values are longs"),
+        }
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.0.needs_score
+    }
+}
+
+/// A [`PainlessSort`] key's script on one segment.
+struct SortLeaf<'c>(ScriptScores<'c>);
+
+impl LeafFieldComparator for SortLeaf<'_> {
+    fn value(&mut self, doc: i32, score: f32) -> Result<SortValue> {
+        let s = &mut self.0;
+        s.env.doc = doc;
+        s.env.score = f64::from(score);
+        let v = s.run_value()?;
+        Ok(SortValue::Long(
+            lucene_util::numeric_utils::double_to_sortable_long(v),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1315,6 +1426,8 @@ mod tests {
         boost: f32,
         /// A `script` query's filter script, without a sub-query.
         filter: bool,
+        /// A number sort script: the sort blob, over every document.
+        sort: Option<Vec<u8>>,
         /// OpenSearch's hits by doc, or the exception it threw.
         outcome: Outcome,
     }
@@ -1327,6 +1440,9 @@ mod tests {
         Threw(String, Option<String>, i32),
         /// `ScriptScorer`'s own error: a negative or NaN score.
         Refused(String),
+        /// A sort script's hits, in the sort's order, with their sortable
+        /// longs.
+        Sorted(Vec<(i32, i64)>),
     }
 
     struct Reader<'a>(&'a [u8]);
@@ -1370,6 +1486,7 @@ mod tests {
                 let source = r.str();
                 let kind = r.u8();
                 let filter = kind == 2;
+                let sorting = kind == 3;
                 let sub = match kind {
                     0 => Blob::default().term("body", "alpha"),
                     1 => Blob::default().u8(5),
@@ -1397,7 +1514,17 @@ mod tests {
                 if boost != 1.0 {
                     b = b.u8(3).f32(boost);
                 }
-                let node = Some(if filter {
+                let sort = sorting.then(|| {
+                    let reverse = u8::from(boost < 0.0);
+                    let mut b = vec![1, crate::jvm_reader::SORT_SCRIPT, reverse];
+                    b.extend_from_slice(&spec.0);
+                    // No search_after, no options, no slices.
+                    b.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+                    b
+                });
+                let node = Some(if sorting {
+                    Blob::tree().u8(5)
+                } else if filter {
                     b.u8(NODE_PAINLESS_FILTER).raw(&spec)
                 } else {
                     b.u8(NODE_PAINLESS_SCORE).raw(&sub).raw(&spec)
@@ -1411,6 +1538,28 @@ mod tests {
                                 .map(|_| (r.i32(), f32::from_bits(r.i32() as u32)))
                                 .collect(),
                         )
+                    }
+                    3 => {
+                        let n = r.i32();
+                        let mut v: Vec<(i32, i64)> = (0..n)
+                            .map(|_| {
+                                let doc = r.i32();
+                                let lo = r.i32() as u32 as u64;
+                                let hi = r.i32() as u32 as u64;
+                                let d = f64::from_bits(lo | hi << 32);
+                                (doc, lucene_util::numeric_utils::double_to_sortable_long(d))
+                            })
+                            .collect();
+                        // TopFieldCollector's order: the key, then the doc.
+                        v.sort_by(|a, b| {
+                            let k = if boost < 0.0 {
+                                b.1.cmp(&a.1)
+                            } else {
+                                a.1.cmp(&b.1)
+                            };
+                            k.then(a.0.cmp(&b.0))
+                        });
+                        Outcome::Sorted(v)
                     }
                     kind => {
                         let class = r.str();
@@ -1431,6 +1580,7 @@ mod tests {
                     sub: case_sub,
                     boost,
                     filter,
+                    sort,
                     outcome,
                 }
             })
@@ -1474,6 +1624,29 @@ mod tests {
         for case in &cases {
             let node = case.node.as_ref().unwrap();
             let refused = check(&case.spec).unwrap();
+            if let Some(sort) = &case.sort {
+                assert!(refused.is_none(), "{}: refused: {refused:?}", case.source);
+                let got = crate::jvm_reader::tests::run_sorted(h, &node.0, sort, 1000, i64::MAX);
+                let e = crate::error::last_error();
+                let bad = match (&case.outcome, got) {
+                    (Outcome::Sorted(want), Ok((hits, _, _))) => {
+                        let hits: Vec<(i32, i64)> = hits.iter().map(|(d, v)| (*d, v[0])).collect();
+                        (&hits != want).then(|| format!("sorted {hits:?}, want {want:?}"))
+                    }
+                    (Outcome::Threw(class, _, offset), Err(_)) => {
+                        let want = format!("\u{1}{offset}\u{1}{class}\u{1}");
+                        (!e.contains(SCRIPT_ERROR) || !e.contains(&want) || !e.contains("\u{1}b"))
+                            .then(|| format!("{e:?}, want ..{want:?}"))
+                    }
+                    (o, r) => Some(format!("{o:?} vs {r:?}: {e}")),
+                };
+                if let Some(bad) = bad {
+                    wrong.push(format!("{}: {bad}", case.source));
+                    continue;
+                }
+                same += 1;
+                continue;
+            }
             let got = run_limit(h, &node.0, 1000, i64::MAX);
             if let Some(why) = refused {
                 if !IN_JAVA.contains(&case.source.as_str()) {
@@ -1503,7 +1676,7 @@ mod tests {
                     };
                     (bits(&hits) != bits(want)).then(|| format!("hits {hits:?}, want {want:?}"))
                 }
-                (Outcome::Hits(_), Err(_)) => Some(format!("failed: {e:?}")),
+                (Outcome::Hits(_) | Outcome::Sorted(_), Err(_)) => Some(format!("failed: {e:?}")),
                 (Outcome::Threw(class, message, offset), Err(_)) => {
                     let message = match message {
                         Some(m) => format!("1{m}"),
@@ -1564,7 +1737,11 @@ mod tests {
         let mut wrong = Vec::new();
         let mut ran = 0;
         for case in cases() {
-            if case.filter || case.boost != 1.0 || check(&case.spec).unwrap().is_some() {
+            if case.filter
+                || case.sort.is_some()
+                || case.boost != 1.0
+                || check(&case.spec).unwrap().is_some()
+            {
                 continue;
             }
             let got = run_limit(h, &function(&case.sub, &case.spec).0, 1000, i64::MAX);
@@ -1750,6 +1927,7 @@ mod bench {
                 params_blob,
                 needs_score: true,
                 filter: false,
+                sort: false,
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,

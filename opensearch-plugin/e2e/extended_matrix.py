@@ -92,7 +92,7 @@ def rows():
                                                           {"field_value_factor": {"field": "qty", "missing": 1}}], score_mode="sum", boost_mode="max"), "native")
     add("function_score script loop", fs([{"script_score": {"script": {"source": "double s = 0.5; for (def v : doc['m']) { s += v / 1000.0; } return s;"}}}],
                                          score_mode="first"), "native")
-    add("function_score script refused", fs([{"script_score": {"script": {"source": "doc['tag'].size() > 0 && doc['tag'].value =~ /a/ ? 2 : 1"}}}]), "function_score_script")
+    add("function_score script refused", fs([{"script_score": {"script": {"source": "doc['m'].stream().mapToLong(x -> x).sum() + 1"}}}]), "function_score_script")
     add("script_score query", {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"source": "_score * 2"}}}}, "native")
     # Painless scripts the native runtime runs (checked statically first, see docs/parity/painless.md).
     add("script_score painless doc values", {"query": {"script_score": {"query": {"match": {"body": "beta"}}, "script": {
@@ -113,7 +113,15 @@ def rows():
     add("script query beside match", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
                                                         "filter": [sq("doc['tag'].size() > 0 && doc['tag'].value == params.t", t="alpha")]}}}, "native")
     add("script query loop", {"query": {"bool": {"filter": [sq("long s = 0; for (def v : doc['m']) { s += v; } return s % 3 == 0;")]}}, "size": 20}, "native")
-    add("script query refused", {"query": {"bool": {"filter": [sq("doc['tag'].size() > 0 && doc['tag'].value =~ /a/")]}}}, "script_query_painless")
+    add("script query refused", {"query": {"bool": {"filter": [sq("doc['m'].stream().anyMatch(x -> x > 3)")]}}}, "script_query_painless")
+
+    # Painless number sort scripts.
+    def ss(source, order="asc", **params):
+        return [{"_script": {"type": "number", "order": order, "script": {"source": source, "params": params}}}]
+    add("script sort", {"query": {"match": {"body": "alpha"}}, "sort": ss("doc['qty'].size() == 0 ? -1 : doc['qty'].value * params.f", "desc", f=2)}, "native")
+    add("script sort then doc", {"query": {"match_all": {}}, "size": 20,
+                                 "sort": ss("doc['tag'].size() == 0 ? 0 : doc['tag'].value.length()") + [{"n": "asc"}]}, "native")
+    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "sort_script_score")
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.
