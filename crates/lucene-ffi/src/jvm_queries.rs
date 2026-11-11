@@ -11,7 +11,7 @@
 //! | `30` doc-values numeric set | `field`, `count: i32`, the `i64`s | `SortedNumericDocValuesSetQuery` (`terms` on a doc-values-only number) |
 //! | `31` doc-values ordinal range | `field`, `flags: u8` (as `NODE_TERM_RANGE`'s), the bounds it says are present | `SortedSetDocValuesRangeQuery` (`range`/`term` on a doc-values-only `keyword` or `ip`) |
 //! | `32` doc-values multi-range | `field`, `count: i32`, each `lower`, `upper` (inclusive) | `SortedSetDocValuesMultiRangeQuery` (`terms` on a doc-values-only `ip`) |
-//! | `33` covering | `count: i32`, the sub-queries (nodes), the minimum: `0` + `i64` constant, or `1` + `field` (the field's first sorted-numeric value) | `CoveringQuery` (`terms_set`) |
+//! | `33` covering | `count: i32`, the sub-queries (nodes), the minimum: `0` + `i64` constant, or `1` + `field` (the field's first sorted-numeric value), or `2` + a checked Painless `terms_set` script (`jvm_painless_score::PainlessMinimum`) | `CoveringQuery` (`terms_set`) |
 //! | `34` long distance feature | `field`, `origin: i64`, `pivot: i64` | `LongDistanceFeatureQuery` (`distance_feature` on a `date`) |
 //! | `35` lat/lon distance feature | `field`, `lat: f64`, `lon: f64`, `pivot: f64` (metres) | `LatLonPointDistanceFeatureQuery` (`distance_feature` on a `geo_point`) |
 //! | `36` synonym | `field`, `count: i32`, each `term: bytes`, `boost: f32` bits as `i32` | `SynonymQuery` (a `match` whose analyzer stacks tokens: `hunspell`, `synonym_graph`, `keyword_repeat`) |
@@ -147,6 +147,7 @@ const REWRITE_DOC_VALUES: u8 = 2;
 /// The covering node's minimum sources.
 const MINIMUM_CONSTANT: u8 = 0;
 const MINIMUM_FIELD: u8 = 1;
+const MINIMUM_PAINLESS: u8 = 2;
 
 /// `NODE_TERM_RANGE`'s flags, which the ordinal range shares.
 const RANGE_HAS_LOWER: u8 = 1;
@@ -276,9 +277,12 @@ pub(crate) fn decode(
             let minimum: Arc<dyn LongValuesSource> = match c.u8()? {
                 MINIMUM_CONSTANT => long_constant(c.i64()?),
                 MINIMUM_FIELD => Arc::new(FirstValueSource(field(c)?)),
+                MINIMUM_PAINLESS => {
+                    Arc::new(crate::jvm_painless_score::PainlessMinimum::decode(c)?)
+                }
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown covering minimum {other} (expected 0..=1)"
+                        "query tree: unknown covering minimum {other} (expected 0..=2)"
                     )))
                 }
             };
