@@ -117,3 +117,46 @@ varints). What hnswlib does differently, and whether it fits Lucene's files:
 During a build, ~30% of the time is the on-heap graph's neighbour arrays (a
 chain of three loads per node, plus a copy into scratch); a flat level-0
 arena would remove two of the three.
+
+## Filtered searches
+
+A filtered search scores the filter's documents exactly, without walking
+the graph, when they are at most one in eight of the segment's vectors
+(`HNSW_EXACT_SHARE` in `crates/lucene-search/src/vector_query.rs`), up to
+2^18 of them, the share of the largest segment measured. Lucene
+does this only below `perLeafTopK` passing documents, or after the walk
+visited as many nodes as pass. In an index sorted by tenant a tenant's
+vectors are one contiguous region of the graph, often far from the entry
+point, and the walk spends most of its visits on other tenants' nodes.
+
+`knn_tenants --scale 4 --format hnsw` (2M GloVe-100 vectors with jitter,
+tenants of 375k, 100k, 10k and 1k, M 16, beam 100, 50 queries per tenant),
+recall@10 / mean ms. `any` tenants are queried from anywhere, `local` ones
+from inside their region:
+
+| tenant (share of a segment) | 1 segment, before | 1 segment, after | 8 segments, before | 8 segments, after |
+|---|---|---|---|---|
+| random375000-any (19%) | 0.918 / 6.7 | unchanged (walks) | 0.964 / 16.2 | unchanged (walks) |
+| region375000-local (19%) | 0.944 / 1.4 | unchanged (walks) | 0.982 / 2.5 | unchanged (walks) |
+| random100000-any (5%) | 0.938 / 10.9 | 1.000 / 4.9 | 1.000 / 21.3 | 1.000 / 5.9 |
+| region100000-any (5%) | 0.874 / 8.1 | 1.000 / 5.2 | 0.964 / 14.9 | 1.000 / 5.6 |
+| region100000-local (5%) | 0.940 / 1.5 | 1.000 / 4.2 | 0.988 / 5.5 | 1.000 / 5.6 |
+| random10000-any (0.5%) | 1.000 / 2.2 | 1.000 / 0.51 | 1.000 / 2.3 | 1.000 / 0.70 |
+| region10000-local (0.5%) | 0.992 / 0.75 | 1.000 / 0.57 | 1.000 / 2.2 | 1.000 / 0.72 |
+| random1000-any (0.05%) | 1.000 / 1.7 | 1.000 / 0.07 | 1.000 / 1.8 | 1.000 / 0.14 |
+
+- At 19% the walk wins on the mean (exact: 24.5 ms over 8 segments), so the
+  share stops at one in eight.
+- The one case that gets slower is a mid-size tenant queried from inside
+  its own region on a large segment (1.5 -> 4.2 ms), with recall 0.94 ->
+  1.0. Walking first with a visit budget of an eighth of the passing
+  documents, then scanning, kept it at 2.3 ms but cost the random tenants
+  40% and recall 0.96-0.998, so the rule scans directly.
+- Graph walks pay the descent on every segment; the scan does not, which is
+  why the small tenants gain most with many segments.
+- On storage that is not in memory the scan reads the tenant's range of
+  `.vec` in order (an index sorted by tenant keeps it contiguous), the walk
+  one random page or more per visited node, so the share is conservative
+  there.
+
+Raw numbers: `perf/tenant-exact-shard/hnsw-2m.csv` in the project files.

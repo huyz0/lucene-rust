@@ -980,6 +980,22 @@ fn exact_search<S: VectorScorer>(
     Ok(collector.top_docs())
 }
 
+/// A filtered graph walk is replaced by the exact scan when the filter passes
+/// at most one in this many of the leaf's vectors, and at most
+/// [`HNSW_EXACT_MAX`]. The walk then visits mostly rejected nodes on its way
+/// to the filter's documents (a tenant of an index sorted by tenant is one
+/// region of the graph, often far from the entry point), where scanning the
+/// passing vectors in document order costs less and finds the exact top `k`
+/// (`docs/benchmarks/hnsw.md`, "Filtered searches"). Lucene scores exactly
+/// only below `perLeafTopK` passing documents, or after the walk visited as
+/// many nodes as pass. A diversifying (nested) search keeps Lucene's rule.
+const HNSW_EXACT_SHARE: usize = 8;
+
+/// The most passing vectors [`HNSW_EXACT_SHARE`] scans exactly: the share of
+/// the largest segment measured (2M vectors). The scan's cost grows with
+/// the segment, the walk's more slowly.
+const HNSW_EXACT_MAX: usize = 1 << 18;
+
 /// One leaf's collector sizing, the part of `getLeafResults` that does not
 /// depend on the target's encoding.
 #[derive(Debug, Clone, Copy)]
@@ -1017,6 +1033,11 @@ struct LeafExtras {
     filtered_search_threshold: i32,
     /// [`KnnFloatVectorQuery::ivf_nprobes`].
     ivf_nprobes: usize,
+    /// The live documents the filter passes over every leaf of the search,
+    /// counted only for a search reaching an IVF field; `None` otherwise or
+    /// when a leaf is searched alone (its own count stands in). It counts
+    /// documents without a vector too, so it errs towards probing.
+    search_passing: Option<usize>,
 }
 
 impl LeafExtras {
@@ -1222,7 +1243,11 @@ fn leaf_results_rescored<S: VectorScorer>(
     } else {
         let bits = accept_bits.expect("a filtered leaf always has an accept set");
         let cost = bits.cardinality();
-        if cost <= per_leaf_top_k {
+        // A filter passing a small share of the graph is scored exactly too
+        // ([`HNSW_EXACT_SHARE`]), on the rescoring vectors when there are
+        // any: the exact top `k`, not `k` codes' estimates rescored.
+        let small_share = cost.saturating_mul(HNSW_EXACT_SHARE) <= size && cost <= HNSW_EXACT_MAX;
+        if cost <= per_leaf_top_k || small_share {
             // "If there are <= perLeafTopK possible matches, short-circuit
             // and perform exact search, since HNSW must always visit at
             // least perLeafTopK documents."
@@ -1232,7 +1257,9 @@ fn leaf_results_rescored<S: VectorScorer>(
             // never calls it.
             let (hits, rescore) = exact_hits(
                 scorer,
-                rescore.as_deref_mut().filter(|_| exact_on_rescore),
+                rescore
+                    .as_deref_mut()
+                    .filter(|_| exact_on_rescore || small_share),
                 bits,
                 cost,
                 plan.k,
@@ -1485,11 +1512,13 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
 /// A filter on a partition of a field clustered per partition is scored
-/// exactly when it passes at most this many times the accepted target: a
-/// partition's few clusters are probed nearly all, with quantization error,
-/// where its documents' exact scores cost little more (`docs/benchmarks/ivf.md`,
-/// "Clusters per partition").
-const IVF_PARTITION_EXACT_RATIO: usize = 16;
+/// exactly when it passes at most this many times the accepted target over
+/// every leaf of the search: a partition's few clusters are probed nearly
+/// all, with quantization error, where its documents' exact scores cost
+/// little more. Counted over the search and not per leaf, so a partition
+/// spread over many segments is probed as it would be in a few
+/// (`docs/benchmarks/ivf.md`, "Clusters per partition").
+const IVF_PARTITION_EXACT_RATIO: usize = 32;
 
 /// Most runs of set bits a filter may have for a filtered IVF search to
 /// prune clusters by document range: a partition's documents are one run
@@ -1499,6 +1528,24 @@ const IVF_FILTER_RUNS: usize = 256;
 /// The clusters whose document range (`ranges`, lowest and highest
 /// document) holds a document `filter` passes, or `None` when the filter
 /// has more than [`IVF_FILTER_RUNS`] runs of documents.
+/// The most documents a leaf's filter on a partition may pass to be scored
+/// exactly: all of them while the search's documents of the partition
+/// (`search_passing`, or the leaf's own `passing`) fit
+/// [`IVF_PARTITION_EXACT_RATIO`], else the probes' accepted target `want`.
+fn partition_exact_below(
+    passing: usize,
+    search_passing: Option<usize>,
+    want: usize,
+    k: usize,
+) -> usize {
+    let all = search_passing.unwrap_or(passing).max(passing);
+    if all <= ivf_accepted_target(k).saturating_mul(IVF_PARTITION_EXACT_RATIO) {
+        passing
+    } else {
+        want
+    }
+}
+
 fn clusters_holding(ranges: &[(i32, i32)], filter: &FixedBitSet) -> Option<Vec<usize>> {
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut from = 0usize;
@@ -1559,10 +1606,7 @@ fn ivf_leaf_results(
             .clamp(1, IVF_MAX_GROUP_SPREAD)
     }));
     // The parents that can be found: at most those still live.
-    let reachable = parents.map_or(0, |p| match input.live_docs {
-        Some(live) => FixedBitSet::intersection_count(p, live),
-        None => p.cardinality(),
-    });
+    let reachable = parents.map_or(0, |p| live_passing(Some(p), input.live_docs, input.max_doc));
     let grouped = parents.is_some();
     // Once the shortlist holds every entry, a grouped search's candidates
     // are every probed child.
@@ -1647,12 +1691,9 @@ fn ivf_leaf_results(
         }
         Some(filter) => {
             // The live documents the filter passes that have a vector here.
-            let live_passing = match input.live_docs {
-                Some(live) => FixedBitSet::intersection_count(filter, live),
-                None => filter.cardinality(),
-            };
+            let filter_live = live_passing(Some(filter), input.live_docs, input.max_doc);
             let passing = if field.count() >= input.max_doc as usize {
-                live_passing
+                filter_live
             } else {
                 // Some documents have no vector (a nested field's parents, a
                 // sparse field): a filter passing at most
@@ -1664,7 +1705,7 @@ fn ivf_leaf_results(
                 let values = input.flat.float_vector_values(resolved.field_number)?;
                 let mut ords = values.doc_to_ord()?;
                 let max_doc = usize::try_from(input.max_doc).unwrap_or(0);
-                let exact = live_passing <= IVF_PASSING_SAMPLE;
+                let exact = filter_live <= IVF_PASSING_SAMPLE;
                 let step = if exact {
                     1
                 } else {
@@ -1694,7 +1735,7 @@ fn ivf_leaf_results(
                 if exact {
                     n
                 } else {
-                    ((live_passing as f64) * n as f64 / seen.max(1) as f64) as usize
+                    ((filter_live as f64) * n as f64 / seen.max(1) as f64) as usize
                 }
             };
             // A filter passing no more documents than the accepted target
@@ -1751,7 +1792,7 @@ fn ivf_leaf_results(
             let mut nprobe = base.max(need.min(space_clusters as f64) as usize);
             let planned = nprobe.saturating_mul(per_cluster);
             let exact_below = match &among {
-                Some(_) => want.saturating_mul(IVF_PARTITION_EXACT_RATIO),
+                Some(_) => partition_exact_below(passing, plan.extras.search_passing, want, k),
                 None => want,
             };
             if passing <= exact_below || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
@@ -2045,6 +2086,15 @@ fn plan_leaves<Q: KnnQuery>(
     let index_max_doc: i64 = segments.iter().map(|s| s.vectors.max_doc as i64).sum();
     let mut resolved = Vec::with_capacity(segments.len());
     let mut plans = Vec::with_capacity(segments.len());
+    let search_passing = segments
+        .iter()
+        .any(|s| s.vectors.filter.is_some() && matches!(s.vectors.hnsw, Some(GraphReader::Ivf(_))))
+        .then(|| {
+            segments
+                .iter()
+                .map(|s| live_passing(s.vectors.filter, s.vectors.live_docs, s.vectors.max_doc))
+                .fold(0usize, usize::saturating_add)
+        });
     for seg in segments {
         resolved.push(resolve_field(&seg.vectors, query)?);
         // Java's `ctx.reader().maxDoc() / (float) ctx.parent.reader().maxDoc()`.
@@ -2062,11 +2112,27 @@ fn plan_leaves<Q: KnnQuery>(
             extras: LeafExtras {
                 filtered_search_threshold: query.filtered_search_threshold(),
                 ivf_nprobes: query.ivf_nprobes(),
+                search_passing,
                 ..extras
             },
         });
     }
     Ok((resolved, plans))
+}
+
+/// The live documents of one leaf its filter passes, every live document
+/// when it has none.
+fn live_passing(
+    filter: Option<&FixedBitSet>,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+) -> usize {
+    match (filter, live_docs) {
+        (Some(f), Some(l)) => FixedBitSet::intersection_count(f, l),
+        (Some(f), None) => f.cardinality(),
+        (None, Some(l)) => l.cardinality(),
+        (None, None) => usize::try_from(max_doc).unwrap_or(0),
+    }
 }
 
 fn merge_leaves(
@@ -3511,6 +3577,41 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_partition_is_scored_exactly_by_its_documents_over_the_search() {
+        let budget = ivf_accepted_target(10) * IVF_PARTITION_EXACT_RATIO;
+        let want = ivf_accepted_target(10);
+        // Within the budget over the search: exact in every leaf.
+        assert_eq!(partition_exact_below(5_000, Some(budget), want, 10), 5_000);
+        // Small in this leaf, too large over the search: probed.
+        assert_eq!(
+            partition_exact_below(5_000, Some(budget + 1), want, 10),
+            want
+        );
+        // A leaf searched alone counts its own documents.
+        assert_eq!(partition_exact_below(budget, None, want, 10), budget);
+        assert_eq!(partition_exact_below(budget + 1, None, want, 10), want);
+        // The search's count is never below the leaf's own.
+        assert_eq!(partition_exact_below(budget + 1, Some(0), want, 10), want);
+    }
+
+    #[test]
+    fn live_passing_counts_the_live_documents_the_filter_passes() {
+        let bits = |len: usize, every: usize| {
+            let mut b = FixedBitSet::new(len);
+            for i in (0..len).step_by(every) {
+                b.set(i);
+            }
+            b
+        };
+        let (filter, live) = (bits(100, 2), bits(100, 3));
+        assert_eq!(live_passing(Some(&filter), Some(&live), 100), 17);
+        assert_eq!(live_passing(Some(&filter), None, 100), 50);
+        assert_eq!(live_passing(None, Some(&live), 100), 34);
+        assert_eq!(live_passing(None, None, 100), 100);
+        assert_eq!(live_passing(None, None, -1), 0);
+    }
 
     /// `HitQueue`'s order through `Float.compare`: `-0.0` below `0.0`,
     /// every `NaN` equal and above everything; a lower score is "worse",
