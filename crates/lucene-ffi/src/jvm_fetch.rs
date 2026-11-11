@@ -190,8 +190,15 @@ pub(crate) fn encode_doc_values<R: lucene_search::reader::LeafReader + ?Sized>(
 
 /// The `_source` of segment `segment`'s document `doc` with its k-NN vectors put back
 /// ([`lucene_search::directory_reader::SegmentReader::visit_source_document`]): the value a
-/// [`DERIVED_SOURCE`] field of [`document_blob`] leaves out.
-pub(crate) fn source_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u8>, FfiStatus> {
+/// [`DERIVED_SOURCE`] field of [`document_blob`] leaves out. Without `vectors`, the `_source` as
+/// stored, each vector's masked value (the number `1`) where the vector would go: for a fetch
+/// whose `_source` filter drops every vector field, whose output is then the same.
+pub(crate) fn source_blob(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    vectors: bool,
+) -> Result<Vec<u8>, FfiStatus> {
     const WHAT: &str = "ffi_jvm_reader_derived_source";
     let h = jvm_reader::lookup(
         handle,
@@ -207,12 +214,15 @@ pub(crate) fn source_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u8>
         number,
         value: None,
     };
-    reader
-        .visit_source_document(doc, &mut source)
-        .map_err(|e| {
-            set_last_error(format!("reading stored fields: {e}"));
-            FfiStatus::Decode
-        })?;
+    let read = if vectors {
+        reader.visit_source_document(doc, &mut source)
+    } else {
+        reader.visit_stored_document(doc, &mut source)
+    };
+    read.map_err(|e| {
+        set_last_error(format!("reading stored fields: {e}"));
+        FfiStatus::Decode
+    })?;
     source.value.ok_or_else(|| {
         set_last_error(format!("{WHAT}: document {doc} stores no _source"));
         FfiStatus::Decode
