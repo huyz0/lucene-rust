@@ -79,9 +79,12 @@ pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINL
 pub(crate) const NODE_MAX_SIM: u8 = crate::jvm_max_sim::NODE_MAX_SIM;
 /// `script` query running a Painless script ([`crate::jvm_painless_score`]).
 pub(crate) const NODE_PAINLESS_FILTER: u8 = crate::jvm_painless_score::NODE_PAINLESS_FILTER;
+/// A phrase over a `pattern_text` field ([`crate::jvm_pattern_phrase`]);
+/// 46 is taken by a native join query on another branch.
+pub(crate) const NODE_PATTERN_PHRASE: u8 = crate::jvm_pattern_phrase::NODE_PATTERN_PHRASE;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_PAINLESS_FILTER;
+pub(crate) const NODE_LAST: u8 = NODE_PATTERN_PHRASE;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -420,6 +423,7 @@ pub(crate) fn decode(
         NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::jvm_max_sim::decode(c, depth, nodes),
         NODE_PAINLESS_FILTER => return crate::jvm_painless_score::decode_filter(c),
+        NODE_PATTERN_PHRASE => return crate::jvm_pattern_phrase::decode(c),
         NODE_TO_CHILD => {
             let parents = crate::jvm_nodes::decode_parents(c, depth + 1, nodes)?;
             let parent = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;

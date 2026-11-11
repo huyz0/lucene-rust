@@ -40,6 +40,7 @@ mod jvm_knn_score;
 mod jvm_max_sim;
 mod jvm_nodes;
 mod jvm_painless_score;
+mod jvm_pattern_phrase;
 mod jvm_queries;
 mod jvm_reader;
 mod jvm_similarity;

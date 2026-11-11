@@ -78,6 +78,7 @@ PREFIXES = {
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
 # more than a prefix or the prefix rule is ambiguous.
 RENAMES = {
+    ("ExtendedEncoder.java", "MAX_PATTERN_TERMS"): ("jvm_pattern_phrase.rs", "MAX_TERMS"),
     ("QueryEncoder.java", "MAX_DEPTH"): ("clauses.rs", "MAX_CLAUSE_DEPTH"),
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
@@ -99,6 +100,7 @@ RENAMES = {
     ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("jvm_painless_score.rs", "NODE_PAINLESS_SCORE"),
     ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("jvm_max_sim.rs", "NODE_MAX_SIM"),
     ("ExtendedEncoder.java", "NODE_PAINLESS_FILTER"): ("jvm_painless_score.rs", "NODE_PAINLESS_FILTER"),
+    ("ExtendedEncoder.java", "NODE_PATTERN_PHRASE"): ("jvm_pattern_phrase.rs", "NODE_PATTERN_PHRASE"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
@@ -134,6 +136,7 @@ JAVA_ONLY = {
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
     ("ExtendedEncoder.java", "MAX_REPEATS"): "Java refuses earlier than Rust's clause limit",
+    ("PatternTextFieldMapper.java", "MAX_TEMPLATE_BYTES"): "MAX_TEMPLATE_BYTES in lucene-pattern-text's fields.rs, outside lucene-ffi (both Lucene's IndexWriter.MAX_TERM_LENGTH)",
     ("SparseAnnQueryBuilder.java", "DEFAULT_TOP_K"): "neural-search's query default, resolved before encoding",
     ("SparseAnnQueryBuilder.java", "DEFAULT_QUERY_CUT"): "neural-search's query default, resolved before encoding",
     ("NeuralQueryBuilder.java", "DEFAULT_K"): "neural-search's query default, resolved before encoding",
