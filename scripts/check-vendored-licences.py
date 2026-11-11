@@ -127,6 +127,9 @@ VENDORED = {
     "crates/lucene-ffi/fuzz/seeds/jvm_search": [
         ("this project's own fuzz seeds, read by a test (Apache-2.0)", "LICENSE", APACHE),
     ],
+    "crates/lucene-script-js/src": [
+        ("this project's own js prelude, run in each script's context (Apache-2.0)", "LICENSE", APACHE),
+    ],
 }
 
 UNICODE = "UNICODE LICENSE V3"
