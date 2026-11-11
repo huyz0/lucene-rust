@@ -23,7 +23,7 @@
 //! | field | layout |
 //! |---|---|
 //! | sub-query | a node |
-//! | `needs_score` | `u8`: `1` the script reads `_score` |
+//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter |
 //! | IR | `i32` length, then the `PIR2` blob |
 //! | params | `i32` length, then a map constant ([`lucene_painless::ir::decode_constant`]) |
 //! | index | string: `_getIndex()` |
@@ -33,6 +33,11 @@
 //!
 //! The fields are the ones the script names by a constant (`doc['f']`); the
 //! check refuses a script that names one any other way.
+//!
+//! OpenSearch's `script` query (`ScriptQuery`, a `FilterScript`) is node
+//! `45`: the same fields with no sub-query and flag `2`. Its `params` are the
+//! script's alone, and a document matches when `execute()` returns `true`,
+//! as a [`FunctionMatchQuery`] at `ScriptQuery`'s match cost.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -50,7 +55,7 @@ use lucene_painless::typed::{lower, BatchEnv, BatchRegs, Regs, Typed};
 use lucene_painless::value::{MapKind, Value};
 use lucene_painless::vm::{DocAccess, Env, Program, Throw, Vm};
 use lucene_search::extended_query::ExtendedQuery;
-use lucene_search::function::FunctionScoreQuery;
+use lucene_search::function::{FunctionMatchQuery, FunctionScoreQuery};
 use lucene_search::query::Clause;
 use lucene_search::reader::doc_values::{
     direct_numeric, direct_sorted_numeric_singleton, get_sorted_numeric, get_sorted_set,
@@ -68,6 +73,10 @@ use crate::jvm_nodes::invalid;
 use crate::jvm_reader::Cursor;
 
 pub(crate) const NODE_PAINLESS_SCORE: u8 = 43;
+pub(crate) const NODE_PAINLESS_FILTER: u8 = 45;
+
+/// `ScriptQuery`'s `TwoPhaseIterator.matchCost()`.
+const FILTER_MATCH_COST: f32 = 1000.0;
 
 /// How a field's doc values read as `ScriptDocValues`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +133,8 @@ struct Spec {
     params: ir::Constant,
     params_blob: Vec<u8>,
     needs_score: bool,
+    /// A `FilterScript`: `execute()` returns whether the document matches.
+    filter: bool,
     index: String,
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
@@ -138,6 +149,11 @@ pub(crate) fn decode(
 ) -> std::result::Result<Clause, FfiStatus> {
     let sub = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
     let spec = decode_spec(c)?;
+    if spec.filter {
+        return Err(invalid(
+            "query tree: painless score node with a filter script",
+        ));
+    }
     // The plugin checked it before sending it: a refusal here is a plugin
     // that did not.
     spec.check()
@@ -148,14 +164,35 @@ pub(crate) fn decode(
     ))))
 }
 
+/// The `script` query node: its script, matching where it returns `true`.
+pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, FfiStatus> {
+    let spec = decode_spec(c)?;
+    if !spec.filter {
+        return Err(invalid(
+            "query tree: painless filter node with a score script",
+        ));
+    }
+    spec.check()
+        .map_err(|r| invalid(format!("query tree: painless script not checked: {r}")))?;
+    let source = PainlessScoreSource(Arc::new(spec));
+    Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionMatch(
+        FunctionMatchQuery::with_match_cost(
+            Arc::new(source),
+            Arc::new(|v: f64| v != 0.0),
+            FILTER_MATCH_COST,
+        ),
+    ))))
+}
+
 /// The node's script, after its sub-query.
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
-    let needs_score = match c.u8()? {
-        0 => false,
-        1 => true,
+    let (needs_score, filter) = match c.u8()? {
+        0 => (false, false),
+        1 => (true, false),
+        2 => (false, true),
         other => {
             return Err(invalid(format!(
-                "query tree: painless score flag {other} (expected 0..=1)"
+                "query tree: painless script context {other} (expected 0..=2)"
             )))
         }
     };
@@ -199,6 +236,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         params,
         params_blob,
         needs_score,
+        filter,
         index,
         shard,
         script_id,
@@ -340,7 +378,10 @@ impl Spec {
             "_getIndex",
             "_getShardId",
         ];
-        if self.needs_score {
+        const FILTER: &[&str] = &["getParams", "getDoc"];
+        if self.filter {
+            FILTER
+        } else if self.needs_score {
             WITH_SCORE
         } else {
             WITHOUT_SCORE
@@ -384,7 +425,8 @@ impl Spec {
         )
     }
 
-    /// `ScoreScript`'s `params`: a copy of the script's, then `LeafSearchLookup.asMap()`.
+    /// `ScoreScript`'s `params`: a copy of the script's, then
+    /// `LeafSearchLookup.asMap()`; `FilterScript`'s: the script's.
     fn params(&self, doc: &Value) -> std::result::Result<Value, Throw> {
         let ir::Constant::Map(entries) = &self.params else {
             unreachable!("decode checks the params are a map")
@@ -394,6 +436,9 @@ impl Spec {
             let k = lucene_painless::compile::constant(k).map_err(|e| missing(e.to_string()))?;
             let v = lucene_painless::compile::constant(v).map_err(|e| missing(e.to_string()))?;
             m.insert(k, v);
+        }
+        if self.filter {
+            return Ok(Value::map(MapKind::HashMap, m));
         }
         m.insert(Value::str("doc"), doc.clone());
         m.insert(Value::str("_doc"), doc.clone());
@@ -914,10 +959,14 @@ struct ScriptScores<'c> {
 
 impl ScriptScores<'_> {
     /// The score of the current document (`env.doc`, `env.score`), checked
-    /// as `ScriptScorer` checks it.
+    /// as `ScriptScorer` checks it; a filter's `1.0` or `0.0`.
     fn run(&mut self) -> Result<f32> {
         let doc = self.env.doc;
-        checked(self.run_value()? as f32, doc)
+        let v = self.run_value()? as f32;
+        if self.env.source.filter {
+            return Ok(v);
+        }
+        checked(v, doc)
     }
 
     /// What the script returns for the current document, as a `double`.
@@ -948,6 +997,7 @@ impl ScriptScores<'_> {
         let r = r?;
         let v = match r {
             Value::Double(v) => v,
+            Value::Bool(b) => f64::from(u8::from(b)),
             r => lucene_painless::types::as_f64(&r).ok_or_else(|| {
                 Error::IllegalArgument(format!(
                     "painless script returned {} for a score",
@@ -995,8 +1045,10 @@ impl ScriptScores<'_> {
         // In document order, as Java scores them: a score check fails
         // before a later document's exception.
         let upto = failed.as_ref().map_or(out.len(), |(k, ..)| *k);
-        for (k, o) in out[..upto].iter_mut().enumerate() {
-            *o = f64::from(checked(*o as f32, docs[k])?);
+        if !env.source.filter {
+            for (k, o) in out[..upto].iter_mut().enumerate() {
+                *o = f64::from(checked(*o as f32, docs[k])?);
+            }
         }
         if let Some((k, e, offset)) = failed {
             let at = At {
@@ -1078,7 +1130,12 @@ impl DoubleValuesSource for PainlessScoreSource {
     }
 
     fn describe(&self) -> String {
-        "painless_score".to_string()
+        if self.0.filter {
+            "painless_filter"
+        } else {
+            "painless_score"
+        }
+        .to_string()
     }
 
     fn equality_key(&self) -> String {
@@ -1090,10 +1147,11 @@ impl DoubleValuesSource for PainlessScoreSource {
             .map(|f| format!("{}:{:?}", f.name, f.kind))
             .collect();
         format!(
-            "painless_score(ir={}, params={}, needs_score={}, index={}, shard={}, fields=[{}])",
+            "painless_score(ir={}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
             hex(&s.ir_blob),
             hex(&s.params_blob),
             s.needs_score,
+            s.filter,
             s.index,
             s.shard,
             fields.join(",")
@@ -1183,6 +1241,11 @@ impl ScriptFunction {
     /// The function's fields ([`decode_spec`]'s layout).
     pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
         let spec = decode_spec(c)?;
+        if spec.filter {
+            return Err(invalid(
+                "query tree: painless score function with a filter script",
+            ));
+        }
         spec.check()
             .map_err(|r| invalid(format!("query tree: painless script not checked: {r}")))?;
         Ok(ScriptFunction(Arc::new(spec)))
@@ -1250,6 +1313,8 @@ mod tests {
         /// The sub-query, and the boost over the node (1 for none).
         sub: Blob,
         boost: f32,
+        /// A `script` query's filter script, without a sub-query.
+        filter: bool,
         /// OpenSearch's hits by doc, or the exception it threw.
         outcome: Outcome,
     }
@@ -1303,9 +1368,12 @@ mod tests {
         (0..n)
             .map(|_| {
                 let source = r.str();
-                let sub = match r.u8() {
+                let kind = r.u8();
+                let filter = kind == 2;
+                let sub = match kind {
                     0 => Blob::default().term("body", "alpha"),
-                    _ => Blob::default().u8(5),
+                    1 => Blob::default().u8(5),
+                    _ => Blob::default(),
                 };
                 let boost = f32::from_bits(r.i32() as u32);
                 assert_eq!(r.u8(), 1, "{source}: every fixture script compiles to IR");
@@ -1329,7 +1397,11 @@ mod tests {
                 if boost != 1.0 {
                     b = b.u8(3).f32(boost);
                 }
-                let node = Some(b.u8(NODE_PAINLESS_SCORE).raw(&sub).raw(&spec));
+                let node = Some(if filter {
+                    b.u8(NODE_PAINLESS_FILTER).raw(&spec)
+                } else {
+                    b.u8(NODE_PAINLESS_SCORE).raw(&sub).raw(&spec)
+                });
                 let case_sub = sub.clone();
                 let outcome = match r.u8() {
                     0 => {
@@ -1358,6 +1430,7 @@ mod tests {
                     spec: spec.0,
                     sub: case_sub,
                     boost,
+                    filter,
                     outcome,
                 }
             })
@@ -1383,7 +1456,8 @@ mod tests {
     ];
 
     /// Every script the check passes runs as OpenSearch's does: the same
-    /// hits and scores, or the same exception at the same offset. The ones
+    /// hits and scores, or the same exception at the same offset, as a
+    /// `script_score` query or, for a filter script, a `script` query. The ones
     /// it refuses never reach the native runtime: a node carrying one is
     /// refused before any document is read.
     #[test]
@@ -1490,7 +1564,7 @@ mod tests {
         let mut wrong = Vec::new();
         let mut ran = 0;
         for case in cases() {
-            if case.boost != 1.0 || check(&case.spec).unwrap().is_some() {
+            if case.filter || case.boost != 1.0 || check(&case.spec).unwrap().is_some() {
                 continue;
             }
             let got = run_limit(h, &function(&case.sub, &case.spec).0, 1000, i64::MAX);
@@ -1675,6 +1749,7 @@ mod bench {
                 ir_blob,
                 params_blob,
                 needs_score: true,
+                filter: false,
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,

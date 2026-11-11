@@ -67,6 +67,7 @@ import org.opensearch.index.mapper.NumberFieldMapper;
 import org.opensearch.painless.PainlessScriptEngine;
 import org.opensearch.painless.spi.Allowlist;
 import org.opensearch.painless.spi.AllowlistLoader;
+import org.opensearch.script.FilterScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptException;
 import org.opensearch.script.Script;
@@ -74,13 +75,16 @@ import org.opensearch.script.ScriptType;
 import org.opensearch.search.lookup.SearchLookup;
 
 /**
- * Writes the fixture the native {@code script_score} node is tested against: an index, and for
- * each script of a set the hits and scores OpenSearch's own {@code ScriptScoreQuery} gives (or
- * the exception it throws), with the IR, params and doc fields the plugin would send.
+ * Writes the fixture the native {@code script_score} and {@code script} query nodes are tested
+ * against: an index, and for each script of a set the hits and scores OpenSearch's own {@code
+ * ScriptScoreQuery} (or {@code ScriptQuery}) gives, or the exception it throws, with the IR,
+ * params and doc fields the plugin would send.
  *
  * <p>Layout (little-endian): {@code PSC2}, count, then per script: source, sub-query kind
- * ({@code u8}: 0 {@code body:alpha}, 1 match all), boost {@code f32}, native {@code u8}; when
- * native, the IR, params, {@code needs_score u8} and the fields (count, then name and kind);
+ * ({@code u8}: 0 {@code body:alpha}, 1 match all, 2 none: a filter script's {@code script}
+ * query), boost {@code f32}, native {@code u8}; when native, the IR, params, the context {@code
+ * u8} (0 score, 1 score reading {@code _score}, 2 filter) and the fields (count, then name and
+ * kind);
  * then the outcome {@code u8}: 0 the hits (count, then doc {@code i32} and score {@code f32}, by
  * doc), 1 the script's exception, 2 another exception: the class (the one Painless's {@code
  * ScriptException} wraps), its message ({@code
@@ -220,13 +224,44 @@ public class ScoreCorpus {
         }
         c.add(new Case("doc['likes'].value * params.w + _score", p, 1, 1f));
         c.add(new Case("_score + doc['likes'].value / 1000.0", p, 0, 2f));
+        String[] filters = {
+            "doc['likes'].value > params.offset * 5",
+            "doc['tag'].value == params.t",
+            "doc['price'].size() > 0 && doc['price'].value < 20",
+            "def s = 0; for (def v : doc['vals']) { s += v; } return s > 120;",
+            "doc['flag'].value",
+            "doc['ratio'].value > 0 || doc['hf'].value > 1.5",
+            "params.m.containsKey(doc['tag'].value)",
+            "return doc['likes'].value % 3 == 0",
+            "def x = doc['likes'].value; return x > 990 ? true : false;",
+            // A filter's params are the script's alone.
+            "params.doc == null && doc['likes'].value < 100",
+            "doc['tag'].contains(params.t) && doc['neg'].value > 0",
+            "for (long v : doc['vals']) { if (v > 98) { return true; } } return false;",
+            // Errors: a missing value, an unmapped field, the script's own.
+            "doc['price'].value > 10",
+            "doc['nosuch'].value > 0",
+            "throw new IllegalArgumentException('nope')",
+            // Refused: _source.
+            "params._source.size() > 0",
+        };
+        for (String s : filters) {
+            c.add(new Case(s, p, 2, 1f));
+        }
+        c.add(new Case("doc['likes'].value < 500", p, 2, 3f));
         return c;
     }
 
     static void write(FSDirectory dir, Path expected) throws Exception {
         List<Allowlist> allowlists = new ArrayList<>(Allowlist.BASE_ALLOWLISTS);
         allowlists.add(AllowlistLoader.loadFromResourceFiles(Allowlist.class, "org.opensearch.score.txt"));
-        PainlessScriptEngine engine = new PainlessScriptEngine(Settings.EMPTY, Map.of(ScoreScript.CONTEXT, allowlists));
+        PainlessScriptEngine engine = new PainlessScriptEngine(
+            Settings.EMPTY,
+            Map.of(ScoreScript.CONTEXT, allowlists, FilterScript.CONTEXT, Allowlist.BASE_ALLOWLISTS)
+        );
+        var scriptQuery = Class.forName("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery")
+            .getDeclaredConstructor(Script.class, FilterScript.LeafFactory.class, String.class);
+        scriptQuery.setAccessible(true);
         PainlessScore.initialize(engine);
         Map<String, MappedFieldType> fts = new LinkedHashMap<>();
         fts.put("likes", new NumberFieldMapper.NumberFieldType("likes", NumberFieldMapper.NumberType.LONG));
@@ -258,14 +293,27 @@ public class ScoreCorpus {
                 rec.str(c.source());
                 rec.u8(c.sub());
                 rec.i32(Float.floatToIntBits(c.boost()));
-                Object compiled = PainlessScore.score(c.source());
-                ScoreScript.Factory factory = engine.compile("fixture", c.source(), ScoreScript.CONTEXT, Map.of());
-                ScoreScript.LeafFactory leaf = factory.newFactory(c.params(), lookup, searcher);
+                boolean filter = c.sub() == 2;
+                Object compiled = filter ? PainlessScore.filter(c.source()) : PainlessScore.score(c.source());
+                Script script = new Script(ScriptType.INLINE, "painless", c.source(), c.params());
+                Query q;
+                int context;
+                if (filter) {
+                    FilterScript.Factory factory = engine.compile("fixture", c.source(), FilterScript.CONTEXT, Map.of());
+                    q = (Query) scriptQuery.newInstance(script, factory.newFactory(script.getParams(), lookup), null);
+                    context = PainlessScore.FILTER;
+                } else {
+                    ScoreScript.Factory factory = engine.compile("fixture", c.source(), ScoreScript.CONTEXT, Map.of());
+                    ScoreScript.LeafFactory leaf = factory.newFactory(c.params(), lookup, searcher);
+                    Query sub = c.sub() == 0 ? new TermQuery(new Term("body", "alpha")) : new MatchAllDocsQuery();
+                    q = new ScriptScoreQuery(sub, script, leaf, null, "idx", 3, Version.CURRENT);
+                    context = leaf.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE;
+                }
                 if (compiled instanceof PainlessIr.Compiled ir) {
                     rec.u8(1);
                     rec.bytes(ir.ir());
                     rec.bytes(PainlessIr.constant(c.params()));
-                    rec.u8(leaf.needs_score() ? 1 : 0);
+                    rec.u8(context);
                     rec.i32(ir.docFields().size());
                     for (String f : ir.docFields()) {
                         rec.str(f);
@@ -276,9 +324,6 @@ public class ScoreCorpus {
                     refused++;
                     System.err.println("refused: " + c.source() + ": " + compiled);
                 }
-                Script script = new Script(ScriptType.INLINE, "painless", c.source(), c.params());
-                Query sub = c.sub() == 0 ? new TermQuery(new Term("body", "alpha")) : new MatchAllDocsQuery();
-                Query q = new ScriptScoreQuery(sub, script, leaf, null, "idx", 3, Version.CURRENT);
                 if (c.boost() != 1f) {
                     q = new BoostQuery(q, c.boost());
                 }
