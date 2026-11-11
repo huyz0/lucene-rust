@@ -12,7 +12,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 const SKIP_HEAP_SIZE: usize = 10;
 
 /// Defaults of `SparseConstants`.
-const DEFAULT_CEILING_INGEST: f32 = 3.0;
+pub(crate) const DEFAULT_CEILING_INGEST: f32 = 3.0;
 const DEFAULT_CEILING_SEARCH: f32 = 16.0;
 const DEFAULT_THRESHOLD: i32 = 1_000_000;
 
