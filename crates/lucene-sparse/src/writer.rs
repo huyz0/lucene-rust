@@ -24,7 +24,7 @@ use crate::search::{attribute, float_attribute, SeismicField};
 use crate::vector::{self, SparseVector};
 use crate::{Error, Result};
 use lucene_codecs::codec::{Lucene104Codec, SegmentFilesWriter, SegmentWrite};
-use lucene_codecs::doc_values::{self, BinaryEntry};
+use lucene_codecs::doc_values;
 use lucene_codecs::field_infos::{FieldInfo, FieldInfos};
 use lucene_codecs::per_field_doc_values::{PER_FIELD_FORMAT_KEY, PER_FIELD_SUFFIX_KEY};
 use std::collections::BTreeMap;
@@ -161,44 +161,100 @@ fn feature_value(value: f32) -> f32 {
     f32::from_bits((value.to_bits() >> 15) << 15)
 }
 
-/// One field's postings and forward vectors in a segment.
-struct FieldData {
+/// One `sparse_vector` field of a segment being written: its postings and
+/// forward vectors, built document by document, then clustered.
+///
+/// The Rust writer feeds it from the segment's doc values; the plugin's Java
+/// codec, which writes the segments of OpenSearch's own engine, feeds it the
+/// same values at flush and merge.
+#[derive(Debug)]
+pub struct FieldClusterer {
+    number: i32,
+    max_doc: i32,
+    ceiling_ingest: f32,
+    params: ClusteringParams,
     /// Term bytes (the decimal token) to `(doc, weight)`, docs ascending.
     postings: BTreeMap<Vec<u8>, Vec<(i32, u8)>>,
     /// Each doc's quantized forward vector, `None` for a doc without one.
     forward: Vec<Option<SparseVector>>,
 }
 
-fn read_field(
-    max_doc: i32,
-    data: &[u8],
-    entry: &BinaryEntry,
-    ceiling_ingest: f32,
-) -> Result<FieldData> {
-    let mut postings: BTreeMap<Vec<u8>, Vec<(i32, u8)>> = BTreeMap::new();
-    let mut forward = Vec::with_capacity(usize::try_from(max_doc).unwrap_or(0));
-    let mut values = doc_values::BinaryReader::new(data, entry);
-    for doc in 0..max_doc {
-        let Some(bytes) = values.value(doc)? else {
-            forward.push(None);
-            continue;
-        };
+impl FieldClusterer {
+    /// A clusterer for `info` in a segment of `max_doc` documents.
+    ///
+    /// # Errors
+    /// A clustering or quantization attribute is not a number.
+    pub fn new(info: &FieldInfo, max_doc: i32) -> Result<Self> {
+        Ok(FieldClusterer {
+            number: info.number,
+            max_doc,
+            ceiling_ingest: float_attribute(
+                info,
+                "quantization_ceiling_ingest",
+                crate::search::DEFAULT_CEILING_INGEST,
+            )?,
+            params: ClusteringParams::from_field_info(info)?,
+            postings: BTreeMap::new(),
+            forward: Vec::with_capacity(usize::try_from(max_doc).unwrap_or(0)),
+        })
+    }
+
+    /// Adds `doc`'s forward-index value: big-endian `(int token, float
+    /// weight)` pairs. Documents come in ascending order; one without a
+    /// value is skipped.
+    ///
+    /// # Errors
+    /// `doc` is out of order or past the segment.
+    pub fn add(&mut self, doc: i32, bytes: &[u8]) -> Result<()> {
+        let at = usize::try_from(doc)
+            .ok()
+            .filter(|&d| d >= self.forward.len() && doc < self.max_doc)
+            .ok_or_else(|| {
+                Error::IllegalArgument(format!(
+                    "doc {doc} out of order or past max_doc {}",
+                    self.max_doc
+                ))
+            })?;
+        self.forward.resize(at, None);
         let pairs = vector::decode_forward(bytes);
         for &(token, value) in &pairs {
             // Negative tokens are refused at index time.
             if i32::try_from(token).is_err() {
                 continue;
             }
-            let weight = vector::quantize(feature_value(value), ceiling_ingest);
-            let list = postings.entry(token.to_string().into_bytes()).or_default();
+            let weight = vector::quantize(feature_value(value), self.ceiling_ingest);
+            let list = self
+                .postings
+                .entry(token.to_string().into_bytes())
+                .or_default();
             match list.last_mut() {
                 Some(last) if last.0 == doc => last.1 = weight,
                 _ => list.push((doc, weight)),
             }
         }
-        forward.push(Some(SparseVector::quantized(&pairs, ceiling_ingest)));
+        self.forward
+            .push(Some(SparseVector::quantized(&pairs, self.ceiling_ingest)));
+        Ok(())
     }
-    Ok(FieldData { postings, forward })
+
+    /// The field's clustered postings, centers drawn from a generator seeded
+    /// by `segment_id`, the field and the term.
+    pub fn finish(self, segment_id: &[u8]) -> FieldClusters {
+        let keep = self.params.postings_per_term(self.max_doc);
+        let terms = self
+            .postings
+            .into_iter()
+            .map(|(term, list)| {
+                let mut rng = SplitMix(seed(segment_id, self.number, &term));
+                let clusters = cluster(&list, &self.forward, &self.params, keep, &mut rng);
+                (term, clusters)
+            })
+            .collect();
+        FieldClusters {
+            number: self.number,
+            terms,
+        }
+    }
 }
 
 /// `PostingsProcessingUtils.getTopK`: the `k` heaviest postings, in doc
@@ -340,12 +396,8 @@ fn doc_values_files(segment: &str, info: &FieldInfo) -> Option<(String, String, 
 }
 
 /// The clustered postings of one field of `segment`.
-fn field_clusters(
-    segment: &SegmentWrite<'_>,
-    info: &FieldInfo,
-    field: &SeismicField,
-) -> Result<FieldClusters> {
-    let mut out = FieldClusters {
+fn field_clusters(segment: &SegmentWrite<'_>, info: &FieldInfo) -> Result<FieldClusters> {
+    let out = FieldClusters {
         number: info.number,
         terms: Vec::new(),
     };
@@ -361,15 +413,14 @@ fn field_clusters(
     let Some(entry) = meta.binary_entry(info.number) else {
         return Ok(out);
     };
-    let data = read_field(segment.max_doc, &dvd, entry, field.ceiling_ingest)?;
-    let params = ClusteringParams::from_field_info(info)?;
-    let keep = params.postings_per_term(segment.max_doc);
-    for (term, list) in data.postings {
-        let mut rng = SplitMix(seed(segment.id, info.number, &term));
-        let clusters = cluster(&list, &data.forward, &params, keep, &mut rng);
-        out.terms.push((term, clusters));
+    let mut clusterer = FieldClusterer::new(info, segment.max_doc)?;
+    let mut values = doc_values::BinaryReader::new(&dvd, entry);
+    for doc in 0..segment.max_doc {
+        if let Some(bytes) = values.value(doc)? {
+            clusterer.add(doc, bytes)?;
+        }
     }
-    Ok(out)
+    Ok(clusterer.finish(segment.id))
 }
 
 /// `SparsePostingsConsumer`: `.sit`/`.sip` for `segment`, with the clustered
@@ -387,7 +438,7 @@ pub fn write_segment(segment: SegmentWrite<'_>) -> Result<Vec<String>> {
     fields.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     let clusters = fields
         .iter()
-        .map(|(info, field)| field_clusters(&segment, info, field))
+        .map(|(info, _)| field_clusters(&segment, info))
         .collect::<Result<Vec<_>>>()?;
     let (sit, sip) = postings::write(segment.id, &clusters);
     let mut names = Vec::with_capacity(2);

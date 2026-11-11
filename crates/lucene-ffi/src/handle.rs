@@ -31,6 +31,9 @@ pub enum RegistryTag {
     ZstdTermsDictionary = 15,
     /// A deployed ml-commons model (`ml.rs`).
     MlModel = 16,
+    /// A `sparse_vector` field being clustered for a JVM-written segment
+    /// (`sparse_writer.rs`).
+    SparseClusterer = 17,
 }
 
 /// The cap on simultaneously open handles in one registry: the 24-bit index
