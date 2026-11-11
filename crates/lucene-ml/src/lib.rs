@@ -18,9 +18,12 @@
 //!   weighs a text's tokens without a network.
 //! - [`text_similarity`] (`TEXT_SIMILARITY`) scores a query against a
 //!   document with a cross-encoder.
+//! - [`hf_analyzer`] is ml-commons' `bert-uncased` analyzer: a tokenizer
+//!   read as a token stream with idf weights.
 //! - [`onnx`] is the session the model functions share; [`torchscript`] is
 //!   how they run TorchScript models, over a runtime the caller provides.
 
+pub mod hf_analyzer;
 pub mod onnx;
 pub mod runtime;
 pub mod sparse_encoding;

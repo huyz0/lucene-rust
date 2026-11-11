@@ -33,7 +33,7 @@ public final class SparseVectorQuery extends Query {
     /** The sum of linear {@code FeatureField} queries, plus the filter, for small segments. */
     final Query fallback;
 
-    SparseVectorQuery(String field, Map<Integer, Float> tokens, int topN, int k, float heapFactor, Query filter, Query fallback) {
+    public SparseVectorQuery(String field, Map<Integer, Float> tokens, int topN, int k, float heapFactor, Query filter, Query fallback) {
         this.field = Objects.requireNonNull(field);
         this.tokens = Map.copyOf(tokens);
         this.topN = topN;

@@ -59,14 +59,21 @@ will refuse the call instead.
 The node loads the library and checks its ABI version at startup; a missing
 or mismatched library stops the node with one line saying which file and
 platform. OpenSearch accepts one `QueryPhaseSearcher` per node, so this plugin
-cannot be installed alongside `neural-search`. It serves neural-search's
-learned sparse search itself: the `sparse_vector` field (`seismic` method,
-`lucene` engine) on an `index.sparse` index, whose segments the Rust engine
-writes in neural-search's format (neural-search opens them unchanged), and the
-`neural_sparse` query by `query_tokens`, with `method_parameters` (`top_n`,
-`k`, `heap_factor`, `filter`), also on `rank_features` fields. `query_text`
-needs neural-search's model inference and is refused, as is the `native`
-sparse engine.
+cannot be installed alongside `neural-search`. It serves neural-search
+itself, over its own ml-commons and k-NN: the `neural` and `neural_knn_query`
+queries on `knn_vector` fields; the `text_embedding`, `sparse_encoding`,
+`text_image_embedding` and `text_chunking` ingest processors; the
+`neural_query_enricher` search processor; ml-commons' `bert-uncased` and
+`mbert-uncased` analyzers and `hf_model_tokenizer` type; and learned sparse
+search: the `sparse_vector` field (`seismic` method, `lucene` engine) on an
+`index.sparse` index, whose segments the Rust engine writes in neural-search's
+format (neural-search opens them unchanged), and the `neural_sparse` query by
+`query_tokens` or by `query_text` (a model, an analyzer, or `bert-uncased` by
+default), with `method_parameters` (`top_n`, `k`, `heap_factor`, `filter`),
+also on `rank_features` fields. `scripts/check-neural-plugin.py` compares them
+with stock. The `native` sparse engine is refused. Model inference runs on
+the plugin's own ml-commons, so with `opensearch-ml` installed the model-backed
+queries and processors fail with a message saying so.
 
 ## Operate
 

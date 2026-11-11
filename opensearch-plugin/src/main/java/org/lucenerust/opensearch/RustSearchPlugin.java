@@ -65,7 +65,23 @@ import org.lucenerust.opensearch.knn.rest.KnnShardsTransport;
 import org.lucenerust.opensearch.knn.rest.KnnStatsTransport;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.core.action.ActionResponse;
-import org.lucenerust.opensearch.sparse.NeuralSparseQueryBuilder;
+import org.lucenerust.opensearch.neural.ml.MLCommonsClientAccessor;
+import org.lucenerust.opensearch.neural.processor.NeuralQueryEnricherProcessor;
+import org.lucenerust.opensearch.neural.processor.SparseEncodingProcessor;
+import org.lucenerust.opensearch.neural.processor.TextChunkingProcessor;
+import org.lucenerust.opensearch.neural.processor.TextEmbeddingProcessor;
+import org.lucenerust.opensearch.neural.processor.TextImageEmbeddingProcessor;
+import org.lucenerust.opensearch.neural.processor.factory.SparseEncodingProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.factory.TextChunkingProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.factory.TextEmbeddingProcessorFactory;
+import org.lucenerust.opensearch.neural.processor.factory.TextImageEmbeddingProcessorFactory;
+import org.lucenerust.opensearch.neural.query.NeuralKNNQueryBuilder;
+import org.lucenerust.opensearch.neural.query.NeuralQueryBuilder;
+import org.lucenerust.opensearch.neural.query.NeuralSparseQueryBuilder;
+import org.lucenerust.opensearch.ml.HfAnalysis;
+import org.opensearch.index.analysis.PreBuiltAnalyzerProviderFactory;
+import org.opensearch.index.analysis.PreConfiguredTokenizer;
+import org.opensearch.plugins.IngestPlugin;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
@@ -111,6 +127,7 @@ public class RustSearchPlugin extends Plugin implements
     AnalysisPlugin,
     IndexStorePlugin,
     MapperPlugin,
+    IngestPlugin,
     ScriptPlugin,
     SearchPipelinePlugin,
     SystemIndexPlugin {
@@ -187,6 +204,8 @@ public class RustSearchPlugin extends Plugin implements
     private final boolean stockKnn;
     /** Whether the stock ml-commons plugin is installed beside this one: it then serves {@code _plugins/_ml}. */
     private final boolean stockMl;
+
+    private MLCommonsClientAccessor mlClient;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
@@ -491,12 +510,34 @@ public class RustSearchPlugin extends Plugin implements
     /** The {@code rust_*} tokenizers ({@link RustAnalysis#TOKENIZERS}): Rust on the index and query side alike. */
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> getTokenizers() {
-        return RustAnalysis.tokenizers();
+        if (stockMl) {
+            return RustAnalysis.tokenizers();
+        }
+        Map<String, AnalysisModule.AnalysisProvider<TokenizerFactory>> tokenizers = new java.util.HashMap<>(RustAnalysis.tokenizers());
+        tokenizers.putAll(HfAnalysis.tokenizers());
+        return tokenizers;
+    }
+
+    /** ml-commons' pre-built {@code bert-uncased} and {@code mbert-uncased} tokenizers. */
+    @Override
+    public List<PreConfiguredTokenizer> getPreConfiguredTokenizers() {
+        return stockMl ? List.of() : HfAnalysis.preConfiguredTokenizers();
+    }
+
+    /** ml-commons' pre-built {@code bert-uncased} and {@code mbert-uncased} analyzers. */
+    @Override
+    public List<PreBuiltAnalyzerProviderFactory> getPreBuiltAnalyzerProviderFactories() {
+        return stockMl ? List.of() : HfAnalysis.preBuiltAnalyzers();
     }
 
     @Override
     public Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> getAnalyzers() {
-        return RustAnalysis.analyzers();
+        if (stockMl) {
+            return RustAnalysis.analyzers();
+        }
+        Map<String, AnalysisModule.AnalysisProvider<AnalyzerProvider<? extends org.apache.lucene.analysis.Analyzer>>> analyzers = new java.util.HashMap<>(RustAnalysis.analyzers());
+        analyzers.putAll(HfAnalysis.analyzers());
+        return analyzers;
     }
 
     @Override
@@ -582,20 +623,62 @@ public class RustSearchPlugin extends Plugin implements
         );
     }
 
-    /** neural-search's {@code neural_sparse} query, by {@code query_tokens}, and k-NN's {@code knn}. */
+    /**
+     * neural-search's {@code neural_sparse}, {@code hybrid}, and, over the plugin's k-NN,
+     * {@code neural} and {@code neural_knn_query}; k-NN's {@code knn}.
+     */
     @Override
     public List<QuerySpec<?>> getQueries() {
-        QuerySpec<?> sparse = new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent);
-        QuerySpec<?> maxSim = new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent);
-        if (stockKnn) {
-            return List.of(sparse, maxSim, HybridSearch.query());
+        List<QuerySpec<?>> queries = new ArrayList<>();
+        queries.add(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
+        queries.add(new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent));
+        queries.add(HybridSearch.query());
+        if (stockKnn == false) {
+            queries.add(new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
+            queries.add(new QuerySpec<>(NeuralQueryBuilder.NAME, NeuralQueryBuilder::new, NeuralQueryBuilder::fromXContent));
+            queries.add(new QuerySpec<>(NeuralKNNQueryBuilder.NAME, NeuralKNNQueryBuilder::new, NeuralKNNQueryBuilder::fromXContent));
         }
-        return List.of(
-            sparse,
-            maxSim,
-            HybridSearch.query(),
-            new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent)
+        return queries;
+    }
+
+    /** neural-search's model-backed ingest processors and {@code text_chunking}. */
+    @Override
+    public Map<String, org.opensearch.ingest.Processor.Factory> getProcessors(org.opensearch.ingest.Processor.Parameters parameters) {
+        MLCommonsClientAccessor accessor = mlClient();
+        org.opensearch.cluster.service.ClusterService cs = parameters.ingestService.getClusterService();
+        return Map.of(
+            TextEmbeddingProcessor.TYPE,
+            new TextEmbeddingProcessorFactory(parameters.client, accessor, parameters.env, cs),
+            SparseEncodingProcessor.TYPE,
+            new SparseEncodingProcessorFactory(parameters.client, accessor, parameters.env, cs),
+            TextImageEmbeddingProcessor.TYPE,
+            new TextImageEmbeddingProcessorFactory(parameters.client, accessor, parameters.env, cs),
+            TextChunkingProcessor.TYPE,
+            new TextChunkingProcessorFactory(parameters.env, cs, parameters.analysisRegistry)
         );
+    }
+
+    /** neural-search's {@code neural_query_enricher}. */
+    @Override
+    public Map<String, org.opensearch.search.pipeline.Processor.Factory<org.opensearch.search.pipeline.SearchRequestProcessor>> getRequestProcessors(
+        Parameters parameters
+    ) {
+        return Map.of(NeuralQueryEnricherProcessor.TYPE, new NeuralQueryEnricherProcessor.Factory());
+    }
+
+    /** The node's neural-search view of ml-commons; one per node, made on first use. */
+    private synchronized MLCommonsClientAccessor mlClient() {
+        if (mlClient == null) {
+            mlClient = new MLCommonsClientAccessor(() -> {
+                if (stockMl) {
+                    throw new IllegalStateException(
+                        "neural search runs models through the lucene-rust plugin's ml-commons, which stands down when opensearch-ml is installed; remove opensearch-ml to use model inference"
+                    );
+                }
+                return MlCommons.get();
+            });
+        }
+        return mlClient;
     }
 
     @Override
@@ -615,6 +698,8 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
+        NeuralQueryBuilder.initialize(mlClient());
+        NeuralSparseQueryBuilder.initialize(mlClient());
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
