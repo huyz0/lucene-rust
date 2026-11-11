@@ -716,9 +716,11 @@ final class ExtendedEncoder {
         if (types == null || script.getOptions().keySet().stream().anyMatch(k -> k.equals(Script.CONTENT_TYPE_OPTION) == false)) {
             return "script_score_script";
         }
-        if ((PainlessScore.score(script.getIdOrCode()) instanceof PainlessIr.Compiled compiled) == false) {
+        Object compiledOrWhy = PainlessScore.score(script.getIdOrCode());
+        if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
             return "script_score_painless";
         }
+        PainlessIr.Compiled compiled = (PainlessIr.Compiled) compiledOrWhy;
         byte[] params;
         try {
             params = PainlessIr.constant(script.getParams());
