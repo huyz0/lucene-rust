@@ -185,19 +185,39 @@ def load_join(req, check, index, questions, seed):
             lines.append(json.dumps({"index": {"_index": index, "_id": f"a{aid}", "routing": f"q{qn}"}}))
             lines.append(json.dumps({"body": " ".join(r.choice(words) for _ in range(r.randint(1, 8))), "rel": {"name": "answer", "parent": f"q{qn}"}}))
             aid += 1
-    res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
-    check(not res["errors"], f"{index}: parent-join bulk has no errors")
+    # Three segments (a join over several needs the global ordinal map), then a few deletes.
+    third = (len(lines) // 6) * 2
+    for part in (lines[:third], lines[third:2 * third], lines[2 * third:]):
+        for at in range(0, len(part), 40000):
+            res = req("POST", "/_bulk", "\n".join(part[at:at + 40000]) + "\n", ndjson=True)
+            check(not res["errors"], f"{index}: parent-join bulk has no errors")
+        req("POST", f"/{index}/_refresh")
+    for n in range(0, min(aid, 1700), 17):
+        req("DELETE", f"/{index}/_doc/a{n}?routing=x&refresh=false")
     req("POST", f"/{index}/_refresh")
 
 
 def join_rows():
-    """parent-join: has_child/has_parent rewrite to JoinUtil's global-ordinal
-    joins in Java (the from side searched during the rewrite, over OpenSearch's
-    own global ordinals), which the native side does not take over; parent_id
-    is a boolean of term queries."""
+    """parent-join: has_child/has_parent run natively -- the from side searched
+    and joined by global ordinal in Rust (JoinRequestFilter defers OpenSearch's
+    Java rewrite); parent_id is a boolean of term queries."""
     q = []
     add = lambda name, body, expect: q.append((name, body, expect))
-    add("has_child", {"query": {"has_child": {"type": "answer", "query": {"match": {"body": "alpha"}}, "score_mode": "max"}}}, "query_GlobalOrdinalsWithScoreQuery")
-    add("has_parent", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta"}}, "score": True}}}, "query_GlobalOrdinalsWithScoreQuery")
+    child = lambda mode, **kw: {"query": {"has_child": {"type": "answer", "query": {"match": {"body": "alpha"}}, "score_mode": mode, **kw}}}
+    for mode in ("none", "avg", "max", "sum", "min"):
+        add(f"has_child {mode}", child(mode), "native")
+    add("has_child min/max children", child("sum", min_children=2, max_children=3), "native")
+    add("has_parent score", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta"}}, "score": True}}}, "native")
+    add("has_parent no score", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta gamma"}}}}}, "native")
+    add("has_child in bool", {"query": {"bool": {
+        "should": [child("max")["query"], {"match": {"body": "delta"}}],
+        "must_not": [{"has_child": {"type": "answer", "query": {"term": {"body": "zeta"}}}}],
+    }}}, "native")
+    add("has_child boosted", {"query": {"has_child": {"type": "answer", "query": {"match_all": {}}, "boost": 2.5}}}, "native")
+    add("has_parent inside has_child", {"query": {"has_child": {"type": "answer", "score_mode": "avg", "query": {"bool": {
+        "must": [{"match": {"body": "eta"}}],
+        "filter": [{"has_parent": {"parent_type": "question", "query": {"match": {"body": "theta"}}}}],
+    }}}}}, "native")
+    add("has_child count", {"size": 0, "track_total_hits": True, "query": child("avg")["query"]}, "native")
     add("parent_id", {"query": {"parent_id": {"type": "answer", "id": "q3"}}}, "native")
     return q

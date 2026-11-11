@@ -682,6 +682,13 @@ public class RustSearchPlugin extends Plugin implements
         List<QuerySpec<?>> queries = new ArrayList<>();
         queries.add(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
         queries.add(new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent));
+        queries.add(
+            new QuerySpec<>(
+                org.lucenerust.opensearch.join.NativeJoinQueryBuilder.NAME,
+                org.lucenerust.opensearch.join.NativeJoinQueryBuilder::new,
+                org.lucenerust.opensearch.join.NativeJoinQueryBuilder::fromXContent
+            )
+        );
         queries.add(HybridSearch.query());
         if (stockKnn == false) {
             queries.add(new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
@@ -815,7 +822,11 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public List<org.opensearch.action.support.ActionFilter> getActionFilters() {
-        return List.of(new RealtimePrimaryFilter(clusterService::get, resolver::get), HybridSearch.requestFilter());
+        return List.of(
+            new RealtimePrimaryFilter(clusterService::get, resolver::get),
+            HybridSearch.requestFilter(),
+            new org.lucenerust.opensearch.join.JoinRequestFilter()
+        );
     }
 
     @Override
