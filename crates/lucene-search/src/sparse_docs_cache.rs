@@ -12,9 +12,10 @@
 //! reader can touch every sparse field of every segment, so what is kept is
 //! bounded: at most [`SPARSE_DOCS_CACHE_BYTES`] across every segment core of
 //! the process, the least recently used set going first when a new one would
-//! pass it. A set larger than a quarter of the budget is not kept at all --
-//! it is decoded per iterator, as before the cache, rather than pushing out
-//! everything else. A segment core's sets go when its last reader drops.
+//! pass it. A set larger than a quarter of the budget is not kept at all,
+//! rather than pushing out everything else: its iterators walk the
+//! `IndexedDISI` in place, as Java's do, and decode it only to visit every
+//! document. A segment core's sets go when its last reader drops.
 //!
 //! Entries are keyed by the segment core (an id per opened segment, shared
 //! by every reader reopened from it with only new deletions, since those
@@ -85,9 +86,15 @@ impl SparseDocsPool {
         })
     }
 
+    /// Whether a set of `bytes` would be kept: at most a quarter of the
+    /// budget.
+    fn keeps(&self, bytes: usize) -> bool {
+        bytes <= self.budget / 4
+    }
+
     fn insert(&self, core: u64, key: SetKey, docs: &Arc<SparseDocs>) {
         let bytes = docs.heap_bytes();
-        if bytes > self.budget / 4 {
+        if !self.keeps(bytes) {
             return;
         }
         self.with(|inner| {
@@ -157,9 +164,21 @@ impl DocsWithFieldCache {
         }
     }
 
+    /// A core whose sets go to a pool of its own of `budget` bytes (tests).
+    #[cfg(test)]
+    pub(crate) fn with_budget(budget: usize) -> Self {
+        Self::in_pool(Box::leak(Box::new(SparseDocsPool::new(budget))))
+    }
+
     /// The set at `key` of this core, if it is kept.
     pub(crate) fn get(&self, key: SetKey) -> Option<Arc<SparseDocs>> {
         self.pool.get(self.core, key)
+    }
+
+    /// Whether a decoded set of `bytes` would be kept. A reader walks a set
+    /// that would not be in place instead of decoding it per iterator.
+    pub(crate) fn keeps(&self, bytes: usize) -> bool {
+        self.pool.keeps(bytes)
     }
 
     /// Keeps `docs` as the set at `key`, within the pool's budget.

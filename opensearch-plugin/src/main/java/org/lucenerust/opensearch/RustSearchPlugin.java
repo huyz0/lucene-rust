@@ -411,7 +411,7 @@ public class RustSearchPlugin extends Plugin implements
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
-                        NativeStoredFieldsReader.fetchStarted();
+                        NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -606,6 +606,7 @@ public class RustSearchPlugin extends Plugin implements
             NODE_LAZY_DECRYPT,
             NODE_DECRYPT_CACHE,
             NODE_PAGE_CACHE_SIZE,
+            org.lucenerust.opensearch.logs.LogsPreset.ENABLED,
             SparseSettings.SPARSE_INDEX
         ));
         settings.addAll(NeuralSearchSettings.all());
@@ -628,6 +629,7 @@ public class RustSearchPlugin extends Plugin implements
         Map<String, Mapper.TypeParser> mappers = new HashMap<>();
         mappers.put(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
         mappers.put(MultiVectorFieldMapper.CONTENT_TYPE, new MultiVectorFieldMapper.TypeParser());
+        mappers.put(org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.CONTENT_TYPE, org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.PARSER);
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
         mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
         if (stockKnn == false) {
@@ -822,6 +824,9 @@ public class RustSearchPlugin extends Plugin implements
             semanticMappingTransformer.setModelResolver(modelResolver);
         }
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
+        if (org.lucenerust.opensearch.logs.LogsPreset.ENABLED.get(environment.settings())) {
+            clusterService.addListener(new org.lucenerust.opensearch.logs.LogsPreset(client));
+        }
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
             MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);
