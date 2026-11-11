@@ -2968,6 +2968,40 @@ mod tests {
     /// `script_score` query or, for a filter script, a `script` query. The ones
     /// it refuses never reach the native runtime: a node carrying one is
     /// refused before any document is read.
+    /// **A count alone.** A `size: 0` search over a filter script counts
+    /// what the search with hits matches: the count prepares the script over
+    /// every segment as the search does, or fails as it does.
+    #[test]
+    fn filter_scripts_count_as_their_searches_match() {
+        let tmp = TempDir::new("painless-count");
+        for e in std::fs::read_dir(fixture("index")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let h = open(&tmp);
+        let mut counted = 0;
+        for case in cases().iter().filter(|c| c.filter) {
+            let node = case.node.as_ref().unwrap();
+            let searched = run_limit(h, &node.0, 1000, i64::MAX);
+            let count = run_limit(h, &node.0, 0, i64::MAX);
+            match (searched, count) {
+                (Ok((_, want, _)), Ok((hits, total, _))) => {
+                    assert!(hits.is_empty(), "{}", case.source);
+                    assert_eq!(total, want, "{}", case.source);
+                    counted += 1;
+                }
+                (Err(_), Err(_)) => {}
+                (a, b) => panic!(
+                    "{}: {a:?} vs {b:?}: {}",
+                    case.source,
+                    crate::error::last_error()
+                ),
+            }
+        }
+        assert!(counted > 0);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
     #[test]
     fn scripts_score_as_opensearch_does() {
         let tmp = TempDir::new("painless-score");
