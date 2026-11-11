@@ -10,6 +10,13 @@
 //! and intersecting the clauses' postings or points. A range on a key ends
 //! the prefix: past it the next key is no longer in order.
 //!
+//! In a segment of document blocks only the parents follow the sort, each
+//! block's children before its parent; a key whose field no child holds
+//! orders the blocks, and the clauses on it match the parents of one run of
+//! whole blocks. Inside a run pinned to one value per key the documents
+//! come in the next keys' order, so a search sorted by those keys can stop
+//! a segment at its first non-competitive hit ([`pinned_sort_keys`]).
+//!
 //! A key is a keyword (a `STRING` or single-valued `SortedSetSortField`
 //! sort), pinned by a term, or a `LONG` sort, pinned by a one-dimensional
 //! long points range (`long` and `date` fields) or a doc-values range. The
@@ -33,8 +40,10 @@ use lucene_index::segment_info::{IndexSortField, IndexSortKind, NumericSortKey};
 use super::build::{seek_term, sorted_term_run, LeafContext};
 use crate::directory_reader::SegmentReader;
 use crate::extended_query::ExtendedQuery;
-use crate::query::{Clause, TermQuery};
+use crate::multi_segment::OpenSegment;
+use crate::query::{BooleanQuery, Clause, TermQuery};
 use crate::Result;
+use lucene_util::fixed_bit_set::FixedBitSet;
 
 /// What a clause pins one sort key to.
 enum Bound<'q> {
@@ -105,37 +114,68 @@ fn bound<'q>(
 
 /// One sort key's value for any document, read at random: a long, or a
 /// keyword's ordinal. Only single-valued columns, where the key is the value.
-enum Keys<'r> {
+/// In a segment of document blocks a document's key is its parent's -- the
+/// next parent at or after it -- which is where the sort puts it.
+struct Keys<'r> {
+    column: Column<'r>,
+    parents: Option<&'r FixedBitSet>,
+}
+
+enum Column<'r> {
     Numeric(&'r [u8], &'r NumericEntry),
     Sorted(&'r [u8], &'r SortedNumericEntry),
 }
 
 impl<'r> Keys<'r> {
-    fn open(reader: &'r SegmentReader, field: &str) -> Option<Self> {
+    fn open(
+        reader: &'r SegmentReader,
+        field: &str,
+        parents: Option<&'r FixedBitSet>,
+    ) -> Option<Self> {
         let fi = reader.field_infos().field_by_name(field)?;
         let (meta, data) = reader.doc_values_for_field(fi.number)?;
-        let keys = if let Some(e) = meta.numeric_entry(fi.number) {
-            Keys::Numeric(data, e)
+        let column = if let Some(e) = meta.numeric_entry(fi.number) {
+            Column::Numeric(data, e)
         } else if let Some(e) = meta.sorted_numeric_entry(fi.number) {
-            Keys::Sorted(data, e)
+            Column::Sorted(data, e)
         } else if let Some(e) = meta.sorted_entry(fi.number) {
-            Keys::Numeric(data, &e.ords)
+            Column::Numeric(data, &e.ords)
         } else {
             match &meta.sorted_set_entry(fi.number)?.kind {
-                SortedSetKind::Single(e) => Keys::Numeric(data, &e.ords),
-                SortedSetKind::Multi { ords, .. } => Keys::Sorted(data, ords),
+                SortedSetKind::Single(e) => Column::Numeric(data, &e.ords),
+                SortedSetKind::Multi { ords, .. } => Column::Sorted(data, ords),
             }
         };
-        match keys {
-            Keys::Sorted(_, e) if e.addresses.is_some() => None,
-            k => Some(k),
+        match column {
+            Column::Sorted(_, e) if e.addresses.is_some() => None,
+            column => Some(Keys { column, parents }),
+        }
+    }
+
+    /// The document whose key `doc` sorts by: itself, or its block's parent.
+    fn holder(&self, doc: i32) -> i32 {
+        match self.parents {
+            None => doc,
+            Some(p) => p.next_set_bit(doc as usize).map_or(doc, |d| d as i32),
+        }
+    }
+
+    /// The last document of `start..end` (`start < end`) a clause on the
+    /// key can match: `end - 1`, or the last parent before `end`.
+    fn last_holder(&self, end: i32) -> i32 {
+        match self.parents {
+            None => end - 1,
+            Some(p) => p
+                .prev_set_bit((end - 1) as usize)
+                .map_or(end - 1, |d| d as i32),
         }
     }
 
     fn get(&self, doc: i32) -> Result<Option<i64>> {
-        Ok(match self {
-            Keys::Numeric(data, e) => doc_values::numeric_value(data, e, doc)?,
-            Keys::Sorted(data, e) => doc_values::sorted_numeric_values(data, e, doc)?
+        let doc = self.holder(doc);
+        Ok(match self.column {
+            Column::Numeric(data, e) => doc_values::numeric_value(data, e, doc)?,
+            Column::Sorted(data, e) => doc_values::sorted_numeric_values(data, e, doc)?
                 .first()
                 .copied(),
         })
@@ -209,12 +249,13 @@ fn term_run(
         return Ok(None);
     };
     let (start, end) = key_range(keys, sort, run, ord, ord)?;
-    if start != first || end <= start {
+    if end <= start || keys.holder(start) != first {
         return Ok(None);
     }
-    // The term's postings inside `run` start at `start`, hold `end - 1`
-    // and stop there.
-    let last = end - 1;
+    // The term's postings inside `run` start at `start` (its first parent
+    // in a segment of blocks), hold the last document (or parent) before
+    // `end` and stop there.
+    let last = keys.last_holder(end);
     if last > first && cursor.advance(last)? != last {
         return Ok(None);
     }
@@ -247,35 +288,60 @@ fn long_run(
 }
 
 /// What [`sort_prefix_run`] found.
-pub(crate) struct PrefixRun {
-    /// The documents `min..max` the clauses keep, `None` when none.
+pub(crate) struct PrefixRun<'r> {
+    /// The documents `min..max` the clauses keep, `None` when none. In a
+    /// segment of document blocks the run holds whole blocks and the
+    /// clauses keep only its documents in `parents`.
     pub(crate) run: Option<(i32, i32)>,
     /// The positions of the clauses the run stands for.
     pub(crate) clauses: Vec<usize>,
+    /// A segment of document blocks' parent documents.
+    pub(crate) parents: Option<&'r FixedBitSet>,
+    /// How many leading sort keys the clauses pin to one value each, with
+    /// the run in the order of the key after them: inside the run the
+    /// documents come in the order of the index sort's keys from there on.
+    pub(crate) pinned: usize,
 }
 
 /// The run of doc ids that the clauses at `clauses` (required, scored or
 /// not alike) keep together on the segment's leading sort keys, with the
 /// positions of the clauses it stands for: `Some((None, _))` when they keep
 /// no document. `None` when no clause bounds the first sort key, or the
-/// segment is unsorted or has document blocks (where only the parents
-/// follow the sort).
-pub(crate) fn sort_prefix_run(
-    ctx: &LeafContext<'_>,
+/// segment is unsorted, or has document blocks without a parent field.
+///
+/// In a segment of document blocks only the parents follow the sort, each
+/// after its children; a key whose field only the parents hold then orders
+/// the blocks, and the run is of whole blocks, the clauses matching its
+/// parents.
+pub(crate) fn sort_prefix_run<'r>(
+    ctx: &LeafContext<'r>,
     clauses: &[&Clause],
-) -> Result<Option<PrefixRun>> {
+) -> Result<Option<PrefixRun<'r>>> {
     let Some(reader) = ctx.reader else {
         return Ok(None);
     };
-    if reader.has_blocks() || reader.simpletext.is_some() {
+    if reader.simpletext.is_some() {
         return Ok(None);
     }
+    let blocks = if reader.has_blocks() {
+        match reader.block_parents()? {
+            Some(b) => Some(b),
+            None => return Ok(None),
+        }
+    } else {
+        None
+    };
+    let parents = blocks.map(|b| &b.parents);
     let Some(sort) = reader.index_sort() else {
         return Ok(None);
     };
     let mut run = (0, reader.max_doc);
     let mut used: Vec<usize> = Vec::new();
+    let mut pinned = 0;
     for (k, key) in sort.iter().enumerate() {
+        if blocks.is_some_and(|b| !b.keys_on_parents.get(k).copied().unwrap_or(false)) {
+            break;
+        }
         let Some((i, b)) = clauses
             .iter()
             .enumerate()
@@ -284,9 +350,9 @@ pub(crate) fn sort_prefix_run(
         else {
             break;
         };
-        let keys = Keys::open(reader, &key.field);
+        let keys = Keys::open(reader, &key.field, parents);
         let found = match (&b, &keys) {
-            (Bound::Term(t), _) if k == 0 => sorted_term_run(ctx, t)?,
+            (Bound::Term(t), _) if k == 0 && parents.is_none() => sorted_term_run(ctx, t)?,
             (Bound::Term(t), Some(keys)) => term_run(ctx, keys, key, t, run)?,
             (Bound::Longs(l, u), Some(keys)) => long_run(keys, key, run, *l, *u)?,
             (_, None) => None,
@@ -299,6 +365,8 @@ pub(crate) fn sort_prefix_run(
             return Ok(Some(PrefixRun {
                 run: None,
                 clauses: used,
+                parents,
+                pinned: sort.len(),
             }));
         };
         run = found;
@@ -309,6 +377,7 @@ pub(crate) fn sort_prefix_run(
         if !b.is_point() || keys.is_none() {
             break;
         }
+        pinned = k + 1;
     }
     if used.is_empty() {
         return Ok(None);
@@ -316,5 +385,34 @@ pub(crate) fn sort_prefix_run(
     Ok(Some(PrefixRun {
         run: Some(run),
         clauses: used,
+        parents,
+        pinned,
     }))
+}
+
+/// The required clauses of `q`, those of its required booleans' included:
+/// every document `q` matches matches each of them.
+fn required_clauses<'q>(q: &'q BooleanQuery, out: &mut Vec<&'q Clause>) {
+    for c in q.must.iter().chain(&q.filter) {
+        match c {
+            Clause::Boolean(b) => required_clauses(b, out),
+            c => out.push(c),
+        }
+    }
+}
+
+/// How many of the segment's leading index sort keys `q`'s required clauses
+/// pin to one value each such that its matches come in the order of the
+/// sort's keys after them (`0` when none): a search sorted by those keys
+/// sees its matches in its sort's order, as `TopFieldCollector` does a
+/// search whose sort begins the index sort, and can end the segment at the
+/// first one that is not competitive.
+///
+/// # Errors
+/// A corrupt postings or doc-values region.
+pub fn pinned_sort_keys(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<usize> {
+    let ctx = LeafContext::for_spans(seg);
+    let mut clauses = Vec::new();
+    required_clauses(q, &mut clauses);
+    Ok(sort_prefix_run(&ctx, &clauses)?.map_or(0, |r| r.pinned))
 }

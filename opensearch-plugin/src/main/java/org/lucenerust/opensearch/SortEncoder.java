@@ -140,10 +140,10 @@ public final class SortEncoder {
     }
 
     /**
-     * {@link #encode(Sort, FieldDoc, boolean, int[][], int, boolean)} with, per segment, whether
-     * the sort is a prefix of its index sort ({@link #indexSorted}; null for none): such a
-     * segment's documents come in the sort's order, and the collector ends it at the first one that
-     * does not compete, as {@code TopFieldCollector} does.
+     * {@link #encode(Sort, FieldDoc, boolean, int[][], int, boolean)} with, per segment, where the
+     * sort sits in its index sort ({@link #indexSorted}; null for none): where the segment's
+     * documents come in the sort's order, the collector ends it at the first one that does not
+     * compete, as {@code TopFieldCollector} does.
      */
     @SuppressWarnings("deprecation")
     public static Encoded encode(
@@ -153,7 +153,7 @@ public final class SortEncoder {
         int[][] slices,
         int terminateAfter,
         boolean countSegments,
-        boolean[] indexSorted
+        byte[] indexSorted
     ) {
         SortField[] fields = sort.getSort();
         if (fields.length == 0 || fields.length > MAX_KEYS) {
@@ -267,9 +267,7 @@ public final class SortEncoder {
         NativeAggregations.writeSlices(out, slices);
         if (indexSorted != null) {
             writeInt(out, indexSorted.length);
-            for (boolean b : indexSorted) {
-                out.write(b ? 1 : 0);
-            }
+            out.write(indexSorted, 0, indexSorted.length);
         }
         return new Encoded(out.toByteArray(), null);
     }
@@ -508,22 +506,31 @@ public final class SortEncoder {
     }
 
     /**
-     * Per leaf of {@code reader}, whether {@code sort} is a prefix of the leaf's index sort --
-     * {@code TopFieldCollector.canEarlyTerminateOnPrefix}, field by field with {@link
-     * SortField#equals} -- or null when no leaf's is.
+     * Per leaf of {@code reader}, where {@code sort} sits in the leaf's index sort: {@code 1} when
+     * it is a prefix of it -- {@code TopFieldCollector.canEarlyTerminateOnPrefix}, field by field
+     * with {@link SortField#equals} -- {@code 1 + p} when it is the index sort's keys from the
+     * {@code p}th on, {@code 0} when neither; null when no leaf's is either. A search whose
+     * required clauses pin the first {@code p} keys to one value each sees its matches in its
+     * sort's order there too, which the native side checks per segment.
      */
-    static boolean[] indexSorted(IndexReader reader, Sort sort) {
+    static byte[] indexSorted(IndexReader reader, Sort sort) {
         List<LeafReaderContext> leaves = reader.leaves();
-        boolean[] out = new boolean[leaves.size()];
+        byte[] out = new byte[leaves.size()];
         boolean any = false;
-        SortField[] search = sort.getSort();
+        List<SortField> search = Arrays.asList(sort.getSort());
         for (int i = 0; i < out.length; i++) {
             Sort index = leaves.get(i).reader().getMetaData().sort();
-            if (index == null || search.length > index.getSort().length) {
+            if (index == null) {
                 continue;
             }
-            out[i] = Arrays.asList(search).equals(Arrays.asList(index.getSort()).subList(0, search.length));
-            any |= out[i];
+            List<SortField> keys = Arrays.asList(index.getSort());
+            for (int p = 0; p + search.size() <= keys.size() && p < Byte.MAX_VALUE; p++) {
+                if (search.equals(keys.subList(p, p + search.size()))) {
+                    out[i] = (byte) (p + 1);
+                    any = true;
+                    break;
+                }
+            }
         }
         return any ? out : null;
     }

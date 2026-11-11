@@ -105,6 +105,9 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_MAX_WINDOW_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
+    ("NeuralSparseTwoPhaseProcessor.java", "DEFAULT_BASE_QUERY_SIZE"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
+    ("NeuralSparseTwoPhaseProcessor.java", "MAX_WINDOWS_SIZE_LOWER_BOUND"): "two-phase search request rewrite parameter, applied in Java before the query reaches Rust",
     ("KnnFieldConfig.java", "DEFAULT_M"): "k-NN's mapping default, resolved into the field's format attribute",
     ("KnnFieldConfig.java", "DEFAULT_EF_CONSTRUCTION"): "k-NN's mapping default, resolved into the field's format attribute",
     ("KnnFieldConfig.java", "DEFAULT_CLUSTER_SIZE"): "the ivf mapping's default, resolved into the field's format attribute",
