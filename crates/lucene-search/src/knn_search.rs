@@ -462,8 +462,11 @@ impl lucene_util::group_top::GroupItem for MergedHit {
 /// the best `k` groups of `group_by`'s field, global doc ids, best first.
 /// Each segment's walk collects by group, keeping `candidates` groups, so
 /// a group whose documents all score alike cannot crowd the others out of
-/// the beam; the segments' groups are merged by their values. Realtime
-/// buffers are not searched, as a nested search searches none.
+/// the beam; the segments' groups are merged by their values. Keeping
+/// several documents a group, the walks look for each group's best alone,
+/// and every document of the best `k` groups is then scored in every
+/// segment. Realtime buffers are not searched, as a nested search searches
+/// none.
 ///
 /// # Errors
 /// As [`knn_top_hits`], and the group field's: doc values of a type
@@ -479,7 +482,10 @@ pub fn knn_top_hits_grouped(
     group_by: &KnnGroupBy,
     ivf_nprobes: usize,
 ) -> Result<Vec<ScoreDoc>> {
-    use crate::top_field::GroupColumn;
+    use crate::top_field::{CollapseValue, GroupColumn};
+    use lucene_util::group_top::GroupTop;
+    use std::collections::HashMap;
+    use vector_query::{GroupFill, GroupMembers};
     let filters = match filter {
         Some(f) => Some(vector_query::filter_bitsets(segments, f)?),
         None => None,
@@ -534,57 +540,111 @@ pub fn knn_top_hits_grouped(
             }
         })
         .collect();
-    let groups: Vec<Option<vector_query::SegmentGroups<'_>>> = leaves
-        .iter()
-        .zip(&ids)
-        .map(|(&i, id)| {
-            Some(vector_query::SegmentGroups {
-                group: &**id,
-                groups: columns[i].as_ref().map_or(1, GroupColumn::groups).max(1),
-                per_group,
+    let docs_total = docs;
+    // Each leaf's groups as `per_group` and `fill` set them, searched, and
+    // the segments' hits merged by their groups' values: best first, so a
+    // group dropped by the merge has nothing left that could bring it back.
+    let mut values: Vec<CollapseValue> = Vec::new();
+    let run = |per_group: usize,
+               fills: Option<&[(GroupMembers<'_>, Vec<i32>)]>,
+               values: &mut Vec<CollapseValue>|
+     -> Result<GroupTop<MergedHit>> {
+        let groups: Vec<Option<vector_query::SegmentGroups<'_>>> = leaves
+            .iter()
+            .enumerate()
+            .map(|(at, &i)| {
+                Some(vector_query::SegmentGroups {
+                    group: &*ids[at],
+                    groups: columns[i].as_ref().map_or(1, GroupColumn::groups).max(1),
+                    per_group,
+                    fill: fills.map(|f| GroupFill {
+                        members: f[at].0,
+                        groups: &f[at].1,
+                    }),
+                })
             })
-        })
-        .collect();
-    let per_segment = match target {
-        KnnTarget::Float(t) => {
-            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
-                .with_ivf_nprobes(ivf_nprobes);
-            vector_query::search_grouped_float_knn_per_segment(&knn, &groups, &q)?
-        }
-        KnnTarget::Byte(t) => {
-            let q = KnnByteVectorQuery::new(field, t.clone(), candidates)?;
-            vector_query::search_grouped_byte_knn_per_segment(&knn, &groups, &q)?
-        }
-    };
-    drop(groups);
-    drop(ids);
-    // The segments' hits by their groups' values, best first, so a group
-    // dropped by the merge has nothing left that could bring it back.
-    let mut values: std::collections::HashMap<crate::top_field::CollapseValue, i32> =
-        std::collections::HashMap::new();
-    let mut all: Vec<(i32, MergedHit)> = Vec::new();
-    for ((&i, seg), hits) in leaves.iter().zip(&knn).zip(per_segment) {
-        let Some(column) = columns[i].as_mut() else {
-            continue;
+            .collect();
+        let per_segment = match target {
+            KnnTarget::Float(t) => {
+                let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
+                    .with_ivf_nprobes(ivf_nprobes);
+                vector_query::search_grouped_float_knn_per_segment(&knn, &groups, &q)?
+            }
+            KnnTarget::Byte(t) => {
+                let q = KnnByteVectorQuery::new(field, t.clone(), candidates)?;
+                vector_query::search_grouped_byte_knn_per_segment(&knn, &groups, &q)?
+            }
         };
-        for h in hits {
-            let value = column.value(column.id(h.doc_id))?;
-            let next = i32::try_from(values.len()).unwrap_or(i32::MAX);
-            let g = *values.entry(value).or_insert(next);
-            all.push((
-                g,
-                MergedHit(ScoreDoc {
-                    doc_id: h.doc_id.saturating_add(seg.doc_base),
-                    score: h.score,
-                }),
-            ));
+        let mut numbered: HashMap<CollapseValue, i32> = HashMap::new();
+        values.clear();
+        let mut all: Vec<(i32, MergedHit)> = Vec::new();
+        for ((&i, seg), hits) in leaves.iter().zip(&knn).zip(per_segment) {
+            let Some(column) = columns[i].as_ref() else {
+                continue;
+            };
+            for h in hits {
+                let value = column.value(column.id(h.doc_id))?;
+                let next = i32::try_from(values.len()).unwrap_or(i32::MAX);
+                let g = *numbered.entry(value).or_insert_with_key(|v| {
+                    values.push(v.clone());
+                    next
+                });
+                all.push((
+                    g,
+                    MergedHit(ScoreDoc {
+                        doc_id: h.doc_id.saturating_add(seg.doc_base),
+                        score: h.score,
+                    }),
+                ));
+            }
+        }
+        all.sort_unstable_by_key(|x| std::cmp::Reverse(x.1));
+        let mut top = GroupTop::new(k, per_group);
+        for (g, h) in all {
+            top.offer(g, h);
+        }
+        Ok(top)
+    };
+    // Several documents a group: the best groups found by their best
+    // document first, then every document of those groups scored in every
+    // segment. A walk bounded by the worst document the groups hold ends
+    // far later than one bounded by their best, and the groups' members
+    // are few next to the index's; when they are not (more than an eighth
+    // of it), the walk keeps every group's documents itself.
+    let leaf_columns = leaves.iter().all(|&i| columns[i].is_some());
+    if per_group > 1 && leaf_columns {
+        let found = run(1, None, &mut values)?;
+        let best: Vec<CollapseValue> = found
+            .into_groups()
+            .into_iter()
+            .filter_map(|(g, _)| usize::try_from(g).ok().and_then(|g| values.get(g)).cloned())
+            .collect();
+        let mut fills: Vec<(GroupMembers<'_>, Vec<i32>)> = Vec::with_capacity(leaves.len()); // alloc-ok: one per leaf
+        let mut members = 0usize;
+        for &i in &leaves {
+            let Some(column) = columns[i].as_ref() else {
+                continue;
+            };
+            let mut local = Vec::with_capacity(best.len()); // alloc-ok: the k groups
+            for v in &best {
+                if let Some(id) = column.id_of(v)? {
+                    local.push(id);
+                }
+            }
+            if let Some(m) = column.members() {
+                members = local
+                    .iter()
+                    .map(|&g| m.of(g).len())
+                    .fold(members, usize::saturating_add);
+                fills.push((m, local));
+            }
+        }
+        if fills.len() == leaves.len() && members <= docs_total / 8 {
+            let top = run(per_group, Some(&fills), &mut values)?;
+            return Ok(top.into_sorted().into_iter().map(|h| h.0).collect());
         }
     }
-    all.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-    let mut top = lucene_util::group_top::GroupTop::new(k, per_group);
-    for (g, h) in all {
-        top.offer(g, h);
-    }
+    let top = run(per_group, None, &mut values)?;
     Ok(top.into_sorted().into_iter().map(|h| h.0).collect())
 }
 
