@@ -398,6 +398,20 @@ impl TermsOrder {
     }
 }
 
+/// Per-document values a node reads in place of a field's column: a
+/// script's (OpenSearch's `ValuesSource.Numeric.Script`).
+pub trait ScriptValuesSource: Send + Sync + std::fmt::Debug {
+    /// The values on one segment.
+    fn open<'a>(&self, reader: &'a SegmentReader) -> Result<Box<dyn ScriptValues + 'a>>;
+}
+
+/// A [`ScriptValuesSource`] on one segment.
+pub trait ScriptValues {
+    /// Appends `doc`'s values to `out`, ascending, in the node's value
+    /// kind's encoding (none: the document has no value).
+    fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()>;
+}
+
 /// One aggregation of a request, with its sub-aggregations.
 #[derive(Debug, Clone)]
 pub enum AggNode {
@@ -412,6 +426,9 @@ pub enum AggNode {
         source: Source,
         /// The parts of [`MetricState`] the caller reads (`aggs::NEED_*`).
         needs: u8,
+        /// A script's values in place of `field`'s (`ValuesSource.Numeric.Script`),
+        /// in `kind`'s encoding.
+        script: Option<Arc<dyn ScriptValuesSource>>,
     },
     /// `percentiles` and `percentile_ranks` over a t-digest
     /// (`TDigestPercentilesAggregator`): each owning bucket's
@@ -1552,6 +1569,8 @@ enum Col<'a> {
     /// The segment's matches and their scores, by document, and its first
     /// document's global number (`docBase`).
     Scores(&'a [i32], &'a [f32], i32),
+    /// A script's values.
+    Script(Box<dyn ScriptValues + 'a>),
     None,
 }
 
@@ -1686,6 +1705,7 @@ impl Leaf<'_> {
                 }
             }
             Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
+            Col::Script(s) => s.values(doc, &mut self.buf)?,
             Col::Filters(_) | Col::Scores(..) | Col::None => {}
         }
         if self.buf.is_empty() {
@@ -1719,6 +1739,10 @@ fn open_leaf<'a>(
 ) -> Result<Leaf<'a>> {
     let reader = view.reader;
     let col = match node {
+        AggNode::Metric {
+            script: Some(script),
+            ..
+        } => Col::Script(script.open(reader)?),
         AggNode::Metric {
             field,
             kind,
@@ -3435,6 +3459,10 @@ struct CountInBuckets<'b> {
     end: i64,
     /// The bucket the last cell `compare` found inside one bucket falls in.
     current: Option<usize>,
+    /// The bucket the last visited value fell in, with its bounds
+    /// `from..to`: a crossing leaf of a one-dimensional tree holds its values
+    /// in order, so the next value nearly always falls in the same bucket.
+    last: Option<(usize, i64, i64)>,
     counts: Vec<u64>,
 }
 
@@ -3444,6 +3472,24 @@ impl CountInBuckets<'_> {
             return None;
         }
         self.starts.partition_point(|&s| s <= v).checked_sub(1)
+    }
+
+    /// [`Self::bucket_of`], answered from [`Self::last`] when `v` falls in it.
+    fn value_bucket(&mut self, v: i64) -> Option<usize> {
+        if let Some((b, from, to)) = self.last {
+            if from <= v && v < to {
+                return Some(b);
+            }
+        }
+        let b = self.bucket_of(v)?;
+        let from = *self.starts.get(b)?;
+        let to = self
+            .starts
+            .get(b.wrapping_add(1))
+            .copied()
+            .unwrap_or(self.end);
+        self.last = Some((b, from, to));
+        Some(b)
     }
 
     fn add(&mut self, bucket: Option<usize>, n: u64) {
@@ -3486,12 +3532,18 @@ impl lucene_codecs::points::IntersectVisitor for CountInBuckets<'_> {
     }
 
     fn visit_with_value(&mut self, _doc_id: i32, packed: &[u8]) {
-        let bucket = self.decode.decode(packed).and_then(|v| self.bucket_of(v));
+        let bucket = self
+            .decode
+            .decode(packed)
+            .and_then(|v| self.value_bucket(v));
         self.add(bucket, 1);
     }
 
     fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
-        let bucket = self.decode.decode(packed).and_then(|v| self.bucket_of(v));
+        let bucket = self
+            .decode
+            .decode(packed)
+            .and_then(|v| self.value_bucket(v));
         self.add(bucket, doc_ids.len() as u64);
     }
 }
@@ -3626,6 +3678,7 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
                 starts: &starts,
                 end,
                 current: None,
+                last: None,
                 counts: vec![0; starts.len()],
             };
             reader.count_points(num, &mut v)?;
@@ -4729,6 +4782,7 @@ mod tests {
     #[test]
     fn reads_points_finds_a_points_metric() {
         let metric = |source| AggNode::Metric {
+            script: None,
             missing: None,
             field: "n".into(),
             kind: ValueKind::Long,
@@ -5022,6 +5076,7 @@ mod tests {
 
     fn metric(field: &str, kind: ValueKind) -> AggNode {
         AggNode::Metric {
+            script: None,
             missing: None,
             field: field.to_string(),
             kind,
@@ -5780,6 +5835,7 @@ mod tests {
         ];
         fn only(field: &str, needs: u8) -> AggNode {
             AggNode::Metric {
+                script: None,
                 missing: None,
                 field: field.to_string(),
                 kind: ValueKind::Long,
@@ -6753,6 +6809,7 @@ mod tests {
         }];
         let _ = run(&reader, &all(), &numeric, &whole(&reader));
         assert!(AggNode::Metric {
+            script: None,
             missing: None,
             field: "x".into(),
             kind: ValueKind::Long,
@@ -6802,6 +6859,7 @@ mod tests {
                 )
                 .unwrap();
                 let node = AggNode::Metric {
+                    script: None,
                     missing: None,
                     field: field.to_string(),
                     kind,

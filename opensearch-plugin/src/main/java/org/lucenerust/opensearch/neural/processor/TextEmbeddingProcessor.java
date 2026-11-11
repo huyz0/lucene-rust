@@ -1,0 +1,108 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.processor;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import org.opensearch.action.get.GetAction;
+import org.opensearch.action.get.GetRequest;
+import org.opensearch.action.get.MultiGetAction;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.common.util.CollectionUtils;
+import org.opensearch.env.Environment;
+import org.opensearch.ingest.IngestDocument;
+import org.opensearch.ingest.IngestDocumentWrapper;
+import org.lucenerust.opensearch.neural.ml.MLCommonsClientAccessor;
+import org.lucenerust.opensearch.neural.processor.optimization.TextEmbeddingInferenceFilter;
+import org.opensearch.transport.client.OpenSearchClient;
+import org.lucenerust.opensearch.neural.stats.events.EventStatsManager;
+import org.lucenerust.opensearch.neural.stats.events.EventStatName;
+import static org.lucenerust.opensearch.neural.constants.DocFieldNames.ID_FIELD;
+import static org.lucenerust.opensearch.neural.constants.DocFieldNames.INDEX_FIELD;
+
+/**
+ * This processor is used for user input data text embedding processing, model_id can be used to indicate which model user use,
+ * and field_map can be used to indicate which fields needs text embedding and the corresponding keys for the text embedding results.
+ */
+public final class TextEmbeddingProcessor extends InferenceProcessor {
+    private static final org.apache.logging.log4j.Logger log = org.apache.logging.log4j.LogManager.getLogger(TextEmbeddingProcessor.class);
+    public static final String TYPE = "text_embedding";
+    public static final String LIST_TYPE_NESTED_MAP_KEY = "knn";
+    private final OpenSearchClient openSearchClient;
+    private final boolean skipExisting;
+    private final TextEmbeddingInferenceFilter textEmbeddingInferenceFilter;
+
+    public TextEmbeddingProcessor(String tag, String description, int batchSize, String modelId, Map<String, Object> fieldMap, boolean skipExisting, TextEmbeddingInferenceFilter textEmbeddingInferenceFilter, OpenSearchClient openSearchClient, MLCommonsClientAccessor clientAccessor, Environment environment, ClusterService clusterService) {
+        super(tag, description, batchSize, TYPE, LIST_TYPE_NESTED_MAP_KEY, modelId, fieldMap, clientAccessor, environment, clusterService);
+        this.skipExisting = skipExisting;
+        this.textEmbeddingInferenceFilter = textEmbeddingInferenceFilter;
+        this.openSearchClient = openSearchClient;
+    }
+
+    @Override
+    public void doExecute(IngestDocument ingestDocument, Map<String, Object> processMap, List<String> inferenceList, BiConsumer<IngestDocument, Exception> handler) {
+        EventStatsManager.increment(EventStatName.TEXT_EMBEDDING_PROCESSOR_EXECUTIONS);
+        // skip existing flag is turned off. Call model inference without filtering
+        if (skipExisting == false) {
+            generateAndSetInference(ingestDocument, processMap, inferenceList, handler);
+            return;
+        }
+        EventStatsManager.increment(EventStatName.SKIP_EXISTING_EXECUTIONS);
+        // if skipExisting flag is turned on, eligible inference texts will be compared and filtered after embeddings are copied
+        Object index = ingestDocument.getSourceAndMetadata().get(INDEX_FIELD);
+        Object id = ingestDocument.getSourceAndMetadata().get(ID_FIELD);
+        if (Objects.isNull(index) || Objects.isNull(id)) {
+            generateAndSetInference(ingestDocument, processMap, inferenceList, handler);
+            return;
+        }
+        openSearchClient.execute(GetAction.INSTANCE, new GetRequest(index.toString(), id.toString()), ActionListener.wrap(response -> reuseOrGenerateEmbedding(response, ingestDocument, processMap, inferenceList, handler, textEmbeddingInferenceFilter), e -> {
+            handler.accept(null, e);
+        }));
+    }
+
+    @Override
+    public void doBatchExecute(List<String> inferenceList, Consumer<List<?>> handler, Consumer<Exception> onException) {
+        // Set PASSAGE content type for document ingestion.
+        // For asymmetric models: MLCommonsClientAccessor will use this to create AsymmetricTextEmbeddingParameters
+        // For symmetric models: MLCommonsClientAccessor will ignore this and pass null parameters
+        // This avoids an extra model lookup here since MLCommonsClientAccessor caches model asymmetry status
+        mlCommonsClientAccessor.inferenceSentences(TextInferenceRequest.builder().modelId(this.modelId).inputTexts(inferenceList).embeddingContentType(EmbeddingContentType.PASSAGE).build(), ActionListener.wrap(handler::accept, onException));
+    }
+
+    @Override
+    public void subBatchExecute(List<IngestDocumentWrapper> ingestDocumentWrappers, Consumer<List<IngestDocumentWrapper>> handler) {
+        try {
+            EventStatsManager.increment(EventStatName.TEXT_EMBEDDING_PROCESSOR_EXECUTIONS);
+            if (CollectionUtils.isEmpty(ingestDocumentWrappers)) {
+                handler.accept(ingestDocumentWrappers);
+                return;
+            }
+            List<DataForInference> dataForInferences = getDataForInference(ingestDocumentWrappers);
+            List<String> inferenceList = constructInferenceTexts(dataForInferences);
+            if (inferenceList.isEmpty()) {
+                handler.accept(ingestDocumentWrappers);
+                return;
+            }
+            // skip existing flag is turned off. Call doSubBatchExecute without filtering
+            if (skipExisting == false) {
+                doSubBatchExecute(ingestDocumentWrappers, inferenceList, dataForInferences, handler);
+                return;
+            }
+            // skipExisting flag is turned on, eligible inference texts in dataForInferences will be compared and filtered after embeddings
+            // are copied
+            EventStatsManager.increment(EventStatName.SKIP_EXISTING_EXECUTIONS);
+            openSearchClient.execute(MultiGetAction.INSTANCE, buildMultiGetRequest(dataForInferences), ActionListener.wrap(response -> reuseOrGenerateEmbedding(response, ingestDocumentWrappers, inferenceList, dataForInferences, handler, textEmbeddingInferenceFilter), e -> {
+                // When exception is thrown in for MultiGetAction, set exception to all ingestDocumentWrappers
+                updateWithExceptions(getIngestDocumentWrappers(dataForInferences), handler, e);
+            }));
+        } catch (Exception e) {
+            updateWithExceptions(ingestDocumentWrappers, handler, e);
+        }
+    }
+}

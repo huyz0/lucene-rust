@@ -9,7 +9,7 @@
 use lucene_codecs::field_infos::{
     FieldInfo, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
-use lucene_codecs::per_field_knn_vectors::{KnnVectorsFormat, IVF_QUANTIZERS};
+use lucene_codecs::per_field_knn_vectors::{KnnVectorsFormat, IVF_AUTO_QUANTIZER, IVF_QUANTIZERS};
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::buffered_updates::Term;
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
@@ -249,7 +249,7 @@ fn files_with(dir: &std::path::Path, ext: &str) -> Vec<std::path::PathBuf> {
 
 #[test]
 fn every_quantizer_writes_codes_and_returns_exact_scores() {
-    for name in IVF_QUANTIZERS {
+    for name in IVF_QUANTIZERS.iter().filter(|&&n| n != "auto") {
         let tmp = TempDir::new(&format!("knn-hnswq-{name}"));
         let dir = FsDirectory::open(&tmp);
         build(&dir, quantized(name));
@@ -384,6 +384,7 @@ fn a_merge_encodes_the_merged_vectors() {
 #[test]
 fn bad_parameters_are_refused() {
     assert!(KnnVectorsFormat::hnsw_quantized(IVF_QUANTIZERS.len() as u8, 16, 100).is_err());
+    assert!(KnnVectorsFormat::hnsw_quantized(IVF_AUTO_QUANTIZER, 16, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_quantized(4, 0, 100).is_err());
     assert!(KnnVectorsFormat::hnsw_quantized(4, 16, 0).is_err());
 }

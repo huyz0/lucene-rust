@@ -237,7 +237,8 @@ fn every_quantizer_writes_its_codes_and_keeps_exact_scores() {
                 .find(|f| f.name == "v")
                 .unwrap();
             let index = seg.ivf_for(field.number).unwrap().expect("an IVF index");
-            let want = if name.starts_with("erq") {
+            // A field this small gets auto's first candidate, erq2.
+            let want = if name.starts_with("erq") || *name == "auto" {
                 "erq"
             } else if *name == "rabitq" {
                 "rot-osq"
@@ -281,7 +282,7 @@ fn a_merge_requantizes_with_the_writers_quantizer() {
 fn bad_ivf_parameters_are_refused() {
     assert!(KnnVectorsFormat::ivf(8, 0).is_err());
     assert!(KnnVectorsFormat::ivf(128, 4).is_err());
-    assert!(KnnVectorsFormat::ivf_quantized(128, 0, 12).is_err());
+    assert!(KnnVectorsFormat::ivf_quantized(128, 0, 13).is_err());
     let tmp = TempDir::new("knn-ivf-bad");
     let dir = FsDirectory::open(&tmp);
     let w = ConcurrentIndexWriter::new(

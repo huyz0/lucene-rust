@@ -37,6 +37,7 @@ mod jvm_invert;
 mod jvm_knn;
 mod jvm_knn_painless;
 mod jvm_knn_score;
+mod jvm_max_sim;
 mod jvm_nodes;
 mod jvm_painless_score;
 mod jvm_queries;

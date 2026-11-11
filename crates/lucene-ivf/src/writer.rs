@@ -93,7 +93,9 @@ pub struct IvfParams {
     /// [`crate::DEFAULT_PROBE_FRACTION`] and
     /// [`crate::DEFAULT_RERANK_MULTIPLE`]. Calibration searches a sample of
     /// 64 of the field's own vectors, a small fraction of the clustering's
-    /// cost.
+    /// cost. A field coded by [`crate::AutoQuantizer`] still compares its
+    /// candidates at [`DEFAULT_CALIBRATION_RECALL`] when this is `None`,
+    /// and records no calibration.
     pub calibration_recall: Option<f32>,
     /// How [`crate::merge_field`] clusters a merged segment: afresh, or from
     /// the clusters of its largest source.
@@ -106,6 +108,11 @@ pub struct IvfParams {
     /// partitions are clustered together with their neighbours, in runs of
     /// at least this many vectors.
     pub partition_min_vectors: usize,
+    /// For a field whose quantizer is picked from candidates
+    /// ([`crate::AutoQuantizer`]): the fewest bytes a reranked vector is
+    /// counted as reading, a disk page by default; a search of vectors held
+    /// in memory reads only the vector's own bytes (`0`).
+    pub auto_rerank_read_bytes: usize,
 }
 
 impl Default for IvfParams {
@@ -120,6 +127,7 @@ impl Default for IvfParams {
             merge_clustering: MergeClustering::default(),
             routing_tree_min: routing::TREE_MIN_CLUSTERS,
             partition_min_vectors: 20_000,
+            auto_rerank_read_bytes: 4096,
         }
     }
 }
@@ -320,6 +328,65 @@ fn write_count(out: &mut Vec<u8>, v: usize) -> Result<()> {
         .map_err(|_| Error::IllegalArgument(format!("count {v} does not fit an int")))?;
     out.write_vint(v);
     Ok(())
+}
+
+/// A candidate quantizer an [`crate::AutoQuantizer`] field was encoded
+/// with: its postings, what calibration found and the bytes per query.
+struct Candidate {
+    quantizer: Box<dyn lucene_vector_quant::Quantizer>,
+    postings: Vec<u8>,
+    evaluation: calibrate::Evaluation,
+    cost: f64,
+}
+
+/// A field's `.ivp` section: each cluster's entries as slots, then their
+/// codes against the cluster's centroid as one `quantizer` block. `flat`
+/// lists every entry as (cluster, slot) in cluster order, `order` each
+/// slot's vector.
+// ARITH: offsets are within the codes buffer, sized for every entry.
+#[allow(clippy::arithmetic_side_effects)]
+fn encode_postings(
+    quantizer: &dyn lucene_vector_quant::Quantizer,
+    centroids: &[f32],
+    dim: usize,
+    entries: &[Vec<u32>],
+    flat: &[(u32, u32)],
+    order: &[u32],
+    vectors: &[f32],
+) -> Vec<u8> {
+    let code_len = quantizer.code_len();
+    let mut codes = vec![0u8; flat.len() * code_len];
+    if code_len > 0 {
+        // Each centroid as the quantizer encodes against it, mapped once
+        // per cluster rather than once per vector.
+        let prepared: Vec<Option<Vec<f32>>> = centroids
+            .par_chunks(dim)
+            .map(|c| quantizer.prepare_centroid(c))
+            .collect();
+        codes
+            .par_chunks_mut(code_len)
+            .zip(flat.par_iter())
+            .for_each(|(out, &(c, slot))| {
+                let vector = kmeans::row(vectors, dim, order[slot as usize] as usize);
+                match &prepared[c as usize] {
+                    Some(p) => quantizer.encode_prepared(vector, p, out),
+                    None => quantizer.encode(vector, kmeans::row(centroids, dim, c as usize), out),
+                }
+            });
+    }
+    let mut postings = Vec::new();
+    let mut at = 0usize;
+    let mut block = Vec::new();
+    for e in entries {
+        for slot in e {
+            postings.write_bytes(&slot.to_le_bytes());
+        }
+        block.clear();
+        quantizer.write_block(&codes[at * code_len..(at + e.len()) * code_len], &mut block);
+        postings.write_bytes(&block);
+        at += e.len();
+    }
+    postings
 }
 
 impl IvfWriter {
@@ -544,9 +611,6 @@ impl IvfWriter {
         for i in kmeans::sample_indices(n, params.training_sample, &mut rng) {
             sample.extend_from_slice(kmeans::row(&vectors, dim, i));
         }
-        let quantizer = factory.train(dim, field.similarity, &sample)?;
-        let code_len = quantizer.code_len();
-
         // Slots: vectors ordered by cluster, then by document (the input is
         // in document order, and the counting sort is stable).
         let mut sizes = vec![0usize; nlist];
@@ -603,43 +667,117 @@ impl IvfWriter {
             .enumerate()
             .flat_map(|(c, e)| e.iter().map(move |&slot| (c as u32, slot)))
             .collect();
-        let mut codes = vec![0u8; flat.len() * code_len];
-        if code_len > 0 {
-            // Each centroid as the quantizer encodes against it, mapped once
-            // per cluster rather than once per vector.
-            let prepared: Vec<Option<Vec<f32>>> = clustering
-                .centroids
-                .par_chunks(dim)
-                .map(|c| quantizer.prepare_centroid(c))
-                .collect();
-            codes
-                .par_chunks_mut(code_len)
-                .zip(flat.par_iter())
-                .for_each(|(out, &(c, slot))| {
-                    let vector = kmeans::row(&vectors, dim, order[slot as usize] as usize);
-                    match &prepared[c as usize] {
-                        Some(p) => quantizer.encode_prepared(vector, p, out),
-                        None => quantizer.encode(
-                            vector,
-                            kmeans::row(&clustering.centroids, dim, c as usize),
-                            out,
-                        ),
+        let tree = (nlist >= params.routing_tree_min.max(2))
+            .then(|| routing::tree_parents(&clustering.centroids, dim, field.similarity));
+        let sizes_of_entries: Vec<usize> = entries.iter().map(Vec::len).collect();
+        let slot_docs: Vec<i32> = order.iter().map(|&i| i as i32).collect();
+        let vector_cost = vector_bytes.max(params.auto_rerank_read_bytes);
+        let target = params
+            .calibration_recall
+            .unwrap_or(DEFAULT_CALIBRATION_RECALL);
+        let calibration_seed = params.kmeans.seed ^ 0xca1_1b8a_7e5e_ed00;
+        // The quantizer, its postings and, when it was picked by calibrating
+        // every candidate, the chosen one's calibration.
+        let (quantizer, postings, picked) = match factory.candidates() {
+            Some(candidates) if n >= crate::auto::AUTO_MIN_VECTORS && candidates.len() > 1 => {
+                let truths =
+                    calibrate::Truths::sample(&vectors, dim, field.similarity, calibration_seed);
+                let mut best: Option<Candidate> = None;
+                for candidate in candidates {
+                    let quantizer = candidate.train(dim, field.similarity, &sample)?;
+                    let code_len = quantizer.code_len();
+                    let postings = encode_postings(
+                        quantizer.as_ref(),
+                        &clustering.centroids,
+                        dim,
+                        &entries,
+                        &flat,
+                        &order,
+                        &vectors,
+                    );
+                    let mut probe = IvfField::in_memory(
+                        field.number,
+                        field.similarity,
+                        dim,
+                        quantizer,
+                        clustering.centroids.clone(),
+                        &sizes_of_entries,
+                        0,
+                        slot_docs.clone(),
+                    )?;
+                    probe.set_tree(tree.clone());
+                    let Some(e) = truths
+                        .as_ref()
+                        .map(|t| {
+                            calibrate::evaluate(
+                                &probe,
+                                &postings,
+                                &vectors,
+                                &clusters_of,
+                                target,
+                                t,
+                            )
+                        })
+                        .transpose()?
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    let cost = e.scanned * code_len as f64 + e.reranked * vector_cost as f64;
+                    let better = best.as_ref().is_none_or(|b| {
+                        let (b, c) = (&b.evaluation, b.cost);
+                        match (e.reached, b.reached) {
+                            (true, false) => true,
+                            (false, true) => false,
+                            (true, true) => cost < c,
+                            (false, false) => {
+                                e.recall > b.recall || (e.recall == b.recall && cost < c)
+                            }
+                        }
+                    });
+                    if better {
+                        best = Some(Candidate {
+                            quantizer: probe.into_quantizer(),
+                            postings,
+                            evaluation: e,
+                            cost,
+                        });
                     }
-                });
-        }
-
-        let postings_offset = self.postings.len();
-        let mut at = 0usize;
-        let mut block = Vec::new();
-        for e in &entries {
-            for slot in e {
-                self.postings.write_bytes(&slot.to_le_bytes());
+                }
+                match best {
+                    Some(b) => (b.quantizer, b.postings, Some(b.evaluation.calibration)),
+                    None => {
+                        let q = candidates[0].train(dim, field.similarity, &sample)?;
+                        let postings = encode_postings(
+                            q.as_ref(),
+                            &clustering.centroids,
+                            dim,
+                            &entries,
+                            &flat,
+                            &order,
+                            &vectors,
+                        );
+                        (q, postings, None)
+                    }
+                }
             }
-            block.clear();
-            quantizer.write_block(&codes[at * code_len..(at + e.len()) * code_len], &mut block);
-            self.postings.write_bytes(&block);
-            at += e.len();
-        }
+            _ => {
+                let q = factory.train(dim, field.similarity, &sample)?;
+                let postings = encode_postings(
+                    q.as_ref(),
+                    &clustering.centroids,
+                    dim,
+                    &entries,
+                    &flat,
+                    &order,
+                    &vectors,
+                );
+                (q, postings, None)
+            }
+        };
+        let postings_offset = self.postings.len();
+        self.postings.extend_from_slice(&postings);
+        drop(postings);
 
         align4(&mut self.vectors);
         let vectors_offset = self.vectors.len();
@@ -696,20 +834,18 @@ impl IvfWriter {
 
         let name = quantizer.name().to_string();
         let state = quantizer.state();
-        let tree = (nlist >= params.routing_tree_min.max(2))
-            .then(|| routing::tree_parents(&clustering.centroids, dim, field.similarity));
         let calibration = match params.calibration_recall {
+            Some(_) if picked.is_some() => picked,
             Some(target) => {
-                let sizes: Vec<usize> = entries.iter().map(Vec::len).collect();
                 let mut probe = IvfField::in_memory(
                     field.number,
                     field.similarity,
                     dim,
                     quantizer,
                     clustering.centroids.clone(),
-                    &sizes,
+                    &sizes_of_entries,
                     postings_offset,
-                    order.iter().map(|&i| i as i32).collect(),
+                    slot_docs,
                 )?;
                 probe.set_tree(tree.clone());
                 calibrate::calibrate(
@@ -718,7 +854,7 @@ impl IvfWriter {
                     &vectors,
                     &clusters_of,
                     target,
-                    params.kmeans.seed ^ 0xca1_1b8a_7e5e_ed00,
+                    calibration_seed,
                 )?
             }
             None => None,

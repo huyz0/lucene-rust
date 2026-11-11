@@ -354,6 +354,16 @@ public final class NativeAggregations {
         return entries.isEmpty() ? null : new Plan(List.copyOf(entries));
     }
 
+    /** The metric of factory {@code f} over its script's doubles, or null when it is not a native metric. */
+    @SuppressWarnings("unchecked")
+    static Metric scriptMetric(AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
+        Kind kind = kind(f);
+        if (kind == null) {
+            return null;
+        }
+        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind));
+    }
+
     /**
      * The metric of factory {@code f}, or null when it is not one of the native metrics on a
      * numeric or date field. {@code top}: a top-level aggregation, the only kind a {@code min} or

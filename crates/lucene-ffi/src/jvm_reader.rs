@@ -38,7 +38,7 @@ use lucene_search::top_field::{
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
+    count_boolean_query_segment_with, search_boolean_query_multi_segment_maxscore_counting,
     search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
 use lucene_store::Directory;
@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 110;
+pub const JVM_ABI_VERSION: u32 = 120;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -185,6 +185,20 @@ pub(crate) fn rewritten(query: JvmQuery) -> JvmQuery {
                 ..Default::default()
             }),
         },
+    }
+}
+
+/// `r`, a search's result over `sim`'s similarities, or the error a
+/// scripted similarity's scorer kept (a `SimScorer` cannot fail): the
+/// search's error, whatever else it returned.
+pub(crate) fn similarity_checked<T>(
+    sim: Option<&PerFieldSimilarity>,
+    r: Result<T, FfiStatus>,
+) -> Result<T, FfiStatus> {
+    use lucene_search::similarities::Similarity;
+    match sim.and_then(|s| s.take_failure()) {
+        Some(e) => Err(crate::clauses::map_search_error(e)),
+        None => r,
     }
 }
 
@@ -613,10 +627,13 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             handle,
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
-        let (hits, total, lower_bound) = match min_score {
-            Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim)?,
-            None => search(&h, &query, top_n, count_limit, sim)?,
-        };
+        let (hits, total, lower_bound) = similarity_checked(
+            sim,
+            match min_score {
+                Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim),
+                None => search(&h, &query, top_n, count_limit, sim),
+            },
+        )?;
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -651,6 +668,11 @@ const SORT_HALF_FLOAT: u8 = 9;
 /// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
 /// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
 const SORT_UNSIGNED_LONG: u8 = 10;
+/// A Painless `_script` key of type `number`
+/// ([`crate::jvm_painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
+/// only, then the script ([`crate::jvm_painless_score`]'s layout, context
+/// `3` or `4`).
+pub(crate) const SORT_SCRIPT: u8 = 11;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -680,7 +702,8 @@ const SORT_COUNT_SEGMENTS: u8 = 4;
 /// Sort-blob option: after the slices, `count: i32` and one `u8` per segment,
 /// `1` where the sort is a prefix of that segment's index sort
 /// (`TopFieldCollector.canEarlyTerminate`, which the JVM decides with
-/// `SortField.equals`).
+/// `SortField.equals`), `1 + p` where it is the index sort's keys from the
+/// `p`th on, `0` where neither.
 const SORT_INDEX_SORTED: u8 = 8;
 /// At most this many keys: OpenSearch's sorts are a handful, and each key
 /// costs a value per hit on the way back.
@@ -689,14 +712,16 @@ const MAX_SORT_KEYS: usize = 16;
 /// A decoded sort blob: the keys, the search-after document, whether to
 /// track the max score, the slices, `terminate_after` with whether its
 /// total counts whole segments ([`SORT_COUNT_SEGMENTS`]), and per segment
-/// whether the sort is a prefix of its index sort ([`SORT_INDEX_SORTED`]).
+/// where the sort sits in its index sort ([`SORT_INDEX_SORTED`]): the index
+/// sort key it begins at, `None` when it is none of the index sort's runs of
+/// keys.
 pub(crate) type DecodedSort = (
     Vec<SortField>,
     Option<FieldDoc>,
     bool,
     Vec<Vec<usize>>,
     Option<(u64, bool)>,
-    Vec<bool>,
+    Vec<Option<usize>>,
 );
 
 /// The concurrent-search slices ending a sort or metrics blob: `count: i32`,
@@ -766,6 +791,19 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if ty == SORT_SCRIPT {
+            if flags & !SORT_REVERSE != 0 {
+                return Err(bad(format!("sort blob: _script key flags {flags:#x}")));
+            }
+            let source = crate::jvm_painless_score::PainlessSort::decode(&mut c)?;
+            keys.push(SortField::with_source(
+                "_script",
+                Arc::new(source),
+                flags & SORT_REVERSE != 0,
+            ));
+            lucene_geo.push(false);
+            continue;
+        }
         if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             lucene_geo.push(false);
@@ -916,8 +954,8 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         let n = c.len()?;
         for _ in 0..n {
             index_sorted.push(match c.u8()? {
-                0 => false,
-                1 => true,
+                0 => None,
+                at @ 1..=127 => Some(usize::from(at - 1)),
                 other => return Err(bad(format!("sort blob: index-sort flag {other}"))),
             });
         }
@@ -1231,19 +1269,22 @@ pub(crate) fn search_sorted_blobs(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound, max_score, terminated) = search_sorted(
-        &h,
-        &query,
-        &keys,
-        after.as_ref(),
-        top_n,
-        count_limit,
-        track,
-        &slices,
-        terminate_after,
-        &index_sorted,
-        min_score,
+    let (hits, total, lower_bound, max_score, terminated) = similarity_checked(
         sim.as_ref(),
+        search_sorted(
+            &h,
+            &query,
+            &keys,
+            after.as_ref(),
+            top_n,
+            count_limit,
+            track,
+            &slices,
+            terminate_after,
+            &index_sorted,
+            min_score,
+            sim.as_ref(),
+        ),
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1378,7 +1419,7 @@ pub(crate) fn search_collapsed_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     if let Some((n, _)) = terminate_after {
-        let (top, cut) = lucene_search::top_field::search_collapsed_until(
+        let top_cut = lucene_search::top_field::search_collapsed_until(
             &segments,
             h.reader.segment_readers(),
             &q,
@@ -1391,7 +1432,8 @@ pub(crate) fn search_collapsed_blobs(
             track,
             n,
         )
-        .map_err(map_search_error)?;
+        .map_err(map_search_error);
+        let (top, cut) = similarity_checked(sim, top_cut)?;
         return encode_collapsed(&keys, &[top], cut.terminated);
     }
     let parts = lucene_search::top_field::search_collapsed(
@@ -1408,7 +1450,8 @@ pub(crate) fn search_collapsed_blobs(
         &slices,
         min_score,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let parts = similarity_checked(sim, parts)?;
     encode_collapsed(&keys, &parts, false)
 }
 
@@ -1559,7 +1602,8 @@ pub(crate) fn rescore_hits(
         rescore_query_weight,
         mode,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let rescored = similarity_checked(sim, rescored)?;
     for (i, hit) in hits.iter().enumerate() {
         docs[i] = hit.doc;
         scores[i] = hit.score;
@@ -1953,7 +1997,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let (sliced, seen) = lucene_search::aggs::aggregate_sliced_counting(
+    let sliced = lucene_search::aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -1963,7 +2007,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
         &slices,
         min.as_ref(),
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let (sliced, seen) = similarity_checked(sim, sliced)?;
     let mut states = Vec::new();
     let mut results = Vec::new();
     for (m, t) in sliced {
@@ -2092,8 +2137,16 @@ pub(crate) fn count_terminates_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n, min.as_ref())
-        .map_err(map_search_error)
+    let counted = lucene_search::terminate::count_terminates(
+        &segments,
+        &q,
+        &slices,
+        &iterate,
+        n,
+        min.as_ref(),
+    )
+    .map_err(map_search_error);
+    similarity_checked(sim, counted)
 }
 
 /// Whether a concurrent `size: 0` search's count stops early
@@ -2168,7 +2221,7 @@ pub(crate) fn search_sorted(
     track_max_score: bool,
     slices: &[Vec<usize>],
     terminate_after: Option<(u64, bool)>,
-    index_sorted: &[bool],
+    index_sorted: &[Option<usize>],
     min_score: Option<f32>,
     sim: Option<&PerFieldSimilarity>,
 ) -> Result<(Vec<FieldDoc>, i64, bool, f32, bool), FfiStatus> {
@@ -2186,18 +2239,6 @@ pub(crate) fn search_sorted(
             FfiStatus::Decode
         })?;
     }
-    let segments: Vec<OpenSegment<'_>> = opened
-        .as_open_segments()
-        .into_iter()
-        .zip(&h.live_docs)
-        .enumerate()
-        .map(|(i, (mut s, live))| {
-            s.live_docs = live.as_ref();
-            s.similarity = sim.map(|p| p as &dyn Similarity);
-            s.index_sort_prefix = index_sorted.get(i).copied().unwrap_or(false);
-            s
-        })
-        .collect();
     let q = match query {
         JvmQuery::Term(t) => BooleanQuery {
             must: vec![Clause::Term(t.clone())],
@@ -2205,6 +2246,26 @@ pub(crate) fn search_sorted(
         },
         JvmQuery::Boolean(b) => b.clone(),
     };
+    let mut segments: Vec<OpenSegment<'_>> = opened
+        .as_open_segments()
+        .into_iter()
+        .zip(&h.live_docs)
+        .map(|(mut s, live)| {
+            s.live_docs = live.as_ref();
+            s.similarity = sim.map(|p| p as &dyn Similarity);
+            s
+        })
+        .collect();
+    // The documents come in the sort's order where it begins the index
+    // sort, or where it follows index sort keys the query pins to one
+    // value each (`tenant = a`, sorted by the timestamp after it).
+    for (s, at) in segments.iter_mut().zip(index_sorted) {
+        s.index_sort_prefix = match *at {
+            None => false,
+            Some(0) => true,
+            Some(p) => lucene_search::pinned_sort_keys(s, &q).map_err(map_search_error)? >= p,
+        };
+    }
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
@@ -2586,7 +2647,7 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
             }
         }
     }
-    Ok(out)
+    similarity_checked(sim.as_ref(), Ok(out))
 }
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
@@ -2862,11 +2923,19 @@ fn total_hits_with(
     if bound > count_limit {
         return Ok((bound, true));
     }
+    // A function query's reader-wide preparation, once for every segment.
+    let counted = (0..segments.len()).all(|i| known.get(i).copied().flatten().is_some());
+    let global = match query {
+        JvmQuery::Boolean(q) if !counted => {
+            lucene_search::count_preparation(segments, q).map_err(map_search_error)?
+        }
+        _ => None,
+    };
     let mut total = 0i64;
     for (i, seg) in segments.iter().enumerate() {
         let n = match known.get(i).copied().flatten() {
             Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
-            None => count_segment(seg, query)?,
+            None => count_segment(seg, query, global.as_ref())?,
         };
         total = total.saturating_add(n);
         if total > count_limit {
@@ -2941,14 +3010,17 @@ fn lower_bound(seg: &OpenSegment<'_>, deleted: i64, clause: &Clause) -> Result<i
 }
 
 /// `IndexSearcher.count` for one segment.
-fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStatus> {
+fn count_segment(
+    seg: &OpenSegment<'_>,
+    query: &JvmQuery,
+    global: Option<&lucene_search::GlobalStats>,
+) -> Result<i64, FfiStatus> {
     Ok({
         match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
             // The scored search's scorer tree, in `COMPLETE_NO_SCORES`.
-            JvmQuery::Boolean(q) => {
-                count_boolean_query_segment(seg, q).map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            }
+            JvmQuery::Boolean(q) => count_boolean_query_segment_with(seg, q, global)
+                .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
         }
         .map_err(map_search_error)?
     })
@@ -3936,9 +4008,9 @@ pub(crate) mod tests {
     }
 
     /// `(hits as (doc, values), total, lower_bound)`, or the status.
-    type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
+    pub(crate) type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
 
-    fn run_sorted(
+    pub(crate) fn run_sorted(
         handle: u64,
         query: &[u8],
         sort: &[u8],
@@ -4255,9 +4327,15 @@ pub(crate) mod tests {
         let by_score = sort_blob(&[(SORT_SCORE, 0, "", 0)], None);
         assert!(decode_sort(&by_score).unwrap().5.is_empty());
         let flagged = with_index_sorted(by_score.clone(), &[1, 0]);
-        assert_eq!(decode_sort(&flagged).unwrap().5, vec![true, false]);
+        assert_eq!(decode_sort(&flagged).unwrap().5, vec![Some(0), None]);
         assert_eq!(
-            decode_sort(&with_index_sorted(by_score.clone(), &[2])).err(),
+            decode_sort(&with_index_sorted(by_score.clone(), &[3]))
+                .unwrap()
+                .5,
+            vec![Some(2)]
+        );
+        assert_eq!(
+            decode_sort(&with_index_sorted(by_score.clone(), &[128])).err(),
             Some(FfiStatus::InvalidArgument)
         );
         // Flags saying no segment's index sort begins with the search's: the

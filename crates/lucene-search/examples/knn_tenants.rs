@@ -16,6 +16,11 @@
 //!   --partition-clusters  IVF clusters per tenant (`set_ivf_partition_clusters`)
 //!   --queries Q    queries per tenant (default 100)
 //!   --dir D        index directory (default /tmp/knn-tenants)
+//!   --sort S       tenant | composite | time (default tenant): the index
+//!                  sort, by tenant, by tenant then sub-partition, or by a
+//!                  random time; each document is in one of 16
+//!                  sub-partitions, and each tenant is also queried with a
+//!                  filter on one of them (`<tenant>+sub`)
 //! ```
 #![allow(clippy::arithmetic_side_effects)]
 
@@ -33,10 +38,12 @@ use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::{
     DocumentVector, ExplicitDocument, IndexWriter, InvertedField, InvertedTerms,
 };
-use lucene_index::segment_info::{IndexSortField, LuceneVersion};
+use lucene_index::segment_info::{
+    IndexSortField, IndexSortKind, LuceneVersion, StringMissingValue,
+};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::knn_search::{knn_top_hits_with, KnnTarget};
-use lucene_search::query::{Clause, TermQuery};
+use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_store::FsDirectory;
 
 const K: usize = 10;
@@ -117,6 +124,9 @@ fn main() {
     let ef: usize = opt("--ef").map_or(100, |s| s.parse().unwrap());
     let partition_clusters = args.iter().any(|a| a == "--partition-clusters");
     let nq: usize = opt("--queries").map_or(100, |s| s.parse().unwrap());
+    let sort_mode = opt("--sort").unwrap_or_else(|| "tenant".into());
+    const SUBS: u64 = 16;
+    let sub_of = |i: usize| Rng(i as u64 ^ 0x5DEE_CE66).next() % SUBS;
     let (_, dim, mut src) = read_bin(&format!("{prefix}.base.fbin"));
     let (nq_all, _, mut queries) = read_bin(&format!("{prefix}.query.fbin"));
     src.chunks_exact_mut(dim)
@@ -231,7 +241,7 @@ fn main() {
     for chunk in order.chunks_mut(per) {
         chunk.sort_by_key(|&i| (tenant[i as usize], i));
     }
-    let block = if partition_clusters { "p" } else { "" };
+    let block = format!("{}{sort_mode}", if partition_clusters { "p" } else { "" });
     let path = std::path::PathBuf::from(opt("--dir").unwrap_or_else(|| "/tmp/knn-tenants".into()))
         .join(format!("{n}-{segments}-{fmt}-b{block}"));
     let marker = path.join("built");
@@ -250,16 +260,28 @@ fn main() {
         };
         let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
         w.enable_explicit_documents().unwrap();
-        w.set_index_sort(Some(&[IndexSortField::long("p", false, None)]))
-            .unwrap();
+        let keyword = |f: &str| IndexSortField {
+            field: f.to_string(),
+            reverse: false,
+            kind: IndexSortKind::String(StringMissingValue::None),
+        };
+        let sort = match sort_mode.as_str() {
+            "tenant" => vec![keyword("t")],
+            "composite" => vec![keyword("t"), keyword("s")],
+            "time" => vec![IndexSortField::long("p", false, None)],
+            o => panic!("{o}"),
+        };
+        w.set_index_sort(Some(&sort)).unwrap();
         w.set_ivf_partition_clusters(partition_clusters.then_some(20_000));
         w.register_field(FieldInfo::new("id", 0)).unwrap();
-        w.register_field(
-            FieldInfo::new("t", 0)
+        let keyword_field = |name: &str| {
+            FieldInfo::new(name, 0)
                 .with_index_options(IndexOptions::Docs)
-                .with_omit_norms(true),
-        )
-        .unwrap();
+                .with_omit_norms(true)
+                .with_doc_values(DocValuesType::Sorted, DocValuesSkipIndexType::None, -1)
+        };
+        // Numbered in registration order: id 0, t 1, v 2, p 3, s 4.
+        w.register_field(keyword_field("t")).unwrap();
         w.register_field(FieldInfo::new("v", 0).with_vectors(
             dim as i32,
             VectorEncoding::Float32,
@@ -272,6 +294,7 @@ fn main() {
             -1,
         ))
         .unwrap();
+        w.register_field(keyword_field("s")).unwrap();
         w.set_knn_vectors_format_for_field(
             "v",
             match fmt.as_str() {
@@ -293,16 +316,24 @@ fn main() {
                     field_number: 0,
                     value: FieldValue::Int(i as i32),
                 });
-                let mut terms = InvertedTerms::default();
-                terms.push::<Vec<u8>>(format!("t{}", tenant[i]).as_bytes(), 1, &[], &[], &[]);
+                let (t, sub) = (format!("t{}", tenant[i]), format!("s{}", sub_of(i)));
+                for (number, value) in [(1, t), (4, sub)] {
+                    let mut terms = InvertedTerms::default();
+                    terms.push::<Vec<u8>>(value.as_bytes(), 1, &[], &[], &[]);
+                    d.fields.doc_values.push(StoredField {
+                        field_number: number,
+                        value: FieldValue::Binary(value.into_bytes()),
+                    });
+                    d.fields.inverted.push(InvertedField {
+                        field_number: number,
+                        terms,
+                        norm: None,
+                    });
+                }
+                // A time: random, unrelated to the tenant.
                 d.fields.doc_values.push(StoredField {
                     field_number: 3,
-                    value: FieldValue::Long(i64::from(tenant[i])),
-                });
-                d.fields.inverted.push(InvertedField {
-                    field_number: 1,
-                    terms,
-                    norm: None,
+                    value: FieldValue::Long((Rng(i as u64 + 3).next() >> 20) as i64),
                 });
                 (
                     d,
@@ -347,6 +378,14 @@ fn main() {
     // One measured tenant per class and the unfiltered search.
     let mut measured: Vec<(String, Option<u32>, Vec<usize>)> =
         vec![("none".into(), None, (0..nq).collect())];
+    let with_subs = |m: Vec<(String, Option<u32>, Vec<usize>)>| {
+        m.into_iter()
+            .flat_map(|(l, t, q)| {
+                let sub = t.map(|_| (format!("{l}+sub"), t, q.clone()));
+                std::iter::once((l, t, q)).chain(sub)
+            })
+            .collect::<Vec<_>>()
+    };
     let mut first = 0;
     for &(size, count, region) in &classes {
         let t = first as u32;
@@ -367,6 +406,7 @@ fn main() {
         }
         first += count;
     }
+    let measured = with_subs(measured);
     println!("n,format,block,tenant,docs,recall@{K},min_q,mean_us,p50_us,p99_us");
     let only = std::env::var("ONLY").ok();
     for (label, t, qs) in &measured {
@@ -376,8 +416,11 @@ fn main() {
         {
             continue;
         }
+        let on_sub = label.ends_with("+sub");
         let members: Vec<usize> = match t {
-            Some(t) => (0..n).filter(|&i| tenant[i] == *t).collect(),
+            Some(t) => (0..n)
+                .filter(|&i| tenant[i] == *t && (!on_sub || sub_of(i) == 3))
+                .collect(),
             None => (0..n).collect(),
         };
         let truth: Vec<Vec<i32>> = qs
@@ -396,11 +439,15 @@ fn main() {
             })
             .collect();
         let clause = t.map(|t| {
-            Clause::Term(TermQuery {
-                field: "t".into(),
-                term: format!("t{t}").into_bytes(),
-                doc_freq: None,
-            })
+            let tenant = Clause::Term(TermQuery::new("t", format!("t{t}").as_bytes()));
+            if on_sub {
+                Clause::Boolean(Box::new(BooleanQuery {
+                    filter: vec![tenant, Clause::Term(TermQuery::new("s", b"s3".as_slice()))],
+                    ..BooleanQuery::default()
+                }))
+            } else {
+                tenant
+            }
         });
         let search = |q: usize| {
             knn_top_hits_with(
