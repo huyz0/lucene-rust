@@ -3595,10 +3595,35 @@ pub(crate) fn search_boolean_query_scored_segment_time_limited<C: ScoringCollect
 /// `Weight.count`-free counting: how many live documents of one segment
 /// `query` matches, run on the same scorer tree and bulk scorers as the
 /// scored search, in `COMPLETE_NO_SCORES` -- frequencies never decoded, no
-/// score computed, no pruning.
+/// score computed, no pruning. A query holding a function query needs its
+/// reader-wide preparation: [`count_boolean_query_segment_with`].
 pub fn count_boolean_query_segment(
     seg: &multi_segment::OpenSegment<'_>,
     query: &BooleanQuery,
+) -> Result<u64> {
+    count_boolean_query_segment_with(seg, query, None)
+}
+
+/// The reader-wide preparation of `query`'s function queries over every
+/// segment of the reader (Java creates each weight over the whole
+/// searcher), for [`count_boolean_query_segment_with`]; `None` when it holds
+/// none.
+///
+/// # Errors
+/// A function source's preparation failing.
+pub fn count_preparation(
+    segments: &[multi_segment::OpenSegment<'_>],
+    query: &BooleanQuery,
+) -> Result<Option<GlobalStats>> {
+    multi_segment::global_function_stats(segments, query, None)
+}
+
+/// [`count_boolean_query_segment`] with `global`, the reader's
+/// [`count_preparation`] of `query`.
+pub fn count_boolean_query_segment_with(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+    global: Option<&GlobalStats>,
 ) -> Result<u64> {
     struct Count(u64);
     impl ScoringCollector for Count {
@@ -3626,7 +3651,7 @@ pub fn count_boolean_query_segment(
         live_docs: seg.live_docs,
         points: seg.points,
         norms: None,
-        global: None,
+        global,
         max_doc: seg.max_doc,
         cache: seg.cache,
         reader: seg.reader,
