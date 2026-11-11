@@ -150,6 +150,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
+        if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (pattern_text only): %d phrases compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestPatternText.encoded, checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
         if ("similarity".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -183,6 +189,8 @@ public final class NativeSelfTest {
         check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
         NativeSelfTestTensor.run(new Random(37), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
+        NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -1531,12 +1539,19 @@ public final class NativeSelfTest {
                 DirectoryReader plain = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, false);
                 org.apache.lucene.index.LeafReader leaf0 = plain.leaves().get(0).reader();
                 check(leaf0.getSortedNumericDocValues("num") instanceof NativeDocValues.Numbers == false, "plain index: Lucene's doc values");
-                NativeStoredFieldsReader.fetchStarted();
+                NativeStoredFieldsReader.fetchStarted(true);
                 try {
                     check(leaf0.getSortedSetDocValues("kw") instanceof NativeDocValues.Terms, "fetch phase: native doc values");
+                    check(NativeStoredFieldsReader.vectorsDropped(), "a fetch phase dropping vectors");
+                    // A fetch phase run inside another (inner hits, top hits) has its own filter.
+                    NativeStoredFieldsReader.fetchStarted(false);
+                    check(NativeStoredFieldsReader.vectorsDropped() == false, "an inner fetch phase keeping vectors");
+                    NativeStoredFieldsReader.fetchEnded();
+                    check(NativeStoredFieldsReader.vectorsDropped(), "the outer fetch phase again");
                 } finally {
                     NativeStoredFieldsReader.fetchEnded();
                 }
+                check(NativeStoredFieldsReader.vectorsDropped() == false, "outside a fetch phase, vectors are read");
                 check(leaf0.getSortedSetDocValues("missing") == null, "an absent field has none");
                 check(leaf0.getSortedSetDocValues("num") == null, "a field of another doc-values type has none");
             }

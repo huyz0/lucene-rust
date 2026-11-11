@@ -1672,9 +1672,9 @@ fn segment_shapes_single_valued_sets_sparse_norms_and_empty_sets() {
 
     // An empty set, and a region outside its file.
     let mut c = super::segment::DvCursor::new(super::segment::DocSet::Empty);
-    assert_eq!(c.next_doc(), NO_MORE_DOCS);
-    assert_eq!(c.advance(3), NO_MORE_DOCS);
-    assert!(!c.advance_exact(1));
+    assert_eq!(c.next_doc().unwrap(), NO_MORE_DOCS);
+    assert_eq!(c.advance(3).unwrap(), NO_MORE_DOCS);
+    assert!(!c.advance_exact(1).unwrap());
     assert!(matches!(
         super::segment::DocSet::read(&[0u8; 4], 2, 8, 9, 10),
         Err(Error::Store(_))
@@ -1688,20 +1688,24 @@ fn segment_shapes_single_valued_sets_sparse_norms_and_empty_sets() {
     // the current document again, and a step back (outside the contract).
     let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130], 200).unwrap());
     let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(sparse));
-    assert!(!c.advance_exact(1));
-    assert!(c.advance_exact(5));
-    assert!(c.advance_exact(5), "the current document again");
-    assert!(c.advance_exact(65));
-    assert_eq!(c.next_doc(), 130);
-    assert!(!c.advance_exact(131));
-    assert!(!c.advance_exact(9999));
-    assert!(!c.advance_exact(-1));
+    assert!(!c.advance_exact(1).unwrap());
+    assert!(c.advance_exact(5).unwrap());
+    assert!(c.advance_exact(5).unwrap(), "the current document again");
+    assert!(c.advance_exact(65).unwrap());
+    assert_eq!(c.next_doc().unwrap(), 130);
+    assert!(!c.advance_exact(131).unwrap());
+    assert!(!c.advance_exact(9999).unwrap());
+    assert!(!c.advance_exact(-1).unwrap());
     let sparse = std::sync::Arc::new(super::SparseDocs::new(vec![2, 5, 64, 65, 130], 200).unwrap());
     let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(sparse));
-    assert_eq!(c.advance(3), 5);
-    assert_eq!(c.advance(5), 64, "never behind the current position");
-    assert_eq!(c.advance(66), 130);
-    assert_eq!(c.advance(131), NO_MORE_DOCS);
+    assert_eq!(c.advance(3).unwrap(), 5);
+    assert_eq!(
+        c.advance(5).unwrap(),
+        64,
+        "never behind the current position"
+    );
+    assert_eq!(c.advance(66).unwrap(), 130);
+    assert_eq!(c.advance(131).unwrap(), NO_MORE_DOCS);
 
     // Postings of an unpositioned enum.
     let t = s.terms("t").unwrap().unwrap();
@@ -2235,7 +2239,11 @@ fn corrupt_sparse_docs_are_refused_before_anything_is_sized_from_them() {
     // The last legal document, and the first past the segment.
     let mut c = super::segment::DvCursor::new(read(&sparse_region(&[(0, &[3, 9])]), 10).unwrap());
     assert_eq!(
-        (c.next_doc(), c.next_doc(), c.next_doc()),
+        (
+            c.next_doc().unwrap(),
+            c.next_doc().unwrap(),
+            c.next_doc().unwrap()
+        ),
         (3, 9, NO_MORE_DOCS)
     );
     assert!(matches!(
@@ -2315,7 +2323,7 @@ fn sparse_doc_sets_follow_the_segment_core_across_reopens() {
         let mut c = super::segment::DvCursor::new(super::segment::DocSet::Sparse(Arc::clone(&set)));
         let mut docs = Vec::new();
         loop {
-            let d = c.next_doc();
+            let d = c.next_doc().unwrap();
             if d == NO_MORE_DOCS {
                 break;
             }
@@ -2667,4 +2675,129 @@ fn direct_columns_read_what_the_iterators_read() {
     assert!(seg.direct_column("absent", T::Numeric).unwrap().is_none());
     assert!(seg.direct_column("n_dense", T::Binary).unwrap().is_none());
     assert!(LeafReader::segment_reader(seg).is_some());
+}
+
+/// A sparse set too large for the cache is walked in place: `advance_exact`
+/// answers what the decoded set answers, with the same ranks, across SPARSE,
+/// DENSE and ALL blocks and through the jump table; a step back rewinds; and
+/// `next_doc` / `advance` decode it where the walk stands. A set the cache
+/// keeps is decoded once and shared.
+#[test]
+fn a_set_over_the_cache_budget_is_walked_in_place() {
+    use super::segment::{DocSet, DocsRegion, DvCursor};
+    use crate::directory_reader::DocsWithFieldCache;
+    let max_doc = 5 * 65_536 + 1000;
+    // Block 0 SPARSE, 1 DENSE, 2 ALL, 3 empty, 4 SPARSE, 5 a few docs.
+    let mut docs: Vec<i32> = (0..65_536).step_by(97).collect();
+    docs.extend((65_536..131_072).filter(|d| d % 3 != 0));
+    docs.extend(131_072..196_608);
+    docs.extend((262_144..327_680).step_by(4099));
+    docs.extend([327_680, 327_999, max_doc - 1]);
+    let (region, jump) = lucene_codecs::indexed_disi::write_with_dense_rank_power(
+        &docs,
+        lucene_codecs::indexed_disi::DEFAULT_DENSE_RANK_POWER,
+    );
+    let at = DocsRegion::at(0, region.len() as i64, jump, docs.len() as i64);
+    let decoded =
+        || DvCursor::new(DocSet::read(&region, 0, region.len() as i64, 9, max_doc).unwrap());
+
+    let tiny = DocsWithFieldCache::with_budget(1024);
+    let mut lazy = DvCursor::open_in(&tiny, max_doc, &region, at).unwrap();
+    let mut eager = decoded();
+    assert_eq!(lazy.cost(), eager.cost());
+    let targets =
+        (0..max_doc)
+            .step_by(331)
+            .chain([131_071, 131_072, 262_143, max_doc - 1, max_doc]);
+    for t in targets {
+        let found = lazy.advance_exact(t).unwrap();
+        assert_eq!(found, eager.advance_exact(t).unwrap(), "{t}");
+        if found {
+            assert_eq!(lazy.sparse_index(), eager.sparse_index(), "{t}");
+        }
+    }
+    assert!(!lazy.advance_exact(-1).unwrap());
+    // Back, outside the contract: answered from the region's start.
+    assert!(lazy.advance_exact(97).unwrap());
+    assert_eq!(lazy.sparse_index(), Some(1));
+    // `next_doc` after a walk carries on from where it stands.
+    assert_eq!(lazy.next_doc().unwrap(), 194);
+    assert_eq!(lazy.sparse_index(), Some(2));
+    let mut lazy = DvCursor::open_in(&tiny, max_doc, &region, at).unwrap();
+    assert!(!lazy.advance_exact(98).unwrap());
+    assert_eq!(lazy.advance(98).unwrap(), 194);
+    assert_eq!(tiny.held(), 0, "too large to keep");
+
+    // The cache keeps a set that fits, and the next cursor shares it.
+    let roomy = DocsWithFieldCache::with_budget(64 << 20);
+    let mut kept = DvCursor::open_in(&roomy, max_doc, &region, at).unwrap();
+    assert_eq!(roomy.held(), 1);
+    assert!(kept.advance_exact(65_537).unwrap());
+    assert_eq!(kept.sparse_index(), Some(677));
+    let _again = DvCursor::open_in(&roomy, max_doc, &region, at).unwrap();
+    assert_eq!(roomy.held(), 1);
+
+    // A region outside its file, before anything is walked.
+    let past = DocsRegion::at(8, region.len() as i64, jump, docs.len() as i64);
+    assert!(DvCursor::open_in(&tiny, max_doc, &region, past).is_err());
+}
+
+/// Every doc-values type counts documents, not values, for the in-place
+/// walk's `cost`, and the walk reads what the reader's own iterator reads.
+#[test]
+fn an_in_place_walk_counts_documents_and_agrees_with_the_reader() {
+    use super::segment::DvCursor;
+    use crate::directory_reader::DocsWithFieldCache;
+    use lucene_index::document::{self as d, Document, Store};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::LuceneVersion;
+
+    let tmp = lucene_util::test_support::TempDir::new("in-place-walk");
+    let dir = FsDirectory::open(tmp.path());
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+    for i in 0..300i64 {
+        let mut doc = Document::new();
+        doc.add(d::StringField::new("id", i.to_string(), Store::No));
+        if i % 3 == 0 {
+            doc.add(d::NumericDocValuesField::new("n", i));
+            doc.add(d::SortedNumericDocValuesField::new("m", i));
+            doc.add(d::SortedNumericDocValuesField::new("m", i + 1000));
+            doc.add(d::BinaryDocValuesField::new("b", vec![i as u8]));
+            doc.add(d::SortedDocValuesField::new("s", format!("v{i}")));
+            doc.add(d::SortedSetDocValuesField::new("ss", "a"));
+            doc.add(d::SortedSetDocValuesField::new("ss", format!("t{i}")));
+        }
+        w.add_fields_document(&doc).unwrap();
+    }
+    w.commit().unwrap();
+    let r = DirectoryReader::open(&dir).unwrap();
+    let seg = &r.segment_readers()[0];
+    let tiny = DocsWithFieldCache::with_budget(64);
+    for field in ["n", "m", "b", "s", "ss"] {
+        let (region, data) = seg.docs_region(field).unwrap();
+        let mut walk = DvCursor::open_in(&tiny, seg.max_doc(), data, region).unwrap();
+        assert_eq!(walk.cost(), 100, "{field}: documents, not values");
+        let mut m = seg.sorted_numeric_doc_values("m").unwrap().unwrap();
+        for doc in 0..300 {
+            let found = walk.advance_exact(doc).unwrap();
+            assert_eq!(found, doc % 3 == 0, "{field} {doc}");
+            if found {
+                assert_eq!(
+                    walk.sparse_index(),
+                    Some(i64::from(doc / 3)),
+                    "{field} {doc}"
+                );
+            }
+            if field == "m" && found {
+                assert!(m.advance_exact(doc).unwrap());
+                assert_eq!(m.next_value().unwrap(), i64::from(doc));
+            }
+        }
+    }
+    assert_eq!(tiny.held(), 0);
 }

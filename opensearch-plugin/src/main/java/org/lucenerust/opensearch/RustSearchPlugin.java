@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.lucenerust.opensearch.hexid.HexIdDocValueFormat;
+import org.lucenerust.opensearch.hexid.HexIdFieldMapper;
 import org.lucenerust.opensearch.tensor.MaxSimQueryBuilder;
 import org.lucenerust.opensearch.tensor.MultiVectorFieldMapper;
 import org.lucenerust.opensearch.ml.MlActions;
@@ -409,7 +411,7 @@ public class RustSearchPlugin extends Plugin implements
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
-                        NativeStoredFieldsReader.fetchStarted();
+                        NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -627,7 +629,9 @@ public class RustSearchPlugin extends Plugin implements
         Map<String, Mapper.TypeParser> mappers = new HashMap<>();
         mappers.put(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
         mappers.put(MultiVectorFieldMapper.CONTENT_TYPE, new MultiVectorFieldMapper.TypeParser());
+        mappers.put(org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.CONTENT_TYPE, org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.PARSER);
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
+        mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
         if (stockKnn == false) {
             mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }
@@ -662,10 +666,16 @@ public class RustSearchPlugin extends Plugin implements
     /** k-NN's {@code knn_vector} doc-value format, which a shard's {@code docvalue_fields} results carry. */
     @Override
     public List<org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry> getNamedWriteables() {
+        var hexId = new org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry(
+            org.opensearch.search.DocValueFormat.class,
+            HexIdDocValueFormat.NAME,
+            HexIdDocValueFormat::fromStream
+        );
         if (stockKnn) {
-            return List.of();
+            return List.of(hexId);
         }
         return List.of(
+            hexId,
             new org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry(
                 org.opensearch.search.DocValueFormat.class,
                 org.lucenerust.opensearch.knn.KnnVectorFieldData.Format.NAME,

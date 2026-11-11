@@ -8208,12 +8208,30 @@ mod tests {
                     .value;
                 assert_eq!(
                     lucene_codecs::stored_fields::FieldValue::Binary(
-                        crate::jvm_fetch::source_blob(jh, 0, d).unwrap()
+                        crate::jvm_fetch::source_blob(jh, 0, d, true).unwrap()
                     ),
                     spliced
                 );
+                // Without the vectors: the `_source` as stored, its vectors masked.
+                let mut visitor = lucene_codecs::stored_fields::DocumentVisitor::all();
+                assert!(seg.visit_stored_document(d, &mut visitor).unwrap());
+                let stored = visitor
+                    .into_document()
+                    .fields
+                    .into_iter()
+                    .find(|f| f.field_number == source)
+                    .unwrap()
+                    .value;
+                assert_eq!(
+                    lucene_codecs::stored_fields::FieldValue::Binary(
+                        crate::jvm_fetch::source_blob(jh, 0, d, false).unwrap()
+                    ),
+                    stored
+                );
+                assert_ne!(stored, spliced, "document {d}: nothing was spliced");
             }
-            assert!(crate::jvm_fetch::source_blob(jh, 0, seg.max_doc).is_err());
+            assert!(crate::jvm_fetch::source_blob(jh, 0, seg.max_doc, true).is_err());
+            assert!(crate::jvm_fetch::source_blob(jh, 0, seg.max_doc, false).is_err());
             crate::jvm_reader::ffi_close_jvm_reader(jh);
         }
         let dir = FsDirectory::open(tmp.path());

@@ -79,6 +79,8 @@ pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINL
 pub(crate) const NODE_MAX_SIM: u8 = crate::jvm_max_sim::NODE_MAX_SIM;
 /// `script` query running a Painless script ([`crate::jvm_painless_score`]).
 pub(crate) const NODE_PAINLESS_FILTER: u8 = crate::jvm_painless_score::NODE_PAINLESS_FILTER;
+/// A phrase over a `pattern_text` field ([`crate::jvm_pattern_phrase`]).
+pub(crate) const NODE_PATTERN_PHRASE: u8 = crate::jvm_pattern_phrase::NODE_PATTERN_PHRASE;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
 /// OpenSearch's `has_child`/`has_parent` (`HasChildQueryBuilder.LateParsingQuery`):
@@ -86,7 +88,7 @@ pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
 /// `max: i32`, the to query (a node), the from query (a node). Searched once
 /// [`crate::jvm_join::resolve`] has run its from side.
 pub(crate) const NODE_JOIN: u8 = 46;
-pub(crate) const NODE_LAST: u8 = NODE_JOIN;
+pub(crate) const NODE_LAST: u8 = NODE_PATTERN_PHRASE;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -425,6 +427,7 @@ pub(crate) fn decode(
         NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::jvm_max_sim::decode(c, depth, nodes),
         NODE_PAINLESS_FILTER => return crate::jvm_painless_score::decode_filter(c),
+        NODE_PATTERN_PHRASE => return crate::jvm_pattern_phrase::decode(c),
         NODE_JOIN => {
             let join_field = std::str::from_utf8(c.bytes()?)
                 .map_err(|_| FfiStatus::InvalidUtf8)?

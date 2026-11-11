@@ -115,19 +115,32 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
 
     /**
      * Per thread, how many fetch phases are running on it ({@link #fetchStarted}): their doc
-     * values ({@code docvalue_fields}) are read a document at a time natively.
+     * values ({@code docvalue_fields}) are read a document at a time natively. Then, a bit per
+     * running fetch phase, innermost lowest: whether its {@code _source} filter drops every k-NN
+     * vector field, so a derived {@code _source} is read without its vectors.
      */
-    private static final ThreadLocal<int[]> FETCHING = ThreadLocal.withInitial(() -> new int[1]);
+    private static final ThreadLocal<long[]> FETCHING = ThreadLocal.withInitial(() -> new long[2]);
 
-    /** A fetch phase starts on this thread. */
-    static void fetchStarted() {
-        FETCHING.get()[0]++;
+    /** A fetch phase starts on this thread; {@code vectorsDropped}: its output never shows a k-NN vector. */
+    static void fetchStarted(boolean vectorsDropped) {
+        long[] n = FETCHING.get();
+        n[0]++;
+        n[1] = (n[1] << 1) | (vectorsDropped ? 1 : 0);
     }
 
     /** A fetch phase ends on this thread, done or failed. */
     static void fetchEnded() {
-        int[] n = FETCHING.get();
-        n[0] = Math.max(0, n[0] - 1);
+        long[] n = FETCHING.get();
+        if (n[0] > 0) {
+            n[0]--;
+            n[1] >>>= 1;
+        }
+    }
+
+    /** Whether the fetch phase running on this thread drops every k-NN vector from its output. */
+    static boolean vectorsDropped() {
+        long[] n = FETCHING.get();
+        return n[0] > 0 && (n[1] & 1) != 0;
     }
 
     static DirectoryReader wrap(DirectoryReader in, NativeReaders readers, SearchStats stats, BooleanSupplier enabled)
@@ -447,14 +460,22 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         private void derivedSource(long h, int docID, FieldInfo fi, StoredFieldVisitor visitor, LuceneDocument lucene)
             throws IOException {
             boolean[] read = new boolean[1];
-            int rc = NativeBridge.derivedSource(h, ord, docID, bytes -> {
+            // A fetch that filters every vector out of what it returns: the vectors would only be
+            // written out as text to be parsed and dropped, so the _source is read as stored, the
+            // vectors masked where the filter drops them.
+            NativeBridge.Borrowed take = bytes -> {
                 // A _source past what a Java array holds is left to Lucene below.
                 if (bytes.byteSize() <= Integer.MAX_VALUE) {
                     visitor.binaryField(fi, binary(bytes.asByteBuffer(), 0, (int) bytes.byteSize()));
                     read[0] = true;
                 }
-            });
+            };
+            boolean masked = vectorsDropped();
+            int rc = masked ? NativeBridge.storedSource(h, ord, docID, take) : NativeBridge.derivedSource(h, ord, docID, take);
             if (rc == NativeBridge.OK && read[0]) {
+                if (masked) {
+                    shared.stats.sourceWithoutVectors();
+                }
                 return;
             }
             shared.stats.nativeError();

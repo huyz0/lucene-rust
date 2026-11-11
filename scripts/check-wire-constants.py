@@ -78,6 +78,7 @@ PREFIXES = {
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
 # more than a prefix or the prefix rule is ambiguous.
 RENAMES = {
+    ("ExtendedEncoder.java", "MAX_PATTERN_TERMS"): ("jvm_pattern_phrase.rs", "MAX_TERMS"),
     ("QueryEncoder.java", "MAX_DEPTH"): ("clauses.rs", "MAX_CLAUSE_DEPTH"),
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
@@ -99,6 +100,7 @@ RENAMES = {
     ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("jvm_painless_score.rs", "NODE_PAINLESS_SCORE"),
     ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("jvm_max_sim.rs", "NODE_MAX_SIM"),
     ("ExtendedEncoder.java", "NODE_PAINLESS_FILTER"): ("jvm_painless_score.rs", "NODE_PAINLESS_FILTER"),
+    ("ExtendedEncoder.java", "NODE_PATTERN_PHRASE"): ("jvm_pattern_phrase.rs", "NODE_PATTERN_PHRASE"),
     ("ExtendedEncoder.java", "NODE_JOIN"): ("jvm_queries.rs", "NODE_JOIN"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
@@ -107,6 +109,9 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("KnnHitsMemo.java", "PER_CONTEXT"): "how many queries' k-NN hits a reader context keeps in Java between phases",
+    ("HexIdCodec.java", "HEX"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
+    ("HexIdCodec.java", "TEXT"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE_INDICATOR"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("MMROverSampleProcessor.java", "DEFAULT_OVERSAMPLE_SCALE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
@@ -135,6 +140,7 @@ JAVA_ONLY = {
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
     ("ExtendedEncoder.java", "MAX_REPEATS"): "Java refuses earlier than Rust's clause limit",
+    ("PatternTextFieldMapper.java", "MAX_TEMPLATE_BYTES"): "MAX_TEMPLATE_BYTES in lucene-pattern-text's fields.rs, outside lucene-ffi (both Lucene's IndexWriter.MAX_TERM_LENGTH)",
     ("JoinQueries.java", "MAX_DEPTH"): "how deep the request filter looks for joins in a query builder tree, Java only",
     ("SparseAnnQueryBuilder.java", "DEFAULT_TOP_K"): "neural-search's query default, resolved before encoding",
     ("SparseAnnQueryBuilder.java", "DEFAULT_QUERY_CUT"): "neural-search's query default, resolved before encoding",
