@@ -893,10 +893,9 @@ final class ExtendedEncoder {
         if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
             return false;
         }
+        // No docFields check: here `doc` is the typed ScriptedSimilarity.Doc, which Painless's
+        // DocFieldsPhase still lists by name (doc.freq) though no doc values are read.
         PainlessIr.Compiled compiled = (PainlessIr.Compiled) compiledOrWhy;
-        if (compiled.docFields().isEmpty() == false) {
-            return false;
-        }
         byte[] params;
         try {
             params = PainlessIr.constant(Map.of());
