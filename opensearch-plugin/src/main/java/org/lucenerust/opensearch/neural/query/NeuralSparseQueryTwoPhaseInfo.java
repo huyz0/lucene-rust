@@ -1,0 +1,121 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.lucenerust.opensearch.neural.query;
+
+import org.lucenerust.opensearch.neural.util.lang.EqualsBuilder;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
+import org.lucenerust.opensearch.neural.util.prune.PruneType;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+/**
+ * This class encapsulates information related to the two-phase execution process
+ * for a neural sparse query. It tracks the current processing phase, the ratio
+ * used for pruning during the two-phase process, and the type of pruning applied.
+ */
+public class NeuralSparseQueryTwoPhaseInfo implements Writeable {
+    private TwoPhaseStatus status = TwoPhaseStatus.NOT_ENABLED;
+    private float twoPhasePruneRatio = 0.0F;
+    private PruneType twoPhasePruneType = PruneType.NONE;
+
+    NeuralSparseQueryTwoPhaseInfo() {
+    }
+
+    NeuralSparseQueryTwoPhaseInfo(TwoPhaseStatus status, float twoPhasePruneRatio, PruneType twoPhasePruneType) {
+        this.status = status;
+        this.twoPhasePruneRatio = twoPhasePruneRatio;
+        this.twoPhasePruneType = twoPhasePruneType;
+    }
+
+    NeuralSparseQueryTwoPhaseInfo(StreamInput in) throws IOException {
+        this.status = TwoPhaseStatus.fromInt(in.readInt());
+        this.twoPhasePruneRatio = in.readFloat();
+        this.twoPhasePruneType = PruneType.fromString(in.readString());
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        out.writeInt(status.getValue());
+        out.writeFloat(twoPhasePruneRatio);
+        out.writeString(twoPhasePruneType.getValue());
+    }
+
+
+    public enum TwoPhaseStatus {
+        NOT_ENABLED(0), PHASE_ONE(1), PHASE_TWO(2);
+        private static final Map<Integer, TwoPhaseStatus> VALUE_MAP = Arrays.stream(values()).collect(Collectors.toUnmodifiableMap(status -> status.value, Function.identity()));
+        private final int value;
+
+        TwoPhaseStatus(int value) {
+            this.value = value;
+        }
+
+        public int getValue() {
+            return value;
+        }
+
+        /**
+         * Converts an integer value to the corresponding TwoPhaseStatus.
+         * @param value the integer value to convert
+         * @return the corresponding TwoPhaseStatus enum constant
+         * @throws IllegalArgumentException if the value does not correspond to any known status
+         */
+        public static TwoPhaseStatus fromInt(final int value) {
+            TwoPhaseStatus status = VALUE_MAP.get(value);
+            if (status == null) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "Invalid two phase status value: %d", value));
+            }
+            return status;
+        }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true; // same reference
+        if (o == null || getClass() != o.getClass()) return false; // null or different class
+        NeuralSparseQueryTwoPhaseInfo info = (NeuralSparseQueryTwoPhaseInfo) o;
+        EqualsBuilder equalsBuilder = new EqualsBuilder();
+        equalsBuilder.append(twoPhasePruneType, info.getTwoPhasePruneType());
+        equalsBuilder.append(twoPhasePruneRatio, info.getTwoPhasePruneRatio());
+        equalsBuilder.append(status.getValue(), info.getStatus().getValue());
+        return equalsBuilder.isEquals();
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(twoPhasePruneType, twoPhasePruneRatio, status.getValue());
+    }
+
+    public TwoPhaseStatus getStatus() {
+        return this.status;
+    }
+
+    public float getTwoPhasePruneRatio() {
+        return this.twoPhasePruneRatio;
+    }
+
+    public PruneType getTwoPhasePruneType() {
+        return this.twoPhasePruneType;
+    }
+
+    public void setStatus(final TwoPhaseStatus status) {
+        this.status = status;
+    }
+
+    public void setTwoPhasePruneRatio(final float twoPhasePruneRatio) {
+        this.twoPhasePruneRatio = twoPhasePruneRatio;
+    }
+
+    public void setTwoPhasePruneType(final PruneType twoPhasePruneType) {
+        this.twoPhasePruneType = twoPhasePruneType;
+    }
+}
