@@ -316,6 +316,18 @@ def pct(values, p):
     return round(values[min(len(values) - 1, int(len(values) * p))], 1) if values else None
 
 
+def index_work():
+    """Merge, refresh and flush work the load caused, and the segments it left."""
+    t = req("GET", "/bench/_stats/merge,refresh,flush,segments")["indices"]["bench"]["total"]
+    m = t["merges"]
+    return {
+        "merges": m["total"], "merge_ms": m["total_time_in_millis"], "merge_docs": m["total_docs"],
+        "merge_bytes": m["total_size_in_bytes"], "refreshes": t["refresh"]["total"],
+        "refresh_ms": t["refresh"]["total_time_in_millis"], "flushes": t["flush"]["total"],
+        "segments": t["segments"]["count"],
+    }
+
+
 def visibility(base, container, corpus, label, out, settings):
     """Bulk-loads the corpus with CLIENTS clients while a probe indexes one document every
     PROBE_EVERY seconds and searches for it until it is found (the time from the write's
@@ -452,6 +464,7 @@ def visibility(base, container, corpus, label, out, settings):
             for n, v in searched.items()
         },
         "memory_after_load": node_snapshot(container),
+        "index_stats_after_load": index_work(),
     }
     # SEARCH_ONLY=N: then N searches of each shape, one at a time, with no
     # indexing: their CPU alone, a shape at a time. The buffered documents
@@ -496,6 +509,7 @@ def visibility(base, container, corpus, label, out, settings):
           f"{result['visible_ms']['p50']}/{result['visible_ms']['p99']} ms ({len(seen)} probes, {missed[0]} missed, "
           f"{len(errors)} request errors)",
           flush=True)
+    print(f"  index work: {result['index_stats_after_load']}", flush=True)
     for n, v in result["search_ms_during_load"].items():
         print(f"  {n:32s} p50 {v['p50']} ms, p90 {v['p90']} ms ({v['n']} searches), mean {v['mean']} ms, took mean {v['took_mean']} ms {v['phase_took_mean']}", flush=True)
     with open(out, "w") as fh:
