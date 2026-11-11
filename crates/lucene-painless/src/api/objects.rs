@@ -103,8 +103,9 @@ pub fn system_lookup(name: &str, arity: usize) -> Option<ApiFn> {
     })
 }
 
-/// Builds an exception object of `class` from constructor arguments.
-pub fn exception_of(class: &str, args: &[Value]) -> Result<Value, Throw> {
+/// Builds an exception object of `class` from constructor arguments, made
+/// at source offset `at`.
+pub fn exception_of(class: &str, args: &[Value], at: i32) -> Result<Value, Throw> {
     if exception_parent(class).is_none() && class != "java.lang.Exception" {
         return Err(Throw::new(
             crate::api::UNSUPPORTED,
@@ -121,5 +122,6 @@ pub fn exception_of(class: &str, args: &[Value]) -> Result<Value, Throw> {
         class: class.to_string(),
         message,
         cause: None,
+        at: Some(at),
     }))
 }
