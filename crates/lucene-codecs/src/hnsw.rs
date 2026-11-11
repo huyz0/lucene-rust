@@ -1888,6 +1888,12 @@ impl<S: UpdateableVectorScorer> HnswGraphBuilder<S> {
         &self.hnsw
     }
 
+    /// The scorer it scores with, for a caller that adds the vectors it
+    /// scores as the graph grows.
+    pub fn scorer_mut(&mut self) -> &mut S {
+        &mut self.scorer
+    }
+
     /// `HnswGraphBuilder.getRandomGraphLevel`.
     fn random_graph_level(&mut self) -> i32 {
         let mut rand_double;

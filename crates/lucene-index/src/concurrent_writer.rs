@@ -1532,9 +1532,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         let graphs_before = dwpt.live.graph_ram_bytes();
                         dwpt.live
                             .record_vectors(doc_id, &doc_vectors, &live_cfg, live.is_some());
-                        added = added.saturating_add(
-                            dwpt.live.graph_ram_bytes().saturating_sub(graphs_before),
-                        );
+                        let graphs_now = dwpt.live.graph_ram_bytes();
+                        if graphs_now < graphs_before {
+                            // A graph given up: its charge goes back.
+                            dwpt.ram_bytes = dwpt
+                                .ram_bytes
+                                .saturating_sub(graphs_before.saturating_sub(graphs_now));
+                        }
+                        added = added.saturating_add(graphs_now.saturating_sub(graphs_before));
                         let at = usize::try_from(doc_id).unwrap_or(0);
                         dwpt.vectors.resize_with(at, Vec::new);
                         dwpt.vectors.push(doc_vectors);

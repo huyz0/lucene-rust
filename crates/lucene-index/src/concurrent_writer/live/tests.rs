@@ -1179,22 +1179,12 @@ fn live_search_flushes_the_vector_graph_it_kept() {
         let infos = crate::segment_infos::read_latest(&dir).unwrap();
         assert_eq!(infos.segments.len(), 1);
         let sci = &infos.segments[0];
+        assert!(kept(&sci.segment_id), "the flush wrote the kept graph");
         let files = segment_files(tmp.path(), sci, &sci.segment_name);
         assert!(files.iter().any(|(n, _)| n.ends_with(".vex")), "{files:?}");
         files
     };
-    let kept = || {
-        crate::index_writer::KEPT_GRAPHS
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|&&n| n == 2000)
-            .count()
-    };
-    let before = kept();
     let on = flushed(true);
-    // Its 2000 vectors (no other test keeps a graph of that many).
-    assert!(kept() > before, "the flush wrote the kept graph");
     let off = flushed(false);
     let names: Vec<&str> = on.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
@@ -1256,11 +1246,21 @@ fn expected_graph_files(
     (vex, vem)
 }
 
-/// The one segment's files, and the vector format's segment suffix.
+/// Whether segment `id`'s flush wrote a graph its buffer kept.
+fn kept(id: &[u8; 16]) -> bool {
+    crate::index_writer::KEPT_GRAPHS
+        .lock()
+        .unwrap()
+        .contains(id)
+}
+
+/// The one segment's files, and the vector format's segment suffix. Its
+/// flush wrote the graph its buffer kept.
 fn single_segment(dir: &FsDirectory, path: &std::path::Path) -> (Vec<(String, Vec<u8>)>, String) {
     let infos = crate::segment_infos::read_latest(dir).unwrap();
     assert_eq!(infos.segments.len(), 1);
     let sci = &infos.segments[0];
+    assert!(kept(&sci.segment_id), "the flush wrote the kept graph");
     let files = segment_files(path, sci, &sci.segment_name);
     let suffix = files
         .iter()
@@ -1282,15 +1282,6 @@ fn file<'f>(files: &'f [(String, Vec<u8>)], ext: &str) -> &'f [u8] {
 fn a_flush_writes_the_graph_built_as_vectors_arrived() {
     let tmp = TempDir::new("flush-kept-graph");
     let dir = FsDirectory::open(tmp.path());
-    let kept = || {
-        crate::index_writer::KEPT_GRAPHS
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|&&n| n == 2400)
-            .count()
-    };
-    let before = kept();
     {
         let (w, id) = vector_writer(&dir, false);
         for i in 0..3000 {
@@ -1298,8 +1289,6 @@ fn a_flush_writes_the_graph_built_as_vectors_arrived() {
         }
         w.commit().unwrap();
     }
-    // Its 2400 vectors (no other test keeps a graph of that many).
-    assert!(kept() > before, "the flush wrote the kept graph");
     let (files, suffix) = single_segment(&dir, tmp.path());
     let vectors: Vec<Vec<f32>> = (0..3000).filter(|i| i % 5 != 0).map(unit).collect();
     let (vex, vem) = expected_graph_files(&vectors, None, &suffix);

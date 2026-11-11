@@ -1283,17 +1283,89 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) graphs: &'b [BufferGraphField],
 }
 
-/// The vector counts of the graphs live search kept that flushes wrote
+/// The segments whose flushes wrote a graph their buffer kept
 /// ([`IndexWriter::kept_graph`]).
 #[cfg(test)]
-pub(crate) static KEPT_GRAPHS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static KEPT_GRAPHS: std::sync::Mutex<Vec<[u8; ID_LENGTH]>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// A vector field's HNSW graph over a buffer's vectors, kept by live search
-/// as they arrive ([`lucene_codecs::buffer_vectors::BufferGraph`]).
+/// A vector field's HNSW graph over a buffer's vectors, built as they
+/// arrive.
 #[derive(Debug, Clone)]
 pub(crate) struct BufferGraphField {
     pub(crate) field_number: i32,
-    pub(crate) graph: std::sync::Arc<lucene_codecs::buffer_vectors::BufferGraph>,
+    pub(crate) graph: KeptGraph,
+}
+
+/// A buffer's graph: one live search reads while it grows
+/// ([`lucene_codecs::buffer_vectors::BufferGraph`]), or one only the
+/// buffer's flush reads ([`lucene_codecs::buffer_vectors::FlushGraph`]).
+#[derive(Debug, Clone)]
+pub(crate) enum KeptGraph {
+    Live(std::sync::Arc<lucene_codecs::buffer_vectors::BufferGraph>),
+    Flush(std::sync::Arc<lucene_codecs::buffer_vectors::FlushGraph>),
+}
+
+impl KeptGraph {
+    pub(crate) fn params(&self) -> (i32, i32) {
+        match self {
+            KeptGraph::Live(g) => g.params(),
+            KeptGraph::Flush(g) => g.params(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> i32 {
+        match self {
+            KeptGraph::Live(g) => g.len(),
+            KeptGraph::Flush(g) => g.len(),
+        }
+    }
+
+    pub(crate) fn shape(
+        &self,
+    ) -> (
+        lucene_codecs::field_infos::VectorEncoding,
+        lucene_codecs::field_infos::VectorSimilarityFunction,
+        usize,
+    ) {
+        match self {
+            KeptGraph::Live(g) => g.shape(),
+            KeptGraph::Flush(g) => g.shape(),
+        }
+    }
+
+    /// The buffer's documents by ordinal.
+    pub(crate) fn docs(&self) -> Option<Vec<i32>> {
+        match self {
+            KeptGraph::Live(g) => (0..g.len()).map(|ord| g.doc(ord)).collect(),
+            KeptGraph::Flush(g) => Some(g.docs()),
+        }
+    }
+
+    /// The graph over its `n` vectors.
+    pub(crate) fn graph(&self, n: i32) -> lucene_codecs::vectors::Result<hnsw::OnHeapHnswGraph> {
+        match self {
+            KeptGraph::Live(g) => g.graph(n),
+            KeptGraph::Flush(g) => g.graph(n),
+        }
+    }
+
+    /// See [`lucene_codecs::buffer_vectors::BufferGraph::ram_bytes`].
+    pub(crate) fn ram_bytes(&self) -> usize {
+        match self {
+            KeptGraph::Live(g) => g.ram_bytes(),
+            KeptGraph::Flush(g) => g.ram_bytes(),
+        }
+    }
+
+    /// Stops the graph growing and lets its vectors go once nothing else
+    /// holds them.
+    pub(crate) fn retire(&self) {
+        match self {
+            KeptGraph::Live(g) => g.retire(),
+            KeptGraph::Flush(g) => g.retire(),
+        }
+    }
 }
 
 /// A flush of a buffer's documents `start..docs` only, numbered from
@@ -7929,17 +8001,13 @@ impl IndexingConfig {
 
     /// An empty graph for vector field `name` that grows as its vectors
     /// arrive and is the graph its flush writes: `None` for a field whose
-    /// format has no graph or scores bytes as Hamming distances. Under an
+    /// format has no graph or scores bytes as Hamming distances. One `live`
+    /// search reads as it grows, or one only the flush reads. Under an
     /// index sort the flush renumbers the graph, as
-    /// `Lucene99HnswVectorsWriter.writeSortingField` does; only a caller
-    /// that reads the graph by nothing but its flush takes one then
-    /// (`sorted`).
-    pub(crate) fn buffer_graph_for(
-        &self,
-        name: &str,
-        sorted: bool,
-    ) -> Option<lucene_codecs::buffer_vectors::BufferGraph> {
-        if self.sorts_documents() && !sorted {
+    /// `Lucene99HnswVectorsWriter.writeSortingField` does; live search
+    /// keeps none then.
+    pub(crate) fn buffer_graph_for(&self, name: &str, live: bool) -> Option<KeptGraph> {
+        if self.sorts_documents() && live {
             return None;
         }
         let (_, dimension, encoding, similarity) = self.vector_field_shape(name)?;
@@ -7951,15 +8019,23 @@ impl IndexingConfig {
             return None;
         }
         let (m, beam_width) = format.graph()?;
-        lucene_codecs::buffer_vectors::BufferGraph::new(
-            encoding,
-            similarity,
-            usize::try_from(dimension).ok()?,
-            m,
-            beam_width,
-            hnsw::DEFAULT_RAND_SEED,
-        )
-        .ok()
+        let dimension = usize::try_from(dimension).ok()?;
+        let seed = hnsw::DEFAULT_RAND_SEED;
+        Some(if live {
+            KeptGraph::Live(std::sync::Arc::new(
+                lucene_codecs::buffer_vectors::BufferGraph::new(
+                    encoding, similarity, dimension, m, beam_width, seed,
+                )
+                .ok()?,
+            ))
+        } else {
+            KeptGraph::Flush(std::sync::Arc::new(
+                lucene_codecs::buffer_vectors::FlushGraph::new(
+                    encoding, similarity, dimension, m, beam_width, seed,
+                )
+                .ok()?,
+            ))
+        })
     }
 
     /// Cluster lists for live search over a buffer's vectors of field
@@ -11209,6 +11285,7 @@ impl IndexWriter<'_> {
         old_to_new: Option<&[usize]>,
         field: &FlatVectorsField,
         params: (i32, i32),
+        #[cfg_attr(not(test), allow(unused_variables))] segment_id: &[u8; ID_LENGTH],
     ) -> Option<hnsw::OnHeapHnswGraph> {
         let kept = graphs
             .iter()
@@ -11224,14 +11301,11 @@ impl IndexWriter<'_> {
         {
             return None;
         }
+        let docs = graph.docs()?;
         let renumber = match old_to_new {
             // The ordinals name the same documents.
             None => {
-                let same_docs =
-                    field.docs.iter().enumerate().all(|(ord, &doc)| {
-                        graph.doc(i32::try_from(ord).unwrap_or(-1)) == Some(doc)
-                    });
-                if !same_docs {
+                if docs != field.docs {
                     return None;
                 }
                 None
@@ -11241,8 +11315,8 @@ impl IndexWriter<'_> {
             // its document in the sorted segment's ordinals.
             Some(old_to_new) => {
                 let mut ords = Vec::with_capacity(field.docs.len());
-                for ord in 0..count {
-                    let old = usize::try_from(graph.doc(ord)?).ok()?;
+                for &old in &docs {
+                    let old = usize::try_from(old).ok()?;
                     let new = i32::try_from(*old_to_new.get(old)?).ok()?;
                     ords.push(i32::try_from(field.docs.binary_search(&new).ok()?).ok()?);
                 }
@@ -11258,7 +11332,7 @@ impl IndexWriter<'_> {
         KEPT_GRAPHS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(count);
+            .push(*segment_id);
         Some(graph)
     }
 
@@ -11388,7 +11462,7 @@ impl IndexWriter<'_> {
                     let kept = if vectors::scores_hamming(suffix) {
                         None
                     } else {
-                        Self::kept_graph(graphs, old_to_new, field, (m, beam_width))
+                        Self::kept_graph(graphs, old_to_new, field, (m, beam_width), segment_id)
                     };
                     if let Some(graph) = kept {
                         return Ok(Some(graph));
