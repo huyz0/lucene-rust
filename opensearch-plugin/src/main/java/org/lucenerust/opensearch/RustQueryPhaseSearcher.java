@@ -332,8 +332,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             int[][] slices = NativeAggregations.slices(ctx);
             // TopFieldCollector ends a segment whose index sort begins with the
             // search's sort at its first non-competitive document; the native
-            // collector does too, told which segments.
-            boolean[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
+            // collector does too, told which segments -- and where the query
+            // pins the index sort's first keys and sorts by the ones after.
+            byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), sort);
             SortEncoder.Encoded sorted = slices == null ? new SortEncoder.Encoded(null, "intra_segment")
                 : SortEncoder.encode(sort, after, trackMaxScore, slices, terminateAfter, countSegments(ctx, terminateAfter), indexSorted);
             reason = sorted.fallbackReason();
