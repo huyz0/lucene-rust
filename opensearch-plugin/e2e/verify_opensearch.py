@@ -1650,7 +1650,7 @@ def main():
             run_js(index, shards)
         else:
             js_off(index)
-    # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
+    # parent-join: has_child/has_parent run natively (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
     except RuntimeError:

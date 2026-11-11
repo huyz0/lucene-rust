@@ -472,10 +472,12 @@ jobs:
           export CARGO_TARGET_DIR=$PWD/target
           cargo clippy --manifest-path crates/lucene-script-js/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path crates/lucene-script-js/Cargo.toml
+          # One test at a time: each on a thread that did not start V8.
+          cargo test --manifest-path crates/lucene-script-js/Cargo.toml -- --test-threads=1
       - name: lucene-ffi with js
         run: |
           cargo clippy -p lucene-ffi --features js --all-targets -- -D warnings
-          cargo test -p lucene-ffi --features js --lib jvm_painless_score
+          cargo test -p lucene-ffi --features js --lib jvm_painless_score -- --test-threads=1
 
   # ---------------------------------------------------------------------------
   # The committed fixtures must still be what Lucene 10.5.0 actually produces.

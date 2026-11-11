@@ -459,7 +459,10 @@ fn initialize() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         v8::V8::set_flags_from_string(FLAGS);
-        let platform = v8::new_default_platform(0, false).make_shared();
+        // Without thread-isolated allocations (memory protection keys), which
+        // need every thread that runs V8 to descend from the one that
+        // initialised it: the JVM's search threads do not.
+        let platform = v8::new_unprotected_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
     });
