@@ -105,9 +105,11 @@ pub struct JException {
     pub class: String,
     pub message: Option<String>,
     pub cause: Option<Value>,
-    /// Where a script's `new` made it: Java fills an exception's stack
-    /// trace when it is made, so its offset is the constructor call's,
-    /// wherever it is thrown. `None` for the runtime's own.
+    /// Where it was made: Java fills an exception's stack trace when it is
+    /// made, so its offset is the constructor call's (or, for the runtime's
+    /// own, the failing operation's), wherever it is thrown again. `None`
+    /// for a runtime exception no `catch` has taken yet: the VM's
+    /// [`Vm::loc`] is still where it was raised.
     pub at: Option<i32>,
 }
 
@@ -867,7 +869,16 @@ impl<'a> Vm<'a> {
                         }) else {
                             return Err(t);
                         };
-                        frame.regs[c.slot as usize] = t.0;
+                        // A runtime exception keeps where it was raised, for
+                        // a `throw` of it after the catch.
+                        frame.regs[c.slot as usize] =
+                            match crate::object::downcast::<JException>(&t.0) {
+                                Some(e) if e.at.is_none() => Value::object(JException {
+                                    at: Some(self.loc),
+                                    ..e.clone()
+                                }),
+                                _ => t.0,
+                            };
                         let flow = self.run(frame, &c.body)?;
                         if !matches!(flow, Flow::Normal) {
                             return Ok(flow);
