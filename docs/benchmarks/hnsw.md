@@ -120,43 +120,111 @@ arena would remove two of the three.
 
 ## Filtered searches
 
-A filtered search scores the filter's documents exactly, without walking
-the graph, when they are at most one in eight of the segment's vectors
-(`HNSW_EXACT_SHARE` in `crates/lucene-search/src/vector_query.rs`), up to
-2^18 of them, the share of the largest segment measured. Lucene
-does this only below `perLeafTopK` passing documents, or after the walk
-visited as many nodes as pass. In an index sorted by tenant a tenant's
-vectors are one contiguous region of the graph, often far from the entry
-point, and the walk spends most of its visits on other tenants' nodes.
+A filtered leaf passing more than `perLeafTopK` documents is searched by a
+cost model (`filtered_walk_plan` in
+`crates/lucene-search/src/vector_query.rs`) instead of Lucene's rule, which
+walks the graph and falls back to an exact scan of the passing vectors
+after visiting as many nodes as pass: at a few percent of a segment that
+costs the walk and then the scan.
 
-`knn_tenants --scale 4 --format hnsw` (2M GloVe-100 vectors with jitter,
-tenants of 375k, 100k, 10k and 1k, M 16, beam 100, 50 queries per tenant),
-recall@10 / mean ms. `any` tenants are queried from anywhere, `local` ones
-from inside their region:
+- An unfiltered walk visits about `ln(size) * k` nodes (Lucene's
+  `expectedVisitedNodes`, with `k` the collector's queue); under a filter
+  unrelated to the query, about that many divided by the filter's share of
+  the segment. Measured visits on GloVe-100 390k at a queue of 100:
+  10,901 / 6,231 / 3,509 / 2,332 at 10% / 20% / 41% / 69% against
+  12,500 / 6,300 / 3,150 / 1,870 predicted.
+- A visit costs about four exact scores (`HNSW_VISIT_COST`: 140-160 ns a
+  visit against 45-55 ns a scored vector in a scan, which reads the passing
+  vectors in order).
+- Walk predicted no dearer than the scan: Lucene's walk. Scan cheaper than
+  four unfiltered walks (`HNSW_PROBE_GAIN`): the scan. Otherwise the filter
+  may still pass most of the query's neighbourhood (a tenant queried from
+  inside its own region), which only the walk can see: it walks 256 nodes
+  (`HNSW_PROBE_VISITS`), counts the share of them that pass (never below
+  the filter's share of the segment), and switches to the scan when the
+  rest of the walk is predicted to cost more (`FilteredWalkPlanner` in
+  `knn_collectors.rs`). A walk that goes on still gives up past twice the
+  scan's cost.
+- A scan the model chooses scores the rescoring vectors when the format has
+  any (quantized HNSW), so it returns the exact top `k`. Nested
+  (diversifying) searches, searches with a patience or deadline (no probe)
+  and retired formats keep Lucene's rule.
 
-| tenant (share of a segment) | 1 segment, before | 1 segment, after | 8 segments, before | 8 segments, after |
-|---|---|---|---|---|
-| random375000-any (19%) | 0.918 / 6.7 | unchanged (walks) | 0.964 / 16.2 | unchanged (walks) |
-| region375000-local (19%) | 0.944 / 1.4 | unchanged (walks) | 0.982 / 2.5 | unchanged (walks) |
-| random100000-any (5%) | 0.938 / 10.9 | 1.000 / 4.9 | 1.000 / 21.3 | 1.000 / 5.9 |
-| region100000-any (5%) | 0.874 / 8.1 | 1.000 / 5.2 | 0.964 / 14.9 | 1.000 / 5.6 |
-| region100000-local (5%) | 0.940 / 1.5 | 1.000 / 4.2 | 0.988 / 5.5 | 1.000 / 5.6 |
-| random10000-any (0.5%) | 1.000 / 2.2 | 1.000 / 0.51 | 1.000 / 2.3 | 1.000 / 0.70 |
-| region10000-local (0.5%) | 0.992 / 0.75 | 1.000 / 0.57 | 1.000 / 2.2 | 1.000 / 0.72 |
-| random1000-any (0.05%) | 1.000 / 1.7 | 1.000 / 0.07 | 1.000 / 1.8 | 1.000 / 0.14 |
+`knn_filtered --format hnsw --ef 100` (GloVe-100 390k, one segment, M 16,
+beam 100, 200 queries, k 10), recall@10 / mean us. `u` filters are random
+documents, `c` ones the documents nearest an anchor, queried from near the
+anchor (`local`) or from anywhere (`any`). Runs vary 10-25% from one to
+the next; the 1-in-8 column is the fixed rule this model replaces (scan at
+most one in eight of the segment's vectors):
 
-- At 19% the walk wins on the mean (exact: 24.5 ms over 8 segments), so the
-  share stops at one in eight.
-- The one case that gets slower is a mid-size tenant queried from inside
-  its own region on a large segment (1.5 -> 4.2 ms), with recall 0.94 ->
-  1.0. Walking first with a visit budget of an eighth of the passing
-  documents, then scanning, kept it at 2.3 ms but cost the random tenants
-  40% and recall 0.96-0.998, so the rule scans directly.
-- Graph walks pay the descent on every segment; the scan does not, which is
-  why the small tenants gain most with many segments.
+| filter (share) | Lucene | 1 in 8 | cost model |
+|---|---|---|---|
+| u4000 (1%) | 1.000 / 1158 | 1.000 / 350 | 1.000 / 300 |
+| u10000 (2.5%) | 1.000 / 2430 | 1.000 / 800 | 1.000 / 750 |
+| u20000 (5%) | 0.993 / 3450 | 1.000 / 1370 | 1.000 / 1170 |
+| u40000 (10%) | 0.956 / 1664 | 1.000 / 2660 | 1.000 / 2300-3000 |
+| u80000 (20%) | 0.943 / 1061 | 0.942 / 1000 | 0.942 / 1040-1250 |
+| c20000-local (5%) | 0.994 / 311 | 1.000 / 1160 | 1.000 / 1420 |
+| c40000-local (10%) | 0.970 / 441 | 1.000 / 2700 | 0.991 / 370-410 |
+| c40000-any (10%) | 0.951 / 3101 | 1.000 / 2085-3084 | 0.984 / 1920 |
+| c80000-any (20%) | 0.937 / 2084 | 0.914 / 2525-2695 | 0.914 / 2040 |
+
+`knn_tenants --scale 8 --format hnsw` (1M GloVe-100 vectors with jitter,
+index sorted by tenant, 50 queries a tenant), recall@10 / mean us:
+
+| tenant | 1 segment, Lucene | 1 segment, cost model | 8 segments, Lucene | 8 segments, 1 in 8 | 8 segments, cost model |
+|---|---|---|---|---|---|
+| random187500-any | 0.932 / 4094 | 0.932 / 3439-4167 | 0.982 / 12844 | 0.982 / 15645 | 0.982 / 11356 |
+| region187500-local | 0.952 / 820 | 0.952 / 774-1059 | 0.992 / 2030 | 0.992 / 1390 | 0.992 / 1711 |
+| random50000-any | 0.962 / 7015 | 1.000 / 2495-2824 | 1.000 / 10015 | 1.000 / 3722 | 1.000 / 2733 |
+| region50000-any | 0.906 / 5378 | 0.976-0.986 / 2563-2899 | 0.990 / 8643 | 1.000 / 2974 | 1.000 / 2678 |
+| region50000-local | 0.940 / 1190 | 0.956-0.962 / 1499-1723 | 0.990 / 5057 | 1.000 / 2529 | 1.000 / 2336 |
+| random5000-any | 1.000 / 961 | 1.000 / 317-344 | 1.000 / 1946 | 1.000 / 346 | 1.000 / 321 |
+| region5000-local | 0.996 / 431 | 1.000 / 350-587 | 1.000 / 1734 | 1.000 / 506 | 1.000 / 390 |
+| random500-any | 1.000 / 874 | 1.000 / 68-79 | 1.000 / 278 | 1.000 / 118 | 1.000 / 96 |
+
+- Against Lucene: 3-13x faster for filters passing 0.05-5% of a segment,
+  with recall 1.0 where Lucene's walk gave 0.91-0.96. The loss: a tenant
+  just under the probe's floor queried from inside its own region
+  (c20000-local, 5%) is scanned where Lucene's walk took 0.3 ms (1.4 ms,
+  recall 0.994 -> 1.0).
+- Against the fixed 1-in-8 share: the same where the filter is unrelated
+  to the query, and 5-7x faster for a tenant queried from inside its own
+  region at 10% of a segment (recall 0.99 instead of 1.0). On one 1M
+  segment a 5% region tenant probes and walks: faster from inside the
+  region (0.96 recall), slower from outside it than the scan. The fixed
+  share also scanned up to 2^18 vectors whatever the segment's size; the
+  model's walk wins earlier as segments grow.
+- ACORN-1 (`FilteredHnswGraphSearcher`, on with a `filteredSearchThreshold`)
+  is no candidate here: 0.60 / 0.74 / 0.76 / 0.84 recall at 1% / 2.5% / 5% /
+  10% on the 390k set, where Lucene's walk and the scan give 0.96-1.0.
 - On storage that is not in memory the scan reads the tenant's range of
   `.vec` in order (an index sorted by tenant keeps it contiguous), the walk
-  one random page or more per visited node, so the share is conservative
-  there.
+  one random page or more per visited node, so the model leans towards the
+  walk there.
 
-Raw numbers: `perf/tenant-exact-shard/hnsw-2m.csv` in the project files.
+Raw numbers: `perf/hnsw-filtered-planner/` and
+`perf/tenant-exact-shard/hnsw-2m.csv` in the project files.
+
+## Adaptive beam
+
+`KnnFloatVectorQuery::with_exploration_slack(hits, slack)` (opt-in, no
+Lucene equivalent) stops a walk once its best unexplored candidate is
+farther than `1 + slack` times the `hits`-th best node found, instead of
+once it no longer beats the worst of its `k`
+(`AdaptiveBeamCollector`; Al-Jazzazi et al., "Distance Adaptive Beam
+Search", the rule behind Vespa's `exploration-slack`). At the same visited
+nodes it finds more of the true top 10 than a wider `ef_search`. GloVe-100
+390k, one segment, k 10 (queue 100 for the slack rows), recall@10 / nodes
+visited:
+
+| filter | ef 100 | ef 200 | slack 0.1 | slack 0.2 | slack 0.3 |
+|---|---|---|---|---|---|
+| none | 0.876 / 1749 | 0.919 / 3019 | 0.841 / 977 | 0.948 / 3045 | 0.984 / 9129 |
+| u40000 (10%) | 0.955 / 10782 | 0.974 / 18649 | 0.933 / 5351 | 0.980 / 16052 | 0.992 / 39217 |
+| u80000 (20%) | 0.947 / 6198 | 0.967 / 10941 | 0.913 / 3122 | 0.976 / 9734 | 0.992 / 25407 |
+| u160000 (41%) | 0.925 / 3539 | 0.957 / 6200 | 0.893 / 1854 | 0.969 / 5916 | 0.991 / 16518 |
+| c80000-any (20%) | 0.931 / 9108 | 0.961 / 14018 | 0.900 / 6752 | 0.980 / 18408 | 0.994 / 43389 |
+
+Latency follows the visits. It changes results, so it stays opt-in; it is
+not yet exposed through the OpenSearch plugin.

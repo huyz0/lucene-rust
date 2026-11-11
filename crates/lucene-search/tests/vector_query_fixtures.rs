@@ -369,6 +369,48 @@ fn a_wider_ef_search_never_returns_worse_hits() {
     }
 }
 
+/// The opt-in adaptive beam reaches the single-segment search: a wide slack
+/// explores further and never scores worse than the plain walk, and a
+/// tight one over fewer `hits` than `k` still returns `k`.
+#[test]
+fn an_exploration_slack_widens_the_walk_and_keeps_k() {
+    let m = Manifest::load("vectors_index");
+    let seg = SegmentBytes::single(&m);
+    let infos = seg.field_infos();
+    let input = seg.input(&infos, true, None, None);
+    let field = m.get("f0.name").to_string();
+    let target = float_vec(m.get("q.f0.0.vec"));
+    let plain = search_knn_float_vector_query(
+        &input,
+        &KnnFloatVectorQuery::new(&field, target.clone(), 10).unwrap(),
+    )
+    .unwrap();
+    let wide = search_knn_float_vector_query(
+        &input,
+        &KnnFloatVectorQuery::new(&field, target.clone(), 10)
+            .unwrap()
+            .with_exploration_slack(10, 5.0)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(wide.len(), 10);
+    for (i, (p, w)) in plain.iter().zip(&wide).enumerate() {
+        assert!(
+            w.score >= p.score - 1e-6,
+            "rank {i}: the slack scored worse"
+        );
+    }
+    let tight = search_knn_float_vector_query(
+        &input,
+        &KnnFloatVectorQuery::new(&field, target, 10)
+            .unwrap()
+            .with_exploration_slack(1, 0.0)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(tight.len(), 10);
+}
+
 // ---------------------------------------------------------------------------
 // Multi-segment
 // ---------------------------------------------------------------------------
