@@ -225,8 +225,8 @@ public final class QueryEncoder {
     /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
     private static final byte NODE_TERM_RANGE = 25;
     private static final byte NODE_POINT_SET = 26;
-    /** {@code NODE_POINT_RANGE_OR_DV} in {@code jvm_queries.rs}: after {@code NODE_JOIN} (46). */
-    private static final byte NODE_POINT_RANGE_OR_DV = 47;
+    /** {@code NODE_POINT_RANGE_OR_DV} in {@code jvm_queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
+    private static final byte NODE_POINT_RANGE_OR_DV = 48;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {

@@ -79,6 +79,8 @@ pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINL
 pub(crate) const NODE_MAX_SIM: u8 = crate::jvm_max_sim::NODE_MAX_SIM;
 /// `script` query running a Painless script ([`crate::jvm_painless_score`]).
 pub(crate) const NODE_PAINLESS_FILTER: u8 = crate::jvm_painless_score::NODE_PAINLESS_FILTER;
+/// A phrase over a `pattern_text` field ([`crate::jvm_pattern_phrase`]).
+pub(crate) const NODE_PATTERN_PHRASE: u8 = crate::jvm_pattern_phrase::NODE_PATTERN_PHRASE;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
 /// OpenSearch's `has_child`/`has_parent` (`HasChildQueryBuilder.LateParsingQuery`):
@@ -92,7 +94,7 @@ pub(crate) const NODE_JOIN: u8 = 46;
 /// bounds): `field`, `min: i64`, `max: i64`, the inclusive bounds as sortable
 /// longs. Kept a choice so a cheap lead (a tenant's doc-id run) checks its
 /// documents' doc values instead of collecting the range's points.
-pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 47;
+pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 48;
 pub(crate) const NODE_LAST: u8 = NODE_POINT_RANGE_OR_DV;
 
 /// The KNN node's kinds.
@@ -432,6 +434,7 @@ pub(crate) fn decode(
         NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::jvm_max_sim::decode(c, depth, nodes),
         NODE_PAINLESS_FILTER => return crate::jvm_painless_score::decode_filter(c),
+        NODE_PATTERN_PHRASE => return crate::jvm_pattern_phrase::decode(c),
         NODE_POINT_RANGE_OR_DV => {
             let field = field(c)?;
             let (min, max) = (c.i64()?, c.i64()?);

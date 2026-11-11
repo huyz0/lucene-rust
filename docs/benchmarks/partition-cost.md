@@ -86,7 +86,7 @@ tenant's query collects the range's points into a bit set over the whole
 segment. OpenSearch builds a `long`/`date`/`double` range on a field with
 doc values as an `IndexOrDocValuesQuery`, which in Lucene checks doc values
 instead when a cheaper clause leads; the plugin used to send only its points
-side. It now sends the pair as one node (`NODE_POINT_RANGE_OR_DV`, ABI 129),
+side. It now sends the pair as one node (`NODE_POINT_RANGE_OR_DV` = 48, ABI 129),
 and the native side estimates the points side's cost as Lucene does, so the
 tenant's doc-id run (or a selective term) leads and the range is checked on
 its documents' doc values. Merged 2M-document indexes, hot mean µs;
