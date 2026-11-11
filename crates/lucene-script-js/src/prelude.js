@@ -1,138 +1,187 @@
-// Run once in each script's own context: locks the context's built-ins, then
+// Run once in each script's own context: locks the context down, then
 // returns the function that builds a script's runner from the host's
-// callbacks, the script's function and its fields.
+// callback, the script's function and its fields.
 (function () {
   "use strict";
-  // No script changes what a later document or request sees: every built-in
-  // and its prototype is frozen, and so is the global object.
-  for (const name of Object.getOwnPropertyNames(globalThis)) {
-    const v = globalThis[name];
-    if (v !== null && (typeof v === "object" || typeof v === "function")) {
-      Object.freeze(v);
-      if (typeof v === "function" && v.prototype) Object.freeze(v.prototype);
-    }
-  }
-  for (const p of [
-    Object.getPrototypeOf(function* () {}),
-    Object.getPrototypeOf(async function () {}),
-    Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())),
-    Object.getPrototypeOf(new Map()[Symbol.iterator]()),
-    Object.getPrototypeOf(new Set()[Symbol.iterator]()),
-    Object.getPrototypeOf(""[Symbol.iterator]()),
-    Object.getPrototypeOf([][Symbol.iterator]()),
-    Object.getPrototypeOf(Int8Array.prototype),
-    Object.getPrototypeOf(Int8Array),
+  // Memory outside the heap V8 limits, and objects that tell a script about
+  // the collector: gone before any script runs. The host makes its own typed
+  // arrays through V8's API.
+  for (const name of [
+    "ArrayBuffer",
+    "SharedArrayBuffer",
+    "DataView",
+    "Atomics",
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float16Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Intl",
+    "WeakRef",
+    "FinalizationRegistry",
+    "WebAssembly",
   ]) {
-    Object.freeze(p);
+    delete globalThis[name];
   }
-  Object.freeze(globalThis);
+
+  // Every object a script can reach freezes: what it holds, its accessors and
+  // its prototype, transitively, so no script changes what a later document
+  // or request sees.
+  const freeze = Object.freeze;
+  const ownKeys = Reflect.ownKeys;
+  const describe = Object.getOwnPropertyDescriptor;
+  const protoOf = Object.getPrototypeOf;
+  function harden(root) {
+    const seen = new Set();
+    const todo = [root];
+    while (todo.length > 0) {
+      const o = todo.pop();
+      if (o === null || (typeof o !== "object" && typeof o !== "function") || seen.has(o)) {
+        continue;
+      }
+      seen.add(o);
+      freeze(o);
+      for (const k of ownKeys(o)) {
+        const d = describe(o, k);
+        if (d === undefined) continue;
+        if ("value" in d) todo.push(d.value);
+        if (d.get !== undefined) todo.push(d.get);
+        if (d.set !== undefined) todo.push(d.set);
+      }
+      todo.push(protoOf(o));
+    }
+    return root;
+  }
+
+  // The intrinsics no global names: the prototypes of functions, iterators
+  // and generators a script can make.
+  const intrinsics = [];
+  const reach = (make) => {
+    try {
+      intrinsics.push(make());
+    } catch (e) {
+      // An engine without it.
+    }
+  };
+  reach(() => function* () {});
+  reach(() => async function () {});
+  reach(() => async function* () {});
+  reach(() => (async function* () {})());
+  reach(() => (function* () {})());
+  reach(() => [][Symbol.iterator]());
+  reach(() => new Map()[Symbol.iterator]());
+  reach(() => new Set()[Symbol.iterator]());
+  reach(() => ""[Symbol.iterator]());
+  reach(() => /a/[Symbol.matchAll]("a"));
+  reach(() => [].values().map((x) => x));
+  reach(() => Iterator.from({ next() { return { done: true }; } }));
+  for (const o of intrinsics) harden(o);
+  harden(globalThis);
 
   const NO_VALUE =
     "A document doesn't have a value for a field! Use doc[<field>].size()==0 to check if a document is missing a field!";
-  const MAX_TERMS = 4096;
 
-  // load(f): field f's values for the call's documents, as [values, starts]
-  // (document k's are values[starts[k] .. starts[k + 1]]). term(f, ord): a
-  // keyword's term. kinds: 0 a number, 1 a boolean, 2 a keyword (its
-  // ordinals), 3 a mapped field no script can read. state[0]: the document
-  // running, for an error.
-  return function (load, term, user, names, kinds, state) {
+  // need(f): stops the call for the host to load field f, after which the
+  // document runs again. cols[f]: field f's column for the call's documents,
+  // as [values, starts, terms] (document k's are values[starts[k] ..
+  // starts[k + 1]], a keyword's terms beside its ordinals), or undefined
+  // until loaded. kinds: 0 a number, 1 a boolean, 2 a keyword, 3 a mapped
+  // field no script can read. state[0]: the document running.
+  return function (need, user, names, kinds, cols, state) {
     const n = names.length;
-    const vals = new Array(n).fill(null);
-    const starts = new Array(n).fill(null);
-    const loaded = new Float64Array(n).fill(-1);
-    const terms = [];
-    for (let f = 0; f < n; f++) terms.push(new Map());
-    let epoch = 0;
     let at = 0;
-    let segment = -1;
+    // Whether the document running asked for a field: its result is
+    // dropped, whatever the script made of the error.
+    let faulted = false;
 
     function column(f) {
-      if (loaded[f] !== epoch) {
-        const c = load(f);
-        vals[f] = c[0];
-        starts[f] = c[1];
-        loaded[f] = epoch;
+      const c = cols[f];
+      if (c === undefined) {
+        faulted = true;
+        need(f);
+        // The host stops the call before this returns to the script.
+        throw new Error("the field is not loaded");
       }
+      return c;
     }
 
     function count(f) {
-      column(f);
-      const s = starts[f];
+      const s = column(f)[1];
       return s[at + 1] - s[at];
     }
 
     function item(f, k) {
-      column(f);
-      const s = starts[f];
+      const c = column(f);
+      const s = c[1];
       const from = s[at];
       const len = s[at + 1] - from;
       if (len === 0) throw new Error(NO_VALUE);
       if (!(k >= 0 && k < len)) {
         throw new RangeError(`Index ${k} out of bounds for length ${len}`);
       }
-      const v = vals[f][from + k];
       switch (kinds[f]) {
         case 1:
-          return v !== 0;
-        case 2: {
-          const m = terms[f];
-          let t = m.get(v);
-          if (t === undefined) {
-            t = term(f, v);
-            if (m.size >= MAX_TERMS) m.clear();
-            m.set(v, t);
-          }
-          return t;
-        }
+          return c[0][from + k] !== 0;
+        case 2:
+          return c[2][from + k];
         default:
-          return v;
+          return c[0][from + k];
       }
     }
 
+    // Only the runner makes a field.
+    const MAKER = {};
+
     // doc['f']: its values in the document running.
     class Field {
-      constructor(f) {
-        this.f = f;
-        Object.freeze(this);
+      #f;
+      constructor(maker, f) {
+        if (maker !== MAKER) throw new TypeError("Illegal constructor");
+        this.#f = f;
+        freeze(this);
       }
       get value() {
-        return item(this.f, 0);
+        return item(this.#f, 0);
       }
       get(k) {
-        return item(this.f, k);
+        return item(this.#f, k);
       }
       size() {
-        return count(this.f);
+        return count(this.#f);
       }
       get length() {
-        return count(this.f);
+        return count(this.#f);
       }
       get empty() {
-        return count(this.f) === 0;
+        return count(this.#f) === 0;
       }
       isEmpty() {
-        return count(this.f) === 0;
+        return count(this.#f) === 0;
       }
       get values() {
-        const c = count(this.f);
+        const c = count(this.#f);
         const out = [];
-        for (let k = 0; k < c; k++) out.push(item(this.f, k));
+        for (let k = 0; k < c; k++) out.push(item(this.#f, k));
         return out;
       }
       [Symbol.iterator]() {
         return this.values[Symbol.iterator]();
       }
     }
-    Object.freeze(Field.prototype);
-    Object.freeze(Field);
 
     // doc['f'] for a field without doc values a script can read.
     function unreadable(name) {
       const fail = () => {
         throw new Error(`doc[${name}]: the field has no doc values a js script can read`);
       };
-      return Object.freeze({
+      return {
         get value() {
           return fail();
         },
@@ -148,14 +197,14 @@
         get values() {
           return fail();
         },
-      });
+      };
     }
 
-    const base = Object.freeze({
+    const base = {
       containsKey(name) {
         return Object.prototype.hasOwnProperty.call(doc, name);
       },
-    });
+    };
     // Any other name: Painless's error for a field the mapping lacks.
     const missing = new Proxy(base, {
       get(target, key, receiver) {
@@ -168,32 +217,28 @@
     const doc = Object.create(missing);
     for (let f = 0; f < n; f++) {
       Object.defineProperty(doc, names[f], {
-        value: kinds[f] === 3 ? unreadable(names[f]) : new Field(f),
+        value: kinds[f] === 3 ? unreadable(names[f]) : new Field(MAKER, f),
         enumerable: true,
       });
     }
-    Object.freeze(doc);
+    harden(base);
+    harden(Field);
+    harden(doc);
+    freeze(missing);
 
     function what(r) {
       return r === null ? "null" : Array.isArray(r) ? "an array" : typeof r;
     }
 
-    function enter(seg) {
-      epoch++;
-      if (seg !== segment) {
-        segment = seg;
-        for (const m of terms) m.clear();
-      }
-    }
-
-    return Object.freeze({
-      // Documents 0 .. count of the call into out, as numbers (mode 0) or
+    return freeze({
+      // Documents from .. count of the call into out, as numbers (mode 0) or
       // booleans as 1 and 0 (mode 1).
-      batch(count, out, scores, params, mode, seg) {
-        enter(seg);
-        for (at = 0; at < count; at++) {
+      batch(from, count, out, scores, params, mode) {
+        faulted = false;
+        for (at = from; at < count; at++) {
           state[0] = at;
           const r = user(doc, params, scores === null ? undefined : scores[at]);
+          if (faulted) return;
           if (mode === 1) {
             if (typeof r !== "boolean") {
               throw new TypeError(`a filter script must return a boolean, not ${what(r)}`);
@@ -208,11 +253,16 @@
         }
       },
       // The call's one document's value, as the script returns it.
-      one(score, params, seg) {
-        enter(seg);
+      one(score, params) {
+        faulted = false;
         at = 0;
         state[0] = 0;
-        return user(doc, params, score);
+        const r = user(doc, params, score);
+        return faulted ? undefined : r;
+      },
+      // A request's params, as scripts read them.
+      params(p) {
+        return harden(p);
       },
     });
   };

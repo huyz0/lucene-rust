@@ -75,7 +75,10 @@ public final class JsScripts {
         Setting.Property.NodeScope
     );
 
-    /** The heap each search thread's V8 isolate may grow to. */
+    /**
+     * The heap each search thread's V8 isolate may grow to: the node holds up to this much per
+     * thread that has run a js script, outside the JVM heap and its circuit breakers.
+     */
     public static final Setting<ByteSizeValue> MAX_HEAP = Setting.byteSizeSetting(
         "lucene_rust.script.js.max_heap",
         new ByteSizeValue(128, ByteSizeUnit.MB),
@@ -336,56 +339,18 @@ public final class JsScripts {
         out.write(b, 0, b.length);
     }
 
-    /** Most names {@link #names} takes from one script. */
-    private static final int MAX_NAMES = 256;
-
     /**
-     * The names {@code source} may read a field by: its string literals (a template literal's
-     * when it has no substitutions) and identifiers, in order, at most {@link #MAX_NAMES}. A
-     * script reads a field only by a name its source spells out; a name built at run time reads
-     * as a field the mapping lacks.
+     * The names {@code source} may read a field by, more than it does: every identifier, inside
+     * strings and comments too, and whatever sits between two of the same quote (a string
+     * literal, and the code between two). A script reads a field only by a name its source spells
+     * out; a name built at run time reads as a field the mapping lacks. Each field loads only once
+     * the script reads it, so a name too many costs nothing.
      */
     public static Set<String> names(String source) {
         Set<String> out = new LinkedHashSet<>();
         int n = source.length();
-        int i = 0;
-        while (i < n && out.size() < MAX_NAMES) {
-            char c = source.charAt(i);
-            if (c == '/' && i + 1 < n && source.charAt(i + 1) == '/') {
-                while (i < n && source.charAt(i) != '\n') {
-                    i++;
-                }
-            } else if (c == '/' && i + 1 < n && source.charAt(i + 1) == '*') {
-                int end = source.indexOf("*/", i + 2);
-                i = end < 0 ? n : end + 2;
-            } else if (c == '\'' || c == '"' || c == '`') {
-                StringBuilder s = new StringBuilder();
-                boolean plain = true;
-                i++;
-                while (i < n && source.charAt(i) != c) {
-                    char d = source.charAt(i);
-                    if (d == '\\' && i + 1 < n) {
-                        char e = source.charAt(i + 1);
-                        s.append(switch (e) {
-                            case 'n' -> '\n';
-                            case 't' -> '\t';
-                            case 'r' -> '\r';
-                            default -> e;
-                        });
-                        i += 2;
-                        continue;
-                    }
-                    if (c == '`' && d == '$' && i + 1 < n && source.charAt(i + 1) == '{') {
-                        plain = false;
-                    }
-                    s.append(d);
-                    i++;
-                }
-                i++;
-                if (plain) {
-                    out.add(s.toString());
-                }
-            } else if (Character.isJavaIdentifierStart(c)) {
+        for (int i = 0; i < n;) {
+            if (Character.isJavaIdentifierStart(source.charAt(i))) {
                 int start = i;
                 while (i < n && Character.isJavaIdentifierPart(source.charAt(i))) {
                     i++;
@@ -395,7 +360,42 @@ public final class JsScripts {
                 i++;
             }
         }
+        for (char q : new char[] { '\'', '"', '`' }) {
+            int from = source.indexOf(q);
+            while (from >= 0) {
+                int to = source.indexOf(q, from + 1);
+                if (to < 0) {
+                    break;
+                }
+                String s = source.substring(from + 1, to);
+                out.add(s);
+                if (s.indexOf('\\') >= 0) {
+                    out.add(unescaped(s));
+                }
+                from = to;
+            }
+        }
         return out;
+    }
+
+    /** {@code s} with its JavaScript escapes read. */
+    private static String unescaped(String s) {
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char e = s.charAt(++i);
+                out.append(switch (e) {
+                    case 'n' -> '\n';
+                    case 't' -> '\t';
+                    case 'r' -> '\r';
+                    default -> e;
+                });
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     /** The names of {@link #names} the mapping has, in order. */

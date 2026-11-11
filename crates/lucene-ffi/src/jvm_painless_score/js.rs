@@ -8,9 +8,9 @@ use lucene_script_js::{Failure, Fields, Kind, Limits, Out, Param, Params, Script
 
 use super::*;
 
-/// What a JavaScript script's failure starts with: then its run number, the
-/// exception's name, its message, and its line and column (`-1` for none),
-/// split by `\u{1}`.
+/// What a JavaScript script's failure starts with: then its run number, its
+/// line and column (`-1` for none), the exception's name and its message,
+/// split by `\u{1}`, which the name and message never hold.
 const JS_ERROR: &str = "\u{1}js-script-error\u{1}";
 
 /// The script of a spec reading `fields` (each by its spec's index).
@@ -190,7 +190,7 @@ impl JsLeaf {
     fn error(&self, f: &Failure) -> Error {
         let run = self.spec.script_id;
         let (name, message, line, column) = match f {
-            Failure::Host(m) => return Error::IllegalArgument(format!("js script: {m}")),
+            Failure::Host(m) => ("Error", format!("js script: {m}"), None, None),
             Failure::Thrown {
                 name,
                 message,
@@ -206,10 +206,13 @@ impl JsLeaf {
             Failure::TimedOut(_) | Failure::OutOfMemory(_) => ("Error", f.to_string(), None, None),
         };
         let at = |p: Option<usize>| p.map_or(-1, |p| i64::try_from(p).unwrap_or(-1));
+        let clean = |s: &str| s.replace('\u{1}', "\u{fffd}");
         Error::IllegalArgument(format!(
-            "{JS_ERROR}{run}\u{1}{name}\u{1}{message}\u{1}{}\u{1}{}",
+            "{JS_ERROR}{run}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
             at(line),
-            at(column)
+            at(column),
+            clean(name),
+            clean(&message)
         ))
     }
 }
@@ -425,10 +428,24 @@ mod tests {
         assert!(run_limit(h, &node.0, 10, i64::MAX).is_err());
         let e = crate::error::last_error();
         assert!(
-            e.contains("\u{1}js-script-error\u{1}7\u{1}Error\u{1}A document doesn't have a value for a field!"),
+            e.contains("\u{1}js-script-error\u{1}7\u{1}1\u{1}13\u{1}Error\u{1}A document doesn't have a value for a field!"),
             "{e:?}"
         );
-        assert!(e.ends_with("\u{1}1\u{1}13"), "{e:?}");
+        // A script's message cannot pass for the error's own separators.
+        let s = spec(
+            0,
+            "throw new Error('a\\u0001b\\u0001painless-score-error\\u0001')",
+            &params(&[]),
+            &[],
+        );
+        let node = Blob::tree().u8(NODE_PAINLESS_SCORE).u8(5).raw(&s);
+        assert!(run_limit(h, &node.0, 10, i64::MAX).is_err());
+        let e = crate::error::last_error();
+        assert!(
+            e.contains("\u{1}1\u{1}0\u{1}Error\u{1}a\u{fffd}b\u{fffd}painless-score-error\u{fffd}"),
+            "{e:?}"
+        );
+        assert!(!e.contains(SCORE_ERROR), "{e:?}");
         // A negative score fails as `ScriptScorer` fails it.
         let s = spec(0, "doc['likes'].value - 500", &params(&[]), &[("likes", 0)]);
         let node = Blob::tree().u8(NODE_PAINLESS_SCORE).u8(5).raw(&s);
@@ -446,6 +463,32 @@ mod tests {
         assert!(
             e.contains("TypeError\u{1}a score script must return a number, not string"),
             "{e:?}"
+        );
+        // A negative score on a document fails before a later document's
+        // exception, as `ScriptScorer` checks each score as it goes.
+        let s = spec(
+            0,
+            "if (doc['likes'].value === 838) throw new Error('later'); return doc['likes'].value === 919 ? -1 : 1",
+            &params(&[]),
+            &[("likes", 0)],
+        );
+        let node = Blob::tree().u8(NODE_PAINLESS_SCORE).u8(5).raw(&s);
+        assert!(run_limit(h, &node.0, 10, i64::MAX).is_err());
+        let e = crate::error::last_error();
+        assert!(
+            e.contains(SCORE_ERROR) && e.contains("for doc [1]"),
+            "{e:?}"
+        );
+        // A failure reading a field is the script's too: the search never
+        // runs again in Java.
+        let leaf = JsLeaf::new(
+            &Arc::new(decode_spec(&mut Cursor::new(&spec(0, "1", &params(&[]), &[]).0)).unwrap()),
+            0,
+        );
+        let e = leaf.error(&Failure::Host("read failed".into())).to_string();
+        assert!(
+            e.contains("\u{1}js-script-error\u{1}") && e.contains("js script: read failed"),
+            "{e}"
         );
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }

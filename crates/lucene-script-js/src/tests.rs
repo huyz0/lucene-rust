@@ -255,6 +255,28 @@ fn scripts_cannot_reach_out_or_keep_state() {
         ("Array.prototype.push = null; return 1", "TypeError"),
         ("params.m.k = 2; return 1", "TypeError"),
         ("undeclared = 1; return 1", "ReferenceError"),
+        // Below the globals too: their functions, namespaces and the
+        // prototypes no global names.
+        ("Math.max.n = 1; return 1", "TypeError"),
+        ("JSON.parse.x = 1; return 1", "TypeError"),
+        (
+            "Object.getPrototypeOf(function* () {}).x = 1; return 1",
+            "TypeError",
+        ),
+        (
+            "Object.getPrototypeOf([].values().map((x) => x)).x = 1; return 1",
+            "TypeError",
+        ),
+        (
+            "Object.getPrototypeOf(/a/[Symbol.matchAll]('a')).x = 1; return 1",
+            "TypeError",
+        ),
+        // No memory outside the heap V8 limits.
+        ("new Uint8Array(1 << 30)", "ReferenceError"),
+        ("new ArrayBuffer(8)", "ReferenceError"),
+        ("new SharedArrayBuffer(8)", "ReferenceError"),
+        ("new DataView(null)", "ReferenceError"),
+        ("Intl.Collator", "ReferenceError"),
     ] {
         let e = batch(&script(src, &[]), &p, &mut f, 1, None).unwrap_err();
         assert!(
@@ -274,6 +296,110 @@ fn scripts_cannot_reach_out_or_keep_state() {
             "{src}"
         );
     }
+}
+
+#[test]
+fn deep_params_freeze_all_the_way_down() {
+    let mut deep = Param::Map(vec![]);
+    for _ in 0..200 {
+        deep = Param::Map(vec![("a".into(), deep)]);
+    }
+    let p = params(&[("d", deep)]);
+    let s = script(
+        "let o = params.d; while (o.a) o = o.a; o.x = 1; return 1",
+        &[],
+    );
+    let e = batch(&s, &p, &mut mem(vec![]), 1, None).unwrap_err();
+    assert!(
+        matches!(&e, Failure::Thrown { name, .. } if name == "TypeError"),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn a_field_is_made_only_by_the_runner() {
+    let mut f = mem(vec![vec![vec![1.0]], vec![vec![2.0]]]);
+    let s = script(
+        "new (doc['a'].constructor)({}, 1).value",
+        &[("a", Kind::Number), ("b", Kind::Unreadable)],
+    );
+    let e = batch(&s, &params(&[]), &mut f, 1, None).unwrap_err();
+    assert!(
+        matches!(&e, Failure::Thrown { name, message, .. } if name == "TypeError" && message == "Illegal constructor"),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn a_field_read_first_runs_its_document_again() {
+    // `b` is read on the second document only, inside a try: the script
+    // never sees the read that loads it.
+    let s = script(
+        "if (doc['a'].value < 2) return 0; try { return doc['b'].value; } catch (e) { return -1; }",
+        &[("a", Kind::Number), ("b", Kind::Number)],
+    );
+    let p = params(&[]);
+    let mut f = mem(vec![
+        vec![vec![1.0], vec![2.0], vec![3.0]],
+        vec![vec![10.0], vec![20.0], vec![30.0]],
+    ]);
+    assert_eq!(
+        batch(&s, &p, &mut f, 3, None).unwrap(),
+        vec![0.0, 20.0, 30.0]
+    );
+    assert_eq!(f.loads, 2);
+    // Later calls load both up front.
+    f.loads = 0;
+    assert_eq!(
+        batch(&s, &p, &mut f, 3, None).unwrap(),
+        vec![0.0, 20.0, 30.0]
+    );
+    assert_eq!(f.loads, 2);
+    let mut one = mem(vec![vec![vec![5.0]], vec![vec![7.0]]]);
+    assert_eq!(
+        run_one(&s, &p, 0, None, &mut one).unwrap(),
+        Out::Number(7.0)
+    );
+}
+
+#[test]
+fn a_throw_keeps_the_documents_before_it() {
+    let s = script(
+        "if (doc['a'].value === 3) throw new Error('three'); return doc['a'].value * 2",
+        &[("a", Kind::Number)],
+    );
+    let mut f = mem(vec![vec![vec![1.0], vec![2.0], vec![3.0], vec![4.0]]]);
+    let mut out = vec![0.0; 4];
+    let e = run_batch(&s, &params(&[]), 0, 4, None, false, &mut f, &mut out).unwrap_err();
+    assert!(
+        matches!(&e, Failure::Thrown { at: 2, message, .. } if message == "three"),
+        "{e:?}"
+    );
+    assert_eq!(&out[..2], &[2.0, 4.0]);
+}
+
+#[test]
+fn one_large_allocation_stops_the_script_and_not_the_process() {
+    std::thread::spawn(|| {
+        let limits = Limits {
+            timeout: Duration::from_secs(60),
+            max_heap: 16 << 20,
+        };
+        for src in [
+            // Small objects, which V8's heap limit stops.
+            "const a = []; for (let i = 0; i < 64; i++) a.push(new Array(1 << 20).fill(i)); return a.length",
+            // Large strings, which it lets past: the watchdog stops them.
+            "const a = []; for (let i = 0; ; i++) { const s = 'x'.repeat(1 << 23) + i; s.indexOf('y'); a.push(s); }",
+            // One string far past the limit at once.
+            "const s = 'x'.repeat(1 << 28) + 'y'; s.indexOf('z'); for (;;) {}",
+        ] {
+            let s = Script::new(src, vec![], limits);
+            let e = batch(&s, &params(&[]), &mut mem(vec![]), 1, None).unwrap_err();
+            assert_eq!(e, Failure::OutOfMemory(16 << 20), "{src}");
+        }
+    })
+    .join()
+    .unwrap();
 }
 
 #[test]
