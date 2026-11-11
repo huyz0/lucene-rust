@@ -34,11 +34,14 @@ import java.util.Optional;
  * neural-search's {@code _plugins/_neural/warmup/{index}} and {@code clear_cache/{index}} on
  * {@code index.sparse} indexes, under its action names, errors and {@code _shards} responses.
  * neural-search loads forward indexes and clustered postings into JVM caches and evicts them; the
- * plugin keeps none, so warmup opens each shard's searcher, as k-NN's does, and clearing has
- * nothing to evict.
+ * plugin keeps none, so both open each shard's searcher (failing a shard that cannot serve one, as
+ * neural-search does) and evict nothing.
  */
 public final class SparseShardsTransport {
     private SparseShardsTransport() {}
+
+    /** neural-search's {@code seismic_thread_pool}, with its {@code seismic_thread_pool.*} settings. */
+    public static final String THREAD_POOL = "seismic_thread_pool";
 
     public static final class WarmupAction extends ActionType<KnnShardsTransport.Response> {
         public static final WarmupAction INSTANCE = new WarmupAction();
@@ -121,7 +124,11 @@ public final class SparseShardsTransport {
         }
 
         @Override
-        protected void onShard(IndexShard shard) {}
+        protected void onShard(IndexShard shard) {
+            try (Engine.Searcher searcher = shard.acquireSearcher("neural-sparse-clear-cache")) {
+                searcher.getIndexReader().leaves();
+            }
+        }
     }
 
     /** {@code RestNeuralSparseWarmupHandler} ({@code warmup} true) and {@code RestNeuralSparseClearCacheHandler}. */

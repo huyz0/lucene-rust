@@ -735,6 +735,16 @@ public class RustSearchPlugin extends Plugin implements
         if (stockKnn == false) {
             builders.add(new org.opensearch.threadpool.FixedExecutorBuilder(settings, "training", 1, 1, "knn", false));
         }
+        builders.add(
+            new org.opensearch.threadpool.FixedExecutorBuilder(
+                settings,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.THREAD_POOL,
+                org.lucenerust.opensearch.neural.NeuralSearchSettings.SPARSE_ALGO_PARAM_INDEX_THREAD_QTY.getDefault(Settings.EMPTY),
+                -1,
+                org.lucenerust.opensearch.sparse.SparseShardsTransport.THREAD_POOL,
+                false
+            )
+        );
         if (stockMl == false) {
             builders.addAll(MlCommons.executorBuilders(settings));
         }

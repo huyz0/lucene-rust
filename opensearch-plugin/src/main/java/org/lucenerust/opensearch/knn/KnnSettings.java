@@ -119,6 +119,31 @@ public final class KnnSettings {
         Property.Dynamic
     );
 
+    /** k-NN's breaker limit: a byte size, or a percentage of the memory outside the heap. */
+    static org.opensearch.core.common.unit.ByteSizeValue parseBreakerLimit(String value, String name) {
+        if (value != null && value.endsWith("%")) {
+            String percent = value.substring(0, value.length() - 1);
+            try {
+                double p = Double.parseDouble(percent);
+                if (p < 0 || p > 100) {
+                    throw new org.opensearch.OpenSearchParseException("percentage should be in [0-100], got [{}]", percent);
+                }
+                long physical = org.opensearch.monitor.os.OsProbe.getInstance().getTotalPhysicalMemorySize();
+                if (physical <= 0) {
+                    throw new IllegalStateException("Physical memory size could not be determined");
+                }
+                long heap = org.opensearch.monitor.jvm.JvmInfo.jvmInfo().getMem().getHeapMax().getBytes();
+                return new org.opensearch.core.common.unit.ByteSizeValue(
+                    (long) ((p / 100) * (physical - heap)),
+                    org.opensearch.core.common.unit.ByteSizeUnit.BYTES
+                );
+            } catch (NumberFormatException e) {
+                throw new org.opensearch.OpenSearchParseException("failed to parse [{}] as a double", e, percent);
+            }
+        }
+        return org.opensearch.core.common.unit.ByteSizeValue.parseBytesSizeValue(value, null, name);
+    }
+
     private static Setting<Boolean> nodeBool(String key, boolean def, boolean dynamic) {
         return dynamic
             ? Setting.boolSetting(key, def, Property.NodeScope, Property.Dynamic)
@@ -137,9 +162,33 @@ public final class KnnSettings {
             SHARD_LEVEL_RESCORING_DISABLED,
             FAISS_FILTER_DISABLE_EXACT_SEARCH,
             INDEX_REMOTE_BUILD,
-            nodeInt("knn.algo_param.index_thread_qty", 1),
+            new Setting<>(
+                "knn.algo_param.index_thread_qty",
+                settings -> Integer.toString(org.opensearch.common.util.concurrent.OpenSearchExecutors.allocatedProcessors(settings) >= 32 ? 4 : 1),
+                s -> {
+                    int value = Integer.parseInt(s);
+                    if (value < 1 || value > 32) {
+                        throw new IllegalArgumentException("Value must be between 1 and 32");
+                    }
+                    return value;
+                },
+                Property.NodeScope,
+                Property.Dynamic
+            ),
             nodeBool("knn.memory.circuit_breaker.enabled", true, true),
-            Setting.simpleString("knn.memory.circuit_breaker.limit", "50%", Property.NodeScope, Property.Dynamic),
+            new Setting<>(
+                "knn.memory.circuit_breaker.limit",
+                "50%",
+                s -> parseBreakerLimit(s, "knn.memory.circuit_breaker.limit"),
+                Property.NodeScope,
+                Property.Dynamic
+            ),
+            Setting.groupSetting(
+                "knn.memory.circuit_breaker.limit.",
+                limits -> limits.keySet().forEach(k -> parseBreakerLimit(limits.get(k), "knn.memory.circuit_breaker.limit")),
+                Property.NodeScope,
+                Property.Dynamic
+            ),
             nodeBool("knn.circuit_breaker.triggered", false, true),
             Setting.doubleSetting("knn.circuit_breaker.unset.percentage", 75, 0, 100, Property.NodeScope, Property.Dynamic),
             nodeBool("knn.feature.cache.force_evict.enabled", false, true),

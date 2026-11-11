@@ -485,7 +485,7 @@ def warmup(c, ours, stock):
         compare(c, f"{op} GET", *both(ours, stock, lambda n: n.call("GET", f"/_plugins/_neural/{op}/wsparse")[0]))
 
 
-PREFIXES = ("knn.", "plugins.neural_search.", "index.knn.", "index.neural_search.")
+PREFIXES = ("knn.", "plugins.neural_search.", "index.knn.", "index.neural_search.", "seismic_thread_pool.")
 
 
 def settings(c, ours, stock):
@@ -507,9 +507,17 @@ def settings(c, ours, stock):
     for k in sorted(set(a) | set(b)):
         compare(c, f"index setting {k}", a.get(k, "<missing>"), b.get(k, "<missing>"))
     for key, value in (("plugins.neural_search.circuit_breaker.overhead", -1), ("knn.quantization.cache.size.limit", "50%"),
-                       ("plugins.neural_search.sparse.algo_param.index_thread_qty", 0), ("knn.remote_index_build.poll.interval", "x")):
+                       ("plugins.neural_search.sparse.algo_param.index_thread_qty", 0), ("knn.remote_index_build.poll.interval", "x"),
+                       ("knn.memory.circuit_breaker.limit", "150%"), ("knn.memory.circuit_breaker.limit", "abc"),
+                       ("knn.memory.circuit_breaker.limit.hot", "101%"), ("knn.algo_param.index_thread_qty", 0),
+                       ("knn.algo_param.index_thread_qty", 33)):
         body = {"persistent": {key: value}}
         compare(c, f"bad setting {key}", *both(ours, stock, lambda n: answer(n.call("PUT", "/_cluster/settings", body))))
+    for key, value in (("knn.memory.circuit_breaker.limit.hot", "40%"), ("knn.memory.circuit_breaker.limit", "60%"),
+                       ("knn.algo_param.index_thread_qty", 32), ("knn.circuit_breaker.unset.percentage", 80)):
+        for v in (value, None):
+            body = {"persistent": {key: v}}
+            compare(c, f"set {key}={v}", *both(ours, stock, lambda n: answer(n.call("PUT", "/_cluster/settings", body))))
 
 
 def main():
