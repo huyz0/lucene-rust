@@ -618,7 +618,7 @@ public class RustSearchPlugin extends Plugin implements
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
-            MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);
+            MlCommons.initialize(client, clusterService, threadPool, scriptService, environment.dataFiles()[0], runtime);
         }
         return org.lucenerust.opensearch.neural.NeuralStats.initialize(clusterService, indexNameExpressionResolver, environment.settings());
     }

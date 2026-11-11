@@ -20,6 +20,9 @@ pub enum Protocol {
     Http,
     /// AWS Signature Version 4.
     AwsSigV4,
+    /// Google Cloud (Vertex AI): plain HTTP, with the OAuth2 access token
+    /// the caller signs in for as the `Authorization` header.
+    GoogleCloud,
 }
 
 /// One action of a connector.
@@ -133,6 +136,34 @@ pub enum Tensor {
     Map(Json),
     /// Tensors a post-process script wrote as model tensor JSON.
     Raw(Json),
+}
+
+impl Tensor {
+    /// The tensor as ml-commons' `ModelTensor` writes it in a predict
+    /// response.
+    pub fn to_json(&self) -> Json {
+        match self {
+            Tensor::Numbers {
+                name,
+                data_type,
+                shape,
+                data,
+            } => Json::Object(vec![
+                ("name".into(), Json::String(name.clone())),
+                ("data_type".into(), Json::String(data_type.clone())),
+                (
+                    "shape".into(),
+                    Json::Array(shape.iter().map(|d| Json::Number(d.to_string())).collect()),
+                ),
+                ("data".into(), Json::Array(data.clone())),
+            ]),
+            Tensor::Map(m) => Json::Object(vec![
+                ("name".into(), Json::String("response".into())),
+                ("dataAsMap".into(), m.clone()),
+            ]),
+            Tensor::Raw(v) => v.clone(),
+        }
+    }
 }
 
 /// What reading a response needs next.
@@ -278,6 +309,7 @@ impl Connector {
         let protocol = match str_field(&v, "protocol").as_deref() {
             Some("http") => Protocol::Http,
             Some("aws_sigv4") => Protocol::AwsSigV4,
+            Some("google_cloud") => Protocol::GoogleCloud,
             Some(p) => return Err(arg(format!("unsupported connector protocol: {p}"))),
             None => return Err(arg("connector protocol is null")),
         };

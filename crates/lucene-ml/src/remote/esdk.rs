@@ -273,6 +273,29 @@ pub fn decrypt(master_key: &[u8], message: &[u8]) -> Result<Vec<u8>> {
     Ok(plain)
 }
 
+/// A new master key, as ml-commons makes one: 32 random bytes, base64.
+pub fn generate_master_key() -> Result<String> {
+    let mut key = [0u8; 32];
+    SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| bad("no randomness"))?;
+    Ok(base64_encode(&key))
+}
+
+/// The credential value ml-commons stores: `plaintext` encrypted under the
+/// base64 master key, base64.
+pub fn encrypt_credential(master_key: &str, plaintext: &str) -> Result<String> {
+    let key = base64_decode(master_key).ok_or_else(|| bad("the master key is not base64"))?;
+    encrypt(&key, plaintext.as_bytes()).map(|m| base64_encode(&m))
+}
+
+/// A stored credential value decrypted under the base64 master key.
+pub fn decrypt_credential(master_key: &str, stored: &str) -> Result<String> {
+    let key = base64_decode(master_key).ok_or_else(|| bad("the master key is not base64"))?;
+    let message = base64_decode(stored).ok_or_else(|| bad("the credential is not base64"))?;
+    String::from_utf8(decrypt(&key, &message)?).map_err(|_| bad("the credential is not UTF-8"))
+}
+
 /// Encrypts `plaintext` as the SDK does, under the 32-byte master key.
 pub fn encrypt(master_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
     let rng = SystemRandom::new();

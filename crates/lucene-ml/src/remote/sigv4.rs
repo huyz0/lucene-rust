@@ -1,8 +1,8 @@
 //! AWS Signature Version 4, as the AWS SDK for Java v2's `AwsV4HttpSigner`
 //! signs a connector's request: the path encoded twice (the SDK's default
 //! for every service but S3), every header the request carries signed,
-//! `host` added, `x-amz-content-sha256` filled with the payload hash when
-//! the connector asks for it, and the session token sent as
+//! `host` added, `x-amz-content-sha256` set to the payload hash (whatever
+//! value the connector gave it), and the session token sent as
 //! `X-Amz-Security-Token`.
 
 use aws_lc_rs::{digest, hmac};
@@ -25,7 +25,7 @@ pub struct Signing<'a> {
 const HASH_HEADER: &str = "x-amz-content-sha256";
 
 /// Signs a request in place: `headers` gains `Host` (unless present),
-/// `X-Amz-Date`, the security token and `Authorization`. `amz_date` is the
+/// `x-amz-content-sha256` (unless present), `X-Amz-Date`, the security token and `Authorization`. `amz_date` is the
 /// signing time as `yyyyMMddTHHmmssZ`.
 pub fn sign(
     method: &str,
@@ -36,10 +36,15 @@ pub fn sign(
     amz_date: &str,
 ) {
     let payload_hash = hex(digest::digest(&digest::SHA256, body).as_ref());
+    let mut hashed = false;
     for (k, v) in headers.iter_mut() {
         if k.eq_ignore_ascii_case(HASH_HEADER) {
-            *v = payload_hash.clone();
+            v.clone_from(&payload_hash);
+            hashed = true;
         }
+    }
+    if !hashed {
+        headers.push((HASH_HEADER.into(), payload_hash.clone()));
     }
     if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
         headers.push(("Host".into(), url.host_header()));
@@ -336,7 +341,7 @@ mod tests {
 
     #[test]
     fn matches_the_aws_test_suite() {
-        // aws-sig-v4-test-suite get-vanilla-query-order-key-case.
+        // aws-sig-v4-test-suite get-vanilla-query-order-key-case, signed as the Java SDK v2 signs it.
         let url = Url::parse("https://example.amazonaws.com/?Param2=value2&Param1=value1").unwrap();
         let mut headers = vec![];
         let signing = Signing {
@@ -349,7 +354,7 @@ mod tests {
         sign("GET", &url, &mut headers, b"", &signing, "20150830T123600Z");
         assert_eq!(header(&headers, "host"), "example.amazonaws.com");
         assert!(header(&headers, "authorization").ends_with(
-            "SignedHeaders=host;x-amz-date, Signature=b97d918cfa904a5beff61c982a1b6f458b799221646efd99d3219ec94cdf2500"
+            "SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=311c7f58b10b06de8540bb5a27f441ee0609f1d5ad7b191e68d7ea87d90e3d6b"
         ));
         let mut headers = vec![];
         let with_token = Signing {
@@ -365,7 +370,10 @@ mod tests {
             "20150830T123600Z",
         );
         assert_eq!(header(&headers, "x-amz-security-token"), "tok");
-        assert!(header(&headers, "authorization").contains("host;x-amz-date;x-amz-security-token"));
+        assert!(header(&headers, "authorization").ends_with(
+            "host;x-amz-content-sha256;x-amz-date;x-amz-security-token, \
+             Signature=d8a6cc3f3f5cafb1231cdb2b3062a10a81aa9d29e13bdb507d23ce97a339fcd9"
+        ));
     }
 
     #[test]

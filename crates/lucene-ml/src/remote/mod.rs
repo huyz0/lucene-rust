@@ -7,6 +7,7 @@
 
 pub mod connector;
 pub mod esdk;
+pub mod google;
 pub mod json;
 pub mod jsonpath;
 pub mod sigv4;
