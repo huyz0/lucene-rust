@@ -34,6 +34,7 @@ mod jvm_analysis;
 mod jvm_fetch;
 mod jvm_function_score;
 mod jvm_invert;
+mod jvm_join;
 mod jvm_knn;
 mod jvm_knn_painless;
 mod jvm_knn_score;
