@@ -50,7 +50,9 @@ A request runs native when **all** of these hold:
   `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (M13 T13.6: a
   `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range`
   and `term` on every numeric type, `date` and `ip` (`PointRangeQuery` of
-  any width) and `terms` on them (`PointInSetQuery`), and `exists`
+  any width; a `long`, `date` or `double` range with doc values keeps its
+  `IndexOrDocValuesQuery`, which takes the doc-values side per segment when
+  a cheaper clause leads, as Lucene's does) and `terms` on them (`PointInSetQuery`), and `exists`
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
   (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
