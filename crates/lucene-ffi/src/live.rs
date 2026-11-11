@@ -80,6 +80,8 @@ struct ViewHandle {
     /// once it gave one: searches sharing it get the same handle, so the
     /// caller can tell they read the same documents.
     id: OnceLock<u64>,
+    /// Whether a search took it as the shared view ([`Warmer::shared_view`]).
+    served: std::sync::atomic::AtomicBool,
 }
 
 impl ViewHandle {
@@ -343,7 +345,11 @@ impl Warmer {
             drop(old);
             return None;
         }
-        shared.as_ref().filter(|h| h.commit == commit).cloned()
+        let h = shared.as_ref().filter(|h| h.commit == commit).cloned();
+        if let Some(h) = &h {
+            h.served.store(true, Ordering::Relaxed);
+        }
+        h
     }
 
     /// Forgets a shared view of a commit before `generation`, which the
@@ -421,8 +427,15 @@ impl Warmer {
     }
 
     /// Whether the warmer should open a new shared view: the shared one is
-    /// missing, of another commit, half its bound old, or lacks documents
-    /// added since.
+    /// missing or of another commit; half its bound old with nothing
+    /// written since (renewed); or it lacks documents added since and a
+    /// search took it or it is three quarters of its bound old. A younger
+    /// view no search took is not replaced by one with more documents:
+    /// under a steady stream of writes the warmer would open one every
+    /// [`WARM_EVERY`], and write chunks and make reads for each, however
+    /// rarely searches come. At three quarters the next view is shared
+    /// before the current one expires, so searches further apart than the
+    /// bound still find one written ahead.
     fn needs_view(&self, w: &EngineWriter, commit: Option<i64>) -> bool {
         let Some(max) = self.max_staleness() else {
             return false;
@@ -435,16 +448,21 @@ impl Warmer {
         let Some(h) = shared else {
             return true;
         };
-        if h.commit != commit || h.opened().elapsed() >= max / 2 {
+        if h.commit != commit {
             return true;
         }
+        let age = h.opened().elapsed();
         let now = w.writer().live_slot_buffers();
-        now.iter().any(|b| {
+        let grown = now.iter().any(|b| {
             !h.view
                 .buffers
                 .iter()
                 .any(|v| v.id == b.id && v.max_doc == b.max_doc)
-        })
+        });
+        if !grown {
+            return age >= max / 2;
+        }
+        h.served.load(Ordering::Relaxed) || age >= max.saturating_sub(max / 4)
     }
 
     fn asked(&self, commit: Option<i64>) {
@@ -825,6 +843,25 @@ fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bo
             "warming the buffers panicked".into(),
         ))
     })
+}
+
+/// Whether `w`'s warmer would open a new shared view of `commit` now.
+#[cfg(test)]
+pub(crate) fn needs_shared_view(w: &EngineWriter, commit: Option<i64>) -> bool {
+    w.live_warmer().needs_view(w, commit)
+}
+
+/// The shared view of `commit` as a search takes it: its blob.
+#[cfg(test)]
+pub(crate) fn serve_shared_view(w: &EngineWriter, commit: Option<i64>) -> Option<Vec<u8>> {
+    w.live_warmer().shared_view(commit).map(|h| h.blob.clone())
+}
+
+/// Opens a view of `commit` as `w`'s warmer does, and shares it.
+#[cfg(test)]
+pub(crate) fn warm_shared_view(w: &Arc<EngineWriter>, commit: Option<i64>) {
+    let h = open_view(w, commit, true).expect("a view");
+    w.live_warmer().share_view(&h);
 }
 
 /// Whether `w`'s warming thread runs.
@@ -1288,6 +1325,8 @@ fn open_handle(
     warm: bool,
 ) -> Result<Arc<ViewHandle>, FfiStatus> {
     let h = open_view(w, commit, warm)?;
+    // The search that opened it reads it.
+    h.served.store(true, Ordering::Relaxed);
     w.live_warmer().share_view(&h);
     Ok(h)
 }
@@ -1346,6 +1385,7 @@ fn open_view(
         whole: Mutex::new(Whole::default()),
         prepared: Mutex::new(Vec::new()),
         id: OnceLock::new(),
+        served: std::sync::atomic::AtomicBool::new(false),
     });
     Ok(h)
 }
@@ -1539,7 +1579,10 @@ pub unsafe extern "C" fn ffi_live_view_knn(
                 None => (None, None),
             }
         };
-        let id = view_reader(handle, &v, request, key)?;
+        let id =
+            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnReader, || {
+                view_reader(handle, &v, request, key)
+            })?;
         let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
         let base = lookup(handle, "ffi_live_view_knn: unknown or closed reader")?
             .reader
@@ -1550,7 +1593,10 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         } else {
             buffer_graphs(&v, &h, base, &knn.field)
         };
-        let hits = crate::jvm_knn::search(&h, &knn, &buffers)?;
+        let hits =
+            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnSearch, || {
+                crate::jvm_knn::search(&h, &knn, &buffers)
+            })?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
@@ -2392,11 +2438,14 @@ pub unsafe extern "C" fn ffi_live_view_document_alloc(
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
         let h = view(view_id)?;
         let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
-        let fields = h
+        let mut fields = h
             .writer
             .writer()
             .live_document(&h.view, buffer, doc)
             .map_err(live_error)?;
+        if let Some(derived) = h.writer.live_derived() {
+            derived.inject(&h.writer, &h.view, buffer, doc, &mut fields)?;
+        }
         let mut out = len_i32(fields.len())?.to_le_bytes().to_vec();
         for f in &fields {
             out.extend_from_slice(&f.field_number.to_le_bytes());
@@ -2971,4 +3020,160 @@ fn commit_masks(
         });
     }
     Ok(Some(masks))
+}
+
+/// k-NN derived source over buffered documents: their `_source` is stored
+/// with each derived field's values masked, as a flushed segment's is, and a
+/// fetch puts the vectors the buffer holds back in place, as a segment's
+/// reader does from its vector files.
+pub(crate) struct LiveDerived {
+    fields: lucene_search::derived_source::DerivedFields,
+    /// Each derived field's name, by number.
+    names: HashMap<i32, String>,
+    /// `_primary_term`'s number, which marks a block's root document; `None`
+    /// before it is registered (no document has nested children yet).
+    parent_marker: Option<i32>,
+}
+
+impl LiveDerived {
+    /// The derived fields among `infos` ([`engine_writer::derived_source_list`]),
+    /// `None` when there are none.
+    pub(crate) fn of(infos: Vec<lucene_codecs::field_infos::FieldInfo>) -> Option<Self> {
+        let mut lists: Vec<(String, String)> = Vec::new();
+        let mut names = HashMap::new();
+        for f in &infos {
+            let Some(list) = engine_writer::derived_source_list(f) else {
+                continue;
+            };
+            names.insert(f.number, f.name.clone());
+            match lists.iter_mut().find(|(k, _)| k == list) {
+                Some((_, v)) => {
+                    v.push(',');
+                    v.push_str(&f.name);
+                }
+                None => lists.push((list.to_string(), f.name.clone())),
+            }
+        }
+        if names.is_empty() {
+            return None;
+        }
+        let parent_marker = infos
+            .iter()
+            .find(|f| f.name == "_primary_term")
+            .map(|f| f.number);
+        let infos = lucene_codecs::field_infos::FieldInfos { fields: infos };
+        let fields = lucene_search::derived_source::DerivedFields::from_attributes(&lists, &infos)?;
+        Some(Self {
+            fields,
+            names,
+            parent_marker,
+        })
+    }
+
+    /// `fields`, document `doc` of `view`'s buffer `buffer`'s stored fields,
+    /// with the vectors put back in its `_source`.
+    fn inject(
+        &self,
+        writer: &EngineWriter,
+        view: &LiveView,
+        buffer: usize,
+        doc: i32,
+        fields: &mut [lucene_codecs::stored_fields::StoredField],
+    ) -> Result<(), FfiStatus> {
+        let number = self.fields.source_number();
+        let refused = |e: lucene_codecs::stored_fields::Error| {
+            set_last_error(format!("derived _source of buffered document {doc}: {e}"));
+            FfiStatus::InvalidArgument
+        };
+        for f in fields.iter_mut().filter(|f| f.field_number == number) {
+            let FieldValue::Binary(source) = &f.value else {
+                continue;
+            };
+            // A _source in another content type is stored whole while buffered.
+            if !lucene_search::derived_source::needs_injection(source).unwrap_or(false) {
+                continue;
+            }
+            let vectors = writer
+                .writer()
+                .live_document_vectors(view, buffer, doc, self.parent_marker.unwrap_or(-1))
+                .map_err(live_error)?;
+            let mut from = BufferVectors {
+                names: &self.names,
+                vectors: &vectors,
+            };
+            let injected = lucene_search::derived_source::inject(&self.fields, source, &mut from)
+                .map_err(refused)?;
+            f.value = FieldValue::Binary(injected);
+        }
+        Ok(())
+    }
+}
+
+/// A buffered document's vectors, for [`lucene_search::derived_source::inject`].
+struct BufferVectors<'a> {
+    names: &'a HashMap<i32, String>,
+    vectors: &'a lucene_index::concurrent_writer::LiveDocumentVectors,
+}
+
+impl BufferVectors<'_> {
+    fn of<'v>(
+        &self,
+        doc: &'v [lucene_index::index_writer::DocumentVector],
+        number: i32,
+    ) -> Option<&'v lucene_index::index_writer::VectorValue> {
+        let name = self.names.get(&number)?;
+        doc.iter().find(|v| &v.field_name == name).map(|v| &v.value)
+    }
+}
+
+impl lucene_search::derived_source::VectorSource for BufferVectors<'_> {
+    fn float_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<f32>>> {
+        Ok(match self.of(&self.vectors.own, number) {
+            Some(lucene_index::index_writer::VectorValue::Float32(v)) => Some(v.to_vec()),
+            _ => None,
+        })
+    }
+
+    fn byte_vector(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Option<Vec<u8>>> {
+        Ok(match self.of(&self.vectors.own, number) {
+            Some(lucene_index::index_writer::VectorValue::Byte(v)) => Some(v.to_vec()),
+            _ => None,
+        })
+    }
+
+    fn child_float_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<f32>>> {
+        Ok(self
+            .vectors
+            .children
+            .iter()
+            .filter_map(|c| match self.of(c, number) {
+                Some(lucene_index::index_writer::VectorValue::Float32(v)) => Some(v.to_vec()),
+                _ => None,
+            })
+            .collect())
+    }
+
+    fn child_byte_vectors(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .vectors
+            .children
+            .iter()
+            .filter_map(|c| match self.of(c, number) {
+                Some(lucene_index::index_writer::VectorValue::Byte(v)) => Some(v.to_vec()),
+                _ => None,
+            })
+            .collect())
+    }
 }

@@ -1351,3 +1351,102 @@ fn a_view_holds_the_buffer_ivf_lists() {
     assert!(!lists.schedule(), "retired");
     w.commit().unwrap();
 }
+
+/// A buffer with vectors stays readable as chunks after it leaves its slot
+/// for a flush, and after its publish while a view reading it so is open:
+/// the chunks hold its vectors (each fifth document has none).
+#[test]
+fn a_flushing_buffer_with_vectors_is_written_as_chunks() {
+    let tmp = TempDir::new("live-flushing-vectors");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, id) = vector_writer(&dir, true);
+    for i in 0..1000 {
+        add_vector_doc(&w, id, i);
+    }
+    let buffer = w.live_slot_buffers()[0].id;
+    let slot_view = w.open_live_view(None).unwrap();
+    let out = TempDir::new("live-flushing-vectors-out");
+    let out_dir = FsDirectory::open(out.path());
+    let vectors_bytes = |name: &str| {
+        let s = w
+            .live_lean_segment(buffer, 100..600, HashMap::new(), &[], false, &out_dir, name)
+            .unwrap();
+        assert!(matches!(s, super::LeanSegment::Written(..)));
+        std::fs::read_dir(out.path())
+            .unwrap()
+            .map(|e| e.unwrap())
+            .filter(|e| {
+                let n = e.file_name().into_string().unwrap();
+                n.starts_with(&format!("{name}_")) && n.ends_with(".vec")
+            })
+            .map(|e| e.metadata().unwrap().len())
+            .sum::<u64>()
+    };
+    let in_slot = vectors_bytes("_s");
+    // 400 of documents 100..600 have a 16-dimension vector.
+    assert!(in_slot >= 400 * 16 * 4, "{in_slot}");
+    let batch = {
+        let mut slot = super::write_slot(&w.slots[0]);
+        w.begin_flush(0, &mut slot).unwrap()
+    };
+    let view = w.open_live_view(None).unwrap();
+    assert!(view
+        .buffers
+        .iter()
+        .any(|b| b.id == buffer && !b.in_slot && b.chunks));
+    assert_eq!(vectors_bytes("_f"), in_slot);
+    // With postings too: the flush only reads them.
+    let with_postings = |name: &str| {
+        w.live_buffer_segment(
+            buffer,
+            100..600,
+            HashMap::from([(id, 500)]),
+            &[],
+            true,
+            &out_dir,
+            name,
+        )
+        .unwrap();
+        with_postings_kinds(out.path(), name)
+    };
+    let slot_files = {
+        // Written while in the slot, as reference: the same file kinds.
+        let tmp2 = TempDir::new("live-flushing-vectors-ref");
+        let d2 = FsDirectory::open(tmp2.path());
+        let (w2, id2) = vector_writer(&d2, true);
+        for i in 0..1000 {
+            add_vector_doc(&w2, id2, i);
+        }
+        let b2 = w2.live_slot_buffers()[0].id;
+        w2.live_buffer_segment(
+            b2,
+            100..600,
+            HashMap::from([(id2, 500)]),
+            &[],
+            true,
+            &out_dir,
+            "_r",
+        )
+        .unwrap();
+        with_postings_kinds(out.path(), "_r")
+    };
+    assert!(
+        slot_files.contains("tim") && slot_files.contains("vec"),
+        "{slot_files:?}"
+    );
+    assert_eq!(with_postings("_g"), slot_files);
+    w.complete_flush(batch).unwrap();
+    assert_eq!(vectors_bytes("_p"), in_slot);
+    assert_eq!(with_postings("_q"), slot_files);
+    w.close_live_view(&view);
+    w.close_live_view(&slot_view);
+}
+
+fn with_postings_kinds(dir: &std::path::Path, name: &str) -> std::collections::BTreeSet<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.starts_with(&format!("{name}_")) || n.starts_with(&format!("{name}.")))
+        .map(|n| n.rsplit('.').next().unwrap().to_owned())
+        .collect()
+}
