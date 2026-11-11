@@ -23,7 +23,7 @@
 //! | field | layout |
 //! |---|---|
 //! | sub-query | a node |
-//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter, `3` number sort, `4` number sort reading `_score`, `5` aggregation |
+//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter, `3` number sort, `4` number sort reading `_score`, `5` aggregation, `6` `terms_set` minimum, `7` interval filter, `8` similarity, `9` similarity weight |
 //! | IR | `i32` length, then the `PIR2` blob |
 //! | params | `i32` length, then a map constant ([`lucene_painless::ir::decode_constant`]) |
 //! | index | string: `_getIndex()` |
@@ -54,6 +54,7 @@ use lucene_painless::specialize::{specialize, Facts};
 use lucene_painless::typed::{lower, BatchEnv, BatchRegs, Regs, Typed};
 use lucene_painless::value::{MapKind, Value};
 use lucene_painless::vm::{DocAccess, Env, Program, Throw, Vm};
+use lucene_search::explain::Explanation;
 use lucene_search::extended_query::ExtendedQuery;
 use lucene_search::function::{FunctionMatchQuery, FunctionScoreQuery};
 use lucene_search::query::Clause;
@@ -61,6 +62,7 @@ use lucene_search::reader::doc_values::{
     direct_numeric, direct_sorted_numeric_singleton, get_sorted_numeric, get_sorted_set,
 };
 use lucene_search::reader::{SortedNumericDocValues, SortedSetDocValues};
+use lucene_search::similarities::{CollectionStatistics, SimScorer, Similarity, TermStatistics};
 use lucene_search::top_field::{
     FieldComparator, FieldComparatorSource, LeafCtx, LeafFieldComparator, SortValue,
 };
@@ -149,6 +151,12 @@ struct Spec {
     /// An `IntervalFilterScript`: `execute(interval)` returns whether the
     /// interval passes.
     interval: bool,
+    /// A `SimilarityScript`: `execute(weight, query, field, term, doc)`
+    /// returns a term's score.
+    similarity: bool,
+    /// A `SimilarityWeightScript`: `execute(query, field, term)` returns a
+    /// term's weight.
+    similarity_weight: bool,
     index: String,
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
@@ -203,6 +211,7 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
 /// The node's script, after its sub-query.
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
     let (mut agg, mut sort, mut terms_set, mut interval) = (false, false, false, false);
+    let (mut similarity, mut similarity_weight) = (false, false);
     let (needs_score, filter) = match c.u8()? {
         0 => (false, false),
         1 => (true, false),
@@ -227,9 +236,17 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
             interval = true;
             (false, false)
         }
+        8 => {
+            similarity = true;
+            (false, false)
+        }
+        9 => {
+            similarity_weight = true;
+            (false, false)
+        }
         other => {
             return Err(invalid(format!(
-                "query tree: painless script context {other} (expected 0..=7)"
+                "query tree: painless script context {other} (expected 0..=9)"
             )))
         }
     };
@@ -279,6 +296,8 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         agg,
         terms_set,
         interval,
+        similarity,
+        similarity_weight,
         index,
         shard,
         script_id,
@@ -329,6 +348,13 @@ struct At {
 /// Where an interval filter script threw: the interval, written
 /// `start:end:gaps` where a document goes.
 fn interval_error(script_id: i32, interval: (i32, i32, i32), offset: i32, t: &Throw) -> Error {
+    let (start, end, gaps) = interval;
+    slot_error(script_id, &format!("{start}:{end}:{gaps}"), offset, t)
+}
+
+/// A [`script_error`] of a script that runs on no document: `slot`, where
+/// the document goes, says what it ran on.
+fn slot_error(script_id: i32, slot: &str, offset: i32, t: &Throw) -> Error {
     if t.class() == lucene_painless::api::UNSUPPORTED {
         return runtime_failure(t);
     }
@@ -336,9 +362,8 @@ fn interval_error(script_id: i32, interval: (i32, i32, i32), offset: i32, t: &Th
         Some(m) => format!("1{m}"),
         None => "0".to_string(),
     };
-    let (start, end, gaps) = interval;
     Error::IllegalArgument(format!(
-        "{SCRIPT_ERROR}{script_id}\u{1}0\u{1}{start}:{end}:{gaps}\u{1}0\u{1}{offset}\u{1}{}\u{1}{message}",
+        "{SCRIPT_ERROR}{script_id}\u{1}0\u{1}{slot}\u{1}0\u{1}{offset}\u{1}{}\u{1}{message}",
         t.class()
     ))
 }
@@ -464,7 +489,13 @@ impl Spec {
 
     /// Whether the script is a `ScoreScript`.
     fn is_score(&self) -> bool {
-        !self.filter && !self.sort && !self.agg && !self.terms_set && !self.interval
+        !self.filter
+            && !self.sort
+            && !self.agg
+            && !self.terms_set
+            && !self.interval
+            && !self.similarity
+            && !self.similarity_weight
     }
 
     /// Where a spec blob holds its script's run number.
@@ -494,7 +525,7 @@ impl Spec {
         ];
         const FILTER: &[&str] = &["getParams", "getDoc"];
         const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
-        if self.interval {
+        if self.interval || self.similarity || self.similarity_weight {
             &[]
         } else if self.filter || self.agg || self.terms_set || (self.sort && !self.needs_score) {
             FILTER
@@ -556,7 +587,7 @@ impl Spec {
             let v = lucene_painless::compile::constant(v).map_err(|e| missing(e.to_string()))?;
             m.insert(k, v);
         }
-        if self.filter || self.interval {
+        if self.filter || self.interval || self.similarity || self.similarity_weight {
             return Ok(Value::map(MapKind::HashMap, m));
         }
         m.insert(Value::str("doc"), doc.clone());
@@ -1803,6 +1834,618 @@ impl lucene_search::intervals::IntervalAccept for IntervalAccepter {
     }
 }
 
+/// OpenSearch's `ScriptedSimilarity`: a field's similarity whose term
+/// scores are a Painless `SimilarityScript`, each term's weight an optional
+/// `SimilarityWeightScript`.
+///
+/// `SimScorer.score` returns a `float` and has no way to fail, so a
+/// script's exception is kept, the first one, for the search to fail with
+/// once it ends ([`Similarity::take_failure`]); the scores after it are `0` and
+/// run no script. The plugin raises it as Painless's `ScriptException`,
+/// running the script once more in Java on the values the error names.
+///
+/// The similarity, after its kind byte in the similarity table
+/// ([`crate::jvm_similarity`]):
+///
+/// | field | layout |
+/// |---|---|
+/// | discount overlaps | `u8` |
+/// | description | string: `ScriptedSimilarity.toString()` |
+/// | weight script | `u8` `0` none, or `1` and a spec of context `9` |
+/// | script | a spec of context `8` |
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptedSimilarity(Arc<Scripted>);
+
+#[derive(Debug)]
+struct Scripted {
+    script: Spec,
+    weight: Option<Spec>,
+    discount_overlaps: bool,
+    description: String,
+    /// Whether a script failed: read before every score.
+    failed: std::sync::atomic::AtomicBool,
+    failure: std::sync::Mutex<Option<Error>>,
+}
+
+impl Scripted {
+    fn fail(&self, e: Error) {
+        let mut slot = self.failure.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.is_none() {
+            *slot = Some(e);
+        }
+        self.failed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn has_failed(&self) -> bool {
+        self.failed.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl ScriptedSimilarity {
+    /// The similarity after its kind byte, its scripts checked.
+    pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
+        let discount_overlaps = c.u8()? != 0;
+        let description = string(c)?;
+        let weight = match c.u8()? {
+            0 => None,
+            1 => Some(similarity_spec(c, true)?),
+            other => {
+                return Err(invalid(format!(
+                    "similarity table: weight script flag {other} (expected 0 or 1)"
+                )))
+            }
+        };
+        let script = similarity_spec(c, false)?;
+        Ok(ScriptedSimilarity(Arc::new(Scripted {
+            script,
+            weight,
+            discount_overlaps,
+            description,
+            failed: std::sync::atomic::AtomicBool::new(false),
+            failure: std::sync::Mutex::new(None),
+        })))
+    }
+}
+
+/// A similarity script's spec: of the weight context or the score one, no
+/// fields, checked.
+fn similarity_spec(c: &mut Cursor<'_>, weight: bool) -> std::result::Result<Spec, FfiStatus> {
+    let spec = decode_spec(c)?;
+    if (weight && !spec.similarity_weight) || (!weight && !spec.similarity) {
+        return Err(invalid(
+            "similarity table: a scripted similarity with another context's script",
+        ));
+    }
+    if !spec.fields.is_empty() {
+        return Err(invalid(
+            "similarity table: a similarity script reads no fields",
+        ));
+    }
+    spec.check().map_err(|r| {
+        invalid(format!(
+            "similarity table: painless script not checked: {r}"
+        ))
+    })?;
+    Ok(spec)
+}
+
+/// `spec` compiled and specialised to its (empty) params.
+fn similarity_program(spec: &Spec) -> Result<(Program, lucene_painless::vm::ParamsEnv)> {
+    let mut prog = lucene_painless::compile::compile(&spec.script)
+        .map_err(|e| Error::IllegalArgument(format!("painless script: {e}")))?;
+    let params = spec.params(&Value::Null).map_err(|t| runtime_failure(&t))?;
+    specialize(
+        &mut prog,
+        &Facts {
+            params: Some(&params),
+            fields: &[],
+        },
+    );
+    Ok((prog, lucene_painless::vm::ParamsEnv { params }))
+}
+
+impl lucene_index::similarity::NormSimilarity for ScriptedSimilarity {
+    /// `ScriptedSimilarity.computeNorm`: `SmallFloat.intToByte4` of the
+    /// length, less the overlaps when they are discounted (a `DOCS` field
+    /// too, unlike `Similarity`'s default).
+    fn compute_norm(
+        &self,
+        _field: &str,
+        state: &lucene_index::similarity::FieldInvertState,
+    ) -> i64 {
+        let n = if self.0.discount_overlaps {
+            state.length.wrapping_sub(state.num_overlap)
+        } else {
+            state.length
+        };
+        i64::from(lucene_util::small_float::int_to_byte4(n as u32) as i8)
+    }
+
+    fn discount_overlaps(&self) -> bool {
+        self.0.discount_overlaps
+    }
+}
+
+/// A term's statistics, as `ScriptedSimilarity.scorer` hands its scripts
+/// them.
+#[derive(Debug, Clone, Copy)]
+struct SimStats {
+    boost: f32,
+    doc_count: i64,
+    sum_doc_freq: i64,
+    sum_total_term_freq: i64,
+    doc_freq: i64,
+    total_term_freq: i64,
+}
+
+impl SimStats {
+    /// `query`, `field` and `term`, as the scripts' arguments.
+    fn objects(self) -> [Value; 3] {
+        [
+            Value::object(SimQuery(self.boost)),
+            Value::object(SimField {
+                doc_count: self.doc_count,
+                sum_doc_freq: self.sum_doc_freq,
+                sum_total_term_freq: self.sum_total_term_freq,
+            }),
+            Value::object(SimTerm {
+                doc_freq: self.doc_freq,
+                total_term_freq: self.total_term_freq,
+            }),
+        ]
+    }
+
+    /// The statistics where a [`slot_error`] names what the script ran on.
+    fn slot(self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            self.boost.to_bits(),
+            self.doc_count,
+            self.sum_doc_freq,
+            self.sum_total_term_freq,
+            self.doc_freq,
+            self.total_term_freq
+        )
+    }
+}
+
+/// A getter of a similarity script's argument: `name()` with no arguments.
+fn getter(args: &[Value], value: Option<Value>) -> Option<std::result::Result<Value, Throw>> {
+    if args.is_empty() {
+        value.map(Ok)
+    } else {
+        None
+    }
+}
+
+/// `ScriptedSimilarity.Query`.
+#[derive(Debug)]
+struct SimQuery(f32);
+
+impl JObject for SimQuery {
+    fn class_name(&self) -> &str {
+        "org.opensearch.index.similarity.ScriptedSimilarity$Query"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn call(
+        &self,
+        _: &mut Vm,
+        _: &Value,
+        name: &str,
+        args: &[Value],
+    ) -> Option<std::result::Result<Value, Throw>> {
+        getter(args, (name == "getBoost").then_some(Value::Float(self.0)))
+    }
+    fn field(&self, _: &mut Vm, name: &str) -> Option<std::result::Result<Value, Throw>> {
+        (name == "boost").then_some(Ok(Value::Float(self.0)))
+    }
+}
+
+/// `ScriptedSimilarity.Field`.
+#[derive(Debug)]
+struct SimField {
+    doc_count: i64,
+    sum_doc_freq: i64,
+    sum_total_term_freq: i64,
+}
+
+impl SimField {
+    fn get(&self, property: &str) -> Option<Value> {
+        Some(Value::Long(match property {
+            "docCount" => self.doc_count,
+            "sumDocFreq" => self.sum_doc_freq,
+            "sumTotalTermFreq" => self.sum_total_term_freq,
+            _ => return None,
+        }))
+    }
+}
+
+impl JObject for SimField {
+    fn class_name(&self) -> &str {
+        "org.opensearch.index.similarity.ScriptedSimilarity$Field"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn call(
+        &self,
+        _: &mut Vm,
+        _: &Value,
+        name: &str,
+        args: &[Value],
+    ) -> Option<std::result::Result<Value, Throw>> {
+        getter(
+            args,
+            name.strip_prefix("get")
+                .and_then(|p| self.get(&decapitalize(p))),
+        )
+    }
+    fn field(&self, _: &mut Vm, name: &str) -> Option<std::result::Result<Value, Throw>> {
+        self.get(name).map(Ok)
+    }
+}
+
+/// `ScriptedSimilarity.Term`.
+#[derive(Debug)]
+struct SimTerm {
+    doc_freq: i64,
+    total_term_freq: i64,
+}
+
+impl SimTerm {
+    fn get(&self, property: &str) -> Option<Value> {
+        Some(Value::Long(match property {
+            "docFreq" => self.doc_freq,
+            "totalTermFreq" => self.total_term_freq,
+            _ => return None,
+        }))
+    }
+}
+
+impl JObject for SimTerm {
+    fn class_name(&self) -> &str {
+        "org.opensearch.index.similarity.ScriptedSimilarity$Term"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn call(
+        &self,
+        _: &mut Vm,
+        _: &Value,
+        name: &str,
+        args: &[Value],
+    ) -> Option<std::result::Result<Value, Throw>> {
+        getter(
+            args,
+            name.strip_prefix("get")
+                .and_then(|p| self.get(&decapitalize(p))),
+        )
+    }
+    fn field(&self, _: &mut Vm, name: &str) -> Option<std::result::Result<Value, Throw>> {
+        self.get(name).map(Ok)
+    }
+}
+
+/// A getter's property: `DocCount` as `docCount`.
+fn decapitalize(p: &str) -> String {
+    let mut c = p.chars();
+    match c.next() {
+        Some(f) => f.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// `ScriptedSimilarity.Doc`: the document a term's scorer is on, set before
+/// each run.
+#[derive(Debug, Default)]
+struct SimDoc {
+    freq: std::cell::Cell<f32>,
+    norm: std::cell::Cell<i64>,
+}
+
+impl SimDoc {
+    /// `getLength()`: `SmallFloat.byte4ToInt((byte) norm)`.
+    fn length(&self) -> i32 {
+        lucene_util::small_float::byte4_to_int(self.norm.get() as u8) as i32
+    }
+
+    fn get(&self, property: &str) -> Option<Value> {
+        match property {
+            "length" => Some(Value::Int(self.length())),
+            "freq" => Some(Value::Float(self.freq.get())),
+            _ => None,
+        }
+    }
+}
+
+impl JObject for SimDoc {
+    fn class_name(&self) -> &str {
+        "org.opensearch.index.similarity.ScriptedSimilarity$Doc"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn call(
+        &self,
+        _: &mut Vm,
+        _: &Value,
+        name: &str,
+        args: &[Value],
+    ) -> Option<std::result::Result<Value, Throw>> {
+        getter(
+            args,
+            name.strip_prefix("get")
+                .and_then(|p| self.get(&decapitalize(p))),
+        )
+    }
+    fn field(&self, _: &mut Vm, name: &str) -> Option<std::result::Result<Value, Throw>> {
+        self.get(name).map(Ok)
+    }
+}
+
+impl Similarity for ScriptedSimilarity {
+    /// `ScriptedSimilarity.scorer`: per term, its weight from the weight
+    /// script (`1` without one), then a scorer running the script; the sum
+    /// of the terms' scores, in `double`, for more than one.
+    fn scorer(
+        &self,
+        _field: &str,
+        boost: f32,
+        collection: &CollectionStatistics,
+        terms: &[TermStatistics],
+    ) -> Arc<dyn SimScorer> {
+        let doc_count = if collection.doc_count == -1 {
+            collection.max_doc
+        } else {
+            collection.doc_count
+        };
+        let mut scorers: Vec<ScriptedScorer> = terms
+            .iter()
+            .map(|t| {
+                let stats = SimStats {
+                    boost,
+                    doc_count,
+                    sum_doc_freq: collection.sum_doc_freq,
+                    sum_total_term_freq: collection.sum_total_term_freq,
+                    doc_freq: t.doc_freq,
+                    total_term_freq: t.total_term_freq,
+                };
+                ScriptedScorer {
+                    weight: self.weight(stats),
+                    stats,
+                    shared: self.0.clone(),
+                    id: next_scorer_id(),
+                }
+            })
+            .collect();
+        if scorers.len() == 1 {
+            Arc::new(scorers.pop().expect("one scorer"))
+        } else {
+            Arc::new(SummedScorer(scorers))
+        }
+    }
+
+    fn simple_name(&self) -> &str {
+        "ScriptedSimilarity"
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn take_failure(&self) -> Option<Error> {
+        if !self.0.has_failed() {
+            return None;
+        }
+        self.0
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+}
+
+impl ScriptedSimilarity {
+    /// `computeWeight`: the weight script's value, or `1`.
+    fn weight(&self, stats: SimStats) -> f64 {
+        let Some(spec) = &self.0.weight else {
+            return 1.0;
+        };
+        if self.0.has_failed() {
+            return 0.0;
+        }
+        let run = || -> Result<f64> {
+            let (prog, mut env) = similarity_program(spec)?;
+            let prog = Rc::new(prog);
+            let mut vm = Vm::new(prog.clone(), &mut env);
+            vm.bindings = vec![None; prog.binding_sites]; // alloc-ok: the compiled program's own count
+            match vm.execute(&stats.objects()) {
+                Ok(v) => script_double(&v),
+                Err(t) => Err(slot_error(spec.script_id, &stats.slot(), vm.loc, &t)),
+            }
+        };
+        run().unwrap_or_else(|e| {
+            self.0.fail(e);
+            0.0
+        })
+    }
+}
+
+/// A similarity script's `double` result.
+fn script_double(v: &Value) -> Result<f64> {
+    match v {
+        Value::Double(d) => Ok(*d),
+        other => Err(Error::IllegalArgument(format!(
+            "painless runtime: a similarity script returned {}",
+            other.java_to_string()
+        ))),
+    }
+}
+
+fn next_scorer_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One term's scorer: `ScriptedSimilarity`'s anonymous `SimScorer`.
+#[derive(Debug)]
+struct ScriptedScorer {
+    shared: Arc<Scripted>,
+    weight: f64,
+    stats: SimStats,
+    /// This scorer's state in each thread's [`SCORERS`].
+    id: u64,
+}
+
+/// A [`ScriptedScorer`]'s compiled script and arguments on one thread:
+/// the runtime's values are not `Send`, so each thread that scores makes
+/// its own.
+struct ScorerState {
+    prog: Rc<Program>,
+    env: lucene_painless::vm::ParamsEnv,
+    bindings: Vec<Option<Value>>,
+    pool: Vec<Vec<Value>>,
+    doc: Rc<SimDoc>,
+    args: [Value; 5],
+}
+
+/// At most this many scorers' states per thread; past it the thread starts
+/// over.
+const MAX_SCORER_STATES: usize = 256;
+
+thread_local! {
+    static SCORERS: std::cell::RefCell<HashMap<u64, ScorerState>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+impl ScriptedScorer {
+    fn state(&self) -> Result<ScorerState> {
+        let (prog, env) = similarity_program(&self.shared.script)?;
+        let doc = Rc::new(SimDoc::default());
+        let [query, field, term] = self.stats.objects();
+        Ok(ScorerState {
+            bindings: vec![None; prog.binding_sites], // alloc-ok: the compiled program's own count
+            prog: Rc::new(prog),
+            env,
+            pool: Vec::new(),
+            args: [
+                Value::Double(self.weight),
+                query,
+                field,
+                term,
+                Value::Object(doc.clone()),
+            ],
+            doc,
+        })
+    }
+
+    fn run(&self, freq: f32, norm: i64) -> Result<f32> {
+        SCORERS.with(|states| {
+            let mut states = states.borrow_mut();
+            if !states.contains_key(&self.id) {
+                if states.len() >= MAX_SCORER_STATES {
+                    states.clear();
+                }
+                states.insert(self.id, self.state()?);
+            }
+            let st = states.get_mut(&self.id).expect("inserted above");
+            st.doc.freq.set(freq);
+            st.doc.norm.set(norm);
+            let mut vm = Vm::new(st.prog.clone(), &mut st.env);
+            vm.bindings = std::mem::take(&mut st.bindings);
+            vm.pool = std::mem::take(&mut st.pool);
+            let r = vm.execute(&st.args);
+            let loc = vm.loc;
+            st.bindings = std::mem::take(&mut vm.bindings);
+            st.pool = std::mem::take(&mut vm.pool);
+            match r {
+                Ok(v) => Ok(script_double(&v)? as f32),
+                Err(t) => Err(slot_error(
+                    self.shared.script.script_id,
+                    &format!(
+                        "{}:{}:{}:{}",
+                        self.weight.to_bits(),
+                        self.stats.slot(),
+                        freq.to_bits(),
+                        norm
+                    ),
+                    loc,
+                    &t,
+                )),
+            }
+        })
+    }
+}
+
+impl SimScorer for ScriptedScorer {
+    fn score(&self, freq: f32, norm: i64) -> f32 {
+        if self.shared.has_failed() {
+            return 0.0;
+        }
+        self.run(freq, norm).unwrap_or_else(|e| {
+            self.shared.fail(e);
+            0.0
+        })
+    }
+
+    /// `ScriptedSimilarity`'s explanation: the score, then each value the
+    /// script read.
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        let score = self.score(freq.value, norm);
+        let s = self.stats;
+        let length = lucene_util::small_float::byte4_to_int(norm as u8) as i64;
+        Explanation::match_(
+            score,
+            format!("score from {} computed from:", self.shared.description),
+        )
+        .with_details(vec![
+            Explanation::match_(self.weight as f32, "weight"),
+            Explanation::match_(s.boost, "query.boost"),
+            Explanation::match_long(s.doc_count, "field.docCount"),
+            Explanation::match_long(s.sum_doc_freq, "field.sumDocFreq"),
+            Explanation::match_long(s.sum_total_term_freq, "field.sumTotalTermFreq"),
+            Explanation::match_long(s.doc_freq, "term.docFreq"),
+            Explanation::match_long(s.total_term_freq, "term.totalTermFreq"),
+            Explanation::match_value_of(&freq, "doc.freq").with_details(freq.details.clone()),
+            Explanation::match_long(length, "doc.length"),
+        ])
+    }
+}
+
+/// More than one term's scorers: their scores summed in `double`.
+#[derive(Debug)]
+struct SummedScorer(Vec<ScriptedScorer>);
+
+impl SimScorer for SummedScorer {
+    fn score(&self, freq: f32, norm: i64) -> f32 {
+        self.0
+            .iter()
+            .map(|s| f64::from(s.score(freq, norm)))
+            .sum::<f64>() as f32
+    }
+
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        let details = self
+            .0
+            .iter()
+            .map(|s| s.explain(freq.clone(), norm))
+            .collect();
+        Explanation::match_(self.score(freq.value, norm), "Sum of:").with_details(details)
+    }
+}
+
+impl Drop for ScriptedScorer {
+    fn drop(&mut self) {
+        // The dropping thread's state; another thread's goes when that
+        // thread passes MAX_SCORER_STATES.
+        let _ = SCORERS.try_with(|s| s.borrow_mut().remove(&self.id));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1983,6 +2626,143 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// A similarity script's spec of `context`: no params, no fields.
+    fn similarity_spec_blob(context: u8, ir: &[u8], run: i32) -> Blob {
+        Blob::default()
+            .u8(context)
+            .bytes(ir)
+            .bytes(&[12, 0, 0, 0, 0])
+            .str("")
+            .i32(0)
+            .i32(run)
+            .i32(0)
+    }
+
+    /// The query of `ScoreCorpus.simQuery(kind)`, behind a similarity table
+    /// giving `body` the scripted similarity `sim`.
+    fn similarity_query(sim: &Blob, kind: u8) -> Blob {
+        let table = Blob::default()
+            .u8(crate::jvm_similarity::QUERY_SIMILARITY)
+            .i32(1)
+            .str("body")
+            .u8(9)
+            .raw(sim);
+        let tree = Blob::tree();
+        let tree = match kind {
+            0 => tree.term("body", "alpha"),
+            1 => tree
+                .u8(1)
+                .i32(0)
+                .i32(3)
+                .u8(2)
+                .term("body", "alpha")
+                .u8(2)
+                .term("body", "beta")
+                .u8(2)
+                .term("body", "gamma"),
+            2 => tree.u8(3).f32(2.5).term("body", "delta"),
+            _ => tree
+                .u8(7)
+                .str("body")
+                .i32(0)
+                .i32(2)
+                .i32(0)
+                .str("beta")
+                .i32(1)
+                .str("alpha"),
+        };
+        table.raw(&tree)
+    }
+
+    /// **Scripted similarity.** Each fixture similarity (a score script,
+    /// with or without a weight script) scores a term, a disjunction, a
+    /// boosted term and a phrase (several terms' statistics, summed) as
+    /// OpenSearch's `ScriptedSimilarity` does, bit for bit, or fails with
+    /// the same exception at the same offset, naming the arguments it ran
+    /// on.
+    #[test]
+    fn scripted_similarities_score_as_opensearch_does() {
+        let tmp = TempDir::new("painless-similarity");
+        for e in std::fs::read_dir(fixture("index")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let h = open(&tmp);
+        let data = std::fs::read(fixture("similarity.bin")).unwrap();
+        assert_eq!(&data[..4], b"PSS1");
+        let mut r = Reader(&data[4..]);
+        let n = r.i32();
+        let (mut same, mut wrong) = (0, Vec::new());
+        for _ in 0..n {
+            let source = r.str();
+            let ir = r.bytes();
+            let weight = (r.u8() == 1).then(|| {
+                let _source = r.str();
+                r.bytes()
+            });
+            let description = r.str();
+            let mut sim = Blob::default().u8(1).str(&description);
+            sim = match &weight {
+                Some(w) => sim.u8(1).raw(&similarity_spec_blob(9, w, 1)),
+                None => sim.u8(0),
+            };
+            let sim = sim.raw(&similarity_spec_blob(8, &ir, 0));
+            for kind in 0..4u8 {
+                let outcome = match r.u8() {
+                    0 => {
+                        let n = r.i32();
+                        Outcome::Hits(
+                            (0..n)
+                                .map(|_| (r.i32(), f32::from_bits(r.i32() as u32)))
+                                .collect(),
+                        )
+                    }
+                    k => {
+                        let class = r.str();
+                        let message = (r.u8() == 1).then(|| r.str());
+                        let offset = r.i32();
+                        assert_eq!(k, 1, "{source}: not the script's exception: {class}");
+                        Outcome::Threw(class, message, offset)
+                    }
+                };
+                let got = run_limit(h, &similarity_query(&sim, kind).0, 1000, i64::MAX);
+                let e = crate::error::last_error();
+                let bad = match (&outcome, got) {
+                    (Outcome::Hits(want), Ok((mut hits, _, _))) => {
+                        hits.sort_by_key(|&(d, _)| d);
+                        let bits = |v: &[(i32, f32)]| -> Vec<(i32, u32)> {
+                            v.iter().map(|&(d, s)| (d, s.to_bits())).collect()
+                        };
+                        (bits(&hits) != bits(want)).then(|| format!("hits {hits:?}, want {want:?}"))
+                    }
+                    (Outcome::Threw(class, message, offset), Err(_)) => {
+                        let message = match message {
+                            Some(m) => format!("1{m}"),
+                            None => "0".to_string(),
+                        };
+                        let run = if weight.is_some() && source == "return weight;" {
+                            1
+                        } else {
+                            0
+                        };
+                        let script = format!("{SCRIPT_ERROR}{run}\u{1}0\u{1}");
+                        let want = format!("\u{1}{offset}\u{1}{class}\u{1}{message}");
+                        (!e.contains(&script) || !e.ends_with(&want))
+                            .then(|| format!("{e:?}, want {script:?}..{want:?}"))
+                    }
+                    (o, r) => Some(format!("{o:?} vs {r:?}: {e}")),
+                };
+                match bad {
+                    Some(bad) => wrong.push(format!("{source} (query {kind}): {bad}")),
+                    None => same += 1,
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        assert_eq!(same, n * 4);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
     /// Scripts the check leaves to Java, before any of them runs.
@@ -2574,6 +3354,8 @@ mod bench {
                 agg: false,
                 terms_set: false,
                 interval: false,
+                similarity: false,
+                similarity_weight: false,
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,
