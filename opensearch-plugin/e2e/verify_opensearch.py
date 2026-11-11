@@ -273,7 +273,19 @@ def matrix():
     add("fuzzy constant_score", {"query": {"fuzzy": {"body": {"value": "alpah", "rewrite": "constant_score"}}}}, "native")
     add("prefix constant_score_blended", {"query": {"prefix": {"body": {"value": "be", "rewrite": "constant_score_blended"}}}}, "native")
     add("terms_set field", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"], "minimum_should_match_field": "qty"}}}}, "native")
-    add("terms_set script", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}}}, "covering_script")
+    add("terms_set script", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}}}, "native")
+    add("terms_set script num_terms", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"],
+        "minimum_should_match_script": {"source": "doc['qty'].size() == 0 ? 1 : Math.min(params.num_terms, doc['qty'].value % 3 + 1)"}}}}}, "native")
+    add("terms_set script null minimum", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3"],
+        "minimum_should_match_script": {"source": "def m = null; if (doc['qty'].size() > 0 && doc['qty'].value <= 20) { m = 1; } return m;"}}}}}, "native")
+    add("terms_set script refused", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+        "minimum_should_match_script": {"source": "doc['m'].stream().count() > 1 ? 2 : 1"}}}}}, "covering_painless")
+    add("terms_set script options", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+        "minimum_should_match_script": {"source": "int s = 0; for (int i = 0; i < 3; i++) { s++; } return s - 2;", "options": {"max_loop_counter": "100"}}}}}}, "covering_options")
+    # Two minimums over the same terms are two clauses: the rewrite keeps both.
+    add("terms_set two scripts", {"query": {"bool": {"filter": [
+        {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}},
+        {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "2"}}}}]}}}, "native")
     add("distance_feature date", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "7d"}}]}}}, "native")
     add("distance_feature date alone", {"track_total_hits": True, "query": {"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "1d"}}}, "native")
     add("terms keyword", {"query": {"terms": {"tag": ["alpha", "beta", "omega"]}}}, "native")
@@ -429,6 +441,17 @@ def matrix():
     add("agg missing date_histogram", {"size": 0, "aggs": {"h": {"date_histogram": {"field": "ts", "calendar_interval": "day", "missing": "2023-11-15"}}}}, "native")
     add("agg missing range", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"r": {"range": {"field": "m", "missing": 500, "ranges": [{"to": 100}, {"from": 100, "to": 600}, {"from": 600}]}}}}, "native")
     add("agg missing terms double", {"size": 0, "aggs": {"t": {"terms": {"field": "md", "size": 4, "missing": -1.25}}}}, "native")
+    # Metrics over a Painless script alone, checked as other scripts are.
+    def sc(source, **params):
+        return {"script": {"source": source, "params": params}}
+    add("agg script stats", {"size": 0, "query": {"match": {"body": "alpha"}},
+                             "aggs": {"s": {"stats": sc("doc['qty'].size() == 0 ? 0 : doc['qty'].value * params.f", f=2)}}}, "native")
+    add("agg script sum avg min", {"size": 0, "aggs": {"s": {"sum": sc("doc['n'].value % 7")}, "a": {"avg": sc("doc['ratio'].size() == 0 ? 1 : doc['ratio'].value")},
+                                                       "lo": {"min": sc("doc['tag'].size() == 0 ? -1 : doc['tag'].value.length()")}}}, "native")
+    add("agg script list values", {"size": 0, "aggs": {"s": {"sum": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")},
+                                                       "hi": {"max": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")}}}, "native")
+    add("agg script boolean", {"size": 0, "aggs": {"s": {"sum": sc("doc['qty'].size() > 0 && doc['qty'].value > 3")}}}, "native")
+    add("agg script under terms", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"m": {"max": sc("doc['n'].value * 3")}}}}}, "native")
     add("agg missing fraction on a long", {"size": 0, "aggs": {"t": {"terms": {"field": "m", "missing": 3.5}}}}, "aggregations")
     add("agg missing keyword terms", {"size": 0, "aggs": {"t": {"terms": {"field": "mtag", "missing": "none"}}}}, "native")
     add("agg missing keyword terms existing term", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "mtag", "size": 5, "missing": "alpha3"}}}}, "native")
@@ -903,12 +926,15 @@ def raw_search(index, body):
         return e.code, json.loads(e.read().decode())
 
 
-def error_shape(resp):
+def error_shape(resp, suppressed=True):
     """A failed search's response with the parts that name a node or time dropped, and its
-    shard failures in shard order."""
+    shard failures in shard order; without `suppressed`, the other slices' exceptions a
+    concurrent search adds to the first are dropped too."""
+    drop = ("node", "took") if suppressed else ("node", "took", "suppressed")
+
     def norm(v):
         if isinstance(v, dict):
-            return {k: norm(x) for k, x in v.items() if k not in ("node", "took")}
+            return {k: norm(x) for k, x in v.items() if k not in drop}
         if isinstance(v, list):
             items = [norm(x) for x in v]
             if items and all(isinstance(x, dict) and "shard" in x for x in items):
@@ -922,7 +948,7 @@ def error_shape(resp):
 
 
 def script_errors(index, shards):
-    """Painless scripts that throw at run time: the native engine runs them (each passed the
+    """Painless scripts that throw at run time (score, function_score and filter scripts): the native engine runs them (each passed the
     static check) and fails exactly as stock does -- the same status, exception type, reason,
     script_stack and position -- without re-running the search in Java (no fallback)."""
     rows = [
@@ -949,6 +975,32 @@ def script_errors(index, shards):
         ("function NaN score", {"query": {"function_score": {"query": {"match": {"body": "alpha"}}, "boost_mode": "replace",
                                                             "functions": [{"script_score": {"script": {"source": "Double.NaN"}}}]}}}),
     ]
+    # A sort script's exception.
+    queries += [
+        ("sort missing value", {"query": {"match": {"body": "alpha"}},
+                                "sort": [{"_script": {"type": "number", "script": {"source": "doc['sp'].value"}}}]}),
+    ]
+    # Aggregation scripts: the script's exception, and a value that is not a number.
+    queries += [
+        ("agg script missing value", {"size": 0, "aggs": {"s": {"sum": {"script": {"source": "doc['sp'].value"}}}}}),
+        ("agg script string value", {"size": 0, "aggs": {"s": {"max": {"script": {"source": "doc['tag'].size() == 0 ? 1 : doc['tag'].value"}}}}}),
+    ]
+    # intervals: a script filter's exception.
+    queries += [
+        ("interval filter division by zero", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+                                              "filter": {"script": {"source": "1 / (interval.start - interval.start) > 0"}}}}}}}),
+    ]
+    # terms_set: a minimum_should_match_script's exception.
+    queries += [
+        ("terms_set minimum missing value", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+                                             "minimum_should_match_script": {"source": "doc['sp'].value"}}}}}),
+    ]
+    # script queries: a filter script's exception.
+    queries += [
+        ("filter missing value", {"query": {"bool": {"filter": [{"script": {"script": {"source": "doc['sp'].value > 1"}}}]}}}),
+        ("filter unmapped field", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
+                                                      "filter": [{"script": {"script": {"source": "doc['nosuch'].value > 0"}}}]}}}),
+    ]
     for name, body in queries:
         set_native(index, False)
         want = raw_search(index, body)
@@ -959,7 +1011,11 @@ def script_errors(index, shards):
         label = f"script errors {index} [{name}]"
         check(want[0] != 200 or failed_shards(want[1]), f"{label}: the stock engine fails ({want[0]})")
         check(got[0] == want[0], f"{label}: status {got[0]} vs stock {want[0]}")
-        a, b = error_shape(got[1]), error_shape(want[1])
+        # A request with aggregations runs concurrently in stock (search.concurrent_segment_search
+        # auto): each slice's first exception after the first is suppressed into it. The native
+        # aggregation stops at the first.
+        whole = not name.startswith("agg ")
+        a, b = error_shape(got[1], whole), error_shape(want[1], whole)
         check(a == b, f"{label}: native error differs from stock: {json.dumps(a, sort_keys=True)[:1500]} vs {json.dumps(b, sort_keys=True)[:1500]}")
         delta = fallback_delta(before, after)
         check(not delta, f"{label}: no fallback (the script never re-runs in Java), got {delta}")

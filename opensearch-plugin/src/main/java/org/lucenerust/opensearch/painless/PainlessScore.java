@@ -29,11 +29,14 @@ import java.util.function.Supplier;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.Scorable;
+import org.apache.lucene.queries.intervals.IntervalIterator;
 import org.lucenerust.opensearch.NativeBridge;
 
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
+import org.opensearch.index.query.IntervalFilterScript;
+import org.opensearch.search.aggregations.AggregationExecutionException;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.NumberFieldMapper;
@@ -42,10 +45,14 @@ import org.opensearch.painless.PainlessScript;
 import org.opensearch.painless.PainlessScriptEngine;
 import org.opensearch.painless.WriterConstants;
 import org.opensearch.painless.lookup.PainlessLookup;
+import org.opensearch.script.AggregationScript;
+import org.opensearch.script.FilterScript;
+import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptException;
 import org.opensearch.script.ScriptService;
+import org.opensearch.script.TermsSetQueryScript;
 
 /**
  * The Painless scripts the native engine runs in place of the classes Painless generates: each
@@ -73,28 +80,240 @@ public final class PainlessScore {
 
     /**
      * What a check depends on: the compiled script (by identity: one per source in {@link
-     * #CACHE}), whether the query needs scores, its params and its fields' kinds.
+     * #CACHE}), its context ({@link #SCORE}, {@link #SCORE_WITH_SCORE} or {@link #FILTER}), its
+     * params and its fields' kinds.
      */
-    private record CheckKey(PainlessIr.Compiled compiled, boolean needsScore, ByteBuffer params, ByteBuffer kinds) {
+    private record CheckKey(PainlessIr.Compiled compiled, byte context, ByteBuffer params, ByteBuffer kinds) {
         @Override
         public boolean equals(Object o) {
-            return o instanceof CheckKey k && k.compiled == compiled && k.needsScore == needsScore && k.params.equals(params)
+            return o instanceof CheckKey k && k.compiled == compiled && k.context == context && k.params.equals(params)
                 && k.kinds.equals(kinds);
         }
 
         @Override
         public int hashCode() {
-            return (System.identityHashCode(compiled) * 31 + params.hashCode()) * 31 + kinds.hashCode() + (needsScore ? 1 : 0);
+            return (System.identityHashCode(compiled) * 31 + params.hashCode()) * 31 + kinds.hashCode() + context;
         }
     }
 
     /**
-     * A score script the request sends to the native runtime: its factory, and the index name,
-     * shard and index version {@code ScriptScoreQuery} gives each script it makes.
+     * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
+     * a number sort script, an aggregation script, a {@code terms_set} minimum, an
+     * {@code intervals} filter script.
      */
-    private record Run(ScoreScript.LeafFactory factory, String index, int shard, Version version) {}
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7;
 
-    /** The score scripts the request on this thread sends to the native runtime, by run number. */
+    /** A script the request sends to the native runtime, as Java makes it again for its error. */
+    private interface Run {
+        /** The script for {@code leaf}. */
+        Object script(LeafReaderContext leaf) throws IOException;
+
+        /** The {@code ScriptException} {@code script} raises on {@code doc} scored {@code score}, or null if it runs. */
+        ScriptException rethrown(Object script, int doc, float score);
+    }
+
+    /**
+     * A score script: its factory, and the index name, shard and index version {@code
+     * ScriptScoreQuery} gives each script it makes.
+     */
+    private record ScoreRun(ScoreScript.LeafFactory factory, String index, int shard, Version version) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            ScoreScript script = factory.newInstance(leaf);
+            script._setIndexName(index);
+            script._setShard(shard);
+            script._setIndexVersion(version);
+            return script;
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            ScoreScript script = (ScoreScript) s;
+            script.setScorer(new Scorable() {
+                @Override
+                public float score() {
+                    return score;
+                }
+            });
+            script.setDocument(doc);
+            try {
+                script.execute(null);
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /** A {@code _script} sort key's number sort script, as {@code ScriptSortBuilder} makes it. */
+    private record SortRun(NumberSortScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            NumberSortScript script = (NumberSortScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /** An aggregation's script, as {@code ValuesSource.Numeric.Script} makes it. */
+    private record AggregationRun(AggregationScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            AggregationScript script = (AggregationScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /** A {@code terms_set} query's {@code minimum_should_match_script}, as {@code ScriptLongValueSource} makes it. */
+    private record TermsSetRun(TermsSetQueryScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            TermsSetQueryScript script = (TermsSetQueryScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /**
+     * An {@code intervals} query's script filter: the one script {@code ScriptFilterSource} runs
+     * for every interval. Its errors name the interval, not a document.
+     */
+    private record IntervalRun(IntervalFilterScript script) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) {
+            return script;
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            return null;
+        }
+
+        /** The {@code ScriptException} the script raises on the interval {@code start..end}, {@code gaps}, or null. */
+        ScriptException rethrown(int start, int end, int gaps) {
+            IntervalFilterScript.Interval interval = new IntervalFilterScript.Interval();
+            try {
+                Field it = IntervalFilterScript.Interval.class.getDeclaredField("iterator");
+                it.setAccessible(true);
+                it.set(interval, new FixedInterval(start, end, gaps));
+                script.execute(interval);
+            } catch (ScriptException e) {
+                return e;
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return null;
+            }
+            return null;
+        }
+    }
+
+    /** One interval, as {@code IntervalFilterScript.Interval} reads its iterator. */
+    private static final class FixedInterval extends IntervalIterator {
+        private final int start, end, gaps;
+
+        FixedInterval(int start, int end, int gaps) {
+            this.start = start;
+            this.end = end;
+            this.gaps = gaps;
+        }
+
+        @Override
+        public int start() {
+            return start;
+        }
+
+        @Override
+        public int end() {
+            return end;
+        }
+
+        @Override
+        public int gaps() {
+            return gaps;
+        }
+
+        @Override
+        public int nextInterval() {
+            return NO_MORE_INTERVALS;
+        }
+
+        @Override
+        public float matchCost() {
+            return 0;
+        }
+
+        @Override
+        public int docID() {
+            return -1;
+        }
+
+        @Override
+        public int nextDoc() {
+            return NO_MORE_DOCS;
+        }
+
+        @Override
+        public int advance(int target) {
+            return NO_MORE_DOCS;
+        }
+
+        @Override
+        public long cost() {
+            return 0;
+        }
+    }
+
+    /** A {@code script} query's filter script, as {@code ScriptQuery} makes it. */
+    private record FilterRun(FilterScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            FilterScript script = (FilterScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /** The scripts the request on this thread sends to the native runtime, by run number. */
     private static final ThreadLocal<List<Run>> RUNS = ThreadLocal.withInitial(ArrayList::new);
 
     /** What a script's error starts with in the native runtime's message ({@code SCRIPT_ERROR}). */
@@ -111,6 +330,9 @@ public final class PainlessScore {
      * ({@code OPENSEARCH_ERROR}): {@code function_score}'s missing value or invalid final score.
      */
     private static final String OPENSEARCH_ERROR = "\u0001opensearch-error\u0001";
+
+    /** What an aggregation's {@code AggregationExecutionException} starts with ({@code AGGREGATION_ERROR}). */
+    private static final String AGGREGATION_ERROR = "\u0001aggregation-error\u0001";
 
     private PainlessScore() {}
 
@@ -145,6 +367,31 @@ public final class PainlessScore {
         return compile(ScoreScript.CONTEXT, ScoreScript.class, source);
     }
 
+    /** {@code source} compiled for the number sort context, as {@link #score}. */
+    public static Object sort(String source) {
+        return compile(NumberSortScript.CONTEXT, NumberSortScript.class, source);
+    }
+
+    /** {@code source} compiled for the aggregation context, as {@link #score}. */
+    public static Object aggregation(String source) {
+        return compile(AggregationScript.CONTEXT, AggregationScript.class, source);
+    }
+
+    /** {@code source} compiled for the {@code terms_set} context, as {@link #score}. */
+    public static Object termsSet(String source) {
+        return compile(TermsSetQueryScript.CONTEXT, TermsSetQueryScript.class, source);
+    }
+
+    /** {@code source} compiled for the {@code intervals} filter context, as {@link #score}. */
+    public static Object interval(String source) {
+        return compile(IntervalFilterScript.CONTEXT, IntervalFilterScript.class, source);
+    }
+
+    /** {@code source} compiled for the filter context, as {@link #score}. */
+    public static Object filter(String source) {
+        return compile(FilterScript.CONTEXT, FilterScript.class, source);
+    }
+
     private static Object compile(ScriptContext<?> context, Class<?> scriptClass, String source) {
         PainlessScriptEngine e = engine;
         if (e == null) {
@@ -177,13 +424,13 @@ public final class PainlessScore {
     }
 
     /**
-     * Whether the native runtime runs {@code compiled} with {@code params} and fields read as
-     * {@code kinds} exactly as Painless would: null when it does, else why not. The check is
+     * Whether the native runtime runs {@code compiled} in {@code context} with {@code params} and
+     * fields read as {@code kinds} exactly as Painless would: null when it does, else why not. The check is
      * static, over the whole script before any of it runs, on the node {@code spec} writes (its
      * fields after the sub-query), and kept per script, params and kinds, refusals too.
      */
-    public static String check(PainlessIr.Compiled compiled, boolean needsScore, byte[] params, byte[] kinds, Supplier<byte[]> spec) {
-        CheckKey key = new CheckKey(compiled, needsScore, ByteBuffer.wrap(params), ByteBuffer.wrap(kinds));
+    public static String check(PainlessIr.Compiled compiled, byte context, byte[] params, byte[] kinds, Supplier<byte[]> spec) {
+        CheckKey key = new CheckKey(compiled, context, ByteBuffer.wrap(params), ByteBuffer.wrap(kinds));
         String hit = CHECKED.get(key);
         if (hit == null) {
             byte[][] out = new byte[1][];
@@ -198,30 +445,135 @@ public final class PainlessScore {
         return hit.isEmpty() ? null : hit;
     }
 
-    /** Starts a request on this thread: no score script sent yet. */
+    /** Starts a request on this thread: no script sent yet. */
     public static void beginRequest() {
+        beginRequest(null);
+    }
+
+    /**
+     * Starts a request on this thread whose search source, as JSON, {@code source} gives: what
+     * {@link #compiledWithDefaults} reads, once, if it is asked.
+     */
+    public static void beginRequest(Supplier<String> source) {
         RUNS.get().clear();
+        REQUEST_SOURCE.set(source);
+        UNDEFAULTED.remove();
         NativeBridge.clearLastError();
     }
 
     /** Ends the request on this thread. */
     public static void endRequest() {
         RUNS.get().clear();
+        REQUEST_SOURCE.remove();
+        UNDEFAULTED.remove();
+    }
+
+    /** The request's search source, for {@link #compiledWithDefaults}; null outside a request. */
+    private static final ThreadLocal<Supplier<String>> REQUEST_SOURCE = new ThreadLocal<>();
+
+    /**
+     * The inline sources the request compiles with options of their own, and {@code null} in it
+     * when the request names a stored script; read from the request's source on first use.
+     */
+    private static final ThreadLocal<java.util.Set<String>> UNDEFAULTED = new ThreadLocal<>();
+
+    /**
+     * Whether a script of {@code source}, read off its compiled factory, was compiled with the
+     * node's default compiler settings, as {@link #compile} compiles it: no script of the request
+     * with that source sets an option other than {@code content_type} ({@code max_loop_counter},
+     * {@code picky}), and the request names no stored script (whose options its source does not
+     * show). A request whose source cannot be read compiled nothing with defaults as far as the
+     * native runtime knows.
+     */
+    public static boolean compiledWithDefaults(String source) {
+        java.util.Set<String> undefaulted = UNDEFAULTED.get();
+        if (undefaulted == null) {
+            undefaulted = new java.util.HashSet<>();
+            Supplier<String> request = REQUEST_SOURCE.get();
+            try {
+                String json = request == null ? null : request.get();
+                if (json != null) {
+                    undefaultedScripts(
+                        org.opensearch.common.xcontent.XContentHelper.convertToMap(
+                            org.opensearch.common.xcontent.json.JsonXContent.jsonXContent,
+                            json,
+                            false
+                        ),
+                        null,
+                        undefaulted
+                    );
+                }
+            } catch (RuntimeException e) {
+                undefaulted.add(null);
+            }
+            UNDEFAULTED.set(undefaulted);
+        }
+        return undefaulted.contains(null) == false && undefaulted.contains(source) == false;
+    }
+
+    /** Adds to {@code out} what {@link #UNDEFAULTED} holds of {@code value}, found under {@code key}. */
+    private static void undefaultedScripts(Object value, String key, java.util.Set<String> out) {
+        if (value instanceof Map<?, ?> m) {
+            if (key != null && key.endsWith("script") && m.get("id") != null) {
+                out.add(null);
+            }
+            if (m.get("source") instanceof String src && m.get("options") instanceof Map<?, ?> options
+                && options.keySet().stream().anyMatch(k -> "content_type".equals(k) == false)) {
+                out.add(src);
+            }
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                undefaultedScripts(e.getValue(), String.valueOf(e.getKey()), out);
+            }
+        } else if (value instanceof List<?> l) {
+            for (Object v : l) {
+                undefaultedScripts(v, key, out);
+            }
+        }
     }
 
     /** The number in this request, for its errors, of a script {@code factory} makes for an index's shard. */
     public static int run(ScoreScript.LeafFactory factory, String index, int shard, Version version) {
+        return run(new ScoreRun(factory, index, shard, version));
+    }
+
+    /** The number in this request, for its errors, of a {@code script} query's filter script. */
+    public static int run(FilterScript.LeafFactory factory) {
+        return run(new FilterRun(factory));
+    }
+
+    /** The number in this request, for its errors, of a {@code _script} sort key's script. */
+    public static int run(NumberSortScript.LeafFactory factory) {
+        return run(new SortRun(factory));
+    }
+
+    /** The number in this request, for its errors, of an aggregation's script. */
+    public static int run(AggregationScript.LeafFactory factory) {
+        return run(new AggregationRun(factory));
+    }
+
+    /** The number in this request, for its errors, of a {@code terms_set} minimum script. */
+    public static int runTermsSet(TermsSetQueryScript.LeafFactory factory) {
+        return run(new TermsSetRun(factory));
+    }
+
+    /** The number in this request, for its errors, of an {@code intervals} filter script. */
+    public static int runInterval(IntervalFilterScript script) {
+        return run(new IntervalRun(script));
+    }
+
+    private static int run(Run run) {
         List<Run> runs = RUNS.get();
-        runs.add(new Run(factory, index, shard, version));
+        runs.add(run);
         return runs.size() - 1;
     }
 
     /** Whether {@code error} is a script's own exception or invalid score, not an internal failure. */
     public static boolean scriptFailed(String error) {
-        return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR) || error.contains(OPENSEARCH_ERROR));
+        return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR) || error.contains(OPENSEARCH_ERROR)
+            || error.contains(AGGREGATION_ERROR));
     }
 
-    /** Whether this request sent a score script to the native runtime. */
+    /** Whether this request sent a script to the native runtime. */
     public static boolean ran() {
         return RUNS.get().isEmpty() == false;
     }
@@ -243,6 +595,10 @@ public final class PainlessScore {
         if (opensearch >= 0) {
             return new OpenSearchException(error.substring(opensearch + OPENSEARCH_ERROR.length()));
         }
+        int aggregation = error == null ? -1 : error.indexOf(AGGREGATION_ERROR);
+        if (aggregation >= 0) {
+            return new AggregationExecutionException(error.substring(aggregation + AGGREGATION_ERROR.length()));
+        }
         int at = error == null ? -1 : error.indexOf(SCRIPT_ERROR);
         if (at < 0) {
             return new IllegalStateException("native script_score search failed: " + error);
@@ -251,53 +607,90 @@ public final class PainlessScore {
         String[] parts = error.substring(at + SCRIPT_ERROR.length()).split("\u0001", 7);
         try {
             Run run = RUNS.get().get(Integer.parseInt(parts[0]));
-            int leaf = Integer.parseInt(parts[1]);
+            int offset0 = Integer.parseInt(parts[4]);
+            String message0 = parts[6].startsWith("1") ? parts[6].substring(1) : null;
+            if (run instanceof IntervalRun interval) {
+                // The interval, start:end:gaps, where a document goes.
+                String[] at3 = parts[2].split(":", 3);
+                ScriptException painless = interval.rethrown(Integer.parseInt(at3[0]), Integer.parseInt(at3[1]), Integer.parseInt(at3[2]));
+                if (painless != null) {
+                    return painless;
+                }
+                return converted(interval.script(), parts[5], message0, offset0);
+            }
+            List<LeafReaderContext> leaves = reader.leaves();
+            // The segment by number, or by doc base ("b<base>") where only that is known.
+            int leaf = parts[1].startsWith("b") ? byDocBase(leaves, Integer.parseInt(parts[1].substring(1))) : Integer.parseInt(parts[1]);
             int doc = Integer.parseInt(parts[2]);
             float docScore = Float.intBitsToFloat(Integer.parseUnsignedInt(parts[3]));
             int offset = Integer.parseInt(parts[4]);
             String message = parts[6].startsWith("1") ? parts[6].substring(1) : null;
-            List<LeafReaderContext> leaves = reader.leaves();
-            if (leaf >= leaves.size()) {
+            if (leaf < 0 || leaf >= leaves.size()) {
                 return new IllegalStateException("native script_score search failed: " + error);
             }
-            ScoreScript script = script(run, leaves.get(leaf));
-            ScriptException painless = rethrown(script, doc, docScore);
+            Object script = run.script(leaves.get(leaf));
+            ScriptException painless = run.rethrown(script, doc, docScore);
             if (painless != null) {
                 return painless;
             }
-            Throwable cause = exception(parts[5], message);
-            // Painless numbers a script's lines by source offset + 1.
-            cause.setStackTrace(new StackTraceElement[] { new StackTraceElement(WriterConstants.CLASS_NAME, "execute", null, offset < 0 ? -1 : offset + 1) });
-            return ((PainlessScript) script).convertToScriptException(cause, Map.of());
+            return converted(script, parts[5], message, offset);
         } catch (IOException | RuntimeException e) {
             return new IllegalStateException("native script_score search failed: " + error, e);
         }
     }
 
-    /** The script {@code ScriptScoreQuery} makes for {@code leaf}. */
-    private static ScoreScript script(Run run, LeafReaderContext leaf) throws IOException {
-        ScoreScript script = run.factory().newInstance(leaf);
-        script._setIndexName(run.index());
-        script._setShard(run.shard());
-        script._setIndexVersion(run.version());
-        return script;
+    /** Painless's {@code ScriptException} around an exception of class {@code name} at source {@code offset}. */
+    private static ScriptException converted(Object script, String name, String message, int offset) {
+        Throwable cause = exception(name, message);
+        // Painless numbers a script's lines by source offset + 1.
+        cause.setStackTrace(new StackTraceElement[] { new StackTraceElement(WriterConstants.CLASS_NAME, "execute", null, offset < 0 ? -1 : offset + 1) });
+        return ((PainlessScript) script).convertToScriptException(cause, Map.of());
     }
 
-    /** The {@code ScriptException} {@code script} raises on {@code doc} scored {@code score}, or null if it runs. */
-    private static ScriptException rethrown(ScoreScript script, int doc, float score) {
-        script.setScorer(new Scorable() {
-            @Override
-            public float score() {
-                return score;
-            }
-        });
-        script.setDocument(doc);
+    /** The source of a Painless script instance ({@code $SOURCE} of its class), or null. */
+    public static String sourceOf(Object script) {
         try {
-            script.execute(null);
-        } catch (ScriptException e) {
-            return e;
+            Class<?> c = script.getClass();
+            if (c.getClassLoader() == null || c.getName().equals(WriterConstants.CLASS_NAME) == false) {
+                return null;
+            }
+            Field source = c.getDeclaredField("$SOURCE");
+            source.setAccessible(true);
+            return source.get(null) instanceof String src ? src : null;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            return null;
         }
-        return null;
+    }
+
+    /** The number of the leaf whose doc base is {@code base}, or -1. */
+    private static int byDocBase(List<LeafReaderContext> leaves, int base) {
+        for (LeafReaderContext l : leaves) {
+            if (l.docBase == base) {
+                return l.ord;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The source and params of a script Painless compiled into {@code factory} (a context's
+     * {@code LeafFactory}): its script class's {@code $SOURCE}, loaded by the factory's own
+     * loader, and the params the factory was made with; null when the factory is not Painless's.
+     */
+    public static Object[] sourceAndParams(Object factory) {
+        try {
+            Class<?> c = factory.getClass();
+            if (c.getClassLoader() == null || c.getName().endsWith("$StatefulFactory") == false) {
+                return null;
+            }
+            Field source = Class.forName(WriterConstants.CLASS_NAME, true, c.getClassLoader()).getDeclaredField("$SOURCE");
+            source.setAccessible(true);
+            Field params = c.getDeclaredField("$arg0");
+            params.setAccessible(true);
+            return new Object[] { source.get(null), params.get(factory) };
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            return null;
+        }
     }
 
     /** An exception of class {@code name} with {@code message} (null for none). */

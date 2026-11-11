@@ -398,6 +398,20 @@ impl TermsOrder {
     }
 }
 
+/// Per-document values a node reads in place of a field's column: a
+/// script's (OpenSearch's `ValuesSource.Numeric.Script`).
+pub trait ScriptValuesSource: Send + Sync + std::fmt::Debug {
+    /// The values on one segment.
+    fn open<'a>(&self, reader: &'a SegmentReader) -> Result<Box<dyn ScriptValues + 'a>>;
+}
+
+/// A [`ScriptValuesSource`] on one segment.
+pub trait ScriptValues {
+    /// Appends `doc`'s values to `out`, ascending, in the node's value
+    /// kind's encoding (none: the document has no value).
+    fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()>;
+}
+
 /// One aggregation of a request, with its sub-aggregations.
 #[derive(Debug, Clone)]
 pub enum AggNode {
@@ -412,6 +426,9 @@ pub enum AggNode {
         source: Source,
         /// The parts of [`MetricState`] the caller reads (`aggs::NEED_*`).
         needs: u8,
+        /// A script's values in place of `field`'s (`ValuesSource.Numeric.Script`),
+        /// in `kind`'s encoding.
+        script: Option<Arc<dyn ScriptValuesSource>>,
     },
     /// `percentiles` and `percentile_ranks` over a t-digest
     /// (`TDigestPercentilesAggregator`): each owning bucket's
@@ -1552,6 +1569,8 @@ enum Col<'a> {
     /// The segment's matches and their scores, by document, and its first
     /// document's global number (`docBase`).
     Scores(&'a [i32], &'a [f32], i32),
+    /// A script's values.
+    Script(Box<dyn ScriptValues + 'a>),
     None,
 }
 
@@ -1686,6 +1705,7 @@ impl Leaf<'_> {
                 }
             }
             Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
+            Col::Script(s) => s.values(doc, &mut self.buf)?,
             Col::Filters(_) | Col::Scores(..) | Col::None => {}
         }
         if self.buf.is_empty() {
@@ -1719,6 +1739,10 @@ fn open_leaf<'a>(
 ) -> Result<Leaf<'a>> {
     let reader = view.reader;
     let col = match node {
+        AggNode::Metric {
+            script: Some(script),
+            ..
+        } => Col::Script(script.open(reader)?),
         AggNode::Metric {
             field,
             kind,
@@ -4758,6 +4782,7 @@ mod tests {
     #[test]
     fn reads_points_finds_a_points_metric() {
         let metric = |source| AggNode::Metric {
+            script: None,
             missing: None,
             field: "n".into(),
             kind: ValueKind::Long,
@@ -5051,6 +5076,7 @@ mod tests {
 
     fn metric(field: &str, kind: ValueKind) -> AggNode {
         AggNode::Metric {
+            script: None,
             missing: None,
             field: field.to_string(),
             kind,
@@ -5809,6 +5835,7 @@ mod tests {
         ];
         fn only(field: &str, needs: u8) -> AggNode {
             AggNode::Metric {
+                script: None,
                 missing: None,
                 field: field.to_string(),
                 kind: ValueKind::Long,
@@ -6782,6 +6809,7 @@ mod tests {
         }];
         let _ = run(&reader, &all(), &numeric, &whole(&reader));
         assert!(AggNode::Metric {
+            script: None,
             missing: None,
             field: "x".into(),
             kind: ValueKind::Long,
@@ -6831,6 +6859,7 @@ mod tests {
                 )
                 .unwrap();
                 let node = AggNode::Metric {
+                    script: None,
                     missing: None,
                     field: field.to_string(),
                     kind,
