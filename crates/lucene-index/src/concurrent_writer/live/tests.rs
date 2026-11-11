@@ -460,6 +460,42 @@ fn deletes_none(w: &ConcurrentIndexWriter<'_>) -> bool {
     view.commit_deletes.is_empty()
 }
 
+/// A big document's stored fields are read from the compressed chunk the
+/// buffer wrote, through its flush and publish, not from a second copy.
+#[test]
+fn a_big_document_is_read_from_its_compressed_chunk() {
+    let tmp = TempDir::new("live-big");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    // Compressible, as `_source` is: a small part of it stays in memory.
+    let source: String = (0..400_000)
+        .map(|i| format!("{{\"k{}\":{i}}}", i % 50))
+        .collect();
+    for i in 0..5 {
+        let mut d = doc(&f, i);
+        if i == 2 {
+            d.stored[0].value = FieldValue::String(source.clone());
+        }
+        w.add_explicit_documents(vec![d]).unwrap();
+    }
+    let view = w.open_live_view(None).unwrap();
+    let read = |doc| w.live_document(&view, 0, doc).unwrap();
+    assert_eq!(read(2)[0].value, FieldValue::String(source.clone()));
+    assert_eq!(read(1)[0].value, FieldValue::String("d1".into()));
+    assert_eq!(read(4)[1].value, FieldValue::Long(4));
+    assert!(
+        w.live_bytes() < source.len() / 2,
+        "{} live bytes for a {} byte document",
+        w.live_bytes(),
+        source.len()
+    );
+    // Flushed and published, the view still reads it.
+    w.commit().unwrap();
+    assert_eq!(read(2)[0].value, FieldValue::String(source));
+    assert_eq!(read(3)[0].value, FieldValue::String("d3".into()));
+    w.close_live_view(&view);
+}
+
 /// A view holds its buffers' documents and deletes as of its opening, and
 /// its stored fields, through a flush, a publish and a release, until it is
 /// closed.

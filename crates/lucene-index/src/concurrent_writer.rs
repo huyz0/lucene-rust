@@ -1479,16 +1479,25 @@ impl<'d> ConcurrentIndexWriter<'d> {
                         .and_then(Iterator::next)
                         .unwrap_or_default();
                     let stored = Document { fields: doc.stored };
-                    if live.is_some() {
-                        dwpt.live.record_stored(&stored.fields);
-                    }
                     if let Some(mode) = streamed {
-                        dwpt.stored
+                        let kept = dwpt
+                            .stored
                             .get_mut()
                             .get_or_insert_with(|| StreamedStored::new(mode))
-                            .add(&stored);
+                            .add(&stored, live.is_some());
+                        if live.is_some() {
+                            // A big document is read from its compressed
+                            // chunk rather than held twice.
+                            match kept {
+                                Some(kept) => dwpt.live.record_stored_chunk(kept),
+                                None => dwpt.live.record_stored(&stored.fields),
+                            }
+                        }
                         dwpt.stored_docs = dwpt.stored_docs.saturating_add(1);
                     } else {
+                        if live.is_some() {
+                            dwpt.live.record_stored(&stored.fields);
+                        }
                         added = added.saturating_add(document_ram_bytes(&stored));
                         dwpt.fill_docs();
                         dwpt.docs.push(stored);

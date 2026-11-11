@@ -772,3 +772,90 @@ fn query_time_join_edges() {
     .unwrap();
     assert_eq!(walks.len(), 1, "no slices: one empty collector");
 }
+
+/// OpenSearch's `has_child`/`has_parent` as the plugin hands them over: every
+/// recorded global-ordinal join, as a [`LateJoinQuery`] inside a boolean,
+/// resolved against the searcher with the reader's cached global ordinals
+/// ([`resolve_late_joins`]) -- the same hits with the same score bits as
+/// Lucene's `JoinUtil.createJoinQuery`, also as a boosted clause beside
+/// another.
+#[test]
+fn late_joins_resolve_to_lucenes_joins() {
+    use lucene_search::extended_query::ExtendedQuery;
+    use lucene_search::join::{resolve_late_joins, LateJoinQuery};
+    let dir = data();
+    let Ok(text) = std::fs::read_to_string(dir.join("searches.tsv")) else {
+        panic!("run scripts/gen-fixtures.sh --only GenQueryTimeJoin");
+    };
+    let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
+    let norms: Vec<SegmentNorms<'_, '_>> = owned
+        .iter()
+        .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))
+        .collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let ords = |field: &str| -> lucene_search::Result<Option<Arc<OrdinalMap>>> {
+        Ok(Some(reader.global_ords(field)?.ordinal_map()))
+    };
+    let mut checked = 0;
+    for line in text.lines() {
+        let [kind, spec, want] = line.split('\t').collect::<Vec<_>>()[..] else {
+            panic!("bad line {line}");
+        };
+        if kind != "all" || !spec.starts_with("gord(") || want.starts_with("ERR ") {
+            continue;
+        }
+        let inner = spec["gord(".len()..].strip_suffix(')').unwrap();
+        let mut parts = inner.splitn(4, ',');
+        let mut next = || parts.next().unwrap();
+        let (m, min, max) = (
+            mode(next()),
+            next().parse().unwrap(),
+            next().parse().unwrap(),
+        );
+        let mut p = Parser { s: next(), at: 0 };
+        let from = p.query();
+        p.eat(b',');
+        let to = p.query();
+        let late = Clause::Extended(Box::new(ExtendedQuery::LateJoin(LateJoinQuery {
+            join_field: "gj".into(),
+            from_query: Box::new(from),
+            to_query: Box::new(to),
+            score_mode: m,
+            min,
+            max,
+        })));
+        let query = BooleanQuery {
+            must: vec![late.clone()],
+            ..Default::default()
+        };
+        let resolved = resolve_late_joins(&query, &searcher, &ords)
+            .unwrap()
+            .expect("a join to resolve");
+        let got: Vec<(i32, u32)> = searcher
+            .search(&resolved, 100_000)
+            .unwrap()
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score.to_bits()))
+            .collect();
+        assert_eq!(got, scored_hits(want), "{spec}");
+        // Boosted beside a term: still resolved where it sits.
+        let beside = BooleanQuery {
+            should: vec![
+                Clause::Boost(Box::new(BoostQuery::new(late, 2.0))),
+                term("body", "a"),
+            ],
+            ..Default::default()
+        };
+        let resolved = resolve_late_joins(&beside, &searcher, &ords)
+            .unwrap()
+            .unwrap();
+        assert!(!lucene_search::join::has_late_joins(&resolved), "{spec}");
+        checked += 1;
+    }
+    assert!(checked >= 50, "{checked} joins");
+}
