@@ -55,6 +55,9 @@ pub enum ExtendedQuery {
     GlobalOrdinals(crate::join::GlobalOrdinalsQuery),
     GlobalOrdinalsWithScore(crate::join::GlobalOrdinalsWithScoreQuery),
     PointInSetIncludingScore(crate::join::PointInSetIncludingScoreQuery),
+    /// OpenSearch's `has_child`/`has_parent` join, searched only once
+    /// [`crate::join::resolve_late_joins`] has made it a global-ordinals one.
+    LateJoin(crate::join::LateJoinQuery),
     /// `lucene-queries`' function queries ([`crate::function`]).
     Function(crate::function::FunctionQuery),
     FunctionRange(crate::function::FunctionRangeQuery),
@@ -197,6 +200,7 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinals(_) => "GlobalOrdinalsQuery",
             ExtendedQuery::GlobalOrdinalsWithScore(_) => "GlobalOrdinalsWithScoreQuery",
             ExtendedQuery::PointInSetIncludingScore(_) => "PointInSetIncludingScoreQuery",
+            ExtendedQuery::LateJoin(_) => "LateParsingQuery",
             ExtendedQuery::Function(_) => "FunctionQuery",
             ExtendedQuery::FunctionRange(_) => "FunctionRangeQuery",
             ExtendedQuery::FunctionMatch(_) => "FunctionMatchQuery",

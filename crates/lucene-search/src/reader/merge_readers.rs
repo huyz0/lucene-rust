@@ -56,6 +56,13 @@ pub trait MergeReaderHooks: Send + Sync {
     fn diagnostics(&self, _reordered: bool) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    /// The numeric doc-values field by which `reorder` keeps document
+    /// blocks whole without a parent field (none by default: Lucene's
+    /// `hasBlocksButNoParentField` skips reordering such a merge).
+    fn block_root_field(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The hooks a plain `OneMerge` has: none.
@@ -142,6 +149,10 @@ impl std::fmt::Debug for SegmentMergeHooks {
 }
 
 impl lucene_index::merge_policy::MergeHooks for SegmentMergeHooks {
+    fn block_root_field(&self) -> Option<&str> {
+        self.hooks.block_root_field()
+    }
+
     fn prepare(
         &self,
         dir: &dyn lucene_store::Directory,
