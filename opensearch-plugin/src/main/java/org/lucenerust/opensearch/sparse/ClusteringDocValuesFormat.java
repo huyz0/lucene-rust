@@ -49,6 +49,11 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
 
     @Override
     public DocValuesConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
+        // A doc values update generation (a soft delete, say) writes under its generation's
+        // suffix: the segment's clustered postings stay as flushed or merged.
+        if (state.segmentSuffix.isEmpty() == false) {
+            return delegate.fieldsConsumer(state);
+        }
         return new Consumer(delegate.fieldsConsumer(state), state);
     }
 
@@ -100,6 +105,8 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
         private final SegmentWriteState state;
         /** Each clustered field's clusterer, by name: the order the fields are written in. */
         private final Map<String, Long> clusterers = new TreeMap<>();
+        /** Whether a field failed, so the segment is being aborted and gets no postings. */
+        private boolean failed;
 
         Consumer(DocValuesConsumer delegate, SegmentWriteState state) {
             this.delegate = delegate;
@@ -113,8 +120,14 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
 
         @Override
         public void addBinaryField(FieldInfo field, DocValuesProducer values) throws IOException {
-            delegate.addBinaryField(field, values);
-            cluster(field, values);
+            boolean ok = false;
+            try {
+                delegate.addBinaryField(field, values);
+                cluster(field, values);
+                ok = true;
+            } finally {
+                failed |= ok == false;
+            }
         }
 
         @Override
@@ -135,6 +148,16 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
         /** The delegate's own merge, then each clustered field's merged forward index. */
         @Override
         public void merge(MergeState mergeState) throws IOException {
+            boolean ok = false;
+            try {
+                mergeAll(mergeState);
+                ok = true;
+            } finally {
+                failed |= ok == false;
+            }
+        }
+
+        private void mergeAll(MergeState mergeState) throws IOException {
             delegate.merge(mergeState);
             int maxDoc = mergeState.segmentInfo.maxDoc();
             DocValuesConsumer clustering = new DocValuesConsumer() {
@@ -197,7 +220,9 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
         public void close() throws IOException {
             try {
                 delegate.close();
-                writePostings();
+                if (failed == false) {
+                    writePostings();
+                }
             } finally {
                 for (long h : clusterers.values()) {
                     NativeBridge.sparseClustererClose(h);

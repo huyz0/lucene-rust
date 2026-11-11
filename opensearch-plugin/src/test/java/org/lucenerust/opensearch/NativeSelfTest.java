@@ -317,6 +317,8 @@ public final class NativeSelfTest {
                     b.putInt(i % 4).putFloat(0.5f + i / 40f).putInt(100 + i).putFloat(1.0f);
                     org.apache.lucene.document.Document doc = new org.apache.lucene.document.Document();
                     doc.add(new org.apache.lucene.document.Field("emb", b.array(), vector));
+                    doc.add(new org.apache.lucene.document.NumericDocValuesField("n", i));
+                    doc.add(new org.apache.lucene.document.StringField("id", "d" + i, org.apache.lucene.document.Field.Store.NO));
                     w.addDocument(doc);
                 }
                 w.commit();
@@ -327,6 +329,11 @@ public final class NativeSelfTest {
             check(sizes.containsKey("_0.sit") && sizes.containsKey("_0.sip"), "flushed sparse segment has .sit/.sip: " + sizes.keySet());
             check(sizes.containsKey("_1.sit") && sizes.containsKey("_1.sip"), "segment under the threshold has .sit/.sip: " + sizes.keySet());
             check(sizes.getOrDefault("_0.sip", 0L) > sizes.getOrDefault("_1.sip", 0L), "clustered segment's postings are written: " + sizes);
+            // A doc values update generation leaves the segment's clustered postings alone.
+            w.updateNumericDocValue(new org.apache.lucene.index.Term("id", "d3"), "n", -1);
+            w.commit();
+            List<String> generations = Arrays.stream(d.listAll()).filter(f -> f.endsWith(".sit") && f.indexOf('_', 1) > 0).toList();
+            check(generations.isEmpty(), "doc values updates write no .sit: " + generations);
             w.getConfig().setMergePolicy(new org.apache.lucene.index.TieredMergePolicy());
             w.forceMerge(1);
             w.commit();
