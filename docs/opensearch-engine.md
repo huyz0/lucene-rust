@@ -124,7 +124,11 @@ With `disable_sequence_numbers`, a document whose history is gone reports no
 sequence-number check (as for an index without them), and a search on
 `_seq_no` sees it as -2. Use it for append-mostly data such as logs; keep
 `doc_values_only` alone where clients rely on optimistic concurrency.
-The segments of both stay readable by stock Lucene and OpenSearch.
+The segments of both stay readable by stock Lucene. Both need the Rust engine:
+a node that would open such an index with OpenSearch's engine refuses it,
+since that engine runs its history and retention ranges on `_seq_no` points.
+Segment-replication replicas and realtime-buffered documents show `_seq_no` as
+points too.
 Numbers: [docs/benchmarks/lean-seq-no.md](benchmarks/lean-seq-no.md).
 
 ## What it refuses

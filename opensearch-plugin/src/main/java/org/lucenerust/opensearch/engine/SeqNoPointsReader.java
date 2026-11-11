@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch.engine;
 
 import org.apache.lucene.codecs.PointsReader;
+import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
@@ -13,11 +14,12 @@ import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.FilterCodecReader;
 import org.apache.lucene.index.FilterDirectoryReader;
-import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader;
 import org.opensearch.index.mapper.SeqNoFieldMapper;
 
 import java.io.IOException;
@@ -32,7 +34,7 @@ import java.io.UncheckedIOException;
  * skip index; the native engine runs such queries on the doc values directly ({@link
  * SeqNoQueries#docValuesOnly}). Other segments and fields are passed through untouched.
  */
-final class SeqNoPointsReader extends FilterDirectoryReader {
+public final class SeqNoPointsReader extends FilterDirectoryReader {
     SeqNoPointsReader(DirectoryReader in) throws IOException {
         super(in, new SubReaderWrapper() {
             @Override
@@ -46,17 +48,31 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
         });
     }
 
+    /** {@code in}, wrapped when one of its leaves has doc-values-only {@code _seq_no} not yet shown as points. */
+    public static DirectoryReader wrapIfNeeded(DirectoryReader in) throws IOException {
+        for (LeafReaderContext leaf : in.leaves()) {
+            if (needsPoints(leaf.reader().getFieldInfos())) {
+                return new SeqNoPointsReader(in);
+            }
+        }
+        return in;
+    }
+
+    private static boolean needsPoints(FieldInfos infos) {
+        FieldInfo seqNo = infos.fieldInfo(SeqNoFieldMapper.NAME);
+        return seqNo != null && seqNo.getPointDimensionCount() == 0 && seqNo.getDocValuesType() == DocValuesType.NUMERIC;
+    }
+
     /** Whether {@code reader} (a segment, possibly wrapped) shows doc-values-only {@code _seq_no} as points. */
     static boolean synthesizes(LeafReader reader) {
         return reader instanceof SyntheticCodecLeaf || reader instanceof SyntheticLeaf;
     }
 
     private static LeafReader wrapLeaf(LeafReader reader) throws IOException {
-        FieldInfo seqNo = reader.getFieldInfos().fieldInfo(SeqNoFieldMapper.NAME);
-        if (seqNo == null || seqNo.getPointDimensionCount() != 0 || seqNo.getDocValuesType() != DocValuesType.NUMERIC) {
+        if (needsPoints(reader.getFieldInfos()) == false) {
             return reader;
         }
-        FieldInfos infos = withPoints(reader.getFieldInfos(), seqNo);
+        FieldInfos infos = withPoints(reader.getFieldInfos(), reader.getFieldInfos().fieldInfo(SeqNoFieldMapper.NAME));
         if (reader instanceof CodecReader codec) {
             return new SyntheticCodecLeaf(codec, infos);
         }
@@ -154,8 +170,8 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
         }
     }
 
-    /** Any other leaf. */
-    private static final class SyntheticLeaf extends FilterLeafReader {
+    /** Any other leaf, such as one of the writer's buffers: its stored fields still read sequentially. */
+    private static final class SyntheticLeaf extends SequentialStoredFieldsLeafReader {
         private final FieldInfos infos;
 
         SyntheticLeaf(LeafReader in, FieldInfos infos) {
@@ -166,6 +182,11 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
         @Override
         public FieldInfos getFieldInfos() {
             return infos;
+        }
+
+        @Override
+        protected StoredFieldsReader doGetSequentialStoredFieldsReader(StoredFieldsReader reader) {
+            return reader;
         }
 
         @Override
@@ -193,36 +214,33 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
         private final String field;
         private final byte[] min;
         private final byte[] max;
+        /** At least the documents with a value. */
+        private final int size;
         private final int docCount;
 
-        private DocValuesPoints(LeafReader reader, String field, long min, long max, int docCount) {
+        private DocValuesPoints(LeafReader reader, String field, long min, long max, int size, int docCount) {
             this.reader = reader;
             this.field = field;
             this.min = LongPoint.pack(min).bytes;
             this.max = LongPoint.pack(max).bytes;
+            this.size = size;
             this.docCount = docCount;
         }
 
-        /** Null when no document has a value, as a segment without the field's points reads. */
+        /**
+         * Null when no document has a value, as a segment without the field's points reads. Without
+         * a skip index (a leaf of the writer's buffers) the bounds are the whole long range and no
+         * document is counted as having the field, so a query's rewrite keeps it whole.
+         */
         static PointValues of(LeafReader reader, String field) throws IOException {
             DocValuesSkipper skipper = reader.getDocValuesSkipper(field);
             if (skipper != null) {
-                return skipper.docCount() == 0 ? null : new DocValuesPoints(reader, field, skipper.minValue(), skipper.maxValue(), skipper.docCount());
+                return skipper.docCount() == 0 ? null : new DocValuesPoints(reader, field, skipper.minValue(), skipper.maxValue(), skipper.docCount(), skipper.docCount());
             }
-            NumericDocValues values = reader.getNumericDocValues(field);
-            if (values == null) {
+            if (reader.maxDoc() == 0 || reader.getNumericDocValues(field) == null) {
                 return null;
             }
-            long min = Long.MAX_VALUE;
-            long max = Long.MIN_VALUE;
-            int count = 0;
-            for (int doc = values.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = values.nextDoc()) {
-                long v = values.longValue();
-                min = Math.min(min, v);
-                max = Math.max(max, v);
-                count++;
-            }
-            return count == 0 ? null : new DocValuesPoints(reader, field, min, max, count);
+            return new DocValuesPoints(reader, field, Long.MIN_VALUE, Long.MAX_VALUE, reader.maxDoc(), 0);
         }
 
         @Override
@@ -257,7 +275,7 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
 
         @Override
         public long size() {
-            return docCount;
+            return size;
         }
 
         @Override
@@ -299,13 +317,13 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
 
             @Override
             public long size() {
-                return docCount;
+                return size;
             }
 
             @Override
             public void visitDocIDs(IntersectVisitor visitor) throws IOException {
                 NumericDocValues values = reader.getNumericDocValues(field);
-                visitor.grow(docCount);
+                visitor.grow(size);
                 for (int doc = values.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = values.nextDoc()) {
                     visitor.visit(doc);
                 }
@@ -315,7 +333,7 @@ final class SeqNoPointsReader extends FilterDirectoryReader {
             public void visitDocValues(IntersectVisitor visitor) throws IOException {
                 NumericDocValues values = reader.getNumericDocValues(field);
                 byte[] packed = new byte[Long.BYTES];
-                visitor.grow(docCount);
+                visitor.grow(size);
                 for (int doc = values.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = values.nextDoc()) {
                     LongPoint.encodeDimension(values.longValue(), packed, 0);
                     visitor.visit(doc, packed);

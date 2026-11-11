@@ -4,9 +4,10 @@
 
 Indexes the same operations (one client, so both nodes assign the same sequence numbers) into a
 stock index and into plugin indices with the default layout, `doc_values_only`, and `doc_values_only`
-plus `disable_sequence_numbers`, then compares searches on `_seq_no`, fetched sequence numbers,
+plus `disable_sequence_numbers`, and `doc_values_only` under realtime search (searched while the
+documents are still in the writer's buffers), then compares searches on `_seq_no`, fetched sequence numbers,
 gets, nested and text searches, before and after a force merge and across a close/open. The
-first two layouts must answer exactly as stock; with `disable_sequence_numbers` the documents the
+other layouts must answer exactly as stock; with `disable_sequence_numbers` the documents the
 merge left without history report no sequence number, and everything else still matches.
 """
 import json, sys, time, urllib.error, urllib.request
@@ -37,6 +38,9 @@ VARIANTS = {
     "doc_values_only": {"lucene_rust.seq_no.index_options": "doc_values_only"},
     "disable_sequence_numbers": {"lucene_rust.seq_no.index_options": "doc_values_only",
                                  "lucene_rust.disable_sequence_numbers": True},
+    # Searched before any refresh: the documents are still in the writer's buffers.
+    "doc_values_only_realtime": {"lucene_rust.seq_no.index_options": "doc_values_only",
+                                 "lucene_rust.realtime_search": True, "lucene_rust.realtime_max_staleness": "0ms"},
 }
 MAPPING = {"properties": {"n": {"type": "long"}, "msg": {"type": "text"},
                           "tags": {"type": "nested", "properties": {"k": {"type": "keyword"}}}}}
@@ -60,7 +64,8 @@ def load(base, index, extra):
     for i in range(7, N, 61):
         lines.append(json.dumps({"delete": {"_id": f"d{i}"}}))
     ok(base, "POST", f"/{index}/_bulk", ("\n".join(lines) + "\n").encode(), ndjson=True)
-    ok(base, "POST", f"/{index}/_refresh")
+    if not extra.get("lucene_rust.realtime_search"):
+        ok(base, "POST", f"/{index}/_refresh")
 
 SEARCHES = {
     "range": {"query": {"range": {"_seq_no": {"gte": 1000, "lt": 1400}}}, "size": 5, "sort": [{"_seq_no": "asc"}], "track_total_hits": True},

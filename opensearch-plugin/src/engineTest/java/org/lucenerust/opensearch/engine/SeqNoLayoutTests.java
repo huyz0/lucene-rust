@@ -11,6 +11,7 @@ import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.UUIDs;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineTestAccess;
 import org.opensearch.index.mapper.ParsedDocument;
@@ -34,6 +35,18 @@ public class SeqNoLayoutTests extends RustEngineTestCase {
             .put(SeqNoSettings.DISABLE_SEQUENCE_NUMBERS.getKey(), sentinels);
         IndexMetadata indexMetadata = IndexMetadata.builder(defaultSettings.getIndexMetadata()).settings(settings).build();
         return IndexSettingsModule.newIndexSettings(indexMetadata, SeqNoSettings.INDEX_OPTIONS, SeqNoSettings.DISABLE_SEQUENCE_NUMBERS);
+    }
+
+    /** A node that would serve a {@code doc_values_only} index with OpenSearch's engine refuses it. */
+    public void testDocValuesOnlyRefusesOpenSearchsEngine() throws Exception {
+        try (Store store = createStore()) {
+            EngineConfig config = config(seqNoSettings(false), store, createTempDir(), newMergePolicy(), null);
+            IllegalArgumentException refused = expectThrows(
+                IllegalArgumentException.class,
+                () -> new RustEngineFactory(false).newReadWriteEngine(config)
+            );
+            assertEquals(RustEngineFactory.SEQ_NO_NEEDS_ENGINE, refused.getMessage());
+        }
     }
 
     /**
