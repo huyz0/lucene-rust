@@ -23,6 +23,14 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              (and rescores some); the plugin searches full precision. The check
              is that its top 10 are the exhaustive scan's, and that they
              overlap stock's by at least MIN_RECALL on average.
+  grouped    knn with `collapse` (and collapse inner hits) on a keyword and
+             a numeric field: the same groups, hits, scores and inner hits
+             as stock, which collapses only the groups its top k happen to
+             cover. Then the plugin's opt-in `group_by` / `group_size` (no
+             stock counterpart, so stock must refuse it), on an HNSW field
+             and an IVF one probing every cluster: the exhaustive scan's best
+             `group_size` documents of each of the best k groups, filtered or
+             not, with collapse too; and its refusals.
   nested     a knn_vector under a nested field: the best child per parent,
              filters at the root and on the nested docs, and
              expand_nested_docs with inner hits, the same hits, scores and
@@ -265,6 +273,136 @@ def close(got, want, tol=1e-3):
 
 def knn(target, **params):
     return {"knn": {"emb": {"vector": target, **params}}}
+
+
+GROUPS = 40
+
+
+def grouped_check(failures):
+    """knn + collapse against stock, and group_by against an exhaustive scan: the queries compared."""
+    index, ivf_index = "grouped_l2", "grouped_ivf"
+    rng = random.Random(f"{SEED}-{index}")
+    spec = {"engine": "lucene", "space_type": "l2"}
+    # Each group's documents lie close together, so an ungrouped top k is a few groups' siblings.
+    centres = [vector_for(spec, rng) for _ in range(GROUPS)]
+    docs = []
+    for i in range(DOCS):
+        g = int(rng.random() ** 2 * GROUPS)
+        emb = [round(c + rng.uniform(-0.05, 0.05), 4) for c in centres[g]]
+        d = {"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": emb}
+        if i % 53 != 0:
+            d["cat"], d["num"] = f"c{g}", g * 1000 - 3
+        docs.append(d)
+    props = {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "cat": {"type": "keyword"},
+             "num": {"type": "long"}}
+    for port, rust, name, emb in ((OURS[1], True, index, field_mapping(spec)), (STOCK[1], False, index, field_mapping(spec)),
+                                  (OURS[1], True, ivf_index, ivf_mapping())):
+        settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
+        if rust:
+            settings["index.lucene_rust.engine"] = True
+        req(port, "PUT", f"/{name}", {"settings": settings, "mappings": {"properties": {**props, "emb": emb}}})
+        per = len(docs) // SEGMENTS
+        for s in range(SEGMENTS):
+            lines = []
+            for d in docs[s * per:(s + 1) * per]:
+                lines.append(json.dumps({"index": {"_index": name, "_id": d["_id"]}}))
+                lines.append(json.dumps({k: v for k, v in d.items() if k != "_id"}))
+            r = req(port, "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            assert not r["errors"], json.dumps(r)[:2000]
+            req(port, "POST", f"/{name}/_flush")
+        req(port, "POST", f"/{name}/_refresh")
+
+    def hits(port, body, name=index):
+        r = req(port, "POST", f"/{name}/_search", body)
+        out = []
+        for h in r["hits"]["hits"]:
+            inner = h.get("inner_hits", {}).get("top", {}).get("hits", {}).get("hits", [])
+            out.append((h["_id"], h["_score"], [(x["_id"], x["_score"]) for x in inner]))
+        return out
+
+    def agree(got, want):
+        if not same([(i, sc) for i, sc, _ in got], [(i, sc) for i, sc, _ in want]):
+            return False
+        return all(same(a, b) for (_, _, a), (_, _, b) in zip(got, want))
+
+    def exact_groups(t, k, size, field, keep=lambda d: True):
+        """The best `size` documents of each of the best `k` groups (no value: one group), best first."""
+        by = {}
+        for d in docs:
+            if keep(d):
+                by.setdefault(d.get(field), []).append((score("l2", t, d["emb"]), d["_id"]))
+        lists = sorted((sorted(l, key=lambda x: (-x[0], x[1]))[:size] for l in by.values()),
+                       key=lambda l: (-l[0][0], l[0][1]))[:k]
+        return lists
+
+    checked, stock_groups, our_groups = 0, 0, 0
+    for qi in range(6):
+        t = [round(c + rng.uniform(-0.2, 0.2), 4) for c in centres[rng.randrange(GROUPS)]]
+        for field in ("cat", "num"):
+            # Stock's knn + collapse: the groups the top k cover.
+            for label, body in (
+                ("collapse", {"size": 10, "query": knn(t, k=10), "collapse": {"field": field}}),
+                ("collapse inner hits", {"size": 10, "query": knn(t, k=20),
+                                         "collapse": {"field": field, "inner_hits": {"name": "top", "size": 3}}}),
+                ("collapse filtered", {"size": 10, "query": knn(t, k=10, filter={"term": {"tag": "even"}}),
+                                       "collapse": {"field": field}}),
+            ):
+                got, want = hits(OURS[1], body), hits(STOCK[1], body)
+                checked += 1
+                if not agree(got, want):
+                    failures.append(f"{index} {label} on {field} query {qi}: {got[:2]} vs stock {want[:2]}")
+                if label == "collapse":
+                    stock_groups += len(want)
+            # group_by: k groups whatever their siblings.
+            for name, extra in ((index, {}), (ivf_index, {"method_parameters": {"nprobes": IVF_ALL}})):
+                for label, size, flt, keep in (("group_by", 1, None, lambda d: True),
+                                               ("group_by 3", 3, None, lambda d: True),
+                                               ("group_by filtered", 2, {"term": {"tag": "odd"}},
+                                                lambda d: d["tag"] == "odd")):
+                    params = {"k": 10, "group_by": field, **extra}
+                    if size != 1:
+                        params["group_size"] = size
+                    if flt:
+                        params["filter"] = flt
+                    want = exact_groups(t, 10, size, field, keep)
+                    flat = sorted((x for l in want for x in l), key=lambda x: (-x[0], x[1]))
+                    got = hits(OURS[1], {"size": 100, "query": knn(t, **params)}, name)
+                    checked += 1
+                    if not same([(i, sc) for i, sc, _ in got], [(i, sc) for sc, i in flat]):
+                        failures.append(f"{name} {label} on {field} query {qi}: {got[:3]} vs scan {flat[:3]}")
+                    body = {"size": 10, "query": knn(t, **params),
+                            "collapse": {"field": field, "inner_hits": {"name": "top", "size": size}}}
+                    got = hits(OURS[1], body, name)
+                    scan = [(l[0][1], l[0][0], [(i, sc) for sc, i in l]) for l in want]
+                    checked += 1
+                    if not agree(got, scan):
+                        failures.append(f"{name} {label} + collapse on {field} query {qi}: {got[:2]} vs scan {scan[:2]}")
+                    if name == index and label == "group_by" and field == "cat":
+                        our_groups += len(got)
+    print(f"{index}: knn + collapse returned {stock_groups} groups on stock over 6 queries; group_by {our_groups}")
+    t = centres[0]
+    refused = [
+        ("group_by radial", {"query": knn(t, min_score=0.5, group_by="cat")}),
+        ("group_by text", {"query": knn(t, k=3, group_by="emb")}),
+        ("group_by unknown", {"query": knn(t, k=3, group_by="nope")}),
+        ("group_size 0", {"query": knn(t, k=3, group_by="cat", group_size=0)}),
+        ("group_size alone", {"query": knn(t, k=3, group_size=2)}),
+        ("group_size too big", {"query": knn(t, k=200, group_by="cat", group_size=100)}),
+    ]
+    for label, body in refused:
+        r = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
+        if r.get("status", 200) != 400:
+            failures.append(f"{label} not refused: {json.dumps(r)[:300]}")
+    nested_body = {"query": {"nested": {"path": "nest", "query": {"knn": {"nest.emb": {
+        "vector": [0.1] * DIM, "k": 3, "group_by": "tag"}}}}}}
+    r = req(OURS[1], "POST", "/nested_l2/_search", nested_body, ok_errors=True)
+    if r.get("status", 200) != 400:
+        failures.append(f"group_by on a nested field not refused: {json.dumps(r)[:300]}")
+    r = req(STOCK[1], "POST", f"/{index}/_search", {"query": knn(t, k=3, group_by="cat")}, ok_errors=True)
+    if r.get("status", 200) != 400:
+        failures.append(f"stock accepted group_by: {json.dumps(r)[:300]}")
+    return checked
 
 
 def nested_check(failures):
@@ -953,6 +1091,7 @@ def main():
                             if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
         checked += nested_check(failures)
+        checked += grouped_check(failures)
         checked += ivf_check(failures)
         checked += rust_hnsw_check(failures)
         checked += realtime_check(failures)

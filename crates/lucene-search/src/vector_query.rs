@@ -66,6 +66,21 @@ use crate::collector::{ScoreDoc, ScoringCollector};
 use crate::multi_segment::merge_multi_segment_scored;
 use crate::{Error, Result};
 
+mod grouped;
+pub use grouped::{
+    search_grouped_byte_knn_per_segment, search_grouped_float_knn_per_segment, SegmentGroups,
+};
+
+/// How a leaf's collector diversifies its hits.
+#[derive(Clone, Copy)]
+enum Diversify<'a> {
+    /// The best child of each parent the bit set closes; `None`: a leaf
+    /// without parents, which has no results.
+    Parents(Option<&'a FixedBitSet>),
+    /// The best documents of each group ([`grouped`]).
+    Groups(SegmentGroups<'a>),
+}
+
 /// `Lucene99HnswVectorsReader.EXHAUSTIVE_BULK_SCORE_ORDS`: how many ordinals
 /// an exhaustive scan scores per batch, so one `bulkScore` maximum can retire
 /// a whole batch against the collector's competitive threshold.
@@ -1115,12 +1130,20 @@ fn leaf_results<S: VectorScorer>(
     max_doc: i32,
     plan: &LeafPlan,
     seed_ords: Option<&[i32]>,
-    diversify: Option<Option<&FixedBitSet>>,
+    diversify: Option<Diversify<'_>>,
 ) -> Result<(LeafHits, bool)> {
-    if let Some(parents) = diversify {
-        return diversified_leaf_results(
-            scorer, graph, accept, ord_to_doc, max_doc, plan, seed_ords, parents,
-        );
+    match diversify {
+        Some(Diversify::Parents(parents)) => {
+            return diversified_leaf_results(
+                scorer, graph, accept, ord_to_doc, max_doc, plan, seed_ords, parents,
+            );
+        }
+        Some(Diversify::Groups(groups)) => {
+            return grouped::grouped_leaf_results(
+                scorer, graph, accept, ord_to_doc, max_doc, plan, groups,
+            );
+        }
+        None => {}
     }
     leaf_results_rescored(
         scorer, None, false, graph, accept, ord_to_doc, max_doc, plan, seed_ords,
@@ -1316,7 +1339,7 @@ fn search_leaf(
     target: Target<'_>,
     plan: &LeafPlan,
     seed_ords: Option<&[i32]>,
-    diversify: Option<Option<&FixedBitSet>>,
+    diversify: Option<Diversify<'_>>,
 ) -> Result<(LeafHits, bool)> {
     let graph = leaf_graph(
         input,
@@ -1337,12 +1360,43 @@ fn search_leaf(
                         };
                     }
                     // A leaf without parents has no results.
-                    Some(None) => return Ok((LeafHits::default(), false)),
-                    // Probing for the best child per parent; a filter too
-                    // selective for probing takes the exhaustive walk below.
-                    Some(Some(parents)) => {
+                    Some(Diversify::Parents(None)) => return Ok((LeafHits::default(), false)),
+                    // Probing for the best child per parent, or the best
+                    // documents per group; a filter too selective for
+                    // probing takes the exhaustive walk below.
+                    Some(Diversify::Parents(Some(parents))) => {
+                        let group = |doc: i32| -> i32 {
+                            usize::try_from(doc)
+                                .ok()
+                                .and_then(|d| parents.next_set_bit(d))
+                                .map_or(i32::MAX, |p| i32::try_from(p).unwrap_or(i32::MAX))
+                        };
+                        // The parents that can be found: at most those still live.
+                        let reachable = match input.live_docs {
+                            Some(live) => FixedBitSet::intersection_count(parents, live),
+                            None => parents.cardinality(),
+                        };
+                        let groups = IvfGroups {
+                            group: &group,
+                            groups: parents.cardinality(),
+                            reachable,
+                            per_group: 1,
+                        };
                         if let Some(found) =
-                            ivf_leaf_results(reader, input, resolved, t, plan, Some(parents))?
+                            ivf_leaf_results(reader, input, resolved, t, plan, Some(groups))?
+                        {
+                            return Ok(found);
+                        }
+                    }
+                    Some(Diversify::Groups(g)) => {
+                        let groups = IvfGroups {
+                            group: g.group,
+                            groups: g.groups,
+                            reachable: g.groups,
+                            per_group: g.per_group,
+                        };
+                        if let Some(found) =
+                            ivf_leaf_results(reader, input, resolved, t, plan, Some(groups))?
                         {
                             return Ok(found);
                         }
@@ -1531,13 +1585,29 @@ fn clusters_holding(ranges: &[(i32, i32)], filter: &FixedBitSet) -> Option<Vec<u
     )
 }
 
+/// How an IVF leaf's documents fall into groups: a nested field's parents,
+/// or a field's values.
+#[derive(Clone, Copy)]
+struct IvfGroups<'a> {
+    /// A document's group.
+    group: &'a dyn Fn(i32) -> i32,
+    /// The groups in the segment (at least): the shortlist widens by the
+    /// documents per group.
+    groups: usize,
+    /// The groups a search can find, at most: fewer than `k` found while
+    /// more are in reach deepens the probes.
+    reachable: usize,
+    /// The documents kept of each group.
+    per_group: usize,
+}
+
 fn ivf_leaf_results(
     reader: &lucene_ivf::IvfReader,
     input: &VectorsInput<'_>,
     resolved: &ResolvedField,
     target: &[f32],
     plan: &LeafPlan,
-    parents: Option<&FixedBitSet>,
+    grouping: Option<IvfGroups<'_>>,
 ) -> Result<Option<(LeafHits, bool)>> {
     let Some(field) = reader.field(resolved.field_number) else {
         return Ok(None);
@@ -1546,24 +1616,30 @@ fn ivf_leaf_results(
     let clusters = field.clusters().max(1);
     // A nested field's children grouped by parent (the next parent bit at
     // or after the child, as `DiversifyingNearestChildrenKnnCollector`
-    // finds it), the shortlist widened by the children per parent.
-    let group = |doc: i32| -> i32 {
-        parents
-            .and_then(|p| usize::try_from(doc).ok().and_then(|d| p.next_set_bit(d)))
-            .map_or(i32::MAX, |p| i32::try_from(p).unwrap_or(i32::MAX))
-    };
-    let spread = std::cell::Cell::new(parents.map_or(1, |p| {
+    // finds it), or documents by a field's value; the shortlist widened by
+    // the documents per group and the documents kept of each.
+    let no_group = |_: i32| 0;
+    let group: &dyn Fn(i32) -> i32 = grouping.map_or(&no_group, |g| g.group);
+    let per_group = grouping.map_or(1, |g| g.per_group.max(1));
+    let spread = std::cell::Cell::new(grouping.map_or(1, |g| {
         field
             .count()
-            .div_ceil(p.cardinality().max(1))
+            .div_ceil(g.groups.max(1))
             .clamp(1, IVF_MAX_GROUP_SPREAD)
+            .saturating_mul(per_group)
     }));
-    // The parents that can be found: at most those still live.
-    let reachable = parents.map_or(0, |p| match input.live_docs {
-        Some(live) => FixedBitSet::intersection_count(p, live),
-        None => p.cardinality(),
-    });
-    let grouped = parents.is_some();
+    let reachable = grouping.map_or(0, |g| g.reachable);
+    let grouped = grouping.is_some();
+    // The groups among a search's hits.
+    let groups_in = |hits: &[lucene_ivf::ScoredDoc]| -> usize {
+        if per_group == 1 {
+            return hits.len();
+        }
+        let mut seen: Vec<i32> = hits.iter().map(|h| group(h.doc)).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len()
+    };
     // Once the shortlist holds every entry, a grouped search's candidates
     // are every probed child.
     let shortlist_full =
@@ -1589,8 +1665,9 @@ fn ivf_leaf_results(
         let field = resolved.field_number;
         if grouped {
             let g = lucene_ivf::Grouping {
-                group: &group,
+                group,
                 spread: spread.get(),
+                per_group,
             };
             reader.search_grouped(field, target, &params, filtered, among, &g)
         } else {
@@ -1630,18 +1707,19 @@ fn ivf_leaf_results(
                     lucene_ivf::Probes::Fixed(nprobe)
                 };
                 let out = search(probes, None)?;
+                let found = groups_in(&out.hits);
                 let enough = if grouped {
-                    !short(out.hits.len())
+                    !short(found)
                 } else {
                     !restricted || out.hits.len() >= k.min(live)
                 };
-                if enough || spent(nprobe, clusters, out.hits.len()) {
+                if enough || spent(nprobe, clusters, found) {
                     break (out.hits, false);
                 }
                 if plan.extras.timed_out() {
                     break (out.hits, true);
                 }
-                widen(out.hits.len());
+                widen(found);
                 nprobe = nprobe.saturating_mul(2).min(clusters);
             }
         }
@@ -1759,7 +1837,7 @@ fn ivf_leaf_results(
             }
             loop {
                 let out = search(lucene_ivf::Probes::Fixed(nprobe), among.as_deref())?;
-                let found = out.hits.len();
+                let found = groups_in(&out.hits);
                 if (out.stats.accepted >= want && !short(found))
                     || spent(nprobe, space_clusters, found)
                 {
@@ -2264,7 +2342,7 @@ fn run_leaves<Q: KnnQuery + Sync>(
     diversify: Option<&[Option<&FixedBitSet>]>,
 ) -> Result<Vec<(LeafHits, bool)>> {
     let seed_for = |i: usize| seed_slice(seeds, i);
-    let parents_for = |i: usize| diversify.map(|d| d.get(i).copied().flatten());
+    let parents_for = |i: usize| diversify.map(|d| Diversify::Parents(d.get(i).copied().flatten()));
     if concurrent {
         use rayon::prelude::*;
         leaves
