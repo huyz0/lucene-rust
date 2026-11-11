@@ -295,6 +295,8 @@ public final class NativeSelfTest {
         has.accept("`${doc['likes'].value}:${doc[\"my-field\"].value}`", List.of("likes", "my-field"));
         has.accept("/\"/.test(doc['tag'].value) ? doc['a.b'].value : 0", List.of("tag", "a.b"));
         has.accept("// doc['x']\ndoc['y'].value", List.of("y"));
+        has.accept("doc['it\\'s'].value", List.of("it's"));
+        has.accept("doc['\\x61'].value + doc['\\u0062'].value + doc['\\u{63}'].value", List.of("a", "b", "c"));
         StringBuilder many = new StringBuilder();
         for (int i = 0; i < 300; i++) {
             many.append("doc['f").append(i).append("'].value + ");
