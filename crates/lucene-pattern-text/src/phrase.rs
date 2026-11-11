@@ -97,8 +97,9 @@ impl PhraseTokens {
 }
 
 /// `field:"phrase"` on a pattern-text field: each position's terms as a
-/// `MUST` clause (scored as `match_only_text` scores them) and a
-/// [`PatternPhraseSource`] filter. A phrase of one position is that clause.
+/// `FILTER` clause and a [`PatternPhraseSource`] filter, so every hit scores
+/// 0 as a `match_only_text` phrase does (OpenSearch's `SourceFieldMatchQuery`
+/// over a filter-only conjunction). A phrase of one position needs no check.
 pub fn pattern_phrase_query(
     field: &str,
     phrase: PhraseTokens,
@@ -111,7 +112,7 @@ pub fn pattern_phrase_query(
             .iter()
             .map(|t| Clause::Term(TermQuery::new(field, t.as_bytes())))
             .collect();
-        q.must.push(if leg.len() == 1 {
+        q.filter.push(if leg.len() == 1 {
             leg.remove(0)
         } else {
             Clause::Boolean(Box::new(BooleanQuery::new().with_should(leg)))

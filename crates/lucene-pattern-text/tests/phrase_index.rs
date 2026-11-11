@@ -159,6 +159,10 @@ fn check(dir: &ByteBuffersDirectory, analyzer: Arc<Analyzer>, want: &Oracle<'_>)
             );
             let top = searcher.search(&q, 10).unwrap();
             assert_eq!(top.total_hits.value, expected, "{phrase}");
+            assert!(
+                top.score_docs.iter().all(|d| d.score == 0.0),
+                "{phrase}: phrases score 0, as on match_only_text"
+            );
         }
     }
     assert!(nonzero >= 12, "most phrases must match something");
