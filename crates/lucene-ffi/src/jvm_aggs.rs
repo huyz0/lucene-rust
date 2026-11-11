@@ -1168,7 +1168,10 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             min.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        // A similarity script's error first: the search met it before
+        // anything that ended it.
+        let sliced = jvm_reader::similarity_checked(sim, sliced)?;
         for results in &sliced {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1188,7 +1191,8 @@ pub(crate) fn aggregate_tree_blobs(
             &slices,
             global_min.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        let results = jvm_reader::similarity_checked(sim, results)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;

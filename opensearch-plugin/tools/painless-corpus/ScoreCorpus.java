@@ -438,6 +438,8 @@ public class ScoreCorpus {
             // Errors: the script's own, the weight script's.
             new SimCase("if (doc.length > 4) { throw new IllegalArgumentException('long doc ' + doc.length); } return doc.freq;", null),
             new SimCase("return weight;", "return 1 / (term.totalTermFreq - term.totalTermFreq);"),
+            // A runtime exception thrown again keeps where it was raised.
+            new SimCase("try { return 1 / (doc.length - doc.length); } catch (ArithmeticException e) { throw e; }", null),
             // Negative scores, which NonNegativeScoresSimilarity refuses; -0.0 passes.
             new SimCase("return doc.freq - 1.5;", null),
             new SimCase("return weight * (4 - doc.length);", "return term.docFreq - 1.0;"),

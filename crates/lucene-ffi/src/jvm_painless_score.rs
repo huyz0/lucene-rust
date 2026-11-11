@@ -1866,14 +1866,20 @@ struct Scripted {
     description: String,
     /// Whether a script failed: read before every score.
     failed: std::sync::atomic::AtomicBool,
-    failure: std::sync::Mutex<Option<Error>>,
+    /// The first error, with when it was met ([`next_order`]).
+    failure: std::sync::Mutex<Option<(u64, Error)>>,
+    /// Each term's weight by its statistics: computed once per query, as
+    /// Java's `createWeight` does, though each segment makes its scorers.
+    weights: std::sync::Mutex<HashMap<[u64; 6], f64>>,
+    /// This similarity's compiled score script in each thread's [`PROGRAMS`].
+    id: u64,
 }
 
 impl Scripted {
     fn fail(&self, e: Error) {
         let mut slot = self.failure.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
-            *slot = Some(e);
+            *slot = Some((next_order(), e));
         }
         self.failed
             .store(true, std::sync::atomic::Ordering::Release);
@@ -1917,6 +1923,8 @@ impl ScriptedSimilarity {
             description,
             failed: std::sync::atomic::AtomicBool::new(false),
             failure: std::sync::Mutex::new(None),
+            weights: std::sync::Mutex::new(HashMap::new()),
+            id: next_scorer_id(),
         })))
     }
 }
@@ -2021,6 +2029,18 @@ impl SimStats {
                 doc_freq: self.doc_freq,
                 total_term_freq: self.total_term_freq,
             }),
+        ]
+    }
+
+    /// The statistics as bits: a [`Scripted::weights`] key.
+    fn key(self) -> [u64; 6] {
+        [
+            u64::from(self.boost.to_bits()),
+            self.doc_count as u64,
+            self.sum_doc_freq as u64,
+            self.sum_total_term_freq as u64,
+            self.doc_freq as u64,
+            self.total_term_freq as u64,
         ]
     }
 
@@ -2281,6 +2301,19 @@ impl Similarity for ScriptedSimilarity {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
+            .map(|(_, e)| e)
+    }
+
+    fn failure_order(&self) -> Option<u64> {
+        if !self.0.has_failed() {
+            return None;
+        }
+        self.0
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|&(o, _)| o)
     }
 }
 
@@ -2293,6 +2326,11 @@ impl ScriptedSimilarity {
         if self.0.has_failed() {
             return 0.0;
         }
+        let key = stats.key();
+        let memo = || self.0.weights.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(&w) = memo().get(&key) {
+            return w;
+        }
         let run = || -> Result<f64> {
             let (prog, mut env) = similarity_program(spec)?;
             let prog = Rc::new(prog);
@@ -2303,10 +2341,16 @@ impl ScriptedSimilarity {
                 Err(t) => Err(slot_error(spec.script_id, &stats.slot(), vm.loc, &t)),
             }
         };
-        run().unwrap_or_else(|e| {
-            self.0.fail(e);
-            0.0
-        })
+        match run() {
+            Ok(w) => {
+                memo().insert(key, w);
+                w
+            }
+            Err(e) => {
+                self.0.fail(e);
+                0.0
+            }
+        }
     }
 }
 
@@ -2322,6 +2366,12 @@ fn script_double(v: &Value) -> Result<f64> {
 }
 
 fn next_scorer_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// When a scripted similarity failed, in one order across every one of them.
+fn next_order() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -2355,16 +2405,52 @@ const MAX_SCORER_STATES: usize = 256;
 thread_local! {
     static SCORERS: std::cell::RefCell<HashMap<u64, ScorerState>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Each scripted similarity's compiled score script, by its id: compiled
+    /// once per thread, not per scorer.
+    static PROGRAMS: std::cell::RefCell<HashMap<u64, Rc<Program>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Makes room for one more entry in a per-thread `map` at most
+/// [`MAX_SCORER_STATES`] long: one entry goes, not all of them.
+fn make_room<V>(map: &mut HashMap<u64, V>) {
+    if map.len() >= MAX_SCORER_STATES {
+        if let Some(&k) = map.keys().next() {
+            map.remove(&k);
+        }
+    }
 }
 
 impl ScriptedScorer {
     fn state(&self) -> Result<ScorerState> {
-        let (prog, env) = similarity_program(&self.shared.script)?;
+        let id = self.shared.id;
+        let cached = PROGRAMS.with(|p| p.borrow().get(&id).cloned());
+        let (prog, env) = match cached {
+            // Its own params: a script may change them.
+            Some(prog) => {
+                let params = self
+                    .shared
+                    .script
+                    .params(&Value::Null)
+                    .map_err(|t| runtime_failure(&t))?;
+                (prog, lucene_painless::vm::ParamsEnv { params })
+            }
+            None => {
+                let (prog, env) = similarity_program(&self.shared.script)?;
+                let prog = Rc::new(prog);
+                PROGRAMS.with(|p| {
+                    let mut p = p.borrow_mut();
+                    make_room(&mut p);
+                    p.insert(id, prog.clone());
+                });
+                (prog, env)
+            }
+        };
         let doc = Rc::new(SimDoc::default());
         let [query, field, term] = self.stats.objects();
         Ok(ScorerState {
             bindings: vec![None; prog.binding_sites], // alloc-ok: the compiled program's own count
-            prog: Rc::new(prog),
+            prog,
             env,
             pool: Vec::new(),
             args: [
@@ -2382,9 +2468,7 @@ impl ScriptedScorer {
         SCORERS.with(|states| {
             let mut states = states.borrow_mut();
             if !states.contains_key(&self.id) {
-                if states.len() >= MAX_SCORER_STATES {
-                    states.clear();
-                }
+                make_room(&mut states);
                 states.insert(self.id, self.state()?);
             }
             let st = states.get_mut(&self.id).expect("inserted above");
@@ -2515,6 +2599,14 @@ impl SimScorer for NonNegativeScorer {
         } else {
             e
         }
+    }
+}
+
+impl Drop for Scripted {
+    fn drop(&mut self) {
+        // The dropping thread's program; another thread's goes when that
+        // thread passes MAX_SCORER_STATES.
+        let _ = PROGRAMS.try_with(|p| p.borrow_mut().remove(&self.id));
     }
 }
 
@@ -2892,6 +2984,56 @@ mod tests {
             .u8(0)
             .raw(&similarity_spec_blob(8, &ir, 0));
         ScriptedSimilarity::decode(&mut Cursor::new(&blob.0))
+    }
+
+    /// **Two failed similarities.** Of two fields' scripted similarities
+    /// that both failed, the search reports the one that failed first,
+    /// whichever field it is.
+    #[test]
+    fn the_first_similarity_failure_is_reported() {
+        use lucene_search::similarities::{PerFieldSimilarity, Similarity};
+        for first_is_default in [true, false] {
+            let (a, b) = (
+                first_fixture_similarity(0).unwrap(),
+                first_fixture_similarity(0).unwrap(),
+            );
+            let (first, second) = if first_is_default { (&a, &b) } else { (&b, &a) };
+            first.0.fail(Error::IllegalArgument("first".into()));
+            second.0.fail(Error::IllegalArgument("second".into()));
+            let per =
+                PerFieldSimilarity::new(Arc::new(a.clone())).with_field("x", Arc::new(b.clone()));
+            assert!(per.failure_order().is_some());
+            assert!(per.take_failure().unwrap().to_string().contains("first"));
+        }
+    }
+
+    /// **`ScriptedSimilarity.computeNorm`.** `intToByte4` of the length,
+    /// less the overlaps when they are discounted, a `DOCS` field too; the
+    /// byte sign-extended as Java's `(byte)` then `long`.
+    #[test]
+    fn scripted_norms_as_opensearch_computes_them() {
+        use lucene_index::similarity::{FieldInvertState, NormSimilarity};
+        let state = |docs_only, length, num_overlap| FieldInvertState {
+            docs_only,
+            length,
+            num_overlap,
+            ..FieldInvertState::default()
+        };
+        let byte4 = |n: u32| i64::from(lucene_util::small_float::int_to_byte4(n) as i8);
+        let discounting = first_fixture_similarity(0).unwrap();
+        assert!(discounting.discount_overlaps());
+        assert_eq!(discounting.compute_norm("f", &state(false, 7, 2)), byte4(5));
+        assert_eq!(discounting.compute_norm("f", &state(true, 7, 2)), byte4(5));
+        // A length whose byte is negative as a Java byte.
+        assert!(byte4(1_000_000) < 0);
+        assert_eq!(
+            discounting.compute_norm("f", &state(false, 1_000_000, 0)),
+            byte4(1_000_000)
+        );
+        let mut sim = first_fixture_similarity(0).unwrap();
+        Arc::get_mut(&mut sim.0).unwrap().discount_overlaps = false;
+        assert!(!sim.discount_overlaps());
+        assert_eq!(sim.compute_norm("f", &state(false, 7, 2)), byte4(7));
     }
 
     /// **`NonNegativeScoresSimilarity`.** A negative score is `0` when not
