@@ -279,9 +279,12 @@ nodes.
 - **One `QueryPhaseSearcher` per node.** OpenSearch accepts exactly one plugin
   providing it. `neural-search` provides one too, so the two cannot be
   installed together; the test image removes the bundled plugins. The plugin
-  serves `sparse_vector` and `neural_sparse` by `query_tokens` itself
-  (`scripts/check-sparse-plugin.py` compares it with stock neural-search);
-  `query_text` (model inference) and the `native` sparse engine are refused.
+  serves neural-search itself: `sparse_vector`, `neural_sparse` by
+  `query_tokens` or `query_text`, the `neural` query, its ingest and search
+  processors (`scripts/check-sparse-plugin.py` and
+  `scripts/check-neural-plugin.py` compare them with stock neural-search). The
+  `neural` query runs as the `knn` query it wraps, natively. The `native`
+  sparse engine is refused.
 - **Compound segments are copied, not mapped.** The native reader reads a
   `.cfs` segment into memory (OpenSearch's small, freshly flushed segments are
   compound); only non-compound segments are memory-mapped. Released with the
