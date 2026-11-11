@@ -54,6 +54,10 @@ use crate::regexp::{RegexpError, RegexpPattern};
 use crate::term_ngram::{gram_key, BOUNDARY};
 use crate::wildcard::WildcardPattern;
 
+use std::sync::Arc;
+
+use crate::automaton::{CompiledDfa, DEAD};
+
 /// The `minLength` a BINARY entry of this format records, where Lucene90
 /// writes the shortest value's length: below any length, it marks the
 /// entry as blocks rather than one byte run.
@@ -62,6 +66,9 @@ pub const MIN_LENGTH_MARKER: i32 = -1001;
 pub const DEFAULT_BLOCK_SHIFT: u8 = 5;
 /// The largest block shift a format accepts: 1024 documents per block.
 pub const MAX_BLOCK_SHIFT: u8 = 10;
+
+/// Postings entries decoded in the time a candidate block takes to read.
+const DECODE_PER_BLOCK_READ: f64 = 700.0;
 const ADDRESS_BLOCK_SHIFT: u32 = 16;
 const POSTINGS_LIST: u8 = 0;
 const POSTINGS_BITSET: u8 = 1;
@@ -319,9 +326,9 @@ pub fn write_data<'v>(
         raw.clear();
         keys.clear();
         write_vu32(&mut header, (i - first) as u32);
-        for k in first..i {
+        for (k, &doc) in docs.iter().enumerate().take(i).skip(first) {
             let v = value(k);
-            write_vu32(&mut header, (docs[k] - base) as u32);
+            write_vu32(&mut header, (doc - base) as u32);
             write_vu32(&mut header, v.len() as u32);
             value_grams(v, &mut symbols, &mut keys);
         }
@@ -635,6 +642,8 @@ impl<'a> SubstringIndex<'a> {
     }
 
     /// Whether gram `i`'s postings are a bitset, and the bitset's words.
+    // ARITH: `words` is the block count over 64, far below `usize::MAX / 8`.
+    #[allow(clippy::arithmetic_side_effects)]
     fn bitset(&self, i: usize) -> Result<Option<&'a [u8]>> {
         let bytes = self.postings_bytes(i)?;
         if bytes.first() == Some(&POSTINGS_BITSET) {
@@ -649,8 +658,8 @@ impl<'a> SubstringIndex<'a> {
 
     /// The blocks holding every gram of `grams`: [`Candidates::All`] when
     /// `grams` is empty, no blocks when one gram is absent. Rarest gram
-    /// first; a gram far more common than the candidates left is not
-    /// decoded, as testing those blocks costs less.
+    /// first; a gram whose postings cost more to decode than reading the
+    /// candidates it would rule out is not decoded.
     // ARITH: candidate counts below the block count.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn candidate_blocks(&self, grams: &[u32]) -> Result<Candidates> {
@@ -673,7 +682,11 @@ impl<'a> SubstringIndex<'a> {
             if cands.is_empty() {
                 break;
             }
-            if df as usize > cands.len().saturating_mul(1024) {
+            // Decoding costs about 1/700 of reading a block per entry, and
+            // a gram in a share `p` of the blocks leaves `p` of the
+            // candidates.
+            let p = f64::from(df) / self.entry.num_blocks.max(1) as f64;
+            if f64::from(df) > cands.len() as f64 * DECODE_PER_BLOCK_READ * (1.0 - p) {
                 break;
             }
             if let Some(words) = self.bitset(i)? {
@@ -720,7 +733,7 @@ impl<'a> SubstringIndex<'a> {
             let len = input.read_vint()?;
             let len = usize::try_from(len).map_err(|_| corrupt("negative block length"))?;
             buf.raw.resize(len, 0);
-            lz4::decompress(&mut input, len, &mut buf.raw, 0)?;
+            lz4::decompress_slice(&mut input, len, &mut buf.raw, 0)?;
             let raw = &buf.raw;
             let mut pos = 0usize;
             let n = read_vu32(raw, &mut pos).ok_or_else(|| corrupt("block header"))? as usize;
@@ -788,9 +801,10 @@ enum Test {
     Exact(Vec<u8>),
     Prefix(Vec<u8>),
     Suffix(Vec<u8>),
-    Contains(memchr::memmem::Finder<'static>),
-    Wildcard(WildcardPattern),
-    Regexp(Box<RegexpPattern>),
+    Contains(Box<memchr::memmem::Finder<'static>>),
+    Wildcard(Box<Glob>),
+    /// The pattern, and its automaton when it is small enough to build.
+    Regexp(Box<RegexpPattern>, Option<Arc<CompiledDfa>>),
 }
 
 /// What a search on a substring field asks: the grams every match holds
@@ -803,6 +817,158 @@ pub struct SubstringMatcher {
     /// cased (`toLowerCase(Locale.ROOT)`) before the test, whose pattern
     /// already is.
     lowercase: bool,
+    /// A byte run every matching value holds, looked for over a whole
+    /// block before the test runs on the values holding it (ASCII lower
+    /// cased on both sides when `fold_prefilter`).
+    prefilter: Option<memchr::memmem::Finder<'static>>,
+    fold_prefilter: bool,
+}
+
+/// Whether `dfa` accepts the whole of `v`, stopping at a dead state or at
+/// one accepting every well-formed rest (`.*` after the needle).
+fn run_dfa(c: &CompiledDfa, v: &[u8]) -> bool {
+    let dfa = &c.dfa;
+    let mut state = dfa.start();
+    for (i, &b) in v.iter().enumerate() {
+        if state == DEAD {
+            return false;
+        }
+        if c.utf8_total.get(state as usize) == Some(&true) {
+            return std::str::from_utf8(v.get(i..).unwrap_or_default()).is_ok();
+        }
+        state = dfa.step(state, b);
+    }
+    dfa.is_accept(state)
+}
+
+/// A wildcard as its `*`-separated segments of bytes and `?`s, matched
+/// leftmost first without backtracking: a `?` is one byte in an ASCII
+/// value. Other values (a `?` may be several bytes) take the backtracking
+/// [`WildcardPattern`].
+#[derive(Debug, Clone)]
+struct Glob {
+    /// `None` is `?`.
+    head: Vec<Option<u8>>,
+    middle: Vec<Segment>,
+    /// `None` without a `*`: the head is the whole pattern.
+    tail: Option<Vec<Option<u8>>>,
+    has_one: bool,
+    slow: WildcardPattern,
+}
+
+#[derive(Debug, Clone)]
+struct Segment {
+    bytes: Vec<Option<u8>>,
+    /// The segment's longest literal run and its offset in the segment.
+    run: Option<(usize, memchr::memmem::Finder<'static>)>,
+}
+
+fn segment_at(seg: &[Option<u8>], v: &[u8], at: usize) -> bool {
+    v.get(at..)
+        .and_then(|v| v.get(..seg.len()))
+        .is_some_and(|w| seg.iter().zip(w).all(|(p, b)| p.is_none_or(|p| p == *b)))
+}
+
+impl Glob {
+    // ARITH: `start <= i` and `s <= e` are kept by the run scan.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn new(toks: &[Tok], pattern: &[u8]) -> Self {
+        let mut segments: Vec<Vec<Option<u8>>> = vec![Vec::new()];
+        let mut has_one = false;
+        for t in toks {
+            match t {
+                Tok::Lit(l) => segments
+                    .last_mut()
+                    .into_iter()
+                    .for_each(|s| s.extend(l.iter().map(|&b| Some(b)))),
+                Tok::One => {
+                    has_one = true;
+                    segments.last_mut().into_iter().for_each(|s| s.push(None));
+                }
+                Tok::Star => segments.push(Vec::new()),
+            }
+        }
+        let head = segments.remove(0);
+        let tail = segments.pop();
+        let middle = segments
+            .into_iter()
+            .map(|bytes| {
+                let mut best: Option<(usize, usize)> = None;
+                let mut start = 0usize;
+                for (i, b) in bytes.iter().chain([&None]).enumerate() {
+                    if b.is_none() {
+                        if i > start && best.is_none_or(|(s, e)| e - s < i - start) {
+                            best = Some((start, i));
+                        }
+                        start = i + 1;
+                    }
+                }
+                let run = best.map(|(s, e)| {
+                    let lit: Vec<u8> = bytes[s..e].iter().flatten().copied().collect();
+                    (s, memchr::memmem::Finder::new(&lit).into_owned())
+                });
+                Segment { bytes, run }
+            })
+            .collect();
+        Glob {
+            head,
+            middle,
+            tail,
+            has_one,
+            slow: WildcardPattern::new(pattern),
+        }
+    }
+
+    // ARITH: positions stay within `v`, checked before each subtraction.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn matches(&self, v: &[u8]) -> bool {
+        if self.has_one && !v.is_ascii() {
+            return self.slow.matches(v);
+        }
+        let Some(tail) = &self.tail else {
+            return v.len() == self.head.len() && segment_at(&self.head, v, 0);
+        };
+        if v.len() < self.head.len() + tail.len()
+            || !segment_at(&self.head, v, 0)
+            || !segment_at(tail, v, v.len() - tail.len())
+        {
+            return false;
+        }
+        let end = v.len() - tail.len();
+        let mut pos = self.head.len();
+        for seg in &self.middle {
+            let Some(at) = Self::find(seg, &v[..end], pos) else {
+                return false;
+            };
+            pos = at + seg.bytes.len();
+        }
+        true
+    }
+
+    /// The leftmost start at or after `from` where `seg` matches in `v`.
+    // ARITH: `off <= seg.bytes.len()`, and a hit lies inside `v`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn find(seg: &Segment, v: &[u8], from: usize) -> Option<usize> {
+        let len = seg.bytes.len();
+        if from + len > v.len() {
+            return None;
+        }
+        let Some((off, finder)) = &seg.run else {
+            return Some(from);
+        };
+        let mut at = from + off;
+        while let Some(hit) = finder.find(v.get(at..)?) {
+            let start = at + hit - off;
+            if start + len > v.len() {
+                return None;
+            }
+            if segment_at(&seg.bytes, v, start) {
+                return Some(start);
+            }
+            at += hit + 1;
+        }
+        None
+    }
 }
 
 enum Tok {
@@ -867,6 +1033,8 @@ impl SubstringMatcher {
     /// A `WildcardQuery` pattern over the whole value; with
     /// `case_insensitive`, OpenSearch's lower-cased pattern against the
     /// lower-cased value.
+    // ARITH: token indexes below the token count.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn wildcard(pattern: &str, case_insensitive: bool) -> Self {
         let pattern = if case_insensitive {
             pattern.to_lowercase()
@@ -898,14 +1066,27 @@ impl SubstringMatcher {
             [Tok::Lit(l), Tok::Star] => Test::Prefix(l.clone()),
             [Tok::Star, Tok::Lit(l)] => Test::Suffix(l.clone()),
             [Tok::Star, Tok::Lit(l), Tok::Star] => {
-                Test::Contains(memchr::memmem::Finder::new(l).into_owned())
+                Test::Contains(Box::new(memchr::memmem::Finder::new(l).into_owned()))
             }
-            _ => Test::Wildcard(WildcardPattern::new(pattern.as_bytes())),
+            _ => Test::Wildcard(Box::new(Glob::new(&toks, pattern.as_bytes()))),
+        };
+        let prefilter = match test {
+            Test::Wildcard(_) => toks
+                .iter()
+                .filter_map(|t| match t {
+                    Tok::Lit(l) => Some(l),
+                    _ => None,
+                })
+                .max_by_key(|l| l.len())
+                .map(|l| memchr::memmem::Finder::new(l).into_owned()),
+            _ => None,
         };
         SubstringMatcher {
             grams,
             test,
             lowercase: case_insensitive,
+            prefilter,
+            fold_prefilter: false,
         }
     }
 
@@ -934,6 +1115,12 @@ impl SubstringMatcher {
             .collect();
         grams.sort_unstable();
         grams.dedup();
+        let mut literal = parsed.required_literal();
+        if case_insensitive {
+            literal.make_ascii_lowercase();
+        }
+        let prefilter =
+            (!literal.is_empty()).then(|| memchr::memmem::Finder::new(&literal).into_owned());
         let compiled = if case_insensitive {
             parsed.ascii_case_insensitive()
         } else {
@@ -941,8 +1128,13 @@ impl SubstringMatcher {
         };
         Ok(SubstringMatcher {
             grams,
-            test: Test::Regexp(Box::new(compiled)),
+            test: {
+                let dfa = compiled.compiled();
+                Test::Regexp(Box::new(compiled), dfa)
+            },
             lowercase: false,
+            prefilter,
+            fold_prefilter: case_insensitive,
         })
     }
 
@@ -958,12 +1150,17 @@ impl SubstringMatcher {
 
     /// Whether `value` matches. `scratch` holds a lower-cased copy.
     pub fn matches(&self, value: &[u8], scratch: &mut Vec<u8>) -> bool {
-        let v = if self.lowercase {
+        if self.lowercase {
             lowercase_bytes(value, scratch);
-            &scratch[..]
+            self.test(scratch)
         } else {
-            value
-        };
+            self.test(value)
+        }
+    }
+
+    /// The test of a value, already lower cased for a case-insensitive
+    /// wildcard.
+    fn test(&self, v: &[u8]) -> bool {
         match &self.test {
             Test::Any => true,
             Test::Exact(l) => v == &l[..],
@@ -971,54 +1168,63 @@ impl SubstringMatcher {
             Test::Suffix(l) => v.ends_with(l),
             Test::Contains(f) => f.find(v).is_some(),
             Test::Wildcard(w) => w.matches(v),
-            Test::Regexp(r) => r.dfa_matches(v).unwrap_or_else(|| r.matches(v)),
+            Test::Regexp(_, Some(dfa)) => run_dfa(dfa, v),
+            Test::Regexp(r, None) => r.matches(v),
         }
     }
 
-    /// Appends the documents of `block` whose value matches to `out`.
+    /// Appends the documents of `block` whose value matches to `out`: the
+    /// block's values searched end to end for the needle (or prefilter),
+    /// and only the values holding it tested.
     // ARITH: positions inside the block's values, whose ends ascend.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn collect(&self, block: &Block, out: &mut Vec<i32>, scratch: &mut Vec<u8>) {
-        if let Test::Contains(f) = &self.test {
-            let values = block.values();
-            let hay: &[u8] = if self.lowercase {
-                if !values.is_ascii() {
-                    return self.collect_each(block, out, scratch);
-                }
-                scratch.clear();
-                scratch.extend(values.iter().map(u8::to_ascii_lowercase));
-                scratch
-            } else {
-                values
+        let (finder, verify) = match (&self.test, &self.prefilter) {
+            (Test::Contains(f), _) => (&**f, false),
+            (_, Some(f)) => (f, true),
+            _ => return self.collect_each(block, out, scratch),
+        };
+        let values = block.values();
+        let hay: &[u8] = if self.lowercase || self.fold_prefilter {
+            // A case-insensitive wildcard lower cases values beyond ASCII.
+            if self.lowercase && !values.is_ascii() {
+                return self.collect_each(block, out, scratch);
+            }
+            scratch.clear();
+            scratch.extend(values.iter().map(u8::to_ascii_lowercase));
+            scratch
+        } else {
+            values
+        };
+        // The value a wildcard tests is lower cased; a regexp's is not.
+        let tested = if self.lowercase { hay } else { values };
+        let base = block.values_start;
+        let needle = finder.needle().len();
+        let mut pos = 0usize;
+        let mut k = 0usize;
+        while k < block.docs.len() {
+            let Some(hit) = finder.find(&hay[pos..]) else {
+                break;
             };
-            let base = block.values_start;
-            let needle = f.needle().len();
-            let mut pos = 0usize;
-            let mut k = 0usize;
-            while k < block.docs.len() {
-                let Some(hit) = f.find(&hay[pos..]) else {
-                    break;
-                };
-                let at = pos + hit;
-                while k < block.docs.len()
-                    && block.ends[k] - base <= at
-                    && !(needle == 0 && block.ends[k] - base == at)
-                {
-                    k += 1;
-                }
-                if k == block.docs.len() {
-                    break;
-                }
-                let (s, e) = (block.starts[k] - base, block.ends[k] - base);
-                if at >= s && at + needle <= e {
-                    out.push(block.docs[k]);
-                }
-                pos = e;
+            let at = pos + hit;
+            while k < block.docs.len()
+                && block.ends[k] - base <= at
+                && !(needle == 0 && block.ends[k] - base == at)
+            {
                 k += 1;
             }
-            return;
+            if k == block.docs.len() {
+                break;
+            }
+            let (s, e) = (block.starts[k] - base, block.ends[k] - base);
+            // A hit straddling into the next value is looked for again
+            // from there: any later one in this value straddles too.
+            if at >= s && at + needle <= e && (!verify || self.test(&tested[s..e])) {
+                out.push(block.docs[k]);
+            }
+            pos = e;
+            k += 1;
         }
-        self.collect_each(block, out, scratch);
     }
 
     fn collect_each(&self, block: &Block, out: &mut Vec<i32>, scratch: &mut Vec<u8>) {
@@ -1125,6 +1331,11 @@ mod tests {
             SubstringMatcher::regexp("error.*", true).unwrap(),
             SubstringMatcher::regexp("(ok|x)", false).unwrap(),
             SubstringMatcher::regexp(".*abc(abc)+", false).unwrap(),
+            SubstringMatcher::regexp(".*TIME(d|out).*", true).unwrap(),
+            SubstringMatcher::regexp(".*ab(c|x)a.*", false).unwrap(),
+            SubstringMatcher::wildcard("*a?c*a*", false),
+            SubstringMatcher::wildcard("*KELVIN*", true),
+            SubstringMatcher::wildcard("*?l?i*", false),
         ];
         for shift in [0u8, 1, 2, 5] {
             for m in &patterns {
@@ -1135,6 +1346,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The leftmost-first glob and the backtracking matcher agree on every
+    /// pattern over a small alphabet, ASCII and not.
+    #[test]
+    fn glob_agrees_with_backtracking() {
+        let alphabet = ["a", "b", "ab", "é"];
+        let mut x = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % n as u64) as usize
+        };
+        for _ in 0..3000 {
+            let mut p = String::new();
+            for _ in 0..1 + next(6) {
+                p.push_str(["*", "?", "a", "b", "ab", "é"][next(6)]);
+            }
+            let mut v = String::new();
+            for _ in 0..next(9) {
+                v.push_str(alphabet[next(alphabet.len())]);
+            }
+            let m = SubstringMatcher::wildcard(&p, false);
+            let slow = WildcardPattern::new(p.as_bytes()).matches(v.as_bytes());
+            assert_eq!(
+                m.matches(v.as_bytes(), &mut Vec::new()),
+                slow,
+                "{p:?} {v:?}"
+            );
+        }
+    }
+
+    /// The regexp's prefilter run and early-stopping automaton change no
+    /// answer of `RegexpPattern::matches`.
+    #[test]
+    fn regexp_prefilter_and_automaton_agree_with_the_pattern() {
+        for (p, ci) in [
+            (".*[Tt]imeout.*", false),
+            (".*FAILED password.*", true),
+            ("(a|b)*abc.*", false),
+            (".*blk_-?[0-9]+ term", false),
+        ] {
+            let m = SubstringMatcher::regexp(p, ci).unwrap();
+            let parsed = RegexpPattern::parse(p).unwrap();
+            let r = if ci {
+                parsed.ascii_case_insensitive()
+            } else {
+                parsed
+            };
+            for &v in VALUES.iter().flatten() {
+                let v = v.as_bytes();
+                assert_eq!(m.matches(v, &mut Vec::new()), r.matches(v), "{p} {v:?}");
+            }
+        }
+        let lit = |p: &str| RegexpPattern::parse(p).unwrap().required_literal();
+        assert_eq!(lit(".*blk_-?[0-9]+ terminating"), b" terminating");
+        assert_eq!(lit("(ab)+cde.*"), b"cde");
+        assert_eq!(lit(".*(x|y)"), b"");
+        assert_eq!(lit("ab&abc"), b"abc");
     }
 
     #[test]

@@ -502,6 +502,15 @@ impl RegexpPattern {
         keys
     }
 
+    /// The longest byte run every matching term contains, empty when
+    /// nothing is forced: a substring a scan can look for before running
+    /// the automaton.
+    pub fn required_literal(&self) -> Vec<u8> {
+        let mut runs = Vec::new();
+        literal_runs_in_node(&self.root, &mut runs);
+        runs.into_iter().max_by_key(Vec::len).unwrap_or_default()
+    }
+
     /// This pattern under `RegExp.ASCII_CASE_INSENSITIVE`: an ASCII letter,
     /// alone or in a string, matches either case (`toCaseInsensitiveChar`);
     /// classes, ranges and every other character are as written.
@@ -817,6 +826,50 @@ fn required_in_sequence(items: &[&Node], anchored: bool, keys: &mut Vec<u32>) {
         run.push(BOUNDARY);
     }
     flush(&mut run, keys);
+}
+
+/// The byte runs every match of the sequence `items` holds, as
+/// [`required_in_sequence`] finds them, appended to `runs`.
+fn literal_runs(items: &[&Node], runs: &mut Vec<Vec<u8>>) {
+    let mut run: Vec<u8> = Vec::new();
+    for item in items {
+        if let Some(bytes) = literal_bytes(item) {
+            run.extend_from_slice(&bytes);
+            continue;
+        }
+        if let Node::Repeat { inner, min, .. } = item {
+            if *min >= 1 {
+                if let Some(bytes) = literal_bytes(inner) {
+                    // At least one copy is forced: it ends the run.
+                    run.extend_from_slice(&bytes);
+                }
+            }
+        }
+        runs.push(std::mem::take(&mut run));
+        match item {
+            Node::Repeat { inner, min, .. } if *min >= 1 && literal_bytes(inner).is_none() => {
+                literal_runs_in_node(inner, runs);
+            }
+            Node::Concat(inner) => {
+                let inner: Vec<&Node> = inner.iter().collect();
+                literal_runs(&inner, runs);
+            }
+            Node::Intersect(a, b) => {
+                literal_runs_in_node(a, runs);
+                literal_runs_in_node(b, runs);
+            }
+            _ => {}
+        }
+    }
+    runs.push(run);
+}
+
+fn literal_runs_in_node(node: &Node, runs: &mut Vec<Vec<u8>>) {
+    let items: Vec<&Node> = match node {
+        Node::Concat(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    literal_runs(&items, runs);
 }
 
 /// A sub-pattern's own forced runs, taken as unanchored -- conservative

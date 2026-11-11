@@ -149,10 +149,13 @@ fn hits(searcher: &IndexSearcher<'_, '_>, q: &SubstringQuery) -> Vec<i32> {
     docs
 }
 
+/// A search's hits, a scan's hits, and the hits' values.
+type Outcome = (Vec<i32>, Vec<i32>, Vec<Vec<u8>>);
+
 /// Every search of [`queries`] over the index in `dir`: its hits, the hits a
 /// scan of the field's values finds, and the hits' values, sorted (two
 /// indexes of the same documents may merge them in another order).
-fn search(dir: &std::path::Path) -> Vec<(Vec<i32>, Vec<i32>, Vec<Vec<u8>>)> {
+fn search(dir: &std::path::Path) -> Vec<Outcome> {
     let reader = DirectoryReader::open(&FsDirectory::open(dir)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
