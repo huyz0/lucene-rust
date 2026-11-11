@@ -6,7 +6,7 @@ nothing until an index template names them in `composed_of`:
 | Template | What it sets |
 |---|---|
 | `lucene_rust_logs@settings` | the Rust engine (`index.lucene_rust.engine`), index sort `@timestamp` descending, paged zstd stored fields (`index.lucene_rust.stored_fields.paged_zstd`), zstd term blocks (`index.lucene_rust.zstd_terms`), adaptive doc values (`index.lucene_rust.adaptive_doc_values`) |
-| `lucene_rust_logs@mappings` | `@timestamp` as `date` with a doc-values skip index (`skip_list`) beside its points; `host.name`, `service.name`, `log.level` as `keyword` with doc values only (`index: false`); `http.response.status_code`, `event.duration` and every dynamically mapped number as doc values with a skip index only; other dynamic strings as `keyword` (`ignore_above: 1024`); `message` as `text` without norms (positions kept, so phrases stay fast) |
+| `lucene_rust_logs@mappings` | `@timestamp` as `date` with a doc-values skip index (`skip_list`) beside its points; `host.name`, `service.name`, `log.level` as `keyword` with doc values only (`index: false`); `http.response.status_code`, `event.duration` and every dynamically mapped number as doc values with a skip index only; other dynamic strings as `keyword` (`ignore_above: 1024`); `message` as `text` without norms (positions kept, so phrases stay fast); `trace.id` and `span.id` as `hex_id` (lowercase hex ids indexed and doc-valued as their bytes) |
 
 Opt in per index template:
 
@@ -18,14 +18,15 @@ PUT _index_template/logs
   "composed_of": ["lucene_rust_logs@settings", "lucene_rust_logs@mappings"],
   "template": {
     "settings": { "index.derived_source.enabled": true },
-    "mappings": { "properties": { "trace": { "properties": { "id": { "type": "keyword" } } } } }
+    "mappings": { "properties": { "user": { "properties": { "id": { "type": "keyword" } } } } }
   }
 }
 ```
 
 The index template's own `settings` and `mappings` win over the preset's, so
 a field the preset maps differently (a `host.name` you filter on without a
-time range, say) is overridden there.
+time range, say, or a `trace.id` you search with `prefix` or `wildcard`, which
+`hex_id` refuses) is overridden there.
 
 `index.derived_source.enabled` is left to the index template because it is a
 trade: it drops the stored `_source` copy (the largest saving below) and makes
@@ -39,54 +40,61 @@ false` (node setting) stops the registration.
 
 ## Compatibility
 
-The mappings template uses stock OpenSearch mapping options only, and works
-on a stock node too. The settings template's `lucene_rust` settings need this
-plugin, and three of them write formats only this plugin reads:
-`RustZstd104` terms, `RustAdaptive` doc values and `LuceneRustZstdPaged104`
-stored fields. To make an index stock-readable again, close it, set those
-three to `false`, reopen it and force-merge to rewrite every segment.
+The settings template's `lucene_rust` settings need this plugin, and three of
+them write formats only this plugin reads: `RustZstd104` terms, `RustAdaptive`
+doc values and `LuceneRustZstdPaged104` stored fields. To make an index
+stock-readable again, close it, set those three to `false`, reopen it and
+force-merge to rewrite every segment. The mappings template uses stock mapping
+options except `hex_id`, a type of this plugin whose segments are plain Lucene
+terms and `SORTED_SET` doc values; on a stock node map those two fields as
+`keyword` instead.
 
 ## Measured
 
-5M synthetic log events over 7 days (1426 MiB NDJSON; the corpus and scripts
-are the logs study's), one shard, force-merged to one segment, then searched.
-Median ms of 15 runs, concurrent segment search off. `MiB` is the sum of the
-shard's files.
+5M synthetic log events over 7 days (1426 MiB NDJSON, a 32-character hex
+`trace.id` on each; the corpus and scripts are the logs study's), one shard,
+force-merged to one segment, then searched. Median ms of 15 runs, concurrent
+segment search off. `MiB` is the sum of the shard's files. Every query runs
+natively in all three (577 native, the same 36 `approximate` fallbacks).
 
-| | Plugin default | Preset | Preset + derived source | Plugin "max" (codec zstd, derived source, zstd terms, adaptive DV, stock mapping) |
-|---|---|---|---|---|
-| MiB on disk (x NDJSON) | 1193 (0.84) | 797 (0.56) | 611 (0.43) | 638 (0.45) |
-| stored fields `.fdt` | 636 | 317 | 131 | 133 |
-| terms `.tim` / postings `.doc` | 209 / 76 | 171 / 63 | 171 / 63 | 171 / 76 |
-| points `.kdd` / doc values `.dvd` / norms | 36 / 198 / 5 | 34 / 179 / 0 | 34 / 179 / 0 | 41 / 179 / 5 |
-| indexing, CPU µs per event | 52.5 | 58.6 | 56.0 | 59.9 |
-| needle trace.id, 7 d | 3.7 | 5.0 | 5.6 | 7.1 |
-| term, last 1 h, newest 100 | 5.4 | 4.6 | 4.2 | 4.5 |
-| term, 7 d, newest 100 | 11.0 | 9.9 | 17.8 | 36.2 |
-| phrase, 24 h, newest 100 | 7.3 | 8.8 | 15.6 | 36.2 |
-| host AND level:ERROR, 24 h | 6.0 | 6.0 | 10.1 | 23.5 |
-| tail: newest 100 | 9.7 | 4.4 | 10.2 | 15.1 |
-| stats count by service, ERROR, 24 h | 7.2 | 5.2 | 4.7 | 5.3 |
-| timechart 1 m x level, last 1 h | 7.1 | 9.2 | 7.8 | 9.7 |
-| timechart 1 h, 7 d | 5.2 | 8.0 | 9.0 | 8.5 |
-| timechart status>=500, 7 d | 7.2 | 6.9 | 8.6 | 7.7 |
-| p50/p99 duration by service, 15 m | 8.2 | 8.0 | 8.5 | 7.8 |
-| count status>=500, 7 d | 3.4 | 2.7 | 2.8 | 3.3 |
-| count service:checkout, 7 d | 2.9 | 2.8 | 3.2 | 2.9 |
-| wildcard `*timeoutexception*`, 24 h | 8.7 | 9.6 | 16.1 | 38.4 |
+| | Plugin default | Preset | Preset + derived source |
+|---|---|---|---|
+| MiB on disk (x NDJSON) | 1193 (0.84) | 715 (0.50) | 532 (0.37) |
+| stored fields `.fdt` | 636 | 315 | 131 |
+| terms `.tim` / postings `.doc` | 209 / 76 | 158 / 63 | 159 / 63 |
+| points `.kdd` / doc values `.dvd` / norms | 37 / 198 / 5 | 34 / 112 / 0 | 34 / 112 / 0 |
+| indexing, CPU µs per event | 55.0 | 61.7 | 55.8 |
+| needle trace.id, 7 d | 4.1 | 4.8 | 4.3 |
+| term, last 1 h, newest 100 | 8.6 | 5.4 | 4.3 |
+| term, 7 d, newest 100 | 10.9 | 8.7 | 11.1 |
+| phrase, 24 h, newest 100 | 7.4 | 8.5 | 9.0 |
+| rare term, 7 d | 5.7 | 7.0 | 8.5 |
+| host AND level:ERROR, 24 h | 5.1 | 6.2 | 8.8 |
+| tail: newest 100 | 12.1 | 5.5 | 8.7 |
+| stats count by service, ERROR, 24 h | 7.6 | 9.3 | 8.5 |
+| timechart 1 m x level, last 1 h | 7.8 | 7.4 | 7.0 |
+| timechart 1 h, 7 d | 5.2 | 6.4 | 5.9 |
+| timechart status>=500, 7 d | 8.0 | 13.2 | 10.0 |
+| p50/p99 duration by service, 15 m | 6.8 | 7.7 | 8.2 |
+| count status>=500, 7 d | 3.3 | 3.3 | 3.3 |
+| count service:checkout, 7 d | 2.6 | 3.0 | 3.0 |
+| wildcard `*timeoutexception*`, 24 h | 9.4 | 11.0 | 11.0 |
 
-The preset stores the events in two thirds of the default's space at the same
-search speed; with derived source, in half, and the searches returning 100 hits
-take about twice as long. Of the preset's saving, the stored fields' paged zstd
-is most (636 to 317 MiB), then zstd term blocks (38) and adaptive doc values
-(19); the mappings template saves 27 MiB more (no postings for the small
-keywords, no points for the numbers, no norms on `message`) at no measured
-search cost. Indexing takes about 12% more CPU per event than the default,
-mostly for the index sort and zstd.
+The preset stores the events in 60% of the default's space, and with derived
+source in 45%. Searches stay within a few ms of the default: newest-first
+searches are faster (the index sort), filters and aggregations on the
+doc-values-only fields 1-5 ms slower, and derived source adds 1-3 ms to a
+search returning 100 hits. Of the saving, paged zstd stored fields are most
+(636 to 315 MiB), then `hex_id` trace ids (81: doc values 179 to 112, terms
+171 to 158), zstd term blocks (38), the mapping's doc-values-only fields and
+no norms (27) and adaptive doc values (19). Indexing takes about 12% more CPU
+per event than the default without derived source, mostly for the index sort
+and zstd, and about the default's with it.
 
 Measured and left out: `@timestamp` with doc values only saves another 19 MiB
 but makes a timechart over all 7 days 5x slower (32 vs 6 ms), since the
-date histogram can no longer count from the points.
+date histogram can no longer count from the points. Indexing `host.name`,
+`service.name` and `log.level` gave no measured search gain.
 
 ## Rollover and force merge
 

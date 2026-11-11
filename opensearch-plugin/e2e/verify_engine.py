@@ -1203,13 +1203,15 @@ def logs_preset():
                                                            "http": {"properties": {"response": {"properties": {
                                                                "status_code": {"type": "integer"}}}}},
                                                            "event": {"properties": {"duration": {"type": "long"}}},
+                                                           "trace": {"properties": {"id": {"type": "keyword"}}},
                                                            "user": {"type": "keyword"}, "bytes": {"type": "long"}}}})
     settings = must("GET", "/logs_preset/_settings")["logs_preset"]["settings"]["index"]
     check(settings.get("lucene_rust", {}).get("engine") == "true" and settings.get("sort", {}).get("field") in ("@timestamp", ["@timestamp"]),
           f"logs preset settings applied: {settings.get('sort')}")
     props = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
     check(props["@timestamp"].get("skip_list") is True and props["event"]["properties"]["duration"].get("index") is False
-          and props["host"]["properties"]["name"].get("index") is False and props["message"].get("norms") is False,
+          and props["host"]["properties"]["name"].get("index") is False and props["message"].get("norms") is False
+          and props["trace"]["properties"]["id"]["type"] == "hex_id",
           f"logs preset mapping applied: {json.dumps(props)[:300]}")
     r = random.Random(17)
     t0 = 1_760_000_000_000
@@ -1223,7 +1225,7 @@ def logs_preset():
                    "host": {"name": f"h{r.randrange(12)}"}, "service": {"name": r.choice(("cart", "auth", "search"))},
                    "log": {"level": r.choice(("INFO",) * 8 + ("WARN", "ERROR"))},
                    "http": {"response": {"status_code": r.choice((200, 200, 200, 404, 500, 503))}},
-                   "event": {"duration": r.randrange(1, 5000)}, "user": f"u{r.randrange(50)}", "bytes": r.randrange(10**6)}
+                   "event": {"duration": r.randrange(1, 5000)}, "trace": {"id": f"{r.randrange(40):032x}"}, "user": f"u{r.randrange(50)}", "bytes": r.randrange(10**6)}
             lines += [{"index": {"_id": f"l{n}"}}, doc]
         body = "\n".join(json.dumps(l) for l in lines) + "\n"
         for idx in ("logs_java", "logs_preset"):
@@ -1252,6 +1254,8 @@ def logs_preset():
         {"size": 0, "track_total_hits": True, "query": {"range": {"http.response.status_code": {"gte": 500}}},
          "aggs": {"p": {"max": {"field": "event.duration"}}, "b": {"sum": {"field": "bytes"}}}},
         {"size": 0, "track_total_hits": True, "query": {"terms": {"service.name": ["cart", "auth"]}}},
+        {"size": 10, "sort": desc, "query": {"term": {"trace.id": f"{7:032x}"}},
+         "aggs": {"t": {"terms": {"field": "trace.id", "size": 5}}}},
         {"size": 10, "sort": desc, "query": {"bool": {"filter": [{"term": {"user": "u7"}}, {"range": {"bytes": {"lt": 500000}}}]}}},
     ]
 
