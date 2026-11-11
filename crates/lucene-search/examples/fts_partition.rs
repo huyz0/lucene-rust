@@ -180,11 +180,19 @@ fn main() {
     let qs = load(&args[3], blocks);
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
-    let segments = opened.as_open_segments();
+    // No query cache, as on the Java side.
+    let uncached = || {
+        let mut s = opened.as_open_segments();
+        for seg in &mut s {
+            seg.cache = None;
+        }
+        s
+    };
+    let segments = uncached();
     let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
-    let sorted_segments = std::cell::RefCell::new(opened.as_open_segments());
+    let sorted_segments = std::cell::RefCell::new(uncached());
     let go = |q: &Q| run(&searcher, &segments, &sorted_segments, &reader, &norms, q);
     match args[1].as_str() {
         "hits" => {
