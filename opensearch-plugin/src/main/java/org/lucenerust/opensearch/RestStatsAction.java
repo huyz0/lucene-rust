@@ -64,6 +64,17 @@ public final class RestStatsAction extends BaseRestHandler {
             long[] parents = NativeBridge.parentCacheStats();
             b.field("nested_parent_sets", parents[0]);
             b.field("nested_parent_set_bytes", parents[1]);
+            long[] agg = new long[NativeBridge.AGG_CACHE_STATS];
+            if (NativeBridge.aggCacheStats(agg) == NativeBridge.OK) {
+                b.startObject("aggregation_segment_cache");
+                b.field("hits", agg[0]);
+                b.field("misses", agg[1]);
+                b.field("evictions", agg[2]);
+                b.field("entries", agg[3]);
+                b.field("bytes", agg[4]);
+                b.field("budget_bytes", agg[5]);
+                b.endObject();
+            }
             // searchWith's own time per path (SearchStats.nativeTime/luceneTime).
             b.startObject("query_phase_nanos");
             b.field("native", stats.nativeNanos());

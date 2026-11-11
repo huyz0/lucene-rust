@@ -108,6 +108,19 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Per-index opt-in, dynamic: aggregations keep each committed segment's collected part in the
+     * node's aggregation segment cache ({@code lucene_rust.search.aggregation_segment_cache.size}),
+     * so a dashboard repeated after a refresh collects only the segments the refresh added. Off by
+     * default; results are the same either way.
+     */
+    public static final Setting<Boolean> AGG_SEGMENT_CACHE = Setting.boolSetting(
+        "index.lucene_rust.search.aggregation_segment_cache",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
     /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
     private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
@@ -877,7 +890,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** The plugin's index settings as last read, and the settings version they were read at. */
-    private record Flags(long version, boolean enabled, boolean allShapes) {}
+    private record Flags(long version, boolean enabled, boolean allShapes, boolean aggCache) {}
 
     private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -892,7 +905,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         String uuid = settings.getUUID();
         Flags f = FLAGS.get(uuid);
         if (f == null || f.version() != version) {
-            f = new Flags(version, settings.getValue(ENABLED), "all".equals(settings.getValue(NATIVE_SHAPES)));
+            f = new Flags(
+                version,
+                settings.getValue(ENABLED),
+                "all".equals(settings.getValue(NATIVE_SHAPES)),
+                settings.getValue(AGG_SEGMENT_CACHE)
+            );
             FLAGS.put(uuid, f);
         }
         return f;
@@ -1034,7 +1052,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return "intra_segment";
             }
             byte[][] result = new byte[1][];
-            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), result);
+            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), flags(ctx).aggCache(), result);
             if (rc != NativeBridge.OK) {
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
