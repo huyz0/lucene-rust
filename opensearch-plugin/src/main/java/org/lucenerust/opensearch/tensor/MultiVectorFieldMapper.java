@@ -4,6 +4,8 @@
 package org.lucenerust.opensearch.tensor;
 
 import org.apache.lucene.document.BinaryDocValuesField;
+import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.xcontent.support.XContentMapValues;
@@ -32,16 +34,22 @@ import java.util.function.Supplier;
  * embeddings), an array of arrays of {@code dimension} numbers, kept as one binary doc value in the
  * field's {@code encoding} ({@link MultiVectorEncoding}): {@code float16} by default, {@code float}
  * for Lucene's own {@code LateInteractionField} bytes, or {@code int8}. Searched by {@code max_sim}
- * ({@link MaxSimQueryBuilder}); {@code _source} keeps the values as sent.
+ * ({@link MaxSimQueryBuilder}); {@code _source} keeps the values as sent. With {@code pooled}, each
+ * document's mean token (unit length, {@link MultiVectorEncoding#pooledMean}) is also indexed in a
+ * hidden HNSW vector field ({@code <field>._pooled}, dot product), where {@code max_sim}'s {@code
+ * candidates} finds the nearest documents.
  *
  * <pre>{@code
- * "colbert": { "type": "multi_vector", "dimension": 96, "encoding": "float16" }
+ * "colbert": { "type": "multi_vector", "dimension": 96, "encoding": "float16", "pooled": true }
  * }</pre>
  */
 public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
     public static final String CONTENT_TYPE = "multi_vector";
     static final String DIMENSION = "dimension";
     static final String ENCODING = "encoding";
+    static final String POOLED = "pooled";
+    /** The suffix of the hidden vector field a {@code pooled} field keeps its documents' means in. */
+    public static final String POOLED_SUFFIX = "._pooled";
     /** Lucene's {@code KnnVectorsFormat.DEFAULT_MAX_DIMENSIONS}, the k-NN plugin's limit too. */
     static final int MAX_DIMENSION = 16000;
 
@@ -64,6 +72,7 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
             (n, c, o) -> MultiVectorEncoding.of(XContentMapValues.nodeStringValue(o, null)).getName(),
             m -> ft(m).encoding.getName()
         ).alwaysSerialize();
+        final Parameter<Boolean> pooled = Parameter.boolParam(POOLED, false, m -> ft(m).pooled, false).alwaysSerialize();
         final Parameter<Map<String, String>> meta = Parameter.metaParam();
 
         Builder(String name) {
@@ -73,7 +82,7 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
 
         @Override
         protected List<Parameter<?>> getParameters() {
-            return List.of(dimension, encoding, meta);
+            return List.of(dimension, encoding, pooled, meta);
         }
 
         @Override
@@ -84,6 +93,7 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
                     buildFullName(context),
                     dimension.getValue(),
                     MultiVectorEncoding.of(encoding.getValue()),
+                    pooled.getValue(),
                     meta.getValue()
                 ),
                 multiFieldsBuilder.build(this, context),
@@ -187,19 +197,38 @@ public final class MultiVectorFieldMapper extends ParametrizedFieldMapper {
         if (tokens.isEmpty()) {
             throw new IllegalArgumentException("[" + CONTENT_TYPE + "] field [" + name() + "] needs at least one token vector");
         }
-        byte[] bytes = fieldType().encoding.encode(tokens.toArray(new float[0][]), dim);
+        float[][] value = tokens.toArray(new float[0][]);
+        byte[] bytes = fieldType().encoding.encode(value, dim);
         context.doc().add(new BinaryDocValuesField(name(), new BytesRef(bytes)));
+        if (fieldType().pooled) {
+            float[] mean = MultiVectorEncoding.pooledMean(value);
+            if (mean != null) {
+                context.doc().add(new KnnFloatVectorField(fieldType().pooledField(), mean, VectorSimilarityFunction.DOT_PRODUCT));
+            }
+        }
     }
 
     /** Not searchable but through {@code max_sim}. */
     public static final class MultiVectorFieldType extends MappedFieldType {
         final int dimension;
         final MultiVectorEncoding encoding;
+        final boolean pooled;
 
-        MultiVectorFieldType(String name, int dimension, MultiVectorEncoding encoding, Map<String, String> meta) {
+        MultiVectorFieldType(String name, int dimension, MultiVectorEncoding encoding, boolean pooled, Map<String, String> meta) {
             super(name, false, false, true, TextSearchInfo.NONE, meta);
             this.dimension = dimension;
             this.encoding = encoding;
+            this.pooled = pooled;
+        }
+
+        /** Whether the documents' pooled means are kept, for {@code max_sim}'s {@code candidates}. */
+        public boolean pooled() {
+            return pooled;
+        }
+
+        /** The hidden vector field holding the documents' pooled means. */
+        public String pooledField() {
+            return name() + POOLED_SUFFIX;
         }
 
         public int dimension() {

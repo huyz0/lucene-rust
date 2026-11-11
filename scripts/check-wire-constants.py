@@ -146,6 +146,7 @@ JAVA_ONLY = {
     ("MemoryStat.java", "BYTES_PER_KILOBYTES"): "the neural stats API's memory units",
     ("TimestampedEventStat.java", "TRAILING_NUMBER_OF_INTERVALS"): "the neural stats API's trailing event window",
     ("MultiVectorFieldMapper.java", "MAX_DIMENSION"): "the mapping's validation, at Lucene's KnnVectorsFormat limit",
+    ("MaxSimQueryBuilder.java", "MAX_CANDIDATES"): "the query's validation, at k-NN's limit on k",
 }
 
 JAVA_CONST = re.compile(

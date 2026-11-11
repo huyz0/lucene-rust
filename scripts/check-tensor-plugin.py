@@ -13,6 +13,9 @@ on an index the Rust engine writes and on one OpenSearch's own engine writes
   rescore    a `match` query's window reranked by `max_sim` through the stock
              `rescore` (query_weight 0): the window's documents in MaxSim
              order, the rest after them.
+  candidates `max_sim` with `candidates` on a `pooled` field: about the
+             documents whose mean token is nearest the query's (HNSW: most of
+             the exact top), each scored by its MaxSim, the filter honoured.
   native     every one of those shard queries ran in Rust (the plugin's
              stats count no fallback).
   errors     a query of the wrong dimension, `max_sim` on another field
@@ -60,11 +63,11 @@ def must(method, path, body=None, ndjson=False):
     return r
 
 
-def start(image):
+def start(image, heap="1g"):
     subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
     subprocess.run(["docker", "run", "-d", "--name", NAME, "-p", f"{PORT}:9200",
                     "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
+                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", f"OPENSEARCH_JAVA_OPTS=-Xms{heap} -Xmx{heap}",
                     "-e", "cluster.routing.allocation.disk.threshold_enabled=false", image],
                    check=True, capture_output=True)
     for _ in range(150):
@@ -75,6 +78,24 @@ def start(image):
             pass
         time.sleep(2)
     sys.exit("node did not start")
+
+
+def build_image():
+    """The pinned OpenSearch image with the built plugin installed."""
+    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
+    if not zips:
+        sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
+    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
+    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
+        os.remove(z)
+    shutil.copy(zips[0], docker_dir)
+    image = f"lucene-rust-opensearch:{VERSION}"
+    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    return image
+
+
+def stop():
+    subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
 
 
 def unit(rng, n):
@@ -103,6 +124,12 @@ def max_sim(query, doc):
     return float(np.max(query.astype(np.float64) @ doc.astype(np.float64).T, axis=1).sum())
 
 
+def pooled(tokens):
+    m = np.asarray(tokens, dtype=np.float64).sum(axis=0)
+    n = np.linalg.norm(m)
+    return None if n == 0 else (m / n).astype(np.float32)
+
+
 def close(a, b):
     return abs(a - b) <= 1e-4 * max(1.0, abs(b))
 
@@ -124,16 +151,7 @@ def ranked(got, want, size, what, failures):
 
 def main():
     keep = "--keep" in sys.argv
-    zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
-    if not zips:
-        sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
-    start(image)
+    start(build_image())
     failures = []
     rng = np.random.default_rng(7)
     docs = []
@@ -154,6 +172,7 @@ def main():
                      "o": {"properties": {"mv": {"type": "multi_vector", "dimension": DIM}}}}
             for e in ENCODINGS:
                 props[f"mv_{e}"] = {"type": "multi_vector", "dimension": DIM, "encoding": e}
+            props["mv_pooled"] = {"type": "multi_vector", "dimension": DIM, "encoding": "float", "pooled": True}
             must("PUT", f"/{index}", {"settings": settings, "mappings": {"properties": props}})
             half = len(docs) // 2
             for part in (docs[:half], docs[half:]):
@@ -163,6 +182,7 @@ def main():
                     if "tokens" in d:
                         for e in ENCODINGS:
                             src[f"mv_{e}"] = d["tokens"].tolist()
+                        src["mv_pooled"] = d["tokens"].tolist()
                     lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
                     lines.append(json.dumps(src))
                 r = must("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
@@ -222,6 +242,32 @@ def main():
                     cases += 3
         print(f"query/filter/rescore: {cases} searches checked")
 
+        # candidates: the nearest by pooled mean, scored by MaxSim
+        recalls = []
+        for index in ("rust", "lucene"):
+            for qi, q in enumerate(queries):
+                pq = pooled(q)
+                for flt in (None, "odd"):
+                    pool = [d for d in live if "tokens" in d and (flt is None or d["tag"] == flt)]
+                    near = sorted(pool, key=lambda d: -float(pooled(d["tokens"]).astype(np.float64) @ pq))[:20]
+                    inner = {"query_vectors": q.tolist(), "candidates": 20}
+                    if flt:
+                        inner["filter"] = {"term": {"tag": flt}}
+                    r = must("POST", f"/{index}/_search", {"size": 40, "query": {"max_sim": {"mv_pooled": inner}}})
+                    hits = r["hits"]["hits"]
+                    what = f"{index} candidates q{qi} {flt}"
+                    want = {d["_id"]: max(0.0, max_sim(q, d["tokens"])) for d in pool}
+                    if len(hits) != 20:
+                        failures.append(f"{what}: {len(hits)} hits")
+                    for k, h in enumerate(hits):
+                        if h["_id"] not in want or not close(h["_score"], want[h["_id"]]) or (k and h["_score"] > hits[k - 1]["_score"]):
+                            failures.append(f"{what}: hit {k} {h['_id']} scored {h['_score']}, expected {want.get(h['_id'])}")
+                            break
+                    recalls.append(len({h["_id"] for h in hits} & {d["_id"] for d in near}) / 20)
+        print(f"candidates: {len(recalls)} searches, mean recall of the exact pooled top 20 {np.mean(recalls):.3f}")
+        if np.mean(recalls) < 0.9:
+            failures.append(f"candidates: mean recall {np.mean(recalls):.3f} below 0.9")
+
         # _source as sent
         d = next(d for d in live if "tokens" in d)
         src = must("GET", f"/rust/_doc/{d['_id']}")["_source"]
@@ -243,6 +289,8 @@ def main():
             ("POST", "/rust/_search", {"query": {"max_sim": {"mv_float": {"query_vectors": [[1.0, 2.0]]}}}}, "dimension"),
             ("POST", "/rust/_search", {"query": {"max_sim": {"text": {"query_vectors": [[1.0] * DIM]}}}}, "multi_vector"),
             ("POST", "/rust/_search", {"query": {"max_sim": {"mv_float": {"query_vectors": []}}}}, "query_vectors"),
+            ("POST", "/rust/_search", {"query": {"max_sim": {"mv_float": {"query_vectors": [[1.0] * DIM], "candidates": 5}}}}, "pooled"),
+            ("POST", "/rust/_search", {"query": {"max_sim": {"mv_pooled": {"query_vectors": [[1.0] * DIM], "candidates": 0}}}}, "candidates"),
             ("PUT", "/bad1", {"mappings": {"properties": {"v": {"type": "multi_vector"}}}}, "dimension"),
             ("PUT", "/bad2", {"mappings": {"properties": {"v": {"type": "multi_vector", "dimension": 4, "encoding": "int4"}}}}, "encoding"),
             ("PUT", "/rust/_doc/x1", {"mv_float": [[1.0, 2.0]]}, "dimension mismatch"),
@@ -268,7 +316,7 @@ def main():
             logs = subprocess.run(["docker", "logs", NAME], capture_output=True, text=True)
             print("\n".join(l for l in (logs.stdout + logs.stderr).splitlines() if "WARN" in l or "ERROR" in l)[-5000:])
         if not keep:
-            subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
+            stop()
     for f in failures[:40]:
         print("FAIL:", f)
     sys.exit(1 if failures else 0)
