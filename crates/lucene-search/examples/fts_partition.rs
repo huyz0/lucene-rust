@@ -14,6 +14,12 @@
 //! top hits (stored id and score bits, or sort value), as the Java side does.
 //! A search sorted by time (`newest`) ends a segment early where the index
 //! sort's tenant key is pinned, as the plugin tells the native collector.
+//! `RANGE=iodv` sends each time range as OpenSearch builds one on a field
+//! with doc values (`IndexOrDocValuesQuery`); the default is the bare points
+//! range.
+//! `RANGE=iodv` sends each time range as OpenSearch builds one on a field
+//! with doc values (`IndexOrDocValuesQuery`); the default is the bare points
+//! range.
 
 #![allow(clippy::arithmetic_side_effects)]
 
@@ -22,6 +28,7 @@ use std::time::Instant;
 
 use lucene_codecs::stored_fields::FieldValue;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::extended_query::{IndexOrDocValuesQuery, NumericDocValuesRangeQuery};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::multi_segment::OpenSegment;
@@ -74,7 +81,18 @@ fn load(path: &str, blocks: bool) -> Vec<Q> {
             ))];
             let (lo, hi): (i64, i64) = (f[4].parse().unwrap(), f[5].parse().unwrap());
             if lo >= 0 {
-                filter.push(Clause::PointsRange(PointsRangeQuery::new("ts", lo, hi)));
+                let points = Clause::PointsRange(PointsRangeQuery::new("ts", lo, hi));
+                // `RANGE=iodv`: the range as OpenSearch sends a date or long
+                // range on a field with doc values.
+                filter.push(if std::env::var("RANGE").is_ok_and(|r| r == "iodv") {
+                    IndexOrDocValuesQuery::new(
+                        points,
+                        NumericDocValuesRangeQuery::new("ts", lo, hi),
+                    )
+                    .into()
+                } else {
+                    points
+                });
             }
             if blocks {
                 filter.push(Clause::Exists(FieldExistsQuery::new("_primary_term")));

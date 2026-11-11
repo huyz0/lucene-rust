@@ -150,6 +150,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
+        if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (pattern_text only): %d phrases compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestPatternText.encoded, checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
         if ("similarity".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -183,6 +189,8 @@ public final class NativeSelfTest {
         check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
         NativeSelfTestTensor.run(new Random(37), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
+        NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -392,6 +400,24 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        // A range with doc values is one node (kind 48) after the tree tag; any other
+        // IndexOrDocValuesQuery is its index side.
+        byte[] both = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 5)
+            ),
+            f -> true
+        ).blob();
+        check(both != null && both[1] == 48, "a long range with doc values encodes as one node");
+        byte[] other = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 6)
+            ),
+            f -> true
+        ).blob();
+        check(other != null && other[1] == 11, "a range whose sides differ encodes its index side");
         // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
@@ -483,7 +509,7 @@ public final class NativeSelfTest {
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
                 // `range`, `term` and `terms` on the other numeric widths and
                 // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
-                case 10 -> switch (r.nextInt(6)) {
+                case 10 -> switch (r.nextInt(7)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
                     case 2 -> {
@@ -495,6 +521,15 @@ public final class NativeSelfTest {
                         // A range on an index-sorted shard's sort field: encoded as its fallback.
                         long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
                         yield new org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery("sl", a, b, LongPoint.newRangeQuery("sl", a, b));
+                    }
+                    case 5 -> {
+                        // A long range on a field with doc values, as OpenSearch builds it: one
+                        // node, either side per segment.
+                        long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
+                        yield new org.apache.lucene.search.IndexOrDocValuesQuery(
+                            LongPoint.newRangeQuery("sl", a, b),
+                            org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("sl", a, b)
+                        );
                     }
                     default -> new BoostQuery(IntPoint.newRangeQuery("si", 10, 20), 2f);
                 };
@@ -1531,12 +1566,19 @@ public final class NativeSelfTest {
                 DirectoryReader plain = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, false);
                 org.apache.lucene.index.LeafReader leaf0 = plain.leaves().get(0).reader();
                 check(leaf0.getSortedNumericDocValues("num") instanceof NativeDocValues.Numbers == false, "plain index: Lucene's doc values");
-                NativeStoredFieldsReader.fetchStarted();
+                NativeStoredFieldsReader.fetchStarted(true);
                 try {
                     check(leaf0.getSortedSetDocValues("kw") instanceof NativeDocValues.Terms, "fetch phase: native doc values");
+                    check(NativeStoredFieldsReader.vectorsDropped(), "a fetch phase dropping vectors");
+                    // A fetch phase run inside another (inner hits, top hits) has its own filter.
+                    NativeStoredFieldsReader.fetchStarted(false);
+                    check(NativeStoredFieldsReader.vectorsDropped() == false, "an inner fetch phase keeping vectors");
+                    NativeStoredFieldsReader.fetchEnded();
+                    check(NativeStoredFieldsReader.vectorsDropped(), "the outer fetch phase again");
                 } finally {
                     NativeStoredFieldsReader.fetchEnded();
                 }
+                check(NativeStoredFieldsReader.vectorsDropped() == false, "outside a fetch phase, vectors are read");
                 check(leaf0.getSortedSetDocValues("missing") == null, "an absent field has none");
                 check(leaf0.getSortedSetDocValues("num") == null, "a field of another doc-values type has none");
             }
