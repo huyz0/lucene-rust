@@ -367,7 +367,10 @@ def visibility(base, container, corpus, label, out, settings):
                 probe_once(n)
             except (RuntimeError, OSError) as e:
                 errors.append(f"probe {n}: {e}")
-            time.sleep(every)
+            # In short steps: the load's end, not a long PROBE_EVERY, ends the run.
+            until = time.perf_counter() + every
+            while not done[0] and time.perf_counter() < until:
+                time.sleep(min(0.05, every))
 
     # SEARCH_RATE=N: each searcher sends at most N searches a second, so
     # configs compare at the same search load.
