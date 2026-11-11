@@ -13,6 +13,9 @@
 //! nodes    := count:u8 node*                  (at most MAX_NODES in all)
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
+//!           | SCRIPT_METRIC needs:u8 script   (a metric over a Painless
+//!                                              script's doubles; the script in
+//!                                              `jvm_painless_score`'s layout)
 //!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
 //!                                              compression in (0, MAX_COMPRESSION])
@@ -141,6 +144,8 @@ const AGG_HDR_PERCENTILES: u8 = 14;
 const AGG_NESTED: u8 = 15;
 const AGG_REVERSE_NESTED: u8 = 16;
 const AGG_SIGNIFICANT_TEXT: u8 = 17;
+/// A metric over a Painless script's values ([`crate::jvm_painless_score::PainlessAggValues`]).
+const AGG_SCRIPT_METRIC: u8 = 18;
 /// The most source fields a `significant_text` may read.
 const MAX_SOURCE_FIELDS: i32 = 1024;
 /// The largest t-digest compression a tree may ask for: a digest holds
@@ -342,6 +347,22 @@ fn node_of(
                 kind,
                 source,
                 needs,
+                script: None,
+            }
+        }
+        AGG_SCRIPT_METRIC => {
+            let needs = c.u8()?;
+            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+                return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
+            }
+            let values = crate::jvm_painless_score::PainlessAggValues::decode(c)?;
+            AggNode::Metric {
+                missing: None,
+                field: String::new(),
+                kind: ValueKind::Double,
+                source: Source::DocValues,
+                needs,
+                script: Some(Arc::new(values)),
             }
         }
         AGG_PERCENTILES => {
