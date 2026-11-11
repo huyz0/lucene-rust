@@ -60,6 +60,7 @@ jobs:
       plugin: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.plugin == 'true' }}
       fixtures: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.fixtures == 'true' }}
       snowball: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.snowball == 'true' }}
+      js: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.js == 'true' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -102,6 +103,12 @@ jobs:
               - 'crates/lucene-util/**'
               - 'crates/lucene-analysis/**'
               - 'scripts/**'
+            # The opt-in js scripts: the V8 crate and the lucene-ffi code
+            # that calls it.
+            js:
+              - *everything
+              - 'crates/lucene-script-js/**'
+              - 'crates/lucene-ffi/**'
 
   # ---------------------------------------------------------------------------
   # The gates that read the tree, not a build: they run on every change,
@@ -443,6 +450,32 @@ jobs:
         run: scripts/build-fips.sh --test
       - name: The plugin's library with the FIPS module only
         run: scripts/build-fips.sh --ffi --test
+
+  # ---------------------------------------------------------------------------
+  # The opt-in js scripts (lucene-ffi's `js` feature). The crate sits outside
+  # the workspace, so the gate does not build it.
+  # ---------------------------------------------------------------------------
+  js-scripts:
+    name: js scripts
+    needs: changes
+    if: needs.changes.outputs.js == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: js
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The crate
+        run: |
+          export CARGO_TARGET_DIR=$PWD/target
+          cargo clippy --manifest-path crates/lucene-script-js/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path crates/lucene-script-js/Cargo.toml
+      - name: lucene-ffi with js
+        run: |
+          cargo clippy -p lucene-ffi --features js --all-targets -- -D warnings
+          cargo test -p lucene-ffi --features js --lib jvm_painless_score
 
   # ---------------------------------------------------------------------------
   # The committed fixtures must still be what Lucene 10.5.0 actually produces.
@@ -849,6 +882,7 @@ jobs:
       - gate-arm64
       - release-tests
       - fips
+      - js-scripts
       - fixtures
       - snowball
       - write-path
