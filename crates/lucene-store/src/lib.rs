@@ -66,6 +66,24 @@ pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
     }
 }
 
+/// Starts reading `bytes` in ahead of a scan through them. A file read by
+/// range fetches its pages as [`prefetch`] does; a mapped file is advised
+/// `MADV_WILLNEED`, which reads the range in even where the mapping was
+/// advised random access ([`Input::advise_random`]), so a sequential scan
+/// keeps large reads. A hint only: heap memory and other platforms ignore
+/// it.
+pub fn read_ahead(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    if paged_input::is_paged(bytes) {
+        let _ = paged_input::prefetch(&[bytes]);
+        return;
+    }
+    directory::advise_will_need(bytes);
+}
+
 /// Whether `bytes` lies in a file read by range, whose reads a [`prefetch`]
 /// can batch. Readers ask before doing extra work to find what to prefetch.
 pub fn is_prefetchable(bytes: &[u8]) -> bool {
