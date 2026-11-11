@@ -23,7 +23,7 @@
 //! | field | layout |
 //! |---|---|
 //! | sub-query | a node |
-//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter, `3` number sort, `4` number sort reading `_score` |
+//! | context | `u8`: `0` score, `1` score reading `_score`, `2` filter, `3` number sort, `4` number sort reading `_score`, `5` aggregation |
 //! | IR | `i32` length, then the `PIR2` blob |
 //! | params | `i32` length, then a map constant ([`lucene_painless::ir::decode_constant`]) |
 //! | index | string: `_getIndex()` |
@@ -140,6 +140,8 @@ struct Spec {
     filter: bool,
     /// A `NumberSortScript`: `execute()` returns the document's sort value.
     sort: bool,
+    /// An `AggregationScript`: `execute()` returns the document's values.
+    agg: bool,
     index: String,
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
@@ -191,15 +193,26 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
 
 /// The node's script, after its sub-query.
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
-    let (needs_score, filter, sort) = match c.u8()? {
-        0 => (false, false, false),
-        1 => (true, false, false),
-        2 => (false, true, false),
-        3 => (false, false, true),
-        4 => (true, false, true),
+    let (mut agg, mut sort) = (false, false);
+    let (needs_score, filter) = match c.u8()? {
+        0 => (false, false),
+        1 => (true, false),
+        2 => (false, true),
+        3 => {
+            sort = true;
+            (false, false)
+        }
+        4 => {
+            sort = true;
+            (true, false)
+        }
+        5 => {
+            agg = true;
+            (false, false)
+        }
         other => {
             return Err(invalid(format!(
-                "query tree: painless script context {other} (expected 0..=4)"
+                "query tree: painless script context {other} (expected 0..=5)"
             )))
         }
     };
@@ -245,6 +258,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         needs_score,
         filter,
         sort,
+        agg,
         index,
         shard,
         script_id,
@@ -325,6 +339,10 @@ const SCORE_ERROR: &str = "\u{1}painless-score-error\u{1}";
 /// raises (`function_score`'s missing value or invalid score) starts with.
 const OPENSEARCH_ERROR: &str = "\u{1}opensearch-error\u{1}";
 
+/// What an aggregation's `AggregationExecutionException` starts with: a
+/// script value an aggregation cannot read.
+const AGGREGATION_ERROR: &str = "\u{1}aggregation-error\u{1}";
+
 /// An `IllegalArgumentException` with `message` that fails a search holding
 /// a script without running it again in Java.
 pub(crate) fn score_error(message: impl std::fmt::Display) -> Error {
@@ -387,7 +405,7 @@ impl JObject for Unavailable {
 impl Spec {
     /// Whether the script is a `ScoreScript`.
     fn is_score(&self) -> bool {
-        !self.filter && !self.sort
+        !self.filter && !self.sort && !self.agg
     }
 
     /// The script class's own methods the score context serves.
@@ -411,7 +429,7 @@ impl Spec {
         ];
         const FILTER: &[&str] = &["getParams", "getDoc"];
         const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
-        if self.filter || (self.sort && !self.needs_score) {
+        if self.filter || self.agg || (self.sort && !self.needs_score) {
             FILTER
         } else if self.sort {
             SORT_WITH_SCORE
@@ -1003,6 +1021,31 @@ impl ScriptScores<'_> {
         checked(v, doc)
     }
 
+    /// What the script returns for the current document.
+    fn run_object(&mut self) -> Result<Value> {
+        let id = self.env.source.script_id;
+        let at = At {
+            leaf: self.env.leaf,
+            doc: self.env.doc,
+            score: self.env.score as f32,
+        };
+        match &mut self.typed {
+            Some((t, regs)) => t
+                .run(&mut self.env, regs)
+                .map_err(|e| script_error(id, at, t.thrown_at(regs), &e)),
+            None => {
+                let mut vm = Vm::new(self.prog.clone(), &mut self.env);
+                vm.bindings = std::mem::take(&mut self.bindings);
+                vm.pool = std::mem::take(&mut self.pool);
+                let r = vm.execute(&self.args);
+                let loc = vm.loc;
+                self.bindings = std::mem::take(&mut vm.bindings);
+                self.pool = std::mem::take(&mut vm.pool);
+                r.map_err(|e| script_error(id, at, loc, &e))
+            }
+        }
+    }
+
     /// What the script returns for the current document, as a `double`.
     fn run_value(&mut self) -> Result<f64> {
         let id = self.env.source.script_id;
@@ -1405,6 +1448,91 @@ impl LeafFieldComparator for SortLeaf<'_> {
     }
 }
 
+/// A numeric aggregation's script (`ValuesSource.Numeric.Script` over an
+/// `AggregationScript`): per document what `ScriptDoubleValues` reads from
+/// `execute()` -- nothing for `null` or an empty array or collection, a
+/// number, a boolean as `1` or `0`, each element of an array or collection
+/// -- sorted as `Double.compare` orders them, as sortable longs.
+#[derive(Debug)]
+pub(crate) struct PainlessAggValues(Arc<Spec>);
+
+impl PainlessAggValues {
+    /// The node's script ([`decode_spec`]'s layout), checked.
+    pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
+        let spec = decode_spec(c)?;
+        if !spec.agg {
+            return Err(invalid(
+                "aggregation tree: painless values with another context's script",
+            ));
+        }
+        spec.check().map_err(|r| {
+            invalid(format!(
+                "aggregation tree: painless script not checked: {r}"
+            ))
+        })?;
+        Ok(PainlessAggValues(Arc::new(spec)))
+    }
+}
+
+impl lucene_search::bucket_aggs::ScriptValuesSource for PainlessAggValues {
+    fn open<'a>(
+        &self,
+        reader: &'a lucene_search::directory_reader::SegmentReader,
+    ) -> Result<Box<dyn lucene_search::bucket_aggs::ScriptValues + 'a>> {
+        let leaf = scripts(&self.0, reader, Leaf::Base(reader.doc_base), None)?;
+        Ok(Box::new(AggLeaf(leaf)))
+    }
+}
+
+/// A [`PainlessAggValues`] on one segment.
+struct AggLeaf<'c>(ScriptScores<'c>);
+
+/// `ScriptDoubleValues.toDoubleValue`.
+fn agg_double(v: &Value) -> Result<f64> {
+    Ok(match v {
+        Value::Bool(b) => f64::from(u8::from(*b)),
+        Value::Byte(n) => f64::from(*n),
+        Value::Short(n) => f64::from(*n),
+        Value::Int(n) => f64::from(*n),
+        Value::Long(n) => *n as f64,
+        Value::Float(n) => f64::from(*n),
+        Value::Double(n) => *n,
+        other => {
+            return Err(Error::IllegalArgument(format!(
+            "{AGGREGATION_ERROR}Unsupported script value [{}], expected a number, date, or boolean",
+            other.java_to_string()
+        )))
+        }
+    })
+}
+
+impl lucene_search::bucket_aggs::ScriptValues for AggLeaf<'_> {
+    fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
+        let s = &mut self.0;
+        s.env.doc = doc;
+        let v = s.run_object()?;
+        let from = out.len();
+        let items: Vec<Value> = match &v {
+            Value::Null => return Ok(()),
+            Value::List(l) => l.borrow().items.clone(),
+            Value::Set(l) => l.borrow().map.iter().map(|(k, _)| k.clone()).collect(),
+            Value::Array(a) => a.borrow().items.clone(),
+            Value::Object(o) => match o.as_any().downcast_ref::<DocValues>() {
+                Some(d) => d.items.clone(),
+                None => vec![v.clone()],
+            },
+            _ => vec![v.clone()],
+        };
+        for item in &items {
+            out.push(lucene_util::numeric_utils::double_to_sortable_long(
+                agg_double(item)?,
+            ));
+        }
+        out[from..].sort_unstable();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1781,6 +1909,115 @@ mod tests {
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
+    /// **Aggregation scripts.** Each fixture sort script, run as a metric
+    /// aggregation's values: each document's one value is the double the
+    /// sort read for it, and where the sort threw, the aggregation throws the
+    /// same exception at the same offset. Each filter script's `boolean` is
+    /// 1 on the documents the `script` query matched and 0 on the rest, as
+    /// `ScriptDoubleValues` reads it.
+    #[test]
+    fn aggregation_scripts_read_what_opensearch_reads() {
+        use lucene_search::bucket_aggs::ScriptValuesSource;
+        use lucene_util::numeric_utils::double_to_sortable_long;
+        let tmp = TempDir::new("painless-score-agg");
+        for e in std::fs::read_dir(fixture("index")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).unwrap();
+        }
+        let h = open(&tmp);
+        let handle = crate::jvm_reader::lookup(h, "reader").unwrap();
+        let mut wrong = Vec::new();
+        let mut ran = 0;
+        for case in cases() {
+            if !case.filter && case.sort.is_none() {
+                continue;
+            }
+            let mut spec = case.spec.clone();
+            spec[0] = 5;
+            let Ok(values) = PainlessAggValues::decode(&mut Cursor::new(&spec)) else {
+                let e = crate::error::last_error();
+                // A filter script's `params` has no `doc` or `_source`; an
+                // aggregation script's has them, as Java serves them.
+                let java = [
+                    "params.doc == null && doc['likes'].value < 100",
+                    "params._source.size() > 0",
+                ];
+                if !IN_JAVA.contains(&case.source.as_str()) && !java.contains(&case.source.as_str())
+                {
+                    wrong.push(format!("{}: refused: {e}", case.source));
+                }
+                continue;
+            };
+            let mut got: Vec<(i32, Vec<i64>)> = Vec::new();
+            let mut threw = None;
+            'segments: for seg in handle.reader.segment_readers() {
+                let mut leaf = values.open(seg).unwrap();
+                for doc in 0..seg.max_doc {
+                    let mut out = Vec::new();
+                    if let Err(e) = leaf.values(doc, &mut out) {
+                        threw = Some(e.to_string());
+                        break 'segments;
+                    }
+                    got.push((seg.doc_base + doc, out));
+                }
+            }
+            got.sort_by_key(|&(d, _)| d);
+            let bad = match (&case.outcome, threw) {
+                (Outcome::Sorted(want), None) => {
+                    let mut want: Vec<(i32, Vec<i64>)> =
+                        want.iter().map(|&(d, v)| (d, vec![v])).collect();
+                    want.sort_by_key(|&(d, _)| d);
+                    (got != want).then(|| format!("values {got:?}, want {want:?}"))
+                }
+                (Outcome::Hits(hits), None) => {
+                    let matched: Vec<i32> = hits.iter().map(|&(d, _)| d).collect();
+                    let want: Vec<(i32, Vec<i64>)> = got
+                        .iter()
+                        .map(|&(d, _)| {
+                            let v = if matched.contains(&d) { 1.0 } else { 0.0 };
+                            (d, vec![double_to_sortable_long(v)])
+                        })
+                        .collect();
+                    (got != want).then(|| format!("values {got:?}, want {want:?}"))
+                }
+                (Outcome::Threw(class, _, offset), Some(e)) => {
+                    let want = format!("\u{1}{offset}\u{1}{class}\u{1}");
+                    (!e.contains(SCRIPT_ERROR) || !e.contains(&want) || !e.contains("\u{1}b"))
+                        .then(|| format!("{e:?}, want ..{want:?}"))
+                }
+                (o, r) => Some(format!("{o:?} vs {r:?}")),
+            };
+            if let Some(bad) = bad {
+                wrong.push(format!("{}: {bad}", case.source));
+            }
+            ran += 1;
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        assert!(ran >= 20, "{ran} scripts run");
+        drop(handle);
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// `ScriptDoubleValues.toDoubleValue`: numbers and booleans, and the
+    /// error OpenSearch raises for anything else.
+    #[test]
+    fn aggregation_values_are_numbers_or_booleans() {
+        assert_eq!(agg_double(&Value::Bool(true)).unwrap(), 1.0);
+        assert_eq!(agg_double(&Value::Bool(false)).unwrap(), 0.0);
+        assert_eq!(agg_double(&Value::Int(-3)).unwrap(), -3.0);
+        assert_eq!(
+            agg_double(&Value::Long(1 << 40)).unwrap(),
+            (1u64 << 40) as f64
+        );
+        assert_eq!(agg_double(&Value::Float(0.5)).unwrap(), 0.5);
+        let e = agg_double(&Value::Null).unwrap_err().to_string();
+        assert!(e.contains(AGGREGATION_ERROR), "{e}");
+        assert!(
+            e.ends_with("Unsupported script value [null], expected a number, date, or boolean"),
+            "{e}"
+        );
+    }
+
     /// `cargo test --release -p lucene-ffi --lib painless_check_cost --
     /// --ignored --nocapture`: the static check's cost per fixture script
     /// (decode, compile, specialise, check), once per distinct script and
@@ -1928,6 +2165,7 @@ mod bench {
                 needs_score: true,
                 filter: false,
                 sort: false,
+                agg: false,
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,

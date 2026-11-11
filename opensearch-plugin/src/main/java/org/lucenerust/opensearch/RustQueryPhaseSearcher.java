@@ -209,7 +209,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
-            : NativeAggregationTree.plan(ctx, field -> true);
+            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
