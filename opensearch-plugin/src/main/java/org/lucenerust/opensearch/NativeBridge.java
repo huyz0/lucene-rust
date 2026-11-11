@@ -225,6 +225,10 @@ public final class NativeBridge {
             "ffi_jvm_reader_derived_source_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
+        static final MethodHandle STORED_SOURCE = bind(
+            "ffi_jvm_reader_stored_source_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
         static final MethodHandle PREFETCH_DOCUMENTS = bind(
             "ffi_jvm_reader_prefetch_documents",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
@@ -1562,6 +1566,14 @@ public final class NativeBridge {
      */
     public static int derivedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
         return lendOwned(H.DERIVED_SOURCE, handle, segment, doc, use);
+    }
+
+    /**
+     * {@link #derivedSource} as stored: each k-NN vector's masked value (the number {@code 1}) where
+     * the vector would go, for a fetch whose {@code _source} filter drops every vector field.
+     */
+    public static int storedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
+        return lendOwned(H.STORED_SOURCE, handle, segment, doc, use);
     }
 
     /**

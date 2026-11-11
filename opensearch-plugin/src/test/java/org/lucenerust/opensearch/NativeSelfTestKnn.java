@@ -47,6 +47,34 @@ import java.util.stream.Stream;
 final class NativeSelfTestKnn {
     private NativeSelfTestKnn() {}
 
+    /** {@code DerivedSource.dropped}: which {@code _source} filters drop every vector path, whatever its value. */
+    static void sourceFilters(BiConsumer<Boolean, String> check) {
+        String[] paths = { "v", "obj.v", "nest.v" };
+        Object[][] cases = {
+            { new String[0], new String[] { "v", "obj.v", "nest.v" }, true },
+            { new String[0], new String[] { "*v" }, true },
+            { new String[0], new String[] { "v", "obj", "nest" }, true },
+            { new String[0], new String[] { "v", "obj.*", "nest.v" }, true },
+            { new String[] { "tag", "obj.label" }, new String[0], true },
+            { new String[] { "tag", "obj" }, new String[] { "obj.v", "nest" }, true },
+            { new String[0], new String[] { "v", "nest.v" }, false },
+            { new String[0], new String[] { "v*" }, false },
+            { new String[] { "obj" }, new String[0], false },
+            { new String[] { "*" }, new String[] { "v" }, false },
+            { new String[] { "nest.*" }, new String[] { "v", "obj.v" }, false },
+            { new String[] { "v.x" }, new String[0], true },
+        };
+        for (Object[] c : cases) {
+            String[] in = (String[]) c[0], ex = (String[]) c[1];
+            boolean want = (Boolean) c[2];
+            var filter = new org.opensearch.search.fetch.subphase.FetchSourceContext(true, in, ex).getFilter();
+            check.accept(
+                org.lucenerust.opensearch.knn.DerivedSource.dropped(filter, paths) == want,
+                "source filter includes " + Arrays.toString(in) + " excludes " + Arrays.toString(ex) + " drops every vector: " + !want
+            );
+        }
+    }
+
     static final int DIM = 12;
     static final String[] FIELDS = { "v_l2", "v_cos", "v_mip", "v_byte" };
     private static final VectorSimilarityFunction[] SIMS = {
@@ -80,6 +108,7 @@ final class NativeSelfTestKnn {
     }
 
     static void run(Random r, BiConsumer<Boolean, String> check, NativeSelfTestExtended.Compare compare) throws Exception {
+        sourceFilters(check);
         Path dir = Files.createTempDirectory("lucene-rust-selftest-knn");
         NativeReaders readers = new NativeReaders();
         try (FSDirectory d = FSDirectory.open(dir); IndexWriter w = new IndexWriter(d, new IndexWriterConfig(new StandardAnalyzer()))) {
