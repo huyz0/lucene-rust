@@ -82,14 +82,14 @@ released.
 Under `index.lucene_rust.realtime_max_staleness` (20 ms by default),
 searches share one view instead of opening their own, and the warmer opens
 the next shared view (writing its tails and making the reads of recent
-requests) ahead of them. It replaces the shared view with one holding later
-writes only once a search took the current one, or once the current one is
-three quarters of the bound old while searches still come. Opening a new
-view on every write instead (every 5 ms under a steady load) made views
-nobody read: at 12k docs/s and 60 searches/s that was about 200 views a
-second for 60 searches and about 5% of the node's CPU. A write becomes
-visible within the bound either way; at that load the median time to
-visibility went from about 5 ms to about 7.5 ms.
+requests) ahead of them. It replaces a shared view with one holding later
+writes once a search took the current one, or once the current one is three
+quarters of the bound old, so searches further apart than the bound still
+find a view written ahead. Opening a new view on every write instead (every
+5 ms under a steady load) made views nobody read. At 12k docs/s, node CPU
+went down 1-4% with 60 searches/s and 5% with 20 searches/s, with the same
+search latency; the median time to visibility went from 4-5 ms to 7-8 ms,
+within the bound.
 
 On the Java side, a search over the buffers reads a new reader, so anything
 OpenSearch caches per reader (global ordinals, for one) is built again for it.

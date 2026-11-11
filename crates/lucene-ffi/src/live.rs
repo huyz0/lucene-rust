@@ -426,13 +426,15 @@ impl Warmer {
     }
 
     /// Whether the warmer should open a new shared view: the shared one is
-    /// missing or of another commit; or it lacks documents added since and
-    /// a search took it, or it is three quarters of its bound old while
-    /// searches come; or it is half its bound old (renewed, as nothing
-    /// was written). A view no search took is not replaced by one with
-    /// more documents: under a steady stream of writes the warmer would
-    /// open one every [`WARM_EVERY`], and write chunks and make reads for
-    /// each, however rarely searches come.
+    /// missing or of another commit; half its bound old with nothing
+    /// written since (renewed); or it lacks documents added since and a
+    /// search took it or it is three quarters of its bound old. A younger
+    /// view no search took is not replaced by one with more documents:
+    /// under a steady stream of writes the warmer would open one every
+    /// [`WARM_EVERY`], and write chunks and make reads for each, however
+    /// rarely searches come. At three quarters the next view is shared
+    /// before the current one expires, so searches further apart than the
+    /// bound still find one written ahead.
     fn needs_view(&self, w: &EngineWriter, commit: Option<i64>) -> bool {
         let Some(max) = self.max_staleness() else {
             return false;
@@ -459,10 +461,7 @@ impl Warmer {
         if !grown {
             return age >= max / 2;
         }
-        let searched =
-            u128::from(epoch_ms().saturating_sub(self.last_lean.load(Ordering::Relaxed)))
-                <= max.as_millis();
-        h.served.load(Ordering::Relaxed) || (age >= max / 4 * 3 && searched)
+        h.served.load(Ordering::Relaxed) || age >= max.saturating_sub(max / 4)
     }
 
     fn asked(&self, commit: Option<i64>) {
@@ -849,6 +848,12 @@ fn warm_min(w: &EngineWriter, min: i32) -> lucene_index::index_writer::Result<bo
 #[cfg(test)]
 pub(crate) fn needs_shared_view(w: &EngineWriter, commit: Option<i64>) -> bool {
     w.live_warmer().needs_view(w, commit)
+}
+
+/// The shared view of `commit` as a search takes it: its blob.
+#[cfg(test)]
+pub(crate) fn serve_shared_view(w: &EngineWriter, commit: Option<i64>) -> Option<Vec<u8>> {
+    w.live_warmer().shared_view(commit).map(|h| h.blob.clone())
 }
 
 /// Opens a view of `commit` as `w`'s warmer does, and shares it.

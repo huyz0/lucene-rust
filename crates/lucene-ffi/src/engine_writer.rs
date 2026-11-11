@@ -5930,13 +5930,14 @@ mod tests {
     }
 
     /// Under a staleness bound the warmer replaces the shared view with one
-    /// holding later writes only once a search took it: a view no search
-    /// read is not reopened as documents arrive.
+    /// holding later writes once a search took it, or once it is three
+    /// quarters of the bound old; a younger view no search read stays
+    /// shared as documents arrive.
     #[test]
-    fn the_warmer_reopens_a_shared_view_only_once_searched() {
+    fn the_warmer_reopens_a_shared_view_once_searched() {
         use crate::live::{
-            ffi_engine_writer_live_view_open, ffi_engine_writer_set_live_staleness,
-            ffi_live_view_close, needs_shared_view, warm_shared_view,
+            ffi_engine_writer_set_live_staleness, needs_shared_view, serve_shared_view,
+            warm_shared_view,
         };
         let tmp = empty_index("engine-writer-live-reopen");
         let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
@@ -5952,37 +5953,28 @@ mod tests {
             );
             assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
         };
-        let open = || {
-            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
-            // SAFETY: live out-pointers.
-            let rc =
-                unsafe { ffi_engine_writer_live_view_open(h, -1, &mut view, &mut ptr, &mut len) };
-            assert_eq!(rc, 0, "{}", crate::error::last_error());
-            // SAFETY: the buffer the call gave, read then freed once.
-            let blob = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
-            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
-            (view, blob)
-        };
+        // No view opens through the entry point, so no warming thread runs.
         let ew = lookup(h).unwrap();
         (0..5).for_each(add);
         assert_eq!(ffi_engine_writer_set_live_staleness(h, 60_000), 0);
-        // A search's own view: it read it, so a later write calls for a new one.
-        let (a, _) = open();
+        assert!(needs_shared_view(&ew, None), "none shared yet");
+        warm_shared_view(&ew, None);
+        assert!(!needs_shared_view(&ew, None), "nothing written since");
         add(5);
-        assert!(needs_shared_view(&ew, None));
-        // The warmer's view, read by no search: more writes leave it shared.
+        assert!(!needs_shared_view(&ew, None), "no search took it");
+        let first = serve_shared_view(&ew, None).expect("the shared view");
+        assert!(needs_shared_view(&ew, None), "a search took it");
+        warm_shared_view(&ew, None);
+        assert!(!needs_shared_view(&ew, None));
+        let second = serve_shared_view(&ew, None).expect("the shared view");
+        assert_ne!(first, second, "the new view holds the later write");
+        // Three quarters of the bound old: replaced though no search took it.
+        assert_eq!(ffi_engine_writer_set_live_staleness(h, 400), 0);
         warm_shared_view(&ew, None);
         add(6);
         assert!(!needs_shared_view(&ew, None));
-        let (b, first) = open();
-        assert_ne!(a, b);
-        // Once a search took it, the next one holds the later write.
-        let (c, second) = open();
-        assert!(c != b || needs_shared_view(&ew, None));
-        assert!(c == b && first == second || first != second);
-        for v in [a, b, c] {
-            assert_eq!(ffi_live_view_close(v), 0);
-        }
+        std::thread::sleep(std::time::Duration::from_millis(310));
+        assert!(needs_shared_view(&ew, None));
         drop(ew);
         assert_eq!(ffi_engine_writer_close(h), 0);
     }
@@ -7568,7 +7560,7 @@ mod tests {
                 let Some(ms) = refresh_ms else {
                     return (n, wall);
                 };
-                let mut held = Vec::new();
+                let mut held: Option<u64> = None;
                 while !done.load(std::sync::atomic::Ordering::Relaxed) {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                     let t = std::time::Instant::now();
@@ -7586,10 +7578,16 @@ mod tests {
                         assert_eq!(rc, 0, "{}", crate::error::last_error());
                         // SAFETY: the buffer the call gave, freed once.
                         unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
-                        held.push(hold);
+                        // The previous refresh's reader closes.
+                        if let Some(prev) = held.replace(hold) {
+                            assert_eq!(ffi_engine_writer_release_hold(h, prev), 0);
+                        }
                     }
                     wall += t.elapsed();
                     n += 1;
+                }
+                if let Some(last) = held {
+                    assert_eq!(ffi_engine_writer_release_hold(h, last), 0);
                 }
                 (n, wall)
             });
@@ -7610,6 +7608,11 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                     let gen = latest.load(std::sync::atomic::Ordering::Relaxed);
                     if readers.last().is_none_or(|&(g, _)| g != gen) {
+                        // The previous commit's reader closes, as the
+                        // plugin's does once its searches are done.
+                        for (_, r) in readers.drain(..) {
+                            assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(r), 0);
+                        }
                         readers.push((gen, open_reader(&tmp, gen)));
                     }
                     let reader = readers.last().map(|&(_, r)| r).unwrap();
