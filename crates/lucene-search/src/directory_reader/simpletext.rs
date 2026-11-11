@@ -500,6 +500,7 @@ impl SegmentReader {
             query_cache: Arc::default(),
             dvs: Vec::new(),
             skip_indexes: Arc::default(),
+            block_parents: Arc::default(),
             docs_with_field: Arc::default(),
             segment_suffix: String::new(),
             fields: Arc::new(BlockTreeFields::empty()),
