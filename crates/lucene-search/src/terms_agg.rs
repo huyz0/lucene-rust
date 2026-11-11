@@ -139,7 +139,7 @@ pub(crate) fn open_ords<'a>(
 /// [`crate::directory_reader::DirectoryReader::global_ords`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalOrds {
-    map: OrdinalMap,
+    map: Arc<OrdinalMap>,
     /// The distinct terms in global-ordinal order, while there are few
     /// ([`KEPT_TERMS`]): what [`Self::remapped`] looks terms up in.
     terms: Option<Arc<[Box<[u8]>]>>,
@@ -164,7 +164,7 @@ impl GlobalOrds {
     pub fn build(readers: &[SegmentReader], field: &str) -> Result<Self> {
         let readers: Vec<&SegmentReader> = readers.iter().collect();
         Ok(GlobalOrds {
-            map: ordinal_map_of(&readers, field)?,
+            map: Arc::new(ordinal_map_of(&readers, field)?),
             terms: None,
             skips_runs: false,
         })
@@ -183,10 +183,16 @@ impl GlobalOrds {
         let readers: Vec<&SegmentReader> = readers.iter().collect();
         let (map, terms) = ordinal_map_keeping(&readers, field, skip_runs)?;
         Ok(GlobalOrds {
-            map,
+            map: Arc::new(map),
             terms: terms.map(Arc::from),
             skips_runs: skip_runs,
         })
+    }
+
+    /// The ordinal map itself, shared: what a global-ordinals join
+    /// ([`crate::join::resolve_late_joins`]) maps its segments by.
+    pub fn ordinal_map(&self) -> Arc<OrdinalMap> {
+        Arc::clone(&self.map)
     }
 
     /// Whether these ordinals kept their terms.
@@ -251,7 +257,7 @@ impl GlobalOrds {
             .remapped(terms, &mut sources)
             .map_err(store_err)?
             .map(|map| GlobalOrds {
-                map,
+                map: Arc::new(map),
                 terms: Some(Arc::clone(terms)),
                 skips_runs: skip_runs,
             }))

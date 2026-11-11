@@ -79,6 +79,14 @@ until it is published and no view reads it that way, then as its published
 segment (files pinned against merges) until the commit holding it is
 released.
 
+The stored arena keeps a copy of each small document's stored fields, so a
+fetch costs no decompression. A document of a stored-fields chunk's size or
+more (16-480 KiB by codec) closes its chunk as it is added; the arena keeps
+that compressed chunk instead, and a fetch decompresses it. Its `_source` is
+then held once uncompressed only while it is being indexed. With 100 MB
+documents this cut realtime's extra peak RSS over realtime off from about
+0.08 GiB to 0.02 GiB.
+
 Under `index.lucene_rust.realtime_max_staleness` (20 ms by default),
 searches share one view instead of opening their own, and the warmer opens
 the next shared view (writing its tails and making the reads of recent

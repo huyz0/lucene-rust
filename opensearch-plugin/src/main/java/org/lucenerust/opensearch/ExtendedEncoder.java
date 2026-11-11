@@ -55,6 +55,10 @@ import org.opensearch.index.fielddata.IndexNumericFieldData;
 import org.opensearch.index.search.OpenSearchToParentBlockJoinQuery;
 import org.opensearch.search.MultiValueMode;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.lucenerust.opensearch.patterntext.PatternPhraseQuery;
+import org.apache.lucene.search.MultiPhraseQuery;
+import org.apache.lucene.search.PhraseQuery;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -85,7 +89,8 @@ import java.util.function.Predicate;
  *       (node 24);
  *   <li>{@code script_score} running k-NN's {@code knn_score} over a {@code knn_vector} space:
  *       OpenSearch's {@link ScriptScoreQuery} without {@code min_score} (node 42);
- *   <li>{@code max_sim} over a {@code multi_vector} field: {@link MaxSimQuery} (node 44).
+ *   <li>{@code max_sim} over a {@code multi_vector} field: {@link MaxSimQuery} (node 44);
+ *   <li>an exact phrase over a {@code pattern_text} field: {@link PatternPhraseQuery} (node 47).
  * </ul>
  *
  * <p>The classes are read through their getters, or through {@link Reflect} where Lucene and
@@ -110,6 +115,10 @@ final class ExtendedEncoder {
     static final byte NODE_PAINLESS_SCORE = 43;
     static final byte NODE_MAX_SIM = 44;
     static final byte NODE_PAINLESS_FILTER = 45;
+    static final byte NODE_JOIN = 46;
+    static final byte NODE_PATTERN_PHRASE = 47;
+    /** {@code jvm_pattern_phrase.rs}'s {@code MAX_TERMS}. */
+    static final int MAX_PATTERN_TERMS = 1024;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -136,6 +145,9 @@ final class ExtendedEncoder {
             if (q instanceof MaxSimQuery ms) {
                 return maxSim(ms, out, child);
             }
+            if (q instanceof PatternPhraseQuery pp) {
+                return patternPhrase(pp, out);
+            }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
                 if (f == null) {
@@ -148,6 +160,9 @@ final class ExtendedEncoder {
             }
             if (q.getClass() == ToChildBlockJoinQuery.class) {
                 return toChild((ToChildBlockJoinQuery) q, out, child);
+            }
+            if (q instanceof org.lucenerust.opensearch.join.DeferredJoinQuery dj) {
+                return join(dj, out, child);
             }
             if (q instanceof SpanQuery sq) {
                 out.write(NODE_SPAN);
@@ -190,6 +205,27 @@ final class ExtendedEncoder {
             return reason;
         }
         return child.node(q.getChildQuery());
+    }
+
+    /**
+     * {@code has_child}/{@code has_parent}: the join field, score mode, {@code min_children} and
+     * {@code max_children}, the to side and the from side, both rewritten.
+     */
+    private static String join(org.lucenerust.opensearch.join.DeferredJoinQuery q, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        if (q.from() == null || q.to() == null) {
+            return "join_unrewritten";
+        }
+        out.write(NODE_JOIN);
+        writeString(out, q.joinField());
+        out.write((byte) q.scoreMode().ordinal());
+        writeInt(out, q.minChildren());
+        writeInt(out, q.maxChildren());
+        String reason = child.node(q.to());
+        if (reason != null) {
+            return reason;
+        }
+        return child.node(q.from());
     }
 
     private static String toChild(ToChildBlockJoinQuery q, ByteArrayOutputStream out, Child child)
@@ -581,6 +617,48 @@ final class ExtendedEncoder {
         for (float[] t : tokens) {
             for (float v : t) {
                 writeInt(out, Float.floatToIntBits(v));
+            }
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // pattern_text phrase
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link PatternPhraseQuery}, an exact phrase: its field, its index analyzer's spec, whether a
+     * template's static text may decide it, and its terms by position, as {@code
+     * crates/lucene-ffi/src/jvm_pattern_phrase.rs} reads them. A phrase with slop or a prefix, or an
+     * analyzer {@link AnalyzerSpec} cannot describe, runs in Java.
+     */
+    private static String patternPhrase(PatternPhraseQuery q, ByteArrayOutputStream out) {
+        if (q.positions() == null) {
+            return q.positional() instanceof PhraseQuery || q.positional() instanceof MultiPhraseQuery ? "pattern_phrase_slop" : "pattern_phrase_prefix";
+        }
+        int count = 0;
+        for (BytesRef[] t : q.terms()) {
+            count += t.length;
+        }
+        if (count > MAX_PATTERN_TERMS) {
+            return "pattern_phrase_terms";
+        }
+        AnalyzerSpec.Spec spec = AnalyzerSpec.cached(q.analyzer(), q.field());
+        if (spec.ok() == false) {
+            return "pattern_phrase_" + spec.reason();
+        }
+        out.write(NODE_PATTERN_PHRASE);
+        writeString(out, q.field());
+        writeBytes(out, spec.blob());
+        out.write(q.templateParts() ? 1 : 0);
+        int[] positions = q.positions();
+        BytesRef[][] terms = q.terms();
+        writeInt(out, positions.length);
+        for (int i = 0; i < positions.length; i++) {
+            writeInt(out, positions[i]);
+            writeInt(out, terms[i].length);
+            for (BytesRef t : terms[i]) {
+                writeBytes(out, t);
             }
         }
         return null;
