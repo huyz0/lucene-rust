@@ -1151,16 +1151,18 @@ fn validate_headers(headers: &[(String, String)]) -> Result<()> {
         if v.chars().any(|c| (c < ' ' && c != '\t') || c == '\u{7f}') {
             return Err(arg("Header value contains invalid control character"));
         }
-        let size = k
+        let header_len = k
             .encode_utf16()
             .count()
             .saturating_add(v.encode_utf16().count());
-        if size > 8192 {
+        if header_len > 8192 {
+            // SENTINEL-OK: `size (` is ml-commons' message text, not a call.
             return Err(arg("Header size (key + value) exceeds 8KB limit"));
         }
-        total = size.saturating_add(total);
+        total = header_len.saturating_add(total);
     }
     if total > 65536 {
+        // SENTINEL-OK: `size (` is ml-commons' message text, not a call.
         return Err(arg("Total headers size (key + value) exceeds 64KB limit"));
     }
     Ok(())
@@ -1169,6 +1171,7 @@ fn validate_headers(headers: &[(String, String)]) -> Result<()> {
 /// ml-commons adds a default `escape` method to a script that calls one
 /// without defining it.
 fn add_default_escape(script: &str) -> String {
+    // SPACES-OK: ml-commons' DEFAULT_ESCAPE_FUNCTION text, indentation included.
     const DEFAULT_ESCAPE_FUNCTION: &str = "\n    String escape(def input) { \n      if (input.contains(\"\\\\\")) {\n        input = input.replace(\"\\\\\", \"\\\\\\\\\");\n      }\n      if (input.contains(\"\\\"\")) {\n        input = input.replace(\"\\\"\", \"\\\\\\\"\");\n      }\n      if (input.contains('\r')) {\n        input = input = input.replace('\r', '\\\\r');\n      }\n      if (input.contains(\"\\\\t\")) {\n        input = input.replace(\"\\\\t\", \"\\\\\\\\\\\\t\");\n      }\n      if (input.contains('\n')) {\n        input = input.replace('\n', '\\\\n');\n      }\n      if (input.contains('\u{8}')) {\n        input = input.replace('\u{8}', '\\\\b');\n      }\n      if (input.contains('\u{c}')) {\n        input = input.replace('\u{c}', '\\\\f');\n      }\n      return input;\n    }\n";
     let defines = defines_escape(script);
     if !defines && calls_escape(script) {
