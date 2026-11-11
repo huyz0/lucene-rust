@@ -99,6 +99,7 @@ RENAMES = {
     ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("jvm_painless_score.rs", "NODE_PAINLESS_SCORE"),
     ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("jvm_max_sim.rs", "NODE_MAX_SIM"),
     ("ExtendedEncoder.java", "NODE_PAINLESS_FILTER"): ("jvm_painless_score.rs", "NODE_PAINLESS_FILTER"),
+    ("ExtendedEncoder.java", "NODE_JOIN"): ("jvm_queries.rs", "NODE_JOIN"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
@@ -107,6 +108,8 @@ RENAMES = {
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
     ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",
+    ("HexIdCodec.java", "HEX"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
+    ("HexIdCodec.java", "TEXT"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE_INDICATOR"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
     ("MMROverSampleProcessor.java", "DEFAULT_OVERSAMPLE_SCALE"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",
@@ -135,6 +138,7 @@ JAVA_ONLY = {
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
     ("ExtendedEncoder.java", "MAX_REPEATS"): "Java refuses earlier than Rust's clause limit",
+    ("JoinQueries.java", "MAX_DEPTH"): "how deep the request filter looks for joins in a query builder tree, Java only",
     ("SparseAnnQueryBuilder.java", "DEFAULT_TOP_K"): "neural-search's query default, resolved before encoding",
     ("SparseAnnQueryBuilder.java", "DEFAULT_QUERY_CUT"): "neural-search's query default, resolved before encoding",
     ("NeuralQueryBuilder.java", "DEFAULT_K"): "neural-search's query default, resolved before encoding",
