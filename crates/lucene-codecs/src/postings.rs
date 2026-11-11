@@ -5423,6 +5423,20 @@ impl<'a> LazyDocsCursor<'a> {
         Ok(doc)
     }
 
+    /// Positions past the last document, as walking to the end would.
+    fn exhaust(&mut self) {
+        self.pending = None;
+        self.bits = None;
+        self.block_len = 0;
+        self.block_pos = 0;
+        self.doc_count_left = 0;
+        self.level0_last_doc_id = NO_MORE_DOCS;
+        self.level1_last_doc_id = NO_MORE_DOCS;
+        self.level0_impacts.clear();
+        self.level0_impacts_stale = false;
+        self.doc_id = NO_MORE_DOCS;
+    }
+
     /// [`Self::advance`] for everything but a target inside the current
     /// array block.
     fn advance_slow(&mut self, target: i32) -> Result<i32> {
@@ -5431,6 +5445,14 @@ impl<'a> LazyDocsCursor<'a> {
         }
         if target <= self.doc_id {
             return Ok(self.doc_id);
+        }
+        if target == NO_MORE_DOCS {
+            // No document can be at or past `NO_MORE_DOCS`, so the walk over
+            // every remaining skip entry that would prove it is skipped: a
+            // scorer that knows nothing more can compete (a constant score
+            // below the bar) exhausts its postings this way.
+            self.exhaust();
+            return Ok(NO_MORE_DOCS);
         }
 
         // First, try the already-decoded current block (covers the common
@@ -8569,6 +8591,44 @@ mod tests {
         );
         // And the walk continues from there, still in order.
         assert_eq!(cursor.next_doc().unwrap(), BLOCK_SIZE + 1);
+    }
+
+    #[test]
+    fn lazy_cursor_advance_to_no_more_docs_ends_from_any_position() {
+        // Two full blocks: end from inside a decoded block, from a block that
+        // a shallow move left undecoded, and before the first document.
+        let id = [42u8; ID_LENGTH];
+        let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
+        let doc_start_fp = doc.len() as u64;
+        write_full_block(&mut doc, false, 0);
+        write_full_block(&mut doc, false, 0);
+        doc.extend_from_slice(&footer);
+        let input = DocInput::open(&doc, &id, "").unwrap();
+        let meta = TermMetadata {
+            doc_start_fp,
+            singleton_doc_id: -1,
+            ..TermMetadata::EMPTY
+        };
+        let open = || {
+            input
+                .lazy_cursor(meta, 2 * BLOCK_SIZE, IndexOptions::Docs, false)
+                .unwrap()
+        };
+        let ends = |mut cursor: LazyDocsCursor<'_>| {
+            assert_eq!(cursor.advance(NO_MORE_DOCS).unwrap(), NO_MORE_DOCS);
+            assert_eq!(cursor.doc_id(), NO_MORE_DOCS);
+            assert_eq!(cursor.next_doc().unwrap(), NO_MORE_DOCS);
+            assert_eq!(cursor.advance(7).unwrap(), NO_MORE_DOCS);
+            assert_eq!(cursor.advance_shallow(7).unwrap(), NO_MORE_DOCS);
+        };
+        let mut decoded = open();
+        assert_eq!(decoded.next_doc().unwrap(), 0);
+        ends(decoded);
+        let mut shallow = open();
+        assert_eq!(shallow.next_doc().unwrap(), 0);
+        assert_eq!(shallow.advance_shallow(300).unwrap(), 2 * BLOCK_SIZE - 1);
+        ends(shallow);
+        ends(open());
     }
 
     #[test]

@@ -586,18 +586,20 @@ impl MaxScoreAccumulator {
 /// by score (ties broken by lower doc ID, matching real Lucene's `HitQueue` —
 /// see [`rank_order`]), discarding everything else.
 ///
-/// **Design**: up to [`SORTED_MAX`] hits are kept fully sorted (best-first) in
-/// a plain `Vec` with a binary-search insert position, which beats a heap at
-/// small sizes. A larger `top_n` keeps `hits` as a binary min-heap with the
-/// worst kept hit at the root (Java's `HitQueue`), so an insert costs
-/// `O(log n)`; [`TopDocsCollector::top_docs`] sorts a copy once on first read.
+/// **Design**: up to [`SORTED_MAX`] hits start fully sorted (best-first) in a
+/// plain `Vec`, a new hit shifted into place from the end, which beats a heap
+/// at small sizes and when hits land near the end (equal or falling scores).
+/// A larger `top_n`, or a full list above [`ALWAYS_SORTED`] whose inserts land
+/// far from the end, keeps `hits` as a binary min-heap with the worst kept hit
+/// at the root (Java's `HitQueue`), so an insert costs `O(log n)`;
+/// [`TopDocsCollector::top_docs`] sorts a copy once on first read.
 /// Both keep the same set: a hit enters only when it outranks the worst kept
 /// hit under the total order [`rank_order`].
 #[derive(Debug, Clone)]
 pub struct TopDocsCollector {
     top_n: usize,
-    /// Best-first when `top_n <= SORTED_MAX`, else a min-heap whose root is
-    /// the worst kept hit.
+    /// Best-first while a sorted list, else a min-heap whose root is the
+    /// worst kept hit (see `heap_ordered`).
     hits: Vec<ScoreDoc>,
     /// `hits` sorted best-first, built on the first [`Self::top_docs`] read of
     /// a heap-ordered collector and dropped by the next insert.
@@ -782,7 +784,8 @@ impl TopDocsCollector {
     /// Whether `hits` is a heap rather than a sorted list.
     #[inline]
     fn heap_ordered(&self) -> bool {
-        self.top_n > SORTED_MAX
+        // A one-hit queue is the same either way.
+        self.worst_at == 0 && self.top_n > 1
     }
 
     /// The worst kept hit. Only called on a full, non-empty queue.
@@ -795,13 +798,30 @@ impl TopDocsCollector {
     /// The caller has checked that it outranks that hit.
     fn insert_hit(&mut self, candidate: ScoreDoc) {
         if !self.heap_ordered() {
-            if self.hits.len() == self.top_n {
+            let full = self.hits.len() == self.top_n;
+            if full {
                 self.hits.pop();
             }
-            let pos = self
-                .hits
-                .partition_point(|h| rank_order(h, &candidate) == std::cmp::Ordering::Greater);
-            self.hits.insert(pos, candidate);
+            // Shift the hits it outranks one place down, from the end: a new
+            // hit usually lands near the end (it beat the worst), and an
+            // open-coded shift of a few elements beats `Vec::insert`'s call
+            // into `memmove`.
+            let h = &mut self.hits;
+            h.push(candidate);
+            let mut i = h.len() - 1;
+            while i > 0 && rank_order(&h[i - 1], &candidate) != std::cmp::Ordering::Greater {
+                h[i] = h[i - 1];
+                i -= 1;
+            }
+            h[i] = candidate;
+            // Hits that keep landing far from the end (scores that rise as
+            // the collection goes on) make the list cost `O(n)` an insert; a
+            // full queue then becomes a heap. The list read in reverse,
+            // worst first, already is one.
+            if full && self.top_n > ALWAYS_SORTED && h.len() - 1 - i > SHIFT_TO_HEAP {
+                h.reverse();
+                self.worst_at = 0;
+            }
             return;
         }
         self.sorted.take();
@@ -955,9 +975,17 @@ impl TopDocsCollector {
 /// which does compete is reached without re-testing many before it.
 const COLLECT_RUN: usize = 16;
 
-/// The largest `top_n` [`TopDocsCollector`] keeps as a sorted list; above it
-/// the hits are a heap.
+/// The largest `top_n` [`TopDocsCollector`] starts as a sorted list; above it
+/// the hits are a heap from the start.
 const SORTED_MAX: usize = 64;
+
+/// Up to this `top_n` the hits stay a sorted list whatever the inserts cost:
+/// a shift of at most this many hits beats a heap's sift and its sort on read.
+const ALWAYS_SORTED: usize = 16;
+
+/// How far from the end an insert into a full sorted list may land before
+/// [`TopDocsCollector`] turns the list into a heap.
+const SHIFT_TO_HEAP: usize = 8;
 
 /// [`TopDocsCollector::worst_at`] for a queue of `top_n`.
 const fn worst_at(top_n: usize) -> usize {
@@ -1492,6 +1520,38 @@ mod tests {
     /// A heap-ordered collector (`top_n` above `SORTED_MAX`) keeps the same
     /// hits, in the same order, as a full sort of the stream; with score
     /// ties, `-inf`, NaN and out-of-order doc ids, and read between inserts.
+    /// A sorted list whose inserts land far from the end turns into a heap;
+    /// one whose inserts land at the end (ties in doc order) stays sorted.
+    /// Both return the same hits as sorting the whole stream.
+    #[test]
+    fn sorted_list_turns_into_heap_only_for_far_inserts() {
+        let top_n = 50;
+        let mut rising = TopDocsCollector::new(top_n);
+        for doc in 0..1000 {
+            ScoringCollector::collect(&mut rising, doc, doc as f32);
+        }
+        assert!(rising.heap_ordered());
+        let got: Vec<i32> = rising.top_docs().iter().map(|h| h.doc_id).collect();
+        let want: Vec<i32> = (950..1000).rev().collect();
+        assert_eq!(got, want);
+
+        let mut ties = TopDocsCollector::new(top_n);
+        for doc in 0..1000 {
+            ScoringCollector::collect(&mut ties, doc, 1.0);
+        }
+        assert!(!ties.heap_ordered());
+        let got: Vec<i32> = ties.top_docs().iter().map(|h| h.doc_id).collect();
+        assert_eq!(got, (0..50).collect::<Vec<_>>());
+
+        // Rising scores into a small queue stay a list.
+        let mut small = TopDocsCollector::new(ALWAYS_SORTED);
+        for doc in 0..1000 {
+            ScoringCollector::collect(&mut small, doc, doc as f32);
+        }
+        assert!(!small.heap_ordered());
+        assert_eq!(small.top_docs()[0].doc_id, 999);
+    }
+
     #[test]
     fn heap_ordered_queue_keeps_the_sorted_top_n() {
         let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -1501,12 +1561,26 @@ mod tests {
             x ^= x << 17;
             x
         };
-        for &top_n in &[SORTED_MAX + 1, 100, 1000] {
+        for &top_n in &[
+            1,
+            2,
+            10,
+            ALWAYS_SORTED,
+            ALWAYS_SORTED + 1,
+            50,
+            SORTED_MAX,
+            SORTED_MAX + 1,
+            100,
+            1000,
+        ] {
             let mut stream: Vec<ScoreDoc> = (0..5000)
                 .map(|doc_id| {
                     let r = next();
+                    // A small queue full of NaN keeps the last NaN, not a
+                    // sorted top (Java's quirk, tested on its own), so the
+                    // sorted-list sizes see no NaN.
                     let score = match r % 97 {
-                        0 => f32::NAN,
+                        0 if top_n > SORTED_MAX => f32::NAN,
                         1 => f32::NEG_INFINITY,
                         _ => (r % 300) as f32 / 7.0,
                     };
