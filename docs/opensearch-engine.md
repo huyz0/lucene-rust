@@ -106,6 +106,27 @@ With `index.lucene_rust.realtime_search`, a buffered hit's doc values come
 from the writer's buffers (`ffi_live_view_doc_values_alloc`), so its derived
 `_source` and `docvalue_fields` are those it has once refreshed.
 
+## Leaner sequence numbers
+
+Every document carries `_seq_no`, which stock OpenSearch indexes twice: as a
+point (for the range queries recovery and history use) and as doc values. Two
+opt-in index settings, both fixed at creation, trim it, after Elasticsearch's
+`index.seq_no.index_options` (9.1) and `index.disable_sequence_numbers` (9.4):
+
+| Setting | Meaning |
+|---|---|
+| `index.lucene_rust.seq_no.index_options` | `points` (default) as stock. `doc_values_only` writes `_seq_no` as doc values with a skip index and no points. Recovery, history snapshots and every search on `_seq_no` (`range`, `term`, `terms`, sorts, aggregations) answer exactly as stock: the engine's own ranges read the doc values, a search's `_seq_no` clause runs on them natively, and the shard's readers show them to Lucene as points, so OpenSearch's point queries rewrite and match as before. |
+| `index.lucene_rust.disable_sequence_numbers` | Needs `doc_values_only`. Merges also write `UNASSIGNED_SEQ_NO` (-2) and `UNASSIGNED_PRIMARY_TERM` (0) for every document below the shard's retained minimum (the operations soft-deletes retention no longer keeps for replicas and recovery), so those values compress to nothing. Replication, recovery and history above the minimum are unchanged. |
+
+With `disable_sequence_numbers`, a document whose history is gone reports no
+`_seq_no` or `_primary_term` in a get or a search hit (`seq_no_primary_term`),
+`if_seq_no` writes on it conflict, an `_update` of it runs without a
+sequence-number check (as for an index without them), and a search on
+`_seq_no` sees it as -2. Use it for append-mostly data such as logs; keep
+`doc_values_only` alone where clients rely on optimistic concurrency.
+The segments of both stay readable by stock Lucene and OpenSearch.
+Numbers: [docs/benchmarks/lean-seq-no.md](benchmarks/lean-seq-no.md).
+
 ## What it refuses
 
 When an index is created:

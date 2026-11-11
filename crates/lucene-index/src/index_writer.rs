@@ -1090,6 +1090,13 @@ pub struct SoftDeletesRetention {
     /// flags it, only on documents whose sequence number is still retained.
     /// `None` keeps it everywhere.
     pub prune_recovery_source_field: Option<String>,
+    /// Elasticsearch's `index.disable_sequence_numbers`: a merge rewrites the
+    /// NUMERIC doc values of these fields (`_seq_no` to `UNASSIGNED_SEQ_NO`,
+    /// `_primary_term` to `UNASSIGNED_PRIMARY_TERM`) on every document whose
+    /// sequence number is below `min_retained_seq_no`, so the merged columns
+    /// hold constant blocks for history nothing replays any more. Empty
+    /// keeps every value.
+    pub seq_no_sentinel: Vec<(String, i64)>,
 }
 
 /// A source's NUMERIC doc-values column for the first field `pred` accepts,
@@ -1165,6 +1172,56 @@ fn recovery_source_pruning(
         0 => Some((number, None)),
         _ => Some((number, Some(keep))),
     })
+}
+
+/// The documents of one source a merge writes sentinels for, and each
+/// sentinel field's number in that source with its value.
+type SentinelDocs = (FixedBitSet, Vec<(i32, i64)>);
+
+/// [`SoftDeletesRetention::seq_no_sentinel`] for one source: the documents
+/// whose sequence number is below the retained minimum, and each sentinel
+/// field's number in this source with its value -- or `None` when nothing is
+/// rewritten.
+fn seq_no_sentinels(
+    max_doc: i32,
+    infos: &lucene_codecs::field_infos::FieldInfos,
+    columns: &SourceDocValueColumns,
+    retention: &SoftDeletesRetention,
+) -> Result<Option<SentinelDocs>> {
+    if retention.seq_no_sentinel.is_empty() {
+        return Ok(None);
+    }
+    let Some((data, entry, _)) =
+        numeric_column(infos, columns, &|f| f.name == retention.seq_no_field)
+    else {
+        return Ok(None);
+    };
+    let fields: Vec<(i32, i64)> = retention
+        .seq_no_sentinel
+        .iter()
+        .filter_map(|(name, value)| {
+            infos
+                .fields
+                .iter()
+                .find(|f| f.name == *name && f.doc_values_type == DocValuesType::Numeric)
+                .map(|f| (f.number, *value))
+        })
+        .collect();
+    let len = usize::try_from(max_doc).unwrap_or(0);
+    let mut docs = FixedBitSet::new(len);
+    let mut seq = doc_values::NumericReader::new(data, entry);
+    for doc in 0..len {
+        let id = i32::try_from(doc).unwrap_or(i32::MAX);
+        if seq
+            .value(id)
+            .map_err(Error::DocValuesRead)?
+            .is_some_and(|s| s < retention.min_retained_seq_no)
+        {
+            // FBS: `docs` was built with `len` bits and `doc < len`.
+            docs.set(doc);
+        }
+    }
+    Ok((docs.cardinality() > 0).then_some((docs, fields)))
 }
 
 /// The live documents a merge should read from one source under `retention`:
@@ -2060,6 +2117,9 @@ impl IndexingConfig {
             /// The pruned recovery-source field and who keeps it -- see
             /// [`SoftDeletesRetention::prune_recovery_source_field`].
             recovery_source: Option<(i32, Option<FixedBitSet>)>,
+            /// The documents and fields rewritten to sentinels -- see
+            /// [`SoftDeletesRetention::seq_no_sentinel`].
+            seq_no_floor: Option<SentinelDocs>,
             postings: RawPostingsFiles,
             term_vectors: RawTermVectorFiles,
             doc_values: SourceDocValueColumns,
@@ -2488,6 +2548,12 @@ impl IndexingConfig {
                 }
                 None => None,
             };
+            let seq_no_floor = match &plan.retention {
+                Some(retention) => {
+                    seq_no_sentinels(si.doc_count, &current_infos, &doc_values, retention)?
+                }
+                None => None,
+            };
 
             // Computed before the push, because the struct literal moves
             // `sci` in its first field.
@@ -2501,6 +2567,7 @@ impl IndexingConfig {
                 live_docs,
                 postings_live,
                 recovery_source,
+                seq_no_floor,
                 postings,
                 term_vectors,
                 doc_values,
@@ -3113,6 +3180,10 @@ impl IndexingConfig {
                         keep: keep.as_ref(),
                     }
                 }),
+                numeric_floor: opened[i]
+                    .seq_no_floor
+                    .as_ref()
+                    .map(|(docs, fields)| merge::SentinelValues { docs, fields }),
             })
             .collect();
 

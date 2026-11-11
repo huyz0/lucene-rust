@@ -91,6 +91,8 @@ const VERSION: LuceneVersion = LuceneVersion {
 /// The doc-values field OpenSearch keeps each document's sequence number in
 /// (`SeqNoFieldMapper.NAME`), which retention is decided by.
 const SEQ_NO_FIELD: &str = "_seq_no";
+/// OpenSearch's `SeqNoFieldMapper.PRIMARY_TERM_NAME`.
+const PRIMARY_TERM_FIELD: &str = "_primary_term";
 /// The field OpenSearch keeps each document's id in (`IdFieldMapper.NAME`),
 /// whose postings a retention merge prunes (`PrunePostingsMergePolicy`).
 const ID_FIELD: &str = "_id";
@@ -2315,22 +2317,43 @@ pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 
     })
 }
 
-/// Sets the soft-deletes retention merges apply: `enabled == 0` keeps every
-/// soft-deleted document, otherwise those whose `_seq_no` is below
-/// `min_retained_seq_no` are dropped.
+/// [`ffi_engine_writer_set_retention`] flag: retention is on.
+const RETENTION_ENABLED: u8 = 1;
+/// [`ffi_engine_writer_set_retention`] flag: merges write
+/// [`UNASSIGNED_SEQ_NO`] and [`UNASSIGNED_PRIMARY_TERM`] for every document
+/// whose `_seq_no` is below the retained minimum.
+const RETENTION_SEQ_NO_SENTINEL: u8 = 2;
+/// OpenSearch's `SequenceNumbers.UNASSIGNED_SEQ_NO`.
+const UNASSIGNED_SEQ_NO: i64 = -2;
+/// OpenSearch's `SequenceNumbers.UNASSIGNED_PRIMARY_TERM`.
+const UNASSIGNED_PRIMARY_TERM: i64 = 0;
+
+/// Sets the soft-deletes retention merges apply. `flags` without
+/// [`RETENTION_ENABLED`] keeps every soft-deleted document; with it, those
+/// whose `_seq_no` is below `min_retained_seq_no` are dropped, and with
+/// [`RETENTION_SEQ_NO_SENTINEL`] as well every document below it gets the
+/// sentinel `_seq_no` and `_primary_term`.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_set_retention(
     handle: u64,
-    enabled: u8,
+    flags: u8,
     min_retained_seq_no: i64,
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let retention = (enabled != 0).then(|| SoftDeletesRetention {
+            let retention = (flags & RETENTION_ENABLED != 0).then(|| SoftDeletesRetention {
                 seq_no_field: SEQ_NO_FIELD.to_string(),
                 min_retained_seq_no,
                 prune_postings_field: Some(ID_FIELD.to_string()),
                 prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
+                seq_no_sentinel: if flags & RETENTION_SEQ_NO_SENTINEL != 0 {
+                    vec![
+                        (SEQ_NO_FIELD.to_string(), UNASSIGNED_SEQ_NO),
+                        (PRIMARY_TERM_FIELD.to_string(), UNASSIGNED_PRIMARY_TERM),
+                    ]
+                } else {
+                    Vec::new()
+                },
             });
             w.writer()
                 .with_writer(|iw| iw.set_soft_deletes_retention(retention));

@@ -123,7 +123,7 @@ final class RustReaderManager extends ReferenceManager<OpenSearchDirectoryReader
             DirectoryReader std = StandardDirectoryReader.open(directory, infos, old, leafSorter, null);
             std.getReaderCacheHelper().addClosedListener(key -> writer.releaseHold(hold));
             success = true;
-            return OpenSearchDirectoryReader.wrap(new SoftDeletesReader(std, Lucene.SOFT_DELETES_FIELD), shardId);
+            return OpenSearchDirectoryReader.wrap(new SeqNoPointsReader(new SoftDeletesReader(std, Lucene.SOFT_DELETES_FIELD)), shardId);
         } finally {
             if (success == false) {
                 writer.releaseHold(hold);
