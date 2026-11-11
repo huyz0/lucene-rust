@@ -226,5 +226,8 @@ visited:
 | u160000 (41%) | 0.925 / 3539 | 0.957 / 6200 | 0.893 / 1854 | 0.969 / 5916 | 0.991 / 16518 |
 | c80000-any (20%) | 0.931 / 9108 | 0.961 / 14018 | 0.900 / 6752 | 0.980 / 18408 | 0.994 / 43389 |
 
-Latency follows the visits. It changes results, so it stays opt-in; it is
-not yet exposed through the OpenSearch plugin.
+Latency follows the visits. It changes results, so it stays opt-in. The
+OpenSearch plugin takes it as `method_parameters.exploration_slack` on a
+`knn` query against a lucene-engine HNSW field (hits = `k`, queue =
+`ef_search`); a nested query ignores it and leaving it out keeps stock
+results.

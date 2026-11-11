@@ -132,6 +132,12 @@ final class KnnEncoder {
             request.write(q.expand() ? 1 : 0);
         }
         writeInt(request, q.nprobes());
+        if (q.explorationSlack() == null) {
+            request.write(0);
+        } else {
+            request.write(1);
+            writeInt(request, Float.floatToIntBits(q.explorationSlack()));
+        }
         byte[] blob = request.toByteArray();
         // An expanded search returns every scored child of the k parents: a few per parent, usually.
         int room = q.expand() ? (int) Math.min((long) q.k() * 8, Integer.MAX_VALUE - 8) : q.k();

@@ -16,7 +16,10 @@
 //! clusters probed in each segment whose field has an IVF index
 //! (`LuceneRustIvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
 //! depth each segment calibrated, for a nested search too (more when fewer
-//! than `k` parents are in reach).
+//! than `k` parents are in reach), then `has_slack: u8` and, when `1`,
+//! `exploration_slack: f32`: the graph walks' opt-in adaptive beam stop
+//! (`method_parameters.exploration_slack`, `KnnFloatVectorQuery::
+//! exploration_slack` over the best `k`; a nested search ignores it).
 //!
 //! A nested search keeps the best child of each of the best `k` parents; an
 //! expanded one returns every scored child of those parents, which can be
@@ -47,6 +50,7 @@ pub(crate) struct Request {
     /// A nested field's parent filter and `expand_nested_docs`.
     pub(crate) nested: Option<(Arc<dyn BitSetProducer>, bool)>,
     nprobes: usize,
+    exploration_slack: Option<f32>,
 }
 
 fn invalid(message: &str) -> FfiStatus {
@@ -92,6 +96,17 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         _ => return Err(invalid("nested flag (expected 0..=1)")),
     };
     let nprobes = usize::try_from(c.i32()?).map_err(|_| invalid("nprobes must not be negative"))?;
+    let exploration_slack = match c.u8()? {
+        0 => None,
+        1 => {
+            let slack = f32::from_bits(c.i32()? as u32);
+            if !slack.is_finite() || slack < 0.0 {
+                return Err(invalid("exploration slack must be a finite number >= 0"));
+            }
+            Some(slack)
+        }
+        _ => return Err(invalid("slack flag (expected 0..=1)")),
+    };
     if c.remaining() != 0 {
         return Err(invalid("trailing bytes"));
     }
@@ -104,6 +119,7 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         filter_bytes,
         nested,
         nprobes,
+        exploration_slack,
     })
 }
 
@@ -162,6 +178,7 @@ pub(crate) fn search(
         nested,
         filter_bytes: _,
         nprobes,
+        exploration_slack,
     } = request;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -195,6 +212,7 @@ pub(crate) fn search(
             filter.as_ref(),
             *nprobes,
             buffers,
+            *exploration_slack,
         ),
         Some((parents, expand)) => knn_top_hits_nested_with(
             &segments,
@@ -251,6 +269,7 @@ mod tests {
         let mut b = request_without_nested(k, candidates, filter);
         b.push(0);
         b.extend_from_slice(&0i32.to_le_bytes());
+        b.push(0);
         b
     }
 
@@ -287,9 +306,9 @@ mod tests {
         assert_eq!(r.nprobes, 0);
         let mut probed = request(3, 10, None);
         let n = probed.len();
-        probed[n - 4..].copy_from_slice(&32i32.to_le_bytes());
+        probed[n - 5..n - 1].copy_from_slice(&32i32.to_le_bytes());
         assert_eq!(decode(&probed).unwrap().nprobes, 32);
-        probed[n - 4..].copy_from_slice(&(-1i32).to_le_bytes());
+        probed[n - 5..n - 1].copy_from_slice(&(-1i32).to_le_bytes());
         assert!(decode(&probed).is_err());
         assert!(decode(&request(0, 10, None)).is_err());
         assert!(decode(&request(3, 0, None)).is_err());
@@ -301,19 +320,53 @@ mod tests {
     }
 
     #[test]
+    fn decodes_the_exploration_slack() {
+        assert_eq!(
+            decode(&request(3, 10, None)).unwrap().exploration_slack,
+            None
+        );
+        let with = |bits: u32| {
+            let mut b = request(3, 10, None);
+            *b.last_mut().unwrap() = 1;
+            b.extend_from_slice(&bits.to_le_bytes());
+            b
+        };
+        assert_eq!(
+            decode(&with(0.25f32.to_bits())).unwrap().exploration_slack,
+            Some(0.25)
+        );
+        assert_eq!(
+            decode(&with(0.0f32.to_bits())).unwrap().exploration_slack,
+            Some(0.0)
+        );
+        for bad in [-0.5f32, f32::NAN, f32::INFINITY] {
+            assert!(decode(&with(bad.to_bits())).is_err(), "{bad}");
+        }
+        let mut flag = request(3, 10, None);
+        *flag.last_mut().unwrap() = 2;
+        assert!(decode(&flag).is_err());
+        // The flag set without its value.
+        let mut short = request(3, 10, None);
+        *short.last_mut().unwrap() = 1;
+        assert!(decode(&short).is_err());
+    }
+
+    #[test]
     fn decodes_a_nested_request() {
         let mut b = request_without_nested(3, 10, None);
         b.push(1);
         b.push(5); // the parent filter: match_all
         b.push(1);
         b.extend_from_slice(&0i32.to_le_bytes());
+        b.push(0);
         let r = decode(&b).unwrap();
         let (parents, expand) = r.nested.unwrap();
         assert!(expand);
         assert!(parents.key().starts_with("parents("));
-        b.truncate(b.len() - 5);
+        b.truncate(b.len() - 6);
         b.push(2);
         b.extend_from_slice(&0i32.to_le_bytes());
+        b.push(0);
         assert!(decode(&b).is_err());
     }
 }
