@@ -837,6 +837,211 @@ def realtime_check(failures):
     return checked
 
 
+def phases_check(failures):
+    """knn over three shards, where each request runs a query and a fetch phase per shard: the
+    plugin and stock return the same hits, scores, `_source`, inner hits, named queries, fields,
+    script fields and highlights, whatever `_source` filter the request has; the plugin's fetch
+    phase reuses the query phase's hits, and a filter that drops every vector reads `_source`
+    without them. Then a realtime index's buffered documents the same way. Returns the queries
+    compared."""
+    index = "phases_l2"
+    rng = random.Random(f"{SEED}-{index}")
+    spec = {"engine": "lucene", "space_type": "l2"}
+    words = ["red", "blue", "green", "fox", "dog"]
+    docs = []
+    for i in range(300):
+        kids = [{"color": rng.choice(["red", "blue"]), "emb": vector_for(spec, rng)} for _ in range(rng.randint(1, 3))]
+        docs.append({"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i,
+                     "title": " ".join(rng.choice(words) for _ in range(4)),
+                     "obj": {"label": f"l{i % 7}", "emb": vector_for(spec, rng)},
+                     "emb": vector_for(spec, rng), "nest": kids})
+    mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "title": {"type": "text"},
+                              "emb": field_mapping(spec),
+                              "obj": {"properties": {"label": {"type": "keyword"}, "emb": field_mapping(spec)}},
+                              "nest": {"type": "nested", "properties": {"color": {"type": "keyword"},
+                                                                       "emb": field_mapping(spec)}}}}
+    for port, rust in ((OURS[1], True), (STOCK[1], False)):
+        settings = {"index.knn": True, "index.knn.derived_source.enabled": True, "number_of_shards": 3,
+                    "number_of_replicas": 0, "refresh_interval": -1}
+        if rust:
+            settings["index.lucene_rust.engine"] = True
+        req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
+        per = len(docs) // SEGMENTS
+        for s in range(SEGMENTS):
+            lines = []
+            for d in docs[s * per:(s + 1) * per]:
+                lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+                lines.append(json.dumps({k: v for k, v in d.items() if k != "_id"}))
+            r = req(port, "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+            assert not r["errors"], json.dumps(r)[:2000]
+            req(port, "POST", f"/{index}/_flush")
+        req(port, "POST", f"/{index}/_refresh")
+
+    def hits(port, body, params="", name=index):
+        r = req(port, "POST", f"/{name}/_search{params}", body)
+        pages = [r]
+        while "_scroll_id" in r and r["hits"]["hits"] and len(pages) < 4:
+            r = req(port, "POST", "/_search/scroll", {"scroll": "1m", "scroll_id": r["_scroll_id"]})
+            pages.append(r)
+        if "_scroll_id" in r:
+            req(port, "DELETE", "/_search/scroll", {"scroll_id": r["_scroll_id"]}, ok_errors=True)
+        out = []
+        for page in pages:
+            for h in page["hits"]["hits"]:
+                inner = {k: [(x["_nested"]["offset"], x["_score"], x.get("_source"))
+                             for x in v["hits"]["hits"]] for k, v in h.get("inner_hits", {}).items()}
+                out.append((h["_id"], h["_score"], {"_source": h.get("_source"), "inner": inner,
+                                                    "named": sorted(h.get("matched_queries", [])),
+                                                    "fields": h.get("fields"), "highlight": h.get("highlight")}))
+        return out
+
+    def agree(got, want):
+        return (same([(i, sc) for i, sc, _ in got], [(i, sc) for i, sc, _ in want])
+                and json_close([x for _, _, x in got], [x for _, _, x in want], 1e-6))
+
+    def unmasked(got):
+        """Stock's inner hits under a root filter that drops `nest.emb` show its mask (`1`); the
+        plugin's show the child's vector: the inner hits' sources without it, and whether every
+        one of the plugin's is a vector."""
+        vectors, out = True, []
+        for i, sc, x in got:
+            inner = {}
+            for k, v in x["inner"].items():
+                inner[k] = []
+                for off, isc, src in v:
+                    vectors &= isinstance((src or {}).get("emb"), list)
+                    inner[k].append((off, isc, {a: b for a, b in (src or {}).items() if a != "emb"}))
+            out.append((i, sc, {**x, "inner": inner}))
+        return vectors, out
+
+    def stats():
+        st = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
+        return st["knn_hits"]["reused"], st["native_sources_without_vectors"]
+
+    reused0, unspliced0 = stats()
+    checked, fetches, dropping = 0, 0, 0
+    for qi in range(4):
+        t = vector_for(spec, rng)
+        q = knn(t, k=10)
+        nested_knn = {"nested": {"path": "nest", "query": {"knn": {"nest.emb": {"vector": t, "k": 10}}}}}
+        no_vectors = {"excludes": ["emb", "obj.emb", "nest.emb"]}
+        # (label, body, URL parameters, whether its _source filter drops every vector)
+        cases = [
+            ("whole _source", {"size": 10, "query": q}, "", False),
+            ("no _source", {"size": 10, "query": q, "_source": False}, "", False),
+            ("excludes vectors", {"size": 10, "query": q, "_source": no_vectors}, "", True),
+            ("excludes wildcards", {"size": 10, "query": q, "_source": {"excludes": ["*emb"]}}, "", True),
+            ("excludes parents", {"size": 10, "query": q, "_source": {"excludes": ["emb", "obj", "nest"]}}, "", True),
+            ("includes", {"size": 10, "query": q, "_source": {"includes": ["tag", "obj.label", "nest.color"]}}, "", True),
+            ("includes and excludes", {"size": 10, "query": q,
+                                       "_source": {"includes": ["tag", "obj"], "excludes": ["obj.emb"]}},
+             "", True),
+            ("excludes one vector", {"size": 10, "query": q, "_source": {"excludes": ["emb", "nest.emb"]}}, "", False),
+            ("k 100", {"size": 100, "query": knn(t, k=100), "_source": no_vectors}, "", True),
+            ("from", {"from": 5, "size": 5, "query": q, "_source": no_vectors}, "", True),
+            ("filtered", {"size": 10, "query": knn(t, k=10, filter={"term": {"tag": "even"}}), "_source": no_vectors},
+             "", True),
+            ("named", {"size": 10, "_source": no_vectors, "query": {"bool": {"should": [
+                {"knn": {"emb": {"vector": t, "k": 10, "_name": "k"}}}, {"match": {"title": {"query": "fox", "_name": "t"}}}]}}},
+             "", True),
+            ("fields", {"size": 10, "query": q, "_source": no_vectors, "fields": ["tag", "obj.label"]}, "", False),
+            ("script fields", {"size": 10, "query": q, "_source": no_vectors, "script_fields": {"dims": {"script": {
+                "source": "def v = params['_source']['emb']; return v instanceof List ? v.size() : -1"}}}}, "", False),
+            ("highlight", {"size": 10, "query": q, "_source": no_vectors, "highlight": {
+                "fields": {"title": {}}, "highlight_query": {"match": {"title": "fox"}}}}, "", False),
+            ("nested inner hits", {"size": 10, "_source": no_vectors, "query": {**nested_knn, "nested": {
+                **nested_knn["nested"], "inner_hits": {"size": 3, "_source": {"excludes": ["emb"]}}}}}, "", False),
+            ("nested inner hits whole", {"size": 10, "_source": no_vectors, "query": {**nested_knn, "nested": {
+                **nested_knn["nested"], "inner_hits": {"size": 3}}}}, "", False),
+            ("scroll", {"size": 4, "query": q, "_source": no_vectors}, "?scroll=1m", True),
+        ]
+        for label, body, params, drops in cases:
+            got, want = hits(OURS[1], body, params), hits(STOCK[1], body, params)
+            checked += 1
+            fetches += 1
+            dropping += drops
+            if label == "nested inner hits whole":
+                vectors, got = unmasked(got)
+                _, want = unmasked(want)
+                if not vectors:
+                    failures.append(f"{index} {label} query {qi}: an inner hit's _source has no vector")
+            if not agree(got, want):
+                first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+                failures.append(f"{index} {label} query {qi}: {len(got)} vs {len(want)} hits, first difference at "
+                                f"{first}: {json.dumps(got[first:first + 1])[:600]} vs {json.dumps(want[first:first + 1])[:600]}")
+    reused, unspliced = stats()
+    print(f"{index}: {checked} queries, k-NN hits reused {reused - reused0} times, "
+          f"{unspliced - unspliced0} _source read without vectors")
+    # Each three-shard request rewrites its knn again in each shard's fetch phase (a shard with
+    # no hit fetched has none): most of them take the query phase's hits.
+    if reused - reused0 < fetches:
+        failures.append(f"{index}: k-NN hits reused {reused - reused0} times over {fetches} requests")
+    if dropping and unspliced - unspliced0 < dropping:
+        failures.append(f"{index}: {unspliced - unspliced0} _source read without vectors over {dropping} requests")
+
+    # A realtime index: half its documents flushed, half buffered.
+    rt = "phases_realtime"
+    settings = {"index.knn": True, "index.knn.derived_source.enabled": True, "index.lucene_rust.engine": True,
+                "index.lucene_rust.realtime_search": True, "number_of_shards": 3, "number_of_replicas": 0,
+                "refresh_interval": -1}
+    # No nested field: a realtime view does not search nested documents natively.
+    flat = {"properties": {k: v for k, v in mapping["properties"].items() if k != "nest"}}
+    req(OURS[1], "PUT", f"/{rt}", {"settings": settings, "mappings": flat})
+
+    def bulk(batch):
+        lines = []
+        for d in batch:
+            lines.append(json.dumps({"index": {"_index": rt, "_id": d["_id"]}}))
+            lines.append(json.dumps({k: v for k, v in d.items() if k not in ("_id", "nest")}))
+        r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        assert not r["errors"], json.dumps(r)[:2000]
+
+    half = len(docs) // 2
+    bulk(docs[:half])
+    req(OURS[1], "POST", f"/{rt}/_flush")
+    bulk(docs[half:])
+    by_id = {d["_id"]: d for d in docs}
+    buffered = 0
+    for qi in range(4):
+        t = vector_for(spec, rng)
+        want = [(i, sc) for sc, i in exact_top(spec, docs, t, 10)]
+        buffered += sum(1 for i, _ in want if int(i[1:]) >= half)
+        for label, src in (("whole _source", None), ("excludes vectors", {"excludes": ["emb", "obj.emb", "nest.emb"]}),
+                           ("includes", {"includes": ["tag", "obj.label"]})):
+            body = {"size": 10, "query": knn(t, k=10)}
+            if src is not None:
+                body["_source"] = src
+            got = hits(OURS[1], body, name=rt)
+            checked += 1
+            if not same([(i, sc) for i, sc, _ in got], want):
+                failures.append(f"{rt} {label} query {qi}: {[(i, sc) for i, sc, _ in got][:3]} vs the scan's {want[:3]}")
+                continue
+            for i, _, x in got:
+                d = {k: v for k, v in by_id[i].items() if k not in ("_id", "nest")}
+                if label == "excludes vectors":
+                    d = {k: v for k, v in d.items() if k != "emb"}
+                    d["obj"] = {"label": d["obj"]["label"]}
+                elif label == "includes":
+                    d = {"tag": d["tag"], "obj": {"label": d["obj"]["label"]}}
+                if not json_close(x["_source"], d):
+                    failures.append(f"{rt} {label} query {qi}: {i}'s _source {json.dumps(x['_source'])[:300]}")
+                    break
+    if buffered == 0:
+        failures.append(f"{rt}: no query's hits were buffered documents")
+    return checked
+
+
+def json_close(a, b, tol=1e-6):
+    """The same JSON, numbers within `tol` (a vector read back as float32)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(json_close(a[k], b[k], tol) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(json_close(x, y, tol) for x, y in zip(a, b))
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
+        return abs(a - b) <= tol * max(1.0, abs(b))
+    return a == b
+
+
 def fallback_counts():
     return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("fallbacks", {})
 
@@ -1095,6 +1300,7 @@ def main():
         checked += ivf_check(failures)
         checked += rust_hnsw_check(failures)
         checked += realtime_check(failures)
+        checked += phases_check(failures)
         print(f"compared {checked} queries")
 
         errors = [

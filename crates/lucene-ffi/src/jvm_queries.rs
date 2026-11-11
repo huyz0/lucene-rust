@@ -39,10 +39,10 @@ use lucene_search::document::{
     SortedSetDocValuesRangeQuery,
 };
 use lucene_search::extended_query::{
-    AutomatonQuery, DocumentClause, ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
-    SynonymQuery,
+    AutomatonQuery, DocumentClause, ExtendedQuery, IndexOrDocValuesQuery, MultiTermQuery,
+    MultiTermSource, NumericDocValuesRangeQuery, RewriteMethod, SynonymQuery,
 };
-use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery};
+use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery, PointsRangeQuery};
 use lucene_search::reader::doc_values::get_sorted_numeric;
 use lucene_search::reader::SortedNumericDocValues;
 use lucene_search::values_source::{
@@ -79,6 +79,8 @@ pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINL
 pub(crate) const NODE_MAX_SIM: u8 = crate::jvm_max_sim::NODE_MAX_SIM;
 /// `script` query running a Painless script ([`crate::jvm_painless_score`]).
 pub(crate) const NODE_PAINLESS_FILTER: u8 = crate::jvm_painless_score::NODE_PAINLESS_FILTER;
+/// A phrase over a `pattern_text` field ([`crate::jvm_pattern_phrase`]).
+pub(crate) const NODE_PATTERN_PHRASE: u8 = crate::jvm_pattern_phrase::NODE_PATTERN_PHRASE;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
 /// OpenSearch's `has_child`/`has_parent` (`HasChildQueryBuilder.LateParsingQuery`):
@@ -86,7 +88,14 @@ pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
 /// `max: i32`, the to query (a node), the from query (a node). Searched once
 /// [`crate::jvm_join::resolve`] has run its from side.
 pub(crate) const NODE_JOIN: u8 = 46;
-pub(crate) const NODE_LAST: u8 = NODE_JOIN;
+/// OpenSearch's range on a long, date or double field with doc values
+/// (`IndexOrDocValuesQuery` of `LongPoint.newRangeQuery` and
+/// `SortedNumericDocValuesField.newSlowRangeQuery` over the same field and
+/// bounds): `field`, `min: i64`, `max: i64`, the inclusive bounds as sortable
+/// longs. Kept a choice so a cheap lead (a tenant's doc-id run) checks its
+/// documents' doc values instead of collecting the range's points.
+pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 48;
+pub(crate) const NODE_LAST: u8 = NODE_POINT_RANGE_OR_DV;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -425,6 +434,16 @@ pub(crate) fn decode(
         NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::jvm_max_sim::decode(c, depth, nodes),
         NODE_PAINLESS_FILTER => return crate::jvm_painless_score::decode_filter(c),
+        NODE_PATTERN_PHRASE => return crate::jvm_pattern_phrase::decode(c),
+        NODE_POINT_RANGE_OR_DV => {
+            let field = field(c)?;
+            let (min, max) = (c.i64()?, c.i64()?);
+            return Ok(IndexOrDocValuesQuery::new(
+                PointsRangeQuery::new(field.clone(), min, max),
+                NumericDocValuesRangeQuery::new(field, min, max),
+            )
+            .into());
+        }
         NODE_JOIN => {
             let join_field = std::str::from_utf8(c.bytes()?)
                 .map_err(|_| FfiStatus::InvalidUtf8)?
@@ -718,6 +737,27 @@ mod tests {
         let (rc, e) = fails(h, &synonym(&[("delta", 2.0)]));
         assert_ne!(rc, 0);
         assert!(e.contains("synonym query"), "{e}");
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_range_with_doc_values_matches_its_points() {
+        let tmp = index("jvm-queries-range-or-dv");
+        let h = open(&tmp);
+        let range = |kind: u8, lo: i64, hi: i64| {
+            let b = Blob::tree().u8(kind).str("date");
+            Blob([b.0, lo.to_le_bytes().to_vec(), hi.to_le_bytes().to_vec()].concat())
+        };
+        let want = matching(|i| (3..=7).contains(&i));
+        assert_eq!(docs(h, &range(NODE_POINT_RANGE_OR_DV, 3000, 7000)), want);
+        assert_eq!(
+            docs(h, &range(NODE_POINT_RANGE_OR_DV, 3000, 7000)),
+            docs(h, &range(crate::jvm_reader::NODE_POINT_RANGE, 3000, 7000))
+        );
+        assert!(docs(h, &range(NODE_POINT_RANGE_OR_DV, 7000, 3000)).is_empty());
+        let mut short = range(NODE_POINT_RANGE_OR_DV, 3000, 7000);
+        short.0.truncate(short.0.len() - 1);
+        assert_ne!(fails(h, &short).0, 0);
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
