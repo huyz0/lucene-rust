@@ -31,6 +31,7 @@ impl Throw {
             class: class.into(),
             message: Some(message.into()),
             cause: None,
+            at: None,
         }))
     }
 
@@ -39,6 +40,7 @@ impl Throw {
             class: class.into(),
             message: None,
             cause: None,
+            at: None,
         }))
     }
 
@@ -103,6 +105,10 @@ pub struct JException {
     pub class: String,
     pub message: Option<String>,
     pub cause: Option<Value>,
+    /// Where a script's `new` made it: Java fills an exception's stack
+    /// trace when it is made, so its offset is the constructor call's,
+    /// wherever it is thrown. `None` for the runtime's own.
+    pub at: Option<i32>,
 }
 
 impl JObject for JException {
@@ -628,9 +634,18 @@ impl<'a> Vm<'a> {
     }
 
     /// Runs the script's `execute` with `args`.
+    ///
+    /// On an exception a script made, [`Self::loc`] is where it made it:
+    /// the offset Painless's `ScriptException` reports.
     pub fn execute(&mut self, args: &[Value]) -> Result<Value, Throw> {
         let entry = self.prog.entry;
-        self.call_local(entry, args)
+        let r = self.call_local(entry, args);
+        if let Err(t) = &r {
+            if let Some(at) = crate::object::downcast::<JException>(&t.0).and_then(|e| e.at) {
+                self.loc = at;
+            }
+        }
+        r
     }
 
     /// Calls function `func` of the script.

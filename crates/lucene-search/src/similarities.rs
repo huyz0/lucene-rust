@@ -210,6 +210,14 @@ pub trait Similarity: NormSimilarity {
     fn simple_name(&self) -> &str {
         "Similarity"
     }
+
+    /// The error a scorer of this similarity met, taken: a `SimScorer`
+    /// cannot fail, so one whose scores can (a script's) keeps its first
+    /// error for the search to fail with once it has run. `None` for every
+    /// similarity that cannot fail.
+    fn take_failure(&self) -> Option<crate::Error> {
+        None
+    }
 }
 
 /// `TFIDFSimilarity`'s `tf` and `idf`, which the function queries' `tf()`
@@ -2260,6 +2268,12 @@ impl Similarity for PerFieldSimilarity {
 
     fn shared(&self) -> Option<Arc<dyn Similarity>> {
         Some(Arc::new(self.clone()))
+    }
+
+    fn take_failure(&self) -> Option<crate::Error> {
+        self.default
+            .take_failure()
+            .or_else(|| self.fields.values().find_map(|s| s.take_failure()))
     }
 }
 

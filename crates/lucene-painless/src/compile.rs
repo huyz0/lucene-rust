@@ -1225,8 +1225,8 @@ impl Fx<'_> {
                 let dst = if *read { self.push(ty) } else { self.reg() };
                 if types::exception_parent(class).is_some() || class == "java.lang.Exception" {
                     let class: Rc<str> = Rc::from(class);
-                    let f: crate::vm::Native = Rc::new(move |_vm: &mut Vm, args: &[Value]| {
-                        api::objects::exception_of(&class, args)
+                    let f: crate::vm::Native = Rc::new(move |vm: &mut Vm, args: &[Value]| {
+                        api::objects::exception_of(&class, args, vm.loc)
                     });
                     self.emit(Op::Native {
                         dst,

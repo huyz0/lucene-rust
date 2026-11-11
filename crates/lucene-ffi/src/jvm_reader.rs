@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 119;
+pub const JVM_ABI_VERSION: u32 = 120;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -185,6 +185,20 @@ pub(crate) fn rewritten(query: JvmQuery) -> JvmQuery {
                 ..Default::default()
             }),
         },
+    }
+}
+
+/// `r`, a search's result over `sim`'s similarities, or the error a
+/// scripted similarity's scorer kept (a `SimScorer` cannot fail): the
+/// search's error, whatever else it returned.
+pub(crate) fn similarity_checked<T>(
+    sim: Option<&PerFieldSimilarity>,
+    r: Result<T, FfiStatus>,
+) -> Result<T, FfiStatus> {
+    use lucene_search::similarities::Similarity;
+    match sim.and_then(|s| s.take_failure()) {
+        Some(e) => Err(crate::clauses::map_search_error(e)),
+        None => r,
     }
 }
 
@@ -613,10 +627,13 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             handle,
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
-        let (hits, total, lower_bound) = match min_score {
-            Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim)?,
-            None => search(&h, &query, top_n, count_limit, sim)?,
-        };
+        let (hits, total, lower_bound) = similarity_checked(
+            sim,
+            match min_score {
+                Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim),
+                None => search(&h, &query, top_n, count_limit, sim),
+            },
+        )?;
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -1252,19 +1269,22 @@ pub(crate) fn search_sorted_blobs(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound, max_score, terminated) = search_sorted(
-        &h,
-        &query,
-        &keys,
-        after.as_ref(),
-        top_n,
-        count_limit,
-        track,
-        &slices,
-        terminate_after,
-        &index_sorted,
-        min_score,
+    let (hits, total, lower_bound, max_score, terminated) = similarity_checked(
         sim.as_ref(),
+        search_sorted(
+            &h,
+            &query,
+            &keys,
+            after.as_ref(),
+            top_n,
+            count_limit,
+            track,
+            &slices,
+            terminate_after,
+            &index_sorted,
+            min_score,
+            sim.as_ref(),
+        ),
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1399,7 +1419,7 @@ pub(crate) fn search_collapsed_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     if let Some((n, _)) = terminate_after {
-        let (top, cut) = lucene_search::top_field::search_collapsed_until(
+        let top_cut = lucene_search::top_field::search_collapsed_until(
             &segments,
             h.reader.segment_readers(),
             &q,
@@ -1412,7 +1432,8 @@ pub(crate) fn search_collapsed_blobs(
             track,
             n,
         )
-        .map_err(map_search_error)?;
+        .map_err(map_search_error);
+        let (top, cut) = similarity_checked(sim, top_cut)?;
         return encode_collapsed(&keys, &[top], cut.terminated);
     }
     let parts = lucene_search::top_field::search_collapsed(
@@ -1429,7 +1450,8 @@ pub(crate) fn search_collapsed_blobs(
         &slices,
         min_score,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let parts = similarity_checked(sim, parts)?;
     encode_collapsed(&keys, &parts, false)
 }
 
@@ -1580,7 +1602,8 @@ pub(crate) fn rescore_hits(
         rescore_query_weight,
         mode,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let rescored = similarity_checked(sim, rescored)?;
     for (i, hit) in hits.iter().enumerate() {
         docs[i] = hit.doc;
         scores[i] = hit.score;
@@ -1974,7 +1997,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let (sliced, seen) = lucene_search::aggs::aggregate_sliced_counting(
+    let sliced = lucene_search::aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -1984,7 +2007,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
         &slices,
         min.as_ref(),
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let (sliced, seen) = similarity_checked(sim, sliced)?;
     let mut states = Vec::new();
     let mut results = Vec::new();
     for (m, t) in sliced {
@@ -2113,8 +2137,16 @@ pub(crate) fn count_terminates_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n, min.as_ref())
-        .map_err(map_search_error)
+    let counted = lucene_search::terminate::count_terminates(
+        &segments,
+        &q,
+        &slices,
+        &iterate,
+        n,
+        min.as_ref(),
+    )
+    .map_err(map_search_error);
+    similarity_checked(sim, counted)
 }
 
 /// Whether a concurrent `size: 0` search's count stops early
@@ -2615,7 +2647,7 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
             }
         }
     }
-    Ok(out)
+    similarity_checked(sim.as_ref(), Ok(out))
 }
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.

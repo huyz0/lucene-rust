@@ -173,6 +173,14 @@ final class SimilarityEncoder implements Predicate<String> {
         } else if (c == LMJelinekMercerSimilarity.class && defaultCollectionModel((LMSimilarity) sim)) {
             out.write(6);
             writeFloat(out, ((LMJelinekMercerSimilarity) sim).getLambda());
+        } else if (sim instanceof org.opensearch.index.similarity.ScriptedSimilarity scripted) {
+            byte[] spec = ExtendedEncoder.painlessSimilarity(scripted);
+            if (spec == null) {
+                return null;
+            }
+            out.write(9);
+            out.writeBytes(spec);
+            return out.toByteArray();
         } else if (c == ClassicSimilarity.class) {
             out.write(7);
         } else if (c == LegacyBM25Similarity.class) {
