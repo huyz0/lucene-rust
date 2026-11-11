@@ -48,6 +48,10 @@ CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
 # reads (lucene-codecs' doc_values.rs and adaptive_values.rs), and the
 # RustZstd104 terms dictionary its terms/ package reads (blocktree.rs).
 CODECS_DIR = os.path.join(ROOT, "crates", "lucene-codecs", "src")
+# The multi-vector encodings, which the plugin's tensor/ package writes
+# (lucene-tensor's encoding.rs, lucene-util's max_sim.rs block width).
+TENSOR_DIR = os.path.join(ROOT, "crates", "lucene-tensor", "src")
+MAX_SIM_RS = os.path.join(ROOT, "crates", "lucene-util", "src", "max_sim.rs")
 
 # Rust files a Java file encodes for without naming them.
 EXTRA_FILES = {
@@ -56,6 +60,7 @@ EXTRA_FILES = {
     "NativeTopHits.java": ["jvm_aggs.rs"],
     "NativeSignificantTerms.java": ["jvm_aggs.rs"],
     "QueryEncoder.java": ["jvm_nodes.rs"],
+    "MultiVectorEncoding.java": ["max_sim.rs"],
 }
 
 # The prefix the Rust side puts in front of a Java file's names.
@@ -92,6 +97,7 @@ RENAMES = {
     ("ExtendedEncoder.java", "NODE_TO_CHILD"): ("jvm_queries.rs", "NODE_TO_CHILD"),
     ("ExtendedEncoder.java", "NODE_KNN_SCORE"): ("jvm_knn_score.rs", "NODE_KNN_SCORE"),
     ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("jvm_painless_score.rs", "NODE_PAINLESS_SCORE"),
+    ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("jvm_max_sim.rs", "NODE_MAX_SIM"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
@@ -139,6 +145,7 @@ JAVA_ONLY = {
     ("RestNeuralStatsAction.java", "MAX_PARAM_LENGTH"): "the neural stats API's request checks",
     ("MemoryStat.java", "BYTES_PER_KILOBYTES"): "the neural stats API's memory units",
     ("TimestampedEventStat.java", "TRAILING_NUMBER_OF_INTERVALS"): "the neural stats API's trailing event window",
+    ("MultiVectorFieldMapper.java", "MAX_DIMENSION"): "the mapping's validation, at Lucene's KnnVectorsFormat limit",
 }
 
 JAVA_CONST = re.compile(
@@ -167,7 +174,9 @@ def snake(camel):
 
 def load_rust():
     consts = {}
-    for d, name in [(d, n) for d in (RUST_DIR, CRYPTO_DIR, CODECS_DIR) for n in sorted(os.listdir(d))]:
+    files = [(d, n) for d in (RUST_DIR, CRYPTO_DIR, CODECS_DIR, TENSOR_DIR) for n in sorted(os.listdir(d))]
+    files.append(os.path.split(MAX_SIM_RS))
+    for d, name in files:
         if not name.endswith(".rs") or name in consts:
             continue
         with open(os.path.join(d, name), encoding="utf-8") as f:
