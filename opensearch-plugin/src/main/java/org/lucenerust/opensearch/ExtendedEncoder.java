@@ -37,9 +37,14 @@ import org.lucenerust.opensearch.painless.PainlessScore;
 import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
 import org.lucenerust.opensearch.knn.script.PainlessKnnScript;
 import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.index.query.IntervalFilterScript;
+import org.opensearch.script.AggregationScript;
+import org.opensearch.script.FilterScript;
+import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptType;
+import org.opensearch.script.TermsSetQueryScript;
 import org.opensearch.common.lucene.search.function.RandomScoreFunction;
 import org.opensearch.common.lucene.search.function.ScoreFunction;
 import org.opensearch.common.lucene.search.function.ScriptScoreFunction;
@@ -103,6 +108,7 @@ final class ExtendedEncoder {
     static final byte NODE_KNN_SCORE = 42;
     static final byte NODE_PAINLESS_SCORE = 43;
     static final byte NODE_MAX_SIM = 44;
+    static final byte NODE_PAINLESS_FILTER = 45;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -151,6 +157,9 @@ final class ExtendedEncoder {
             }
             if (q instanceof CombinedFieldQuery cf) {
                 return combinedField(cf, out, fieldOk);
+            }
+            if (q.getClass().getName().equals("org.opensearch.index.query.ScriptQueryBuilder$ScriptQuery")) {
+                return painlessFilter(q, out);
             }
             return NOT_EXTENDED;
         } catch (ReflectiveOperationException | ClassCastException e) {
@@ -353,6 +362,13 @@ final class ExtendedEncoder {
     @SuppressWarnings("unchecked")
     private static String source(IntervalsSource s, ByteArrayOutputStream out) throws ReflectiveOperationException {
         String name = s.getClass().getName();
+        if (name.equals("org.opensearch.index.query.IntervalsSourceProvider$ScriptFilterSource")) {
+            out.write(6);
+            out.write(2);
+            writeString(out, (String) field(s, "name"));
+            String why = painlessInterval((IntervalFilterScript) field(s, "script"), out);
+            return why != null ? why : source((IntervalsSource) field(s, "in"), out);
+        }
         if (name.startsWith(INTERVALS) == false) {
             return "interval_" + s.getClass().getSimpleName();
         }
@@ -685,7 +701,8 @@ final class ExtendedEncoder {
      */
     private static String painlessScore(ScriptScoreQuery q, Script script, ByteArrayOutputStream out, Child child)
         throws ReflectiveOperationException {
-        Object prepared = painless(script, (ScoreScript.LeafFactory) field(q, "scriptBuilder"));
+        ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(q, "scriptBuilder");
+        Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -694,38 +711,158 @@ final class ExtendedEncoder {
         if (reason != null) {
             return reason;
         }
-        ((Painless) prepared).write(out, (String) field(q, "indexName"), (int) field(q, "shardId"), (org.opensearch.Version) field(q, "indexVersion"));
+        painlessScoreSpec(out, (Painless) prepared, factory, (String) field(q, "indexName"), (int) field(q, "shardId"), (org.opensearch.Version) field(q, "indexVersion"));
         return null;
     }
 
-    /** A score script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
-    private record Painless(ScoreScript.LeafFactory factory, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {
-        /** Its spec, registered as this request's next run for its errors. */
-        void write(ByteArrayOutputStream out, String index, int shard, org.opensearch.Version version) {
-            int run = PainlessScore.run(factory, index, shard, version);
-            painlessSpec(out, factory.needs_score(), compiled, params, index == null ? "" : index, shard, run, names, kinds);
-        }
+    /** A score script's spec, registered as this request's next run for its errors. */
+    private static void painlessScoreSpec(
+        ByteArrayOutputStream out,
+        Painless p,
+        ScoreScript.LeafFactory factory,
+        String index,
+        int shard,
+        org.opensearch.Version version
+    ) {
+        int run = PainlessScore.run(factory, index, shard, version);
+        painlessSpec(out, p, index == null ? "" : index, shard, run);
     }
 
     /**
-     * {@code script}, made by {@code factory} for the score context, as the native runtime runs
-     * it: a {@link Painless}, or why it stays in Java.
+     * A {@code script} query ({@code ScriptQuery}) with an inline Painless script run by the
+     * native runtime: node 45, its script's spec. Other scripts run in Java.
      */
-    private static Object painless(Script script, ScoreScript.LeafFactory factory) {
+    private static String painlessFilter(Query q, ByteArrayOutputStream out) throws ReflectiveOperationException {
+        Script script = (Script) field(q, "script");
+        if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
+            return "script_query_script";
+        }
+        Object prepared = painless(script, PainlessScore.FILTER, "script_query");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        out.write(NODE_PAINLESS_FILTER);
+        int run = PainlessScore.run((FilterScript.LeafFactory) field(q, "filterScript"));
+        painlessSpec(out, (Painless) prepared, "", 0, run);
+        return null;
+    }
+
+    /**
+     * A {@code _script} sort key's number sort script, made by {@code factory}, as the native
+     * runtime runs it: its spec (context {@link PainlessScore#SORT}), or why it stays in Java. A
+     * script reading {@code _score} stays in Java.
+     */
+    static String painlessSort(NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
+        if (factory.needs_score()) {
+            return "sort_script_score";
+        }
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "sort_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.SORT, "sort_script");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.run(factory));
+        return null;
+    }
+
+    /**
+     * An aggregation's script, made by {@code factory}, as the native runtime runs it: its spec
+     * (context {@link PainlessScore#AGGREGATION}), or why it stays in Java. A script reading
+     * {@code _score} stays in Java.
+     */
+    static String painlessAggregation(AggregationScript.LeafFactory factory, ByteArrayOutputStream out) {
+        if (factory == null || factory.needs_score()) {
+            return "aggregation_script_score";
+        }
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "aggregation_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.AGGREGATION, "aggregation_script");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.run(factory));
+        return null;
+    }
+
+    /**
+     * A {@code terms_set} query's {@code minimum_should_match_script}, made by {@code factory}, as
+     * the native runtime runs it: its spec (context {@link PainlessScore#TERMS_SET}), or why it
+     * stays in Java.
+     */
+    static String painlessTermsSet(TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "covering_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.TERMS_SET, "covering");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runTermsSet(factory));
+        return null;
+    }
+
+    /**
+     * An {@code intervals} query's script filter, as the native runtime runs it: its spec (context
+     * {@link PainlessScore#INTERVAL}), or why it stays in Java.
+     */
+    private static String painlessInterval(IntervalFilterScript script, ByteArrayOutputStream out) {
+        String source = PainlessScore.sourceOf(script);
+        if (source == null) {
+            return "interval_script";
+        }
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", source, Map.of()), PainlessScore.INTERVAL, "interval");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        if (((Painless) prepared).names().length != 0) {
+            return "interval_painless";
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.runInterval(script));
+        return null;
+    }
+
+    /** A script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
+    private record Painless(byte context, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {}
+
+    /**
+     * {@code script} in {@code context} ({@link PainlessScore#SCORE}, {@link
+     * PainlessScore#SCORE_WITH_SCORE} or {@link PainlessScore#FILTER}) as the native runtime runs
+     * it: a {@link Painless}, or why it stays in Java ({@code reason} and why).
+     */
+    private static Object painless(Script script, byte context, String reason) {
         Function<String, MappedFieldType> types = FIELD_TYPES.get();
         if (types == null || script.getOptions().keySet().stream().anyMatch(k -> k.equals(Script.CONTENT_TYPE_OPTION) == false)) {
-            return "script_score_script";
+            return reason + "_script";
         }
-        Object compiledOrWhy = PainlessScore.score(script.getIdOrCode());
+        Object compiledOrWhy = switch (context) {
+            case PainlessScore.FILTER -> PainlessScore.filter(script.getIdOrCode());
+            case PainlessScore.SORT -> PainlessScore.sort(script.getIdOrCode());
+            case PainlessScore.AGGREGATION -> PainlessScore.aggregation(script.getIdOrCode());
+            case PainlessScore.TERMS_SET -> PainlessScore.termsSet(script.getIdOrCode());
+            case PainlessScore.INTERVAL -> PainlessScore.interval(script.getIdOrCode());
+            default -> PainlessScore.score(script.getIdOrCode());
+        };
         if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
-            return "script_score_painless";
+            return reason + "_painless";
         }
         PainlessIr.Compiled compiled = (PainlessIr.Compiled) compiledOrWhy;
         byte[] params;
         try {
             params = PainlessIr.constant(script.getParams());
         } catch (PainlessIr.Unsupported e) {
-            return "script_score_params";
+            return reason + "_params";
         }
         byte[] kinds = new byte[compiled.docFields().size()];
         // The doc values a field's name reads: an alias's are its target's.
@@ -737,39 +874,29 @@ final class ExtendedEncoder {
         }
         // The whole script checked before anything runs: one the native runtime would not run
         // exactly as Painless does stays in Java, never tried natively first.
-        boolean needsScore = factory.needs_score();
-        String refused = PainlessScore.check(compiled, needsScore, params, kinds, () -> {
+        Painless p = new Painless(context, compiled, params, names, kinds);
+        String refused = PainlessScore.check(compiled, context, params, kinds, () -> {
             ByteArrayOutputStream checked = new ByteArrayOutputStream();
-            painlessSpec(checked, needsScore, compiled, params, "", 0, 0, names, kinds);
+            painlessSpec(checked, p, "", 0, 0);
             return checked.toByteArray();
         });
-        return refused != null ? "script_score_painless" : new Painless(factory, compiled, params, names, kinds);
+        return refused != null ? reason + "_painless" : p;
     }
 
-    /** A painless score node's fields after its sub-query, as {@code jvm_painless_score.rs} reads them. */
-    private static void painlessSpec(
-        ByteArrayOutputStream out,
-        boolean needsScore,
-        PainlessIr.Compiled compiled,
-        byte[] params,
-        String index,
-        int shard,
-        int run,
-        String[] names,
-        byte[] kinds
-    ) {
-        out.write(needsScore ? 1 : 0);
-        writeBytes(out, compiled.ir());
-        writeBytes(out, params);
+    /** A painless node's script, after any sub-query, as {@code jvm_painless_score.rs} reads it. */
+    private static void painlessSpec(ByteArrayOutputStream out, Painless p, String index, int shard, int run) {
+        out.write(p.context());
+        writeBytes(out, p.compiled().ir());
+        writeBytes(out, p.params());
         writeString(out, index);
         writeInt(out, shard);
         writeInt(out, run);
-        writeInt(out, kinds.length);
-        for (int i = 0; i < kinds.length; i++) {
+        writeInt(out, p.kinds().length);
+        for (int i = 0; i < p.kinds().length; i++) {
             // The name the script reads it by, then the one its doc values are under.
-            writeString(out, compiled.docFields().get(i));
-            writeString(out, names[i]);
-            out.write(kinds[i]);
+            writeString(out, p.compiled().docFields().get(i));
+            writeString(out, p.names()[i]);
+            out.write(p.kinds()[i]);
         }
     }
 
@@ -915,12 +1042,13 @@ final class ExtendedEncoder {
             if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
                 return "function_score_script";
             }
-            Object prepared = painless(script, (ScoreScript.LeafFactory) field(f, "script"));
+            ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(f, "script");
+            Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
             if (prepared instanceof String) {
                 return "function_score_script";
             }
             out.write(5);
-            ((Painless) prepared).write(out, (String) field(f, "indexName"), (int) field(f, "shardId"), (org.opensearch.Version) field(f, "indexVersion"));
+            painlessScoreSpec(out, (Painless) prepared, factory, (String) field(f, "indexName"), (int) field(f, "shardId"), (org.opensearch.Version) field(f, "indexVersion"));
             return null;
         }
         if (name.endsWith("ScriptScoreFunction")) {
