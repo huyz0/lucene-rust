@@ -195,6 +195,69 @@ public final class RustEngineSupport {
      * fields other than {@code method: ivf}, or on segments holding nested documents (whose blocks
      * keep whole-field clusters). Segments read like any other IVF segment.
      */
+    /**
+     * The mean recall at {@code k} a {@code knn} query on this index's {@code lucene_rust} or
+     * {@code lucene} engine fields should reach. A value in {@code (0, 1]} turns on recall-targeted
+     * search: each shard tunes each field's search depth (an HNSW search's candidates, an IVF
+     * search's probes and rerank depth, from a quarter to 64 times the asked one) to the
+     * shallowest one that reaches the target, measured by checking sampled queries against an exact
+     * scan of the field on a thread of their own. {@code 0} (the default) searches at the depth asked,
+     * as stock does. A query that sets {@code method_parameters.ef_search} or {@code nprobes} is
+     * never tuned. On GloVe-100 (390k vectors, 4 segments) a 0.95 target ran IVF 1.9x faster than its
+     * calibrated default (0.968 recall where the default over-reached to 0.988) and picked an HNSW
+     * candidate count of 200; every target was met on held-out queries. See {@code
+     * GET /_plugins/lucene_rust/stats}, {@code knn_recall}, for what each tuner measured.
+     */
+    public static final Setting<Float> KNN_TARGET_RECALL = new Setting<>(
+        "index.lucene_rust.knn.target_recall",
+        "0",
+        v -> unitFloat("index.lucene_rust.knn.target_recall", v, true),
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * The most queries a recall-targeted search ({@link #KNN_TARGET_RECALL}) checks, as a share of
+     * them, in {@code (0, 1]}.
+     */
+    public static final Setting<Float> KNN_RECALL_SAMPLE_RATE = new Setting<>(
+        "index.lucene_rust.knn.recall_sample_rate",
+        "0.01",
+        v -> unitFloat("index.lucene_rust.knn.recall_sample_rate", v, false),
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * The most CPU time a recall-targeted search's checks ({@link #KNN_TARGET_RECALL}) take, as a
+     * share of the time its searches took, once the first 64 checks are done (those take up to as
+     * long as the searches): an exact scan reads every vector of the field, so on a large shard this
+     * budget, not the sample rate, sets how often one runs.
+     */
+    public static final Setting<Float> KNN_RECALL_CHECK_BUDGET = Setting.floatSetting(
+        "index.lucene_rust.knn.recall_check_budget",
+        0.05f,
+        0f,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /** {@code value} as a float in {@code (0, 1]} (or {@code 0} when {@code zero} allows it). */
+    static float unitFloat(String key, String value, boolean zero) {
+        float f;
+        try {
+            f = Float.parseFloat(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Failed to parse value [" + value + "] for setting [" + key + "]", e);
+        }
+        if ((f > 0f && f <= 1f) || (zero && f == 0f)) {
+            return f;
+        }
+        throw new IllegalArgumentException(
+            "Failed to parse value [" + value + "] for setting [" + key + "] must be " + (zero ? "0 or " : "") + "in (0, 1]"
+        );
+    }
+
     public static final Setting<Integer> IVF_PARTITION_CLUSTERS = Setting.intSetting(
         "index.lucene_rust.knn.ivf_partition_clusters",
         0,

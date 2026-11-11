@@ -227,6 +227,7 @@ pub mod intervals;
 pub mod java_priority_queue;
 pub mod join;
 pub mod knn_collectors;
+pub mod knn_recall;
 pub mod knn_search;
 pub mod leaf_collector;
 pub mod live_segment;

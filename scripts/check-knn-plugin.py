@@ -56,6 +56,11 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              and a delete since are seen by top-k, filtered and in-bool knn
              queries, which return the exhaustive scan's hits and scores
              over every live document, all of them in Rust.
+  recall     `index.lucene_rust.knn.target_recall` (opt-in) on an IVF and
+             an HNSW index: at a 0.99 target the top 10 is nearly the scan's,
+             the stats show the tuner's sampled checks, a query setting its
+             own depth is not tuned, a target over 1 is refused, and 0
+             turns tuning off.
   errors     requests the stock plugin refuses are refused here too; faiss
              mappings, which stock accepts, are refused here.
 
@@ -519,6 +524,71 @@ def ivf_check(failures):
     return checked
 
 
+def recall_target_check(failures):
+    """`index.lucene_rust.knn.target_recall` on an IVF and an HNSW index (see the module doc)."""
+    checked = 0
+    for index, mapping in (("rt_ivf", ivf_mapping(rerank_encoding="float")),
+                           ("rt_hnsw", {"type": "knn_vector", "dimension": DIM,
+                                        "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}})):
+        rng = random.Random(f"{SEED}-{index}")
+        docs = [{"_id": f"d{i}", "emb": vector(rng, False)} for i in range(DOCS)]
+        settings = {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
+                    "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.lucene_rust.knn.target_recall": 0.99,
+                    "index.lucene_rust.knn.recall_sample_rate": 1.0,
+                    "index.lucene_rust.knn.recall_check_budget": 1000.0}
+        req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": {"properties": {"emb": mapping}}})
+        lines = []
+        for d in docs:
+            lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+            lines.append(json.dumps({"emb": d["emb"]}))
+        r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        assert not r["errors"], json.dumps(r)[:2000]
+        req(OURS[1], "POST", f"/{index}/_refresh")
+        uuid = req(OURS[1], "GET", f"/{index}/_settings")[index]["settings"]["index"]["uuid"]
+        key = f"{uuid}/0/emb"
+
+        def tuner():
+            return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("knn_recall", {}).get(key)
+
+        targets = [vector(rng, False) for _ in range(40)]
+        found = 0
+        for t in targets:
+            got = search(OURS[1], index, {"size": 10, "query": knn(t, k=10)})
+            found += len({i for _, i in exact_top(IVF, docs, t, 10)} & {i for i, _ in got})
+            checked += 1
+        recall = found / (10 * len(targets))
+        print(f"{index}: recall@10 {recall:.3f} at target 0.99")
+        if recall < 0.95:
+            failures.append(f"{index}: recall@10 {recall:.3f} at target 0.99")
+        # The checks run behind the searches.
+        stats = tuner()
+        for _ in range(300):
+            if stats and stats["samples"] > 0:
+                break
+            time.sleep(0.1)
+            stats = tuner()
+        if not stats or stats["samples"] == 0 or stats["queries"] < len(targets) or stats["target_recall"] != 0.99:
+            failures.append(f"{index}: tuner stats {stats}")
+            continue
+        # A query asking for its own depth is not tuned.
+        own = {"nprobes": 4} if index == "rt_ivf" else {"ef_search": 50}
+        search(OURS[1], index, {"size": 10, "query": knn(targets[0], k=10, method_parameters=own)})
+        if tuner()["queries"] != stats["queries"]:
+            failures.append(f"{index}: a query with method_parameters {own} was tuned")
+        r = req(OURS[1], "PUT", f"/{index}/_settings", {"index.lucene_rust.knn.target_recall": 1.5}, ok_errors=True)
+        if r.get("status", 200) != 400:
+            failures.append(f"{index}: target_recall 1.5 accepted: {json.dumps(r)[:200]}")
+        # Off again (the setting is dynamic): searched as asked.
+        req(OURS[1], "PUT", f"/{index}/_settings", {"index.lucene_rust.knn.target_recall": 0})
+        before = tuner()["queries"]
+        search(OURS[1], index, {"size": 10, "query": knn(targets[0], k=10)})
+        if tuner()["queries"] != before:
+            failures.append(f"{index}: target_recall 0 still tuned")
+        checked += 3
+    return checked
+
+
 def rust_hnsw_mapping(**params):
     return {"type": "knn_vector", "dimension": DIM,
             "method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2", "parameters": params}}
@@ -955,6 +1025,7 @@ def main():
         checked += nested_check(failures)
         checked += ivf_check(failures)
         checked += rust_hnsw_check(failures)
+        checked += recall_target_check(failures)
         checked += realtime_check(failures)
         print(f"compared {checked} queries")
 

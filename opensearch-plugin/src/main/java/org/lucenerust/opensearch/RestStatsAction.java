@@ -6,7 +6,11 @@ package org.lucenerust.opensearch;
 import org.lucenerust.opensearch.engine.RustEngineFactory;
 
 import org.opensearch.core.rest.RestStatus;
+import org.opensearch.common.xcontent.json.JsonXContent;
+import org.opensearch.core.xcontent.DeprecationHandler;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.rest.BaseRestHandler;
 import org.opensearch.rest.BytesRestResponse;
 import org.opensearch.rest.RestRequest;
@@ -97,6 +101,19 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native", analyzed[0]);
             b.field("java", analyzed[1]);
             b.endObject();
+            // Recall-targeted k-NN tuners (index.lucene_rust.knn.target_recall), by index/shard/field.
+            String recall = NativeBridge.knnRecallStats();
+            if (recall != null) {
+                try (
+                    XContentParser p = JsonXContent.jsonXContent.createParser(
+                        NamedXContentRegistry.EMPTY,
+                        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                        recall
+                    )
+                ) {
+                    b.field("knn_recall", p.map());
+                }
+            }
             b.endObject();
             channel.sendResponse(new BytesRestResponse(RestStatus.OK, b));
         };
