@@ -2671,6 +2671,10 @@ pub unsafe extern "C" fn ffi_engine_writer_set_bp_reorder(
                     .collect();
                 reorderer.set_fields(Some(names));
             }
+            // OpenSearch sets no parent field on an unsorted index with nested
+            // documents, so its blocks are found by their root documents: only
+            // those have a `_primary_term` (`Queries.newNonNestedFilter`).
+            reorderer.set_block_root_field(Some("_primary_term".to_string()));
             // The policy's own checks, before anything changes.
             let mut probe = BpReorderingMergePolicy::new(
                 Box::new(TieredMergePolicy::default()),
