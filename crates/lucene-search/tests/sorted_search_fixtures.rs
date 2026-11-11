@@ -285,7 +285,7 @@ fn sorted_searches_match_real_lucene() {
             } else if total <= 1000 {
                 !td_gte && td.total.value == total
             } else {
-                td.total.value > 1000
+                td.total.value > 1000 && (td_gte || td.total.value == total)
             };
             searcher_runs += 1;
             if td.hits != want || !td_total_ok {
