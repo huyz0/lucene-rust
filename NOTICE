@@ -16,6 +16,11 @@ spatial-extras module depends on, both under the Apache License, Version 2.0
  - The S2 Geometry Library for Java, as published in
    io.sgr:s2-geometry-library-java 1.0.0, Copyright 2005 Google Inc.
 
+The OpenSearch plugin bundles ml-commons 3.9.0's bert-uncased and
+mbert-uncased analysis data (opensearch-plugin/src/main/resources/analysis:
+Hugging Face tokenizer.json vocabularies and idf.json weights), Copyright
+OpenSearch Contributors, under the Apache License, Version 2.0.
+
 crates/lucene-analysis/src/java_float.rs implements the f32 case of Ryu
 (https://github.com/ulfjack/ryu, Copyright 2018 Ulf Adams, under the Apache
 License, Version 2.0, or the Boost Software License 1.0), following its f2s.c.
