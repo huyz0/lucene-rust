@@ -52,6 +52,16 @@ pub struct Meta {
     blocks: Vec<Block>,
 }
 
+impl Meta {
+    /// The meta of no values.
+    pub(crate) fn empty() -> Self {
+        Self {
+            block_shift: 0,
+            blocks: Vec::new(),
+        }
+    }
+}
+
 /// Reads `Meta` from the metadata stream (e.g. the `.dvm`/`.fnm` file), one
 /// `(min: i64, avg: f32-as-i32-bits, offset: i64, bpv: u8)` tuple per block.
 pub fn load_meta(input: &mut impl DataInput, num_values: i64, block_shift: u32) -> Result<Meta> {
