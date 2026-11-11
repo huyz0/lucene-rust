@@ -78,11 +78,11 @@ public final class KnnShardsTransport {
     }
 
     /** One operation on every shard of the requested indices, as the stock transport actions run it. */
-    abstract static class Base extends TransportBroadcastByNodeAction<Request, Response, TransportBroadcastByNodeAction.EmptyResult> {
+    public abstract static class Base extends TransportBroadcastByNodeAction<Request, Response, TransportBroadcastByNodeAction.EmptyResult> {
         private final IndicesService indices;
         private final ClusterBlockLevel level;
 
-        Base(
+        protected Base(
             String name,
             ClusterBlockLevel level,
             ClusterService clusterService,
@@ -96,7 +96,10 @@ public final class KnnShardsTransport {
             this.level = level;
         }
 
-        abstract void onShard(IndexShard shard) throws IOException;
+        protected abstract void onShard(IndexShard shard) throws IOException;
+
+        /** Refuses the request's indices before any shard runs; nothing by default. */
+        protected void validate(ClusterState state, String[] concreteIndices) {}
 
         @Override
         protected EmptyResult readShardResult(StreamInput in) throws IOException {
@@ -139,6 +142,7 @@ public final class KnnShardsTransport {
 
         @Override
         protected ClusterBlockException checkRequestBlock(ClusterState state, Request request, String[] concreteIndices) {
+            validate(state, concreteIndices);
             return state.blocks().indicesBlockedException(level, concreteIndices);
         }
     }
@@ -157,7 +161,7 @@ public final class KnnShardsTransport {
         }
 
         @Override
-        void onShard(IndexShard shard) {
+        protected void onShard(IndexShard shard) {
             if (shard.indexSettings().isWarmIndex()) {
                 // Read on demand from the remote store: nothing to load ahead.
                 return;
@@ -182,6 +186,6 @@ public final class KnnShardsTransport {
         }
 
         @Override
-        void onShard(IndexShard shard) {}
+        protected void onShard(IndexShard shard) {}
     }
 }
