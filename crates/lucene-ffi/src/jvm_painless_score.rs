@@ -146,6 +146,9 @@ struct Spec {
     /// A `TermsSetQueryScript`: `execute()` returns the document's
     /// minimum number of matching terms.
     terms_set: bool,
+    /// An `IntervalFilterScript`: `execute(interval)` returns whether the
+    /// interval passes.
+    interval: bool,
     index: String,
     shard: i32,
     /// The plugin's number for the script, in the errors it raises.
@@ -199,7 +202,7 @@ pub(crate) fn decode_filter(c: &mut Cursor<'_>) -> std::result::Result<Clause, F
 
 /// The node's script, after its sub-query.
 fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
-    let (mut agg, mut sort, mut terms_set) = (false, false, false);
+    let (mut agg, mut sort, mut terms_set, mut interval) = (false, false, false, false);
     let (needs_score, filter) = match c.u8()? {
         0 => (false, false),
         1 => (true, false),
@@ -220,9 +223,13 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
             terms_set = true;
             (false, false)
         }
+        7 => {
+            interval = true;
+            (false, false)
+        }
         other => {
             return Err(invalid(format!(
-                "query tree: painless script context {other} (expected 0..=6)"
+                "query tree: painless script context {other} (expected 0..=7)"
             )))
         }
     };
@@ -271,6 +278,7 @@ fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, FfiStatus> {
         sort,
         agg,
         terms_set,
+        interval,
         index,
         shard,
         script_id,
@@ -316,6 +324,23 @@ struct At {
     leaf: Leaf,
     doc: i32,
     score: f32,
+}
+
+/// Where an interval filter script threw: the interval, written
+/// `start:end:gaps` where a document goes.
+fn interval_error(script_id: i32, interval: (i32, i32, i32), offset: i32, t: &Throw) -> Error {
+    if t.class() == lucene_painless::api::UNSUPPORTED {
+        return runtime_failure(t);
+    }
+    let message = match t.message() {
+        Some(m) => format!("1{m}"),
+        None => "0".to_string(),
+    };
+    let (start, end, gaps) = interval;
+    Error::IllegalArgument(format!(
+        "{SCRIPT_ERROR}{script_id}\u{1}0\u{1}{start}:{end}:{gaps}\u{1}0\u{1}{offset}\u{1}{}\u{1}{message}",
+        t.class()
+    ))
 }
 
 /// The error a script's exception fails the search with: the plugin raises
@@ -418,7 +443,7 @@ impl JObject for Unavailable {
 impl Spec {
     /// Whether the script is a `ScoreScript`.
     fn is_score(&self) -> bool {
-        !self.filter && !self.sort && !self.agg && !self.terms_set
+        !self.filter && !self.sort && !self.agg && !self.terms_set && !self.interval
     }
 
     /// Where a spec blob holds its script's run number.
@@ -448,7 +473,9 @@ impl Spec {
         ];
         const FILTER: &[&str] = &["getParams", "getDoc"];
         const SORT_WITH_SCORE: &[&str] = &["getParams", "getDoc", "get_score"];
-        if self.filter || self.agg || self.terms_set || (self.sort && !self.needs_score) {
+        if self.interval {
+            &[]
+        } else if self.filter || self.agg || self.terms_set || (self.sort && !self.needs_score) {
             FILTER
         } else if self.sort {
             SORT_WITH_SCORE
@@ -508,7 +535,7 @@ impl Spec {
             let v = lucene_painless::compile::constant(v).map_err(|e| missing(e.to_string()))?;
             m.insert(k, v);
         }
-        if self.filter {
+        if self.filter || self.interval {
             return Ok(Value::map(MapKind::HashMap, m));
         }
         m.insert(Value::str("doc"), doc.clone());
@@ -1648,6 +1675,127 @@ impl LongValues for MinimumLeaf<'_> {
     }
 }
 
+/// An `intervals` query's `script` filter (OpenSearch's
+/// `ScriptFilterSource`), checked.
+#[derive(Debug)]
+pub(crate) struct PainlessInterval(Arc<Spec>);
+
+impl PainlessInterval {
+    /// The filter's script ([`decode_spec`]'s layout), checked.
+    pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, FfiStatus> {
+        let spec = decode_spec(c)?;
+        if !spec.interval {
+            return Err(invalid(
+                "query tree: an interval filter with another context's script",
+            ));
+        }
+        if !spec.fields.is_empty() {
+            return Err(invalid(
+                "query tree: an interval filter script reads no fields",
+            ));
+        }
+        spec.check()
+            .map_err(|r| invalid(format!("query tree: painless script not checked: {r}")))?;
+        Ok(PainlessInterval(Arc::new(spec)))
+    }
+}
+
+impl lucene_search::intervals::IntervalScript for PainlessInterval {
+    fn accepter(&self) -> Result<Box<dyn lucene_search::intervals::IntervalAccept>> {
+        let spec = &self.0;
+        let mut prog = lucene_painless::compile::compile(&spec.script)
+            .map_err(|e| Error::IllegalArgument(format!("painless script: {e}")))?;
+        let params = spec.params(&Value::Null).map_err(|t| runtime_failure(&t))?;
+        specialize(
+            &mut prog,
+            &Facts {
+                params: Some(&params),
+                fields: &[],
+            },
+        );
+        Ok(Box::new(IntervalAccepter {
+            bindings: vec![None; prog.binding_sites], // alloc-ok: the compiled program's own count
+            prog: Rc::new(prog),
+            env: lucene_painless::vm::ParamsEnv { params },
+            pool: Vec::new(),
+            script_id: spec.script_id,
+        }))
+    }
+}
+
+/// A [`PainlessInterval`] ready to run.
+struct IntervalAccepter {
+    prog: Rc<Program>,
+    env: lucene_painless::vm::ParamsEnv,
+    bindings: Vec<Option<Value>>,
+    pool: Vec<Vec<Value>>,
+    script_id: i32,
+}
+
+/// `IntervalFilterScript.Interval`: the interval the filter is looking at.
+#[derive(Debug)]
+struct Interval {
+    start: i32,
+    end: i32,
+    gaps: i32,
+}
+
+impl JObject for Interval {
+    fn class_name(&self) -> &str {
+        "org.opensearch.index.query.IntervalFilterScript$Interval"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn call(
+        &self,
+        _vm: &mut Vm,
+        _this: &Value,
+        name: &str,
+        args: &[Value],
+    ) -> Option<std::result::Result<Value, Throw>> {
+        if !args.is_empty() {
+            return None;
+        }
+        Some(Ok(Value::Int(match name {
+            "getStart" => self.start,
+            "getEnd" => self.end,
+            "getGaps" => self.gaps,
+            _ => return None,
+        })))
+    }
+    /// The getter shortcuts: `interval.start` for `getStart()`.
+    fn field(&self, _vm: &mut Vm, name: &str) -> Option<std::result::Result<Value, Throw>> {
+        Some(Ok(Value::Int(match name {
+            "start" => self.start,
+            "end" => self.end,
+            "gaps" => self.gaps,
+            _ => return None,
+        })))
+    }
+}
+
+impl lucene_search::intervals::IntervalAccept for IntervalAccepter {
+    fn accept(&mut self, start: i32, end: i32, gaps: i32) -> Result<bool> {
+        let interval = Value::object(Interval { start, end, gaps });
+        let mut vm = Vm::new(self.prog.clone(), &mut self.env);
+        vm.bindings = std::mem::take(&mut self.bindings);
+        vm.pool = std::mem::take(&mut self.pool);
+        let r = vm.execute(&[interval]);
+        let loc = vm.loc;
+        self.bindings = std::mem::take(&mut vm.bindings);
+        self.pool = std::mem::take(&mut vm.pool);
+        match r {
+            Ok(Value::Bool(b)) => Ok(b),
+            Ok(other) => Err(Error::IllegalArgument(format!(
+                "painless runtime: an interval filter returned {}",
+                other.java_to_string()
+            ))),
+            Err(t) => Err(interval_error(self.script_id, (start, end, gaps), loc, &t)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2395,6 +2543,7 @@ mod bench {
                 sort: false,
                 agg: false,
                 terms_set: false,
+                interval: false,
                 index: "idx".into(),
                 shard: 0,
                 script_id: 0,

@@ -29,11 +29,13 @@ import java.util.function.Supplier;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.Scorable;
+import org.apache.lucene.queries.intervals.IntervalIterator;
 import org.lucenerust.opensearch.NativeBridge;
 
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
+import org.opensearch.index.query.IntervalFilterScript;
 import org.opensearch.search.aggregations.AggregationExecutionException;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MappedFieldType;
@@ -96,9 +98,10 @@ public final class PainlessScore {
 
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
-     * a number sort script, an aggregation script, a {@code terms_set} minimum.
+     * a number sort script, an aggregation script, a {@code terms_set} minimum, an
+     * {@code intervals} filter script.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6;
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
     private interface Run {
@@ -202,6 +205,94 @@ public final class PainlessScore {
         }
     }
 
+    /**
+     * An {@code intervals} query's script filter: the one script {@code ScriptFilterSource} runs
+     * for every interval. Its errors name the interval, not a document.
+     */
+    private record IntervalRun(IntervalFilterScript script) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) {
+            return script;
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            return null;
+        }
+
+        /** The {@code ScriptException} the script raises on the interval {@code start..end}, {@code gaps}, or null. */
+        ScriptException rethrown(int start, int end, int gaps) {
+            IntervalFilterScript.Interval interval = new IntervalFilterScript.Interval();
+            try {
+                Field it = IntervalFilterScript.Interval.class.getDeclaredField("iterator");
+                it.setAccessible(true);
+                it.set(interval, new FixedInterval(start, end, gaps));
+                script.execute(interval);
+            } catch (ScriptException e) {
+                return e;
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return null;
+            }
+            return null;
+        }
+    }
+
+    /** One interval, as {@code IntervalFilterScript.Interval} reads its iterator. */
+    private static final class FixedInterval extends IntervalIterator {
+        private final int start, end, gaps;
+
+        FixedInterval(int start, int end, int gaps) {
+            this.start = start;
+            this.end = end;
+            this.gaps = gaps;
+        }
+
+        @Override
+        public int start() {
+            return start;
+        }
+
+        @Override
+        public int end() {
+            return end;
+        }
+
+        @Override
+        public int gaps() {
+            return gaps;
+        }
+
+        @Override
+        public int nextInterval() {
+            return NO_MORE_INTERVALS;
+        }
+
+        @Override
+        public float matchCost() {
+            return 0;
+        }
+
+        @Override
+        public int docID() {
+            return -1;
+        }
+
+        @Override
+        public int nextDoc() {
+            return NO_MORE_DOCS;
+        }
+
+        @Override
+        public int advance(int target) {
+            return NO_MORE_DOCS;
+        }
+
+        @Override
+        public long cost() {
+            return 0;
+        }
+    }
+
     /** A {@code script} query's filter script, as {@code ScriptQuery} makes it. */
     private record FilterRun(FilterScript.LeafFactory factory) implements Run {
         @Override
@@ -289,6 +380,11 @@ public final class PainlessScore {
     /** {@code source} compiled for the {@code terms_set} context, as {@link #score}. */
     public static Object termsSet(String source) {
         return compile(TermsSetQueryScript.CONTEXT, TermsSetQueryScript.class, source);
+    }
+
+    /** {@code source} compiled for the {@code intervals} filter context, as {@link #score}. */
+    public static Object interval(String source) {
+        return compile(IntervalFilterScript.CONTEXT, IntervalFilterScript.class, source);
     }
 
     /** {@code source} compiled for the filter context, as {@link #score}. */
@@ -385,6 +481,11 @@ public final class PainlessScore {
         return run(new TermsSetRun(factory));
     }
 
+    /** The number in this request, for its errors, of an {@code intervals} filter script. */
+    public static int runInterval(IntervalFilterScript script) {
+        return run(new IntervalRun(script));
+    }
+
     private static int run(Run run) {
         List<Run> runs = RUNS.get();
         runs.add(run);
@@ -431,6 +532,17 @@ public final class PainlessScore {
         String[] parts = error.substring(at + SCRIPT_ERROR.length()).split("\u0001", 7);
         try {
             Run run = RUNS.get().get(Integer.parseInt(parts[0]));
+            int offset0 = Integer.parseInt(parts[4]);
+            String message0 = parts[6].startsWith("1") ? parts[6].substring(1) : null;
+            if (run instanceof IntervalRun interval) {
+                // The interval, start:end:gaps, where a document goes.
+                String[] at3 = parts[2].split(":", 3);
+                ScriptException painless = interval.rethrown(Integer.parseInt(at3[0]), Integer.parseInt(at3[1]), Integer.parseInt(at3[2]));
+                if (painless != null) {
+                    return painless;
+                }
+                return converted(interval.script(), parts[5], message0, offset0);
+            }
             List<LeafReaderContext> leaves = reader.leaves();
             // The segment by number, or by doc base ("b<base>") where only that is known.
             int leaf = parts[1].startsWith("b") ? byDocBase(leaves, Integer.parseInt(parts[1].substring(1))) : Integer.parseInt(parts[1]);
@@ -446,12 +558,32 @@ public final class PainlessScore {
             if (painless != null) {
                 return painless;
             }
-            Throwable cause = exception(parts[5], message);
-            // Painless numbers a script's lines by source offset + 1.
-            cause.setStackTrace(new StackTraceElement[] { new StackTraceElement(WriterConstants.CLASS_NAME, "execute", null, offset < 0 ? -1 : offset + 1) });
-            return ((PainlessScript) script).convertToScriptException(cause, Map.of());
+            return converted(script, parts[5], message, offset);
         } catch (IOException | RuntimeException e) {
             return new IllegalStateException("native script_score search failed: " + error, e);
+        }
+    }
+
+    /** Painless's {@code ScriptException} around an exception of class {@code name} at source {@code offset}. */
+    private static ScriptException converted(Object script, String name, String message, int offset) {
+        Throwable cause = exception(name, message);
+        // Painless numbers a script's lines by source offset + 1.
+        cause.setStackTrace(new StackTraceElement[] { new StackTraceElement(WriterConstants.CLASS_NAME, "execute", null, offset < 0 ? -1 : offset + 1) });
+        return ((PainlessScript) script).convertToScriptException(cause, Map.of());
+    }
+
+    /** The source of a Painless script instance ({@code $SOURCE} of its class), or null. */
+    public static String sourceOf(Object script) {
+        try {
+            Class<?> c = script.getClass();
+            if (c.getClassLoader() == null || c.getName().equals(WriterConstants.CLASS_NAME) == false) {
+                return null;
+            }
+            Field source = c.getDeclaredField("$SOURCE");
+            source.setAccessible(true);
+            return source.get(null) instanceof String src ? src : null;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            return null;
         }
     }
 

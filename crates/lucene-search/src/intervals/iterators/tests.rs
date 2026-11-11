@@ -227,12 +227,11 @@ fn the_filtering_and_relative_iterators_filter_by_the_other_side() {
 fn filters_extensions_offsets_and_repeats() {
     let ab = || ordered(vec![terms(&[(0, &[0, 5])]), terms(&[(0, &[3, 6])])], None);
     let gaps: BoxIntervals<'static> =
-        BoxIntervals::boxed(FilteredIntervals::new(ab(), IntervalFilterKind::MaxGaps(1)));
+        BoxIntervals::boxed(FilteredIntervals::new(ab(), &IntervalFilterKind::MaxGaps(1)).unwrap());
     assert_eq!(walk(gaps), [(0, 5, 6, 0)]);
-    let width: BoxIntervals<'static> = BoxIntervals::boxed(FilteredIntervals::new(
-        ab(),
-        IntervalFilterKind::MaxWidth(4),
-    ));
+    let width: BoxIntervals<'static> = BoxIntervals::boxed(
+        FilteredIntervals::new(ab(), &IntervalFilterKind::MaxWidth(4)).unwrap(),
+    );
     assert_eq!(walk(width), [(0, 0, 3, 2), (0, 5, 6, 0)]);
     let ext: BoxIntervals<'static> =
         BoxIntervals::boxed(ExtendedIntervals::new(terms(&[(0, &[1, 5])]), 2, 3));
@@ -282,4 +281,47 @@ fn at_least_n_of_m_minimizes_over_the_front_of_the_queue() {
     it.advance(0).unwrap();
     it.next_interval().unwrap();
     assert_eq!(it.current_iterators().len(), 2);
+}
+
+/// A script filter that passes intervals starting at an even position and
+/// fails on one ending past 100.
+#[derive(Debug)]
+struct EvenStarts;
+
+struct EvenAccept;
+
+impl crate::intervals::IntervalScript for EvenStarts {
+    fn accepter(&self) -> Result<Box<dyn crate::intervals::IntervalAccept>> {
+        Ok(Box::new(EvenAccept))
+    }
+}
+
+impl crate::intervals::IntervalAccept for EvenAccept {
+    fn accept(&mut self, start: i32, end: i32, gaps: i32) -> Result<bool> {
+        if end > 100 {
+            return Err(crate::Error::IllegalArgument(format!(
+                "at {start}:{end}:{gaps}"
+            )));
+        }
+        Ok(start % 2 == 0)
+    }
+}
+
+#[test]
+fn a_script_filter_passes_what_its_script_accepts_and_fails_with_it() {
+    let script = || IntervalFilterKind::Script {
+        name: "even".into(),
+        script: std::sync::Arc::new(EvenStarts),
+    };
+    let ab = || ordered(vec![terms(&[(0, &[0, 5])]), terms(&[(0, &[3, 6])])], None);
+    let even: BoxIntervals<'static> =
+        BoxIntervals::boxed(FilteredIntervals::new(ab(), &script()).unwrap());
+    assert_eq!(walk(even), [(0, 0, 3, 2)]);
+    let mut far = FilteredIntervals::new(terms(&[(0, &[200])]), &script()).unwrap();
+    far.next_doc().unwrap();
+    let e = far.next_interval().unwrap_err().to_string();
+    assert!(e.contains("at 200:200:0"), "{e}");
+    // Equal by name, as `FilteredIntervalsSource.equals`.
+    assert_eq!(script(), script());
+    assert_ne!(script(), IntervalFilterKind::MaxGaps(1));
 }

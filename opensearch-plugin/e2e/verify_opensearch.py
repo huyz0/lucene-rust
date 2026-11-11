@@ -979,6 +979,11 @@ def script_errors(index, shards):
         ("agg script missing value", {"size": 0, "aggs": {"s": {"sum": {"script": {"source": "doc['sp'].value"}}}}}),
         ("agg script string value", {"size": 0, "aggs": {"s": {"max": {"script": {"source": "doc['tag'].size() == 0 ? 1 : doc['tag'].value"}}}}}),
     ]
+    # intervals: a script filter's exception.
+    queries += [
+        ("interval filter division by zero", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+                                              "filter": {"script": {"source": "1 / (interval.start - interval.start) > 0"}}}}}}}),
+    ]
     # terms_set: a minimum_should_match_script's exception.
     queries += [
         ("terms_set minimum missing value", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],

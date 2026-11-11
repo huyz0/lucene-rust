@@ -167,7 +167,7 @@ where the native call's fixed cost shows -- see
 |---|---|---|
 | `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
 | `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
-| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter but `script`) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a `script` filter falls back (`interval_ScriptFilterSource`) |
+| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`) |
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |

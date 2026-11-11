@@ -50,7 +50,13 @@ def rows():
     add("intervals prefix", {"query": {"intervals": {"body": {"prefix": {"prefix": "ga"}}}}}, "native")
     add("intervals wildcard", {"query": {"intervals": {"body": {"wildcard": {"pattern": "*ta"}}}}}, "native")
     add("intervals fuzzy", {"query": {"intervals": {"body": {"fuzzy": {"term": "alpah"}}}}}, "native")
-    add("intervals script filter", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "filter": {"script": {"source": "interval.start > 1"}}}}}}}, "interval_*")
+    add("intervals script filter", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "filter": {"script": {"source": "interval.start > 1"}}}}}}}, "native")
+    add("intervals script filter gaps", {"query": {"intervals": {"body": {"match": {"query": "gamma delta epsilon", "max_gaps": 10,
+        "filter": {"script": {"source": "interval.getGaps() <= 2 && interval.getEnd() - interval.getStart() < 6"}}}}}}}, "native")
+    add("intervals script filter loop", {"query": {"intervals": {"body": {"all_of": {"ordered": True, "intervals": [{"match": {"query": "alpha"}}, {"match": {"query": "beta"}}],
+        "filter": {"script": {"source": "int w = 0; for (int i = interval.start; i <= interval.end; i++) { w++; } return w % 2 == 0;"}}}}}}}, "native")
+    add("intervals script filter refused", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+        "filter": {"script": {"source": "[interval.start, interval.end].stream().allMatch(x -> x > 0)"}}}}}}}, "interval_painless")
 
     # combined_fields (`CombinedFieldQuery`, node 23).
     add("combined_fields", {"query": {"combined_fields": {"query": "alpha beta", "fields": ["body", "title^2"]}}}, "native")

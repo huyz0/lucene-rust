@@ -1054,7 +1054,7 @@ fn source_matches(
                 return Ok(None);
             };
             let filtered =
-                BoxIntervals::boxed(iterators::FilteredIntervals::new(wrap(&mi, doc), *filter));
+                BoxIntervals::boxed(iterators::FilteredIntervals::new(wrap(&mi, doc), filter)?);
             as_matches(filtered, mi, doc)?
         }
         S::Extended {
