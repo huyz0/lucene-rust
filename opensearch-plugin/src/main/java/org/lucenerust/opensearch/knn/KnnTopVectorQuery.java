@@ -229,12 +229,13 @@ public final class KnnTopVectorQuery extends Query {
 
     /**
      * The grouped answer by Lucene: the top {@code n} documents for ever larger {@code n} (from {@code
-     * candidates}, four times more each round) until they cover {@code k} groups or the reader's every
-     * document, then grouped.
+     * candidates}, four times more each round) until they cover {@code k} groups, the reader's every
+     * document, or a round brings no new group, then grouped.
      */
     private ScoreDoc[] groupedByLucene(IndexSearcher searcher, Query filter) throws IOException {
         int maxDoc = Math.max(1, searcher.getIndexReader().maxDoc());
         int n = Math.min(maxDoc, (int) Math.min(Integer.MAX_VALUE, Math.max((long) candidates, (long) k * grouping.size())));
+        int before = -1;
         while (true) {
             Query lucene = target.floats() != null
                 ? new KnnFloatVectorQuery(field, target.floats(), n, filter)
@@ -242,9 +243,10 @@ public final class KnnTopVectorQuery extends Query {
             ScoreDoc[] top = searcher.search(lucene, n).scoreDocs;
             List<ScoreDoc> grouped = new ArrayList<>();
             int groups = group(searcher, top, grouped);
-            if (groups >= k || n >= maxDoc || top.length < n) {
+            if (groups >= k || groups == before || n >= maxDoc || top.length < n) {
                 return grouped.toArray(ScoreDoc[]::new);
             }
+            before = groups;
             n = (int) Math.min(maxDoc, (long) n * 4);
         }
     }

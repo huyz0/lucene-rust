@@ -108,7 +108,25 @@ fn doc(id: usize) -> (ExplicitDocument, Vec<DocumentVector>) {
             value: FieldValue::Long(g as i64 * 1_000_003 - 7),
         });
     }
-    (d, vec![DocumentVector::float32("v", vector(id))])
+    // A document without a vector may hold several groups: no search
+    // offers it, so none refuses it.
+    if id == 4 {
+        d.fields.doc_values.push(StoredField {
+            field_number: 3,
+            value: FieldValue::Binary(b"g-extra".to_vec()),
+        });
+    }
+    let vectors = if has_vector(id) {
+        vec![DocumentVector::float32("v", vector(id))]
+    } else {
+        Vec::new()
+    };
+    (d, vectors)
+}
+
+/// One document in five has no vector: the field is sparse.
+fn has_vector(id: usize) -> bool {
+    id % 5 != 4
 }
 
 fn build(dir: &FsDirectory, format: KnnVectorsFormat) {
@@ -178,7 +196,7 @@ fn exact(
     keep: impl Fn(usize) -> bool,
 ) -> Vec<(usize, f32)> {
     let mut by: HashMap<Option<usize>, Vec<(usize, f32)>> = HashMap::new();
-    for id in (0..DOCS).filter(|&id| keep(id)) {
+    for id in (0..DOCS).filter(|&id| keep(id) && has_vector(id)) {
         by.entry(group(id))
             .or_default()
             .push((id, score(target, &vector(id))));

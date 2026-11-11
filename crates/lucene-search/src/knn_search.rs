@@ -465,8 +465,8 @@ impl lucene_util::group_top::GroupItem for MergedHit {
 /// the beam; the segments' groups are merged by their values. Keeping
 /// several documents a group, the walks look for each group's best alone,
 /// and every document of the best `k` groups is then scored in every
-/// segment. Realtime buffers are not searched, as a nested search searches
-/// none.
+/// segment. A realtime buffer's documents are searched through their
+/// segments' own vectors, not the buffer's graph, as a nested search does.
 ///
 /// # Errors
 /// As [`knn_top_hits`], and the group field's: doc values of a type
@@ -583,7 +583,7 @@ pub fn knn_top_hits_grouped(
                 continue;
             };
             for h in hits {
-                let value = column.value(column.id(h.doc_id))?;
+                let value = column.value_of_doc(h.doc_id)?;
                 let next = i32::try_from(values.len()).unwrap_or(i32::MAX);
                 let g = *numbered.entry(value).or_insert_with_key(|v| {
                     values.push(v.clone());

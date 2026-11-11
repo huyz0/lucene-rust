@@ -283,6 +283,8 @@ enum Selector<'a> {
 /// ordinal of the segment's dictionary.
 enum Key {
     Missing,
+    /// Several values, which collapsing refuses.
+    Multi,
     Long(i64),
     Ord(i32),
 }
@@ -324,8 +326,16 @@ impl<'a> Selector<'a> {
         })
     }
 
-    /// `advanceTo(doc)`: the document's key.
+    /// `advanceTo(doc)`: the document's key, refusing several values.
     fn advance(&mut self, doc: i32) -> Result<Key> {
+        match self.key(doc)? {
+            Key::Multi => Err(multi_valued(doc)),
+            k => Ok(k),
+        }
+    }
+
+    /// The document's key, [`Key::Multi`] for several values.
+    fn key(&mut self, doc: i32) -> Result<Key> {
         Ok(match self {
             Selector::Empty => Key::Missing,
             Selector::Numeric(v) => {
@@ -339,7 +349,7 @@ impl<'a> Selector<'a> {
                 if !v.advance_exact(doc)? {
                     Key::Missing
                 } else if v.doc_value_count() > 1 {
-                    return Err(multi_valued(doc));
+                    Key::Multi
                 } else {
                     Key::Long(v.next_value()?)
                 }
@@ -357,7 +367,7 @@ impl<'a> Selector<'a> {
                 } else {
                     let ord = v.next_ord()?;
                     if v.doc_value_count() != 1 {
-                        return Err(multi_valued(doc));
+                        return Ok(Key::Multi);
                     }
                     Key::Ord(i32::try_from(ord).map_err(|_| SortError::Ordinal(ord))?)
                 }
@@ -408,7 +418,8 @@ impl<'a> GroupColumn<'a> {
             let mut missing = false;
             let mut groups = 0usize;
             for doc in 0..max_doc {
-                let id = match selector.advance(doc)? {
+                let id = match selector.key(doc)? {
+                    Key::Multi => MULTI,
                     Key::Missing => {
                         missing = true;
                         -1
@@ -531,6 +542,18 @@ impl<'a> GroupColumn<'a> {
         }
     }
 
+    /// Hit `doc`'s group value; an error for a document with several
+    /// values, as collapsing refuses it.
+    ///
+    /// # Errors
+    /// As [`Self::value`], and a multi-valued document.
+    pub(crate) fn value_of_doc(&self, doc: i32) -> Result<CollapseValue> {
+        match self.id(doc) {
+            MULTI => Err(multi_valued(doc)),
+            id => self.value(id),
+        }
+    }
+
     /// Group `id`'s value, as the collapse collector reports it.
     ///
     /// # Errors
@@ -552,6 +575,10 @@ impl<'a> GroupColumn<'a> {
         }
     }
 }
+
+/// The group id of a document with several values: in no group's
+/// members, and refused once the document is a hit.
+pub(crate) const MULTI: i32 = -2;
 
 /// Group id `g`'s slot in [`group_members`]' starts: `g + 1`.
 fn slot(g: i32) -> usize {
@@ -579,7 +606,7 @@ fn group_members(ids: &[i32]) -> (Vec<u32>, Vec<i32>) {
     }
     let mut next = starts.clone();
     let mut members = vec![0i32; ids.len()];
-    for (doc, &g) in ids.iter().enumerate() {
+    for (doc, &g) in ids.iter().enumerate().filter(|&(_, &g)| g != MULTI) {
         let at = &mut next[slot(g)];
         members[*at as usize] = i32::try_from(doc).unwrap_or(i32::MAX);
         *at = at.saturating_add(1);
@@ -686,6 +713,8 @@ impl Collapser {
         }
         let key = selector.advance(doc)?;
         let group = match key {
+            // `advance` refuses several values.
+            Key::Multi => None,
             Key::Missing => self.map.get(&CollapseValue::Missing).copied(),
             Key::Long(v) => self.map.get(&CollapseValue::Long(v)).copied(),
             Key::Ord(o) => match self.ords.get(&o) {
@@ -710,6 +739,12 @@ impl Collapser {
     /// The value `key` names (`copyValue`).
     fn value_of(selector: &mut Selector<'_>, key: &Key) -> Result<CollapseValue> {
         Ok(match *key {
+            // `advance` refuses several values before a key gets here.
+            Key::Multi => {
+                return Err(Error::IllegalState(
+                    "the collapse field must be single valued".into(),
+                ))
+            }
             Key::Missing => CollapseValue::Missing,
             Key::Long(v) => CollapseValue::Long(v),
             Key::Ord(o) => CollapseValue::Bytes(selector.term(o)?),
