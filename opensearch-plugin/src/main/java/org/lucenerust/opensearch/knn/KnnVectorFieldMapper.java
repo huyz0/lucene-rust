@@ -153,7 +153,8 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                 method.getValue(),
                 mode.getValue(),
                 compression.getValue(),
-                indexSettings.get(KnnSettings.SPACE_TYPE.getKey())
+                // An index created with the removed index.knn.space_type keeps the space its segments hold.
+                indexSettings.get("archived.index.knn.space_type")
             );
         }
 

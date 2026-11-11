@@ -15,12 +15,17 @@ are compared:
              k, min_score, max_distance, filters, inside bool and hybrid, the
              neural_query_enricher defaults, and its errors; on a Java-engine
              and (plugin only) a Rust-engine index, which must answer natively
+  rerank     the rerank response processor (ml_opensearch with a cross-encoder,
+             by_field) and its pipeline errors
+  two_phase  neural_sparse_two_phase_processor: hits and pipeline errors
+  warmup     _plugins/_neural/warmup and clear_cache on sparse and other indexes
+  settings   every knn.* and neural_search setting's default, and bad values
   sparse     neural_sparse by query_text with a model, by query_text with the
              default bert-uncased analyzer, by query_tokens, with the enricher,
              and its errors
 
   scripts/check-neural-plugin.py [--stock http://localhost:9200] [--keep]
-                                 [--only analyze,ingest,neural,sparse]
+                                 [--only analyze,ingest,neural,sparse,rerank,two_phase,warmup,settings]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
@@ -81,8 +86,13 @@ def answer(r):
     if s != 200 and isinstance(o, dict) and "error" in o:
         e = o["error"]
         root = (e.get("root_cause") or [{}])[0]
-        return s, e.get("type"), e.get("reason"), root.get("type"), root.get("reason")
+        return s, e.get("type"), pkg(e.get("reason")), root.get("type"), pkg(root.get("reason"))
     return s, o
+
+
+def pkg(reason):
+    # The ported classes live under another package, which shows in Java exception messages.
+    return reason.replace("org.lucenerust.opensearch.neural.", "org.opensearch.neuralsearch.") if isinstance(reason, str) else reason
 
 
 def hits(r):
@@ -387,6 +397,129 @@ def sparse(c, ours, stock, z):
     return mids
 
 
+# ---------------------------------------------------------------- rerank
+
+CROSS_CONFIG = {"model_type": "bert", "embedding_dimension": 1, "framework_type": "huggingface_transformers"}
+
+
+def rerank(c, ours, stock, z):
+    mids = [deploy(n, golden.CROSS, "TEXT_SIMILARITY", z, CROSS_CONFIG) for n in (ours, stock)]
+    docs = [{**d, "meta": {"rank": (int(d["_id"]) * 7) % 11}} for d in DOCS]
+    for n, mid in zip((ours, stock), mids):
+        n.call("DELETE", "/rr")
+        n.ok("PUT", "/rr", {"settings": {"number_of_shards": 1, "number_of_replicas": 0},
+                            "mappings": {"properties": {"text": {"type": "text"}, "tag": {"type": "keyword"}, "n": {"type": "integer"}}}})
+        bulk(n, "rr", docs)
+        n.ok("PUT", "/_search/pipeline/rr-ml", {"response_processors": [{"rerank": {
+            "ml_opensearch": {"model_id": mid}, "context": {"document_fields": ["text"]}}}]})
+        n.ok("PUT", "/_search/pipeline/rr-field", {"response_processors": [{"rerank": {
+            "by_field": {"target_field": "meta.rank", "keep_previous_score": True}}}]})
+        n.ok("PUT", "/_search/pipeline/rr-field-remove", {"response_processors": [{"rerank": {
+            "by_field": {"target_field": "meta.rank", "remove_target_field": True}}}]})
+    q = {"query": {"match": {"text": "documents search"}}, "size": 10}
+    searches = [
+        ("ml query_text", "rr-ml", {**q, "ext": {"rerank": {"query_context": {"query_text": golden.QUERY}}}}),
+        ("ml query_text_path", "rr-ml", {**q, "ext": {"rerank": {"query_context": {"query_text_path": "query.match.text.query"}}}}),
+        ("ml no context", "rr-ml", q),
+        ("ml both contexts", "rr-ml", {**q, "ext": {"rerank": {"query_context": {"query_text": "a", "query_text_path": "x"}}}}),
+        ("ml bad path", "rr-ml", {**q, "ext": {"rerank": {"query_context": {"query_text_path": "query.nope"}}}}),
+        ("by_field", "rr-field", q),
+        ("by_field remove", "rr-field-remove", q),
+    ]
+    for label, pipeline, body in searches:
+        a, b = (n.call("POST", f"/rr/_search?search_pipeline={pipeline}", body) for n in (ours, stock))
+        source = lambda r: [(h["_id"], h["_score"], h.get("_source")) for h in r[1]["hits"]["hits"]] if r[0] == 200 else answer(r)
+        compare(c, f"rerank {label}", source(a), source(b))
+    bad = [
+        ("no type", {"response_processors": [{"rerank": {"context": {"document_fields": ["text"]}}}]}),
+        ("two types", {"response_processors": [{"rerank": {"ml_opensearch": {"model_id": "m"}, "by_field": {"target_field": "x"},
+                                                          "context": {"document_fields": ["text"]}}}]}),
+        ("ml without context", {"response_processors": [{"rerank": {"ml_opensearch": {"model_id": "m"}}}]}),
+        ("ml empty fields", {"response_processors": [{"rerank": {"ml_opensearch": {"model_id": "m"}, "context": {"document_fields": []}}}]}),
+        ("ml too many fields", {"response_processors": [{"rerank": {"ml_opensearch": {"model_id": "m"},
+                                                                   "context": {"document_fields": [f"f{i}" for i in range(51)]}}}]}),
+        ("by_field without target", {"response_processors": [{"rerank": {"by_field": {}}}]}),
+        ("by_field bad flag", {"response_processors": [{"rerank": {"by_field": {"target_field": "x", "keep_previous_score": "maybe"}}}]}),
+    ]
+    for label, body in bad:
+        compare(c, f"rerank pipeline {label}", *both(ours, stock, lambda n: answer(n.call("PUT", "/_search/pipeline/rr-bad", body))))
+
+
+# ---------------------------------------------------------------- two-phase
+
+def two_phase(c, ours, stock, z):
+    mids = [deploy(n, golden.SPARSE, "SPARSE_ENCODING", z) for n in (ours, stock)]
+    for n, mid in zip((ours, stock), mids):
+        sparse_index(n, "tp", mid)
+        n.ok("PUT", "/_search/pipeline/tp", {"request_processors": [{"neural_sparse_two_phase_processor": {
+            "tag": "t", "description": "d", "enabled": True,
+            "two_phase_parameter": {"prune_ratio": 0.4, "expansion_rate": 5.0, "max_window_size": 10000}}}]})
+        n.ok("PUT", "/_search/pipeline/tp-off", {"request_processors": [{"neural_sparse_two_phase_processor": {"enabled": False}}]})
+    q = lambda mid: {"size": 15, "query": {"neural_sparse": {"feat": {"query_text": golden.QUERY, "model_id": mid}}}}
+    bq = lambda mid: {"size": 15, "query": {"bool": {"should": [{"neural_sparse": {"feat": {"query_text": "documents", "model_id": mid}}},
+                                                               {"match": {"text": "search"}}]}}}
+    for label, pipeline, make in (("query", "tp", q), ("bool", "tp", bq), ("disabled", "tp-off", q)):
+        a, b = (hits(n.call("POST", f"/tp/_search?search_pipeline={pipeline}", make(mid))) for n, mid in zip((ours, stock), mids))
+        compare(c, f"two-phase {label}", a, b)
+    bad = [("prune_ratio", {"two_phase_parameter": {"prune_ratio": 2.0}}),
+           ("expansion_rate", {"two_phase_parameter": {"expansion_rate": 0.5}}),
+           ("max_window_size", {"two_phase_parameter": {"max_window_size": 10}}),
+           ("unknown", {"two_phase_parameter": {"bogus": 1}})]
+    for label, body in bad:
+        p = {"request_processors": [{"neural_sparse_two_phase_processor": body}]}
+        compare(c, f"two-phase pipeline {label}", *both(ours, stock, lambda n: answer(n.call("PUT", "/_search/pipeline/tp-bad", p))))
+
+
+# ---------------------------------------------------------------- warmup, clear_cache, settings
+
+def warmup(c, ours, stock):
+    for n in (ours, stock):
+        for name, sparse_flag in (("wsparse", True), ("wplain", False)):
+            n.call("DELETE", f"/{name}")
+            n.ok("PUT", f"/{name}", {"settings": {"index.sparse": sparse_flag, "number_of_shards": 2, "number_of_replicas": 0},
+                                     "mappings": {"properties": {"emb": {"type": "sparse_vector", "method": {"name": "seismic"}}}
+                                                  if sparse_flag else {"t": {"type": "text"}}}})
+    for op in ("warmup", "clear_cache"):
+        for idx in ("wsparse", "wplain", "wsparse,wplain", "missing-index"):
+            compare(c, f"{op} {idx}", *both(ours, stock, lambda n: answer(n.call("POST", f"/_plugins/_neural/{op}/{idx}"))))
+        compare(c, f"{op} GET", *both(ours, stock, lambda n: n.call("GET", f"/_plugins/_neural/{op}/wsparse")[0]))
+
+
+PREFIXES = ("knn.", "plugins.neural_search.", "index.knn.", "index.neural_search.", "seismic_thread_pool.")
+
+
+def settings(c, ours, stock):
+    def flat(n):
+        r = n.ok("GET", "/_cluster/settings?include_defaults=true&flat_settings=true")
+        out = {}
+        for part in ("defaults", "persistent", "transient"):
+            out.update({k: v for k, v in r.get(part, {}).items() if k.startswith(PREFIXES)})
+        return out
+    a, b = flat(ours), flat(stock)
+    for k in sorted(set(a) | set(b)):
+        compare(c, f"cluster setting {k}", a.get(k, "<missing>"), b.get(k, "<missing>"))
+    def index_flat(n):
+        n.call("DELETE", "/sset")
+        n.ok("PUT", "/sset", {"settings": {"index.knn": True}})
+        r = n.ok("GET", "/sset/_settings?include_defaults=true&flat_settings=true")["sset"]
+        return {k: v for part in ("settings", "defaults") for k, v in r.get(part, {}).items() if k.startswith(PREFIXES)}
+    a, b = index_flat(ours), index_flat(stock)
+    for k in sorted(set(a) | set(b)):
+        compare(c, f"index setting {k}", a.get(k, "<missing>"), b.get(k, "<missing>"))
+    for key, value in (("plugins.neural_search.circuit_breaker.overhead", -1), ("knn.quantization.cache.size.limit", "50%"),
+                       ("plugins.neural_search.sparse.algo_param.index_thread_qty", 0), ("knn.remote_index_build.poll.interval", "x"),
+                       ("knn.memory.circuit_breaker.limit", "150%"), ("knn.memory.circuit_breaker.limit", "abc"),
+                       ("knn.memory.circuit_breaker.limit.hot", "101%"), ("knn.algo_param.index_thread_qty", 0),
+                       ("knn.algo_param.index_thread_qty", 33)):
+        body = {"persistent": {key: value}}
+        compare(c, f"bad setting {key}", *both(ours, stock, lambda n: answer(n.call("PUT", "/_cluster/settings", body))))
+    for key, value in (("knn.memory.circuit_breaker.limit.hot", "40%"), ("knn.memory.circuit_breaker.limit", "60%"),
+                       ("knn.algo_param.index_thread_qty", 32), ("knn.circuit_breaker.unset.percentage", 80)):
+        for v in (value, None):
+            body = {"persistent": {key: v}}
+            compare(c, f"set {key}={v}", *both(ours, stock, lambda n: answer(n.call("PUT", "/_cluster/settings", body))))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stock")
@@ -409,7 +542,7 @@ def main():
         ml.start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{VERSION}")
         stock = ml.Node(f"http://localhost:{STOCK[1]}")
     ours = ml.Node(f"http://localhost:{OURS[1]}")
-    zips = {"tiny-bert": golden.model_zip("tiny-bert"), golden.SPARSE: golden.model_zip(golden.SPARSE)}
+    zips = {name: golden.model_zip(name) for name in ("tiny-bert", golden.SPARSE, golden.CROSS)}
     ml.serve(zips)
     c = ml.Check()
     try:
@@ -420,6 +553,10 @@ def main():
             "analyze": lambda: analyze(c, ours, stock),
             "neural": lambda: neural(c, ours, stock, zips["tiny-bert"]),
             "sparse": lambda: sparse(c, ours, stock, zips[golden.SPARSE]),
+            "rerank": lambda: rerank(c, ours, stock, zips[golden.CROSS]),
+            "two_phase": lambda: two_phase(c, ours, stock, zips[golden.SPARSE]),
+            "warmup": lambda: warmup(c, ours, stock),
+            "settings": lambda: settings(c, ours, stock),
             "ingest": lambda: ingest(c, ours, stock, [text_model(n, zips["tiny-bert"]) for n in (ours, stock)],
                                      [deploy(n, golden.SPARSE, "SPARSE_ENCODING", zips[golden.SPARSE]) for n in (ours, stock)]),
         }

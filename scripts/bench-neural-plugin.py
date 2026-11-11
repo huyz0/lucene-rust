@@ -11,6 +11,9 @@ and tiny-sparse encoding models. Per node, one at a time:
   neural     QUERIES neural queries (k 10), one at a time: p50 / p99 ms
   sparse     neural_sparse by query_text with the model, and with the default
              bert-uncased analyzer: p50 / p99 ms
+  rerank     a match query's top 10 reranked by the tiny cross-encoder through
+             the rerank response processor, and the same query unreranked:
+             p50 / p99 ms
 
   scripts/bench-neural-plugin.py [--docs 4000] [--queries 400]
 """
@@ -50,10 +53,13 @@ def model_id(n, prefix):
 def bench(n, docs, queries):
     rng = random.Random(7)
     dense, sparse = model_id(n, "tiny-bert-"), model_id(n, "tiny-sparse-")
+    cross = model_id(n, golden.CROSS)
     n.call("DELETE", "/bench")
     n.ok("PUT", "/_ingest/pipeline/bench-p", {"processors": [
         {"text_embedding": {"model_id": dense, "field_map": {"text": "emb"}}},
         {"sparse_encoding": {"model_id": sparse, "field_map": {"text": "feat"}}}]})
+    n.ok("PUT", "/_search/pipeline/bench-rr", {"response_processors": [{"rerank": {
+        "ml_opensearch": {"model_id": cross}, "context": {"document_fields": ["text"]}}}]})
     n.ok("PUT", "/bench", {"settings": {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0,
                                         "default_pipeline": "bench-p", "refresh_interval": -1},
                            "mappings": {"properties": {"text": {"type": "text"}, "feat": {"type": "rank_features"},
@@ -67,8 +73,8 @@ def bench(n, docs, queries):
     n.ok("POST", "/bench/_forcemerge?max_num_segments=1")
     qs = [text(rng, rng.randint(2, 6)) for _ in range(queries)]
 
-    def run(body):
-        s, r = n.call("POST", "/bench/_search", body)
+    def run(body, pipeline=None):
+        s, r = n.call("POST", "/bench/_search" + (f"?search_pipeline={pipeline}" if pipeline else ""), body)
         assert s == 200, json.dumps(r)[:500]
 
     for q in qs[:20]:
@@ -77,6 +83,9 @@ def bench(n, docs, queries):
     out["neural p50/p99 ms"] = timed(lambda i: run({"query": {"neural": {"emb": {"query_text": qs[i], "model_id": dense, "k": 10}}}}), queries)
     out["neural_sparse model p50/p99 ms"] = timed(lambda i: run({"query": {"neural_sparse": {"feat": {"query_text": qs[i], "model_id": sparse}}}}), queries)
     out["neural_sparse analyzer p50/p99 ms"] = timed(lambda i: run({"query": {"neural_sparse": {"feat": {"query_text": qs[i]}}}}), queries)
+    match = lambda i: {"query": {"match": {"text": qs[i]}}, "size": 10}
+    out["match p50/p99 ms"] = timed(lambda i: run(match(i)), queries)
+    out["rerank p50/p99 ms"] = timed(lambda i: run({**match(i), "ext": {"rerank": {"query_context": {"query_text": qs[i]}}}}, "bench-rr"), queries)
     return {k: (tuple(round(x, 2) for x in v) if isinstance(v, tuple) else v) for k, v in out.items()}
 
 
