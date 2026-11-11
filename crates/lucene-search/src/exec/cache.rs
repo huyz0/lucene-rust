@@ -409,8 +409,9 @@ impl SegmentQueryCache {
     }
 
     /// The sort column `key` of a segment of `max_doc` documents: cached,
-    /// or built by `build` on its second use when it fits the budget. `None`
-    /// means read the column per document.
+    /// or built by `build` on its second use (and handed back, uncached,
+    /// when it does not fit the budget). `None` means read the column per
+    /// document.
     pub(crate) fn sort_column(
         &self,
         key: &str,
@@ -435,8 +436,9 @@ impl SegmentQueryCache {
         let col = Arc::new(build()?);
         let bytes = col.ram_bytes();
         let mut c = lock(&self.columns);
+        // Built but over a cap: the search still uses it, uncached.
         if c.bytes.saturating_add(bytes) > MAX_COLUMN_BYTES {
-            return Ok(None);
+            return Ok(Some(col));
         }
         // Reserve against the process-wide cap; the segment's share goes
         // back when its cache is dropped.
@@ -449,7 +451,7 @@ impl SegmentQueryCache {
             },
         );
         if reserved.is_err() {
-            return Ok(None);
+            return Ok(Some(col));
         }
         c.bytes += bytes;
         c.built.insert(key.to_string(), Arc::clone(&col));
@@ -1134,10 +1136,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(Arc::ptr_eq(&built, &again));
-        // A column past the budget is built once and dropped; not retried.
+        // A column past the budget is built once, handed back uncached, and
+        // not retried.
         let big = MAX_COLUMN_BYTES / 4 + 1;
         assert!(col("g", 20_000, big).unwrap().is_none());
-        assert!(col("g", 20_000, big).unwrap().is_none());
+        assert!(col("g", 20_000, big).unwrap().is_some());
         assert!(col("g", 20_000, big).unwrap().is_none());
         // A failed build is the search's error.
         assert!(col("h", 20_000, 1).unwrap().is_none());
