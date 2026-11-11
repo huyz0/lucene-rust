@@ -661,6 +661,155 @@ def mmr(c, ours, stock, z):
             n.ok("PUT", "/_cluster/settings", {"persistent": {factories: None}})
 
 
+# ---------------------------------------------------------------- ivf
+
+IVF_FIELD = {"type": "knn_vector", "dimension": 32, "space_type": "l2",
+             "method": {"name": "ivf", "engine": "lucene_rust", "parameters": {"target_cluster_size": 16, "rerank_encoding": "float"}}}
+# Every cluster: the IVF search is then the exhaustive one, which stock's HNSW over 36 documents is too.
+ALL_PROBES = {"nprobes": 1024}
+
+
+def ivf(c, ours, stock, z):
+    """The plugin's IVF fields (lucene_rust engine) through the stock k-NN and neural-search surface:
+    the same documents, hits, scores and errors as stock's lucene HNSW field over the same documents."""
+    mids = [text_model(n, z) for n in (ours, stock)]
+    sem = [semantic_dense_model(n, z) for n in (ours, stock)]
+    hnsw = {"type": "knn_vector", "dimension": 32, "space_type": "l2", "method": {"name": "hnsw", "engine": "lucene"}}
+    cos = lambda f: {**f, "space_type": "cosinesimil"}
+    ip = lambda f: {**f, "space_type": "innerproduct"}
+    for n, mid, smid in zip((ours, stock), mids, sem):
+        field = IVF_FIELD if n is ours else hnsw
+        settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "default_pipeline": "ivf-p"}
+        if n is ours:
+            settings["index.lucene_rust.engine"] = True
+        n.ok("PUT", "/_ingest/pipeline/ivf-p", {"processors": [{"text_embedding": {"model_id": mid, "field_map": {"text": "emb"}}},
+                                                               {"copy": {"source_field": "emb", "target_field": "cos"}},
+                                                               {"copy": {"source_field": "emb", "target_field": "ip"}}]})
+        n.call("DELETE", "/ivf")
+        n.ok("PUT", "/ivf", {"settings": settings, "mappings": {"properties": {
+            "text": {"type": "text"}, "tag": {"type": "keyword"}, "n": {"type": "integer"},
+            "emb": field, "cos": cos(field), "ip": ip(field)}}})
+        bulk(n, "ivf", DOCS)
+        n.ok("PUT", "/_search/pipeline/ivf-hybrid", {"phase_results_processors": [{"normalization-processor": {
+            "normalization": {"technique": "min_max"}, "combination": {"technique": "arithmetic_mean"}}}]})
+        # A semantic field whose dense embeddings are an IVF field.
+        n.call("DELETE", "/ivf-sem")
+        dense = {"dense_embedding_config": {"method": IVF_FIELD["method"]}} if n is ours else {}
+        n.ok("PUT", "/ivf-sem", {"settings": {k: v for k, v in settings.items() if k != "default_pipeline"},
+                                 "mappings": {"properties": {"text": {"type": "semantic", "model_id": smid, **dense}, "n": {"type": "integer"}}}})
+        bulk(n, "ivf-sem", [{"_id": d["_id"], "text": d["text"], "n": d["n"]} for d in DOCS])
+
+    # Between two documents: a query equal to a document makes MMR's later picks ties.
+    a, b = (ours.ok("GET", f"/ivf/_doc/{i}")["_source"]["emb"] for i in (5, 8))
+    vec = [round((x + y) / 2, 4) for x, y in zip(a, b)]
+    knn = lambda f="emb", **kw: {"knn": {f: {"vector": vec, **kw}}}
+    neural = lambda f="emb", **kw: {"neural": {f: {"query_text": golden.QUERY, "model_id": "<mid>", **kw}}}  # kw may override query_text
+    mmr = lambda **kw: {"mmr": {"diversity": 0.5, "candidates": 20, **kw}}
+    cases = [
+        ("knn", "/ivf", {"query": knn(k=10)}),
+        ("knn cosine", "/ivf", {"query": knn("cos", k=10)}),
+        ("knn innerproduct", "/ivf", {"query": knn("ip", k=10)}),
+        ("knn filter", "/ivf", {"query": knn(k=10, filter={"term": {"tag": "even"}})}),
+        ("knn min_score", "/ivf", {"size": 50, "query": knn(min_score=0.6)}),
+        ("knn max_distance", "/ivf", {"size": 50, "query": knn(max_distance=0.8)}),
+        ("knn cosine min_score", "/ivf", {"size": 50, "query": knn("cos", min_score=0.8)}),
+        ("knn rescore", "/ivf", {"query": knn(k=10, rescore={"oversample_factor": 2.0})}),
+        ("knn boost name", "/ivf", {"query": knn(k=5, boost=2.0, _name="q")}),
+        ("knn in bool", "/ivf", {"query": {"bool": {"must": [knn(k=10)], "filter": [{"range": {"n": {"lt": 20}}}]}}}),
+        ("knn explain", "/ivf", {"size": 3, "explain": True, "query": knn(k=3)}),
+        ("knn source vector", "/ivf", {"size": 3, "_source": ["emb", "n"], "query": knn(k=3)}),
+        ("knn fields", "/ivf", {"size": 3, "_source": False, "fields": ["emb"], "docvalue_fields": ["emb"], "query": knn(k=3)}),
+        ("knn from", "/ivf", {"from": 3, "size": 4, "query": knn(k=10)}),
+        ("knn two indices", "/ivf,ivf-sem", {"query": knn(k=5)}),
+        ("knn_score script", "/ivf", {"size": 5, "query": {"script_score": {"query": {"match_all": {}}, "script": {
+            "source": "knn_score", "lang": "knn", "params": {"field": "emb", "query_value": vec, "space_type": "l2"}}}}}),
+        ("painless l2Squared", "/ivf", {"size": 5, "query": {"script_score": {"query": {"match_all": {}}, "script": {
+            "source": "1 / (1 + l2Squared(params.q, doc['emb']))", "params": {"q": vec}}}}}),
+        ("neural", "/ivf", {"query": neural(k=10)}),
+        ("neural filter", "/ivf", {"query": neural(k=10, filter={"term": {"tag": "odd"}})}),
+        ("neural min_score", "/ivf", {"size": 50, "query": neural(min_score=0.5)}),
+        ("neural max_distance", "/ivf", {"size": 50, "query": neural(max_distance=1.2)}),
+        ("neural cosine", "/ivf", {"query": neural("cos", k=10)}),
+        ("neural in bool", "/ivf", {"query": {"bool": {"should": [neural(k=5), {"match": {"text": "documents"}}]}}}),
+        ("hybrid", "/ivf/_search?search_pipeline=ivf-hybrid", {"query": {"hybrid": {"queries": [
+            {"match": {"text": "documents search"}}, neural(k=10)]}}}),
+        ("hybrid knn", "/ivf/_search?search_pipeline=ivf-hybrid", {"query": {"hybrid": {"queries": [
+            {"match": {"text": "documents"}}, knn(k=10)]}}}),
+        ("semantic neural", "/ivf-sem", {"query": {"neural": {"text": {"query_text": golden.QUERY, "k": 10}}}}),
+        ("semantic neural filter", "/ivf-sem", {"query": {"neural": {"text": {"query_text": "documents", "k": 5, "filter": {"range": {"n": {"gte": 4}}}}}}}),
+        ("mmr knn", "/ivf", {"size": 5, "query": knn(k=10), "ext": mmr()}),
+        ("mmr neural", "/ivf", {"size": 5, "query": neural(k=10, query_text="dense retrieval of documents"), "ext": mmr()}),
+        ("mmr cosine", "/ivf", {"size": 5, "query": knn("cos", k=10), "ext": mmr()}),
+        ("mmr path", "/ivf", {"size": 5, "query": {"match": {"text": "documents"}}, "ext": mmr(vector_field_path="ip")}),
+        ("mmr explain", "/ivf", {"size": 3, "explain": True, "query": knn(k=10), "ext": mmr(explain=True)}),
+        ("default excludes", "/ivf", {"size": 3, "query": {"term": {"n": 3}}}),
+        ("default excludes source true", "/ivf", {"size": 3, "query": {"term": {"n": 3}}, "_source": True}),
+        # errors
+        ("wrong dimension", "/ivf", {"query": {"knn": {"emb": {"vector": [1.0, 2.0], "k": 3}}}}),
+        ("k zero", "/ivf", {"query": knn(k=0)}),
+        ("k and min_score", "/ivf", {"query": knn(k=3, min_score=0.5)}),
+        ("negative max_distance", "/ivf", {"query": knn(max_distance=-1.0)}),
+        ("bad ef_search", "/ivf", {"query": knn(k=3, method_parameters={"ef_search": 0})}),
+        ("k over 10000", "/ivf", {"query": knn(k=10001)}),
+    ] + [(f"knn error {json.dumps(q)}", "/ivf", {"query": {"knn": {"emb": q}}}) for q in (
+        {"vector": vec}, {"vector": [], "k": 3}, {"k": 3}, {"vector": vec, "min_score": 0}, {"vector": vec, "max_distance": -1},
+        {"vector": vec, "k": 3, "method_parameters": {"nprobes": 0}}, {"vector": vec, "k": 3, "method_parameters": {"bogus": 1}},
+        {"vector": vec, "k": 3, "method_parameters": {"ef_search": 0, "nprobes": 0}}, {"vector": vec, "k": 3, "method_parameters": 5},
+        {"vector": vec, "k": 3, "method_parameters": {"ef_search": "x"}}, {"vector": vec, "k": 3, "method_parameters": {}},
+        {"vector": vec, "k": 3, "rescore": {"oversample_factor": 1000}}, {"vector": vec, "k": 3, "rescore": {"oversample_factor": 0.5}},
+        {"vector": vec, "k": 3, "rescore": {"bogus": 1}}, {"vector": vec, "k": 3, "bogus": 1}, {"vector": "x", "k": 3},
+        {"vector": vec, "k": "x"}, {"vector": vec, "k": 3, "filter": 5}, {"vector": vec, "k": 3, "expand_nested_docs": "x"},
+        {"vector": ["a"], "k": 3})] + [
+        ("knn vector shorthand", "/ivf", {"query": {"knn": {"emb": vec}}}),
+        ("knn two fields", "/ivf", {"query": {"knn": {"emb": {"vector": vec, "k": 3}, "cos": {"vector": vec, "k": 3}}}}),
+    ]
+
+    def probed(q):
+        # Probe every cluster in each knn and neural query of the IVF index; stock's HNSW has no probes.
+        if isinstance(q, dict):
+            out = {k: probed(v) for k, v in q.items()}
+            for kind in ("knn", "neural"):
+                if kind in out and isinstance(out[kind], dict):
+                    out[kind] = {f: ({**b, "method_parameters": {**b.get("method_parameters", {}), **ALL_PROBES}}
+                                     if isinstance(b, dict) and "method_parameters" not in b and "k" in b and b["k"] not in (0, 10001) else b)
+                                 for f, b in out[kind].items()}
+            return out
+        return [probed(x) for x in q] if isinstance(q, list) else q
+
+    ids = mids + sem
+
+    def run(n, mid, path, body, probe=True):
+        b = json.loads(json.dumps(body).replace("<mid>", mid))
+        if n is ours and probe:
+            b = probed(b)
+        p = path if "/_search" in path else path + "/_search"
+        s, r = n.call("POST", p, b)
+        if s != 200:
+            return answer((s, r))
+        rows = [r["hits"].get("total")]
+        for h in r["hits"]["hits"]:
+            rows.append((h["_index"], h["_id"], round(h["_score"], 4) if h["_score"] is not None else None,
+                         h.get("_source"), h.get("fields"), h.get("_explanation")))
+        return json.loads(functools.reduce(lambda t, i: t.replace(i, "<id>"), ids, json.dumps(rows)))
+
+    factories = "cluster.search.enabled_system_generated_factories"
+    for n in (ours, stock):
+        n.ok("PUT", "/_cluster/settings", {"persistent": {factories: ["*"]}})
+    try:
+        for label, path, body in cases:
+            compare(c, f"ivf {label}", *(run(n, mid, path, body, not label.startswith("knn error")) for n, mid in zip((ours, stock), mids)))
+    finally:
+        for n in (ours, stock):
+            n.ok("PUT", "/_cluster/settings", {"persistent": {factories: None}})
+    # Warmup and the k-NN stats on the IVF index.
+    compare(c, "ivf warmup", *both(ours, stock, lambda n: answer(n.call("GET", "/_plugins/_knn/warmup/ivf"))))
+    compare(c, "ivf clear_cache", *both(ours, stock, lambda n: answer(n.call("POST", "/_plugins/_knn/clear_cache/ivf"))))
+    # The calibrated depth, with no nprobes: still most of the exhaustive hits.
+    want = {h["_id"] for h in stock.ok("POST", "/ivf/_search", {"size": 10, "query": knn(k=10)})["hits"]["hits"]}
+    got = {h["_id"] for h in ours.ok("POST", "/ivf/_search", {"size": 10, "query": knn(k=10)})["hits"]["hits"]}
+    c.true("ivf calibrated depth recall", len(want & got) >= 8, f"{len(want & got)}/10")
+
+
 # ---------------------------------------------------------------- rerank
 
 CROSS_CONFIG = {"model_type": "bert", "embedding_dimension": 1, "framework_type": "huggingface_transformers"}
@@ -822,6 +971,7 @@ def main():
             "warmup": lambda: warmup(c, ours, stock),
             "settings": lambda: settings(c, ours, stock),
             "mmr": lambda: mmr(c, ours, stock, zips["tiny-bert"]),
+            "ivf": lambda: ivf(c, ours, stock, zips["tiny-bert"]),
             "semantic": lambda: semantic(c, ours, stock, zips["tiny-bert"], zips[golden.SPARSE]),
             "ingest": lambda: ingest(c, ours, stock, [text_model(n, zips["tiny-bert"]) for n in (ours, stock)],
                                      [deploy(n, golden.SPARSE, "SPARSE_ENCODING", zips[golden.SPARSE]) for n in (ours, stock)]),
