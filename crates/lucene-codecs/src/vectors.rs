@@ -1142,9 +1142,9 @@ impl RawVectorValues<'_> {
     /// [`crate::hnsw::VectorScorer::read_ahead`]: the vectors of ordinals
     /// `from..to`, clamped to the field.
     fn read_ahead(&self, from: i32, to: i32) {
-        let ord = |o: i32| usize::try_from(o.clamp(0, self.size)).unwrap_or(0);
-        let start = ord(from).saturating_mul(self.vector_bytes);
-        let end = ord(to).saturating_mul(self.vector_bytes);
+        let clamped = |o: i32| usize::try_from(o.clamp(0, self.size)).unwrap_or(0);
+        let start = clamped(from).saturating_mul(self.vector_bytes);
+        let end = clamped(to).saturating_mul(self.vector_bytes);
         if let Some(bytes) = self.slice.get(start..end) {
             lucene_store::read_ahead(bytes);
         }

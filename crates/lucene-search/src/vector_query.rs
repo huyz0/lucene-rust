@@ -1006,8 +1006,8 @@ fn read_ahead_dense<S: VectorScorer>(
 ) -> usize {
     let to = from.saturating_add(span).min(end);
     if count_set_bits(accept_ords.words(), from, to) >= READ_AHEAD_MIN_ACCEPTED {
-        let ord = |o: usize| i32::try_from(o).unwrap_or(i32::MAX);
-        scorer.read_ahead(ord(from), ord(to));
+        let as_i32 = |o: usize| i32::try_from(o).unwrap_or(i32::MAX);
+        scorer.read_ahead(as_i32(from), as_i32(to));
     }
     to
 }
