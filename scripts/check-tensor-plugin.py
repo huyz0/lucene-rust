@@ -16,6 +16,8 @@ on an index the Rust engine writes and on one OpenSearch's own engine writes
   candidates `max_sim` with `candidates` on a `pooled` field: about the
              documents whose mean token is nearest the query's (HNSW: most of
              the exact top), each scored by its MaxSim, the filter honoured.
+  formula    `script_score` over `max_sim` (its `_score`) with a doc field,
+             in Painless.
   native     every one of those shard queries ran in Rust (the plugin's
              stats count no fallback).
   errors     a query of the wrong dimension, `max_sim` on another field
@@ -168,7 +170,7 @@ def main():
             settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
             if engine:
                 settings["index.lucene_rust.engine"] = True
-            props = {"tag": {"type": "keyword"}, "text": {"type": "text"},
+            props = {"tag": {"type": "keyword"}, "text": {"type": "text"}, "rank": {"type": "long"},
                      "o": {"properties": {"mv": {"type": "multi_vector", "dimension": DIM}}}}
             for e in ENCODINGS:
                 props[f"mv_{e}"] = {"type": "multi_vector", "dimension": DIM, "encoding": e}
@@ -178,7 +180,7 @@ def main():
             for part in (docs[:half], docs[half:]):
                 lines = []
                 for d in part:
-                    src = {"tag": d["tag"], "text": d["text"]}
+                    src = {"tag": d["tag"], "text": d["text"], "rank": int(d["_id"][1:]) % 10}
                     if "tokens" in d:
                         for e in ENCODINGS:
                             src[f"mv_{e}"] = d["tokens"].tolist()
@@ -264,6 +266,14 @@ def main():
                             failures.append(f"{what}: hit {k} {h['_id']} scored {h['_score']}, expected {want.get(h['_id'])}")
                             break
                     recalls.append(len({h["_id"] for h in hits} & {d["_id"] for d in near}) / 20)
+        # a ranking formula over max_sim: script_score's _score is the MaxSim, run by native Painless
+        for index in ("rust", "lucene"):
+            for qi, q in enumerate(queries[:4]):
+                body = {"size": 30, "query": {"script_score": {"query": {"max_sim": {"mv_float": {"query_vectors": q.tolist()}}},
+                        "script": {"source": "_score * params.w + doc['rank'].value", "params": {"w": 2.0}}}}}
+                r = must("POST", f"/{index}/_search", body)
+                want = {d["_id"]: 2.0 * max(0.0, max_sim(q, d["tokens"])) + int(d["_id"][1:]) % 10 for d in live if "tokens" in d}
+                ranked([(h["_id"], h["_score"]) for h in r["hits"]["hits"]], want, 30, f"{index} script_score q{qi}", failures)
         print(f"candidates: {len(recalls)} searches, mean recall of the exact pooled top 20 {np.mean(recalls):.3f}")
         if np.mean(recalls) < 0.9:
             failures.append(f"candidates: mean recall {np.mean(recalls):.3f} below 0.9")
