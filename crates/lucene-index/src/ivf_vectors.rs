@@ -97,8 +97,9 @@ pub(crate) struct IvfGroupWriter {
 }
 
 /// The quantizer factory of an [`IVF_QUANTIZERS`] wire number: OSQ at 1
-/// (BBQ), 2, 4 or 7 bits, Extended RaBitQ at 2 to 8 bits, or 1-bit RaBitQ
-/// (BBQ after a random rotation); `None` for an unknown number.
+/// (BBQ), 2, 4 or 7 bits, Extended RaBitQ at 2 to 8 bits, 1-bit RaBitQ
+/// (BBQ after a random rotation), or a pick among them per segment
+/// ([`lucene_ivf::AutoQuantizer`]); `None` for an unknown number.
 ///
 /// [`IVF_QUANTIZERS`]: lucene_codecs::per_field_knn_vectors::IVF_QUANTIZERS
 pub fn quantizer_factory(quantizer: u8) -> Option<Box<dyn QuantizerFactory>> {
@@ -112,6 +113,7 @@ pub fn quantizer_factory(quantizer: u8) -> Option<Box<dyn QuantizerFactory>> {
         #[allow(clippy::arithmetic_side_effects)]
         4..=10 => Some(Box::new(ExRabitqFactory::new(quantizer - 2))),
         11 => Some(Box::new(RotatedFactory::new(Arc::new(OsqFactory::bbq())))),
+        12 => Some(Box::new(lucene_ivf::AutoQuantizer::with_defaults())),
         _ => None,
     }
 }
@@ -400,6 +402,8 @@ mod tests {
                 "erq"
             } else if *name == "rabitq" {
                 "rot-osq"
+            } else if *name == "auto" {
+                "auto"
             } else {
                 "osq"
             };
