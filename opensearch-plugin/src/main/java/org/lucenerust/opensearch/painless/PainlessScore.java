@@ -43,6 +43,7 @@ import org.opensearch.painless.PainlessScriptEngine;
 import org.opensearch.painless.WriterConstants;
 import org.opensearch.painless.lookup.PainlessLookup;
 import org.opensearch.script.FilterScript;
+import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptException;
@@ -90,8 +91,11 @@ public final class PainlessScore {
         }
     }
 
-    /** A script's context on the wire: a score script, one reading {@code _score}, a filter script. */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2;
+    /**
+     * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
+     * a number sort script.
+     */
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
     private interface Run {
@@ -128,6 +132,26 @@ public final class PainlessScore {
             script.setDocument(doc);
             try {
                 script.execute(null);
+            } catch (ScriptException e) {
+                return e;
+            }
+            return null;
+        }
+    }
+
+    /** A {@code _script} sort key's number sort script, as {@code ScriptSortBuilder} makes it. */
+    private record SortRun(NumberSortScript.LeafFactory factory) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) throws IOException {
+            return factory.newInstance(leaf);
+        }
+
+        @Override
+        public ScriptException rethrown(Object s, int doc, float score) {
+            NumberSortScript script = (NumberSortScript) s;
+            script.setDocument(doc);
+            try {
+                script.execute();
             } catch (ScriptException e) {
                 return e;
             }
@@ -204,6 +228,11 @@ public final class PainlessScore {
      */
     public static Object score(String source) {
         return compile(ScoreScript.CONTEXT, ScoreScript.class, source);
+    }
+
+    /** {@code source} compiled for the number sort context, as {@link #score}. */
+    public static Object sort(String source) {
+        return compile(NumberSortScript.CONTEXT, NumberSortScript.class, source);
     }
 
     /** {@code source} compiled for the filter context, as {@link #score}. */
@@ -285,6 +314,11 @@ public final class PainlessScore {
         return run(new FilterRun(factory));
     }
 
+    /** The number in this request, for its errors, of a {@code _script} sort key's script. */
+    public static int run(NumberSortScript.LeafFactory factory) {
+        return run(new SortRun(factory));
+    }
+
     private static int run(Run run) {
         List<Run> runs = RUNS.get();
         runs.add(run);
@@ -326,13 +360,14 @@ public final class PainlessScore {
         String[] parts = error.substring(at + SCRIPT_ERROR.length()).split("\u0001", 7);
         try {
             Run run = RUNS.get().get(Integer.parseInt(parts[0]));
-            int leaf = Integer.parseInt(parts[1]);
+            List<LeafReaderContext> leaves = reader.leaves();
+            // The segment by number, or by doc base ("b<base>") where only that is known.
+            int leaf = parts[1].startsWith("b") ? byDocBase(leaves, Integer.parseInt(parts[1].substring(1))) : Integer.parseInt(parts[1]);
             int doc = Integer.parseInt(parts[2]);
             float docScore = Float.intBitsToFloat(Integer.parseUnsignedInt(parts[3]));
             int offset = Integer.parseInt(parts[4]);
             String message = parts[6].startsWith("1") ? parts[6].substring(1) : null;
-            List<LeafReaderContext> leaves = reader.leaves();
-            if (leaf >= leaves.size()) {
+            if (leaf < 0 || leaf >= leaves.size()) {
                 return new IllegalStateException("native script_score search failed: " + error);
             }
             Object script = run.script(leaves.get(leaf));
@@ -346,6 +381,37 @@ public final class PainlessScore {
             return ((PainlessScript) script).convertToScriptException(cause, Map.of());
         } catch (IOException | RuntimeException e) {
             return new IllegalStateException("native script_score search failed: " + error, e);
+        }
+    }
+
+    /** The number of the leaf whose doc base is {@code base}, or -1. */
+    private static int byDocBase(List<LeafReaderContext> leaves, int base) {
+        for (LeafReaderContext l : leaves) {
+            if (l.docBase == base) {
+                return l.ord;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The source and params of a script Painless compiled into {@code factory} (a context's
+     * {@code LeafFactory}): its script class's {@code $SOURCE}, loaded by the factory's own
+     * loader, and the params the factory was made with; null when the factory is not Painless's.
+     */
+    public static Object[] sourceAndParams(Object factory) {
+        try {
+            Class<?> c = factory.getClass();
+            if (c.getClassLoader() == null || c.getName().endsWith("$StatefulFactory") == false) {
+                return null;
+            }
+            Field source = Class.forName(WriterConstants.CLASS_NAME, true, c.getClassLoader()).getDeclaredField("$SOURCE");
+            source.setAccessible(true);
+            Field params = c.getDeclaredField("$arg0");
+            params.setAccessible(true);
+            return new Object[] { source.get(null), params.get(factory) };
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            return null;
         }
     }
 

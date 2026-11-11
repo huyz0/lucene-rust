@@ -949,6 +949,11 @@ def script_errors(index, shards):
         ("function NaN score", {"query": {"function_score": {"query": {"match": {"body": "alpha"}}, "boost_mode": "replace",
                                                             "functions": [{"script_score": {"script": {"source": "Double.NaN"}}}]}}}),
     ]
+    # A sort script's exception.
+    queries += [
+        ("sort missing value", {"query": {"match": {"body": "alpha"}},
+                                "sort": [{"_script": {"type": "number", "script": {"source": "doc['sp'].value"}}}]}),
+    ]
     # script queries: a filter script's exception.
     queries += [
         ("filter missing value", {"query": {"bool": {"filter": [{"script": {"script": {"source": "doc['sp'].value > 1"}}}]}}}),

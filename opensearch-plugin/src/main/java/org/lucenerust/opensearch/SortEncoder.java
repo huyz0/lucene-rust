@@ -17,6 +17,7 @@ import org.apache.lucene.util.NumericUtils;
 import org.opensearch.index.fielddata.IndexFieldData;
 import org.opensearch.index.fielddata.IndexNumericFieldData;
 import org.opensearch.index.fielddata.plain.NonPruningSortedSetOrdinalsIndexFieldData;
+import org.opensearch.script.NumberSortScript;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
@@ -67,6 +68,8 @@ public final class SortEncoder {
     static final byte HALF_FLOAT = 9;
     /** An {@code unsigned_long} field ({@code UnsignedLongValuesComparatorSource}). */
     static final byte UNSIGNED_LONG = 10;
+    /** A Painless {@code _script} key of type {@code number} ({@link ExtendedEncoder#painlessSort}). */
+    static final byte SCRIPT = 11;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
     /** Key flags' mode field: OpenSearch's {@code MultiValueMode} for its own comparator sources. */
@@ -173,6 +176,13 @@ public final class SortEncoder {
             }
             if (type == GEO) {
                 String reason = geoKey(f, out);
+                if (reason != null) {
+                    return new Encoded(null, reason);
+                }
+                continue;
+            }
+            if (type == SCRIPT) {
+                String reason = scriptKey(key, f, out);
                 if (reason != null) {
                     return new Encoded(null, reason);
                 }
@@ -321,6 +331,9 @@ public final class SortEncoder {
                     if (shardKeyPrefix(f) != null) {
                         yield SHARD_DOC;
                     }
+                    if (numberSortScript(f) != null) {
+                        yield SCRIPT;
+                    }
                     Mode mode = mode(f);
                     yield mode == null ? -1 : mode.type();
                 }
@@ -372,6 +385,37 @@ public final class SortEncoder {
      */
     static Mode mode(SortField f) {
         return modeOrReason(f) instanceof Mode m ? m : null;
+    }
+
+    /** {@code ScriptSortBuilder}'s comparator source for a {@code number} script sort. */
+    private static final String SCRIPT_SORT_SOURCE = "org.opensearch.search.sort.ScriptSortBuilder$";
+
+    /** The number sort script a {@code _script} key of type {@code number} runs, or null for any other key. */
+    static NumberSortScript.LeafFactory numberSortScript(SortField f) {
+        Object src = f.getComparatorSource();
+        if (f.getClass() != SortField.class || src == null || src.getClass().getName().startsWith(SCRIPT_SORT_SOURCE) == false) {
+            return null;
+        }
+        try {
+            Field script = Reflect.declared(src.getClass(), "val$numberSortScript");
+            return script == null ? null : (NumberSortScript.LeafFactory) script.get(src);
+        } catch (ReflectiveOperationException | ClassCastException e) {
+            return null;
+        }
+    }
+
+    /** A {@code _script} key: its type, flags and script, or why it runs in Java. */
+    private static String scriptKey(SortField key, SortField f, ByteArrayOutputStream out) {
+        try {
+            if (NESTED == null || NESTED.get(f.getComparatorSource()) != null) {
+                return "sort_script_nested";
+            }
+        } catch (ReflectiveOperationException e) {
+            return "sort_script_nested";
+        }
+        out.write(SCRIPT);
+        out.write(key == f && f.getReverse() ? REVERSE : 0);
+        return ExtendedEncoder.painlessSort(numberSortScript(f), out);
     }
 
     /**
@@ -622,7 +666,7 @@ public final class SortEncoder {
             case SCORE -> Float.floatToIntBits(((Number) v).floatValue());
             case DOC, INT -> ((Number) v).intValue();
             case LONG -> ((Number) v).longValue();
-            case DOUBLE, GEO -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
+            case DOUBLE, GEO, SCRIPT -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
             case FLOAT, HALF_FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
             case SHARD_DOC, UNSIGNED_LONG -> ((Number) v).longValue();
             default -> throw new IllegalArgumentException("sort type " + type);
@@ -635,7 +679,7 @@ public final class SortEncoder {
             case SCORE -> Float.intBitsToFloat((int) v);
             case DOC, INT -> (int) v;
             case LONG -> v;
-            case DOUBLE -> NumericUtils.sortableLongToDouble(v);
+            case DOUBLE, SCRIPT -> NumericUtils.sortableLongToDouble(v);
             case FLOAT, HALF_FLOAT -> NumericUtils.sortableIntToFloat((int) v);
             case SHARD_DOC -> v;
             case UNSIGNED_LONG -> new java.math.BigInteger(Long.toUnsignedString(v));

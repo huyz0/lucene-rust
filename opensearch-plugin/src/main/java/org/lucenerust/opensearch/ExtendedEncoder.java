@@ -38,6 +38,7 @@ import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
 import org.lucenerust.opensearch.knn.script.PainlessKnnScript;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.script.FilterScript;
+import org.opensearch.script.NumberSortScript;
 import org.opensearch.script.ScoreScript;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptType;
@@ -736,6 +737,29 @@ final class ExtendedEncoder {
         return null;
     }
 
+    /**
+     * A {@code _script} sort key's number sort script, made by {@code factory}, as the native
+     * runtime runs it: its spec (context {@link PainlessScore#SORT}), or why it stays in Java. A
+     * script reading {@code _score} stays in Java.
+     */
+    static String painlessSort(NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
+        if (factory.needs_score()) {
+            return "sort_script_score";
+        }
+        Object[] sp = PainlessScore.sourceAndParams(factory);
+        if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
+            return "sort_script";
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) sp[1];
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.SORT, "sort_script");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        painlessSpec(out, (Painless) prepared, "", 0, PainlessScore.run(factory));
+        return null;
+    }
+
     /** A script the native runtime runs: what {@link #painlessSpec} writes, but the run. */
     private record Painless(byte context, PainlessIr.Compiled compiled, byte[] params, String[] names, byte[] kinds) {}
 
@@ -749,7 +773,11 @@ final class ExtendedEncoder {
         if (types == null || script.getOptions().keySet().stream().anyMatch(k -> k.equals(Script.CONTENT_TYPE_OPTION) == false)) {
             return reason + "_script";
         }
-        Object compiledOrWhy = context == PainlessScore.FILTER ? PainlessScore.filter(script.getIdOrCode()) : PainlessScore.score(script.getIdOrCode());
+        Object compiledOrWhy = switch (context) {
+            case PainlessScore.FILTER -> PainlessScore.filter(script.getIdOrCode());
+            case PainlessScore.SORT -> PainlessScore.sort(script.getIdOrCode());
+            default -> PainlessScore.score(script.getIdOrCode());
+        };
         if ((compiledOrWhy instanceof PainlessIr.Compiled) == false) {
             return reason + "_painless";
         }
