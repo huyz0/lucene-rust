@@ -52,8 +52,9 @@ import java.util.function.Function;
  * native fetch and Lucene codec, and stock k-NN's -- puts the vectors back. A listed field left
  * whole (a {@code copy_to} source) reads back the same vector.
  *
- * <p>Only the Rust engine lists the fields, so only its indexes are masked; and only with realtime
- * search off, whose buffered documents are read without the vector files.
+ * <p>Only the Rust engine lists the fields, so only its indexes are masked. With realtime search, a
+ * buffered document's vectors are put back from the buffer when its {@code _source} is read, which
+ * reads JSON only: a {@code _source} in another content type is stored whole there.
  */
 public final class DerivedSource {
     /** The field attribute the Rust writer lists a field for ({@code engine_writer.rs}). */
@@ -65,16 +66,14 @@ public final class DerivedSource {
 
     /**
      * {@code IndexUtil.isDerivedEnabledForIndex}, for an index this node masks: k-NN's setting on,
-     * core's own derived source off, no node-to-node segment replication, served by the Rust engine
-     * without realtime search.
+     * core's own derived source off, no node-to-node segment replication, served by the Rust engine.
      */
     public static boolean forIndex(Settings settings) {
         return KnnSettings.KNN_INDEX.get(settings)
             && KnnSettings.DERIVED_SOURCE.get(settings)
             && IndexSettings.INDEX_DERIVED_SOURCE_SETTING.get(settings) == false
             && segRepLocal(settings) == false
-            && RustEngineSupport.servedByRust(settings)
-            && RustEngineSupport.REALTIME_SEARCH.get(settings) == false;
+            && RustEngineSupport.servedByRust(settings);
     }
 
     private static boolean segRepLocal(Settings settings) {
@@ -158,6 +157,13 @@ public final class DerivedSource {
      * stored one is still masked, as stock's codec writer masks it.
      */
     public static final class Listener implements IndexingOperationListener {
+        /** Whether buffered documents are searched (realtime search), whose {@code _source} only JSON reads back. */
+        private final boolean realtime;
+
+        public Listener(boolean realtime) {
+            this.realtime = realtime;
+        }
+
         @Override
         public Engine.Index preIndex(ShardId shardId, Engine.Index operation) {
             // Each field's vectors in document order: a nested field's are its child documents', in
@@ -199,7 +205,7 @@ public final class DerivedSource {
                     );
             }
             IndexableField stored = operation.parsedDoc().rootDoc().getField(SourceFieldMapper.NAME);
-            if (stored instanceof StoredField f && f.storedValue() != null) {
+            if (stored instanceof StoredField f && f.storedValue() != null && (realtime == false || type == XContentType.JSON)) {
                 // The stored _source may be filtered (_source includes/excludes): mask what is
                 // stored, never the whole request source.
                 BytesRef bytes = f.binaryValue();

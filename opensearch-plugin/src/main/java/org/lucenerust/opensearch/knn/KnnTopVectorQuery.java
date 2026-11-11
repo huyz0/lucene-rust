@@ -53,6 +53,13 @@ public final class KnnTopVectorQuery extends Query {
     /** Searches a query natively over a searcher's reader: its hits, or null when the reader is not native. */
     public interface NativeSearch {
         KnnHitsQuery search(IndexSearcher searcher, KnnTopVectorQuery query) throws IOException;
+
+        /**
+         * Before Lucene answers over a realtime view: gives Lucene the view's buffered documents,
+         * so it finds their vectors too. Throws when they cannot be read; does nothing over a
+         * reader that is no view.
+         */
+        default void readBuffersByLucene(IndexSearcher searcher) throws IOException {}
     }
 
     private static volatile NativeSearch nativeSearch;
@@ -161,6 +168,9 @@ public final class KnnTopVectorQuery extends Query {
             if (hits != null) {
                 return hits;
             }
+        }
+        if (n != null) {
+            n.readBuffersByLucene(searcher);
         }
         Query lucene;
         if (parents == null) {

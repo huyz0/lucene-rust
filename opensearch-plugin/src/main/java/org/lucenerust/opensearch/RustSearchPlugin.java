@@ -13,6 +13,12 @@ import org.lucenerust.opensearch.ml.MlSettings;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
 import org.opensearch.indices.SystemIndexDescriptor;
 import org.opensearch.plugins.SystemIndexPlugin;
+import org.lucenerust.opensearch.neural.mapper.SemanticFieldMapper;
+import org.lucenerust.opensearch.neural.mappingtransformer.SemanticMappingTransformer;
+import org.lucenerust.opensearch.neural.ml.resolver.DefaultSemanticModelResolver;
+import org.lucenerust.opensearch.neural.ml.resolver.SemanticModelResolver;
+import org.lucenerust.opensearch.neural.processor.factory.SemanticFieldProcessorFactory;
+import org.lucenerust.opensearch.neural.settings.SemanticModelSelectionSettingsAccessor;
 import org.lucenerust.opensearch.neural.HybridSearch;
 import org.lucenerust.opensearch.neural.NeuralSearchSettings;
 import org.opensearch.plugins.SearchPipelinePlugin;
@@ -105,6 +111,7 @@ import org.opensearch.common.SetOnce;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -210,6 +217,9 @@ public class RustSearchPlugin extends Plugin implements
     private final boolean stockMl;
 
     private MLCommonsClientAccessor mlClient;
+    private org.opensearch.core.xcontent.NamedXContentRegistry xContentRegistry;
+    private SemanticMappingTransformer semanticMappingTransformer;
+    private volatile SemanticModelResolver modelResolver;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
         this.libraryPath = NativeLibrary.load(pluginDir());
@@ -219,7 +229,17 @@ public class RustSearchPlugin extends Plugin implements
             logger.info("lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn");
             org.lucenerust.opensearch.engine.RustEngineSupport.refuseKnnVectorFields();
         } else {
-            KnnTopVectorQuery.setNative((searcher, q) -> KnnEncoder.topHits(readers, searcher, q));
+            KnnTopVectorQuery.setNative(new KnnTopVectorQuery.NativeSearch() {
+                @Override
+                public org.lucenerust.opensearch.knn.KnnHitsQuery search(org.apache.lucene.search.IndexSearcher searcher, KnnTopVectorQuery q) {
+                    return KnnEncoder.topHits(readers, searcher, q);
+                }
+
+                @Override
+                public void readBuffersByLucene(org.apache.lucene.search.IndexSearcher searcher) throws java.io.IOException {
+                    KnnEncoder.readBuffersByLucene(readers, searcher);
+                }
+            });
         }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
@@ -354,7 +374,7 @@ public class RustSearchPlugin extends Plugin implements
     public void onIndexModule(IndexModule indexModule) {
         RustIndexerFactory.install(indexModule);
         if (stockKnn == false && DerivedSource.forIndex(indexModule.getSettings())) {
-            indexModule.addIndexOperationListener(new DerivedSource.Listener());
+            indexModule.addIndexOperationListener(new DerivedSource.Listener(RustEngineSupport.REALTIME_SEARCH.get(indexModule.getSettings())));
         }
         // The fuzzy-set _id postings format is refused at creation (RustEngineSupport.unsupported); the
         // setting is dynamic, so turning it on later is refused too, rather than ignored.
@@ -465,8 +485,10 @@ public class RustSearchPlugin extends Plugin implements
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
         // that only inherits the node default falls back to OpenSearch's engine where the Rust
-        // writer cannot serve it.
-        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings());
+        // writer cannot serve it. Realtime search is the Rust engine's alone, so asking for it
+        // asks for the engine: it is never dropped silently.
+        boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(indexSettings.getSettings())
+            || indexSettings.getValue(RustEngineSupport.REALTIME_SEARCH);
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
             if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
@@ -594,21 +616,38 @@ public class RustSearchPlugin extends Plugin implements
      */
     @Override
     public Map<String, Mapper.TypeParser> getMappers() {
-        if (stockKnn) {
-            return Map.of(
-                SparseVectorFieldMapper.CONTENT_TYPE,
-                new SparseVectorFieldMapper.TypeParser(),
-                MultiVectorFieldMapper.CONTENT_TYPE,
-                new MultiVectorFieldMapper.TypeParser()
-            );
+        Map<String, Mapper.TypeParser> mappers = new HashMap<>();
+        mappers.put(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
+        mappers.put(MultiVectorFieldMapper.CONTENT_TYPE, new MultiVectorFieldMapper.TypeParser());
+        mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
+        if (stockKnn == false) {
+            mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }
+        return mappers;
+    }
+
+    /** neural-search's semantic field: adds the {@code semantic_info} fields its model needs to the mapping. */
+    @Override
+    public List<org.opensearch.index.mapper.MappingTransformer> getMappingTransformers() {
+        semanticMappingTransformer = new SemanticMappingTransformer(mlClient(), xContentRegistry);
+        if (modelResolver != null) {
+            semanticMappingTransformer.setModelResolver(modelResolver);
+        }
+        return List.of(semanticMappingTransformer);
+    }
+
+    /** neural-search's system ingest processor, which writes a semantic field's embeddings. */
+    @Override
+    public Map<String, org.opensearch.ingest.Processor.Factory> getSystemIngestProcessors(org.opensearch.ingest.Processor.Parameters parameters) {
         return Map.of(
-            SparseVectorFieldMapper.CONTENT_TYPE,
-            new SparseVectorFieldMapper.TypeParser(),
-            MultiVectorFieldMapper.CONTENT_TYPE,
-            new MultiVectorFieldMapper.TypeParser(),
-            KnnVectorFieldMapper.CONTENT_TYPE,
-            new KnnVectorFieldMapper.TypeParser()
+            SemanticFieldProcessorFactory.PROCESSOR_FACTORY_TYPE,
+            new SemanticFieldProcessorFactory(
+                mlClient(),
+                parameters.env,
+                parameters.ingestService.getClusterService(),
+                parameters.analysisRegistry,
+                parameters.client
+            )
         );
     }
 
@@ -715,6 +754,11 @@ public class RustSearchPlugin extends Plugin implements
         HybridSearch.initialize(threadPool);
         NeuralQueryBuilder.initialize(mlClient());
         NeuralSparseQueryBuilder.initialize(mlClient());
+        this.xContentRegistry = xContentRegistry;
+        modelResolver = new DefaultSemanticModelResolver(new SemanticModelSelectionSettingsAccessor(clusterService));
+        if (semanticMappingTransformer != null) {
+            semanticMappingTransformer.setModelResolver(modelResolver);
+        }
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
