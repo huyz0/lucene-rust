@@ -112,6 +112,7 @@ fn every_cluster_probed_finds_the_exact_best_child_of_each_group() {
         let grouping = Grouping {
             group: &group,
             spread: 5,
+            per_group: 1,
         };
         let clusters = r.field(1).unwrap().clusters();
         for qi in 0..10 {
@@ -153,6 +154,7 @@ fn estimates_and_calibrated_probes_still_keep_one_child_per_group() {
     let grouping = Grouping {
         group: &group,
         spread: 5,
+        per_group: 1,
     };
     let q = &data[123 * DIM..124 * DIM];
     for params in [

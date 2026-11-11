@@ -30,6 +30,9 @@ import java.nio.charset.StandardCharsets;
  *       id and score pairs.
  * </ul>
  *
+ * The whole-reader request ends with the grouping: {@code 0}, or {@code 1}, the group field, its
+ * kind ({@link NativeCollapse#NUMERIC} or {@link NativeCollapse#KEYWORD}) and the group size.
+ *
  * {@link #topHits} is {@link KnnTopVectorQuery}'s native rewrite.
  */
 final class KnnEncoder {
@@ -132,9 +135,21 @@ final class KnnEncoder {
             request.write(q.expand() ? 1 : 0);
         }
         writeInt(request, q.nprobes());
+        KnnTopVectorQuery.Grouping grouping = q.grouping();
+        if (grouping == null) {
+            request.write(0);
+        } else {
+            request.write(1);
+            writeString(request, grouping.field());
+            request.write(grouping.keyword() ? NativeCollapse.KEYWORD : NativeCollapse.NUMERIC);
+            writeInt(request, grouping.size());
+        }
         byte[] blob = request.toByteArray();
-        // An expanded search returns every scored child of the k parents: a few per parent, usually.
-        int room = q.expand() ? (int) Math.min((long) q.k() * 8, Integer.MAX_VALUE - 8) : q.k();
+        // An expanded search returns every scored child of the k parents: a few per parent, usually;
+        // a grouped one up to group_size documents of each of the k groups.
+        int room = q.expand() ? (int) Math.min((long) q.k() * 8, Integer.MAX_VALUE - 8)
+            : grouping != null ? (int) Math.min((long) q.k() * grouping.size(), Integer.MAX_VALUE - 8)
+            : q.k();
         int[] docs = new int[room];
         float[] scores = new float[room];
         int[] count = new int[1];

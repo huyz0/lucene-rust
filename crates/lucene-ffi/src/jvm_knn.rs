@@ -16,17 +16,24 @@
 //! clusters probed in each segment whose field has an IVF index
 //! (`LuceneRustIvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
 //! depth each segment calibrated, for a nested search too (more when fewer
-//! than `k` parents are in reach).
+//! than `k` parents are in reach). Last, `grouped: u8`: when `1`, the search
+//! is grouped (the plugin's `group_by`): the group field (`i32 len`,
+//! UTF-8), its kind (`0` numeric, `1` keyword, as the collapse blob's) and
+//! `group_size: i32` follow, and `k` counts groups; a grouped search is
+//! never nested.
 //!
 //! A nested search keeps the best child of each of the best `k` parents; an
 //! expanded one returns every scored child of those parents, which can be
-//! more than `k`: when they do not fit the buffers, the call is
-//! [`FfiStatus::BufferTooSmall`] with the count it needs in `*out_count`.
+//! more than `k`, as can a grouped one (`k` times `group_size`): when they do
+//! not fit the buffers, the call is [`FfiStatus::BufferTooSmall`] with the
+//! count it needs in `*out_count`.
 
 use std::sync::Arc;
 
 use lucene_search::join::BitSetProducer;
-use lucene_search::knn_search::{knn_top_hits_buffered, knn_top_hits_nested_with};
+use lucene_search::knn_search::{
+    knn_top_hits_buffered, knn_top_hits_grouped, knn_top_hits_nested_with, KnnGroupBy,
+};
 use lucene_search::multi_segment::OpenSegment;
 
 use crate::clauses::map_search_error;
@@ -47,6 +54,16 @@ pub(crate) struct Request {
     /// A nested field's parent filter and `expand_nested_docs`.
     pub(crate) nested: Option<(Arc<dyn BitSetProducer>, bool)>,
     nprobes: usize,
+    /// A grouped search's field, kind and documents per group.
+    pub(crate) group_by: Option<KnnGroupBy>,
+}
+
+impl Request {
+    /// Whether the search reads whole segments only: a nested or grouped
+    /// one, which searches no realtime buffer.
+    pub(crate) fn whole_segments(&self) -> bool {
+        self.nested.is_some() || self.group_by.is_some()
+    }
 }
 
 fn invalid(message: &str) -> FfiStatus {
@@ -92,6 +109,29 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         _ => return Err(invalid("nested flag (expected 0..=1)")),
     };
     let nprobes = usize::try_from(c.i32()?).map_err(|_| invalid("nprobes must not be negative"))?;
+    let group_by = match c.u8()? {
+        0 => None,
+        1 => {
+            let field = std::str::from_utf8(c.bytes()?)
+                .map_err(|_| FfiStatus::InvalidUtf8)?
+                .to_string();
+            let kind = match c.u8()? {
+                0 => lucene_search::top_field::CollapseKind::Numeric,
+                1 => lucene_search::top_field::CollapseKind::Keyword,
+                _ => return Err(invalid("group kind (expected 0..=1)")),
+            };
+            let per_group = positive(c.i32()?, "group_size must be at least 1")?;
+            if nested.is_some() {
+                return Err(invalid("a grouped search cannot be nested"));
+            }
+            Some(KnnGroupBy {
+                field,
+                kind,
+                per_group,
+            })
+        }
+        _ => return Err(invalid("grouped flag (expected 0..=1)")),
+    };
     if c.remaining() != 0 {
         return Err(invalid("trailing bytes"));
     }
@@ -104,6 +144,7 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         filter_bytes,
         nested,
         nprobes,
+        group_by,
     })
 }
 
@@ -162,6 +203,7 @@ pub(crate) fn search(
         nested,
         filter_bytes: _,
         nprobes,
+        group_by,
     } = request;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -185,6 +227,19 @@ pub(crate) fn search(
             s
         })
         .collect();
+    if let Some(group_by) = group_by {
+        return knn_top_hits_grouped(
+            &segments,
+            field,
+            target,
+            *k,
+            *candidates,
+            filter.as_ref(),
+            group_by,
+            *nprobes,
+        )
+        .map_err(map_search_error);
+    }
     match nested {
         None => knn_top_hits_buffered(
             &segments,
@@ -251,6 +306,7 @@ mod tests {
         let mut b = request_without_nested(k, candidates, filter);
         b.push(0);
         b.extend_from_slice(&0i32.to_le_bytes());
+        b.push(0);
         b
     }
 
@@ -287,9 +343,9 @@ mod tests {
         assert_eq!(r.nprobes, 0);
         let mut probed = request(3, 10, None);
         let n = probed.len();
-        probed[n - 4..].copy_from_slice(&32i32.to_le_bytes());
+        probed[n - 5..n - 1].copy_from_slice(&32i32.to_le_bytes());
         assert_eq!(decode(&probed).unwrap().nprobes, 32);
-        probed[n - 4..].copy_from_slice(&(-1i32).to_le_bytes());
+        probed[n - 5..n - 1].copy_from_slice(&(-1i32).to_le_bytes());
         assert!(decode(&probed).is_err());
         assert!(decode(&request(0, 10, None)).is_err());
         assert!(decode(&request(3, 0, None)).is_err());
@@ -307,13 +363,63 @@ mod tests {
         b.push(5); // the parent filter: match_all
         b.push(1);
         b.extend_from_slice(&0i32.to_le_bytes());
+        b.push(0);
         let r = decode(&b).unwrap();
+        assert!(r.whole_segments() && r.group_by.is_none());
         let (parents, expand) = r.nested.unwrap();
         assert!(expand);
         assert!(parents.key().starts_with("parents("));
-        b.truncate(b.len() - 5);
+        // Nested and grouped at once: refused.
+        let mut both = b.clone();
+        both.pop();
+        both.extend_from_slice(&grouping("cat", 1, 2));
+        assert!(decode(&both).is_err());
+        b.truncate(b.len() - 6);
         b.push(2);
         b.extend_from_slice(&0i32.to_le_bytes());
+        b.push(0);
         assert!(decode(&b).is_err());
+    }
+
+    /// The grouped tail: flag, field, kind, group size.
+    fn grouping(field: &str, kind: u8, size: i32) -> Vec<u8> {
+        let mut b = vec![1u8];
+        b.extend_from_slice(&(field.len() as i32).to_le_bytes());
+        b.extend_from_slice(field.as_bytes());
+        b.push(kind);
+        b.extend_from_slice(&size.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn decodes_a_grouped_request() {
+        let plain = request(3, 10, None);
+        assert!(!decode(&plain).unwrap().whole_segments());
+        let with = |tail: Vec<u8>| {
+            let mut b = plain[..plain.len() - 1].to_vec();
+            b.extend_from_slice(&tail);
+            b
+        };
+        let r = decode(&with(grouping("cat", 1, 2))).unwrap();
+        assert!(r.whole_segments());
+        assert_eq!(
+            r.group_by,
+            Some(KnnGroupBy {
+                field: "cat".into(),
+                kind: lucene_search::top_field::CollapseKind::Keyword,
+                per_group: 2,
+            })
+        );
+        let r = decode(&with(grouping("n", 0, 1))).unwrap();
+        assert_eq!(
+            r.group_by.unwrap().kind,
+            lucene_search::top_field::CollapseKind::Numeric
+        );
+        assert!(decode(&with(grouping("n", 2, 1))).is_err());
+        assert!(decode(&with(grouping("n", 0, 0))).is_err());
+        assert!(decode(&with(vec![2])).is_err());
+        let mut bad_utf8 = grouping("n", 0, 1);
+        bad_utf8[5] = 0xFF;
+        assert!(decode(&with(bad_utf8)).is_err());
     }
 }
