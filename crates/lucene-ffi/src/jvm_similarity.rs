@@ -2,8 +2,8 @@
 //! `SimilarityService.PerFieldSimilarity` (a `PerFieldSimilarityWrapper`)
 //! unwrapped, for every field the query scores, to the Lucene similarity its
 //! mapping names -- `BM25` with its parameters, `boolean`, `DFR`, `IB`,
-//! `DFI`, `LMDirichlet`, `LMJelinekMercer`, `LegacyBM25`, and Lucene's
-//! `ClassicSimilarity`. A field the table leaves out
+//! `DFI`, `LMDirichlet`, `LMJelinekMercer`, `LegacyBM25`, Lucene's
+//! `ClassicSimilarity`, and a `scripted` one in Painless. A field the table leaves out
 //! scores with the default `BM25Similarity`.
 //!
 //! ```text
@@ -21,6 +21,8 @@
 //!     6 LMJelinekMercer  lambda: f32, discount_overlaps: u8
 //!     7 classic          discount_overlaps: u8
 //!     8 LegacyBM25       k1: f32, b: f32, discount_overlaps: u8
+//!     9 scripted         OpenSearch's ScriptedSimilarity over Painless
+//!                        ([`crate::jvm_painless_score::ScriptedSimilarity`])
 //!   normalization: u8 (0 none, 1 H1, 2 H2, 3 H3, 4 Z), then its f32 unless none
 //! ```
 //!
@@ -55,6 +57,7 @@ const LM_DIRICHLET: u8 = 5;
 const LM_JELINEK_MERCER: u8 = 6;
 const CLASSIC: u8 = 7;
 const LEGACY_BM25: u8 = 8;
+const SCRIPTED: u8 = 9;
 
 fn bad(message: impl Into<String>) -> FfiStatus {
     set_last_error(format!("similarity table: {}", message.into()));
@@ -83,6 +86,7 @@ fn similarity(c: &mut Cursor<'_>) -> Result<Arc<dyn Similarity>, FfiStatus> {
             Arc::new(Bm25Similarity::new(k1, b, discount(c)?).map_err(bad)?)
         }
         BOOLEAN => Arc::new(BooleanSimilarity),
+        SCRIPTED => Arc::new(crate::jvm_painless_score::ScriptedSimilarity::decode(c)?),
         DFR => {
             let basic = match c.u8()? {
                 0 => BasicModel::G,
@@ -251,7 +255,7 @@ mod tests {
         // An unknown kind, basic model, after effect, normalization,
         // distribution or independence measure.
         for spec in [
-            &[9u8][..],
+            &[10u8][..],
             &[DFR, 7, 0, 0, 1],
             &[DFR, 0, 5, 0, 1],
             &[DFR, 0, 0, 9, 1],
