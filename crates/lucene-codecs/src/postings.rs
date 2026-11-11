@@ -5434,6 +5434,7 @@ impl<'a> LazyDocsCursor<'a> {
         self.level1_last_doc_id = NO_MORE_DOCS;
         self.level0_impacts.clear();
         self.level0_impacts_stale = false;
+        self.level1_impacts.clear();
         self.doc_id = NO_MORE_DOCS;
     }
 
@@ -5448,7 +5449,10 @@ impl<'a> LazyDocsCursor<'a> {
         }
         if target == NO_MORE_DOCS {
             // No document can be at or past `NO_MORE_DOCS`, so the walk over
-            // every remaining skip entry that would prove it is skipped: a
+            // every remaining skip entry that would prove it is skipped (a
+            // deliberate difference from `BlockPostingsEnum.advance`, which
+            // walks them; skip data past the current position is then never
+            // read, so a corrupt entry there is not reported here): a
             // scorer that knows nothing more can compete (a constant score
             // below the bar) exhausts its postings this way.
             self.exhaust();
