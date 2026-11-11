@@ -20,8 +20,8 @@ of collecting with comparator pruning across the whole index.
    last bound, so a filter that matches only old documents costs about what it
    did before.
 4. The total is counted separately up to the track-total-hits threshold, with
-   `Weight::count` shortcuts per segment. It is exact whenever counting finishes
-   and a lower bound (`GreaterThanOrEqualTo`) otherwise, as in Lucene.
+   `Weight::count` shortcuts per segment. It is exact up to the threshold and a
+   lower bound (`GreaterThanOrEqualTo`) past it, as Lucene's collector reports.
 
 It applies to one `LONG` or `INT` key with a `MIN`/`MAX`/`MIDDLE_*` selector
 whose missing value sorts after the bound, with no `index_sort` prefix,

@@ -287,7 +287,7 @@ fn newest_hits_take_one_slice_over_time_ordered_segments() {
     let top = run(&reader, &q, &sort, 10, 1000, None, false);
     assert_eq!(SLICES.with(Cell::get), 1);
     assert_eq!(top.hits.len(), 10);
-    assert_eq!(top.total.relation, TotalHitsRelation::EqualTo);
+    assert_eq!(top.total.relation, TotalHitsRelation::GreaterThanOrEqualTo);
     // An ascending key whose missing value sorts first is the ordinary
     // search's: the range would leave those documents out.
     SLICES.with(|c| c.set(0));

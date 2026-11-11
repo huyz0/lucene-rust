@@ -524,7 +524,7 @@ fn slice_after(key: &SortField, after: Option<&FieldDoc>, prev: Option<i64>) -> 
 
 /// The total `TopFieldCollector` reports for `query`: exact while below
 /// `threshold` (raised to the queue size, as `TopFieldCollectorManager`
-/// does), a lower bound once counting stops there.
+/// does), a lower bound once the count passes it.
 fn count(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
@@ -536,6 +536,9 @@ fn count(
     for seg in segments {
         if let crate::terminate::LeafCount::Whole(c) = crate::terminate::leaf_count(seg, query)? {
             total = total.saturating_add(c);
+            if total >= limit {
+                break;
+            }
             continue;
         }
         let ctx = exec::LeafContext {
@@ -571,9 +574,16 @@ fn count(
             doc = exec::exact_next(scorer.as_mut())?;
         }
     }
+    // Past the threshold Lucene's collector reports a lower bound even when
+    // it went on counting.
+    let relation = if total >= limit {
+        TotalHitsRelation::GreaterThanOrEqualTo
+    } else {
+        TotalHitsRelation::EqualTo
+    };
     Ok(TotalHits {
         value: total,
-        relation: TotalHitsRelation::EqualTo,
+        relation,
     })
 }
 

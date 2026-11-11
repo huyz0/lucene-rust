@@ -229,9 +229,7 @@ fn sorted_searches_match_real_lucene() {
         // a lower bound, and how far past depends on when each starts
         // skipping (Lucene's match-all and filter conjunctions collect whole
         // 4096-document windows first); all that is promised is that it
-        // exceeds the threshold. The bounded newest-N search counts on its
-        // own, and where a count is free (`Weight.count`) reports it exact:
-        // never below Lucene's bound.
+        // exceeds the threshold.
         let total_ok = if track {
             // Beside a MaxScoreCollector nothing is skipped on either side:
             // the count is the same, bound or not.
@@ -246,7 +244,7 @@ fn sorted_searches_match_real_lucene() {
             doc_led_exact += 1;
             got_gte && got.total.value == total
         } else if gte {
-            got.total.value > threshold && (got_gte || got.total.value >= total)
+            got_gte && got.total.value > threshold
         } else {
             !got_gte && got.total.value == total
         };
@@ -285,7 +283,7 @@ fn sorted_searches_match_real_lucene() {
             } else if total <= 1000 {
                 !td_gte && td.total.value == total
             } else {
-                td.total.value > 1000 && (td_gte || td.total.value == total)
+                td_gte && td.total.value > 1000
             };
             searcher_runs += 1;
             if td.hits != want || !td_total_ok {
