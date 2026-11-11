@@ -441,6 +441,27 @@ impl JObject for Unavailable {
 }
 
 impl Spec {
+    /// `name` over what the script runs: its IR, params, context, index,
+    /// shard and fields, not its run number.
+    fn key(&self, name: &str) -> String {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let fields: Vec<String> = self
+            .fields
+            .iter()
+            .map(|f| format!("{}:{:?}", f.name, f.kind))
+            .collect();
+        format!(
+            "{name}(ir={}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
+            hex(&self.ir_blob),
+            hex(&self.params_blob),
+            self.needs_score,
+            self.filter,
+            self.index,
+            self.shard,
+            fields.join(",")
+        )
+    }
+
     /// Whether the script is a `ScoreScript`.
     fn is_score(&self) -> bool {
         !self.filter && !self.sort && !self.agg && !self.terms_set && !self.interval
@@ -1267,23 +1288,7 @@ impl DoubleValuesSource for PainlessScoreSource {
     }
 
     fn equality_key(&self) -> String {
-        let s = &self.0;
-        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
-        let fields: Vec<String> = s
-            .fields
-            .iter()
-            .map(|f| format!("{}:{:?}", f.name, f.kind))
-            .collect();
-        format!(
-            "painless_score(ir={}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
-            hex(&s.ir_blob),
-            hex(&s.params_blob),
-            s.needs_score,
-            s.filter,
-            s.index,
-            s.shard,
-            fields.join(",")
-        )
+        self.0.key("painless_score")
     }
 }
 
@@ -1629,8 +1634,10 @@ impl LongValuesSource for PainlessMinimum {
         false
     }
 
+    /// The script's identity: `ScriptLongValueSource.equals` compares
+    /// the script, and `CoveringQuery`'s equality compares this.
     fn describe(&self) -> String {
-        "painless_minimum".to_string()
+        self.0.key("painless_minimum")
     }
 }
 
@@ -2259,6 +2266,29 @@ mod tests {
         assert!(ran >= 20, "{ran} scripts run");
         drop(handle);
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn terms_set_minimums_of_other_scripts_differ() {
+        // `CoveringQuery` equality compares `describe()`: two scripts there
+        // must not merge in the boolean rewrite.
+        let specs: Vec<Vec<u8>> = cases()
+            .into_iter()
+            .filter(|c| c.sort.is_some())
+            .map(|c| {
+                let mut spec = c.spec.clone();
+                spec[0] = 6;
+                spec
+            })
+            .take(2)
+            .collect();
+        let describe = |spec: &[u8]| {
+            PainlessMinimum::decode(&mut Cursor::new(spec))
+                .unwrap()
+                .describe()
+        };
+        assert_ne!(describe(&specs[0]), describe(&specs[1]));
+        assert_eq!(describe(&specs[0]), describe(&specs[0]));
     }
 
     /// **`terms_set` minimums.** Each fixture sort script, run as a

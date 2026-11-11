@@ -57,6 +57,8 @@ def rows():
         "filter": {"script": {"source": "int w = 0; for (int i = interval.start; i <= interval.end; i++) { w++; } return w % 2 == 0;"}}}}}}}, "native")
     add("intervals script filter refused", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
         "filter": {"script": {"source": "[interval.start, interval.end].stream().allMatch(x -> x > 0)"}}}}}}}, "interval_painless")
+    add("intervals script filter options", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+        "filter": {"script": {"source": "interval.start >= 0", "options": {"max_loop_counter": "100"}}}}}}}}, "interval_options")
 
     # combined_fields (`CombinedFieldQuery`, node 23).
     add("combined_fields", {"query": {"combined_fields": {"query": "alpha beta", "fields": ["body", "title^2"]}}}, "native")

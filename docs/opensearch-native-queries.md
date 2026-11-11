@@ -167,7 +167,7 @@ where the native call's fixed cost shows -- see
 |---|---|---|
 | `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
 | `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
-| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`) |
+| `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`, `interval_options` for a script with compile options) |
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
@@ -211,7 +211,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |
 | `automaton_states`, `fuzzy_automaton` | a multi-term query whose automaton has more than 65,536 states, or a fuzzy query Lucene cannot build an automaton for |
-| `covering_script`, `covering_painless`, `covering_field_data` | `terms_set` whose minimum is a script other than inline Painless, a Painless script the static check refuses, or field data other than plain integral doc values |
+| `covering_script`, `covering_painless`, `covering_options`, `covering_field_data` | `terms_set` whose minimum is a script other than inline Painless, a Painless script the static check refuses or compiled with options (`max_loop_counter`, `picky`) or stored, or field data other than plain integral doc values |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
