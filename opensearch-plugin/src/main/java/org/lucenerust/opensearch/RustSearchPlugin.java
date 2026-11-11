@@ -3,6 +3,8 @@
  */
 package org.lucenerust.opensearch;
 
+import org.lucenerust.opensearch.hexid.HexIdDocValueFormat;
+import org.lucenerust.opensearch.hexid.HexIdFieldMapper;
 import org.lucenerust.opensearch.tensor.MaxSimQueryBuilder;
 import org.lucenerust.opensearch.tensor.MultiVectorFieldMapper;
 import org.lucenerust.opensearch.ml.MlActions;
@@ -634,6 +636,7 @@ public class RustSearchPlugin extends Plugin implements
         mappers.put(SparseVectorFieldMapper.CONTENT_TYPE, new SparseVectorFieldMapper.TypeParser());
         mappers.put(MultiVectorFieldMapper.CONTENT_TYPE, new MultiVectorFieldMapper.TypeParser());
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
+        mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
         if (stockKnn == false) {
             mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }
@@ -668,10 +671,16 @@ public class RustSearchPlugin extends Plugin implements
     /** k-NN's {@code knn_vector} doc-value format, which a shard's {@code docvalue_fields} results carry. */
     @Override
     public List<org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry> getNamedWriteables() {
+        var hexId = new org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry(
+            org.opensearch.search.DocValueFormat.class,
+            HexIdDocValueFormat.NAME,
+            HexIdDocValueFormat::fromStream
+        );
         if (stockKnn) {
-            return List.of();
+            return List.of(hexId);
         }
         return List.of(
+            hexId,
             new org.opensearch.core.common.io.stream.NamedWriteableRegistry.Entry(
                 org.opensearch.search.DocValueFormat.class,
                 org.lucenerust.opensearch.knn.KnnVectorFieldData.Format.NAME,
@@ -689,6 +698,13 @@ public class RustSearchPlugin extends Plugin implements
         List<QuerySpec<?>> queries = new ArrayList<>();
         queries.add(new QuerySpec<>(NeuralSparseQueryBuilder.NAME, NeuralSparseQueryBuilder::new, NeuralSparseQueryBuilder::fromXContent));
         queries.add(new QuerySpec<>(MaxSimQueryBuilder.NAME, MaxSimQueryBuilder::new, MaxSimQueryBuilder::fromXContent));
+        queries.add(
+            new QuerySpec<>(
+                org.lucenerust.opensearch.join.NativeJoinQueryBuilder.NAME,
+                org.lucenerust.opensearch.join.NativeJoinQueryBuilder::new,
+                org.lucenerust.opensearch.join.NativeJoinQueryBuilder::fromXContent
+            )
+        );
         queries.add(HybridSearch.query());
         if (stockKnn == false) {
             queries.add(new QuerySpec<>(KnnQueryBuilder.NAME, KnnQueryBuilder::new, KnnQueryBuilder::fromXContent));
@@ -822,7 +838,11 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public List<org.opensearch.action.support.ActionFilter> getActionFilters() {
-        return List.of(new RealtimePrimaryFilter(clusterService::get, resolver::get), HybridSearch.requestFilter());
+        return List.of(
+            new RealtimePrimaryFilter(clusterService::get, resolver::get),
+            HybridSearch.requestFilter(),
+            new org.lucenerust.opensearch.join.JoinRequestFilter()
+        );
     }
 
     @Override

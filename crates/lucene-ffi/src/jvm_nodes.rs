@@ -119,6 +119,23 @@ pub(crate) fn decode_parents(
     }))
 }
 
+/// A block or query-time join's `ScoreMode`, by ordinal: `0` None, `1` Avg,
+/// `2` Max, `3` Total, `4` Min.
+pub(crate) fn decode_score_mode(c: &mut Cursor<'_>) -> Result<ScoreMode, FfiStatus> {
+    Ok(match c.u8()? {
+        0 => ScoreMode::None,
+        1 => ScoreMode::Avg,
+        2 => ScoreMode::Max,
+        3 => ScoreMode::Total,
+        4 => ScoreMode::Min,
+        other => {
+            return Err(invalid(format!(
+                "query tree: unknown block-join score mode {other} (expected 0..=4)"
+            )))
+        }
+    })
+}
+
 /// A node of kind 20-24, its kind byte read; `start` is the node's offset.
 pub(crate) fn decode(
     c: &mut Cursor<'_>,
@@ -129,18 +146,7 @@ pub(crate) fn decode(
 ) -> Result<Clause, FfiStatus> {
     let extended = match kind {
         NODE_TO_PARENT => {
-            let score_mode = match c.u8()? {
-                0 => ScoreMode::None,
-                1 => ScoreMode::Avg,
-                2 => ScoreMode::Max,
-                3 => ScoreMode::Total,
-                4 => ScoreMode::Min,
-                other => {
-                    return Err(invalid(format!(
-                        "query tree: unknown block-join score mode {other} (expected 0..=4)"
-                    )))
-                }
-            };
+            let score_mode = decode_score_mode(c)?;
             let parents = decode_parents(c, depth + 1, nodes)?;
             let child = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
             ExtendedQuery::ToParentBlockJoin(ToParentBlockJoinQuery::new(

@@ -83,6 +83,29 @@ with stock. The `native` sparse engine is refused. Model inference runs on
 the plugin's own ml-commons, so with `opensearch-ml` installed the model-backed
 queries and processors fail with a message saying so.
 
+### `hex_id` fields
+
+`"type": "hex_id"` is a `keyword` for trace, span and request ids. A value of
+lowercase hex digits (even length) is indexed and doc-valued as its bytes,
+half its characters; any other value (uppercase, odd length, dashes, other
+text) is kept as its exact UTF-8. Results are a `keyword`'s on the same data:
+`term`, `terms`, `exists` and `case_insensitive` `term` match the same
+documents, and sort values, aggregation keys, `docvalue_fields`, `fields`,
+scripts and derived `_source` give back the original strings. The
+differences: non-canonical values sort after the canonical ones, so on mixed
+data a document's values, a sort, a terms aggregation's `_key` order and
+count ties, and composite paging order differently; `prefix`, `wildcard`,
+`regexp`, `fuzzy` and `range` queries are refused, as on an `ip`; whatever
+reads the index terms as text sees the bytes (a terms aggregation's regex
+`include`/`exclude`, highlighting, the `term` suggester, `more_like_this`);
+`cardinality` hashes the bytes, so its estimate can differ by a unit; and a
+non-hex value may be 2 bytes shorter than Lucene's term limit. Parameters:
+`index`, `doc_values`, `null_value`, `ignore_above`, `meta`. The segments are plain Lucene terms and `SORTED_SET` doc values. 5M
+random 32-character trace ids on the Rust engine, one segment: 101 MiB less
+than `keyword` (shard 506 → 405 MiB: terms 144 → 110, doc values 163 → 96),
+with `term`, `terms` and sorted lookups within 2% of `keyword`'s latency
+(`e2e/bench_hex_id.py`; `e2e/hex_id_matrix.py` is the parity check).
+
 ## Operate
 
 | | |
