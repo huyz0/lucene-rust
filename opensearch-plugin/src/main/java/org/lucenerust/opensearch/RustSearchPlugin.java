@@ -315,6 +315,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         configureLazyDecrypt(settings);
         configurePageCache(settings);
+        NativeMemory.install(settings, NativeBridge.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(settings).getBytes() : 0);
         configureAggSegmentCache(settings);
         configureReadAdvice(settings);
     }
@@ -714,6 +715,7 @@ public class RustSearchPlugin extends Plugin implements
             NODE_LAZY_DECRYPT,
             NODE_DECRYPT_CACHE,
             NODE_PAGE_CACHE_SIZE,
+            NativeMemory.OFF_HEAP_LIMIT,
             NODE_READ_ADVICE,
             NODE_WARM_RANDOM,
             org.lucenerust.opensearch.logs.LogsPreset.ENABLED,
@@ -930,6 +932,14 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
+        clusterService.getClusterSettings()
+            .addSettingsUpdateConsumer(
+                NativeMemory.OFF_HEAP_LIMIT,
+                v -> NativeMemory.applyLimit(
+                    v,
+                    NativeBridge.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(environment.settings()).getBytes() : 0
+                )
+            );
         HybridSearch.initialize(threadPool);
         org.lucenerust.opensearch.store.PageCacheAccounting.start(threadPool);
         NeuralQueryBuilder.initialize(mlClient());
