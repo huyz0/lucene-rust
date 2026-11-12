@@ -448,7 +448,8 @@ impl<'a> SliceInput<'a> {
     }
 
     /// A hint that the bytes at `pos` will be read soon: loads their cache line
-    /// in the background (`prefetcht0`) so a later read does not stall on it.
+    /// in the background ([`lucene_util::simd::prefetch`]) so a later read does
+    /// not stall on it.
     /// No effect on the cursor or on correctness; a `pos` past the end, or a
     /// target without the instruction, does nothing.
     ///
@@ -457,19 +458,7 @@ impl<'a> SliceInput<'a> {
     /// as it parses the current one, and has a block to decode in between.
     #[inline(always)]
     pub fn prefetch(&self, pos: usize) {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(b) = self.buf.get(pos) {
-            // SAFETY: a prefetch never faults and changes no program-visible
-            // state; the address is a byte of this buffer in any case. SSE is
-            // part of the x86_64 baseline.
-            unsafe {
-                std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
-                    b as *const u8 as *const i8,
-                )
-            };
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        let _ = pos;
+        lucene_util::simd::prefetch(self.buf, pos);
     }
 
     /// Zero-copy view of `[from..to)` of the underlying buffer, independent of the
