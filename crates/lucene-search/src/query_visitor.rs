@@ -223,6 +223,36 @@ fn leaf_on(visitor: &mut dyn QueryVisitor, field: &str, clause: &Clause) {
     }
 }
 
+/// A recorded `visit` of `clause`, done again on `visitor`.
+fn replay(
+    record: &crate::extended_query::VisitRecord,
+    clause: &Clause,
+    visitor: &mut dyn QueryVisitor,
+) {
+    use crate::extended_query::VisitEvent;
+    let accepts = |v: &dyn QueryVisitor, guard: &Option<String>| {
+        guard.as_deref().is_none_or(|f| v.accept_field(f))
+    };
+    for event in &record.events {
+        match event {
+            VisitEvent::Terms { guard, terms } => {
+                if accepts(visitor, guard) {
+                    visitor.consume_terms(clause, terms);
+                }
+            }
+            VisitEvent::Leaf { guard } => {
+                if accepts(visitor, guard) {
+                    visitor.visit_leaf(clause);
+                }
+            }
+            VisitEvent::Sub(occur, sub) => {
+                with_sub(visitor, *occur, clause, &mut |v| replay(sub, clause, v));
+            }
+            VisitEvent::Node(node) => visit(node, visitor),
+        }
+    }
+}
+
 /// Runs `f` with the visitor `getSubVisitor(occur, parent)` gives.
 fn with_sub(
     visitor: &mut dyn QueryVisitor,
@@ -509,6 +539,13 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             crate::extended_query::ExtendedQuery::PointInSet(q) => {
                 leaf_on(visitor, &q.field, clause);
             }
+            // OpenSearch's `FunctionScoreQuery.visit`: its query, as `MUST`
+            crate::extended_query::ExtendedQuery::VisitOnly(inner) => {
+                with_sub(visitor, Occur::Must, clause, &mut |v| visit(inner, v));
+            }
+            crate::extended_query::ExtendedQuery::Visited(record) => {
+                replay(record, clause, visitor);
+            }
             // `MultiPhrasePrefixQuery.visit`: every position but the prefix one
             crate::extended_query::ExtendedQuery::MultiPhrasePrefix(q) => {
                 if !visitor.accept_field(&q.field) {
@@ -692,6 +729,68 @@ pub fn extract_terms(clause: &Clause) -> BTreeSet<Term> {
 mod tests {
     use super::*;
     use crate::query::{BooleanQuery, TermQuery};
+
+    #[test]
+    fn a_visit_record_replays_behind_its_guards_and_sub_visitors() {
+        use crate::extended_query::{ExtendedQuery, VisitEvent, VisitRecord};
+        struct Seen(Vec<String>, bool);
+        impl QueryVisitor for Seen {
+            fn accept_field(&self, field: &str) -> bool {
+                field == "f"
+            }
+            fn consume_terms(&mut self, _q: &Clause, terms: &[Term]) {
+                self.0.extend(
+                    terms
+                        .iter()
+                        .map(|t| String::from_utf8_lossy(&t.bytes).into()),
+                );
+            }
+            fn visit_leaf(&mut self, _q: &Clause) {
+                self.0.push("leaf".into());
+            }
+            fn sub_visitor(&mut self, occur: Occur, _parent: &Clause) -> SubVisitor {
+                if self.1 && occur == Occur::MustNot {
+                    SubVisitor::Empty
+                } else {
+                    SubVisitor::Same
+                }
+            }
+        }
+        let terms = |guard: Option<&str>, t: &str| VisitEvent::Terms {
+            guard: guard.map(str::to_owned),
+            terms: vec![Term::new("f", t)],
+        };
+        let record = VisitRecord {
+            events: vec![
+                terms(Some("f"), "a"),
+                terms(Some("g"), "b"),
+                terms(None, "c"),
+                VisitEvent::Leaf {
+                    guard: Some("g".into()),
+                },
+                VisitEvent::Leaf { guard: None },
+                VisitEvent::Sub(
+                    Occur::MustNot,
+                    VisitRecord {
+                        events: vec![terms(None, "d")],
+                    },
+                ),
+                VisitEvent::Node(Clause::Term(TermQuery::new("f", "e"))),
+            ],
+        };
+        let q = Clause::Extended(Box::new(ExtendedQuery::Visited(record)));
+        let seen = |skip_not| {
+            let mut v = Seen(Vec::new(), skip_not);
+            visit(&q, &mut v);
+            v.0
+        };
+        assert_eq!(seen(false), ["a", "c", "leaf", "d", "e"]);
+        assert_eq!(seen(true), ["a", "c", "leaf", "e"]);
+        let Clause::Extended(e) = &q else {
+            unreachable!()
+        };
+        assert_eq!(e.children().len(), 1);
+    }
 
     #[test]
     fn span_wrappers_visit_what_they_wrap() {

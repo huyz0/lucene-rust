@@ -42,6 +42,7 @@ pub use match_highlight::{
     PassageSelector, QueryOffsetRange, StoredValues,
 };
 pub mod highlighter;
+pub mod opensearch_plain;
 pub use term_vector::{TokenSources, TokenStreamFromTermVector};
 pub use word_break::{Kind as BreakKind, RuleBreakIterator};
 
@@ -64,6 +65,8 @@ pub enum Error {
     Io(String),
     /// `RuntimeException`.
     Runtime(String),
+    /// `IndexSearcher.TooManyClauses`: a rewrite expands past the clause count.
+    TooManyClauses(String),
 }
 
 impl Error {
@@ -78,6 +81,7 @@ impl Error {
             Error::IllegalArgument(_) => "java.lang.IllegalArgumentException",
             Error::Io(_) => "java.io.IOException",
             Error::Runtime(_) => "java.lang.RuntimeException",
+            Error::TooManyClauses(_) => "org.apache.lucene.search.IndexSearcher$TooManyClauses",
         }
     }
 
@@ -87,7 +91,8 @@ impl Error {
             Error::InvalidTokenOffsets(m)
             | Error::IllegalArgument(m)
             | Error::Io(m)
-            | Error::Runtime(m) => m.clone(),
+            | Error::Runtime(m)
+            | Error::TooManyClauses(m) => m.clone(),
             Error::Analysis(e) => e.to_string(),
             Error::Search(e) => e.to_string(),
         }
@@ -180,6 +185,15 @@ pub trait Fragmenter {
     fn is_new_fragment(&mut self, token: &AttributeSource) -> bool;
 }
 
+impl<F: Fragmenter + ?Sized> Fragmenter for Box<F> {
+    fn start(&mut self, original_text: &str) {
+        (**self).start(original_text);
+    }
+    fn is_new_fragment(&mut self, token: &AttributeSource) -> bool {
+        (**self).is_new_fragment(token)
+    }
+}
+
 /// `Formatter`: marks up a group of matching tokens.
 pub trait Formatter {
     /// `highlightTerm(originalText, tokenGroup)`.
@@ -190,6 +204,12 @@ pub trait Formatter {
 pub trait Encoder {
     /// `encodeText(originalText)`.
     fn encode_text(&self, original_text: &str) -> String;
+}
+
+impl<E: Encoder + ?Sized> Encoder for Box<E> {
+    fn encode_text(&self, original_text: &str) -> String {
+        (**self).encode_text(original_text)
+    }
 }
 
 /// `TokenGroup`: tokens whose offsets overlap, which are marked up together.
@@ -515,10 +535,13 @@ impl Highlighter {
             let to = usize::try_from(to).unwrap_or(0).min(text_len).max(from);
             &units[from..to]
         };
-        let encode = |enc: &dyn Encoder, s: &[u16]| -> Vec<u16> {
-            enc.encode_text(&String::from_utf16_lossy(s))
-                .encode_utf16()
-                .collect()
+        // the text between tokens, encoded onto `new_text` (through one
+        // reused buffer)
+        let mut scratch = String::new();
+        let mut encode = |enc: &dyn Encoder, s: &[u16], new_text: &mut Vec<u16>| {
+            scratch.clear();
+            scratch.extend(char::decode_utf16(s.iter().copied()).map(|c| c.unwrap_or('\u{FFFD}')));
+            new_text.extend(enc.encode_text(&scratch).encode_utf16());
         };
         let mut last_end_offset = 0i32;
         let mut cur = doc_frags.len() - 1;
@@ -543,7 +566,11 @@ impl Highlighter {
                     .formatter
                     .highlight_term(&self.encoder.encode_text(&token_text), &token_group);
                 if start > last_end_offset {
-                    new_text.extend(encode(self.encoder.as_ref(), slice(last_end_offset, start)));
+                    encode(
+                        self.encoder.as_ref(),
+                        slice(last_end_offset, start),
+                        new_text,
+                    );
                 }
                 new_text.extend(marked.encode_utf16());
                 last_end_offset = end.max(last_end_offset);
@@ -568,17 +595,22 @@ impl Highlighter {
                 .formatter
                 .highlight_term(&self.encoder.encode_text(&token_text), &token_group);
             if start > last_end_offset {
-                new_text.extend(encode(self.encoder.as_ref(), slice(last_end_offset, start)));
+                encode(
+                    self.encoder.as_ref(),
+                    slice(last_end_offset, start),
+                    new_text,
+                );
             }
             new_text.extend(marked.encode_utf16());
             last_end_offset = last_end_offset.max(end);
         }
         let text_len_i = i32::try_from(text_len).unwrap_or(i32::MAX);
         if last_end_offset < text_len_i && text_len_i <= self.max_doc_chars_to_analyze {
-            new_text.extend(encode(
+            encode(
                 self.encoder.as_ref(),
                 slice(last_end_offset, text_len_i),
-            ));
+                new_text,
+            );
         }
         doc_frags[cur].text_end_pos = new_text.len();
         Ok(())

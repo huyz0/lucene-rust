@@ -90,6 +90,15 @@ pub enum ExtendedQuery {
     /// OpenSearch's `match_phrase_prefix` query
     /// ([`MultiPhrasePrefixQuery`]); only highlighted, not searched.
     MultiPhrasePrefix(MultiPhrasePrefixQuery),
+    /// A query Lucene's highlighters read only through its `visit`, which
+    /// visits the wrapped query as `MUST`: OpenSearch's `FunctionScoreQuery`
+    /// (`function_score`), a class the span extractor does not support.
+    /// Only highlighted, not searched.
+    VisitOnly(Box<Clause>),
+    /// A query Lucene's `unified` highlighter reads only through its
+    /// `visit`, as what that visit does ([`VisitRecord`]); only highlighted,
+    /// not searched.
+    Visited(VisitRecord),
     /// A query only tests build ([`crate::test_support::TestQuery`]).
     #[cfg(any(test, feature = "asserting"))]
     Test(crate::test_support::TestQuery),
@@ -191,6 +200,8 @@ impl ExtendedQuery {
             ExtendedQuery::NumericDocValuesRange(_) => "SortedNumericDocValuesRangeQuery",
             ExtendedQuery::Substring(_) => "SubstringQuery",
             ExtendedQuery::MultiPhrasePrefix(_) => "MultiPhrasePrefixQuery",
+            ExtendedQuery::VisitOnly(_) => "FunctionScoreQuery",
+            ExtendedQuery::Visited(_) => "VisitedQuery",
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
@@ -241,6 +252,12 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinals(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
+            ExtendedQuery::VisitOnly(q) => vec![q.as_ref()],
+            ExtendedQuery::Visited(r) => {
+                let mut out = Vec::new();
+                r.nodes(&mut out);
+                out
+            }
             ExtendedQuery::Covering(q) => q.queries.iter().collect(),
             ExtendedQuery::Document(q) => q
                 .filter
@@ -262,6 +279,41 @@ impl ExtendedQuery {
 /// `SynonymQuery`: terms of one field scored as if they were one term -- the
 /// document's frequency is the sum of each present term's `boost * freq`,
 /// `docFreq` the largest of theirs, `totalTermFreq` the sum.
+/// What a query's `visit` did, recorded event by event: replayed, it
+/// visits a visitor as that query would.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VisitRecord {
+    pub events: Vec<VisitEvent>,
+}
+
+/// One step of a [`VisitRecord`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum VisitEvent {
+    /// `consumeTerms`, behind `acceptField(guard)` when the query asked.
+    Terms {
+        guard: Option<String>,
+        terms: Vec<crate::query_visitor::Term>,
+    },
+    /// `visitLeaf`, behind `acceptField(guard)` when the query asked.
+    Leaf { guard: Option<String> },
+    /// `getSubVisitor(occur)`, and what was done with it.
+    Sub(crate::query_visitor::Occur, VisitRecord),
+    /// A query handed over whole, visited as itself.
+    Node(Clause),
+}
+
+impl VisitRecord {
+    fn nodes<'a>(&'a self, out: &mut Vec<&'a Clause>) {
+        for e in &self.events {
+            match e {
+                VisitEvent::Sub(_, r) => r.nodes(out),
+                VisitEvent::Node(c) => out.push(c),
+                VisitEvent::Terms { .. } | VisitEvent::Leaf { .. } => {}
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SynonymQuery {
     pub field: String,

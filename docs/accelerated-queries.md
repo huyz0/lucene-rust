@@ -274,18 +274,104 @@ trailing separators stripped), its no-match summary and its
 `max_analyzed_offset` errors. `e2e/highlight_matrix.py` compares the plugin
 and stock nodes over ten indices (offsets, term vectors, both, the
 `english`, `whitespace`, `stop`, synonym and n-gram analyzers, stored
-fields), 46 queries and 20 option sets. A `match_phrase_prefix` is
+fields), 61 queries (nested, script, geo, `intervals` and other queries read through their visit among them) and 21 option sets. A `match_phrase_prefix` is
 highlighted as stock's highlighter rewrites it: a span near of its terms
 with a prefix span for the last position (only the search itself still
 runs on Java).
 
+A query the highlighter's phrase helper does not support (a script, geo,
+`intervals`, `combined_fields`, `distance_feature`, `more_like_this`, a
+`function_score`) is read, as stock reads it, only through its `visit`:
+the Java side records what that visit does (the terms it consumes behind
+the field it asked to accept, its leaves, its sub-visitors and occurs, the
+queries it hands over whole) and sends the record (`NODE_VISITED`), which
+the native visitor replays. A `nested` query is read as its child query,
+as stock's phrase helper rewrites it.
+
 A field falls back to OpenSearch's highlighter (counted in the stats'
-`fallbacks`) when its query holds a class the encoder does not send
-(`highlight_<Class>`: `nested`, joins, scripts), a `function_score` around a phrase or span
-(`highlight_function_score_phrase`), a needed analyzer cannot be described
+`fallbacks`) when its query's visit matches terms by an automaton the
+encoder does not send (`highlight_<Class>`), a needed analyzer cannot be described
 (the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
-(`index.highlight.accelerated: false`). `plain` and `fvh` stay
-OpenSearch's.
+(`index.highlight.accelerated: false`).
+
+### The `plain` highlighter
+
+`plain` fields are pointed the same way at `accelerated_plain`
+(`highlight/NativePlainHighlighter.java` over
+`lucene-highlighter/src/opensearch_plain.rs`): the classic `Highlighter`
+with OpenSearch's `CustomQueryScorer` (its extractor reads a
+`function_score` or an `IndexOrDocValuesQuery` as its query, skips
+`has_child`/`has_parent`, and gives an unknown query's terms when nothing
+else has), the `span`/`simple`/none fragmenter, the field's tags and
+encoder. Per field and search the Java side writes one request
+(`lucene-ffi/src/jvm_highlight_plain.rs`): the query, the field's index
+analyzer and the options; per hit it sends the converted (and
+`max_analyzer_offset`-cut) values and, with `no_match_size`, the first
+raw value for the summary. The fragments are scored natively and ordered
+and picked in Java with stock's comparator. Stock keeps one fragmenter per
+field for the whole fetch phase, and `SimpleSpanFragmenter` does not reset
+the span it waits for between texts, so a span read to the end of one
+value delays the next value's (or next hit's) first cut: the plugin hands
+that state from one call to the next. A `FuzzyQuery` is sent as itself
+(`NODE_FUZZY`), as each term it expands to is weighted by its similarity.
+A query the extractor does not know whose rewrite keeps it (a script, geo,
+`intervals`, `distance_feature`, `terms_set`, `combined_fields`,
+`script_score`) is sent as its recorded visit, whose terms the extractor
+reads when it has none yet; one whose rewrite reads the index
+(`more_like_this`) falls back (`highlight_<Class>`).
+
+`e2e/highlight_matrix.py` runs every option set above as `type: plain`
+and seven of plain's own (fragmenters, sizes, score order, `html`), all
+identical to stock. Falls back: the reasons above but the realtime view
+(the plain highlighter reads no index), a boolean query whose clauses are
+not musts, then shoulds, then filters (`highlight_clause_order`: the
+extractor's kept weights and an unknown query's terms depend on the order),
+a join or points-or-doc-values query directly inside a `function_score` or
+`nested` query, or such a wrapper there whose rewrite changes it
+(`highlight_nested_<Class>`: Lucene's extractor, which stock hands that
+query to, rewrites it against the document), an unknown
+`fragmenter` or a `max_analyzer_offset` over the index limit (stock's
+errors), and per hit a value past `index.highlight.max_analyzed_offset`
+(stock's error), a multi-term query expanding past the clause count over
+it (`highlight_plain_hit`: stock throws), or holding a lone surrogate (`highlight_lone_surrogate`:
+Java's tokenizers read one, often left by a `max_analyzer_offset` cut, in
+ways the native text cannot hold).
+
+### The `fvh` highlighter
+
+`fvh` fields are pointed at `accelerated_fvh`
+(`highlight/NativeFvhHighlighter.java` over
+`lucene-highlighter/src/vectorhighlight` and
+`lucene-ffi/src/jvm_highlight_fvh.rs`). The field query is stock's own:
+the Java side builds OpenSearch's `CustomFieldQuery` as its highlighter
+does (and sets `highlight_filter` after it, in stock's order), and sends
+its phrase tries and term sets once per field and search, so every query
+`CustomFieldQuery` flattens is covered with no query encoding. Per hit the
+native side reads the matches from the hit's term vectors in its segment
+(the segment's `maxDoc` and `docFreq` weigh them, as the leaf reader does
+in stock), builds the fragment list (single for `number_of_fragments: 0`,
+simple with `fragment_offset` otherwise), and cuts the fragments from the
+values stock's fragments builder reads, which Java passes: the stored
+strings, or `_source` when the field is not stored or `force_source` is
+set. The builders follow stock's pick (Lucene's score-order builder over
+stored fields, OpenSearch's builders elsewhere, which move a fragment's
+start back to its first match when the analyzer has a filter that
+`breaksFastVectorHighlighter`, such as `edge_ngram`), with
+`search.highlight.term_vector_multi_value`, the boundary scanner
+(`chars`, `sentence`, `word`), tags, encoder, `matched_fields`,
+`phrase_limit` and the `no_match_size` summary.
+
+`e2e/highlight_matrix.py` runs every option set above as `type: fvh` and
+thirteen of fvh's own (`matched_fields`, `fragment_offset`,
+`phrase_limit`, `boundary_chars`, `force_source`, multi-valued fields,
+locales, `highlight_filter`) on six term-vector indices (stored or not,
+`edge_ngram`, synonyms, `english`), all identical to stock. Falls back: a
+field without term vectors (stock's error, `highlight_fvh_term_vectors`),
+a `fragment_size` under the fragment list's minimum or a negative
+`fragment_offset` (stock's errors), the realtime view, the reasons of the
+unified highlighter's reader and derived fields, Thai boundaries; per hit
+a value with a lone surrogate, and a hit stock's highlighter throws on or
+whose fragment would cut a surrogate pair (`highlight_fvh_hit`).
 
 ### What runs native around the others
 
@@ -293,7 +379,7 @@ OpenSearch's.
   including on an index with `completion` fields, which used to fall back
   whole (`postings_format`);
 - the stored fields the highlighters read their text from (the fetch
-  phase's native stored-fields reader, R6); term vectors (`fvh`) and the
+  phase's native stored-fields reader, R6) and term vectors (`fvh`); the
   suggesters' own reads (the completion FST, the term dictionary) are
   Lucene's, through the same reader;
 - `query_string` and `simple_query_string`: OpenSearch's parser builds the
