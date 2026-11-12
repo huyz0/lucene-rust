@@ -23,6 +23,8 @@ thread_local! {
     pub(crate) static DISABLED: Cell<bool> = const { Cell::new(false) };
     /// The slices the bounded search ran.
     pub(crate) static SLICES: Cell<u32> = const { Cell::new(0) };
+    /// The whole passes it ran after its slices.
+    pub(crate) static RESTS: Cell<u32> = const { Cell::new(0) };
 }
 
 const VERSION: LuceneVersion = LuceneVersion {
@@ -275,6 +277,12 @@ fn the_bounded_search_keeps_the_ordinary_hits() {
     }
     // Most shapes take the bounded search; the rest are the ones it refuses.
     assert!(bounded > 1000, "bounded searches: {bounded}");
+    // And many of those end in a whole pass after the slices.
+    assert!(
+        RESTS.with(Cell::get) > 100,
+        "passes: {}",
+        RESTS.with(Cell::get)
+    );
 }
 
 #[test]
