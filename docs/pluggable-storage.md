@@ -115,7 +115,11 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
 - Reads use `O_DIRECT` where the file system takes it, so a page is held
   once, in the budget, not again in the kernel's page cache. A read goes
   into a reused per-thread buffer and from there straight into the mapping
-  (`UFFDIO_COPY`); each fault wakes one handler thread (`EPOLLEXCLUSIVE`).
+  (`UFFDIO_COPY`); each fault wakes one handler thread (`EPOLLEXCLUSIVE`),
+  of four per CPU (16 to 64), so faults wait on the disk in parallel.
+- Every open of one file shares its pages: a merge reading a segment the
+  search reader has open reads the pages the reader holds, and no page is
+  held twice. Files read whole at open are shared the same way.
 - Pages are 64 KiB. A file larger than half the budget gets 4 KiB pages
   (vector data) or 16 KiB pages (the rest), since it cannot stay resident
   and a large page would bring in bytes nobody reads
@@ -140,16 +144,33 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   start on probation. A page faulted in again within about a budget's worth
   of evictions (the kernel's refault distance), or announced again by a
   prefetch, is protected, and protected pages take at most three quarters of
-  the budget, so a scan cannot push out the working set.
+  the budget, so a scan cannot push out the working set. A pass past the
+  budget goes a little below it (1/256), and its victims are released in
+  one `process_madvise` call where the kernel takes `MADV_DONTNEED` there
+  (Linux 6.13+; 6.16+ flushes the TLB once per batch), else one `madvise`
+  each.
 - In-flight reads and pinned files are outside the budget: leave headroom
   under a hard memory limit (the bench needed about 15% at 256 MiB).
-- `Pager::stats` counts faults, refaults, fault time and evictions.
+  `lucene_store::whole_file_bytes` reports the pinned files' bytes.
+- `Pager::stats` counts faults, refaults, fault time, evictions and pages
+  that could not be read.
+- A page that cannot be read (an I/O error) is retried for about two
+  seconds. It then reads as zeros for one second (`UNREADABLE_HOLD`), and
+  the failure is recorded under the file's path
+  (`lucene-store/src/read_failures.rs`), so the calls that ran while it was
+  served fail; after that the zeros are dropped and the next touch reads
+  the disk again. Announced reads (`will_need`, `prefetch`) get the error
+  directly. The process never aborts for a page.
 
 In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
 default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
 mapped). `lucene_rust.store.page_cache.size` (default 1 GB) is the node's
 budget. A node where `userfaultfd` is blocked keeps every index mapped and
-says so at startup.
+says so at startup. `GET /_plugins/lucene_rust/stats` reports the page
+cache under `page_cache` (budget, resident and whole-file bytes, faults,
+refaults, evictions, read errors, fault time), and the resident bytes are
+charged to the `lucene_rust_writer` breaker, whose default limit includes
+the budget, so they show in `_nodes/stats/breaker`.
 
 ### Against `mmap`
 
@@ -454,8 +475,8 @@ What it needs and how it fails:
   shard while a failure is recorded under it (`Io`, "failed
   authentication"); a merge reading the bad chunk fails its checksum check.
   OpenSearch then fails the shard and recovers it from a replica.
-- An I/O error reading a page is retried for about a minute, then aborts
-  the process, as for an unencrypted paged shard.
+- An I/O error reading a page fails the calls that read it, as for an
+  unencrypted paged shard, and the page is read again on its next touch.
 
 ## Limits to know
 

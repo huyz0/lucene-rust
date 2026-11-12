@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 141;
+    public static final int EXPECTED_ABI_VERSION = 143;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -269,6 +269,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
         );
         static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
+        static final MethodHandle STORE_PAGE_CACHE_STATS = bind("ffi_store_page_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1753,6 +1754,28 @@ public final class NativeBridge {
         byte[] utf8 = (spec == null ? "" : spec).getBytes(java.nio.charset.StandardCharsets.UTF_8);
         try (Scratch s = Scratch.open()) {
             return (int) H.STORE_SET_READ_ADVICE.invokeExact(s.bytes(utf8), (long) utf8.length, warmRandom ? 1 : 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** How many values {@link #storePageCacheStats} returns. */
+    public static final int PAGE_CACHE_STATS = 8;
+
+    /**
+     * The page cache's numbers: {@code [budget, resident bytes, bytes of files read whole at open,
+     * faults, pages read again after eviction, evictions, pages that could not be read, nanoseconds
+     * serving faults]}; every value -1 if the call fails.
+     */
+    public static long[] storePageCacheStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(PAGE_CACHE_STATS * Long.BYTES);
+            int rc = (int) H.STORE_PAGE_CACHE_STATS.invokeExact(out);
+            long[] values = new long[PAGE_CACHE_STATS];
+            for (int i = 0; i < PAGE_CACHE_STATS; i++) {
+                values[i] = rc == OK ? out.get(JAVA_LONG, (long) i * Long.BYTES) : -1;
+            }
+            return values;
         } catch (Throwable t) {
             throw rethrow(t);
         }

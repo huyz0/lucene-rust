@@ -88,11 +88,15 @@ thread_local! {
     /// ([`note_shard`]), and how deep in nested guard calls this thread is.
     static CALL_SHARDS: RefCell<Vec<std::sync::Arc<str>>> = const { RefCell::new(Vec::new()) };
     static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// [`lucene_store::read_failures::epoch`] when the outermost running
+    /// [`guard`] call started.
+    static CALL_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Notes that the running call reads the shard at `path`: if a page of a
-/// file under it fails to decode while the call runs (an encrypted chunk
-/// that fails authentication), [`guard`] fails the call with that error.
+/// file under it fails to decode (an encrypted chunk that fails
+/// authentication) or cannot be read from disk while the call runs,
+/// [`guard`] fails the call with that error.
 pub(crate) fn note_shard(path: &std::sync::Arc<str>) {
     CALL_SHARDS.with(|c| {
         let mut shards = c.borrow_mut();
@@ -108,10 +112,11 @@ fn shard_read_failure() -> Option<String> {
     if lucene_store::read_failures::count() == 0 {
         return None;
     }
+    let since = CALL_EPOCH.with(|e| e.get());
     CALL_SHARDS.with(|c| {
         c.borrow()
             .iter()
-            .find_map(|path| lucene_store::read_failures::failure_under(path))
+            .find_map(|path| lucene_store::read_failures::failure_under(path, since))
     })
 }
 
@@ -187,6 +192,7 @@ where
     });
     if depth == 0 {
         CALL_SHARDS.with(|c| c.borrow_mut().clear());
+        CALL_EPOCH.with(|e| e.set(lucene_store::read_failures::epoch()));
     }
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);
@@ -195,8 +201,9 @@ where
     CAPTURING_PANIC.with(|c| c.set(depth > 0));
     match outcome {
         Ok(Ok(())) => match shard_read_failure() {
-            // The call read a page that failed to decode, and zeros stood
-            // in for it: its result cannot be trusted.
+            // The call may have read a page that failed to decode or could
+            // not be read, and zeros stood in for it: its result cannot be
+            // trusted.
             Some(message) => {
                 set_last_error(format!("reading the shard failed: {message}"));
                 FfiStatus::Io.code()
