@@ -211,3 +211,40 @@ fn an_index_or_doc_values_query_and_a_term_set_give_their_terms() {
         ["The quick brown <em>fox</em> jumps over the lazy <em>dog</em>. A second sentence mentions the <em>fox</em> again & it ends"]
     );
 }
+
+#[test]
+fn an_unknown_query_after_a_should_adds_no_terms() {
+    use lucene_search::extended_query::{ExtendedQuery, VisitEvent, VisitRecord};
+    use lucene_search::query_visitor::Term;
+    // an intervals query's recorded visit: its terms count only when nothing
+    // else gave any, and stock meets the shoulds before the filters
+    let visited = Clause::Extended(Box::new(ExtendedQuery::Visited(VisitRecord {
+        events: vec![VisitEvent::Terms {
+            guard: None,
+            terms: vec![Term::new("body", "dog")],
+        }],
+    })));
+    let mut b = BooleanQuery::new();
+    b.should.push(term("body", "fox"));
+    b.filter.push(visited.clone());
+    let both = run(options(), Clause::Boolean(Box::new(b))).concat();
+    assert!(both.contains("<em>fox</em>") && !both.contains("<em>dog</em>"), "{both}");
+    let mut alone = BooleanQuery::new();
+    alone.filter.push(visited);
+    let alone = run(options(), Clause::Boolean(Box::new(alone))).concat();
+    assert!(alone.contains("<em>dog</em>"), "{alone}");
+}
+
+#[test]
+fn a_prefix_past_the_clause_count_is_stock_s_error() {
+    let words: Vec<String> = (0..1100).map(|i| format!("pre{i:04}")).collect();
+    let text = words.join(" ");
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let q = Clause::Prefix(PrefixQuery::new("body", b"pre".to_vec()));
+    let h = PlainHighlighter::new(options(), q, analyzer);
+    assert!(matches!(
+        h.fragments(&text),
+        Err(crate::Error::TooManyClauses(_))
+    ));
+    assert!(h.fragments(&words[..20].join(" ")).is_ok());
+}

@@ -65,6 +65,8 @@ pub enum Error {
     Io(String),
     /// `RuntimeException`.
     Runtime(String),
+    /// `IndexSearcher.TooManyClauses`: a rewrite expands past the clause count.
+    TooManyClauses(String),
 }
 
 impl Error {
@@ -79,6 +81,7 @@ impl Error {
             Error::IllegalArgument(_) => "java.lang.IllegalArgumentException",
             Error::Io(_) => "java.io.IOException",
             Error::Runtime(_) => "java.lang.RuntimeException",
+            Error::TooManyClauses(_) => "org.apache.lucene.search.IndexSearcher$TooManyClauses",
         }
     }
 
@@ -88,7 +91,8 @@ impl Error {
             Error::InvalidTokenOffsets(m)
             | Error::IllegalArgument(m)
             | Error::Io(m)
-            | Error::Runtime(m) => m.clone(),
+            | Error::Runtime(m)
+            | Error::TooManyClauses(m) => m.clone(),
             Error::Analysis(e) => e.to_string(),
             Error::Search(e) => e.to_string(),
         }

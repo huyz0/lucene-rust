@@ -241,6 +241,11 @@ QUERIES = {
     "terms_set": {"terms_set": {"body": {"terms": ["fox", "dog", "gold"], "minimum_should_match_script": {"source": "1"}}}},
     "distance_feature": {"bool": {"must": [{"match": {"body": "fox"}}], "should": [{"distance_feature": {"field": "date", "pivot": "30d", "origin": "2026-06-01"}}]}},
     "boosting": {"boosting": {"positive": {"match": {"body": "fox"}}, "negative": {"match": {"body": "dog"}}, "negative_boost": 0.5}},
+    "should_then_filter": {"bool": {"should": [{"match": {"body": "fox"}}], "filter": [{"intervals": {"body": {"match": {"query": "dog"}}}}]}},
+    "boost_twice": {"bool": {"should": [{"term": {"body": {"value": "fox", "boost": 5}}}, {"term": {"body": {"value": "dog", "boost": 2}}}], "filter": [{"term": {"body": "fox"}}]}},
+    "function_score_nested": {"function_score": {"query": {"nested": {"path": "comments", "query": {"match_phrase": {"comments.text": "quick brown"}}}}, "field_value_factor": {"field": "num"}}},
+    "nested_function_score": {"nested": {"path": "comments", "query": {"function_score": {"query": {"match_phrase": {"comments.text": "quick brown"}}}}}},
+    "query_string_mixed": {"query_string": {"query": "fox OR (lazy AND dog) OR gold", "default_field": "body"}},
     "query_string_proximity": {"query_string": {"query": "\"quick fox\"~3 OR lazy", "default_field": "body"}},
 }
 

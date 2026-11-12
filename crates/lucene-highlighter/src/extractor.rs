@@ -550,8 +550,17 @@ impl Run<'_, '_> {
         match query {
             Clause::Boost(b) => self.extract(&b.inner, boost * b.boost),
             Clause::Boolean(b) => {
-                for c in b.must.iter().chain(&b.filter).chain(&b.should) {
-                    self.extract(c, boost)?;
+                // OpenSearch's bool queries hold their musts, shoulds and filters in that order
+                // (the plugin sends no other order), which the kept weights and an unknown
+                // query's terms depend on
+                if self.cfg.opensearch {
+                    for c in b.must.iter().chain(&b.should).chain(&b.filter) {
+                        self.extract(c, boost)?;
+                    }
+                } else {
+                    for c in b.must.iter().chain(&b.filter).chain(&b.should) {
+                        self.extract(c, boost)?;
+                    }
                 }
                 Ok(())
             }
@@ -614,8 +623,9 @@ impl Run<'_, '_> {
         };
         // `SCORING_BOOLEAN_REWRITE`: a boosted `TermQuery` per matching term
         self.ensure_terms()?;
-        let expanded = expand_clause(query, &self.leaf.terms)?;
-        for (term, term_boost) in expanded.unwrap_or_default() {
+        let expanded = expand_clause(query, &self.leaf.terms)?.unwrap_or_default();
+        too_many_clauses(expanded.len())?;
+        for (term, term_boost) in expanded {
             let text = text_of(&term);
             if self.field_ok(field) {
                 self.put(
@@ -662,6 +672,7 @@ impl Run<'_, '_> {
             out: Vec::new(),
         };
         query_visitor::visit(query, &mut accepted);
+        too_many_clauses(accepted.out.len())?;
         for term in accepted.out {
             let text = text_of(&term);
             self.put(text.clone(), WeightedSpanTerm::new(boost, text));
@@ -1345,4 +1356,16 @@ impl Scorer for QueryTermScorer {
     fn fragment_score(&self) -> f32 {
         self.total_score
     }
+}
+
+/// `ScoringRewrite`'s `checkMaxClauseCount`: a multi-term query's scoring
+/// rewrite over the document refuses more terms than the clause count.
+fn too_many_clauses(terms: usize) -> Result<()> {
+    use lucene_search::extended_query::MAX_CLAUSE_COUNT;
+    if terms > MAX_CLAUSE_COUNT {
+        return Err(Error::TooManyClauses(format!(
+            "maxClauseCount is set to {MAX_CLAUSE_COUNT}"
+        )));
+    }
+    Ok(())
 }

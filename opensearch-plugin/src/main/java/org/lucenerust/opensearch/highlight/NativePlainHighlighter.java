@@ -52,6 +52,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
     /** {@code jvm_highlight_plain.rs}'s request version and status. */
     private static final byte REQUEST_VERSION = 1;
     private static final int STATUS_FRAGMENTS = 0;
+    private static final int STATUS_STOCK = 1;
 
     private final SearchStats stats;
 
@@ -122,7 +123,10 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             if (hasLoneSurrogate(text)) {
                 // Java's analysis reads a lone surrogate (often one a max_analyzer_offset cut
                 // leaves) in ways the native text, which has none, cannot mirror.
-                stats.fallback("highlight_lone_surrogate");
+                // Stock's span fragmenter carries its state from hit to hit: once one hit is
+                // stock's, so are the rest.
+                prepared.fallback = "highlight_lone_surrogate";
+                stats.fallback(prepared.fallback);
                 return super.highlight(fieldContext);
             }
             values.add(text);
@@ -141,6 +145,12 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         }
         ByteBuffer b = ByteBuffer.wrap(out[0]).order(ByteOrder.LITTLE_ENDIAN);
         int status = b.get();
+        if (status == STATUS_STOCK) {
+            // a hit stock's highlighter throws on: its answer, the rest of the hits with it
+            prepared.fallback = "highlight_plain_hit";
+            stats.fallback(prepared.fallback);
+            return super.highlight(fieldContext);
+        }
         if (status != STATUS_FRAGMENTS) {
             throw new IllegalStateException("lucene-rust: plain highlight status " + status);
         }

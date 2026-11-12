@@ -323,11 +323,17 @@ reads when it has none yet; one whose rewrite reads the index
 `e2e/highlight_matrix.py` runs every option set above as `type: plain`
 and seven of plain's own (fragmenters, sizes, score order, `html`), all
 identical to stock. Falls back: the reasons above but the realtime view
-(the plain highlighter reads no index), a `function_score` directly in a
-`function_score` (`highlight_function_score_nested`), an unknown
+(the plain highlighter reads no index), a boolean query whose clauses are
+not musts, then shoulds, then filters (`highlight_clause_order`: the
+extractor's kept weights and an unknown query's terms depend on the order),
+a join or points-or-doc-values query directly inside a `function_score` or
+`nested` query, or such a wrapper there whose rewrite changes it
+(`highlight_nested_<Class>`: Lucene's extractor, which stock hands that
+query to, rewrites it against the document), an unknown
 `fragmenter` or a `max_analyzer_offset` over the index limit (stock's
 errors), and per hit a value past `index.highlight.max_analyzed_offset`
-(stock's error) or holding a lone surrogate (`highlight_lone_surrogate`:
+(stock's error), a multi-term query expanding past the clause count over
+it (`highlight_plain_hit`: stock throws), or holding a lone surrogate (`highlight_lone_surrogate`:
 Java's tokenizers read one, often left by a `max_analyzer_offset` cut, in
 ways the native text cannot hold).
 

@@ -18,7 +18,8 @@
 //! | `pre_tag: bytes`, `post_tag: bytes` | UTF-8 |
 //! | `html: u8` | the `html` encoder |
 //!
-//! Result layout: `status: u8` ([`STATUS_FRAGMENTS`]), `count: i32` and per
+//! Result layout: `status: u8` ([`STATUS_FRAGMENTS`], or [`STATUS_STOCK`]
+//! alone), `count: i32` and per
 //! fragment `score: f32`, `len: i32` and `len` UTF-16 units, every value's
 //! fragments in value order; then `summary_end: i32`, the end of the
 //! summary when there is no fragment and a summary was asked for, else -1;
@@ -44,6 +45,9 @@ pub(crate) const REQUEST_VERSION: u8 = 1;
 
 /// The fragments follow.
 pub(crate) const STATUS_FRAGMENTS: u8 = 0;
+/// The hit is one stock's highlighter throws on (a multi-term query expanding
+/// past the clause count): nothing follows.
+pub(crate) const STATUS_STOCK: u8 = 1;
 
 /// At most this many highlighters are kept per thread.
 const CACHED_PER_THREAD: usize = 16;
@@ -144,10 +148,12 @@ pub(crate) fn highlight(
     let mut fragments: Vec<PlainFragment> = Vec::new();
     for v in values {
         let text = String::from_utf16_lossy(v);
-        fragments.extend(
-            h.fragments_carrying(&text, &mut wait_for_pos)
-                .map_err(|e| failed(&e))?,
-        );
+        match h.fragments_carrying(&text, &mut wait_for_pos) {
+            Ok(f) => fragments.extend(f),
+            // stock throws on the hit: it is stock's to answer
+            Err(lucene_highlighter::Error::TooManyClauses(_)) => return Ok(vec![STATUS_STOCK]),
+            Err(e) => return Err(failed(&e)),
+        }
     }
     let mut summary_end = -1;
     if fragments.is_empty() && no_match_size > 0 {
