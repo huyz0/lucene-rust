@@ -95,6 +95,7 @@ final class RealtimePrimaryFilter implements ActionFilter {
     static boolean segmentCopies(IndexMetadata index) {
         Settings settings = index.getSettings();
         return RustEngineSupport.REALTIME_SEARCH.get(settings)
+            && RustEngineSupport.openSearchEngine(settings) == false
             && index.getNumberOfReplicas() > 0
             && (IndexMetadata.INDEX_REPLICATION_TYPE_SETTING.get(settings) == ReplicationType.SEGMENT
                 || settings.getAsBoolean(IndexMetadata.SETTING_REMOTE_STORE_ENABLED, false));

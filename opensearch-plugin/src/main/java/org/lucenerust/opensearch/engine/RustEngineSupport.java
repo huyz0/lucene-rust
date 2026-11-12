@@ -328,7 +328,7 @@ public final class RustEngineSupport {
      * realtime search, which only it serves), or it inherits the node default and none of its static settings sends it to OpenSearch's engine.
      */
     public static boolean servedByRust(org.opensearch.common.settings.Settings settings) {
-        if (ENGINE_ENABLED.get(settings) == false) {
+        if (openSearchEngine(settings)) {
             return false;
         }
         return ENGINE_ENABLED.exists(settings)
@@ -347,6 +347,22 @@ public final class RustEngineSupport {
      */
     public static boolean inheritsOntoLucene10(org.opensearch.common.settings.Settings settings) {
         return org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings).luceneVersion.major >= 10;
+    }
+
+    /**
+     * The setting cross-cluster replication puts on a follower index
+     * ({@code ReplicationPlugin.REPLICATED_INDEX_SETTING}): the index it follows.
+     */
+    static final String CCR_FOLLOWER = "index.plugins.replication.follower.leader_index";
+
+    /**
+     * Whether OpenSearch's engine, or another plugin's, serves an index whatever else its settings ask:
+     * {@link #ENGINE_ENABLED} is off, or the index is a cross-cluster replication follower. A follower
+     * keeps its leader's settings, the accelerated engine's included, and is served by
+     * cross-cluster replication's own engine; OpenSearch refuses an index two plugins offer an engine for.
+     */
+    public static boolean openSearchEngine(org.opensearch.common.settings.Settings settings) {
+        return ENGINE_ENABLED.get(settings) == false || settings.get(CCR_FOLLOWER) != null;
     }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */
