@@ -1158,6 +1158,15 @@ impl<'a> OwnedQuantizedQueryScorer<'a> {
 }
 
 impl crate::hnsw::VectorScorer for OwnedQuantizedQueryScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        crate::hnsw::read_ahead_span(self.values.byte_size)
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        let v = &self.values;
+        crate::hnsw::read_ahead_rows(v.slice, v.size, v.byte_size, from, to);
+    }
+
     fn score(&mut self, node: i32) -> Result<f32> {
         quantized_score(
             &self.query,
@@ -1189,6 +1198,15 @@ pub fn is_meta_file(meta: &[u8]) -> bool {
 }
 
 impl crate::hnsw::VectorScorer for QuantizedQueryScorer<'_, '_> {
+    fn read_ahead_span(&self) -> usize {
+        crate::hnsw::read_ahead_span(self.values.byte_size)
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        let v = &self.values;
+        crate::hnsw::read_ahead_rows(v.slice, v.size, v.byte_size, from, to);
+    }
+
     fn score(&mut self, node: i32) -> Result<f32> {
         quantized_score(
             &self.query,

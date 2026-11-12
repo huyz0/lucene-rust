@@ -83,6 +83,9 @@ pub struct JvmReaderHandle {
     pub agg_identities: std::sync::OnceLock<
         Vec<Option<lucene_search::bucket_aggs::segment_cache::SegmentIdentity>>,
     >,
+    /// The shard path the reader's files are under, noted for each call
+    /// that reads them ([`crate::error::note_shard`]).
+    pub path: std::sync::Arc<str>,
 }
 
 impl JvmReaderHandle {
