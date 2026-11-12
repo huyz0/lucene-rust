@@ -1,6 +1,6 @@
 //! A flush's doc-values columns in one pass over its documents.
 //!
-//! [`IndexWriter::collect_dense_column`] builds one column by scanning every
+//! [`super::IndexWriter::collect_dense_column`] builds one column by scanning every
 //! document's doc values for that field, so a flush of `F` doc-values
 //! fields read every document's values `F` times, and it copied each
 //! SORTED_SET value and gave each SORTED_NUMERIC and SORTED_SET document a
@@ -13,7 +13,7 @@
 //! so the bytes written are the ones the per-field columns gave.
 //!
 //! BINARY and SORTED columns, and any column whose documents carry a value
-//! of the wrong kind, are left to [`IndexWriter::collect_dense_column`],
+//! of the wrong kind, are left to [`super::IndexWriter::collect_dense_column`],
 //! which reports the error exactly as before.
 
 use lucene_codecs::doc_values::{SortedNumericColumn, SortedSetOrdsColumn};
