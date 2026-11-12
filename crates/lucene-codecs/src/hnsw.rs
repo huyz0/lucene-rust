@@ -103,6 +103,27 @@ pub const NO_MORE_DOCS: i32 = i32::MAX;
 // Scorers
 // ---------------------------------------------------------------------------
 
+/// About how many bytes of vectors an exhaustive scan reads ahead at a
+/// time ([`VectorScorer::read_ahead`]).
+pub const READ_AHEAD_BYTES: usize = 1 << 20;
+
+/// [`VectorScorer::read_ahead_span`] for rows of `row_bytes` bytes: the
+/// ordinals in about [`READ_AHEAD_BYTES`].
+pub fn read_ahead_span(row_bytes: usize) -> usize {
+    READ_AHEAD_BYTES.checked_div(row_bytes).unwrap_or(0).max(1)
+}
+
+/// [`VectorScorer::read_ahead`] over `data`, `rows` rows of `row_bytes`
+/// bytes: the rows of ordinals `from..to`, clamped to `0..rows`.
+pub fn read_ahead_rows(data: &[u8], rows: i32, row_bytes: usize, from: i32, to: i32) {
+    let clamped = |o: i32| usize::try_from(o.clamp(0, rows.max(0))).unwrap_or(0);
+    let start = clamped(from).saturating_mul(row_bytes);
+    let end = clamped(to).saturating_mul(row_bytes);
+    if let Some(bytes) = data.get(start..end) {
+        lucene_store::read_ahead(bytes);
+    }
+}
+
 /// Port of `org.apache.lucene.util.hnsw.RandomVectorScorer`: scores an
 /// abstract query against a vector ordinal.
 ///

@@ -208,6 +208,33 @@ public class RustSearchPlugin extends Plugin implements
         Setting.Property.NodeScope
     );
 
+    /**
+     * How the Rust engine advises the kernel to read each mapped shard file, by extension, as
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential} or
+     * {@code willneed}; {@code *} for every extension not listed, Lucene's
+     * {@code org.apache.lucene.store.defaultReadAdvice}). Empty (the default) advises random reads
+     * for the files a vector search reads a vector at a time ({@code vec}, {@code vex},
+     * {@code ivv}, {@code veq}, {@code vqd}) and leaves every other file to the OS read-ahead. A
+     * list replaces the whole table. Random advice helps once those files no longer fit in memory,
+     * most on IOPS-capped volumes such as EBS gp3; on local NVMe with free memory it changes little.
+     */
+    public static final Setting<List<String>> NODE_READ_ADVICE = Setting.listSetting(
+        "lucene_rust.store.mmap.read_advice",
+        List.of(),
+        java.util.function.Function.identity(),
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * Whether a file advised random that is small next to available memory (at most an eighth of
+     * it) is read in once when a shard opens, so a cold start still warms it in large reads.
+     */
+    public static final Setting<Boolean> NODE_WARM_RANDOM = Setting.boolSetting(
+        "lucene_rust.store.mmap.warm_random",
+        true,
+        Setting.Property.NodeScope
+    );
+
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
 
     private final SetOnce<org.opensearch.cluster.service.ClusterService> clusterService = new SetOnce<>();
@@ -269,6 +296,17 @@ public class RustSearchPlugin extends Plugin implements
         }
         configureLazyDecrypt(settings);
         configurePageCache(settings);
+        configureReadAdvice(settings);
+    }
+
+    private static void configureReadAdvice(Settings settings) {
+        String spec = String.join(",", NODE_READ_ADVICE.get(settings));
+        int rc = NativeBridge.storeSetReadAdvice(spec, NODE_WARM_RANDOM.get(settings));
+        if (rc != 0) {
+            throw new IllegalArgumentException(
+                "lucene-rust: invalid [" + NODE_READ_ADVICE.getKey() + "] " + spec + ": " + NativeBridge.lastError()
+            );
+        }
     }
 
     private static void configurePageCache(Settings settings) {
@@ -599,6 +637,8 @@ public class RustSearchPlugin extends Plugin implements
             NODE_LAZY_DECRYPT,
             NODE_DECRYPT_CACHE,
             NODE_PAGE_CACHE_SIZE,
+            NODE_READ_ADVICE,
+            NODE_WARM_RANDOM,
             org.lucenerust.opensearch.logs.LogsPreset.ENABLED,
             SparseSettings.SPARSE_INDEX
         ));
