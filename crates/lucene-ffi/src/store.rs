@@ -431,6 +431,33 @@ pub extern "C" fn ffi_store_set_page_cache_budget(budget_bytes: u64) -> i32 {
     FfiStatus::Ok.code()
 }
 
+/// Sets how mapped shard files are read, by extension
+/// ([`lucene_store::read_advice::set`]): `spec` is comma-separated
+/// `ext:advice` entries (`normal`, `random`, `sequential`, `willneed`), `*`
+/// for every other extension, empty for the defaults. `warm_random` 1 reads
+/// a file advised random in at open when it is small next to available
+/// memory. Applies to readers opened afterwards.
+///
+/// # Safety
+/// `spec` valid for `spec_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_store_set_read_advice(
+    spec: *const c_char,
+    spec_len: usize,
+    warm_random: i32,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        let spec = unsafe { str_from_raw(spec, spec_len)? };
+        lucene_store::read_advice::set(spec).map_err(|e| {
+            set_last_error(format!("ffi_store_set_read_advice: {e}"));
+            FfiStatus::InvalidArgument
+        })?;
+        lucene_store::read_advice::set_warm_random(warm_random != 0);
+        Ok(())
+    })
+}
+
 /// Bytes the page cache holds resident now, across every bound shard.
 #[no_mangle]
 pub extern "C" fn ffi_store_page_cache_resident_bytes() -> u64 {
@@ -600,6 +627,32 @@ mod tests {
     /// and the writer's and a reader's directories at one path share the
     /// plaintext. A chunk that changes under an open reader fails the call
     /// that reads it with an I/O error instead of ending the process.
+    /// The read advice table is set through the FFI, a bad spec is refused
+    /// with a message, and an empty one restores the defaults.
+    #[test]
+    fn read_advice_is_set_refused_and_restored() {
+        use lucene_store::read_advice::{for_extension, warm_random, ReadAdvice};
+        let spec = "fdt:random,*:normal";
+        // SAFETY: `spec` is valid for its length.
+        let rc = unsafe { ffi_store_set_read_advice(spec.as_ptr().cast(), spec.len(), 0) };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert_eq!(for_extension("fdt"), ReadAdvice::Random);
+        assert_eq!(for_extension("vec"), ReadAdvice::Normal);
+        assert!(!warm_random());
+        let bad = "fdt:sideways";
+        // SAFETY: as above.
+        let rc = unsafe { ffi_store_set_read_advice(bad.as_ptr().cast(), bad.len(), 1) };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+        assert!(crate::error::last_error().contains("sideways"));
+        assert_eq!(for_extension("fdt"), ReadAdvice::Random);
+        // SAFETY: an empty spec.
+        let rc = unsafe { ffi_store_set_read_advice(std::ptr::null(), 0, 1) };
+        assert_eq!(rc, FfiStatus::Ok.code());
+        assert_eq!(for_extension("vec"), ReadAdvice::Random);
+        assert_eq!(for_extension("fdt"), ReadAdvice::Normal);
+        assert!(warm_random());
+    }
+
     #[test]
     fn encrypted_shards_read_through_the_page_cache_and_fail_bad_chunks_cleanly() {
         // SAFETY: a function with the upcall's contract.

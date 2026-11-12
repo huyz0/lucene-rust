@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 138;
+    public static final int EXPECTED_ABI_VERSION = 141;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -263,6 +263,10 @@ public final class NativeBridge {
         static final MethodHandle STORE_SET_PAGE_CACHE_BUDGET = bind(
             "ffi_store_set_page_cache_budget",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle STORE_SET_READ_ADVICE = bind(
+            "ffi_store_set_read_advice",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
         );
         static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
         static final MethodHandle ANALYZE = bind(
@@ -1722,6 +1726,20 @@ public final class NativeBridge {
     public static int storeSetPageCacheBudget(long budgetBytes) {
         try {
             return (int) H.STORE_SET_PAGE_CACHE_BUDGET.invokeExact(budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Sets how mapped shard files are read, by extension: {@code spec} is comma-separated
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
+     * {@code willneed}), {@code *} for every other extension, empty for the defaults.
+     */
+    public static int storeSetReadAdvice(String spec, boolean warmRandom) {
+        byte[] utf8 = (spec == null ? "" : spec).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_SET_READ_ADVICE.invokeExact(s.bytes(utf8), (long) utf8.length, warmRandom ? 1 : 0);
         } catch (Throwable t) {
             throw rethrow(t);
         }
