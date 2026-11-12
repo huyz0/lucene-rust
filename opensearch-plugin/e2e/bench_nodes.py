@@ -227,10 +227,10 @@ def run(base, container, corpus, label, out, rounds, java_too):
     result["search"] = time_shapes(rounds)
     result["memory_after_search"] = node_snapshot(container)
     if java_too:
-        req("PUT", "/bench/_settings", {"index.lucene_rust.search.enabled": False})
+        req("PUT", "/bench/_settings", {"index.search.accelerated": False})
         print(f"{label}: search, native search off")
         result["search_java"] = time_shapes(rounds)
-        req("PUT", "/bench/_settings", {"index.lucene_rust.search.enabled": True})
+        req("PUT", "/bench/_settings", {"index.search.accelerated": True})
     # Merged to one segment: the same shapes on the smallest index either engine makes.
     t = time.perf_counter()
     req("POST", "/bench/_forcemerge?max_num_segments=1", timeout=3600)

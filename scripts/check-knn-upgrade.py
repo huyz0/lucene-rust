@@ -18,7 +18,7 @@ exhaustive scan's top 10, and the two nodes' top 10 must overlap by MIN_RECALL.
                     and deletes into the old index, force-merges it to one
                     segment and still returns the exhaustive scan's top k.
   plugin -> stock   the plugin writes, once with the Rust engine
-                    (index.lucene_rust.engine) and once with OpenSearch's;
+                    (index.engine.accelerated) and once with OpenSearch's;
                     stock reads.
 
 Every plugin search must run in Rust (its stats show no fallback).
@@ -267,7 +267,7 @@ def write_into(cases, failures, live, rename=""):
 
 def fallbacks_since(before):
     after = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
-    return after["native_queries"] - before["native_queries"], {
+    return after["accelerated_queries"] - before["accelerated_queries"], {
         k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
         if v != before.get("fallbacks", {}).get(k, 0)}
 
@@ -293,11 +293,11 @@ def main():
         snapshot("from-stock", list(cases))
         stop()
         # The stock indexes in place inherit the Rust engine; the restored ones take OpenSearch's.
-        start(image, "lucene_rust.engine.default=true")
+        start(image, "indices.engine.accelerated.default=true")
         before = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
         green(failures, "stock indexes in place")
         n = read(cases, "", True, failures)
-        restore("from-stock", failures, {"index.lucene_rust.engine": False})
+        restore("from-stock", failures, {"index.engine.accelerated": False})
         green(failures, "stock snapshot restored")
         n += read(cases, "restored-", True, failures)
         alive = {index: c[2] for index, c in cases.items()}
@@ -309,14 +309,14 @@ def main():
         ran, fell = fallbacks_since(before)
         after = ck.req(NODE[1], "GET", "/_plugins/lucene_rust/stats")
         engines = after["engines"]
-        fetched = after["fetch_nanos"]["native_count"] - before["fetch_nanos"]["native_count"]
-        errors = after["native_errors"] - before["native_errors"]
+        fetched = after["fetch_nanos"]["accelerated_count"] - before["fetch_nanos"]["accelerated_count"]
+        errors = after["accelerated_errors"] - before["accelerated_errors"]
         print(f"  {n} queries compared, {m} sources; {ran} shard queries in Rust, fallbacks {fell}; "
               f"engines {engines}; {fetched} documents fetched natively, {errors} native errors")
         if fell:
             failures.append(f"stock -> plugin: queries fell back to Java: {fell}")
-        if engines["rust"] < len(cases):
-            failures.append(f"stock -> plugin: the {len(cases)} indexes in place are not on the Rust engine: {engines}")
+        if engines["accelerated"] < len(cases):
+            failures.append(f"stock -> plugin: the {len(cases)} indexes in place are not on the accelerated engine: {engines}")
         if errors or fetched == 0:
             failures.append(f"stock -> plugin: native fetch read {fetched} documents with {errors} errors")
         stop()

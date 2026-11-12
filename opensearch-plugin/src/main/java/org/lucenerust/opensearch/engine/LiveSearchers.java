@@ -22,7 +22,7 @@ import java.util.function.Function;
 
 /**
  * External searchers that also read the writer's buffered documents ({@code
- * index.lucene_rust.realtime_search}): each searcher supplier -- one search request, its query and
+ * index.search.realtime.enabled}): each searcher supplier -- one search request, its query and
  * fetch phases, or a point in time -- opens one view of the buffers beside its reader as it is
  * made, so every phase numbers the buffered documents alike, and closes it with the supplier.
  * Under a staleness bound the searches sharing a view share its reader too ({@link

@@ -4,9 +4,9 @@ The lucene-rust plugin for **OpenSearch 3.9.0** (Lucene 10.5.1). Through
 `liblucene_ffi.so`, called with Java's Foreign Function & Memory API (JDK 25,
 the JDK OpenSearch 3.9.0 bundles), it runs in Rust the query phase of supported
 searches, their aggregations, stored-field reads in the fetch phase, and, with
-the Rust engine, indexing and merging. Anything it cannot answer natively runs
+the accelerated engine, indexing and merging. Anything it cannot answer natively runs
 on OpenSearch and Lucene as usual.
-What runs native: [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md);
+What runs native: [`docs/accelerated-queries.md`](../docs/accelerated-queries.md);
 the engine: [`docs/opensearch-engine.md`](../docs/opensearch-engine.md).
 
 ## Build
@@ -36,9 +36,9 @@ workload (search 1.27x faster on the queries it was trained on, untrained code
 - the native library built against AWS-LC's FIPS 140-3 module
   (`scripts/build-fips.sh --ffi`, which needs CMake, Go and Perl);
 - the Amazon Corretto Crypto Provider's FIPS build, which does the JVM's
-  encryption for the `rust_encrypted` store.
+  encryption for the `encrypted` store.
 
-See [`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-rust_encrypted-store-type).
+See [`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-encrypted-store-type).
 
 ## Install
 
@@ -101,18 +101,18 @@ reads the index terms as text sees the bytes (a terms aggregation's regex
 `cardinality` hashes the bytes, so its estimate can differ by a unit; and a
 non-hex value may be 2 bytes shorter than Lucene's term limit. Parameters:
 `index`, `doc_values`, `null_value`, `ignore_above`, `meta`. The segments are plain Lucene terms and `SORTED_SET` doc values. 5M
-random 32-character trace ids on the Rust engine, one segment: 101 MiB less
+random 32-character trace ids on the accelerated engine, one segment: 101 MiB less
 than `keyword` (shard 506 → 405 MiB: terms 144 → 110, doc values 163 → 96),
 with `term`, `terms` and sorted lookups within 2% of `keyword`'s latency
 (`e2e/bench_hex_id.py`; `e2e/hex_id_matrix.py` is the parity check).
 
-### `rust_wildcard` fields
+### `compact_wildcard` fields
 
-`"type": "rust_wildcard"` takes the queries of OpenSearch's `wildcard` field
+`"type": "compact_wildcard"` takes the queries of OpenSearch's `wildcard` field
 (`term`, `terms`, `prefix`, `wildcard`, `regexp`, `match`, `exists`,
 `query_string` wildcards, `case_insensitive` where stock takes it) and matches
-the documents whose value stock's own test accepts. On the Rust engine the
-value is stored as `RustSubstring` doc values: LZ4 blocks of 32 values with a
+the documents whose value stock's own test accepts. On the accelerated engine the
+value is stored as `Substring90` doc values: LZ4 blocks of 32 values with a
 trigram index over the blocks, kept through every flush and merge, and every
 query runs natively but a `regexp` with `flags` other than `ALL`. Under
 OpenSearch's engine the field is plain `BINARY` doc values, read and tested
@@ -130,59 +130,59 @@ values, which stock's hits include but its total leaves out.
 1M log lines (Loghub samples, digits varied), one shard, one segment, the
 plugin's non-LTO release library on 4 cores: shard 256 MiB vs 328 for
 `wildcard` (both with `_source`), bulk indexing 24.5 s vs 40.5 s (51.0 s for
-`wildcard` on the Rust engine). Median latency, `wildcard` → `rust_wildcard`:
+`wildcard` on the accelerated engine). Median latency, `wildcard` → `compact_wildcard`:
 `*error*` (57K hits) 606 → 89 ms, case-insensitive 752 → 92 ms, `*ab*` (142K)
 1,737 → 97 ms, a regexp (54K) 698 → 103 ms, `*10.1*` 40 → 22 ms, `term` 2.6 →
 2.0 ms; slower: `*session*root*` (1.4K hits from common grams) 27 → 57 ms and
 `prefix` 2.9 → 4.3 ms, where every candidate block is decompressed
-(`e2e/bench_rust_wildcard.py`; `e2e/rust_wildcard_matrix.py` is the parity
+(`e2e/bench_compact_wildcard.py`; `e2e/compact_wildcard_matrix.py` is the parity
 check against `wildcard` under both engines).
 
 ## Operate
 
 | | |
 |---|---|
-| `index.lucene_rust.search.enabled` (index, dynamic, default `true`) | route this index's searches native when eligible |
-| `index.lucene_rust.search.native_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Every encodable shape currently measures faster, so the two values agree |
-| `index.lucene_rust.fetch.enabled` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API |
-| `lucene_rust.fetch.reader_wrapper` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
-| `index.lucene_rust.bp_reorder.enabled` (index, dynamic, default `false`) | Lucene's `BPReorderingMergePolicy` around the shard's merge policy: forced merges, and natural merges of at least `bp_reorder.min_merge_docs` (default 65536) documents, renumber documents so ones sharing terms sit together (smaller postings, faster queries). Output segments are ordinary Lucene segments. Tuning: `bp_reorder.fields` (default every indexed field), `min_doc_freq` (4096), `max_doc_freq` (1.0), `min_partition_size` (32), `max_iters` (20), `ram_budget` (256mb), `min_merge_ratio` (0.0). Ignored on sorted and sparse indexes, and a merge of segments holding nested documents keeps their order (Lucene needs a parent field to keep blocks together, and OpenSearch sets none) |
-| `lucene_rust_logs@settings`, `lucene_rust_logs@mappings` (component templates) | the logs preset, opt-in per index template: see [`docs/logs-preset.md`](../docs/logs-preset.md). `lucene_rust.logs_preset.templates.enabled` (node, default `true`) registers them |
-| `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`native_fetches`, `native_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
+| `index.search.accelerated` (index, dynamic, default `true`) | route this index's searches native when eligible |
+| `index.search.accelerated_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Every encodable shape currently measures faster, so the two values agree |
+| `index.fetch.accelerated` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API |
+| `indices.fetch.accelerated_reader` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
+| `index.merge.reorder.enabled` (index, dynamic, default `false`) | Lucene's `BPReorderingMergePolicy` around the shard's merge policy: forced merges, and natural merges of at least `index.merge.reorder.min_merge_docs` (default 65536) documents, renumber documents so ones sharing terms sit together (smaller postings, faster queries). Output segments are ordinary Lucene segments. Tuning: `index.merge.reorder.fields` (default every indexed field), `min_doc_freq` (4096), `max_doc_freq` (1.0), `min_partition_size` (32), `max_iters` (20), `ram_budget` (256mb), `min_merge_ratio` (0.0). Ignored on sorted and sparse indexes, and a merge of segments holding nested documents keeps their order (Lucene needs a parent field to keep blocks together, and OpenSearch sets none) |
+| `logs_preset@settings`, `logs_preset@mappings` (component templates) | the logs preset, opt-in per index template: see [`docs/logs-preset.md`](../docs/logs-preset.md). `indices.logs_preset.enabled` (node, default `true`) registers them |
+| `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`accelerated_fetches`, `accelerated_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
 
 ### Encryption at rest
 
-`index.store.type: rust_encrypted` encrypts every shard file but commit
+`index.store.type: encrypted` encrypts every shard file but commit
 metadata (`segments_N`, `.si`), which OpenSearch reads on restart without the
 store. Lucene and the
-Rust engine both read and write it, and keys come from a KMS through
+accelerated engine both read and write it, and keys come from a KMS through
 OpenSearch's `crypto-kms` plugin (BYOK):
 
 ```
 PUT /tenant-a
 { "settings": {
-    "index.store.type": "rust_encrypted",
-    "index.store.rust_encrypted.key_provider_type": "aws-kms",
-    "index.store.rust_encrypted.key_provider": "kms",
-    "index.store.rust_encrypted.kms.key_arn": "arn:aws:kms:us-east-1:111122223333:key/..." } }
+    "index.store.type": "encrypted",
+    "index.store.encrypted.key_provider_type": "aws-kms",
+    "index.store.encrypted.key_provider": "kms",
+    "index.store.encrypted.kms.key_arn": "arn:aws:kms:us-east-1:111122223333:key/..." } }
 ```
 
-With no KMS, the provider type `lucene_rust_local` wraps data keys with a key
-from the node keystore (`opensearch-keystore add lucene_rust.store.local_key`,
-base64 of 32 random bytes). The Rust engine refuses other store types that
+With no KMS, the provider type `local_keystore` wraps data keys with a key
+from the node keystore (`opensearch-keystore add indices.store.encrypted.local_key`,
+base64 of 32 random bytes). The accelerated engine refuses other store types that
 change bytes on disk, rather than bypass them. Settings, key rotation and
 FIPS:
-[`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-rust_encrypted-store-type).
+[`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-encrypted-store-type).
 
-A native failure is logged, counted as `native_errors`, and the query is re-run
+A native failure is logged, counted as `accelerated_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.
 
 The `unified` highlighter (named, or the default when a field names no
 `type`) runs natively: `NamedRegistry` refuses a plugin that registers a
-built-in name again, so the plugin registers it as `rust_unified` and points
+built-in name again, so the plugin registers it as `accelerated_unified` and points
 each search's `unified` fields at it before the fetch phase. Its snippets are
 stock's, on every offset source (postings, term vectors, re-analysis with the
-field's analyzer built natively). `index.lucene_rust.highlight.enabled`
+field's analyzer built natively). `index.highlight.accelerated`
 (dynamic, default `true`) turns it off per index. A field whose query or
 analyzer cannot be sent falls back to OpenSearch's highlighter under a named
 reason (`highlight_<Class>`, `highlight_function_score_phrase`, an analyzer
@@ -193,7 +193,7 @@ name: escaped wildcards, non-default regexp flags, phrases with position
 gaps), and so does an index with `completion` fields (the Completion90-104
 postings formats are read natively; the suggesters read Lucene's reader).
 Term vectors, which `fvh` reads, are Lucene's.
-See [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md#suggesters-and-highlighters).
+See [`docs/accelerated-queries.md`](../docs/accelerated-queries.md#suggesters-and-highlighters).
 
 Native memory the JVM does not see, per segment of 10,000 documents or more:
 the query cache (at most 16 MB) and, for sorted searches, decoded sort columns

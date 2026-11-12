@@ -355,7 +355,7 @@ build is mostly Lucene's document quantization (`OptimizedScalarQuantizer`,
 kept bit-exact with Java) and the full Lloyd rounds, which already use the
 tiled kernel.
 
-## Through the index: `LuceneRustIvfVectorsFormat`
+## Through the index: `IvfVectorsFormat`
 
 `knn_formats` (lucene-search example) writes one float field through
 `IndexWriter`, opens it with `DirectoryReader` and searches with
@@ -363,7 +363,7 @@ tiled kernel.
 collector and doc-id mapping. GloVe-100 (390k, cosine), one flushed segment,
 1000 queries after 200 warm-up ones, one thread, k = 10. HNSW is
 `Lucene99HnswVectorsFormat(16, 100)` searched with 100 candidates; IVF is
-`LuceneRustIvfVectorsFormat(384, encoding)` (BBQ codes) with its calibrated
+`IvfVectorsFormat(384, encoding)` (BBQ codes) with its calibrated
 probe count (`nprobes=0`) or a fixed one.
 
 | format | setting | build | index | recall@10 | mean | p99 |
@@ -464,7 +464,7 @@ cargo run --release -p lucene-search --example knn_formats -- <prefix> cosine \
 shard of a single node (2 GB heap), force-merges it to one segment and runs
 1000 `knn` queries (k = 10, `_source: false`) one at a time over REST. HNSW
 is the `lucene` engine (`m` 16, `ef_construction` 100, the default
-`ef_search` 100); IVF is the `lucene_rust` engine's `method: ivf`
+`ef_search` 100); IVF is the `extended` engine's `method: ivf`
 (`target_cluster_size` 384).
 
 | mapping | setting | load | merge | store | recall@10 | took | client |
@@ -646,7 +646,7 @@ whose range holds a document it passes, with the calibrated share of
 them. A partition of at most 32 times the accepted target (64k documents
 at `k` 10), counted over every segment of the search, is scored exactly.
 In the OpenSearch plugin this is the index setting
-`index.lucene_rust.knn.ivf_partition_clusters` (`min_vectors`, `0` off, the
+`index.knn.ivf.partition_min_vectors` (`min_vectors`, `0` off, the
 default), with `index.sort.field` set to the partition field.
 
 - Large tenants search 1.5-4.2x faster with recall up to 0.97-0.985 (the

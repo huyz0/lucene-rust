@@ -18,7 +18,7 @@ Ratios are `lucene_time / native_time`: **above 1.0 means native is faster.**
   shape: 3 warm-up requests, then 40 timed requests per pass in four passes
   alternating Lucene/native/Lucene/native -- 80 samples per engine -- median
   wall time of the HTTP round trip, `request_cache=false`. The switch is the
-  index's own `index.lucene_rust.search.enabled`, so both engines answer from
+  index's own `index.search.accelerated`, so both engines answer from
   the same shard, reader and page cache.
 - **In process**: `gradle -p opensearch-plugin nativeBench` — one JDK 21 JVM,
   a 500,000-document index written by Lucene's `IndexWriter` (4 segments, 9,891
@@ -36,7 +36,7 @@ The M2 budget is 1 µs; a search makes exactly one crossing.
 ## REST, per request shape
 
 Every shape the engine answers natively, timed natively (the index set to
-`native_shapes: all`); the second column is where the plugin sends it by
+`accelerated_shapes: all`); the second column is where the plugin sends it by
 default.
 
 | shape | routed to | Lucene ms | native ms | ratio |

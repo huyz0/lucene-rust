@@ -40,19 +40,19 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * Lucene 10.5.1's {@code Lucene103BlockTreeTermsReader} for the {@code RustZstd104} terms
+ * Lucene 10.5.1's {@code Lucene103BlockTreeTermsReader} for the {@code ZstdTerms104} terms
  * dictionary the Rust engine writes ({@link RustZstd104PostingsFormat}): the same files and blocks,
  * under their own header names, with blocks that may be zstd blocks ({@link ZstdTermBlocks}) and
  * each field's {@code .tmd} record ending with its zstd dictionary ({@link ZstdTermsDictionary}).
  * Only those changes are made to Lucene's reader classes in this package. {@code blocktree.rs}
  * and {@code blocktree_writer.rs} in {@code lucene-codecs} read and write the same files.
  */
-public final class RustZstdBlockTreeTermsReader extends FieldsProducer {
+public final class ZstdBlockTreeTermsReader extends FieldsProducer {
 
   /** Extension of terms file */
   static final String TERMS_EXTENSION = "tim";
 
-  static final String TERMS_CODEC_NAME = "RustZstdBlockTreeTermsDict";
+  static final String TERMS_CODEC_NAME = "ZstdBlockTreeTermsDict";
 
   /** Initial terms format. */
   public static final int VERSION_START = 0;
@@ -63,12 +63,12 @@ public final class RustZstdBlockTreeTermsReader extends FieldsProducer {
   /** Extension of terms index file */
   static final String TERMS_INDEX_EXTENSION = "tip";
 
-  static final String TERMS_INDEX_CODEC_NAME = "RustZstdBlockTreeTermsIndex";
+  static final String TERMS_INDEX_CODEC_NAME = "ZstdBlockTreeTermsIndex";
 
   /** Extension of terms meta file */
   static final String TERMS_META_EXTENSION = "tmd";
 
-  static final String TERMS_META_CODEC_NAME = "RustZstdBlockTreeTermsMeta";
+  static final String TERMS_META_CODEC_NAME = "ZstdBlockTreeTermsMeta";
 
   // Open input to the main terms dict file (_X.tib)
   final IndexInput termsIn;
@@ -92,7 +92,7 @@ public final class RustZstdBlockTreeTermsReader extends FieldsProducer {
   final int version;
 
   /** Sole constructor. */
-  public RustZstdBlockTreeTermsReader(PostingsReaderBase postingsReader, SegmentReadState state)
+  public ZstdBlockTreeTermsReader(PostingsReaderBase postingsReader, SegmentReadState state)
       throws IOException {
     boolean success = false;
 

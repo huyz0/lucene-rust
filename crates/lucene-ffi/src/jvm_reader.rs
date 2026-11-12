@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 166;
+pub const JVM_ABI_VERSION: u32 = 169;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -471,7 +471,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
         // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
         // mapping lives as long as the segment reader, which is why closing the
         // handle matters.
-        // A `rust_encrypted` shard's path is bound to an encrypting directory
+        // A `encrypted` shard's path is bound to an encrypting directory
         // over the mapping (`store.rs`), which decrypts each file on open.
         let dir = crate::store::shard_directory(path).map_err(|e| {
             set_last_error(format!("opening the shard directory [{path}]: {e}"));

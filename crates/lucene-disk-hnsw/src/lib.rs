@@ -71,11 +71,11 @@ pub use lucene_ivf::{RangeSource, VectorEncoding};
 pub use lucene_vector_quant::Similarity;
 
 /// Codec name of the `.dhm` header.
-pub const META_CODEC: &str = "LuceneRustDiskHnswMeta";
+pub const META_CODEC: &str = "DiskHnswMeta";
 /// Codec name of the `.dhc` header.
-pub const CODES_CODEC: &str = "LuceneRustDiskHnswCodes";
+pub const CODES_CODEC: &str = "DiskHnswCodes";
 /// Codec name of the `.dhn` header.
-pub const NODES_CODEC: &str = "LuceneRustDiskHnswNodes";
+pub const NODES_CODEC: &str = "DiskHnswNodes";
 /// The meta file's extension.
 pub const META_EXTENSION: &str = "dhm";
 /// The codes file's extension.

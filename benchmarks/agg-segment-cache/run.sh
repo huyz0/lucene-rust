@@ -11,7 +11,7 @@ cd "$WORK"
 mkdir -p data out
 fresh() { rm -rf "data/$1"; if [[ -n "${2:-}" ]]; then cp -a "data/$2" "data/$1"; else mkdir -p "data/$1"; fi; chown 1000:1000 "data/$1"; }
 trap 'docker rm -f bench-stock bench-plugin >/dev/null 2>&1 || true' EXIT
-PLUGIN=(-e lucene_rust.engine.default=true)
+PLUGIN=(-e indices.engine.accelerated.default=true)
 # One load for both plugin runs, so that they start from the same segments.
 fresh plugin
 "$HERE/node.sh" bench-plugin "$MAIN" "$WORK/data/plugin" "${PLUGIN[@]}"
@@ -33,7 +33,7 @@ rm -rf data/main
 fresh cache plugin
 "$HERE/node.sh" bench-plugin "$CACHE" "$WORK/data/cache" "${PLUGIN[@]}"
 curl -sf -XPUT localhost:9250/logs/_settings -H 'content-type: application/json' \
-    -d '{"index":{"lucene_rust.search.aggregation_segment_cache":true}}' >/dev/null
+    -d '{"index":{"search.aggregation_segment_cache.enabled":true}}' >/dev/null
 python3 "$HERE/parity.py" out/parity-cache-cold.json
 python3 "$HERE/parity.py" out/parity-cache.json
 python3 "$HERE/bench.py" http://localhost:9250 corpus cache out/cache.json --plugin --cache

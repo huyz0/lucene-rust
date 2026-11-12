@@ -26,7 +26,7 @@ with its Rust counterpart and fails when the values differ:
     listed in `JAVA_ONLY`, so a new wire constant cannot go unpaired by
     accident.
 
-The encrypted store's (`lucene-store-crypto`) and the RustAdaptive doc-values
+The encrypted store's (`lucene-store-crypto`) and the Adaptive90 doc-values
 format's (`lucene-codecs`) constants pair the same way.
 
 Run from anywhere: `python3 scripts/check-wire-constants.py`. `--list` prints
@@ -44,9 +44,9 @@ RUST_DIR = os.path.join(ROOT, "crates", "lucene-ffi", "src")
 # The encrypted store's file format, which the plugin's store/Lrse.java reads
 # and writes too.
 CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
-# The RustAdaptive doc-values format, which the plugin's docvalues/ package
+# The Adaptive90 doc-values format, which the plugin's docvalues/ package
 # reads (lucene-codecs' doc_values.rs and adaptive_values.rs), and the
-# RustZstd104 terms dictionary its terms/ package reads (blocktree.rs).
+# ZstdTerms104 terms dictionary its terms/ package reads (blocktree.rs).
 CODECS_DIR = os.path.join(ROOT, "crates", "lucene-codecs", "src")
 # The multi-vector encodings, which the plugin's tensor/ package writes
 # (lucene-tensor's encoding.rs, lucene-util's max_sim.rs block width).

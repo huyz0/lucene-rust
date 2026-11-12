@@ -319,7 +319,7 @@ public final class NativeMemory {
          */
         public RuntimeException stopped(int rc, String message) {
             if (rc == NativeBridge.CANCELLED) {
-                return new TaskCancelledException("cancelled while the native " + label + " ran");
+                return new TaskCancelledException("cancelled while the " + label + " ran");
             }
             if (rc != NativeBridge.MEMORY_LIMIT) {
                 return null;
