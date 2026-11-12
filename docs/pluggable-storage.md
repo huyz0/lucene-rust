@@ -210,6 +210,62 @@ What it shows:
   vectors spread over every cluster and sorting by tenant does not make
   them contiguous.
 
+### Read advice for mapped files
+
+A mapped file's page fault reads ahead of the faulting page by default (Linux
+reads up to 128 KiB around it). For files read a few hundred bytes at a time
+at scattered offsets, that wastes reads and memory once the files no longer
+fit in memory, and on a volume capped in IOPS and bandwidth (EBS gp3: 3000
+IOPS, 125 MB/s) the waste is what caps throughput. Lucene 9.11 to 10.2
+advised the vector files, stored fields and term vectors `RANDOM`; 10.3 went
+back to the OS default and made per-file advice opt-in
+(`MMapDirectory.ADVISE_BY_CONTEXT`, `-Dorg.apache.lucene.store.defaultReadAdvice`).
+
+The search reader advises each mapped file by extension
+(`lucene_store::read_advice`). By default the files a vector search reads a
+vector at a time are advised random: flat vectors (`vec`), the HNSW graph
+(`vex`), IVF rerank vectors (`ivv`) and quantized codes (`veq`, `vqd`).
+Every other file keeps the OS default. Merges open their own mappings and
+are never advised. A file advised random that is at most an eighth of
+available memory (`MemAvailable`, capped by the memory cgroup's limit) is
+also read in once at open, so a cold start still warms it in large reads;
+exhaustive (filtered) scans read their vectors ahead in 1 MiB windows.
+
+In OpenSearch, two node settings change it:
+
+- `lucene_rust.store.mmap.read_advice`: a list of `ext:advice` entries
+  (`normal`, `random`, `sequential`, `willneed`; `*` for every extension not
+  listed, as Lucene's `defaultReadAdvice`). A list replaces the whole table,
+  so `["vec:random", "vex:random", "fdt:random"]` leaves `veq` at `normal`.
+  `willneed` reads the whole file in at open, as OpenSearch's
+  `index.store.preload` does.
+- `lucene_rust.store.mmap.warm_random` (default `true`): the read-in at
+  open of small random-advised files.
+
+On local NVMe with free memory the advice changes little (hot latency was
+within noise in every case below). It matters when vector files do not fit
+in memory, most of all on IOPS-capped volumes. HNSW 500k x 128 (266 MB), 600
+queries in a 160 MB memory cgroup, one thread; gp3 emulated with a blkio
+throttle of 3000 read IOPS and 125 MB/s on this VM's disk (an emulation, not
+EBS):
+
+| | ms/query | device reads/query | MiB read/query | gp3 qps ceiling |
+|---|---|---|---|---|
+| `mmap`, OS default | 176 | 518 | 19 | ~6 |
+| `mmap`, random | 66 | 247 | 1.0 | ~12 |
+| page cache (pager) | 71 | 239 | 1.25 | ~12 |
+
+Filtered to 2% (an exhaustive scan per segment) in the same setup: 3.5 s,
+1.25 s and 1.32 s per query. The pager reads as `mmap` with random advice
+does; it does not beat it.
+
+Quantized HNSW (`Lucene104` 7-bit codes, `.veq` 72 MB, graph 21 MB, raw
+vectors 256 MB for rescoring; `knn_formats --mmap`, 500 queries) in a 64 MB
+cgroup: `veq` advised normal vs random (the default) took 22 vs 17 ms per
+query on the local disk and 221 vs 124 ms under the gp3 throttle, reading
+3.6 vs 0.85 GiB. With 1 GB of memory both read the same and run within
+noise.
+
 ## Example: BYOK on an object store
 
 ```rust

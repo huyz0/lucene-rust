@@ -23,6 +23,7 @@ pub mod paged_fs_directory;
 #[cfg(target_os = "linux")]
 pub mod paged_input;
 pub mod rate_limiter;
+pub mod read_advice;
 pub mod read_failures;
 pub mod store_registry;
 
