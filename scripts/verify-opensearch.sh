@@ -8,7 +8,8 @@
 # against that node *and* against a stock node built from the same image
 # without the plugin, and requires the two failure sets to be identical and
 # the plugin to report no native error: the suites' own pass/fail is
-# OpenSearch's business, a difference between the two nodes is ours.
+# OpenSearch's business, a difference between the two nodes is ours. Then
+# e2e/highlight_matrix.py requires every highlight on the two to be identical.
 #
 # With --engine the plugin node serves every index -- system indices and
 # every index the YAML suites create included -- with the Rust engine
@@ -143,6 +144,12 @@ if [[ $YAML == 1 && $status == 0 ]]; then
         status=1
     fi
     echo "yaml: $(wc -l <"$work/rust/failures.txt") failures on both nodes; outputs in $work"
+    # Every highlight of the highlight matrix, plugin against stock (the native `unified`).
+    if ! PLUGIN="http://localhost:${PORT}" STOCK="http://localhost:$((PORT + 2))" \
+        python3 opensearch-plugin/e2e/highlight_matrix.py all; then
+        echo "verify-opensearch: highlights differ from stock" >&2
+        status=1
+    fi
 fi
 if [[ $YAML == 1 ]]; then
     check_jvm "$NAME"

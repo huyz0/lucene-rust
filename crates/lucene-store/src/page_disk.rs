@@ -539,13 +539,33 @@ fn punch_hole(file: &File, offset: u64, len: u64) {
 
 #[cfg(unix)]
 fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
+    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)?;
+    drop_cached(file, offset, buf.len());
+    Ok(())
 }
 
 #[cfg(unix)]
 fn write_all_at(file: &File, buf: &[u8], offset: u64) -> std::io::Result<()> {
-    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)?;
+    drop_cached(file, offset, buf.len());
+    Ok(())
 }
+
+/// Asks the kernel not to keep a slot's bytes in its page cache: a page
+/// read or written here goes on into the memory tier (the pager's budget),
+/// so a second copy in the kernel's cache would hold the same bytes twice.
+#[cfg(target_os = "linux")]
+fn drop_cached(file: &File, offset: u64, len: usize) {
+    use std::os::fd::AsRawFd;
+    let (Ok(offset), Ok(len)) = (libc::off_t::try_from(offset), libc::off_t::try_from(len)) else {
+        return;
+    };
+    // SAFETY: a hint on an open descriptor; it changes no file contents.
+    unsafe { libc::posix_fadvise(file.as_raw_fd(), offset, len, libc::POSIX_FADV_DONTNEED) };
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn drop_cached(_file: &File, _offset: u64, _len: usize) {}
 
 #[cfg(windows)]
 fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {

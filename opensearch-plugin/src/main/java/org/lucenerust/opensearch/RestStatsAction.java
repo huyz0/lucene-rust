@@ -59,6 +59,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("accelerated_fetches", stats.fetchCount());
             b.field("accelerated_sequential_fetches", stats.sequentialFetchCount());
             b.field("accelerated_doc_values", stats.docValuesCount());
+            b.field("accelerated_highlights", stats.highlightCount());
             b.field("accelerated_sources_without_vectors", stats.sourcesWithoutVectorsCount());
             // k-NN hits a request's later phases (fetch, scroll pages) took from its first rewrite.
             b.startObject("knn_hits");
@@ -75,6 +76,17 @@ public final class RestStatsAction extends BaseRestHandler {
             long[] parents = NativeBridge.parentCacheStats();
             b.field("nested_parent_sets", parents[0]);
             b.field("nested_parent_set_bytes", parents[1]);
+            long[] agg = new long[NativeBridge.AGG_CACHE_STATS];
+            if (NativeBridge.aggCacheStats(agg) == NativeBridge.OK) {
+                b.startObject("aggregation_segment_cache");
+                b.field("hits", agg[0]);
+                b.field("misses", agg[1]);
+                b.field("evictions", agg[2]);
+                b.field("entries", agg[3]);
+                b.field("bytes", agg[4]);
+                b.field("budget_bytes", agg[5]);
+                b.endObject();
+            }
             // searchWith's own time per path (SearchStats.nativeTime/luceneTime).
             b.startObject("query_phase_nanos");
             b.field("accelerated", stats.nativeNanos());
@@ -107,6 +119,20 @@ public final class RestStatsAction extends BaseRestHandler {
             b.startObject("analyzed_values");
             b.field("accelerated", analyzed[0]);
             b.field("fallback", analyzed[1]);
+            b.endObject();
+            // The page cache (page_cache and encrypted shards): its memory is native, outside
+            // the heap OpenSearch measures; resident bytes are also charged to the indexing_buffers
+            // breaker (PageCacheAccounting).
+            long[] pages = NativeBridge.storePageCacheStats();
+            b.startObject("page_cache");
+            b.field("budget_in_bytes", pages[0]);
+            b.field("resident_in_bytes", pages[1]);
+            b.field("whole_files_in_bytes", pages[2]);
+            b.field("faults", pages[3]);
+            b.field("refaults", pages[4]);
+            b.field("evictions", pages[5]);
+            b.field("read_errors", pages[6]);
+            b.field("fault_time_in_nanos", pages[7]);
             b.endObject();
             // Recall-targeted k-NN tuners (index.knn.target_recall), by index/shard/field.
             String recall = NativeBridge.knnRecallStats();

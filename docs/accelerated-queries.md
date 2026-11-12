@@ -247,16 +247,53 @@ OpenSearch registers its highlighters (`plain`, `unified`, `fvh`), its
 suggesters (`completion`, `term`, `phrase`), `SuggestPhase` and its query
 parsers by name, and `NamedRegistry` refuses a plugin that registers a
 built-in name again: a plugin can add a highlighter or suggester, not
-replace one. So these stay OpenSearch's code, unchanged; what runs native
-around them is:
+replace one.
+
+### The `unified` highlighter
+
+The plugin adds its own, `accelerated_unified`
+(`highlight/NativeUnifiedHighlighter.java` over
+`lucene-highlighter/src/unified/opensearch.rs`), and a search operation
+listener (`HighlightRouting`, `onPreFetchPhase`) points every field whose
+highlighter is `unified`, named or by default, at it before `HighlightPhase`
+picks one. Per field and search the Java side writes one request
+(`lucene-ffi/src/jvm_highlight.rs`): the unrewritten highlight query, the
+offset source the mapping implies, the analyzers of the field and its
+`matched_fields`, and the options (`number_of_fragments`, `fragment_size`,
+`boundary_scanner` `sentence`/`word`, `no_match_size`, tags, `encoder`,
+`require_field_match`, `max_analyzer_offset`). Per hit it sends the loaded
+value (as stock loads it, multi-values joined by `U+0000`) with the hit's
+segment and document; the native side reads postings offsets or term vectors
+from the native reader, or re-analyzes the value, and returns the snippets.
+The highlighter a request describes is built once per thread and kept for
+the next hits.
+
+The output is stock's `CustomUnifiedHighlighter`: its passage loop, its
+`BoundedBreakIteratorScanner`, its formatter (look-ahead tag merging,
+trailing separators stripped), its no-match summary and its
+`max_analyzed_offset` errors. `e2e/highlight_matrix.py` compares the plugin
+and stock nodes over ten indices (offsets, term vectors, both, the
+`english`, `whitespace`, `stop`, synonym and n-gram analyzers, stored
+fields), 39 queries and 20 option sets.
+
+A field falls back to OpenSearch's highlighter (counted in the stats'
+`fallbacks`) when its query holds a class the encoder does not send
+(`highlight_<Class>`: `match_phrase_prefix`'s `MultiPhrasePrefixQuery`,
+`nested`, joins, scripts), a `function_score` around a phrase or span
+(`highlight_function_score_phrase`), a needed analyzer cannot be described
+(the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
+(`index.highlight.accelerated: false`). `plain` and `fvh` stay
+OpenSearch's.
+
+### What runs native around the others
 
 - the query phase of the search they ride on, by the rules above --
   including on an index with `completion` fields, which used to fall back
   whole (`postings_format`);
 - the stored fields the highlighters read their text from (the fetch
-  phase's native stored-fields reader, R6); term vectors (`fvh`, `unified`
-  over term vectors) and the suggesters' own reads (the completion FST,
-  the term dictionary) are Lucene's, through the same reader;
+  phase's native stored-fields reader, R6); term vectors (`fvh`) and the
+  suggesters' own reads (the completion FST, the term dictionary) are
+  Lucene's, through the same reader;
 - `query_string` and `simple_query_string`: OpenSearch's parser builds the
   Lucene query, and its shapes encode by the rules above (term ranges since
   M13; escaped wildcards and regexps with any flags since 2026-10-30),

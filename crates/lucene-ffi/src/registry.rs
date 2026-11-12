@@ -74,6 +74,42 @@ pub struct JvmReaderHandle {
     /// applied, as far as the last live search read them
     /// ([`crate::live::CommitLive`]).
     pub commit_live: std::sync::Mutex<Option<crate::live::CommitLive>>,
+    /// How many of the reader's segments, from the first, the aggregation
+    /// segment cache may keep parts of: the committed ones. A realtime view's
+    /// buffers, appended after them, change with every view.
+    pub cacheable: usize,
+    /// Each segment's identity in the aggregation segment cache, found on
+    /// first use: `None` past [`Self::cacheable`].
+    pub agg_identities: std::sync::OnceLock<
+        Vec<Option<lucene_search::bucket_aggs::segment_cache::SegmentIdentity>>,
+    >,
+    /// The shard path the reader's files are under, noted for each call
+    /// that reads them ([`crate::error::note_shard`]).
+    pub path: std::sync::Arc<str>,
+}
+
+impl JvmReaderHandle {
+    /// [`Self::agg_identities`], found now when no search has yet.
+    pub fn agg_identities(
+        &self,
+    ) -> &[Option<lucene_search::bucket_aggs::segment_cache::SegmentIdentity>] {
+        self.agg_identities.get_or_init(|| {
+            self.reader
+                .segment_readers()
+                .iter()
+                .zip(&self.live_docs)
+                .enumerate()
+                .map(|(i, (r, live))| {
+                    (i < self.cacheable).then(|| {
+                        lucene_search::bucket_aggs::segment_cache::SegmentIdentity::of(
+                            r,
+                            live.as_ref(),
+                        )
+                    })
+                })
+                .collect()
+        })
+    }
 }
 
 /// Handles are `Arc`s so a search clones one out and runs with no lock held.

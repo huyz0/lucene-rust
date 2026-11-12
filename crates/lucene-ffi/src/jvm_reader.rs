@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 146;
+pub const JVM_ABI_VERSION: u32 = 152;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -513,11 +513,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             }));
             live_docs.push(live);
         }
+        let cacheable = live_docs.len();
         let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(JvmReaderHandle {
             reader,
             live_docs,
             deleted,
             commit_live: std::sync::Mutex::new(None),
+            cacheable,
+            agg_identities: std::sync::OnceLock::new(),
+            path: std::sync::Arc::from(path),
         }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
@@ -528,13 +532,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
-    read_recovering(jvm_readers())
+    let reader = read_recovering(jvm_readers())
         .get(handle)
         .cloned()
         .ok_or_else(|| {
             set_last_error(missing);
             FfiStatus::InvalidHandle
-        })
+        })?;
+    crate::error::note_shard(&reader.path);
+    Ok(reader)
 }
 
 /// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
@@ -3575,7 +3581,7 @@ pub(crate) mod tests {
 
     /// Opens the fixture with `live[i]` as segment `i`'s live-docs words
     /// (missing or empty: no deletions).
-    fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
+    pub(crate) fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
         let infos = infos();
         let counts: Vec<usize> = (0..max_docs.len())
             .map(|i| live.get(i).map_or(0, |w| w.len()))
@@ -3614,7 +3620,7 @@ pub(crate) mod tests {
     }
 
     /// Opens `fixtures/data/<rel>` as [`open_bwc`] opens a version.
-    fn open_fixture(rel: &str) -> u64 {
+    pub(crate) fn open_fixture(rel: &str) -> u64 {
         let path = format!("{}/../../fixtures/data/{rel}", env!("CARGO_MANIFEST_DIR"));
         let dir = lucene_store::FsDirectory::open(&path);
         let files: Vec<String> = std::fs::read_dir(&path)
@@ -6592,6 +6598,28 @@ pub(crate) mod tests {
     /// A prefix query's blob.
     pub(crate) fn prefix_blob(field: &str, prefix: &str) -> Vec<u8> {
         tree(N::Pre(field, prefix))
+    }
+
+    /// `+field:term #range(numeric, min, max)`'s blob.
+    pub(crate) fn term_and_range_blob(
+        field: &str,
+        term: &str,
+        numeric: &str,
+        min: i64,
+        max: i64,
+    ) -> Vec<u8> {
+        tree(N::B(
+            0,
+            vec![
+                (crate::clauses::OCCUR_MUST, N::T(field, term)),
+                (crate::clauses::OCCUR_FILTER, N::R(numeric, min, max)),
+            ],
+        ))
+    }
+
+    /// `#range(numeric, min, max)`'s blob.
+    pub(crate) fn range_blob(numeric: &str, min: i64, max: i64) -> Vec<u8> {
+        tree(N::R(numeric, min, max))
     }
 
     fn tree(n: N<'_>) -> Vec<u8> {
