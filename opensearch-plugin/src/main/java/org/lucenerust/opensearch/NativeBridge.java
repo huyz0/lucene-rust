@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 169;
+    public static final int EXPECTED_ABI_VERSION = 170;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -426,6 +426,10 @@ public final class NativeBridge {
         );
         static final MethodHandle MEMORY_SCOPE_END = bind("ffi_memory_scope_end", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         static final MethodHandle MEMORY_SCOPE_CANCEL = bind("ffi_memory_scope_cancel", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle MEMORY_SCOPE_SET_DEADLINE = bind(
+            "ffi_memory_scope_set_deadline",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
         static final MethodHandle MEMORY_SET_PROCESS_LIMIT = bind(
             "ffi_memory_set_process_limit",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
@@ -3175,8 +3179,8 @@ public final class NativeBridge {
     }
 
     /**
-     * Closes this thread's innermost memory scope: {@code out} gets the bytes granted, the most held
-     * and what was still held, as far as it reaches.
+     * Closes this thread's innermost memory scope: {@code out} gets the bytes granted, the most held,
+     * what was still held and 1 when its deadline passed while it collected, as far as it reaches.
      */
     public static int memoryScopeEnd(long[] out) {
         try (Scratch s = Scratch.open()) {
@@ -3203,6 +3207,18 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Gives the request {@code token} a deadline {@code nanos} from now (0 or less: passed): once it
+     * passes, its native calls collect no more and answer with what they collected.
+     */
+    public static int memoryScopeSetDeadline(long token, long nanos) {
+        try {
+            return (int) H.MEMORY_SCOPE_SET_DEADLINE.invokeExact(token, nanos);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** The bytes every segment's native query cache may hold together. */
     public static int queryCacheSetBudget(long bytes) {
         try {
@@ -3224,7 +3240,8 @@ public final class NativeBridge {
     /**
      * The accounting's counters into {@code out}: bytes held, the most held, the bound, requests
      * stopped by their grant, requests stopped by the bound, requests cancelled; then the native
-     * query caches' bytes, budget and evictions, and decoded sort columns' bytes.
+     * query caches' bytes, budget and evictions, decoded sort columns' bytes, the global ordinals'
+     * bytes, and requests that stopped collecting at their deadline.
      */
     public static int memoryStats(long[] out) {
         if (out == null) {
