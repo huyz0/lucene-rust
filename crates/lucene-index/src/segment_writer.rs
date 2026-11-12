@@ -322,7 +322,7 @@ pub(crate) fn build_native_stored_fields(
 /// written by the high-compression LZ4 match finder records (value
 /// [`LZ4_HC_VALUE`]). Readers ignore it; a merge that writes the same way
 /// copies such a segment's chunks instead of compressing them again.
-pub const LZ4_HC_ATTRIBUTE: &str = "lucene_rust.stored_fields.lz4";
+pub const LZ4_HC_ATTRIBUTE: &str = "accelerated.stored_fields.lz4_hc";
 /// [`LZ4_HC_ATTRIBUTE`]'s value.
 pub const LZ4_HC_VALUE: &str = "hc";
 

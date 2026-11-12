@@ -25,9 +25,9 @@ def cpu():
 
 settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "5s"}
 if "--lean" in A:
-    settings["lucene_rust"] = {"seq_no": {"index_options": "doc_values_only"}}
+    settings["seq_no"] = {"index_options": "doc_values_only"}
     if "--disable-seq" in A:
-        settings["lucene_rust"]["disable_sequence_numbers"] = True
+        settings["disable_sequence_numbers"] = True
 mapping = {"dynamic": "strict", "properties": {
     "@timestamp": {"type": "date", "format": "epoch_millis"},
     "line": {"type": "long"},

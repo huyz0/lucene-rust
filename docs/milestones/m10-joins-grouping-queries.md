@@ -322,7 +322,7 @@ grouping. Each of them falls back to Lucene today.
   `boost` moved onto the sub-query as OpenSearch's weight does).
   `more_like_this`, `common` and `parent_id` need nothing: OpenSearch
   rewrites them to booleans of term queries before the query phase.
-  **Falls back**, each by name (`docs/opensearch-native-queries.md`):
+  **Falls back**, each by name (`docs/accelerated-queries.md`):
   `has_child`/`has_parent` (the rewrite runs `JoinUtil`'s from side in Java
   over OpenSearch's own `OrdinalMap` and keeps the collected ordinals; the
   ported global-ordinal joins would have to receive the from query and the

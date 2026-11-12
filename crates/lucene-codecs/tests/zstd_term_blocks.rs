@@ -1,4 +1,4 @@
-//! `RustZstd104`'s terms dictionary: the same fields written with and without
+//! `ZstdTerms104`'s terms dictionary: the same fields written with and without
 //! [`WriteOptions::zstd_term_blocks`] read back identically -- every term, its
 //! stats and postings, exact and ceiling seeks, wildcard walks -- while the
 //! zstd `.tim` is smaller, carries its own header names, and holds zstd
@@ -15,7 +15,7 @@ use lucene_codecs::postings_writer::{
 use lucene_codecs::wildcard::WildcardPattern;
 
 const ID: [u8; 16] = *b"zstdtermblocks01";
-const SUFFIX: &str = "RustZstd104_0";
+const SUFFIX: &str = "ZstdTerms104_0";
 const MAX_DOC: i32 = 40_000;
 
 fn infos() -> FieldInfos {
@@ -171,7 +171,7 @@ fn zstd_dictionaries_read_back_like_stock_ones_and_are_smaller() {
     );
     assert_eq!(
         lucene_store::codec_util::peek_codec_name(&zstd.tim).as_deref(),
-        Some("RustZstdBlockTreeTermsDict")
+        Some("ZstdBlockTreeTermsDict")
     );
     assert_eq!(
         lucene_store::codec_util::peek_codec_name(&stock.tim).as_deref(),

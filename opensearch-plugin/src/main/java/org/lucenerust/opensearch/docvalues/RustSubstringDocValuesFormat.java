@@ -33,7 +33,7 @@ import org.apache.lucene.util.compress.LZ4;
 import org.apache.lucene.util.packed.DirectMonotonicReader;
 
 /**
- * The {@code RustSubstring} doc-values format the Rust engine writes for a {@code rust_wildcard}
+ * The {@code Substring90} doc-values format the Rust engine writes for a {@code compact_wildcard}
  * field ({@code lucene-codecs/src/substring.rs}): Lucene90's files and entry prefix, with each BINARY
  * field's values in LZ4 blocks of {@code 2^shift} documents next to a trigram index of the blocks.
  * This side reads the values back, so every Lucene path that reads the field's doc values (a
@@ -45,7 +45,7 @@ import org.apache.lucene.util.packed.DirectMonotonicReader;
  */
 public final class RustSubstringDocValuesFormat extends DocValuesFormat {
     /** {@code Lucene90DocValuesFormat::RUST_SUBSTRING_NAME} in {@code doc_values.rs}. */
-    public static final String NAME = "RustSubstring";
+    public static final String NAME = "Substring90";
 
     public RustSubstringDocValuesFormat() {
         super(NAME);
@@ -53,7 +53,7 @@ public final class RustSubstringDocValuesFormat extends DocValuesFormat {
 
     @Override
     public DocValuesConsumer fieldsConsumer(SegmentWriteState state) {
-        throw new UnsupportedOperationException("the " + NAME + " doc values format is written by the Rust engine only");
+        throw new UnsupportedOperationException("the " + NAME + " doc values format is written by the accelerated engine only");
     }
 
     @Override

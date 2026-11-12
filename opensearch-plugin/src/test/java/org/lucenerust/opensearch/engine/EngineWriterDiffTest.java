@@ -110,11 +110,11 @@ public final class EngineWriterDiffTest {
         for (long seed : new long[] { 4, 5 }) {
             run(seed, 1500, nativeAnalyzer(), false);
         }
-        // Under index.lucene_rust.adaptive_doc_values: the same documents read back through the
-        // RustAdaptive doc-values format's producer, from merged segments large enough for it.
+        // Under index.codec.adaptive_doc_values: the same documents read back through the
+        // Adaptive90 doc-values format's producer, from merged segments large enough for it.
         run(6, 4000, nativeAnalyzer(), true);
-        // Under index.lucene_rust.zstd_terms: every terms dictionary read back through the
-        // RustZstd104 postings format's reader, zstd term blocks and trained dictionaries included.
+        // Under index.codec.terms_compression: zstd: every terms dictionary read back through the
+        // ZstdTerms104 postings format's reader, zstd term blocks and trained dictionaries included.
         run(9, 4000, nativeAnalyzer(), false, null, true, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
         // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
         // field: segments flushed and merged in the same order Lucene writes them.
@@ -125,7 +125,7 @@ public final class EngineWriterDiffTest {
         for (long seed : new long[] { 7, 8 }) {
             run(seed, 2500, nativeAnalyzer(), false, sort);
         }
-        // Under index.lucene_rust.stored_fields.paged_zstd: the documents read back through the
+        // Under index.codec.stored_fields.page_aligned: the documents read back through the
         // plugin's ZstdPagedCodec, from flushed and merged segments.
         run(9, 2500, nativeAnalyzer(), false, null, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED);
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
@@ -509,7 +509,7 @@ public final class EngineWriterDiffTest {
                 try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
                     for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
                         String codec = ((org.apache.lucene.index.SegmentReader) ctx.reader()).getSegmentInfo().info.getCodec().getName();
-                        check(codec.equals("LuceneRustZstdPaged104"), "seed " + seed + ": paged zstd segment codec " + codec);
+                        check(codec.equals("PagedZstd104"), "seed " + seed + ": paged zstd segment codec " + codec);
                     }
                     check(reader.leaves().isEmpty() == false, "seed " + seed + ": paged zstd segments");
                 }
@@ -523,8 +523,8 @@ public final class EngineWriterDiffTest {
                     check(sorted == reader.leaves().size() && sorted > 0, "seed " + seed + ": " + sorted + " of " + reader.leaves().size() + " segments sorted");
                 }
             }
-            int zstdFields = formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104");
-            check(zstdTerms ? zstdFields > 0 : zstdFields == 0, "seed " + seed + ": " + zstdFields + " RustZstd104 postings fields");
+            int zstdFields = formatFields(rustDir, "PerFieldPostingsFormat.format", "ZstdTerms104");
+            check(zstdTerms ? zstdFields > 0 : zstdFields == 0, "seed " + seed + ": " + zstdFields + " ZstdTerms104 postings fields");
             if (zstdTerms) {
                 // A Java merge rewrites the Rust index with Java's own postings format.
                 try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
@@ -533,14 +533,14 @@ public final class EngineWriterDiffTest {
                 }
                 checkIndex("seed " + seed + " after a Java merge", rustDir);
                 check(
-                    formatFields(rustDir, "PerFieldPostingsFormat.format", "RustZstd104") == 0,
+                    formatFields(rustDir, "PerFieldPostingsFormat.format", "ZstdTerms104") == 0,
                     "seed " + seed + ": the Java merge wrote stock postings"
                 );
             }
             int adaptiveFields = adaptiveFields(rustDir);
-            check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " RustAdaptive doc-values fields");
+            check(adaptive ? adaptiveFields > 0 : adaptiveFields == 0, "seed " + seed + ": " + adaptiveFields + " Adaptive90 doc-values fields");
             if (adaptive) {
-                // A Java writer on the Rust index: a doc-values update to a RustAdaptive field is
+                // A Java writer on the Rust index: a doc-values update to a Adaptive90 field is
                 // written under that format's name, then everything still reads and checks.
                 try (IndexWriter java = new IndexWriter(rustDir, new IndexWriterConfig(analyzer).setSoftDeletesField(SOFT))) {
                     java.updateNumericDocValue(new Term("_id", "d0"), "_version", 7L);
@@ -573,13 +573,13 @@ public final class EngineWriterDiffTest {
         return n;
     }
 
-    /** How many segment fields the Rust index stores under the RustAdaptive doc-values format. */
+    /** How many segment fields the Rust index stores under the Adaptive90 doc-values format. */
     private static int adaptiveFields(FSDirectory dir) throws IOException {
         int n = 0;
         try (DirectoryReader reader = DirectoryReader.open(dir)) {
             for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
                 for (FieldInfo fi : ctx.reader().getFieldInfos()) {
-                    if ("RustAdaptive".equals(fi.getAttribute("PerFieldDocValuesFormat.format"))) {
+                    if ("Adaptive90".equals(fi.getAttribute("PerFieldDocValuesFormat.format"))) {
                         n++;
                     }
                 }
@@ -940,7 +940,7 @@ public final class EngineWriterDiffTest {
     }
 
     /**
-     * index.lucene_rust.partition_field: each document lands in the segments of its partition (a
+     * index.segment_partition.field: each document lands in the segments of its partition (a
      * keyword's value, a long's), every segment records it as OpenSearch's context-aware {@code bucket}
      * attribute, documents without a value share the default partition, and a forced merge leaves one
      * segment per partition that Lucene reads.

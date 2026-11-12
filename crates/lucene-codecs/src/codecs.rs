@@ -207,7 +207,7 @@ pub const ZSTD_NO_DICT_CODEC: &str = "ZSTDNODICT104";
 /// The codec of the Rust engine's paged zstd stored fields
 /// ([`crate::stored_fields::Mode::ZstdPaged`]): `Lucene104` with those
 /// stored fields. The OpenSearch plugin registers a Java codec of this name.
-pub const ZSTD_PAGED_CODEC: &str = "LuceneRustZstdPaged104";
+pub const ZSTD_PAGED_CODEC: &str = "PagedZstd104";
 
 /// The Rust engine's own `FilterCodec`s, `(name, delegate)` as in
 /// [`OPENSEARCH_ZSTD_CODECS`].

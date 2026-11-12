@@ -15,10 +15,10 @@ import java.util.Map;
  * and {@code index.disable_sequence_numbers}).
  *
  * <ul>
- *   <li>{@code index.lucene_rust.seq_no.index_options: doc_values_only} indexes {@code _seq_no} as
+ *   <li>{@code index.seq_no.index_options: doc_values_only} indexes {@code _seq_no} as
  *       doc values with a skip index and no points. Every query on it (recovery, history
  *       snapshots, searches on {@code _seq_no}) runs on the doc values, with the same results.
- *   <li>{@code index.lucene_rust.disable_sequence_numbers: true} (needs {@code doc_values_only})
+ *   <li>{@code index.disable_sequence_numbers: true} (needs {@code doc_values_only})
  *       also makes merges write {@code UNASSIGNED_SEQ_NO} and {@code UNASSIGNED_PRIMARY_TERM} for
  *       every document whose operation history is no longer retained. Replication and recovery
  *       still work, but get and search report no {@code _seq_no} or {@code _primary_term} for
@@ -37,12 +37,12 @@ public final class SeqNoSettings {
     public static final String DOC_VALUES_ONLY = "doc_values_only";
 
     public static final Setting<String> INDEX_OPTIONS = Setting.simpleString(
-        "index.lucene_rust.seq_no.index_options",
+        "index.seq_no.index_options",
         POINTS,
         value -> {
             if (POINTS.equals(value) == false && DOC_VALUES_ONLY.equals(value) == false) {
                 throw new IllegalArgumentException(
-                    "[index.lucene_rust.seq_no.index_options] must be [" + POINTS + "] or [" + DOC_VALUES_ONLY + "], got [" + value + "]"
+                    "[index.seq_no.index_options] must be [" + POINTS + "] or [" + DOC_VALUES_ONLY + "], got [" + value + "]"
                 );
             }
         },
@@ -51,7 +51,7 @@ public final class SeqNoSettings {
     );
 
     public static final Setting<Boolean> DISABLE_SEQUENCE_NUMBERS = Setting.boolSetting(
-        "index.lucene_rust.disable_sequence_numbers",
+        "index.disable_sequence_numbers",
         false,
         new Setting.Validator<>() {
             @Override
@@ -61,7 +61,7 @@ public final class SeqNoSettings {
             public void validate(Boolean value, Map<Setting<?>, Object> settings) {
                 if (value && DOC_VALUES_ONLY.equals(settings.get(INDEX_OPTIONS)) == false) {
                     throw new IllegalArgumentException(
-                        "[index.lucene_rust.disable_sequence_numbers] requires [index.lucene_rust.seq_no.index_options] to be ["
+                        "[index.disable_sequence_numbers] requires [index.seq_no.index_options] to be ["
                             + DOC_VALUES_ONLY
                             + "]"
                     );

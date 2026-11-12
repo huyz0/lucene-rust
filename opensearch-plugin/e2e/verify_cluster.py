@@ -2,7 +2,7 @@
 """The Rust engine in a three-node cluster, driven by scripts/verify-opensearch-cluster.sh.
 
 os1 and os2 serve Rust-engine indices with the Rust writer; os3 runs with
-lucene_rust.engine.node_enabled: false and serves them with OpenSearch's own engine. Every write
+indices.engine.accelerated.node_enabled: false and serves them with OpenSearch's own engine. Every write
 the test makes is recorded in a model of what was acknowledged, and every copy of the shard --
 read with preference=_only_nodes -- must hold exactly that, after each of:
 
@@ -197,19 +197,19 @@ def main():
     # 1. Document replication: a Rust primary and a Rust replica.
     must("PUT", "/docrep", {"settings": {
         "number_of_shards": 1, "number_of_replicas": 1, "index.replication.type": "DOCUMENT",
-        "index.lucene_rust.engine": True, "index.routing.allocation.include._name": "os1,os2"}})
+        "index.engine.accelerated": True, "index.routing.allocation.include._name": "os1,os2"}})
     wait(lambda: health("docrep", "green"), "docrep green")
     m = Model("docrep", 1)
     for _ in range(5):
         m.ops(300)
     m.verify("document replication (Rust primary, Rust replica)")
     for node in ("os1", "os2"):
-        check(engines(node).get("rust", 0) >= 1, f"{node} runs the Rust engine: {engines(node)}")
+        check(engines(node).get("accelerated", 0) >= 1, f"{node} runs the accelerated engine: {engines(node)}")
 
     # 2. Peer recovery onto the Java node.
     settings("docrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
     wait(lambda: health("docrep", "green"), "three copies")
-    check(engines("os3").get("java", 0) >= 1, f"os3 runs Java's engine: {engines('os3')}")
+    check(engines("os3").get("standard", 0) >= 1, f"os3 runs Java's engine: {engines('os3')}")
     m.verify("peer recovery (Rust primary, new Java replica)")
     m.ops(300)
     m.verify("writes to a Rust primary with a Java replica")
@@ -252,7 +252,7 @@ def main():
     settings("docrep", {"index.number_of_replicas": 0, "index.routing.allocation.include._name": "os1"})
     wait(lambda: health("docrep", "green") and primary("docrep") == "os1", "the primary relocated to os1")
     m.ops(600)
-    m.verify("relocated Java -> Rust; the Rust writer updates Java-written segments")
+    m.verify("relocated Java -> Rust; the accelerated writer updates Java-written segments")
     settings("docrep", {"index.number_of_replicas": 2, "index.routing.allocation.include._name": "os1,os2,os3"})
     wait(lambda: health("docrep", "green"), "three copies again", 300)
     m.verify("replicas recovered from the Rust primary")
@@ -269,16 +269,16 @@ def main():
         sr.ops(300)
     sr.verify("segment replication (Java primary, replicas read natively)")
     replica = next(n for n, prim in copies("segrep").items() if not prim)
-    before = must("GET", "/_plugins/lucene_rust/stats", node=replica)["native_queries"]
+    before = must("GET", "/_plugins/lucene_rust/stats", node=replica)["accelerated_queries"]
     must("POST", f"/segrep/_search?preference=_only_nodes:{replica}&request_cache=false",
          {"query": {"match": {"title": "alpha"}}})
-    after = must("GET", "/_plugins/lucene_rust/stats", node=replica)["native_queries"]
+    after = must("GET", "/_plugins/lucene_rust/stats", node=replica)["accelerated_queries"]
     check(after > before, f"the replica on {replica} answered a match query natively: {before} -> {after}")
 
     # 8. Segment replication with a Rust primary: its replicas copy the Rust writer's segments.
     must("PUT", "/segrep_rust", {"settings": {
         "number_of_shards": 1, "number_of_replicas": 1, "index.replication.type": "SEGMENT",
-        "index.lucene_rust.engine": True, "index.routing.allocation.include._name": "os1,os2"}})
+        "index.engine.accelerated": True, "index.routing.allocation.include._name": "os1,os2"}})
     wait(lambda: health("segrep_rust", "green"), "segrep_rust green")
     rs = Model("segrep_rust", 3)
     for _ in range(4):
@@ -287,23 +287,23 @@ def main():
     p = primary("segrep_rust")
     r = next(n for n, prim in copies("segrep_rust").items() if not prim)
     check(engines(r).get("nrt_replica", 0) >= 1, f"the replica on {r} runs NRTReplicationEngine: {engines(r)}")
-    native = engines(p).get("segrep_primary") == "native"
+    native = engines(p).get("segrep_primary") == "accelerated"
     print(f"segment-replication primaries: {engines(p).get('segrep_primary')}", flush=True)
     if not native:
-        check(engines(p).get("rust_indexer", 0) >= 1, f"the primary on {p} was built by RustIndexerFactory: {engines(p)}")
+        check(engines(p).get("accelerated_indexer", 0) >= 1, f"the primary on {p} was built by RustIndexerFactory: {engines(p)}")
 
     # Promotion: the replica becomes a Rust primary on the segments it copied.
-    rust_before = engines(r).get("rust", 0)
+    rust_before = engines(r).get("accelerated", 0)
     docker("stop", p)
     DOWN.add(p)
     wait(lambda: health("segrep_rust", "yellow") and primary("segrep_rust") == r, "the segrep replica promoted")
     # The cluster state names r primary before its IndexShard swaps the NRTReplicationEngine for
     # a primary engine (the promotion runs on the shard's own thread after the primary-term
     # bump), so the new engine may not be counted yet: wait for it rather than read once.
-    wait(lambda: engines(r).get("rust", 0) > rust_before, f"{r}'s promoted engine", 60)
-    check(engines(r).get("rust", 0) > rust_before, f"{r} was promoted into the Rust engine: {engines(r)}")
+    wait(lambda: engines(r).get("accelerated", 0) > rust_before, f"{r}'s promoted engine", 60)
+    check(engines(r).get("accelerated", 0) > rust_before, f"{r} was promoted into the accelerated engine: {engines(r)}")
     if not native:
-        check(engines(r).get("rust_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
+        check(engines(r).get("accelerated_indexer", 0) >= 1, f"the promoted engine on {r} went through RustIndexerFactory: {engines(r)}")
     rs.ops(300)
     rs.verify(f"writes after a segment-replication promotion to {r}")
     docker("start", p)

@@ -202,7 +202,7 @@ public final class NativeSelfTest {
         NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
         NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
-        check(NativeSelfTestSubstring.encoded >= 150, "rust_wildcard queries compared: " + NativeSelfTestSubstring.encoded);
+        check(NativeSelfTestSubstring.encoded >= 150, "compact_wildcard queries compared: " + NativeSelfTestSubstring.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);

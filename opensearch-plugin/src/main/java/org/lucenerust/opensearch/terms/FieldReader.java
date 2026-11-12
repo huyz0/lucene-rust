@@ -44,14 +44,14 @@ public final class FieldReader extends Terms {
   final long indexStart;
   final long rootFP;
   final long indexEnd;
-  final RustZstdBlockTreeTermsReader parent;
+  final ZstdBlockTreeTermsReader parent;
   final IndexInput indexIn;
   final ZstdTermsDictionary zstdDictionary;
 
   // private boolean DEBUG;
 
   FieldReader(
-      RustZstdBlockTreeTermsReader parent,
+      ZstdBlockTreeTermsReader parent,
       FieldInfo fieldInfo,
       long numTerms,
       long sumTotalTermFreq,

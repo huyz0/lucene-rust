@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Many tenants on one node (opensearch-plugin/e2e/bench_tenants.py): an index
 # per tenant against one shared index, on stock OpenSearch and on the plugin,
-# the plugin also with segment partitions (index.lucene_rust.partition_field).
+# the plugin also with segment partitions (index.segment_partition.field).
 # Each configuration runs on a fresh node, alone on the machine, same heap.
 #
 #   scripts/bench-tenants.sh [TENANTS] [DOCS] [OUT_DIR]   # default 500, 500000, target/bench-tenants
@@ -27,7 +27,7 @@ for cfg in $CONFIGS; do
     args=()
     if [[ "$node" == plugin ]]; then
         image=lucene-rust-opensearch:3.9.0
-        args=(-e lucene_rust.engine.default=true)
+        args=(-e indices.engine.accelerated.default=true)
     else
         image=opensearch-stock-min:3.9.0
     fi

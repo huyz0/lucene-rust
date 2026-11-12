@@ -178,14 +178,14 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   (`will_need`, `prefetch`) get the error directly. The process never
   aborts for a page.
 
-In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
+In OpenSearch, `index.store.read_mode` picks it per index: `mmap` (the
 default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
-mapped). `lucene_rust.store.page_cache.size` (default 1 GB) is the node's
+mapped). `indices.store.page_cache.size` (default 1 GB) is the node's
 budget. A node where `userfaultfd` is blocked keeps every index mapped and
 says so at startup. `GET /_plugins/lucene_rust/stats` reports the page
 cache under `page_cache` (budget, resident and whole-file bytes, faults,
 refaults, evictions, read errors, fault time), and the resident bytes are
-charged to the `lucene_rust_writer` breaker, whose default limit includes
+charged to the `indexing_buffers` breaker, whose default limit includes
 the budget, so they show in `_nodes/stats/breaker`.
 
 ### Against `mmap`
@@ -272,13 +272,13 @@ exhaustive (filtered) scans read their vectors ahead in 1 MiB windows.
 
 In OpenSearch, two node settings change it:
 
-- `lucene_rust.store.mmap.read_advice`: a list of `ext:advice` entries
+- `indices.store.mmap.read_advice`: a list of `ext:advice` entries
   (`normal`, `random`, `sequential`, `willneed`, `auto`; `*` for every
   extension not listed, as Lucene's `defaultReadAdvice`). A list replaces the whole table,
   so `["vec:random", "vex:random", "fdt:random"]` leaves `veq` at `normal`.
   `willneed` reads the whole file in at open, as OpenSearch's
   `index.store.preload` does.
-- `lucene_rust.store.mmap.warm_random` (default `true`): the read-in at
+- `indices.store.mmap.warm_random` (default `true`): the read-in at
   open of small random-advised files.
 
 On local NVMe with free memory the advice changes little (hot latency was
@@ -404,30 +404,30 @@ AWS-LC's current CMVP certificate for the resolved `aws-lc-fips-sys`. A
 key provider over a KMS must itself use FIPS endpoints for an end-to-end
 FIPS deployment.
 
-## In OpenSearch: the `rust_encrypted` store type
+## In OpenSearch: the `encrypted` store type
 
-The plugin adds the store type `rust_encrypted`. Both Lucene (the JVM) and
+The plugin adds the store type `encrypted`. Both Lucene (the JVM) and
 the Rust engine read and write a shard's files in the format above, with the
 same keys.
 
 ```yaml
-index.store.type: rust_encrypted
-index.store.rust_encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
-index.store.rust_encrypted.key_provider: my-kms           # its name
-index.store.rust_encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
-index.store.rust_encrypted.kms.encryption_context: tenant=a
+index.store.type: encrypted
+index.store.encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
+index.store.encrypted.key_provider: my-kms           # its name
+index.store.encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
+index.store.encrypted.kms.encryption_context: tenant=a
 # optional
-index.store.rust_encrypted.chunk_size: 64kb
-index.store.rust_encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
-index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
+index.store.encrypted.chunk_size: 64kb
+index.store.encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
+index.store.encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
 ```
 
 - **Keys:** keys come from OpenSearch's `MasterKeyProvider`, through any
   installed `CryptoKeyProviderPlugin` (`crypto-kms` for AWS KMS). The
   key-encryption key never leaves the KMS.
-  - The provider type `lucene_rust_local` instead wraps data keys with a
-    key in the node keystore (`lucene_rust.store.local_key`, base64 of 32
-    bytes; id `lucene_rust.store.local_key_id`). It is meant for tests and
+  - The provider type `local_keystore` instead wraps data keys with a
+    key in the node keystore (`indices.store.encrypted.local_key`, base64 of 32
+    bytes; id `indices.store.encrypted.local_key_id`). It is meant for tests and
     for clusters without a KMS.
 - **How the engine gets keys:** when the plugin creates the directory, it
   binds the shard path in the native library to the same key source
@@ -450,7 +450,7 @@ index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps w
 - **No silent plaintext:**
   - The Rust engine refuses an index whose `index.store.type` it cannot
     write through (another plugin's encryption, say). Use
-    `rust_encrypted` for encryption at rest.
+    `encrypted` for encryption at rest.
   - The native read path declines any store directory that changes bytes on
     disk.
 - **FIPS:** the plugin built with `gradle -Pfips bundlePlugin` produces
@@ -477,7 +477,7 @@ plain memory; nothing is decrypted per read.
 - Local disk: `PagedFsDirectory` (the demand pager, `lucene-store/src/paged_input.rs`)
   reads the ciphertext with `O_DIRECT`, so it never sits in the kernel's
   page cache, and holds the plaintext in its process-wide budget (the
-  plugin's `lucene_rust.store.page_cache.size`, shared with
+  plugin's `indices.store.page_cache.size`, shared with
   `store_mode: page_cache` shards). Pages are whole chunks: 64 KiB with the
   default chunk size, sized up against the budget like plain files.
 - Blob store: `CachedBlobDirectory` caches pages of whole chunks as
@@ -487,9 +487,9 @@ plain memory; nothing is decrypted per read.
   authenticated and decrypted whole when it opens and costs its size in RAM
   while a reader holds it.
 
-The plugin's `rust_encrypted` shards always read through the pager where it
-runs. The node settings `lucene_rust.store.encrypted.lazy_decrypt` and
-`lucene_rust.store.encrypted.decrypt_cache_size` (the earlier demand mode,
+The plugin's `encrypted` shards always read through the pager where it
+runs. The node settings `indices.store.encrypted.lazy_decrypt` and
+`indices.store.encrypted.decrypt_cache_size` (the earlier demand mode,
 which authenticated whole files at open and decrypted from a mapping of the
 ciphertext) are deprecated and ignored.
 
