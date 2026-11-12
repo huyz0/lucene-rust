@@ -51,6 +51,7 @@ mod ml;
 mod ml_torch;
 mod raw;
 mod registry;
+mod sparse_writer;
 mod store;
 mod zstd_dictionary;
 mod zstd_terms;

@@ -1,0 +1,64 @@
+shape,n,median_ms,p90_ms,reps,hits,total,relation
+match_all ts desc,10,0.1474,0.1670,400,10,5500000,GreaterThanOrEqualTo
+match_all ts asc,10,5.7198,6.9813,199,10,1000010,GreaterThanOrEqualTo
+match_all ts_s(skipper) desc,10,0.2981,0.3247,400,10,5500000,GreaterThanOrEqualTo
+match_all ts_s(skipper) asc,10,0.2910,0.3277,400,10,12288,GreaterThanOrEqualTo
+src=openssh ts desc,10,9.4136,10.7539,123,10,638947,GreaterThanOrEqualTo
+src=hdfs ts desc,10,5.8044,6.4674,203,10,1620967,GreaterThanOrEqualTo
+src=openssh ts_s(skipper) desc,10,9.1562,11.6304,123,10,638947,GreaterThanOrEqualTo
+range24h ts desc,10,0.1822,0.2421,400,10,1001,GreaterThanOrEqualTo
+range24h&hdfs ts desc,10,5.9999,6.6791,193,10,1001,GreaterThanOrEqualTo
+range24h&openssh(0 hits) ts desc,10,0.2391,0.2639,400,0,0,EqualTo
+match_all tsec(ties) desc,10,0.1416,0.1839,400,10,5500000,GreaterThanOrEqualTo
+match_all tsec(ties) asc,10,5.8955,6.1170,204,10,1000010,GreaterThanOrEqualTo
+match_all tmiss desc missing_last,10,0.0761,0.0884,400,10,5500000,GreaterThanOrEqualTo
+match_all tmiss asc missing_last,10,0.0399,0.0477,400,10,5500000,GreaterThanOrEqualTo
+match_all tmiss desc missing_first,10,0.0407,0.0470,400,10,1001,GreaterThanOrEqualTo
+match_all ts desc search_after,10,0.3002,0.3247,400,10,5500000,GreaterThanOrEqualTo
+src=hdfs tsec(ties) desc search_after,10,6.0294,6.1526,199,10,1620967,GreaterThanOrEqualTo
+match_all ts desc,100,0.1592,0.1874,400,100,5500000,GreaterThanOrEqualTo
+match_all ts asc,100,5.8819,8.7453,190,100,1000100,GreaterThanOrEqualTo
+match_all ts_s(skipper) desc,100,0.3395,0.3745,400,100,5500000,GreaterThanOrEqualTo
+match_all ts_s(skipper) asc,100,0.3369,0.3645,400,100,12288,GreaterThanOrEqualTo
+src=openssh ts desc,100,9.6427,10.0246,124,100,638947,GreaterThanOrEqualTo
+src=hdfs ts desc,100,8.7238,13.2183,118,100,1620967,GreaterThanOrEqualTo
+src=openssh ts_s(skipper) desc,100,11.1856,16.8295,103,100,638947,GreaterThanOrEqualTo
+range24h ts desc,100,0.1777,0.2302,400,100,1001,GreaterThanOrEqualTo
+range24h&hdfs ts desc,100,8.7560,10.4575,133,100,1001,GreaterThanOrEqualTo
+range24h&openssh(0 hits) ts desc,100,0.2363,0.2734,400,0,0,EqualTo
+match_all tsec(ties) desc,100,0.2374,0.2821,400,100,5500000,GreaterThanOrEqualTo
+match_all tsec(ties) asc,100,6.0286,6.3343,197,100,1000100,GreaterThanOrEqualTo
+match_all tmiss desc missing_last,100,0.0418,0.0475,400,100,5500000,GreaterThanOrEqualTo
+match_all tmiss asc missing_last,100,0.0501,0.0609,400,100,5500000,GreaterThanOrEqualTo
+match_all tmiss desc missing_first,100,0.1013,0.1221,400,100,1001,GreaterThanOrEqualTo
+match_all ts desc search_after,100,0.3035,0.3305,400,100,5500000,GreaterThanOrEqualTo
+src=hdfs tsec(ties) desc search_after,100,9.1594,10.3573,128,100,1620967,GreaterThanOrEqualTo
+match_all ts desc,1000,0.2552,0.2963,400,1000,5500000,GreaterThanOrEqualTo
+match_all ts asc,1000,31.7570,36.3222,37,1000,5500000,GreaterThanOrEqualTo
+match_all ts_s(skipper) desc,1000,0.4452,0.4895,400,1000,5500000,GreaterThanOrEqualTo
+match_all ts_s(skipper) asc,1000,24.2221,25.2719,50,1000,1015808,GreaterThanOrEqualTo
+src=openssh ts desc,1000,9.5576,10.8406,122,1000,638947,GreaterThanOrEqualTo
+src=hdfs ts desc,1000,13.8633,16.0856,84,1000,1620967,GreaterThanOrEqualTo
+src=openssh ts_s(skipper) desc,1000,9.6227,15.7337,108,1000,638947,GreaterThanOrEqualTo
+range24h ts desc,1000,0.1994,0.2836,400,1000,1001,GreaterThanOrEqualTo
+range24h&hdfs ts desc,1000,14.0825,15.3373,84,1000,1001,GreaterThanOrEqualTo
+range24h&openssh(0 hits) ts desc,1000,0.2294,0.2573,400,0,0,EqualTo
+match_all tsec(ties) desc,1000,0.1627,0.2446,400,1000,5500000,GreaterThanOrEqualTo
+match_all tsec(ties) asc,1000,32.5432,32.9313,37,1000,5500000,GreaterThanOrEqualTo
+match_all tmiss desc missing_last,1000,0.2287,0.2444,400,1000,5500000,GreaterThanOrEqualTo
+match_all tmiss asc missing_last,1000,0.2086,0.2317,400,1000,5500000,GreaterThanOrEqualTo
+match_all tmiss desc missing_first,1000,94.1977,101.1944,13,1000,5500000,GreaterThanOrEqualTo
+match_all ts desc search_after,1000,0.6128,0.9459,400,1000,5500000,GreaterThanOrEqualTo
+src=hdfs tsec(ties) desc search_after,1000,14.5090,15.8828,81,1000,1620967,GreaterThanOrEqualTo
+src=openssh ts asc,10,5.1153,5.5770,226,10,251078,GreaterThanOrEqualTo
+tsec(old half) ts desc,10,19.2197,20.0802,62,10,1001,GreaterThanOrEqualTo
+tsec(middle third) ts desc,10,31.4282,36.3300,37,10,1001,GreaterThanOrEqualTo
+tsec(middle third) ts asc,10,12.4898,15.5798,91,10,2151614,GreaterThanOrEqualTo
+src=openssh ts asc,100,5.2267,7.3045,212,100,251168,GreaterThanOrEqualTo
+tsec(old half) ts desc,100,66.2917,72.1936,18,100,1001,GreaterThanOrEqualTo
+tsec(middle third) ts desc,100,82.5564,90.8175,15,100,1001,GreaterThanOrEqualTo
+tsec(middle third) ts asc,100,12.8931,14.9077,90,100,2151614,GreaterThanOrEqualTo
+src=openssh ts asc,1000,13.4140,19.9088,83,1000,638947,GreaterThanOrEqualTo
+tsec(old half) ts desc,1000,134.7634,158.7413,9,1000,1001,GreaterThanOrEqualTo
+tsec(middle third) ts desc,1000,102.2738,120.5313,12,1000,1001,GreaterThanOrEqualTo
+tsec(middle third) ts asc,1000,12.8355,16.4370,89,1000,2151614,GreaterThanOrEqualTo

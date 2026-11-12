@@ -984,9 +984,14 @@ fn exact_search<S: VectorScorer>(
     // this path runs when the filter is selective, so most ordinals are not
     // accepted and a per-ordinal probe would dominate the scoring.
     let end = scorer.max_ord().max(0) as usize;
+    let span = scorer.read_ahead_span();
+    let mut read_until = 0usize;
     let mut next = accept_ords.next_set_bit(0);
     while let Some(ord_idx) = next.filter(|&o| o < end) {
         next = accept_ords.next_set_bit(ord_idx + 1);
+        if span > 0 && ord_idx >= read_until {
+            read_until = read_ahead_dense(scorer, accept_ords, ord_idx, span, end);
+        }
         let ord = ord_idx as i32;
         ords[num_ords] = ord;
         num_ords += 1;
@@ -999,6 +1004,53 @@ fn exact_search<S: VectorScorer>(
         flush_bulk(&mut collector, scorer, &ords, &mut scores, num_ords)?;
     }
     Ok(collector.top_docs())
+}
+
+/// The fewest accepted ordinals in a read-ahead window for
+/// [`read_ahead_dense`] to read it ahead: a quarter of the ~256 pages it
+/// spans, below which the scan touches too few of its pages for one large
+/// read to beat a page per accepted vector.
+const READ_AHEAD_MIN_ACCEPTED: usize = 64;
+
+/// Reads the window of `span` ordinals from `from` ahead when enough of
+/// them are accepted ([`READ_AHEAD_MIN_ACCEPTED`]), and returns where the
+/// window ends. An exhaustive scan visits ordinals in order: over vectors
+/// advised random access this keeps a dense scan (a contiguous tenant, a
+/// broad filter) to large reads while a sparse one still reads only the
+/// pages it scores.
+fn read_ahead_dense<S: VectorScorer>(
+    scorer: &S,
+    accept_ords: &FixedBitSet,
+    from: usize,
+    span: usize,
+    end: usize,
+) -> usize {
+    let to = from.saturating_add(span).min(end);
+    if count_set_bits(accept_ords.words(), from, to) >= READ_AHEAD_MIN_ACCEPTED {
+        let as_i32 = |o: usize| i32::try_from(o).unwrap_or(i32::MAX);
+        scorer.read_ahead(as_i32(from), as_i32(to));
+    }
+    to
+}
+
+/// Set bits of `words` in `from..to`.
+fn count_set_bits(words: &[u64], from: usize, to: usize) -> usize {
+    if from >= to {
+        return 0;
+    }
+    let (first, last) = (from / 64, (to - 1) / 64);
+    let mut count = 0usize;
+    for (i, &w) in words.iter().enumerate().take(last + 1).skip(first) {
+        let mut w = w;
+        if i == first {
+            w &= u64::MAX << (from % 64);
+        }
+        if i == last {
+            w &= u64::MAX >> (63 - (to - 1) % 64);
+        }
+        count += w.count_ones() as usize;
+    }
+    count
 }
 
 /// One leaf's collector sizing, the part of `getLeafResults` that does not
@@ -1193,6 +1245,14 @@ impl VectorScorer for DynScorer<'_, '_> {
 
     fn prefetch(&self, nodes: &[i32]) {
         self.0.prefetch(nodes)
+    }
+
+    fn read_ahead_span(&self) -> usize {
+        self.0.read_ahead_span()
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        self.0.read_ahead(from, to)
     }
 
     fn bulk_score(
@@ -3311,9 +3371,14 @@ fn diversified_exact_search<S: VectorScorer>(
         }
     };
     let end = scorer.max_ord().max(0) as usize;
+    let span = scorer.read_ahead_span();
+    let mut read_until = 0usize;
     let mut next = accept_ords.next_set_bit(0);
     while let Some(o) = next.filter(|&o| o < end) {
         next = accept_ords.next_set_bit(o + 1);
+        if span > 0 && o >= read_until {
+            read_until = read_ahead_dense(scorer, accept_ords, o, span, end);
+        }
         let ord = o as i32;
         let doc = ord_to_doc(ord)?;
         let parent = usize::try_from(doc)
@@ -3523,6 +3588,24 @@ pub fn search_diversifying_children_byte_knn_multi_segment(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn count_set_bits_counts_each_window_exactly() {
+        let mut bits = FixedBitSet::new(300);
+        for i in [0usize, 1, 63, 64, 65, 127, 128, 200, 299] {
+            bits.set(i);
+        }
+        for from in 0..300 {
+            for to in from..=300 {
+                let naive = (from..to).filter(|&i| bits.get(i)).count();
+                assert_eq!(
+                    count_set_bits(bits.words(), from, to),
+                    naive,
+                    "{from}..{to}"
+                );
+            }
+        }
+    }
     #[test]
     fn identity_accept_ords_is_live_and_filter_bit_for_bit() {
         let bits = |len: usize, every: usize| {

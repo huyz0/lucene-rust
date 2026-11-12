@@ -191,7 +191,9 @@ impl Input {
             Input::Mapped(m) => {
                 // Advice only: a failure (an old kernel) changes nothing a
                 // reader can see.
-                let _ = m.advise_range(memmap2::Advice::WillNeed, offset, len);
+                if let Some(bytes) = m.get(offset..end) {
+                    advise_will_need(bytes);
+                }
                 Ok(())
             }
             #[cfg(not(unix))]
@@ -200,6 +202,50 @@ impl Input {
             Input::External(bytes) => bytes.will_need(offset, len),
             #[cfg(any(test, feature = "test-util"))]
             Input::Tracked(t) => t.input.will_need(offset, len),
+        }
+    }
+
+    /// Advises the kernel that a mapped input is read at random, so a page
+    /// fault reads that page alone instead of the read-around window
+    /// (`MADV_RANDOM`; Lucene's `ReadAdvice.RANDOM`). For files a search
+    /// reads a few hundred bytes at a time at scattered offsets, the vectors
+    /// a graph walk or a rerank visits: under memory pressure the default
+    /// window reads mostly bytes nobody asked for and evicts the ones that
+    /// are needed. A compound file's member advises its own range of the
+    /// archive. Inputs that are not mappings ignore it; so does a failure
+    /// (an advice changes no bytes a reader sees).
+    pub fn advise_random(&self) {
+        self.advise_random_range(0, self.len());
+    }
+
+    /// [`Self::advise_random`], and when the input is small next to the
+    /// memory this process may use ([`memory_available`]: at most an
+    /// eighth of it), [`Self::will_need`] over all of it as well. Random
+    /// advice stops a fault reading ahead, so a file that would fit in the
+    /// page cache would otherwise warm up one page per fault after a cold
+    /// start; reading it in once, in large reads, keeps that cost to what
+    /// the default advice pays. A file too large for that is left to
+    /// demand faults, which is where random advice pays.
+    pub fn advise_random_and_warm(&self) {
+        self.advise_random();
+        let len = self.len() as u64;
+        if len > 0 && memory_available().is_some_and(|avail| len <= avail / 8) {
+            let _ = self.will_need(0, self.len());
+        }
+    }
+
+    fn advise_random_range(&self, offset: usize, len: usize) {
+        match self {
+            #[cfg(unix)]
+            Input::Mapped(m) if len > 0 => {
+                let _ = m.advise_range(memmap2::Advice::Random, offset, len);
+            }
+            Input::Slice { base, start, .. } => {
+                base.advise_random_range(start.saturating_add(offset), len)
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            Input::Tracked(t) => t.input.advise_random_range(offset, len),
+            _ => {}
         }
     }
 
@@ -229,6 +275,88 @@ impl Input {
         }
     }
 }
+
+/// Bytes this process can still fill without reclaiming its own memory, as
+/// far as Linux says: `MemAvailable` from `/proc/meminfo`, capped by the
+/// memory cgroup's limit (v2 `memory.max`, else v1
+/// `memory.limit_in_bytes`) when one is set. `None` elsewhere.
+pub fn memory_available() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+        let avail_kb: u64 = meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix("MemAvailable:"))?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
+        let mut avail = avail_kb.saturating_mul(1024);
+        if let Some(limit) = cgroup_memory_limit() {
+            avail = avail.min(limit);
+        }
+        Some(avail)
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+/// This process's memory cgroup limit, if it has one.
+#[cfg(target_os = "linux")]
+fn cgroup_memory_limit() -> Option<u64> {
+    let cgroups = fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in cgroups.lines() {
+        let mut parts = line.splitn(3, ':');
+        let (_, controllers, path) = (parts.next()?, parts.next()?, parts.next()?);
+        let file = if controllers.is_empty() {
+            format!("/sys/fs/cgroup{path}/memory.max")
+        } else if controllers.split(',').any(|c| c == "memory") {
+            format!("/sys/fs/cgroup/memory{path}/memory.limit_in_bytes")
+        } else {
+            continue;
+        };
+        if let Some(limit) = fs::read_to_string(file)
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+        {
+            return Some(limit);
+        }
+    }
+    None
+}
+
+/// `MADV_WILLNEED` over the pages holding `bytes`: see
+/// [`crate::read_ahead`].
+#[cfg(unix)]
+pub(crate) fn advise_will_need(bytes: &[u8]) {
+    // SAFETY: `sysconf` has no preconditions.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .ok()
+        .filter(|p| p.is_power_of_two())
+        .unwrap_or(4096);
+    let addr = bytes.as_ptr() as usize;
+    let start = addr & !page.wrapping_sub(1);
+    let end = addr.saturating_add(bytes.len());
+    // Linux reads at most the device's read-ahead window per call
+    // (`force_page_cache_ra` caps it at `max(io_pages, ra_pages)`, 128 KiB
+    // by default), so a larger range goes in window-sized calls; each only
+    // queues its reads.
+    const CALL: usize = 128 * 1024;
+    let mut at = start;
+    while at < end {
+        let len = CALL.min(end.saturating_sub(at));
+        // SAFETY: the range covers only pages that hold `bytes`, which are
+        // mapped for as long as the borrow lives; `MADV_WILLNEED` schedules
+        // reads and changes no contents or mapping.
+        unsafe {
+            libc::madvise(at as *mut libc::c_void, len, libc::MADV_WILLNEED);
+        }
+        at = at.saturating_add(len);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn advise_will_need(_bytes: &[u8]) {}
 
 /// The same bytes as [`Deref`], as an `AsRef` — the bound a type-erased
 /// shared buffer needs.
@@ -1358,6 +1486,41 @@ pub fn open_commit_file(dir: &(impl Directory + ?Sized), generation: i64) -> Res
 mod tests {
     use super::*;
     use crate::data_output::DataOutput;
+
+    /// Random-access advice and read-ahead are hints: a mapping, a compound
+    /// member over one, and a heap buffer read the same bytes after both,
+    /// over ranges larger than one read-ahead call and unaligned ones.
+    #[test]
+    fn advice_and_read_ahead_leave_every_input_readable() {
+        let tmp = lucene_util::test_support::TempDir::new("store-advice");
+        let root = tmp.path().to_path_buf();
+        let data: Vec<u8> = (0..1_000_000u32).map(|i| (i * 7) as u8).collect();
+        std::fs::write(root.join("_0.vec"), &data).unwrap();
+        let mapped = Arc::new(
+            MmapDirectory::with_read_threshold(&root, 0)
+                .open("_0.vec")
+                .unwrap(),
+        );
+        assert!(matches!(*mapped, Input::Mapped(_)));
+        let member = Input::slice_of(&mapped, 4097, 300_000).unwrap();
+        let owned = Input::Owned(data.clone());
+        for input in [&*mapped, &member, &owned] {
+            input.advise_random();
+            input.advise_random_and_warm();
+            input.will_need(13, 700_000).unwrap();
+            crate::read_ahead(&input[1..]);
+        }
+        assert_eq!(&mapped[..], &data[..]);
+        assert_eq!(&member[..], &data[4097..304_097]);
+        assert_eq!(&owned[..], &data[..]);
+        crate::read_ahead(&[]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn memory_available_is_known_on_linux() {
+        assert!(memory_available().is_some_and(|b| b > 0));
+    }
 
     #[test]
     fn close_input_drops_the_input_and_forwards_through_a_box() {
