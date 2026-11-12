@@ -101,6 +101,7 @@ import org.lucenerust.opensearch.ml.HfAnalysis;
 import org.opensearch.index.analysis.PreBuiltAnalyzerProviderFactory;
 import org.opensearch.index.analysis.PreConfiguredTokenizer;
 import org.opensearch.plugins.IngestPlugin;
+import org.lucenerust.opensearch.sparse.SparseCodecService;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
@@ -498,14 +499,20 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * {@code KNNPlugin.getCustomCodecServiceFactory}: OpenSearch's engine writes a k-NN index's
-     * vector fields in the formats their mappings resolve to, as the Rust writer does.
+     * vector fields in the formats their mappings resolve to, as the Rust writer does. neural-search's:
+     * it writes an {@code index.sparse} index's segments with their clustered postings, as the Rust
+     * writer does, so a {@code neural_sparse} search scores them as stock's does whichever engine
+     * wrote them.
      */
     @Override
     public Optional<CodecServiceFactory> getCustomCodecServiceFactory(IndexSettings indexSettings) {
-        if (stockKnn || KnnSettings.KNN_INDEX.get(indexSettings.getSettings()) == false) {
-            return Optional.empty();
+        if (stockKnn == false && KnnSettings.KNN_INDEX.get(indexSettings.getSettings())) {
+            return Optional.of(KnnCodecService::new);
         }
-        return Optional.of(KnnCodecService::new);
+        if (SparseSettings.SPARSE_INDEX.get(indexSettings.getSettings())) {
+            return Optional.of(SparseCodecService::new);
+        }
+        return Optional.empty();
     }
 
     @Override

@@ -3140,7 +3140,7 @@ fn open_segment_file_aligned(
         Some(name) => name,
         None => return Ok(None),
     };
-    match compound {
+    let input = match compound {
         // A compound member is a window onto the archive (`openInput`'s
         // `slice`), and a loose file is handed back exactly as the directory
         // produced it: for `MmapDirectory` either one is the mapping itself,
@@ -3149,14 +3149,31 @@ fn open_segment_file_aligned(
             // `open_input` checks the entry's range against the archive.
             let member = compound_format::open_input(&archive.data, &archive.entries, &name)?;
             let entry = archive.entries.get(&name).expect("open_input found it");
-            let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
-            Ok(Some(Arc::new(slice)))
+            Input::slice_of(&archive.data, entry.offset as usize, member.len())?
         }
-        None => Ok(Some(Arc::new(match alignment {
+        None => match alignment {
             Some(alignment) => dir.open_aligned(&name, alignment)?,
             None => dir.open(&name)?,
-        }))),
+        },
+    };
+    if is_random_access(ext) {
+        input.advise_random_and_warm();
     }
+    Ok(Some(Arc::new(input)))
+}
+
+/// Whether a search reads the file with extension `ext` (possibly behind a
+/// codec suffix) at scattered offsets a vector at a time, so its mapping is
+/// advised random access ([`Input::advise_random`], Lucene's
+/// `DataAccessHint.RANDOM` for the flat vectors and the graph): the flat
+/// vectors a graph walk scores (`.vec`), the graph itself (`.vex`) and an
+/// IVF index's rerank vectors (`.ivv`, whose reader prefetches the ranges it
+/// reranks). A file small next to free memory is read in once at open, so
+/// a cold start still warms it in large reads. Exhaustive scans read ahead
+/// explicitly (`VectorScorer::read_ahead`). Only the search reader advises: a merge
+/// opens its own mappings and reads them in order.
+fn is_random_access(ext: &str) -> bool {
+    matches!(ext.rsplit('.').next(), Some("vec" | "vex" | "ivv"))
 }
 
 /// A segment's stored-fields files and their codec suffix.
