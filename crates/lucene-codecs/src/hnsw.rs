@@ -936,6 +936,60 @@ impl OnHeapHnswGraph {
             .is_some_and(|levels| levels.len() > level as usize)
     }
 
+    /// The graph with node `old` named `old_to_new[old]`: what
+    /// `Lucene99HnswVectorsWriter.reconstructAndWriteGraph` writes for a
+    /// flush under an index sort. Each list keeps its order and scores;
+    /// the writer sorts the ordinals it writes.
+    ///
+    /// # Errors
+    /// `old_to_new` is not a permutation of the graph's `size()` ordinals,
+    /// or the graph has holes.
+    pub fn renumbered(self, old_to_new: &[i32]) -> Result<OnHeapHnswGraph> {
+        let n = self.graph.len();
+        let bad = || Error::InvalidGraphParameter("not a permutation of the graph's nodes".into());
+        if old_to_new.len() != n || usize::try_from(self.size).ok() != Some(n) {
+            return Err(bad());
+        }
+        let mut graph: Vec<Vec<NeighborArray>> = vec![Vec::new(); n];
+        for (old, mut levels) in self.graph.into_iter().enumerate() {
+            let new = old_to_new
+                .get(old)
+                .and_then(|&o| usize::try_from(o).ok())
+                .filter(|&o| o < n)
+                .ok_or_else(bad)?;
+            let slot = graph.get_mut(new).ok_or_else(bad)?;
+            if !slot.is_empty() || levels.is_empty() {
+                return Err(bad());
+            }
+            for list in &mut levels {
+                for node in &mut list.nodes {
+                    *node = usize::try_from(*node)
+                        .ok()
+                        .and_then(|o| old_to_new.get(o))
+                        .copied()
+                        .ok_or_else(bad)?;
+                }
+            }
+            *slot = levels;
+        }
+        let entry_node = match usize::try_from(self.entry_node) {
+            Ok(e) => *old_to_new.get(e).ok_or_else(bad)?,
+            Err(_) => self.entry_node,
+        };
+        Ok(OnHeapHnswGraph {
+            nsize: self.nsize,
+            nsize0: self.nsize0,
+            graph,
+            entry_node,
+            entry_level: self.entry_level,
+            size: self.size,
+            // ARITH: `n` is `size`, an `i32` of at least 0.
+            #[allow(clippy::arithmetic_side_effects)]
+            max_node_id: self.size - 1,
+            fixed_size: self.fixed_size,
+        })
+    }
+
     /// `OnHeapHnswGraph.trySetNewEntryNode`.
     pub fn try_set_new_entry_node(&mut self, node: i32, level: i32) -> bool {
         // `num_levels()` is `entry_level + 1`; this and `try_promote` are the
@@ -1866,6 +1920,12 @@ impl<S: UpdateableVectorScorer> HnswGraphBuilder<S> {
 
     pub fn graph(&self) -> &OnHeapHnswGraph {
         &self.hnsw
+    }
+
+    /// The scorer it scores with, for a caller that adds the vectors it
+    /// scores as the graph grows.
+    pub fn scorer_mut(&mut self) -> &mut S {
+        &mut self.scorer
     }
 
     /// `HnswGraphBuilder.getRandomGraphLevel`.
@@ -3124,6 +3184,41 @@ mod tests {
         assert!(g.try_promote_new_entry_node(1, 3, 2));
         assert_eq!(g.entry_node(), 1);
         assert_eq!(g.num_levels(), 4);
+    }
+
+    #[test]
+    fn renumbered_moves_nodes_lists_levels_and_entry() {
+        let mut g = OnHeapHnswGraph::new(4);
+        g.add_node(1, 0);
+        g.add_node(0, 0);
+        assert!(g.try_set_new_entry_node(0, 1));
+        g.add_node(0, 1);
+        g.add_node(0, 2);
+        g.neighbors_mut(0, 0).add_in_order(1, 0.9);
+        g.neighbors_mut(0, 0).add_in_order(2, 0.5);
+        g.neighbors_mut(0, 2).add_in_order(0, 0.5);
+        // 0 -> 2, 1 -> 0, 2 -> 1.
+        let r = g.clone().renumbered(&[2, 0, 1]).unwrap();
+        assert_eq!(r.size(), 3);
+        assert_eq!(r.entry_node(), 2);
+        assert_eq!(r.num_levels(), 2);
+        assert_eq!(r.sorted_nodes_on_level(1).unwrap(), vec![2]);
+        assert_eq!(r.neighbors(0, 2).nodes(), &[0, 1]);
+        assert_eq!(r.neighbors(0, 2).score(0), 0.9);
+        assert_eq!(r.neighbors(0, 1).nodes(), &[2]);
+        assert!(r.neighbors(0, 0).nodes().is_empty());
+        assert_eq!(HnswGraphView::max_node_id(&r), 2);
+
+        // Not a permutation: too short, a repeat, out of range.
+        assert!(g.clone().renumbered(&[0, 1]).is_err());
+        assert!(g.clone().renumbered(&[0, 0, 1]).is_err());
+        assert!(g.clone().renumbered(&[0, 1, 3]).is_err());
+        assert!(g.clone().renumbered(&[0, 1, -1]).is_err());
+        // A hole: ordinal 1 never added.
+        let mut holes = OnHeapHnswGraph::new(4);
+        holes.add_node(0, 0);
+        holes.add_node(0, 2);
+        assert!(holes.renumbered(&[0, 1, 2]).is_err());
     }
 
     #[test]

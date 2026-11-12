@@ -711,6 +711,9 @@ public final class RustEngineSupport {
      * own postings format, for instance) must be the ones the Rust writer lays out.
      */
     private static String unsupportedFormat(Codec codec, String field, FieldSchema schema) {
+        if (codec instanceof org.lucenerust.opensearch.sparse.SparseCodec sparse) {
+            codec = sparse.delegate();
+        }
         if (schema.indexOptions != IndexOptions.NONE && codec.postingsFormat() instanceof PerFieldPostingsFormat p) {
             String name = p.getPostingsFormatForField(field).getName();
             if (name.equals("Lucene104") == false) {
