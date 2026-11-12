@@ -3,12 +3,15 @@
 //! open file costs its working set in RAM rather than its size.
 //!
 //! The mapping is registered with Linux `userfaultfd`. The first access to
-//! a missing page blocks the faulting thread; one of the pager's handler
-//! threads asks the file's [`PageFiller`] for the page holding it (from the
-//! [`crate::PageCache`], decoded when the file is encrypted) and installs it
-//! with `UFFDIO_COPY`. [`ExternalBytes::will_need`] installs a range ahead
-//! of the reads, in one batch, and returns any error fetching it; that is
-//! how a reader keeps remote round trips few and sees failures as errors.
+//! a missing page raises `SIGBUS` on the faulting thread, whose handler
+//! ([`sigbus`]) asks the file's [`PageFiller`] for the page holding it
+//! (from the [`crate::PageCache`], decoded when the file is encrypted),
+//! installs it with `UFFDIO_COPY` and returns, so the access runs again.
+//! Where that cannot be set up, the access blocks the faulting thread and
+//! one of the pager's handler threads serves it the same way.
+//! [`ExternalBytes::will_need`] installs a range ahead of the reads, in one
+//! batch, and returns any error fetching it; that is how a reader keeps
+//! remote round trips few and sees failures as errors.
 //! When resident pages exceed the budget, pages are released with
 //! `MADV_DONTNEED`, and the next access faults them in again. Eviction is
 //! a segmented FIFO: a new page starts on probation; a page that comes back
@@ -145,6 +148,9 @@ const UFFDIO_COPY: libc::c_ulong = 0xC028_AA03;
 const UFFDIO_REGISTER_MODE_MISSING: u64 = 1;
 /// Fault messages carry the faulting thread's id.
 const UFFD_FEATURE_THREAD_ID: u64 = 1 << 8;
+/// A fault on a missing page raises `SIGBUS` on the faulting thread
+/// instead of queueing a message.
+const UFFD_FEATURE_SIGBUS: u64 = 1 << 7;
 const UFFD_EVENT_PAGEFAULT: u8 = 0x12;
 
 #[repr(C)]
@@ -215,6 +221,27 @@ pub const UNREADABLE_HOLD: Duration = Duration::from_secs(1);
 
 static GLOBAL: OnceLock<Option<&'static Pager>> = OnceLock::new();
 
+/// Where faults are served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Faults {
+    /// On the faulting thread ([`sigbus`]), where the kernel and the
+    /// process's signal handling allow it; the default.
+    OnThread,
+    /// On the pager's handler threads.
+    Handlers,
+}
+
+impl Faults {
+    /// `PAGE_CACHE_FAULT_HANDLING=threads` serves faults on handler
+    /// threads; anything else, on the faulting thread.
+    fn from_env() -> Faults {
+        match std::env::var("PAGE_CACHE_FAULT_HANDLING") {
+            Ok(v) if v.eq_ignore_ascii_case("threads") => Faults::Handlers,
+            _ => Faults::OnThread,
+        }
+    }
+}
+
 /// A pidfd of this process, or `None` where `pidfd_open` is unavailable.
 fn own_pidfd() -> Option<OwnedFd> {
     // SAFETY: plain syscalls with integer arguments; the result is checked.
@@ -233,6 +260,13 @@ pub struct Pager {
     /// ([`crate::read_failures::set_checked`]) be handed zeros for a page
     /// that cannot be read.
     thread_ids: bool,
+    /// Whether a fault is served on the faulting thread ([`sigbus`]):
+    /// the kernel raises `SIGBUS` there instead of queueing a message for
+    /// a handler thread, and the signal handler fills the page. That saves
+    /// the two thread hand-offs of each fault (the faulting thread waking
+    /// a handler, the handler waking it back), most of a fault's cost
+    /// beyond the read.
+    on_thread: bool,
     os_page: usize,
     files: RwLock<BTreeMap<usize, Weak<File>>>,
     resident: Mutex<Queues>,
@@ -366,6 +400,17 @@ impl ExternalBytes for PagedBytes {
         self.file.fill(&missing)?;
         self.file.pager.evict();
         Ok(())
+    }
+}
+
+impl PagedBytes {
+    /// Installs `bytes` as the file's first page, already read and decoded
+    /// at open.
+    pub(crate) fn install_first(&self, bytes: &[u8]) {
+        if self.file.pages > 0 && !self.file.live[0].load(Ordering::Acquire) {
+            self.file.pager.install(&self.file, 0, bytes);
+            self.file.pager.evict();
+        }
     }
 }
 
@@ -583,33 +628,84 @@ pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
     let result = match work.as_slice() {
         [] => Ok(()),
         [(file, missing)] => file.fill(missing),
-        // A bounded number of files at a time: a query over many segments
-        // must not start a thread per file.
-        _ => {
-            let mut first = Ok(());
-            for batch in work.chunks(PREFETCH_FILES) {
-                std::thread::scope(|scope| {
-                    let handles: Vec<_> = batch
-                        .iter()
-                        .map(|(file, missing)| scope.spawn(move || file.fill(missing)))
-                        .collect();
-                    for handle in handles {
-                        let r = handle.join().unwrap_or_else(|_| {
-                            Err(Error::Io(std::io::Error::other(
-                                "a prefetch thread panicked",
-                            )))
-                        });
-                        if first.is_ok() {
-                            first = r;
-                        }
-                    }
-                });
-            }
-            first
-        }
+        // Many files: every file's runs go to the filler's I/O threads at
+        // once, so a query over many segments reads them all at the I/O
+        // threads' queue depth instead of a few files at a time.
+        _ => prefetch_files(&work),
     };
     pager.evict();
     result
+}
+
+/// Fetches the `missing` pages of several files at once ([`prefetch`]):
+/// each file's runs on its filler's I/O threads where it reads in the
+/// background, a bounded number of files at a time on threads of their own
+/// where it cannot. Returns the first error.
+fn prefetch_files(work: &[(Arc<File>, Vec<u64>)]) -> Result<()> {
+    let mut first = Ok(());
+    let mut keep = |r: Result<()>| {
+        if first.is_ok() {
+            first = r;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<(Arc<File>, Result<()>)>();
+    let mut started = 0usize;
+    let mut here: Vec<&(Arc<File>, Vec<u64>)> = Vec::new();
+    for item in work {
+        let (file, missing) = item;
+        if missing.is_empty() {
+            // Listed for its decode failure only.
+            keep(file.check());
+            continue;
+        }
+        if let Err(e) = file.check().and_then(|()| file.check_readable(missing)) {
+            keep(Err(e));
+            continue;
+        }
+        let owner = Arc::clone(file);
+        let tx = tx.clone();
+        let done: BackgroundDone = Box::new(move |r| {
+            let _ = tx.send((owner, r));
+        });
+        if file
+            .filler
+            .fill_background(missing.clone(), file.sink(), done)
+        {
+            started = started.saturating_add(1);
+        } else {
+            here.push(item);
+        }
+    }
+    drop(tx);
+    for batch in here.chunks(PREFETCH_FILES) {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|(file, missing)| scope.spawn(move || file.fill(missing)))
+                .collect();
+            for handle in handles {
+                keep(handle.join().unwrap_or_else(|_| {
+                    Err(Error::Io(std::io::Error::other(
+                        "a prefetch thread panicked",
+                    )))
+                }));
+            }
+        });
+    }
+    for _ in 0..started {
+        // Every sender gone before all reported: a read was lost.
+        let Ok((file, r)) = rx.recv() else {
+            keep(Err(Error::Io(std::io::Error::other(
+                "a page read did not complete",
+            ))));
+            break;
+        };
+        keep(r.map_err(|e| match undecodable_message(&e) {
+            Some(message) => file.fail(&message),
+            None => e,
+        }));
+    }
+    first
 }
 
 /// Whether `bytes` starts in a demand-filled file of the global [`Pager`]:
@@ -747,11 +843,28 @@ impl Pager {
         GLOBAL.get().copied().flatten()
     }
 
-    /// Starts a pager and its handler threads. Both live for the rest of
-    /// the process.
+    /// Starts a pager, and its handler threads where faults go to them.
+    /// Both live for the rest of the process.
     fn spawn(user_mode_only: bool) -> Option<&'static Pager> {
-        let pager = Pager::start(user_mode_only).ok()?;
+        Pager::spawn_serving(user_mode_only, Faults::from_env())
+    }
+
+    /// [`Pager::spawn`] serving faults as `faults` asks, where it can: on
+    /// the faulting thread needs `UFFD_FEATURE_SIGBUS` (Linux 4.14) and
+    /// this process's `SIGBUS` handler; otherwise handler threads serve
+    /// them.
+    fn spawn_serving(user_mode_only: bool, faults: Faults) -> Option<&'static Pager> {
+        let on_thread = faults == Faults::OnThread && sigbus::install();
+        let pager = match Pager::start(user_mode_only, on_thread) {
+            Ok(pager) => pager,
+            Err(_) if on_thread => Pager::start(user_mode_only, false).ok()?,
+            Err(_) => return None,
+        };
         let pager: &'static Pager = Box::leak(Box::new(pager));
+        if pager.on_thread {
+            sigbus::register(pager);
+            return Some(pager);
+        }
         for i in 0..handler_threads() {
             std::thread::Builder::new()
                 .name(format!("lucene-page-fault-{i}"))
@@ -761,7 +874,12 @@ impl Pager {
         Some(pager)
     }
 
-    fn start(user_mode_only: bool) -> std::io::Result<Pager> {
+    /// Whether faults are served on the faulting thread.
+    pub fn serves_on_thread(&self) -> bool {
+        self.on_thread
+    }
+
+    fn start(user_mode_only: bool, on_thread: bool) -> std::io::Result<Pager> {
         // Full mode first (kernel accesses fault in too); user-mode-only is
         // what an unprivileged process gets when vm.unprivileged_userfaultfd
         // is 0.
@@ -796,7 +914,9 @@ impl Pager {
             // SAFETY: `api` is a valid `struct uffdio_api` for the call.
             unsafe { libc::ioctl(fd, UFFDIO_API, &mut api) == 0 }
         };
-        let thread_ids = handshake(uffd.as_raw_fd(), UFFD_FEATURE_THREAD_ID);
+        // Faults served on the faulting thread raise SIGBUS there.
+        let extra = if on_thread { UFFD_FEATURE_SIGBUS } else { 0 };
+        let thread_ids = handshake(uffd.as_raw_fd(), UFFD_FEATURE_THREAD_ID | extra);
         if !thread_ids {
             // A refused handshake leaves the descriptor unusable: start over
             // on a new one without thread ids.
@@ -807,7 +927,7 @@ impl Pager {
             }
             // SAFETY: `fd` is a fresh descriptor this function owns.
             uffd = unsafe { OwnedFd::from_raw_fd(fd) };
-            if !handshake(fd, 0) {
+            if !handshake(fd, extra) {
                 return Err(std::io::Error::last_os_error());
             }
         }
@@ -817,6 +937,7 @@ impl Pager {
         Ok(Pager {
             uffd,
             thread_ids,
+            on_thread,
             os_page,
             files: RwLock::new(BTreeMap::new()),
             resident: Mutex::new(Queues::default()),
@@ -900,6 +1021,9 @@ impl Pager {
             return Err(Error::IllegalArgument(format!(
                 "page of {page_len} bytes is not a whole number of OS pages"
             )));
+        }
+        if self.on_thread {
+            sigbus::ensure_installed();
         }
         let pages = len.div_ceil(page_len);
         let map_len = len.div_ceil(self.os_page).saturating_mul(self.os_page);
@@ -1040,8 +1164,10 @@ impl Pager {
     }
 
     /// Fills and installs the page holding `addr`, for the faulting thread
-    /// `tid` when the kernel names it.
-    fn resolve(&'static self, addr: usize, tid: Option<u32>) {
+    /// `tid` when the kernel names it (on the faulting thread itself when
+    /// [`Self::on_thread`]). Returns whether `addr` lies in one of this
+    /// pager's files.
+    fn resolve(&'static self, addr: usize, tid: Option<u32>) -> bool {
         let file = {
             let files = match self.files.read() {
                 Ok(f) => f,
@@ -1053,16 +1179,32 @@ impl Pager {
                 .and_then(|(_, w)| w.upgrade())
         };
         let Some(file) = file else {
-            return;
+            return false;
         };
+        if addr >= file.base.saturating_add(file.map_len) {
+            return false;
+        }
         let Some(index) = addr
             .checked_sub(file.base)
             .and_then(|off| off.checked_div(file.page))
         else {
-            return;
+            return false;
         };
         if index >= file.pages {
-            return;
+            return false;
+        }
+        if self.on_thread {
+            // A background read-ahead is bringing the page: wait for it
+            // here, as a handler-served fault waits in the kernel.
+            let mut spins = 0u32;
+            while file.inflight[index].load(Ordering::Acquire) {
+                if spins < 64 {
+                    std::thread::yield_now();
+                    spins = spins.saturating_add(1);
+                } else {
+                    std::thread::sleep(Duration::from_micros(20));
+                }
+            }
         }
         // A page marked resident whose faulting OS page is present was
         // installed since the fault was raised: waking is enough. One with
@@ -1072,18 +1214,18 @@ impl Pager {
         // skipped). Waking the thread then would have it fault again, forever.
         if file.live[index].load(Ordering::Acquire) && self.present(addr) {
             self.wake(addr);
-            return;
+            return true;
         }
         if file.inflight[index].load(Ordering::Acquire) {
             // A background read-ahead brings it: installing it wakes the
             // faulting thread, and a failed one wakes it to fault again.
-            return;
+            return true;
         }
         if file.readahead_max > 1 && self.fill_ahead(&file, index) {
             self.faults.fetch_add(1, Ordering::Relaxed);
             self.wake(addr);
             self.evict();
-            return;
+            return true;
         }
         let mut attempt = 0usize;
         let sink = file.sink();
@@ -1107,7 +1249,12 @@ impl Pager {
                         let e = other
                             .err()
                             .map_or_else(|| "no page returned".to_string(), |e| e.to_string());
-                        if tid.is_some_and(crate::read_failures::is_checked) {
+                        let checked = if self.on_thread {
+                            crate::read_failures::checked_here()
+                        } else {
+                            tid.is_some_and(crate::read_failures::is_checked)
+                        };
+                        if checked {
                             self.serve_unreadable(&file, index, &e);
                             break;
                         }
@@ -1137,6 +1284,20 @@ impl Pager {
         // installed the page first: wake it in that case too.
         self.wake(addr);
         self.evict();
+        true
+    }
+
+    /// [`Self::resolve`] on the faulting thread, from the `SIGBUS`
+    /// handler; counted in [`PagerStats::fault_nanos`] as a handler
+    /// thread's fault is.
+    fn resolve_here(&'static self, addr: usize) -> bool {
+        let started = std::time::Instant::now();
+        let ours = self.resolve(addr, None);
+        if ours {
+            let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            self.fault_nanos.fetch_add(nanos, Ordering::Relaxed);
+        }
+        ours
     }
 
     /// Serves page `index` of `file`, which could not be read (`error`), as
@@ -1230,6 +1391,11 @@ impl Pager {
 
     /// Wakes the threads waiting on pages `first..=last` of `file`.
     fn wake_pages(&self, file: &File, first: usize, last: usize) {
+        if self.on_thread {
+            // No thread waits in the kernel: a faulting thread waits for
+            // the in-flight flag, or faults again.
+            return;
+        }
         let start = file.base.saturating_add(first.saturating_mul(file.page));
         let end = file
             .base
@@ -1262,6 +1428,10 @@ impl Pager {
 
     /// Wakes the threads waiting on the OS page holding `addr`.
     fn wake(&self, addr: usize) {
+        if self.on_thread {
+            // As in `wake_pages`: no thread waits in the kernel.
+            return;
+        }
         let mut range = UffdioRange {
             start: (addr & !self.os_page.saturating_sub(1)) as u64,
             len: self.os_page as u64,
@@ -1546,6 +1716,182 @@ impl Pager {
         for &(_, start, len) in drops {
             // SAFETY: as above, one range at a time.
             unsafe { libc::madvise(start as *mut libc::c_void, len, libc::MADV_DONTNEED) };
+        }
+    }
+}
+
+/// Faults served on the faulting thread: the `userfaultfd` raises
+/// `SIGBUS` (`UFFD_FEATURE_SIGBUS`) on a missing page, and this process's
+/// handler fills the page on the faulting thread and returns, so the
+/// access runs again and finds it. A `SIGBUS` at any other address goes to
+/// the handler installed before this one (the JVM's, in a JVM), as if this
+/// one were not there.
+///
+/// The handler only runs for accesses to registered mappings, which no
+/// code makes while holding the pager's own locks, and it saves and
+/// restores `errno`. Kernel accesses to a missing page (a `write(2)` from
+/// a mapping) fail with `EFAULT`, as under a user-mode-only `userfaultfd`;
+/// [`crate::index_output`] copies such bytes through a buffer.
+mod sigbus {
+    use super::Pager;
+    use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+    use std::sync::Mutex;
+
+    /// The pagers whose faults this handler serves, newest first. Nodes
+    /// are leaked: a pager lives for the rest of the process.
+    struct Node {
+        pager: &'static Pager,
+        next: *mut Node,
+    }
+
+    static PAGERS: AtomicPtr<Node> = AtomicPtr::new(std::ptr::null_mut());
+    /// The handler this one chains to, leaked so the handler can read it
+    /// without a lock while [`ensure_installed`] replaces it.
+    static PREVIOUS: AtomicPtr<libc::sigaction> = AtomicPtr::new(std::ptr::null_mut());
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    /// Held while the handler is installed or reinstalled.
+    static INSTALLING: Mutex<()> = Mutex::new(());
+
+    /// Installs the handler (once per process); whether it is installed.
+    pub(super) fn install() -> bool {
+        let _held = crate::lock::lock_ignoring_poison(&INSTALLING);
+        if INSTALLED.load(Ordering::Acquire) {
+            return true;
+        }
+        let ok = replace();
+        INSTALLED.store(ok, Ordering::Release);
+        ok
+    }
+
+    /// Adds `pager` to the pagers the handler serves.
+    pub(super) fn register(pager: &'static Pager) {
+        let node = Box::into_raw(Box::new(Node {
+            pager,
+            next: std::ptr::null_mut(),
+        }));
+        let mut head = PAGERS.load(Ordering::Acquire);
+        loop {
+            // SAFETY: `node` is not published yet; this thread owns it.
+            unsafe { (*node).next = head };
+            match PAGERS.compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(now) => head = now,
+            }
+        }
+    }
+
+    /// Installs the handler again if another one replaced it since (a
+    /// library that installs its own `SIGBUS` handler without chaining
+    /// this one), chaining the replacement in turn. Without it, the next
+    /// fault on a missing page would reach that handler.
+    pub(super) fn ensure_installed() {
+        if !INSTALLED.load(Ordering::Acquire) || current_is_ours() {
+            return;
+        }
+        let _held = crate::lock::lock_ignoring_poison(&INSTALLING);
+        if !current_is_ours() {
+            replace();
+        }
+    }
+
+    fn ours() -> usize {
+        handle as *const () as usize
+    }
+
+    fn current_is_ours() -> bool {
+        // SAFETY: an all-zero `sigaction` is a valid out-parameter.
+        let mut now: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: queries the disposition only.
+        let rc = unsafe { libc::sigaction(libc::SIGBUS, std::ptr::null(), &mut now) };
+        rc == 0 && now.sa_sigaction == ours()
+    }
+
+    /// Installs [`handle`], keeping the handler it replaces to chain to.
+    fn replace() -> bool {
+        // SAFETY: an all-zero `sigaction` is valid, and the fields set
+        // below make it a SA_SIGINFO handler with an empty mask.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = ours();
+        // On the faulting thread's own stack (no SA_ONSTACK): filling a
+        // page needs more than an alternate signal stack holds. NODEFER: a
+        // page filled from another registered page may fault in turn.
+        action.sa_flags = libc::SA_SIGINFO | libc::SA_NODEFER | libc::SA_RESTART;
+        // SAFETY: `action.sa_mask` is a valid signal set to clear.
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+        // SAFETY: as above.
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: installs a handler that stays valid for the process.
+        if unsafe { libc::sigaction(libc::SIGBUS, &action, &mut old) } != 0 {
+            return false;
+        }
+        if old.sa_sigaction != ours() {
+            let old = Box::into_raw(Box::new(old));
+            // The one replaced stays allocated: a handler running now may
+            // still be reading it.
+            PREVIOUS.store(old, Ordering::Release);
+        }
+        true
+    }
+
+    /// Serves the fault at `addr` if a registered pager's file holds it.
+    fn serve(addr: usize) -> bool {
+        let mut node = PAGERS.load(Ordering::Acquire);
+        while !node.is_null() {
+            // SAFETY: nodes are published whole and never freed.
+            let n = unsafe { &*node };
+            if n.pager.resolve_here(addr) {
+                return true;
+            }
+            node = n.next;
+        }
+        false
+    }
+
+    extern "C" fn handle(sig: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
+        // SAFETY: the kernel passes a valid `siginfo_t` to a SA_SIGINFO
+        // handler; a fault's (positive `si_code`) carries its address.
+        let (code, addr) = unsafe { ((*info).si_code, (*info).si_addr() as usize) };
+        if code > 0 {
+            // SAFETY: this thread's `errno`, restored before returning to
+            // the interrupted code.
+            let errno = unsafe { *libc::__errno_location() };
+            // A panic must not unwind out of a signal handler.
+            let served =
+                std::panic::catch_unwind(|| serve(addr)).unwrap_or_else(|_| std::process::abort());
+            // SAFETY: as above.
+            unsafe { *libc::__errno_location() = errno };
+            if served {
+                return;
+            }
+        }
+        chain(sig, info, context);
+    }
+
+    /// Hands the signal to the handler installed before this one; with
+    /// none, restores the default action, so the access runs again and
+    /// the process ends as it would have without this handler.
+    fn chain(sig: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
+        let previous = PREVIOUS.load(Ordering::Acquire);
+        // SAFETY: `PREVIOUS` is null or a leaked, never-freed `sigaction`.
+        let Some(previous) = (unsafe { previous.as_ref() }) else {
+            // SAFETY: resets the disposition; nothing else to uphold.
+            unsafe { libc::signal(sig, libc::SIG_DFL) };
+            return;
+        };
+        let handler = previous.sa_sigaction;
+        if handler == libc::SIG_DFL || handler == libc::SIG_IGN {
+            // A fault's SIGBUS cannot be ignored: the default it is.
+            // SAFETY: as above.
+            unsafe { libc::signal(sig, libc::SIG_DFL) };
+        } else if previous.sa_flags & libc::SA_SIGINFO != 0 {
+            // SAFETY: a SA_SIGINFO handler takes these three arguments.
+            let f: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
+                unsafe { std::mem::transmute(handler) };
+            f(sig, info, context);
+        } else {
+            // SAFETY: a plain handler takes the signal number.
+            let f: extern "C" fn(libc::c_int) = unsafe { std::mem::transmute(handler) };
+            f(sig);
         }
     }
 }
@@ -1971,6 +2317,57 @@ mod tests {
         assert!(!pager.supports(100));
         assert!(pager.open(10, 100, pattern(10, 100), "f").is_err());
         assert!(pager.resident_bytes() <= DEFAULT_BUDGET);
+    }
+
+    #[test]
+    fn faults_are_served_on_the_faulting_thread_or_by_handler_threads() {
+        for faults in [Faults::OnThread, Faults::Handlers] {
+            let Some(pager) = Pager::spawn_serving(false, faults) else {
+                return;
+            };
+            assert_eq!(pager.serves_on_thread(), faults == Faults::OnThread);
+            let page = 16 * 1024;
+            let len = 64 * page;
+            let p = pattern(len, page);
+            let input = pager.open(len, page, p.clone(), "modes").unwrap();
+            // A budget below the file: threads fault, evict and refault.
+            pager.set_budget(8 * page as u64);
+            let bytes = input.bytes();
+            std::thread::scope(|s| {
+                for t in 0..4usize {
+                    s.spawn(move || {
+                        for round in 0..3usize {
+                            for i in (0..len).step_by(4096) {
+                                let at = (i + t * 7919 + round * 104_729) % len;
+                                assert_eq!(bytes[at], byte(at), "{faults:?} at {at}");
+                            }
+                        }
+                    });
+                }
+            });
+            let stats = pager.stats();
+            assert!(
+                stats.faults > 0 && stats.evictions > 0,
+                "{faults:?} {stats:?}"
+            );
+            assert!(stats.fault_nanos > 0, "{faults:?} {stats:?}");
+            // A page that cannot be read is served as zeros to a checked
+            // call, however its fault is served.
+            pager.set_budget(DEFAULT_BUDGET);
+            let q = pattern(100_000, page);
+            let name = format!("/modes-{faults:?}/f.doc");
+            let unreadable = pager.open(100_000, page, q.clone(), &name).unwrap();
+            q.fail_first.store(usize::MAX, Ordering::Relaxed);
+            crate::read_failures::set_checked(true);
+            assert_eq!(unreadable.bytes()[20_000], 0);
+            crate::read_failures::set_checked(false);
+            assert!(
+                crate::read_failures::failure_under(&format!("/modes-{faults:?}"), 0).is_some()
+            );
+            q.fail_first.store(0, Ordering::Relaxed);
+            pager.drop_unreadable(Duration::ZERO);
+            assert_eq!(unreadable.bytes()[20_000], byte(20_000));
+        }
     }
 
     #[test]

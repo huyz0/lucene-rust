@@ -33,6 +33,25 @@ public final class KnnQueryParsers {
     private static final String NPROBES = "nprobes";
     /** {@code MethodParameter.values()} in declaration order: the wire order. */
     private static final List<String> PARAMETERS = List.of(EF_SEARCH, NPROBES);
+    /**
+     * This plugin's own opt-in method parameter, which stock does not have: the graph walk's adaptive
+     * beam stop ({@code KnnFloatVectorQuery::exploration_slack}), a number {@code >= 0}. It travels in
+     * the stream's map of other parameters, so the stock wire order is unchanged.
+     */
+    public static final String EXPLORATION_SLACK = "exploration_slack";
+
+    private static Float parseSlack(Object value) {
+        final float v;
+        try {
+            v = Float.parseFloat(String.valueOf(value));
+        } catch (final NumberFormatException e) {
+            throw new IllegalArgumentException(EXPLORATION_SLACK + " value must be a number");
+        }
+        if (Float.isFinite(v) == false || v < 0) {
+            throw new IllegalArgumentException(EXPLORATION_SLACK + " should be a finite number >= 0");
+        }
+        return v;
+    }
 
     private static final ObjectParser<float[], Void> RESCORE_PARSER = new ObjectParser<>(RESCORE_PARAMETER, () -> new float[] {
         RescoreContext.DEFAULT_OVERSAMPLE_FACTOR });
@@ -63,6 +82,14 @@ public final class KnnQueryParsers {
         }
         final Map<String, Object> methodParameters = new HashMap<>();
         for (Map.Entry<String, Object> e : json.entrySet()) {
+            if (EXPLORATION_SLACK.equals(e.getKey())) {
+                try {
+                    methodParameters.put(e.getKey(), parseSlack(e.getValue()));
+                } catch (final Exception exception) {
+                    throw new ParsingException(parser.getTokenLocation(), exception.getMessage());
+                }
+                continue;
+            }
             if (PARAMETERS.contains(e.getKey()) == false) {
                 throw new ParsingException(
                     parser.getTokenLocation(),
@@ -82,7 +109,13 @@ public final class KnnQueryParsers {
     static ValidationException validateMethodParameters(final Map<String, ?> methodParameters) {
         final List<String> errors = new ArrayList<>();
         for (final Map.Entry<String, ?> p : methodParameters.entrySet()) {
-            if (PARAMETERS.contains(p.getKey())) {
+            if (EXPLORATION_SLACK.equals(p.getKey())) {
+                try {
+                    parseSlack(p.getValue());
+                } catch (final IllegalArgumentException e) {
+                    errors.add("Validation Failed: 1: " + e.getMessage() + ";");
+                }
+            } else if (PARAMETERS.contains(p.getKey())) {
                 Integer v = parse(p.getKey(), p.getValue());
                 if (v == null || v <= 0) {
                     errors.add("Validation Failed: 1: " + p.getKey() + " should be greater than 0;");
@@ -97,6 +130,12 @@ public final class KnnQueryParsers {
         ValidationException validationException = new ValidationException();
         validationException.addValidationErrors(errors);
         return validationException;
+    }
+
+    /** {@code exploration_slack} of a parsed method parameter map, or null. */
+    public static Float explorationSlack(Map<String, ?> methodParameters) {
+        Object v = methodParameters == null ? null : methodParameters.get(EXPLORATION_SLACK);
+        return v == null ? null : parseSlack(v);
     }
 
     /** {@code MethodParametersParser.streamInput}. */

@@ -643,8 +643,8 @@ partition of the index sort's first field on its own at flush and merge
 20,000). Each field records it (`.ivm` version 5), the reader keeps each
 cluster's document range, and a filtered search probes only the clusters
 whose range holds a document it passes, with the calibrated share of
-them. A partition of at most 16 times the accepted
-target is scored exactly.
+them. A partition of at most 32 times the accepted target (64k documents
+at `k` 10), counted over every segment of the search, is scored exactly.
 In the OpenSearch plugin this is the index setting
 `index.lucene_rust.knn.ivf_partition_clusters` (`min_vectors`, `0` off, the
 default), with `index.sort.field` set to the partition field.
@@ -655,6 +655,36 @@ default), with `index.sort.field` set to the partition field.
   nearest documents spread over every partition's clusters. The setting
   fits indexes that are always searched within one tenant.
 - Builds are 3x faster: k-means runs on each partition alone.
+
+#### Partitions spread over many segments
+
+The exact-scan budget counts the partition's documents over every segment
+of the search, not in each segment. Counted per segment, a 400k tenant over
+32 segments (12.5k a segment, under the 20k clustering minimum and under the
+per-segment budget) was scanned exactly in every segment: all 400k vectors.
+8M vectors, 32 segments, recall@10 / mean ms, 100 queries:
+
+| tenant | per segment (16x) | search-wide (32x) | 4 segments, search-wide |
+|---|---|---|---|
+| random400000-any | 1.000 / 24.0 | 0.985 / 7.5 | 0.972 / 3.1 |
+| region400000-any | 1.000 / 26.5 | 0.970 / 6.4 | 0.941 / 3.2 |
+| region400000-local | 1.000 / 25.7 | 0.994 / 6.2 | 0.969 / 3.1 |
+| random40000-any | 1.000 / 2.4 | 1.000 / 2.4 | 1.000 / 2.5 |
+| random4000-any | 1.000 / 0.37 | 1.000 / 0.37 | 1.000 / 0.42 |
+
+Four segments give the same results as before (40k tenants stay exact: 32x
+keeps every tenant up to 64k at recall 1.0 whatever the segment count).
+Tenants above the budget get the probe's recall, as they do in few
+segments.
+
+Bytes read per query, from the search counters (codes 38 B an entry, f16
+rerank vectors 208 B, raw vectors 400 B): the 400k tenant over 32 segments
+probes 1,097 clusters, 269k code entries (10 MB in 1,097 ranges) and
+reranks 12.6k vectors; scanning it exactly reads 160 MB of raw vectors in
+32 ranges. At the 64k budget the scan reads 26 MB in order against a
+probe's 1-3 MB of codes plus ~4k scattered rerank reads, about even on
+NVMe and fewer requests on a blob store, so the budget holds off memory
+too.
 
 ### Composite partition keys
 

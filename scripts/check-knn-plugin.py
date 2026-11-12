@@ -12,7 +12,8 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              enough that HNSW finds the true neighbours on both nodes, so every
              top-k, filtered, ef_search, boosted and radial query must return
              the same hits with the same scores (1e-4), and the same hits as an
-             exhaustive scan computed here.
+             exhaustive scan computed here; the plugin's own
+             `method_parameters.exploration_slack` too (scan only).
   half_float float vectors stored as half floats (cosine ones normalized
              first, as stock does): checked as exact, against a scan over the
              half-float values.
@@ -1227,6 +1228,15 @@ def main():
                             scan = exact_top(spec, docs, t, kk, keep_doc or (lambda d: True))
                             if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
+                    if not binary:
+                        # The plugin's own opt-in adaptive beam stop (stock has no such method
+                        # parameter): on these small graphs a slack of 0.5 still finds the scan's top k.
+                        body = {"size": 50, "query": knn(t, k=k, method_parameters={"exploration_slack": 0.5})}
+                        got = search(OURS[1], index, body)
+                        scan = [(i, sc) for sc, i in exact_top(spec, docs, t, k)]
+                        checked += 1
+                        if not (close(got, scan) if half_cosine(spec) else same(got, scan)):
+                            failures.append(f"{index} exploration_slack query {qi}: {got[:3]} vs the scan's {scan[:3]}")
         checked += nested_check(failures)
         checked += ivf_check(failures)
         checked += rust_hnsw_check(failures)
@@ -1249,6 +1259,9 @@ def main():
             ("binary values", "lucene_binary", {"query": knn([200] * 8, k=3)}),
             ("half_float dimension", "lucene_half_l2", {"query": knn([0.1] * (DIM + 1), k=3)}),
             ("expand not nested", "lucene_l2", {"query": knn([0.1] * DIM, k=3, expand_nested_docs=True)}),
+            # Stock refuses the unknown parameter, the plugin a negative slack: both 400.
+            ("negative exploration_slack", "lucene_l2",
+             {"query": knn([0.1] * DIM, k=3, method_parameters={"exploration_slack": -1})}),
         ]
         for label, index, body in errors:
             a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)

@@ -194,6 +194,20 @@ pub fn set_checked(_on: bool) {}
 /// for the read to succeed.
 pub fn set_checked(on: bool) {
     let _ = SLOT.try_with(|s| s.on.store(on, Ordering::Release));
+    let _ = CHECKED_HERE.try_with(|c| c.set(on));
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// This thread's [`set_checked`] flag, read where the thread itself
+    /// serves a fault (no registration, no lock).
+    static CHECKED_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(target_os = "linux")]
+/// Whether this thread is running a checked call ([`set_checked`]).
+pub(crate) fn checked_here() -> bool {
+    CHECKED_HERE.try_with(std::cell::Cell::get).unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
