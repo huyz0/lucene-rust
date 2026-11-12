@@ -11,9 +11,11 @@
 # OpenSearch's business, a difference between the two nodes is ours. Then
 # e2e/highlight_matrix.py requires every highlight on the two to be identical.
 #
-# With --engine the plugin node serves every index -- system indices and
-# every index the YAML suites create included -- with the Rust engine
-# (indices.engine.accelerated.default: true), and the e2e stage is
+# Without --engine the plugin node runs with indices.engine.accelerated.default: false,
+# the opt-out: OpenSearch's engine for every index that does not ask, native
+# search on top. With --engine it keeps the default (true), so it serves every
+# index -- system indices and every index the YAML suites create included --
+# with the accelerated engine, and the e2e stage is
 # opensearch-plugin/e2e/verify_engine.py: the Rust engine against OpenSearch's
 # own, operation for operation, through restarts, SIGKILL, a writer panic and
 # a tripped breaker.
@@ -61,9 +63,9 @@ fi
 docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 # The disk-watermark block is off: a CI runner's or container's disk can sit
 # past the flood stage, and a node refusing to create indices tests nothing.
-NODE_ENV=()
+NODE_ENV=(-e indices.engine.accelerated.default=false)
 if [[ $ENGINE == 1 ]]; then
-    NODE_ENV=(-e indices.engine.accelerated.default=true)
+    NODE_ENV=()
 fi
 start_node() { # name port image [docker-run args...]
     docker rm -f "$1" >/dev/null 2>&1 || true
