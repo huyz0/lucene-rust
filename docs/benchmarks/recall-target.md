@@ -2,7 +2,7 @@
 
 `lucene_search::knn_recall` tunes a field's search depth to a target recall
 from sampled live queries, each checked against an exact scan of the field;
-the plugin turns it on per index with `index.lucene_rust.knn.target_recall`
+the plugin turns it on per index with `index.knn.target_recall`
 (off by default). This page is the evidence for its defaults.
 
 Data: GloVe-100 (gensim-data `glove-wiki-gigaword-100`, cosine, 390k base

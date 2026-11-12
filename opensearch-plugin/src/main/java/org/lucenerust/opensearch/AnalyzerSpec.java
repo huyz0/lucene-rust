@@ -410,7 +410,7 @@ public final class AnalyzerSpec {
     }
 
     /**
-     * A synonym filter's map, entry by entry ({@code lucene_rust.synonym_entries}): each input with
+     * A synonym filter's map, entry by entry ({@code accelerated.synonym_entries}): each input with
      * its {@code keepOrig} and outputs in order, as the FST holds them, so the Rust map is this one.
      */
     private static String synonyms(Object o, Component c, String name) {
@@ -439,7 +439,7 @@ public final class AnalyzerSpec {
         }
         c.name = name;
         c.arg("synonyms", c.writer.resource(sb.toString()))
-            .arg("format", "lucene_rust.synonym_entries")
+            .arg("format", "accelerated.synonym_entries")
             .arg("ignoreCase", flag(readBool(o, "ignoreCase")));
         return null;
     }

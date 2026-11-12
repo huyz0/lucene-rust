@@ -125,9 +125,7 @@ fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
     let (flushed, flushed_bodies) = inspect(&dir);
     assert_eq!(flushed.len(), 4);
     assert!(
-        flushed
-            .iter()
-            .all(|s| !s.1 && s.2 && s.3 == "LuceneRustZstdPaged104"),
+        flushed.iter().all(|s| !s.1 && s.2 && s.3 == "PagedZstd104"),
         "{flushed:?}"
     );
     let flushed_bytes: usize = flushed.iter().map(|s| s.0).sum();

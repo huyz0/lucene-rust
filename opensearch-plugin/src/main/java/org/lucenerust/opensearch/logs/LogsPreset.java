@@ -27,8 +27,8 @@ import org.opensearch.gateway.GatewayService;
 import org.opensearch.transport.client.Client;
 
 /**
- * The logs preset: two component templates, {@code lucene_rust_logs@settings} and {@code
- * lucene_rust_logs@mappings}, which an index template opts into by naming them in its {@code
+ * The logs preset: two component templates, {@code logs_preset@settings} and {@code
+ * logs_preset@mappings}, which an index template opts into by naming them in its {@code
  * composed_of}. They change nothing until a template names them.
  *
  * <p>The elected cluster manager puts each one when it is missing or older than this plugin's
@@ -40,14 +40,14 @@ public final class LogsPreset implements ClusterStateListener {
 
     /** Whether the elected cluster manager keeps the preset's component templates registered. */
     public static final Setting<Boolean> ENABLED = Setting.boolSetting(
-        "lucene_rust.logs_preset.templates.enabled",
+        "indices.logs_preset.enabled",
         true,
         Setting.Property.NodeScope
     );
 
     /** The templates' names, in the order an index template's {@code composed_of} lists them. */
-    public static final String SETTINGS = "lucene_rust_logs@settings";
-    public static final String MAPPINGS = "lucene_rust_logs@mappings";
+    public static final String SETTINGS = "logs_preset@settings";
+    public static final String MAPPINGS = "logs_preset@mappings";
 
     private final Client client;
     private final Map<String, ComponentTemplate> templates;

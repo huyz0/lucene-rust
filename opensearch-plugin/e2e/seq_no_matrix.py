@@ -1,4 +1,4 @@
-"""Lean sequence-number layouts (index.lucene_rust.seq_no.*) against stock OpenSearch.
+"""Lean sequence-number layouts (index.seq_no.*) against stock OpenSearch.
 
   python3 seq_no_matrix.py STOCK_URL PLUGIN_URL
 
@@ -35,12 +35,12 @@ def ok(base, method, path, body=None, ndjson=False):
 
 VARIANTS = {
     "default": {},
-    "doc_values_only": {"lucene_rust.seq_no.index_options": "doc_values_only"},
-    "disable_sequence_numbers": {"lucene_rust.seq_no.index_options": "doc_values_only",
-                                 "lucene_rust.disable_sequence_numbers": True},
+    "doc_values_only": {"seq_no.index_options": "doc_values_only"},
+    "disable_sequence_numbers": {"seq_no.index_options": "doc_values_only",
+                                 "disable_sequence_numbers": True},
     # Searched before any refresh: the documents are still in the writer's buffers.
-    "doc_values_only_realtime": {"lucene_rust.seq_no.index_options": "doc_values_only",
-                                 "lucene_rust.realtime_search": True, "lucene_rust.realtime_max_staleness": "0ms"},
+    "doc_values_only_realtime": {"seq_no.index_options": "doc_values_only",
+                                 "search.realtime.enabled": True, "search.realtime.max_staleness": "0ms"},
 }
 MAPPING = {"properties": {"n": {"type": "long"}, "msg": {"type": "text"},
                           "tags": {"type": "nested", "properties": {"k": {"type": "keyword"}}}}}
@@ -64,7 +64,7 @@ def load(base, index, extra):
     for i in range(7, N, 61):
         lines.append(json.dumps({"delete": {"_id": f"d{i}"}}))
     ok(base, "POST", f"/{index}/_bulk", ("\n".join(lines) + "\n").encode(), ndjson=True)
-    if not extra.get("lucene_rust.realtime_search"):
+    if not extra.get("search.realtime.enabled"):
         ok(base, "POST", f"/{index}/_refresh")
 
 SEARCHES = {

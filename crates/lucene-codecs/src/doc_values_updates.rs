@@ -46,7 +46,7 @@
 //! bookkeeping.
 //!
 //! **The delta encoding below is not an index format.** The
-//! `LuceneRustNumericDocValuesUpdates`/`LuceneRustBinaryDocValuesUpdates`
+//! `NumericDocValuesUpdates`/`BinaryDocValuesUpdates`
 //! files [`write_numeric_updates`]/[`write_binary_updates`] produce are this
 //! port's own invention and **nothing in an index references them any more**:
 //! no `segments_N`, no `.si`, no `SegmentCommitInfo::files`. They survive as a
@@ -76,11 +76,11 @@ use lucene_store::DataOutput;
 
 use crate::doc_values::{self, NumericEntry};
 
-const NUMERIC_UPDATES_CODEC: &str = "LuceneRustNumericDocValuesUpdates";
+const NUMERIC_UPDATES_CODEC: &str = "NumericDocValuesUpdates";
 /// The binary counterpart's codec name -- a distinct name so a binary overlay
 /// file handed to [`read_numeric_updates`] (or the reverse) fails the header
 /// check instead of decoding garbage.
-const BINARY_UPDATES_CODEC: &str = "LuceneRustBinaryDocValuesUpdates";
+const BINARY_UPDATES_CODEC: &str = "BinaryDocValuesUpdates";
 const VERSION_START: i32 = 0;
 /// Adds the per-entry `has_value` byte, so a generation can *remove* a doc's
 /// value (`DocValuesFieldUpdates.reset`) and not only overwrite it.

@@ -1,8 +1,8 @@
 """Index size, indexing time and query latency of a `wildcard` field (OpenSearch's engine and the
-Rust engine) against a `rust_wildcard` field (Rust engine) on the same log lines: lines drawn from
+Rust engine) against a `compact_wildcard` field (Rust engine) on the same log lines: lines drawn from
 the Loghub 2k samples (one *.log file per system, in LOGHUB_DIR) with their digits varied.
 
-python3 bench_rust_wildcard.py LOGHUB_DIR [lines] [config,...]
+python3 bench_compact_wildcard.py LOGHUB_DIR [lines] [config,...]
 """
 import json, os, random, re, sys, time, glob, statistics, urllib.request, urllib.error
 B = "http://localhost:9200"
@@ -21,8 +21,8 @@ rnd = random.Random(7)
 def vary(l):
     return re.sub(r"\d", lambda m: str(rnd.randrange(10)), l)
 corpus = [vary(rnd.choice(lines)) for _ in range(N)]
-CONFIGS = [("wildcard_os", "wildcard", {}), ("wildcard_rust", "wildcard", {"index.lucene_rust.engine": True}),
-           ("rustwc_rust", "rust_wildcard", {"index.lucene_rust.engine": True})]
+CONFIGS = [("wildcard_os", "wildcard", {}), ("wildcard_rust", "wildcard", {"index.engine.accelerated": True}),
+           ("rustwc_rust", "compact_wildcard", {"index.engine.accelerated": True})]
 QUERIES = [("contains rare", {"wildcard": {"m": "*SocketTimeoutException*"}}),  # absent: the trigram lookup alone
            ("contains common", {"wildcard": {"m": "*error*"}}),
            ("contains ci", {"wildcard": {"m": {"value": "*error*", "case_insensitive": True}}}),

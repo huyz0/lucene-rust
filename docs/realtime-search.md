@@ -1,6 +1,6 @@
 # Realtime search: where the data comes from
 
-With `index.lucene_rust.realtime_search` on, a search reads the writer's
+With `index.search.realtime.enabled` on, a search reads the writer's
 indexing buffers next to the refreshed segments, so a document is searchable
 right after its ack, without a refresh. This page shows where each piece of
 search data lives, which thread builds it as documents arrive, and what a
@@ -89,7 +89,7 @@ then held once uncompressed only while it is being indexed. With 100 MB
 documents this cut realtime's extra peak RSS over realtime off from about
 0.08 GiB to 0.02 GiB.
 
-Under `index.lucene_rust.realtime_max_staleness` (20 ms by default),
+Under `index.search.realtime.max_staleness` (20 ms by default),
 searches share one view instead of opening their own, and the warmer opens
 the next shared view (writing its tails and making the reads of recent
 requests) ahead of them. It replaces a shared view with one holding later
@@ -177,7 +177,7 @@ included, so a search racing a flush neither fails nor falls back to Lucene. Pea
 | 300k x 128-d (146 MiB of vectors) | 446 MiB | 497-501 MiB |
 | 80k x 768-d (234 MiB of vectors) | 416 MiB | 422-467 MiB |
 
-An IVF field (`LuceneRustIvfVectorsFormat`) keeps cluster lists over each
+An IVF field (`IvfVectorsFormat`) keeps cluster lists over each
 buffer's vectors instead (`lucene_codecs::buffer_lists::BufferLists`): the
 clusters are the ones the field's last flush wrote (its centroids, routing
 tree, radii and default probe depth), and one background task routes each
@@ -224,10 +224,10 @@ after the last refresh.
 |---|---|---|---|---|---|
 | lucene hnsw | refresh 1s | 2.3 / 1.9 ms | 0.845 | 558 ms | 55.3 s |
 | lucene hnsw | realtime | 2.5 / 2.2 ms | 0.857 | 4.3 ms | 54.5 s |
-| lucene_rust ivf | refresh 1s | 2.3 / 1.6 ms | 0.988 | 535 ms | 47.7 s |
-| lucene_rust ivf | realtime | 2.8 / 2.5 ms | 0.993 | 4.5 ms | 47.7 s |
-| lucene_rust hnsw rabitq | refresh 1s | 2.0 / 1.6 ms | 0.805 | 545 ms | 56.7 s |
-| lucene_rust hnsw rabitq | realtime | 2.7 / 2.7 ms | 0.808 | 4.9 ms | 54.6 s |
+| extended ivf | refresh 1s | 2.3 / 1.6 ms | 0.988 | 535 ms | 47.7 s |
+| extended ivf | realtime | 2.8 / 2.5 ms | 0.993 | 4.5 ms | 47.7 s |
+| extended hnsw rabitq | refresh 1s | 2.0 / 1.6 ms | 0.805 | 545 ms | 56.7 s |
+| extended hnsw rabitq | realtime | 2.7 / 2.7 ms | 0.808 | 4.9 ms | 54.6 s |
 
 Realtime indexes with no more CPU (the flush writes the graph kept over the
 buffer) and the same memory. k-NN derived source works under realtime: a
