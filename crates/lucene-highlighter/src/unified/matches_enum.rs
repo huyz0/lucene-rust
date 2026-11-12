@@ -27,7 +27,7 @@ pub(super) fn query_to_term(query: &Clause) -> Vec<u8> {
     let mut v = Terms(Vec::new());
     query_visitor::visit(query, &mut v);
     if v.0.is_empty() {
-        lucene_search::explain::describe_clause(query).into_bytes()
+        super::strategies::query_label(query).into_bytes()
     } else {
         v.0
     }
