@@ -59,6 +59,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native_fetches", stats.fetchCount());
             b.field("native_sequential_fetches", stats.sequentialFetchCount());
             b.field("native_doc_values", stats.docValuesCount());
+            b.field("native_highlights", stats.highlightCount());
             b.field("native_sources_without_vectors", stats.sourcesWithoutVectorsCount());
             // k-NN hits a request's later phases (fetch, scroll pages) took from its first rewrite.
             b.startObject("knn_hits");

@@ -396,6 +396,19 @@ public class RustSearchPlugin extends Plugin implements
                 }
             });
         }
+        // A search's unified highlighting runs natively while index.lucene_rust.highlight.enabled is on.
+        if (org.lucenerust.opensearch.highlight.HighlightRouting.available()) {
+            FetchFlag highlight = new FetchFlag(HIGHLIGHT_ENABLED.get(indexModule.getSettings()));
+            indexModule.addSettingsUpdateConsumer(HIGHLIGHT_ENABLED, highlight::set);
+            indexModule.addSearchOperationListener(new SearchOperationListener() {
+                @Override
+                public void onPreFetchPhase(SearchContext context) {
+                    if (highlight.enabled()) {
+                        org.lucenerust.opensearch.highlight.HighlightRouting.route(context);
+                    }
+                }
+            });
+        }
         // Every searcher OpenSearch hands out for the index -- the fetch
         // phase's, the get API's -- reads stored fields natively while
         // index.lucene_rust.fetch.enabled is on, and with Lucene otherwise
@@ -468,6 +481,17 @@ public class RustSearchPlugin extends Plugin implements
             return enabled;
         }
     }
+
+    /**
+     * Whether a search's {@code unified} highlighting (the default highlighter) runs natively
+     * ({@code NativeUnifiedHighlighter}); off, OpenSearch's highlighter runs it.
+     */
+    public static final Setting<Boolean> HIGHLIGHT_ENABLED = Setting.boolSetting(
+        "index.lucene_rust.highlight.enabled",
+        true,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
 
     /** Whether the index's stored fields are read natively. */
     public static final Setting<Boolean> FETCH_ENABLED = Setting.boolSetting(
@@ -583,6 +607,15 @@ public class RustSearchPlugin extends Plugin implements
         return analyzers;
     }
 
+    /** OpenSearch's {@code unified} highlighter run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
+    @Override
+    public Map<String, org.opensearch.search.fetch.subphase.highlight.Highlighter> getHighlighters() {
+        return Map.of(
+            org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter(readers, stats)
+        );
+    }
+
     @Override
     public Optional<QueryPhaseSearcher> getQueryPhaseSearcher() {
         return Optional.of(new RustQueryPhaseSearcher(readers, stats));
@@ -594,6 +627,7 @@ public class RustSearchPlugin extends Plugin implements
         settings.addAll(List.of(
             RustQueryPhaseSearcher.ENABLED,
             FETCH_ENABLED,
+            HIGHLIGHT_ENABLED,
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
             RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
