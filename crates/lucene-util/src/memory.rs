@@ -30,8 +30,9 @@
 //! bound and small for a request.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// A thread's unreported change is folded into the shared counters once it
 /// reaches this many bytes either way.
@@ -52,6 +53,7 @@ static OVER_PROCESS: AtomicBool = AtomicBool::new(false);
 static TRIPS_REQUEST: AtomicI64 = AtomicI64::new(0);
 static TRIPS_PROCESS: AtomicI64 = AtomicI64::new(0);
 static CANCELLED: AtomicI64 = AtomicI64::new(0);
+static TIMED_OUT: AtomicI64 = AtomicI64::new(0);
 
 struct Local {
     /// Bytes allocated minus freed on this thread, not yet folded.
@@ -169,6 +171,8 @@ pub struct Stats {
     pub request_trips: i64,
     pub process_trips: i64,
     pub cancelled: i64,
+    /// Requests that stopped collecting at their deadline ([`past_deadline`]).
+    pub timed_out: i64,
 }
 
 /// The counters now.
@@ -180,6 +184,7 @@ pub fn stats() -> Stats {
         request_trips: TRIPS_REQUEST.load(Relaxed),
         process_trips: TRIPS_PROCESS.load(Relaxed),
         cancelled: CANCELLED.load(Relaxed),
+        timed_out: TIMED_OUT.load(Relaxed),
     }
 }
 
@@ -259,6 +264,11 @@ pub struct Scope {
     /// The most the request may use whatever the host grants; `0` is none.
     hard_limit: i64,
     stop: AtomicU8,
+    /// When the request should stop collecting, in [`now_nanos`]; `0` is
+    /// never.
+    deadline: AtomicU64,
+    /// Whether a thread of the request saw its deadline pass.
+    timed_out: AtomicBool,
     grant: Option<Box<Grant>>,
     /// Held while asking the host, so concurrent threads ask once.
     asking: Mutex<()>,
@@ -286,6 +296,8 @@ impl Scope {
             granted: AtomicI64::new(0),
             hard_limit: hard_limit.max(0),
             stop: AtomicU8::new(0),
+            deadline: AtomicU64::new(0),
+            timed_out: AtomicBool::new(false),
             grant,
             asking: Mutex::new(()),
             label: label.into(),
@@ -305,6 +317,36 @@ impl Scope {
     /// Bytes the host granted (and must release when the request ends).
     pub fn granted(&self) -> i64 {
         self.granted.load(Relaxed)
+    }
+
+    /// Sets the request's deadline `after` from now: once it passes,
+    /// [`past_deadline`] says so on the request's threads, which stop
+    /// collecting and answer with what they collected -- a search's
+    /// `timeout`, which ends in a partial result rather than an error.
+    pub fn set_deadline(&self, after: Duration) {
+        let at = now_nanos()
+            .saturating_add(u64::try_from(after.as_nanos()).unwrap_or(u64::MAX))
+            .max(1);
+        self.deadline.store(at, Relaxed);
+    }
+
+    /// Whether the request's deadline passed while it collected.
+    pub fn timed_out(&self) -> bool {
+        self.timed_out.load(Relaxed)
+    }
+
+    fn past_deadline(&self) -> bool {
+        if self.timed_out.load(Relaxed) {
+            return true;
+        }
+        let at = self.deadline.load(Relaxed);
+        if at == 0 || now_nanos() < at {
+            return false;
+        }
+        if !self.timed_out.swap(true, Relaxed) {
+            TIMED_OUT.fetch_add(1, Relaxed);
+        }
+        true
     }
 
     /// Tells the request to stop at its next [`checkpoint`]: any thread may
@@ -494,6 +536,32 @@ pub fn checkpoint() -> Result<(), Exceeded> {
     .unwrap_or(Ok(()))
 }
 
+/// Whether the request on this thread is past its deadline
+/// ([`Scope::set_deadline`]): a collecting loop asks between windows of
+/// documents and, once it is, collects no more -- OpenSearch's
+/// `CancellableBulkScorer` under a search `timeout`. Always `false` outside
+/// a scope or without a deadline.
+#[inline]
+pub fn past_deadline() -> bool {
+    with_scope(|s| Ok(s.past_deadline()))
+        .and_then(Result::ok)
+        .unwrap_or(false)
+}
+
+/// Whether a scope is entered on this thread.
+#[inline]
+pub fn in_scope() -> bool {
+    LOCAL
+        .try_with(|l| !l.scope.get().is_null())
+        .unwrap_or(false)
+}
+
+/// Nanoseconds since this process first asked: a deadline's clock.
+fn now_nanos() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// [`checkpoint`] before allocating `bytes` at once: refused, rather than
 /// allocated and then stopped, when the request may not grow by that much.
 pub fn reserve(bytes: usize) -> Result<(), Exceeded> {
@@ -583,6 +651,25 @@ mod tests {
         let other = Arc::clone(&s);
         std::thread::spawn(move || other.cancel()).join().unwrap();
         assert_eq!(checkpoint().unwrap_err().reason, Reason::Cancelled);
+    }
+
+    #[test]
+    fn a_passed_deadline_is_seen_once_and_counted_once() {
+        assert!(!past_deadline(), "outside a scope");
+        let s = Scope::new("d", 0, None);
+        let _e = enter(Arc::clone(&s));
+        assert!(!past_deadline(), "no deadline");
+        s.set_deadline(Duration::from_secs(3600));
+        assert!(!past_deadline());
+        assert!(!s.timed_out());
+        let before = stats().timed_out;
+        s.set_deadline(Duration::ZERO);
+        assert!(past_deadline());
+        assert!(past_deadline());
+        assert!(s.timed_out());
+        assert_eq!(stats().timed_out - before, 1);
+        // A deadline is not an error: the request goes on to answer.
+        assert!(checkpoint().is_ok());
     }
 
     #[test]
