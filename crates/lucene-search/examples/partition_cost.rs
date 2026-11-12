@@ -21,6 +21,10 @@
 //! row: docs/s, commit time, refresh count and times, merge count and
 //! time, segments and size. `forcemerge` times `force_merge` and a commit.
 //! `knn` prints tenant-filtered top-10 latency and recall per tenant class.
+//!
+//! `STORE_SOURCE=1` also stores the body as a `_source` field, and `HC=1`
+//! turns on `IndexWriter::set_merge_lz4_high_compression`, as
+//! `docs/benchmarks/settings-defaults.md` runs it.
 
 #![allow(clippy::arithmetic_side_effects)]
 
@@ -244,6 +248,10 @@ fn writer<'d>(
             w.set_ivf_partition_clusters((fmt == "ivf-p").then_some(20_000));
         }
     }
+    if std::env::var("STORE_SOURCE").is_ok() {
+        w.register_field(FieldInfo::new("_source", 4)).unwrap();
+    }
+    w.set_merge_lz4_high_compression(std::env::var("HC").is_ok());
     w.set_merge_policy(Some(MergePolicyConfig::default()));
     w.set_forced_merge_max_segment_size(Some(u64::MAX));
     w.set_max_full_flush_merge_wait_millis(0);
@@ -260,6 +268,12 @@ fn document(r: &Row, vector: Option<&[f32]>) -> (ExplicitDocument, Vec<DocumentV
         field_number: 0,
         value: FieldValue::Int(r.id),
     });
+    if std::env::var("STORE_SOURCE").is_ok() {
+        d.stored.push(StoredField {
+            field_number: 4,
+            value: FieldValue::Binary(r.body.as_bytes().to_vec()),
+        });
+    }
     let mut t = InvertedTerms::default();
     t.push::<Vec<u8>>(r.tenant.as_bytes(), 1, &[], &[], &[]);
     d.fields.inverted.push(InvertedField {

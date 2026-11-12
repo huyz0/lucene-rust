@@ -179,6 +179,10 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
             expect = "slower_shape"
         if expect == "slow_agg":
             expect = "aggregations"
+        # The plugin node runs the default exact approximation: a sorted range or match_all
+        # OpenSearch approximates runs natively, a post_filter one still falls back.
+        if expect == "approximate":
+            expect = "native|approximate"
         before = vo.stats()
         url, b = vo.search_url(index, body)
         got = vo.shape(vo.search(index, body), b)
