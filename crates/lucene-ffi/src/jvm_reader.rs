@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 145;
+pub const JVM_ABI_VERSION: u32 = 149;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -3617,7 +3617,7 @@ pub(crate) mod tests {
     }
 
     /// Opens `fixtures/data/<rel>` as [`open_bwc`] opens a version.
-    fn open_fixture(rel: &str) -> u64 {
+    pub(crate) fn open_fixture(rel: &str) -> u64 {
         let path = format!("{}/../../fixtures/data/{rel}", env!("CARGO_MANIFEST_DIR"));
         let dir = lucene_store::FsDirectory::open(&path);
         let files: Vec<String> = std::fs::read_dir(&path)
