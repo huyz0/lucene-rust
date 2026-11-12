@@ -36,7 +36,7 @@ remapped to one of them.
 | `index.lucene_rust.stored_fields.paged_zstd` | `false` | Own format: stock cannot read it. |
 | `index.lucene_rust.store_mode` | `mmap` | Stock's IO. `page_cache` wins only under memory pressure and costs 5-30% on cold first touch. |
 | `index.lucene_rust.bp_reorder.*` | `enabled: false` | Readable by stock, but forced merges take 3x as long and ascending sorts on time-ordered data regress; text queries gain 1.13x, size -6%. |
-| `index.lucene_rust.seq_no.index_options`, `disable_sequence_numbers` | `points`, `false` | -3.3%/-5.3% size, but a stock node reading the index has no `_seq_no` points. |
+| `index.lucene_rust.seq_no.index_options`, `disable_sequence_numbers` | `points`, `false` | -3.3%/-5.3% size, but OpenSearch's own engine refuses such an index (it runs history ranges on `_seq_no` points), though the segments stay Lucene-readable. |
 | `index.lucene_rust.partition_field`, `knn.ivf_partition_clusters` | unset, `0` | Opt-in feature. |
 | `index.lucene_rust.knn.target_recall` (+ sample rate, check budget) | `0` (off) | Opt-in feature; stock k-NN has no recall target. |
 | `index.store.rust_encrypted.*` | `chunk_size` 64 KiB, `data_key_ttl` 1 h, `key_cache_ttl` 5 min | New feature. 64 KiB measured best for encrypted pages (128 KiB worse). |
@@ -45,7 +45,7 @@ remapped to one of them.
 
 | Setting | Default | Why it stays |
 |---|---|---|
-| `lucene_rust.engine.default` | `false` | Put to Huy: turning it on routes new indices to the Rust engine where it can. Recommended on; a separate change. |
+| `lucene_rust.engine.default` | `false` here | Turned on in its own change: every index without its own setting goes to the Rust engine where it can, storing no setting, so stock still opens it. |
 | `lucene_rust.engine.node_enabled` | `true` | Rollback switch. |
 | `lucene_rust.fetch.reader_wrapper` | `true` (off with the security plugin) | Needed for native stored-field reads. |
 | `lucene_rust.store.page_cache.size` | 1 GB | A cap, filled only by `page_cache` and encrypted shards. |
