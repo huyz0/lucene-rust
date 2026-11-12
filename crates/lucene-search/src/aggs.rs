@@ -1016,42 +1016,6 @@ pub(crate) fn segment_match_read<'b>(
             u64::try_from(count).unwrap_or(u64::MAX),
         )));
     }
-    struct Marks<'w>(&'w mut [u64]);
-    impl crate::collector::ScoringCollector for Marks<'_> {
-        #[inline]
-        fn collect(&mut self, doc_id: i32, _score: f32) {
-            let d = doc_id as u32 as usize;
-            if let Some(w) = self.0.get_mut(d >> 6) {
-                *w |= 1 << (d & 63);
-            }
-        }
-        fn score_mode(&self) -> crate::collector::ScoreMode {
-            crate::collector::ScoreMode::CompleteNoScores
-        }
-        /// No threshold: a batch is marked whole.
-        /// The batch's bits gathered in a register while its documents stay
-        /// in one word (ascending, they mostly do), each word stored once:
-        /// a store per document would wait on the previous one's.
-        fn collect_many(&mut self, docs: &[i32], _scores: &[f32], doc_base: i32) -> usize {
-            let mut at = usize::MAX;
-            let mut bits = 0u64;
-            for &d in docs {
-                let d = d.saturating_add(doc_base) as u32 as usize;
-                if d >> 6 != at {
-                    if let Some(w) = self.0.get_mut(at) {
-                        *w |= bits;
-                    }
-                    at = d >> 6;
-                    bits = 0;
-                }
-                bits |= 1 << (d & 63);
-            }
-            if let Some(w) = self.0.get_mut(at) {
-                *w |= bits;
-            }
-            docs.len()
-        }
-    }
     let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::NoScores)? else {
         return Ok(None);
     };
@@ -1088,6 +1052,79 @@ pub(crate) fn segment_match_read<'b>(
         return Ok(Some((ColumnRead::Seek(docs), count)));
     }
     Ok(Some((ColumnRead::Stream(Accept::Marked(words)), count)))
+}
+
+/// A bulk scorer's matches marked in a segment's bit set.
+struct Marks<'w>(&'w mut [u64]);
+impl crate::collector::ScoringCollector for Marks<'_> {
+    #[inline]
+    fn collect(&mut self, doc_id: i32, _score: f32) {
+        let d = doc_id as u32 as usize;
+        if let Some(w) = self.0.get_mut(d >> 6) {
+            *w |= 1 << (d & 63);
+        }
+    }
+    fn score_mode(&self) -> crate::collector::ScoreMode {
+        crate::collector::ScoreMode::CompleteNoScores
+    }
+    /// No threshold: a batch is marked whole.
+    /// The batch's bits gathered in a register while its documents stay
+    /// in one word (ascending, they mostly do), each word stored once:
+    /// a store per document would wait on the previous one's.
+    fn collect_many(&mut self, docs: &[i32], _scores: &[f32], doc_base: i32) -> usize {
+        let mut at = usize::MAX;
+        let mut bits = 0u64;
+        for &d in docs {
+            let d = d.saturating_add(doc_base) as u32 as usize;
+            if d >> 6 != at {
+                if let Some(w) = self.0.get_mut(at) {
+                    *w |= bits;
+                }
+                at = d >> 6;
+                bits = 0;
+            }
+            bits |= 1 << (d & 63);
+        }
+        if let Some(w) = self.0.get_mut(at) {
+            *w |= bits;
+        }
+        docs.len()
+    }
+}
+
+/// [`segment_matches`] as the segment's bit set (`words`, one bit per
+/// document, live ones only): `None` when the query matches nothing in the
+/// segment, `Some(false)` when it matches every live document (`words`
+/// untouched), `Some(true)` when `words` holds the matches. The same
+/// documents as [`segment_matches`], in 1 bit a document instead of 32 a
+/// match.
+pub(crate) fn segment_match_bits(
+    ctx: &exec::LeafContext<'_>,
+    query: &BooleanQuery,
+    clause: &Clause,
+    live: Option<&FixedBitSet>,
+    max_doc: i32,
+    words: &mut Vec<u64>,
+) -> Result<Option<bool>> {
+    if matches_everything(clause) {
+        return Ok(Some(false));
+    }
+    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::NoScores)? else {
+        return Ok(None);
+    };
+    let max = usize::try_from(max_doc).unwrap_or(0);
+    words.clear();
+    words.resize(max.div_ceil(64), 0);
+    if !copy_constant_bits(&bulk, live, words) {
+        exec::score_segment(
+            &mut bulk,
+            Mode::NoScores,
+            live,
+            &mut Marks(words),
+            ctx.max_doc,
+        )?;
+    }
+    Ok(Some(true))
 }
 
 /// The marks of a bulk scorer over a constant-scored bit set (a points range
