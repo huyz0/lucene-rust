@@ -1201,38 +1201,83 @@ pub(crate) fn segment_matches_scoring<'b>(
     Ok(Some(Some(&buf[..])))
 }
 
-/// [`segment_matches_scoring`] keeping each match's score too: the matches
-/// in `docs`, by document, their scores in `scores`.
-pub(crate) fn segment_matches_scored(
-    ctx: &exec::LeafContext<'_>,
-    query: &BooleanQuery,
-    live: Option<&FixedBitSet>,
+/// [`segment_matches_scoring`] keeping each match's score too, a range of
+/// documents at a time (`BulkScorer.score(collector, acceptDocs, min, max)`
+/// over consecutive windows): what a pass reading scores holds is one
+/// range's matches, not the segment's.
+pub(crate) struct ScoredRanges<'a> {
+    bulk: Option<exec::Bulk<'a>>,
+    live: Option<&'a FixedBitSet>,
     min: f32,
-    docs: &mut Vec<i32>,
-    scores: &mut Vec<f32>,
-) -> Result<()> {
-    struct Hits<'v>(&'v mut Vec<(i32, f32)>);
-    impl crate::collector::ScoringCollector for Hits<'_> {
-        fn collect(&mut self, doc_id: i32, score: f32) {
-            self.0.push((doc_id, score));
+    /// The first document the next range scores.
+    next: i32,
+}
+
+impl<'a> ScoredRanges<'a> {
+    /// `query` over the segment of `ctx` from document `from` on, scored in
+    /// `COMPLETE` mode behind `min_score` `min`.
+    ///
+    /// # Errors
+    /// What building the scorer reports.
+    pub(crate) fn open(
+        ctx: &exec::LeafContext<'a>,
+        query: &BooleanQuery,
+        live: Option<&'a FixedBitSet>,
+        min: f32,
+        from: i32,
+    ) -> Result<Self> {
+        Ok(ScoredRanges {
+            bulk: exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)?,
+            live,
+            min,
+            next: from,
+        })
+    }
+
+    /// The matches of the next range of `width` documents below `end`, by
+    /// document, in `docs` and their scores in `scores`; `false` once
+    /// nothing is left to score below `end`. A range may hold no match.
+    ///
+    /// # Errors
+    /// What scoring reports.
+    pub(crate) fn next(
+        &mut self,
+        width: i32,
+        end: i32,
+        docs: &mut Vec<i32>,
+        scores: &mut Vec<f32>,
+    ) -> Result<bool> {
+        struct Hits<'v>(&'v mut Vec<i32>, &'v mut Vec<f32>);
+        impl crate::collector::ScoringCollector for Hits<'_> {
+            fn collect(&mut self, doc_id: i32, score: f32) {
+                self.0.push(doc_id);
+                self.1.push(score);
+            }
         }
+        docs.clear();
+        scores.clear();
+        let Some(bulk) = self.bulk.as_mut() else {
+            return Ok(false);
+        };
+        if self.next >= end {
+            return Ok(false);
+        }
+        let max = self.next.saturating_add(width).min(end);
+        let mut sink = Hits(docs, scores);
+        let mut passing = crate::collector::MinScoreCollector::new(&mut sink, self.min);
+        self.next = bulk.score(Mode::Complete, self.live, &mut passing, self.next, max)?;
+        if !docs.windows(2).all(|w| w[0] < w[1]) {
+            let mut hits: Vec<(i32, f32)> =
+                docs.iter().copied().zip(scores.iter().copied()).collect();
+            hits.sort_by_key(|h| h.0);
+            hits.dedup_by_key(|h| h.0);
+            docs.clear();
+            scores.clear();
+            docs.extend(hits.iter().map(|h| h.0));
+            scores.extend(hits.iter().map(|h| h.1));
+        }
+        Ok(true)
     }
-    docs.clear();
-    scores.clear();
-    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)? else {
-        return Ok(());
-    };
-    let mut hits = Vec::new();
-    let mut sink = Hits(&mut hits);
-    let mut passing = crate::collector::MinScoreCollector::new(&mut sink, min);
-    exec::score_segment(&mut bulk, Mode::Complete, live, &mut passing, ctx.max_doc)?;
-    if !hits.windows(2).all(|w| w[0].0 < w[1].0) {
-        hits.sort_by_key(|h| h.0);
-        hits.dedup_by_key(|h| h.0);
-    }
-    docs.extend(hits.iter().map(|h| h.0));
-    scores.extend(hits.iter().map(|h| h.1));
-    Ok(())
 }
 
 /// How a segment's matches meet a column.
