@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 135;
+    public static final int EXPECTED_ABI_VERSION = 149;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -128,6 +128,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle KNN_RECALL_STATS = bind("ffi_knn_recall_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
             "ffi_jvm_reader_doc_freq",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -249,10 +250,6 @@ public final class NativeBridge {
         );
         static final MethodHandle STORE_UNBIND = bind("ffi_store_unbind", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         static final MethodHandle STORE_IS_FIPS = bind("ffi_store_is_fips", FunctionDescriptor.of(JAVA_INT));
-        static final MethodHandle STORE_SET_LAZY_DECRYPT = bind(
-            "ffi_store_set_lazy_decrypt",
-            FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
-        );
         static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle STORE_BIND_PAGE_CACHE = bind(
             "ffi_store_bind_page_cache",
@@ -267,7 +264,16 @@ public final class NativeBridge {
             "ffi_store_set_page_cache_budget",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
         );
+        static final MethodHandle STORE_SET_READ_ADVICE = bind(
+            "ffi_store_set_read_advice",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
+        );
         static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
+        static final MethodHandle STORE_PAGE_CACHE_STATS = bind("ffi_store_page_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle HIGHLIGHT_UNIFIED = bind(
+            "ffi_jvm_highlight_unified_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -423,6 +429,19 @@ public final class NativeBridge {
         static final MethodHandle ML_HF_ANALYZE = bind(
             "ffi_ml_hf_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_OPEN = bind(
+            "ffi_sparse_clusterer_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_ADD = bind(
+            "ffi_sparse_clusterer_add",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_CLOSE = bind("ffi_sparse_clusterer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle SPARSE_POSTINGS_WRITE = bind(
+            "ffi_sparse_postings_write_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_SPARSE_ENCODING_OPEN = bind(
             "ffi_ml_sparse_encoding_open",
@@ -782,6 +801,24 @@ public final class NativeBridge {
             MemorySegment out = s.alloc(2 * Long.BYTES);
             int rc = (int) H.PARENT_CACHE_STATS.invokeExact(out);
             return rc == OK ? new long[] { out.get(JAVA_LONG, 0), out.get(JAVA_LONG, Long.BYTES) } : new long[] { -1, -1 };
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * What each recall-targeted k-NN tuner on this node measured, as a JSON object keyed by {@code
+     * <index uuid>/<shard>/<field>}; null when the native call fails.
+     */
+    public static String knnRecallStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.KNN_RECALL_STATS.invokeExact(ptrOf(slot), lenOf(slot));
+            if (rc != OK) {
+                return null;
+            }
+            byte[] json = take(slot);
+            return json == null ? "{}" : new String(json, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1652,18 +1689,9 @@ public final class NativeBridge {
     }
 
     /**
-     * Turns demand decryption of encrypted shards on or off for directories the engine opens from now
-     * on, keeping at most {@code budgetBytes} of decrypted pages resident (0 keeps the current budget).
+     * Whether the engine reads encrypted shards through the page cache, decrypting each chunk once as
+     * it is read in ({@code userfaultfd} is available); otherwise it decrypts each file whole.
      */
-    public static int storeSetLazyDecrypt(boolean enabled, long budgetBytes) {
-        try {
-            return (int) H.STORE_SET_LAZY_DECRYPT.invokeExact(enabled ? 1 : 0, budgetBytes);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
-    /** Whether encrypted shards the engine opens now are demand-decrypted (on, and supported here). */
     public static boolean storeLazyDecryptActive() {
         try {
             return (int) H.STORE_LAZY_DECRYPT_ACTIVE.invokeExact() == 1;
@@ -1721,6 +1749,42 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Sets how mapped shard files are read, by extension: {@code spec} is comma-separated
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
+     * {@code willneed}), {@code *} for every other extension, empty for the defaults.
+     */
+    public static int storeSetReadAdvice(String spec, boolean warmRandom) {
+        byte[] utf8 = (spec == null ? "" : spec).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_SET_READ_ADVICE.invokeExact(s.bytes(utf8), (long) utf8.length, warmRandom ? 1 : 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** How many values {@link #storePageCacheStats} returns. */
+    public static final int PAGE_CACHE_STATS = 8;
+
+    /**
+     * The page cache's numbers: {@code [budget, resident bytes, bytes of files read whole at open,
+     * faults, pages read again after eviction, evictions, pages that could not be read, nanoseconds
+     * serving faults]}; every value -1 if the call fails.
+     */
+    public static long[] storePageCacheStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(PAGE_CACHE_STATS * Long.BYTES);
+            int rc = (int) H.STORE_PAGE_CACHE_STATS.invokeExact(out);
+            long[] values = new long[PAGE_CACHE_STATS];
+            for (int i = 0; i < PAGE_CACHE_STATS; i++) {
+                values[i] = rc == OK ? out.get(JAVA_LONG, (long) i * Long.BYTES) : -1;
+            }
+            return values;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Bytes the page cache holds resident now, across every bound shard. */
     public static long storePageCacheResidentBytes() {
         try {
@@ -1738,6 +1802,47 @@ public final class NativeBridge {
         byte[] utf8 = dir.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         try (Scratch s = Scratch.open()) {
             return (int) H.ADD_DATA_PACK_DIR.invokeExact(s.bytes(utf8), (long) utf8.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's unified-highlighter snippets ({@code jvm_highlight.rs}): segment {@code segment}'s
+     * document {@code doc} of {@code handle}'s reader, whose loaded value is {@code content},
+     * highlighted as the field's {@code request} asks; the result in {@code out[0]}.
+     */
+    public static int highlightUnified(long handle, byte[] request, int segment, int doc, String content, byte[][] out) {
+        if (request == null || content == null) {
+            return nullArgument(request == null ? "request" : "content");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int n = content.length();
+            MemorySegment chars = s.alloc((long) n * Character.BYTES);
+            MemorySegment.copy(content.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, 0, n);
+            int rc = (int) H.HIGHLIGHT_UNIFIED.invokeExact(
+                handle,
+                s.bytes(request),
+                (long) request.length,
+                segment,
+                doc,
+                chars,
+                (long) n,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the snippets");
+                }
+                out[0] = encoded;
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1986,6 +2091,73 @@ public final class NativeBridge {
         try (Scratch s = Scratch.open()) {
             MemorySegment slot = ownedSlot(s);
             int rc = (int) H.ML_HF_ANALYZE.invokeExact(handle, s.bytes(text), (long) text.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a clusterer for {@code sparse_vector} field {@code number} ({@code name}) of a segment of
+     * {@code maxDoc} documents, its attributes encoded as a little-endian {@code u32} count then per
+     * entry a {@code u32} length and UTF-8 key, a {@code u32} length and UTF-8 value; its handle goes
+     * to {@code outHandle[0]}.
+     */
+    public static int sparseClustererOpen(byte[] name, int number, byte[] attributes, int maxDoc, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.SPARSE_CLUSTERER_OPEN.invokeExact(
+                s.bytes(name),
+                (long) name.length,
+                number,
+                s.bytes(attributes),
+                (long) attributes.length,
+                maxDoc,
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Adds {@code doc}'s forward-index value, {@code length} bytes of {@code bytes} from {@code offset}. */
+    public static int sparseClustererAdd(long handle, int doc, byte[] bytes, int offset, int length) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment value = s.alloc(length);
+            MemorySegment.copy(bytes, offset, value, JAVA_BYTE, 0, length);
+            return (int) H.SPARSE_CLUSTERER_ADD.invokeExact(handle, doc, value, (long) length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a clusterer {@link #sparsePostingsWrite} did not take. */
+    public static int sparseClustererClose(long handle) {
+        try {
+            return (int) H.SPARSE_CLUSTERER_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Clusters the fields of {@code handles} (in field-name order, each released whatever the
+     * outcome) and encodes the segment's {@code .sit} and {@code .sip}: the {@code .sit} length as
+     * a little-endian {@code u64}, then {@code .sit}, then {@code .sip}. {@code null} on failure,
+     * with the reason in {@link #lastError}.
+     */
+    public static byte[] sparsePostingsWrite(long[] handles, byte[] segmentId) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            MemorySegment hs = handles.length == 0 ? s.alloc(Long.BYTES) : s.longs(handles);
+            int rc = (int) H.SPARSE_POSTINGS_WRITE.invokeExact(hs, (long) handles.length, s.bytes(segmentId), ptrOf(slot), lenOf(slot));
             return rc == OK ? take(slot) : null;
         } catch (Throwable t) {
             throw rethrow(t);
@@ -2567,10 +2739,15 @@ public final class NativeBridge {
         }
     }
 
-    /** Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by merges. */
-    public static int writerSetRetention(long handle, boolean enabled, long minRetainedSeqNo) {
+    /**
+     * Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by
+     * merges; with {@code seqNoSentinels}, merges also write {@code UNASSIGNED_SEQ_NO} and {@code
+     * UNASSIGNED_PRIMARY_TERM} for every document below it.
+     */
+    public static int writerSetRetention(long handle, boolean enabled, boolean seqNoSentinels, long minRetainedSeqNo) {
         try {
-            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, (byte) (enabled ? 1 : 0), minRetainedSeqNo);
+            byte flags = (byte) ((enabled ? 1 : 0) | (seqNoSentinels ? 2 : 0));
+            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, flags, minRetainedSeqNo);
         } catch (Throwable t) {
             throw rethrow(t);
         }

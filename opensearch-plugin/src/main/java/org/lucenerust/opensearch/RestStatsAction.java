@@ -6,7 +6,11 @@ package org.lucenerust.opensearch;
 import org.lucenerust.opensearch.engine.RustEngineFactory;
 
 import org.opensearch.core.rest.RestStatus;
+import org.opensearch.common.xcontent.json.JsonXContent;
+import org.opensearch.core.xcontent.DeprecationHandler;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.rest.BaseRestHandler;
 import org.opensearch.rest.BytesRestResponse;
 import org.opensearch.rest.RestRequest;
@@ -55,6 +59,7 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native_fetches", stats.fetchCount());
             b.field("native_sequential_fetches", stats.sequentialFetchCount());
             b.field("native_doc_values", stats.docValuesCount());
+            b.field("native_highlights", stats.highlightCount());
             b.field("native_sources_without_vectors", stats.sourcesWithoutVectorsCount());
             // k-NN hits a request's later phases (fetch, scroll pages) took from its first rewrite.
             b.startObject("knn_hits");
@@ -104,6 +109,33 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native", analyzed[0]);
             b.field("java", analyzed[1]);
             b.endObject();
+            // The page cache (page_cache and rust_encrypted shards): its memory is native, outside
+            // the heap OpenSearch measures; resident bytes are also charged to the lucene_rust_writer
+            // breaker (PageCacheAccounting).
+            long[] pages = NativeBridge.storePageCacheStats();
+            b.startObject("page_cache");
+            b.field("budget_in_bytes", pages[0]);
+            b.field("resident_in_bytes", pages[1]);
+            b.field("whole_files_in_bytes", pages[2]);
+            b.field("faults", pages[3]);
+            b.field("refaults", pages[4]);
+            b.field("evictions", pages[5]);
+            b.field("read_errors", pages[6]);
+            b.field("fault_time_in_nanos", pages[7]);
+            b.endObject();
+            // Recall-targeted k-NN tuners (index.lucene_rust.knn.target_recall), by index/shard/field.
+            String recall = NativeBridge.knnRecallStats();
+            if (recall != null) {
+                try (
+                    XContentParser p = JsonXContent.jsonXContent.createParser(
+                        NamedXContentRegistry.EMPTY,
+                        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                        recall
+                    )
+                ) {
+                    b.field("knn_recall", p.map());
+                }
+            }
             b.endObject();
             channel.sendResponse(new BytesRestResponse(RestStatus.OK, b));
         };

@@ -3140,7 +3140,7 @@ fn open_segment_file_aligned(
         Some(name) => name,
         None => return Ok(None),
     };
-    match compound {
+    let input = match compound {
         // A compound member is a window onto the archive (`openInput`'s
         // `slice`), and a loose file is handed back exactly as the directory
         // produced it: for `MmapDirectory` either one is the mapping itself,
@@ -3149,14 +3149,19 @@ fn open_segment_file_aligned(
             // `open_input` checks the entry's range against the archive.
             let member = compound_format::open_input(&archive.data, &archive.entries, &name)?;
             let entry = archive.entries.get(&name).expect("open_input found it");
-            let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
-            Ok(Some(Arc::new(slice)))
+            Input::slice_of(&archive.data, entry.offset as usize, member.len())?
         }
-        None => Ok(Some(Arc::new(match alignment {
+        None => match alignment {
             Some(alignment) => dir.open_aligned(&name, alignment)?,
             None => dir.open(&name)?,
-        }))),
-    }
+        },
+    };
+    // The file's read advice (`lucene_store::read_advice`: random for the
+    // files a vector search reads a vector at a time). Only the search
+    // reader advises: a merge opens its own mappings and reads them in
+    // order.
+    input.advise(lucene_store::read_advice::for_extension(ext));
+    Ok(Some(Arc::new(input)))
 }
 
 /// A segment's stored-fields files and their codec suffix.

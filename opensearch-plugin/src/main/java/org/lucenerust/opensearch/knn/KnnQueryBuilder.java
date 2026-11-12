@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
@@ -624,15 +625,16 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
         Query filterQuery = filterQuery(context);
         if (k != null) {
+            KnnTopVectorQuery.RecallTarget recall = recallTarget(context);
             if (config.ivf()) {
                 // IVF sizes its own rerank from k; ef_search widens it only when asked for.
                 int candidates = efSearch == null ? k : Math.max(k, efSearch);
                 return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withNprobes(
                     nprobes == null ? 0 : nprobes
-                );
+                ).withRecallTarget(recall);
             }
             int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
-            return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand);
+            return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
         }
         float threshold;
         if (maxDistance != null) {
@@ -688,6 +690,29 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         BitSetProducer parents = context.bitsetFilter(parentQuery);
         Query roots = new NestedHelper(context.getMapperService()).mightMatchNestedDocs(q) ? Queries.filtered(q, parentQuery) : q;
         return new ToChildBlockJoinQuery(roots, parents);
+    }
+
+    /**
+     * The index's {@code index.lucene_rust.knn.target_recall} for this shard's field, or null when it
+     * is off or the query asks for its own depth ({@code ef_search} or {@code nprobes}), which is
+     * then searched as asked.
+     */
+    private KnnTopVectorQuery.RecallTarget recallTarget(QueryShardContext context) {
+        if (efSearch != null || nprobes != null) {
+            return null;
+        }
+        Settings settings = context.getIndexSettings().getSettings();
+        float recall = RustEngineSupport.KNN_TARGET_RECALL.get(settings);
+        if (recall <= 0f) {
+            return null;
+        }
+        String key = context.index().getUUID() + "/" + context.getShardId() + "/" + fieldName;
+        return new KnnTopVectorQuery.RecallTarget(
+            recall,
+            RustEngineSupport.KNN_RECALL_SAMPLE_RATE.get(settings),
+            RustEngineSupport.KNN_RECALL_CHECK_BUDGET.get(settings),
+            key
+        );
     }
 
     /**

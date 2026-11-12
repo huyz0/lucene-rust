@@ -28,7 +28,7 @@ The writer side works like this:
 | Refresh | A Rust **commit**, carrying the live commit data. Indexing continues while it runs. The writer reads the commit data through an upcall after it has flushed the buffered documents, as `IndexWriter.commit` reads `liveCommitData` after `flushAllThreads`, so the recorded `max_seq_no` covers every flushed operation. The engine's readers are Java `StandardDirectoryReader`s opened on those commits and reuse every unchanged segment reader. `SoftDeletesReader` applies soft deletes the way `IndexWriter`'s NRT readers do, and keeps fully soft-deleted segments for the history they hold. |
 | File lifetime | OpenSearch's `CombinedDeletionPolicy` runs in Java and names the commits to drop, and Rust deletes them. A reader pins its commit's files until it closes (`hold_commit` / `release_files`). |
 | Merges | The Rust writer's `TieredMergePolicy`, run on a `ConcurrentMergeScheduler` configured from `index.merge.scheduler.*`, with `SoftDeletesRetentionMergePolicy`, `PrunePostingsMergePolicy` and `RecoverySourcePruneMergePolicy` ported. The minimum retained sequence number comes from OpenSearch's `SoftDeletesPolicy` at every commit and force merge. |
-| Memory | The buffered documents' RAM is accounted to the `lucene_rust_writer` circuit breaker. Its limit, `breaker.lucene_rust_writer.limit`, defaults to three times `indices.memory.index_buffer_size` (30% of the heap by default). The writer stalls indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's `DocumentsWriterStallControl` does, so the limit sits above that bound. Only an index operation on the primary can trip it, and the trip is a 429 on that document. The no-op that records the refusal, deletes, and operations on replicas or in recovery are counted without tripping, because a failure there would fail the shard, and Lucene's `IndexWriter` never refuses a document for memory. The parent breaker adds these bytes in only with `indices.breaker.total.use_real_memory: false` (the default real-memory parent measures the heap, and these bytes are native). |
+| Memory | The buffered documents' RAM is accounted to the `lucene_rust_writer` circuit breaker. Its limit, `breaker.lucene_rust_writer.limit`, defaults to three times `indices.memory.index_buffer_size` (30% of the heap by default) plus `lucene_rust.store.page_cache.size`, because the page cache's resident bytes are charged to it too, without ever refusing anything. The writer stalls indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's `DocumentsWriterStallControl` does, so the limit sits above that bound. Only an index operation on the primary can trip it, and the trip is a 429 on that document. The no-op that records the refusal, deletes, and operations on replicas or in recovery are counted without tripping, because a failure there would fail the shard, and Lucene's `IndexWriter` never refuses a document for memory. The parent breaker adds these bytes in only with `indices.breaker.total.use_real_memory: false` (the default real-memory parent measures the heap, and these bytes are native). |
 | Failure | A Rust panic is caught at the FFI boundary. The writer records it as tragic, the engine fails that one shard, and OpenSearch recovers the shard from its translog. |
 | `maxDocs` | Enforced by the Rust writer (`IndexWriter.MAX_DOCS`, or the engine's lower limit), with Lucene's message. |
 
@@ -105,6 +105,31 @@ more than 128 documents) hands over to the segment's own.
 With `index.lucene_rust.realtime_search`, a buffered hit's doc values come
 from the writer's buffers (`ffi_live_view_doc_values_alloc`), so its derived
 `_source` and `docvalue_fields` are those it has once refreshed.
+
+## Leaner sequence numbers
+
+Every document carries `_seq_no`, which stock OpenSearch indexes twice: as a
+point (for the range queries recovery and history use) and as doc values. Two
+opt-in index settings, both fixed at creation, trim it, after Elasticsearch's
+`index.seq_no.index_options` (9.1) and `index.disable_sequence_numbers` (9.4):
+
+| Setting | Meaning |
+|---|---|
+| `index.lucene_rust.seq_no.index_options` | `points` (default) as stock. `doc_values_only` writes `_seq_no` as doc values with a skip index and no points. Recovery, history snapshots and every search on `_seq_no` (`range`, `term`, `terms`, sorts, aggregations) answer exactly as stock: the engine's own ranges read the doc values, a search's `_seq_no` clause runs on them natively, and the shard's readers show them to Lucene as points, so OpenSearch's point queries rewrite and match as before. |
+| `index.lucene_rust.disable_sequence_numbers` | Needs `doc_values_only`. Merges also write `UNASSIGNED_SEQ_NO` (-2) and `UNASSIGNED_PRIMARY_TERM` (0) for every document below the shard's retained minimum (the operations soft-deletes retention no longer keeps for replicas and recovery), so those values compress to nothing. Replication, recovery and history above the minimum are unchanged. |
+
+With `disable_sequence_numbers`, a document whose history is gone reports no
+`_seq_no` or `_primary_term` in a get or a search hit (`seq_no_primary_term`),
+`if_seq_no` writes on it conflict, an `_update` of it runs without a
+sequence-number check (as for an index without them), and a search on
+`_seq_no` sees it as -2. Use it for append-mostly data such as logs; keep
+`doc_values_only` alone where clients rely on optimistic concurrency.
+The segments of both stay readable by stock Lucene. Both need the Rust engine:
+a node that would open such an index with OpenSearch's engine refuses it,
+since that engine runs its history and retention ranges on `_seq_no` points.
+Segment-replication replicas and realtime-buffered documents show `_seq_no` as
+points too.
+Numbers: [docs/benchmarks/lean-seq-no.md](benchmarks/lean-seq-no.md).
 
 ## What it refuses
 

@@ -430,6 +430,11 @@ pub struct KnnFloatVectorQuery {
     /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
     /// segment calibrated when it was written. Other formats ignore it.
     pub ivf_nprobes: usize,
+    /// A scale on an IVF leaf's search depth, `1.0` (the default) leaving
+    /// it as asked: its probes and its rerank cap are multiplied by it. A
+    /// recall-targeted search ([`crate::knn_recall`]) sets it, scaling an
+    /// HNSW search's `k` (its candidates) itself. Other leaves ignore it.
+    pub search_effort: f32,
 }
 
 /// `KnnByteVectorQuery`: [`KnnFloatVectorQuery`] over a BYTE-encoded field.
@@ -456,6 +461,11 @@ pub struct KnnByteVectorQuery {
     /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
     /// segment calibrated when it was written. Other formats ignore it.
     pub ivf_nprobes: usize,
+    /// A scale on an IVF leaf's search depth, `1.0` (the default) leaving
+    /// it as asked: its probes and its rerank cap are multiplied by it. A
+    /// recall-targeted search ([`crate::knn_recall`]) sets it, scaling an
+    /// HNSW search's `k` (its candidates) itself. Other leaves ignore it.
+    pub search_effort: f32,
 }
 
 macro_rules! knn_query_impl {
@@ -474,12 +484,19 @@ macro_rules! knn_query_impl {
                     similarity: None,
                     filtered_search_threshold: 0,
                     ivf_nprobes: 0,
+                    search_effort: 1.0,
                 })
             }
 
             /// See [`KnnFloatVectorQuery::ivf_nprobes`].
             pub fn with_ivf_nprobes(mut self, nprobes: usize) -> Self {
                 self.ivf_nprobes = nprobes;
+                self
+            }
+
+            /// See [`KnnFloatVectorQuery::search_effort`].
+            pub fn with_search_effort(mut self, effort: f32) -> Self {
+                self.search_effort = effort;
                 self
             }
 
@@ -535,6 +552,9 @@ macro_rules! knn_query_impl {
             fn ivf_nprobes(&self) -> usize {
                 self.ivf_nprobes
             }
+            fn search_effort(&self) -> f32 {
+                self.search_effort
+            }
         }
     };
 }
@@ -555,6 +575,7 @@ trait KnnQuery {
     fn similarity(&self) -> Option<VectorSimilarityFunction>;
     fn filtered_search_threshold(&self) -> i32;
     fn ivf_nprobes(&self) -> usize;
+    fn search_effort(&self) -> f32;
 }
 
 #[derive(Clone, Copy)]
@@ -963,9 +984,14 @@ fn exact_search<S: VectorScorer>(
     // this path runs when the filter is selective, so most ordinals are not
     // accepted and a per-ordinal probe would dominate the scoring.
     let end = scorer.max_ord().max(0) as usize;
+    let span = scorer.read_ahead_span();
+    let mut read_until = 0usize;
     let mut next = accept_ords.next_set_bit(0);
     while let Some(ord_idx) = next.filter(|&o| o < end) {
         next = accept_ords.next_set_bit(ord_idx + 1);
+        if span > 0 && ord_idx >= read_until {
+            read_until = read_ahead_dense(scorer, accept_ords, ord_idx, span, end);
+        }
         let ord = ord_idx as i32;
         ords[num_ords] = ord;
         num_ords += 1;
@@ -978,6 +1004,53 @@ fn exact_search<S: VectorScorer>(
         flush_bulk(&mut collector, scorer, &ords, &mut scores, num_ords)?;
     }
     Ok(collector.top_docs())
+}
+
+/// The fewest accepted ordinals in a read-ahead window for
+/// [`read_ahead_dense`] to read it ahead: a quarter of the ~256 pages it
+/// spans, below which the scan touches too few of its pages for one large
+/// read to beat a page per accepted vector.
+const READ_AHEAD_MIN_ACCEPTED: usize = 64;
+
+/// Reads the window of `span` ordinals from `from` ahead when enough of
+/// them are accepted ([`READ_AHEAD_MIN_ACCEPTED`]), and returns where the
+/// window ends. An exhaustive scan visits ordinals in order: over vectors
+/// advised random access this keeps a dense scan (a contiguous tenant, a
+/// broad filter) to large reads while a sparse one still reads only the
+/// pages it scores.
+fn read_ahead_dense<S: VectorScorer>(
+    scorer: &S,
+    accept_ords: &FixedBitSet,
+    from: usize,
+    span: usize,
+    end: usize,
+) -> usize {
+    let to = from.saturating_add(span).min(end);
+    if count_set_bits(accept_ords.words(), from, to) >= READ_AHEAD_MIN_ACCEPTED {
+        let as_i32 = |o: usize| i32::try_from(o).unwrap_or(i32::MAX);
+        scorer.read_ahead(as_i32(from), as_i32(to));
+    }
+    to
+}
+
+/// Set bits of `words` in `from..to`.
+fn count_set_bits(words: &[u64], from: usize, to: usize) -> usize {
+    if from >= to {
+        return 0;
+    }
+    let (first, last) = (from / 64, (to - 1) / 64);
+    let mut count = 0usize;
+    for (i, &w) in words.iter().enumerate().take(last + 1).skip(first) {
+        let mut w = w;
+        if i == first {
+            w &= u64::MAX << (from % 64);
+        }
+        if i == last {
+            w &= u64::MAX >> (63 - (to - 1) % 64);
+        }
+        count += w.count_ones() as usize;
+    }
+    count
 }
 
 /// One leaf's collector sizing, the part of `getLeafResults` that does not
@@ -1017,6 +1090,8 @@ struct LeafExtras {
     filtered_search_threshold: i32,
     /// [`KnnFloatVectorQuery::ivf_nprobes`].
     ivf_nprobes: usize,
+    /// [`KnnFloatVectorQuery::search_effort`]; `0.0` (the default) is `1.0`.
+    search_effort: f32,
 }
 
 impl LeafExtras {
@@ -1024,6 +1099,20 @@ impl LeafExtras {
         self.deadline
             .is_some_and(|d| std::time::Instant::now() >= d)
     }
+
+    /// The search effort when it scales anything: positive, finite and not
+    /// `1.0`.
+    fn effort(&self) -> Option<f32> {
+        let e = self.search_effort;
+        (e.is_finite() && e > 0.0 && e != 1.0).then_some(e)
+    }
+}
+
+/// `n` scaled by `effort`, rounded up, at least `min` (and at least 1).
+fn scaled(n: usize, effort: f32, min: usize) -> usize {
+    let v = (n as f64 * f64::from(effort)).ceil();
+    // A float above `usize::MAX` saturates in the cast.
+    (v as usize).max(min).max(1)
 }
 
 /// `searchNearestVectors` into the leaf's collector chain when it is
@@ -1156,6 +1245,14 @@ impl VectorScorer for DynScorer<'_, '_> {
 
     fn prefetch(&self, nodes: &[i32]) {
         self.0.prefetch(nodes)
+    }
+
+    fn read_ahead_span(&self) -> usize {
+        self.0.read_ahead_span()
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        self.0.read_ahead(from, to)
     }
 
     fn bulk_score(
@@ -1568,11 +1665,21 @@ fn ivf_leaf_results(
     // are every probed child.
     let shortlist_full =
         || spread.get().saturating_mul(k.max(field.auto_rerank(k))) >= field.entries();
+    let effort = plan.extras.effort();
     let base_nprobe = match plan.extras.ivf_nprobes {
         0 => field.auto_nprobe(),
         n => n,
-    }
-    .clamp(1, clusters);
+    };
+    let base_nprobe = effort
+        .map_or(base_nprobe, |e| scaled(base_nprobe, e, 1))
+        .clamp(1, clusters);
+    // The calibrated rerank cap, scaled with the probes.
+    let rerank = match effort {
+        Some(e) => lucene_ivf::Rerank::Bounded {
+            cap: scaled(field.auto_rerank(k), e, k),
+        },
+        None => lucene_ivf::Rerank::Auto,
+    };
     let accept = |doc: i32| {
         input.live_docs.is_none_or(|l| l.get_doc(doc))
             && input.filter.is_none_or(|f| f.get_doc(doc))
@@ -1581,11 +1688,7 @@ fn ivf_leaf_results(
     let filtered: Option<&dyn Fn(i32) -> bool> = restricted.then_some(&accept);
     // A search of every cluster, or (`among`) of those clusters only.
     let search = |nprobe: lucene_ivf::Probes, among: Option<&[usize]>| {
-        let params = lucene_ivf::SearchParams {
-            k,
-            nprobe,
-            rerank: lucene_ivf::Rerank::Auto,
-        };
+        let params = lucene_ivf::SearchParams { k, nprobe, rerank };
         let field = resolved.field_number;
         if grouped {
             let g = lucene_ivf::Grouping {
@@ -1624,11 +1727,12 @@ fn ivf_leaf_results(
                 .map_or(field.count(), |l| l.cardinality().min(field.count()));
             let mut nprobe = base_nprobe;
             loop {
-                let probes = if plan.extras.ivf_nprobes == 0 && nprobe == base_nprobe {
-                    lucene_ivf::Probes::Auto
-                } else {
-                    lucene_ivf::Probes::Fixed(nprobe)
-                };
+                let probes =
+                    if plan.extras.ivf_nprobes == 0 && effort.is_none() && nprobe == base_nprobe {
+                        lucene_ivf::Probes::Auto
+                    } else {
+                        lucene_ivf::Probes::Fixed(nprobe)
+                    };
                 let out = search(probes, None)?;
                 let enough = if grouped {
                     !short(out.hits.len())
@@ -1929,6 +2033,7 @@ fn search_one_segment<Q: KnnQuery>(input: &VectorsInput<'_>, query: &Q) -> Resul
         extras: LeafExtras {
             filtered_search_threshold: query.filtered_search_threshold(),
             ivf_nprobes: query.ivf_nprobes(),
+            search_effort: query.search_effort(),
             ..LeafExtras::default()
         },
     };
@@ -2062,6 +2167,7 @@ fn plan_leaves<Q: KnnQuery>(
             extras: LeafExtras {
                 filtered_search_threshold: query.filtered_search_threshold(),
                 ivf_nprobes: query.ivf_nprobes(),
+                search_effort: query.search_effort(),
                 ..extras
             },
         });
@@ -3265,9 +3371,14 @@ fn diversified_exact_search<S: VectorScorer>(
         }
     };
     let end = scorer.max_ord().max(0) as usize;
+    let span = scorer.read_ahead_span();
+    let mut read_until = 0usize;
     let mut next = accept_ords.next_set_bit(0);
     while let Some(o) = next.filter(|&o| o < end) {
         next = accept_ords.next_set_bit(o + 1);
+        if span > 0 && o >= read_until {
+            read_until = read_ahead_dense(scorer, accept_ords, o, span, end);
+        }
         let ord = o as i32;
         let doc = ord_to_doc(ord)?;
         let parent = usize::try_from(doc)
@@ -3477,6 +3588,24 @@ pub fn search_diversifying_children_byte_knn_multi_segment(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn count_set_bits_counts_each_window_exactly() {
+        let mut bits = FixedBitSet::new(300);
+        for i in [0usize, 1, 63, 64, 65, 127, 128, 200, 299] {
+            bits.set(i);
+        }
+        for from in 0..300 {
+            for to in from..=300 {
+                let naive = (from..to).filter(|&i| bits.get(i)).count();
+                assert_eq!(
+                    count_set_bits(bits.words(), from, to),
+                    naive,
+                    "{from}..{to}"
+                );
+            }
+        }
+    }
     #[test]
     fn identity_accept_ords_is_live_and_filter_bit_for_bit() {
         let bits = |len: usize, every: usize| {

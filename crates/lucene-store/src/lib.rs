@@ -23,6 +23,8 @@ pub mod paged_fs_directory;
 #[cfg(target_os = "linux")]
 pub mod paged_input;
 pub mod rate_limiter;
+pub mod read_advice;
+pub mod read_failures;
 pub mod store_registry;
 
 pub use blob_directory::{BlobDirectory, BlobStore, InMemoryBlobStore};
@@ -43,7 +45,7 @@ pub use nrt_caching_directory::NrtCachingDirectory;
 pub use page_cache::{
     PageCache, PageCacheConfig, PageCacheStats, PageCodec, PageDecoder, UnitLayout,
 };
-pub use paged_fs_directory::{PagedFsConfig, PagedFsDirectory};
+pub use paged_fs_directory::{whole_file_bytes, PagedFsConfig, PagedFsDirectory};
 pub use rate_limiter::{RateLimitedIndexOutput, RateLimiter, SimpleRateLimiter};
 pub use store_registry::{
     register_store_type, register_store_wrapper, StoreProvider, StoreSettings, StoreSpec,
@@ -66,11 +68,44 @@ pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
     }
 }
 
-/// Whether `bytes` lies in a file read by range, whose reads a [`prefetch`]
-/// can batch. Readers ask before doing extra work to find what to prefetch.
+/// Starts reading `bytes` in ahead of a scan through them. A file read by
+/// range fetches its pages as [`prefetch`] does; a mapped file is advised
+/// `MADV_WILLNEED`, which reads the range in even where the mapping was
+/// advised random access ([`Input::advise_random`]), so a sequential scan
+/// keeps large reads. A hint only: heap memory and other platforms ignore
+/// it.
+pub fn read_ahead(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    if paged_input::is_paged(bytes) {
+        let _ = paged_input::prefetch(&[bytes]);
+        return;
+    }
+    directory::advise_will_need(bytes);
+}
+
+/// Whether the first and last bytes of `bytes` are in memory now: always,
+/// unless `bytes` lies in a demand-filled file whose pages holding them are
+/// not resident ([`crate::paged_input`]).
+pub fn is_resident(bytes: &[u8]) -> bool {
+    #[cfg(target_os = "linux")]
+    return paged_input::is_resident(bytes);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bytes;
+        true
+    }
+}
+
+/// Whether `bytes` lies in a file read by range that is not wholly in
+/// memory now, whose reads a [`prefetch`] can batch. Readers ask before
+/// doing extra work to find what to prefetch: a file whose every page is
+/// resident reads like memory, and the work would be wasted.
 pub fn is_prefetchable(bytes: &[u8]) -> bool {
     #[cfg(target_os = "linux")]
-    return paged_input::is_paged(bytes);
+    return paged_input::may_fetch(bytes);
     #[cfg(not(target_os = "linux"))]
     {
         let _ = bytes;

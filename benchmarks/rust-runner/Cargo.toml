@@ -70,3 +70,7 @@ debug = true          # keep frame pointers/symbols for profiling (T1.4)
 # (lucene-search -> lucene-codecs -> lucene-store).
 lto = "fat"
 codegen-units = 1
+
+[[bin]]
+name = "logs-write"
+path = "src/logs_write.rs"

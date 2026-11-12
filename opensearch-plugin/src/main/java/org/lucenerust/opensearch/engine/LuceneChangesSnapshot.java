@@ -38,7 +38,7 @@ package org.lucenerust.opensearch.engine;
 
 import org.opensearch.index.engine.*;
 
-import org.apache.lucene.document.LongPoint;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
@@ -294,8 +294,8 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
         return true;
     }
 
-    private static Query operationsRangeQuery(long fromSeqNo, long toSeqNo) {
-        return new BooleanQuery.Builder().add(LongPoint.newRangeQuery(SeqNoFieldMapper.NAME, fromSeqNo, toSeqNo), BooleanClause.Occur.MUST)
+    private static Query operationsRangeQuery(IndexReader reader, long fromSeqNo, long toSeqNo) {
+        return new BooleanQuery.Builder().add(SeqNoQueries.range(reader, fromSeqNo, toSeqNo), BooleanClause.Occur.MUST)
             .add(Queries.newNonNestedFilter(), BooleanClause.Occur.MUST) // exclude non-root nested docs
             .build();
     }
@@ -305,11 +305,11 @@ final class LuceneChangesSnapshot implements Translog.Snapshot {
             throw new IllegalArgumentException("Invalid sequence range; fromSeqNo [" + fromSeqNo + "] toSeqNo [" + toSeqNo + "]");
         }
         IndexSearcher indexSearcher = new IndexSearcher(Lucene.wrapAllDocsLive(searcher.getDirectoryReader()));
-        return indexSearcher.count(operationsRangeQuery(fromSeqNo, toSeqNo));
+        return indexSearcher.count(operationsRangeQuery(indexSearcher.getIndexReader(), fromSeqNo, toSeqNo));
     }
 
     private TopDocs searchOperations(FieldDoc after, boolean accurate) throws IOException {
-        final Query rangeQuery = operationsRangeQuery(Math.max(fromSeqNo, lastSeenSeqNo), toSeqNo);
+        final Query rangeQuery = operationsRangeQuery(indexSearcher.getIndexReader(), Math.max(fromSeqNo, lastSeenSeqNo), toSeqNo);
         final Sort sortedBySeqNo = new Sort(new SortField(SeqNoFieldMapper.NAME, SortField.Type.LONG));
         final TopFieldCollector topFieldCollector = new TopFieldCollectorManager(
             sortedBySeqNo,

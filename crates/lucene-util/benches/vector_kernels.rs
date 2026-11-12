@@ -4,6 +4,12 @@
 //! x86_64 the dispatched kernel is the AVX2 build baseline, on aarch64 NEON;
 //! the `_scalar` rows are the same work through the specification.
 //!
+//! `gather` scores 32 random rows of a table far larger than the caches, as
+//! an HNSW neighbour list is scored: `prefetch` asks for every row's cache
+//! lines first (`simd::prefetch`, what `FloatVectorScorer::prefetch` does),
+//! `no_prefetch` does not. Their gap is what the prefetch hint buys on the
+//! target.
+//!
 //! Run with: `cargo bench -p lucene-util --bench vector_kernels`
 #![allow(clippy::arithmetic_side_effects)]
 
@@ -82,5 +88,51 @@ fn bench_probe_setup(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_similarity, bench_probe_setup);
+fn bench_gather(c: &mut Criterion) {
+    let mut g = c.benchmark_group("gather");
+    const BATCH: usize = 32;
+    for dim in [100usize, 768] {
+        // 512 MiB of rows: every batch misses the caches.
+        let rows = (512usize << 20) / 4 / dim;
+        let table = floats(rows * dim, 5);
+        let q = floats(dim, 6);
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut batch = move || {
+            let mut out = [0usize; BATCH];
+            for o in &mut out {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                *o = (s % rows as u64) as usize;
+            }
+            out
+        };
+        g.throughput(Throughput::Elements(BATCH as u64));
+        let score = |rows: &[usize], prefetch: bool| {
+            if prefetch {
+                for &r in rows {
+                    let row = &table[r * dim..(r + 1) * dim];
+                    let mut i = 0;
+                    while i < dim {
+                        simd::prefetch(row, i);
+                        i += 16;
+                    }
+                    simd::prefetch(row, dim - 1);
+                }
+            }
+            rows.iter()
+                .map(|&r| simd::dot_f32(&q, &table[r * dim..(r + 1) * dim]))
+                .sum::<f32>()
+        };
+        g.bench_function(format!("prefetch/{dim}"), |x| {
+            x.iter(|| score(black_box(&batch()), true))
+        });
+        g.bench_function(format!("no_prefetch/{dim}"), |x| {
+            x.iter(|| score(black_box(&batch()), false))
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(benches, bench_similarity, bench_probe_setup, bench_gather);
 criterion_main!(benches);

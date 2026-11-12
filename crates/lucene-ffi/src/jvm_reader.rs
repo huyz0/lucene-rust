@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 135;
+pub const JVM_ABI_VERSION: u32 = 149;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -518,6 +518,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             live_docs,
             deleted,
             commit_live: std::sync::Mutex::new(None),
+            path: std::sync::Arc::from(path),
         }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
@@ -528,13 +529,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
-    read_recovering(jvm_readers())
+    let reader = read_recovering(jvm_readers())
         .get(handle)
         .cloned()
         .ok_or_else(|| {
             set_last_error(missing);
             FfiStatus::InvalidHandle
-        })
+        })?;
+    crate::error::note_shard(&reader.path);
+    Ok(reader)
 }
 
 /// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
@@ -3614,7 +3617,7 @@ pub(crate) mod tests {
     }
 
     /// Opens `fixtures/data/<rel>` as [`open_bwc`] opens a version.
-    fn open_fixture(rel: &str) -> u64 {
+    pub(crate) fn open_fixture(rel: &str) -> u64 {
         let path = format!("{}/../../fixtures/data/{rel}", env!("CARGO_MANIFEST_DIR"));
         let dir = lucene_store::FsDirectory::open(&path);
         let files: Vec<String> = std::fs::read_dir(&path)
