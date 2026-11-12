@@ -204,10 +204,12 @@ fn a_page_decrypted_index_round_trips_under_a_tiny_budget() {
         ..lucene_store::PagedFsConfig::default()
     };
     let paged = lucene_store::PagedFsDirectory::with_config(tmp.path(), config);
-    index_and_verify(
+    // Enough documents that files span several pages.
+    index_and_verify_n(
         &EncryptedDirectory::new(paged, keys())
             .with_chunk_size(4096)
             .unwrap(),
+        20_000,
     );
     #[cfg(target_os = "linux")]
     if let (Some(p), Some((budget, faults))) = (pager, before) {
