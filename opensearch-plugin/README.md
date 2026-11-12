@@ -74,7 +74,7 @@ k-NN's `mmr` search extension and `knn_default_excludes` system processor
 (on with `cluster.search.enabled_system_generated_factories`, as in stock); ml-commons' `bert-uncased` and
 `mbert-uncased` analyzers and `hf_model_tokenizer` type; and learned sparse
 search: the `sparse_vector` field (`seismic` method, `lucene` engine) on an
-`index.sparse` index, whose segments the Rust engine writes in neural-search's
+`index.sparse` index, whose segments either engine writes in neural-search's
 format (neural-search opens them unchanged), and the `neural_sparse` query by
 `query_tokens` or by `query_text` (a model, an analyzer, or `bert-uncased` by
 default), with `method_parameters` (`top_n`, `k`, `heap_factor`, `filter`),
