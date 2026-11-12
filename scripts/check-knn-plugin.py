@@ -516,7 +516,7 @@ def ivf_check(failures):
     ]
     off = [("ivf off the Rust engine", ivf_mapping(), False), ("lucene_rust hnsw off the Rust engine", rust_hnsw_mapping(), False)]
     for label, m, rust in [(label, m, True) for label, m in bad] + off:
-        settings = {"index.knn": True, **({"index.lucene_rust.engine": True} if rust else {})}
+        settings = {"index.knn": True, "index.lucene_rust.engine": rust}
         r = req(OURS[1], "PUT", "/bad-mapping", {"settings": settings,
                                                  "mappings": {"properties": {"v": m}}}, ok_errors=True)
         if r.get("status", 200) != 400:
