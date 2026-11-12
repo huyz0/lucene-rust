@@ -144,8 +144,9 @@ pub extern "C" fn ffi_memory_set_process_limit(bytes: i64) -> i32 {
 /// The accounting's counters into `out[0..n]`: bytes held now, the most
 /// held, the process bound, requests stopped by their grant, requests
 /// stopped by the process bound, requests cancelled; then the query caches'
-/// bytes, their node budget and sets evicted, and decoded sort columns'
-/// bytes.
+/// bytes, their node budget and sets evicted, decoded sort columns' bytes,
+/// and the global ordinals' bytes (what the host charges its `fielddata`
+/// breaker).
 ///
 /// # Safety
 /// `out` valid for `n` writes (null when 0).
@@ -169,6 +170,7 @@ pub unsafe extern "C" fn ffi_memory_stats(out: *mut i64, n: usize) -> i32 {
             i(qc_budget),
             i64::try_from(qc_evictions).unwrap_or(i64::MAX),
             i(lucene_search::sort_column_bytes()),
+            lucene_search::ordinal_map::held_bytes(),
         ];
         for (i, v) in values.iter().take(n).enumerate() {
             // SAFETY: `out` is valid for `n > i` writes (caller contract).
@@ -245,9 +247,9 @@ mod tests {
 
     #[test]
     fn stats_report_the_counters() {
-        let mut out = [0i64; 10];
+        let mut out = [0i64; 11];
         // SAFETY: valid out.
-        assert_eq!(unsafe { ffi_memory_stats(out.as_mut_ptr(), 10) }, 0);
+        assert_eq!(unsafe { ffi_memory_stats(out.as_mut_ptr(), 11) }, 0);
         assert!(out[1] >= out[0].min(0));
         assert!(out[7] > 0, "the query caches have a budget");
     }
