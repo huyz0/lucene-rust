@@ -319,58 +319,84 @@ fn date_histogram(b: &mut Blob, field: &str, interval_ms: i64) {
 
 fn cases() -> Vec<(&'static str, Vec<u8>)> {
     vec![
-        ("terms_id", tree(|b| {
-            b.u8(1);
-            terms(b, "id", 60_000);
-            b.u8(0);
-        })),
-        ("terms_id>avg", tree(|b| {
-            b.u8(1);
-            terms(b, "id", 60_000);
-            b.u8(1);
-            metric(b, NEED_COUNT_SUM, "n");
-        })),
-        ("terms_id>stats", tree(|b| {
-            b.u8(1);
-            terms(b, "id", 60_000);
-            b.u8(1);
-            metric(b, NEED_ALL, "n");
-        })),
-        ("numeric_terms_n>avg", tree(|b| {
-            b.u8(1).u8(NUMERIC_TERMS).s("n").u8(0).i32(60_000).u8(0);
-            b.u8(1);
-            metric(b, NEED_COUNT_SUM, "n");
-        })),
-        ("date_histogram_7ms>max", tree(|b| {
-            b.u8(1);
-            date_histogram(b, "ts", 7);
-            b.u8(1);
-            metric(b, NEED_MAX, "n");
-        })),
-        ("date_histogram_1s>avg", tree(|b| {
-            b.u8(1);
-            date_histogram(b, "ts", 1000);
-            b.u8(1);
-            metric(b, NEED_COUNT_SUM, "n");
-        })),
-        ("terms_host>avg", tree(|b| {
-            b.u8(1);
-            terms(b, "host", 10);
-            b.u8(1);
-            metric(b, NEED_COUNT_SUM, "n");
-        })),
-        ("terms_host>terms_id", tree(|b| {
-            b.u8(1);
-            terms(b, "host", 1000);
-            b.u8(1);
-            terms(b, "id", 50);
-            b.u8(0);
-        })),
+        (
+            "terms_id",
+            tree(|b| {
+                b.u8(1);
+                terms(b, "id", 60_000);
+                b.u8(0);
+            }),
+        ),
+        (
+            "terms_id>avg",
+            tree(|b| {
+                b.u8(1);
+                terms(b, "id", 60_000);
+                b.u8(1);
+                metric(b, NEED_COUNT_SUM, "n");
+            }),
+        ),
+        (
+            "terms_id>stats",
+            tree(|b| {
+                b.u8(1);
+                terms(b, "id", 60_000);
+                b.u8(1);
+                metric(b, NEED_ALL, "n");
+            }),
+        ),
+        (
+            "numeric_terms_n>avg",
+            tree(|b| {
+                b.u8(1).u8(NUMERIC_TERMS).s("n").u8(0).i32(60_000).u8(0);
+                b.u8(1);
+                metric(b, NEED_COUNT_SUM, "n");
+            }),
+        ),
+        (
+            "date_histogram_7ms>max",
+            tree(|b| {
+                b.u8(1);
+                date_histogram(b, "ts", 7);
+                b.u8(1);
+                metric(b, NEED_MAX, "n");
+            }),
+        ),
+        (
+            "date_histogram_1s>avg",
+            tree(|b| {
+                b.u8(1);
+                date_histogram(b, "ts", 1000);
+                b.u8(1);
+                metric(b, NEED_COUNT_SUM, "n");
+            }),
+        ),
+        (
+            "terms_host>avg",
+            tree(|b| {
+                b.u8(1);
+                terms(b, "host", 10);
+                b.u8(1);
+                metric(b, NEED_COUNT_SUM, "n");
+            }),
+        ),
+        (
+            "terms_host>terms_id",
+            tree(|b| {
+                b.u8(1);
+                terms(b, "host", 1000);
+                b.u8(1);
+                terms(b, "id", 50);
+                b.u8(0);
+            }),
+        ),
     ]
 }
 
 fn main() {
-    let dir = std::env::args().nth(1).expect("agg-memory <index dir> [filter]");
+    let dir = std::env::args()
+        .nth(1)
+        .expect("agg-memory <index dir> [filter]");
     let only = std::env::args().nth(2);
     let budget = Duration::from_millis(
         std::env::var("SWEEP_MS")
@@ -422,9 +448,21 @@ fn main() {
     println!("case\tcalls\tus\tallocs\tbytes\tpeak_kib\tdigest\tcolumns_kib");
     let q = match_all();
     let sorts: Vec<(&str, Vec<u8>, Vec<u8>)> = vec![
-        ("sort/ts_desc/all", sort_blob(SORT_LONG, true, "ts"), match_all()),
-        ("sort/n/host", sort_blob(SORT_LONG, false, "n"), term_query("host", "h7")),
-        ("sort/id/all", sort_blob(SORT_STRING, false, "id"), match_all()),
+        (
+            "sort/ts_desc/all",
+            sort_blob(SORT_LONG, true, "ts"),
+            match_all(),
+        ),
+        (
+            "sort/n/host",
+            sort_blob(SORT_LONG, false, "n"),
+            term_query("host", "h7"),
+        ),
+        (
+            "sort/id/all",
+            sort_blob(SORT_STRING, false, "id"),
+            match_all(),
+        ),
     ];
     for (name, sort, query) in &sorts {
         if only.as_deref().is_some_and(|f| !name.contains(f)) {
@@ -457,7 +495,11 @@ fn main() {
                     ),
                     name,
                 );
-                let mut h = if tl > 0 { hash(std::slice::from_raw_parts(tp, tl)) } else { 0 };
+                let mut h = if tl > 0 {
+                    hash(std::slice::from_raw_parts(tp, tl))
+                } else {
+                    0
+                };
                 if !tp.is_null() {
                     ffi_jvm_free_bytes(tp, tl);
                 }
