@@ -214,7 +214,13 @@ index carrying `index.plugins.replication.follower.leader_index`
 and does not route that index's realtime searches. The follower writes stock
 segments, which native reads serve, so an `extended` k-NN field cannot be
 followed. The follower cluster needs this plugin for the settings and the
-mappings.
+mappings. A replication plugin built with
+`opensearch-plugin/ccr/0001-configurable-follower-engine.patch` and run with
+`plugins.replication.follower.engine: delegate` offers no engine for
+followers; this plugin then serves them with `FollowerEngines` (the accelerated
+engine, or OpenSearch's for an index it does not serve), which replay at the
+leader's sequence numbers as replication's engine does, and `extended` fields
+can be followed. See `opensearch-plugin/ccr/README.md`.
 
 ## Where it behaves differently
 
