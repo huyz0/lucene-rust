@@ -1,0 +1,91 @@
+From c0bf2eb0c8d6fed9519012bed432f332ea75a907 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 23:52:07 +0000
+Subject: [PATCH] Configurable follower engine:
+ plugins.replication.follower.engine (replication | delegate)
+
+delegate leaves a follower index's engine to the one engine plugin that serves
+followers; replay fails if an engine applies an operation at a sequence number
+other than the leader's.
+---
+ .../replication/ReplicationPlugin.kt          | 19 +++++++++++++++++--
+ .../replay/TransportReplayChangesAction.kt    | 14 ++++++++++++++
+ 2 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt b/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt
+index b2551c0..82b811d 100644
+--- a/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt
++++ b/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt
+@@ -188,6 +188,20 @@ internal class ReplicationPlugin : Plugin(), ActionPlugin, PersistentTaskPlugin,
+         const val MIN_OPS_BATCH_SIZE = 16
+         val REPLICATED_INDEX_SETTING: Setting<String> = Setting.simpleString("index.plugins.replication.follower.leader_index",
+             Setting.Property.InternalIndex, Setting.Property.IndexScope)
++        const val FOLLOWER_ENGINE_REPLICATION = "replication"
++        const val FOLLOWER_ENGINE_DELEGATE = "delegate"
++        /**
++         * Which engine serves follower indices on this node. `replication` (the default): this plugin's
++         * [ReplicationEngine]. `delegate`: this plugin offers no engine for followers, so the one engine
++         * plugin that serves follower indices (it must replay operations at the leader's sequence numbers)
++         * provides it. OpenSearch accepts at most one engine factory per index.
++         */
++        val REPLICATION_FOLLOWER_ENGINE: Setting<String> = Setting.simpleString("plugins.replication.follower.engine",
++            FOLLOWER_ENGINE_REPLICATION, { value ->
++                require(value == FOLLOWER_ENGINE_REPLICATION || value == FOLLOWER_ENGINE_DELEGATE) {
++                    "[plugins.replication.follower.engine] must be [$FOLLOWER_ENGINE_REPLICATION] or [$FOLLOWER_ENGINE_DELEGATE], got [$value]"
++                }
++            }, Setting.Property.NodeScope)
+         // Cluster-level batch size setting
+         val REPLICATION_FOLLOWER_OPS_BATCH_SIZE: Setting<Int> = Setting.intSetting("plugins.replication.follower.index.ops_batch_size", 50000, MIN_OPS_BATCH_SIZE,
+             Setting.Property.Dynamic, Setting.Property.NodeScope)
+@@ -413,7 +427,7 @@ internal class ReplicationPlugin : Plugin(), ActionPlugin, PersistentTaskPlugin,
+             REPLICATION_INDEX_TRANSLOG_RETENTION_SIZE, REPLICATION_FOLLOWER_BLOCK_START, REPLICATION_AUTOFOLLOW_CONCURRENT_REPLICATION_JOBS_TRIGGER_SIZE,
+             REPLICATION_FOLLOWER_CONCURRENT_WRITERS_PER_SHARD, REPLICATION_REPLICATE_INDEX_DELETION,
+             REPLICATION_FOLLOWER_BULK_BATCH_SIZE,
+-            REPLICATION_FOLLOWER_BULK_POLL_TIMEOUT)
++            REPLICATION_FOLLOWER_BULK_POLL_TIMEOUT, REPLICATION_FOLLOWER_ENGINE)
+     }
+     override fun getInternalRepositories(env: Environment, namedXContentRegistry: NamedXContentRegistry,
+                                          clusterService: ClusterService, recoverySettings: RecoverySettings): Map<String, Repository.Factory> {
+@@ -423,7 +437,8 @@ internal class ReplicationPlugin : Plugin(), ActionPlugin, PersistentTaskPlugin,
+     }
+ 
+     override fun getEngineFactory(indexSettings: IndexSettings): Optional<EngineFactory> {
+-        return if (indexSettings.settings.get(REPLICATED_INDEX_SETTING.key) != null) {
++        val delegated = REPLICATION_FOLLOWER_ENGINE.get(indexSettings.nodeSettings) == FOLLOWER_ENGINE_DELEGATE
++        return if (indexSettings.settings.get(REPLICATED_INDEX_SETTING.key) != null && !delegated) {
+             Optional.of(EngineFactory { config ->
+                 // Use NRTSegmentReplicationEngine for SEGMENT replication type indices replica shards
+                 if (config.isReadOnlyReplica) {
+diff --git a/src/main/kotlin/org/opensearch/replication/action/replay/TransportReplayChangesAction.kt b/src/main/kotlin/org/opensearch/replication/action/replay/TransportReplayChangesAction.kt
+index 354622b..bd75c4c 100644
+--- a/src/main/kotlin/org/opensearch/replication/action/replay/TransportReplayChangesAction.kt
++++ b/src/main/kotlin/org/opensearch/replication/action/replay/TransportReplayChangesAction.kt
+@@ -132,11 +132,25 @@ class TransportReplayChangesAction @Inject constructor(settings: Settings, trans
+                 result = primaryShard.applyTranslogOperation(op, Engine.Operation.Origin.PRIMARY)
+             }
+ 
++            checkLeaderSeqNo(op, result)
+             location = syncOperationResultOrThrow(result, location)
+         }
+         val response = ReplayChangesResponse() // TODO: Figure out what to add to response
+         return WritePrimaryResult(request, response, location, null, primaryShard, log)
+     }
++    /**
++     * A follower's operations keep the leader's sequence numbers. An engine that assigned its own (one
++     * that is not a follower engine, as when `plugins.replication.follower.engine: delegate` finds no
++     * plugin serving follower indices) would diverge from the leader silently, so the replay fails instead.
++     */
++    private fun checkLeaderSeqNo(op: Translog.Operation, result: Engine.Result) {
++        if (result.resultType == Engine.Result.Type.SUCCESS && result.seqNo != op.seqNo()) {
++            throw IllegalStateException("follower engine applied operation [${op.seqNo()}] at sequence number [${result.seqNo}]: " +
++                "the engine serving this follower index does not replay at the leader's sequence numbers " +
++                "(check [plugins.replication.follower.engine])")
++        }
++    }
++
+     fun shouldSyncMappingAndRetry(result: Engine.Result): Boolean {
+         /*
+             1. Incase the doc index requires a mapping update, we get the result as MAPPING_UPDATE_REQUIRED.
+-- 
+2.43.0
+

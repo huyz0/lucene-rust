@@ -340,6 +340,29 @@ public final class NativeSelfTest {
                 .settings(settings)
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == (c.realtime() && c.rust()), "ccr follower: realtime primary routing: " + c);
+            check(org.lucenerust.opensearch.engine.RustEngineSupport.servesFollower(settings) == false, "ccr follower: not delegated: " + c);
+        }
+        // With plugins.replication.follower.engine: delegate, replication leaves followers to this plugin.
+        org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(
+            org.opensearch.common.settings.Settings.builder().put(org.lucenerust.opensearch.engine.RustEngineSupport.CCR_FOLLOWER_ENGINE, "delegate").build()
+        );
+        try {
+            for (Case c : cases) {
+                org.opensearch.common.settings.Settings.Builder b = org.opensearch.common.settings.Settings.builder()
+                    .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT);
+                if (c.engine() != null) {
+                    b.put(org.lucenerust.opensearch.engine.RustEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
+                }
+                if (c.follows()) {
+                    b.put(follower, "leader-cluster:docs");
+                }
+                org.opensearch.common.settings.Settings settings = b.build();
+                boolean rust = c.engine() != Boolean.FALSE;
+                check(org.lucenerust.opensearch.engine.RustEngineSupport.servedByRust(settings) == rust, "ccr follower delegated: served: " + c);
+                check(org.lucenerust.opensearch.engine.RustEngineSupport.servesFollower(settings) == c.follows(), "ccr follower delegated: engine: " + c);
+            }
+        } finally {
+            org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(org.opensearch.common.settings.Settings.EMPTY);
         }
     }
 

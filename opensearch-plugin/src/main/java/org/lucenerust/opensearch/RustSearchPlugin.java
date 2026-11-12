@@ -302,6 +302,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
+        org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
         this.fetchWrapper = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : security == false;
         if (security && fetchWrapper == false) {
@@ -592,8 +593,11 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
+        Optional<EngineFactory> openSearch = RustEngineSupport.servesFollower(indexSettings.getSettings())
+            ? Optional.of(RustEngineFactory.standardFollower())
+            : Optional.empty();
         if (RustEngineSupport.openSearchEngine(indexSettings.getSettings())) {
-            return Optional.empty();
+            return openSearch;
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
         // that only inherits the node default falls back to OpenSearch's engine where the Rust
@@ -604,17 +608,17 @@ public class RustSearchPlugin extends Plugin implements
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
             if (RustEngineSupport.inheritsOntoLucene10(indexSettings.getSettings()) == false) {
-                return Optional.empty();
+                return openSearch;
             }
             if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
-                return Optional.empty();
+                return openSearch;
             }
             MappingMetadata mapping = indexSettings.getIndexMetadata().mapping();
             if (mapping != null && RustEngineSupport.unsupportedField(mapping.sourceAsMap()) != null) {
-                return Optional.empty();
+                return openSearch;
             }
         }
-        return Optional.of(new RustEngineFactory(nodeEngineEnabled));
+        return Optional.of(new RustEngineFactory(nodeEngineEnabled, RustEngineSupport.servesFollower(indexSettings.getSettings())));
     }
 
     /**
