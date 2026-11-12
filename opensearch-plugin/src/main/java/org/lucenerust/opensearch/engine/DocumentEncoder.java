@@ -75,6 +75,11 @@ final class DocumentEncoder {
     private final FormatCheck formats;
     /** Per field: its analyzer registered in Rust, or {@link #JAVA}; null when analysis stays in Java. */
     private final ConcurrentHashMap<String, NativeField> nativeFields;
+    /**
+     * {@link SeqNoSettings#DOC_VALUES_ONLY}: {@code _seq_no} goes in without its points and with a
+     * doc-values skip index. Set before the first document.
+     */
+    private volatile boolean seqNoDocValuesOnly;
 
     /**
      * {@code lucene_rust.native_analysis=false} keeps every field's analysis in the JVM (the Rust
@@ -106,6 +111,17 @@ final class DocumentEncoder {
         this.softDeletesField = softDeletesField;
         this.formats = formats;
         this.nativeFields = NATIVE_ANALYSIS && analyzer != null ? new ConcurrentHashMap<>() : null;
+    }
+
+    void setSeqNoDocValuesOnly(boolean docValuesOnly) {
+        this.seqNoDocValuesOnly = docValuesOnly;
+    }
+
+    /** Whether {@code field} is {@code _seq_no}'s point, which a doc-values-only layout leaves out. */
+    private boolean droppedSeqNoPoint(IndexableField field) {
+        return seqNoDocValuesOnly
+            && field.fieldType().pointDimensionCount() != 0
+            && field.name().equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME);
     }
 
     /**
@@ -365,6 +381,9 @@ final class DocumentEncoder {
         // shard's -- IndexingChain.processDocument's first loop.
         Map<String, PerField> fields = ws.fields;
         for (IndexableField field : doc) {
+            if (droppedSeqNoPoint(field)) {
+                continue;
+            }
             PerField pf = ws.perField(field.name());
             pf.schema.absorb(field.fieldType());
             pf.instances.add(field);
@@ -372,6 +391,11 @@ final class DocumentEncoder {
         for (PerField pf : ws.order) {
             if (pf.schema.name.equals(softDeletesField)) {
                 pf.schema.softDeletes = true;
+            }
+            if (seqNoDocValuesOnly
+                && pf.schema.docValuesType == DocValuesType.NUMERIC
+                && pf.schema.name.equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME)) {
+                pf.schema.skipIndex = org.apache.lucene.index.DocValuesSkipIndexType.RANGE;
             }
             String unsupported = formats == null ? null : formats.unsupported(pf.schema.name, pf.schema);
             if (unsupported != null) {
@@ -402,6 +426,9 @@ final class DocumentEncoder {
         List<Object[]> points = ws.points;
         List<IndexableField> vectors = null;
         for (IndexableField field : doc) {
+            if (droppedSeqNoPoint(field)) {
+                continue;
+            }
             PerField pf = fields.get(field.name());
             IndexableFieldType type = field.fieldType();
             if (type.vectorDimension() != 0) {

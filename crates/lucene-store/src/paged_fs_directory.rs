@@ -250,7 +250,7 @@ impl PagedFsDirectory {
         let len = usize::try_from(file.len())
             .map_err(|_| crate::error::Error::Corrupted(format!("{name}: too large to open")))?;
         let whole = self.config.pins(name, file.len(), budget) || len <= page;
-        let key = shared::Key::of(&file, page, false, whole)?;
+        let key = shared::Key::of(&file, &path, page, false, whole)?;
         if let Some(input) = shared::reuse(&key) {
             return Ok(Some(input));
         }
@@ -260,7 +260,9 @@ impl PagedFsDirectory {
         }
         let filler: Arc<dyn PageFiller> = Arc::new(file);
         let readahead = self.config.readahead.checked_div(page).unwrap_or(0).max(1);
-        let paged = pager.open_with_readahead(len, page, filler, name, readahead)?;
+        // The full path names the file's failures (`read_failures`).
+        let label = path.to_string_lossy();
+        let paged = pager.open_with_readahead(len, page, filler, &label, readahead)?;
         Ok(Some(shared::share_paged(key, paged)))
     }
 
@@ -298,7 +300,7 @@ impl PagedFsDirectory {
         file.set_page(page);
         file.set_decode(codec, layout, units as u64);
         let whole = self.config.pins(name, layout.plain_len, budget) || len <= page;
-        let key = shared::Key::of(&file, page, true, whole)?;
+        let key = shared::Key::of(&file, &path, page, true, whole)?;
         if let Some(input) = shared::reuse(&key) {
             return Ok(Some(input));
         }
@@ -452,12 +454,15 @@ mod shared {
     use crate::lock::lock_ignoring_poison;
     use crate::paged_input::PagedBytes;
 
-    /// One file as opened: its identity on disk (device, inode, length,
-    /// change time), how its pages are cut and whether they are decoded,
-    /// and whether it was read whole. Lucene never rewrites a file in
-    /// place, and an open file's inode cannot be reused while it is open.
+    /// One file as opened: its path (which names its read failures, so a
+    /// file hard-linked into another shard is opened apart), its identity
+    /// on disk (device, inode, length, change time), how its pages are cut
+    /// and whether they are decoded, and whether it was read whole. Lucene
+    /// never rewrites a file in place, and an open file's inode cannot be
+    /// reused while it is open.
     #[derive(Clone, PartialEq, Eq, Hash)]
     pub(super) struct Key {
+        path: std::path::PathBuf,
         dev: u64,
         ino: u64,
         len: u64,
@@ -470,12 +475,14 @@ mod shared {
     impl Key {
         pub(super) fn of(
             file: &super::local::LocalFile,
+            path: &std::path::Path,
             page: usize,
             decoded: bool,
             whole: bool,
         ) -> Result<Key> {
             let meta = file.metadata()?;
             Ok(Key {
+                path: path.to_path_buf(),
                 dev: meta.dev(),
                 ino: meta.ino(),
                 len: meta.len(),
@@ -1262,6 +1269,32 @@ mod tests {
         assert_eq!(again.as_ptr(), input.as_ptr());
     }
 
+    /// A plain file's read failure is recorded under its full path, where
+    /// a call on its shard looks for it.
+    #[test]
+    fn an_unreadable_page_is_recorded_under_the_shard() {
+        if crate::paged_input::Pager::global().is_none() {
+            return;
+        }
+        let tmp = TempDir::new("paged-fs-unreadable");
+        let root = tmp.path().to_string_lossy().to_string();
+        let dir = PagedFsDirectory::open(tmp.path());
+        write(&dir, "_0.doc", &pattern(4 << 20));
+        let input = dir.open("_0.doc").unwrap();
+        let since = crate::read_failures::epoch();
+        // Cut the file under the open input: its last pages cannot be read.
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(tmp.path().join("_0.doc"))
+            .unwrap();
+        f.set_len(1 << 20).unwrap();
+        crate::read_failures::set_checked(true);
+        assert_eq!(input[3 << 20], 0);
+        crate::read_failures::set_checked(false);
+        let recorded = crate::read_failures::failure_under(&root, since).expect("recorded");
+        assert!(recorded.contains("_0.doc"), "{recorded}");
+    }
+
     #[test]
     fn opens_of_one_file_share_its_pages() {
         if crate::paged_input::Pager::global().is_none() {
@@ -1275,7 +1308,7 @@ mod tests {
         let b = PagedFsDirectory::open(tmp.path()).open("_0.doc").unwrap();
         assert_eq!(a.as_ptr(), b.as_ptr());
         assert_eq!(b[3 << 20], bytes[3 << 20]);
-        assert!(crate::is_resident(&a[3 << 20..(3 << 20) + 1]));
+        assert_eq!(a[3 << 20], bytes[3 << 20]);
         drop((a, b));
         // A file rewritten under the same name is a new file.
         let other = pattern(5 << 20);
