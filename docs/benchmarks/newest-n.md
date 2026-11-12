@@ -230,7 +230,7 @@ Hits and totals are identical to stock on every shape here.
 
 - The Lucene-layer change is on by default: it returns the ordinary search's
   hits by construction and is tested against it.
-- `native_approximate` is on by default (since the settings-defaults review,
+- `index.search.approximation.exact` is on by default (since the settings-defaults review,
   [settings-defaults.md](settings-defaults.md)). OpenSearch's approximation
   collects documents in BKD order and can pick a different document among
   equal sort values at a leaf boundary; the native path returns the exact
