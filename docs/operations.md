@@ -51,7 +51,7 @@ indices that ask for it.
 | `index.lucene_rust.engine` | index, final | the node default | `true`: the index's shards are written by the Rust engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
 | `lucene_rust.engine.default` | node | `false` | the default of the setting above. An index that only inherits it falls back to OpenSearch's engine where the Rust one would refuse it |
 | `lucene_rust.engine.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for Rust-engine indices. Used for rolling back and for mixed clusters |
-| `breaker.lucene_rust_writer.limit` | node | 3 × `indices.memory.index_buffer_size` | circuit breaker for the Rust writer's buffered documents. A trip is a 429 on the indexing request |
+| `breaker.lucene_rust_writer.limit` | node | 3 × `indices.memory.index_buffer_size` + `lucene_rust.store.page_cache.size` | circuit breaker for the Rust writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
 | `-Dlucene_rust.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
 
 `index.lucene_rust.engine.fault_injection` exists for tests only. Do not set
