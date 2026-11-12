@@ -106,6 +106,38 @@ than `keyword` (shard 506 → 405 MiB: terms 144 → 110, doc values 163 → 96)
 with `term`, `terms` and sorted lookups within 2% of `keyword`'s latency
 (`e2e/bench_hex_id.py`; `e2e/hex_id_matrix.py` is the parity check).
 
+### `rust_wildcard` fields
+
+`"type": "rust_wildcard"` takes the queries of OpenSearch's `wildcard` field
+(`term`, `terms`, `prefix`, `wildcard`, `regexp`, `match`, `exists`,
+`query_string` wildcards, `case_insensitive` where stock takes it) and matches
+the documents whose value stock's own test accepts. On the Rust engine the
+value is stored as `RustSubstring` doc values: LZ4 blocks of 32 values with a
+trigram index over the blocks, kept through every flush and merge, and every
+query runs natively but a `regexp` with `flags` other than `ALL`. Under
+OpenSearch's engine the field is plain `BINARY` doc values, read and tested
+by the same queries. Parameters: `null_value`,
+`ignore_above`, `normalizer`, `meta`. The differences from `wildcard`: one
+value per document (an array is refused); no sorting, aggregations or
+scripts on it (`fields` and `_source` give the value back); `fuzzy` and
+`range` refused, as on `wildcard`. Where stock's trigram index answers
+differently from its own test, this field follows the test: a
+`case_insensitive` pattern with non-ASCII letters (`*Ü*`, the Kelvin sign)
+finds the documents stock misses, `terms` with `""` matches the empty
+values, and `exists`, `*` and `.*` report a total that counts the empty
+values, which stock's hits include but its total leaves out.
+
+1M log lines (Loghub samples, digits varied), one shard, one segment, the
+plugin's non-LTO release library on 4 cores: shard 256 MiB vs 328 for
+`wildcard` (both with `_source`), bulk indexing 24.5 s vs 40.5 s (51.0 s for
+`wildcard` on the Rust engine). Median latency, `wildcard` → `rust_wildcard`:
+`*error*` (57K hits) 606 → 89 ms, case-insensitive 752 → 92 ms, `*ab*` (142K)
+1,737 → 97 ms, a regexp (54K) 698 → 103 ms, `*10.1*` 40 → 22 ms, `term` 2.6 →
+2.0 ms; slower: `*session*root*` (1.4K hits from common grams) 27 → 57 ms and
+`prefix` 2.9 → 4.3 ms, where every candidate block is decompressed
+(`e2e/bench_rust_wildcard.py`; `e2e/rust_wildcard_matrix.py` is the parity
+check against `wildcard` under both engines).
+
 ## Operate
 
 | | |
