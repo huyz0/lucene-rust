@@ -2278,6 +2278,14 @@ struct KeyOrds {
     /// eighths full: short probe runs, whose branches predict well. A free
     /// slot's ordinal is [`KeyOrds::EMPTY`].
     slots: Vec<KeySlot>,
+    /// Owner 0's bucket of each key in `0..dense.len()` ([`KeyOrds::EMPTY`]
+    /// until it has one), when [`KeyOrds::densify`] chose it: a top-level
+    /// keyword `terms` whose global ordinals the matches will mostly reach
+    /// keeps 4 bytes an ordinal instead of a slot per bucket. Every other
+    /// key lives in `slots`.
+    dense: Vec<u32>,
+    /// The keys in `slots`.
+    hashed: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -2311,12 +2319,46 @@ impl KeyOrds {
         64 - len.trailing_zeros()
     }
 
+    /// Whether owner 0's keys `0..keys` should be looked up in a dense array
+    /// rather than the table: a lookup is 2-3x cheaper and holds 4 bytes a
+    /// key rather than 16 a slot (at most five eighths full), which pays
+    /// once the matches reach about one key in eight
+    /// (`perf/memory-bounds/raw/followup`); past that the table, sized by
+    /// the buckets made, holds less.
+    fn dense_pays(keys: usize, matches: u64) -> bool {
+        keys > 0 && (keys as u64) <= matches.saturating_mul(8)
+    }
+
+    /// Looks up owner 0's keys `0..keys` in a dense array from now on, when
+    /// the request's memory allows it; before any bucket is made.
+    fn densify(&mut self, keys: usize) {
+        if self.hashed > 0 || !self.dense.is_empty() {
+            return;
+        }
+        let bytes = keys.saturating_mul(std::mem::size_of::<u32>());
+        if lucene_util::memory::reserve(bytes).is_ok() {
+            self.dense = vec![Self::EMPTY; keys];
+        }
+    }
+
     /// The bucket of `(owning, key)`, appended to `keys` when new.
     #[inline]
     fn ord(&mut self, keys: &mut Vec<(u32, i64)>, owning: u32, key: i64) -> u32 {
+        if owning == 0 {
+            if let Some(d) = usize::try_from(key)
+                .ok()
+                .and_then(|k| self.dense.get_mut(k))
+            {
+                if *d == Self::EMPTY {
+                    *d = keys.len() as u32;
+                    keys.push((0, key));
+                }
+                return *d;
+            }
+        }
         // ARITH: at most `u32::MAX - 1` buckets (an ordinal is a `u32`).
         #[allow(clippy::arithmetic_side_effects)]
-        if (keys.len() + 1) * 8 > self.slots.len() * 5 {
+        if (self.hashed + 1) * 8 > self.slots.len() * 5 {
             self.grow(keys);
         }
         let mask = self.slots.len() - 1;
@@ -2328,6 +2370,11 @@ impl KeyOrds {
                 let ord = keys.len() as u32;
                 *slot = KeySlot { key, owning, ord };
                 keys.push((owning, key));
+                // ARITH: below `keys.len()`.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    self.hashed += 1;
+                }
                 return ord;
             }
             if slot.key == key && slot.owning == owning {
@@ -2353,7 +2400,11 @@ impl KeyOrds {
         self.slots = vec![Self::FREE; len];
         let mask = len - 1;
         let shift = Self::shift(len);
+        let dense = self.dense.len();
         for (ord, &(owning, key)) in keys.iter().enumerate() {
+            if owning == 0 && usize::try_from(key).is_ok_and(|k| k < dense) {
+                continue;
+            }
             let mut i = Self::slot_of(owning, key, shift);
             // FBS: `i <= mask`; the table has room for every key.
             while self.slots.get(i).is_some_and(|s| s.ord != Self::EMPTY) {
@@ -4621,9 +4672,28 @@ pub fn aggregate_tree_cached(
     // `Err(Inexact)` when a cached part cannot be added in exactly as
     // collecting its segment would have (a sum past 2^53): the pass then
     // runs again without the cache.
+    let matches = crate::slices::estimated_matches(segments, query);
+    let all_docs: u64 = segments
+        .iter()
+        .map(|s| u64::try_from(s.max_doc.unwrap_or(0)).unwrap_or(0))
+        .fold(0, u64::saturating_add);
     let one =
         |slice: &[usize]| -> Result<std::result::Result<Vec<AggResult>, segment_cache::Inexact>> {
             let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+            let slice_docs: u64 = slice
+                .iter()
+                .filter_map(|&i| segments.get(i))
+                .map(|s| u64::try_from(s.max_doc.unwrap_or(0)).unwrap_or(0))
+                .fold(0, u64::saturating_add);
+            // ARITH: u128 products of u64s; `all_docs` is not 0 there.
+            #[allow(clippy::arithmetic_side_effects)]
+            let slice_matches = if all_docs == 0 {
+                0
+            } else {
+                u64::try_from(u128::from(matches) * u128::from(slice_docs) / u128::from(all_docs))
+                    .unwrap_or(u64::MAX)
+            };
+            densify_top_terms(nodes, &mut states, globals, slice_matches);
             let mut docs_buf = Vec::new();
             let mut match_bits: Vec<u64> = Vec::new();
             let mut window_docs: Vec<i32> = Vec::with_capacity(WINDOW as usize);
@@ -4736,6 +4806,24 @@ pub fn aggregate_tree_cached(
         }
     }
     Ok(out)
+}
+
+/// Top-level keyword `terms` states whose matches will reach about one
+/// global ordinal in eight or more look their buckets up by ordinal
+/// ([`KeyOrds::densify`]); a top-level node's buckets all have owner 0.
+fn densify_top_terms(nodes: &[AggNode], states: &mut [State], globals: &Globals<'_>, matches: u64) {
+    for (node, state) in nodes.iter().zip(states) {
+        let (AggNode::Terms { field, .. }, State::Keyed { ords, .. }) = (node, state) else {
+            continue;
+        };
+        let Some(global) = globals.ords.get(field) else {
+            continue;
+        };
+        let keys = global.value_count();
+        if KeyOrds::dense_pays(keys, matches) {
+            ords.densify(keys);
+        }
+    }
 }
 
 /// A global ordinal's term, read from the first segment holding it.
@@ -5503,7 +5591,26 @@ mod tests {
     /// ordinal would, across its growth.
     #[test]
     fn key_ords_number_keys_as_a_map_does() {
+        key_ords_match_a_map(None);
+    }
+
+    /// With owner 0's keys below 5000 looked up densely, the rest hashed
+    /// (other owners, negatives, keys past the array), every key keeps one
+    /// bucket, and the table holds only its own keys.
+    #[test]
+    fn dense_key_ords_number_keys_as_a_map_does() {
+        key_ords_match_a_map(Some(5000));
+        assert!(KeyOrds::dense_pays(10_000, 2_000));
+        assert!(!KeyOrds::dense_pays(10_000, 1_000));
+        assert!(!KeyOrds::dense_pays(0, 1_000));
+    }
+
+    fn key_ords_match_a_map(dense: Option<usize>) {
         let mut ords = KeyOrds::default();
+        if let Some(n) = dense {
+            ords.densify(n);
+            assert_eq!(ords.dense.len(), n);
+        }
         let mut keys = Vec::new();
         let mut want: FastMap<(u32, i64), u32> = FastMap::default();
         let mut x = 0x2545_f491_4f6c_dd1du64;
@@ -5526,7 +5633,13 @@ mod tests {
         for (&k, &o) in &want {
             assert_eq!(keys[o as usize], k);
         }
-        assert!(ords.slots.len() * 5 >= keys.len() * 8);
+        assert!(ords.slots.len() * 5 >= ords.hashed * 8);
+        let n = dense.unwrap_or(0);
+        let in_dense = keys
+            .iter()
+            .filter(|&&(o, k)| o == 0 && usize::try_from(k).is_ok_and(|k| k < n))
+            .count();
+        assert_eq!(ords.hashed + in_dense, keys.len());
     }
 
     /// Bounded selection keeps what sorting every bucket and truncating
