@@ -216,6 +216,13 @@ impl QueryVisitor for TermCollector {
     }
 }
 
+/// A doc-values or point query's `visit`: a leaf when its field is accepted.
+fn leaf_on(visitor: &mut dyn QueryVisitor, field: &str, clause: &Clause) {
+    if visitor.accept_field(field) {
+        visitor.visit_leaf(clause);
+    }
+}
+
 /// Runs `f` with the visitor `getSubVisitor(occur, parent)` gives.
 fn with_sub(
     visitor: &mut dyn QueryVisitor,
@@ -481,6 +488,26 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             }
             crate::extended_query::ExtendedQuery::MultiTerm(m) => {
                 visit_source(&m.source, clause, visitor);
+            }
+            // `IndexOrDocValuesQuery.visit`: both of its queries, as `MUST`
+            crate::extended_query::ExtendedQuery::IndexOrDocValues(q) => {
+                with_sub(visitor, Occur::Must, clause, &mut |v| {
+                    visit(&q.index_query, v);
+                    visit(&q.dv_query, v);
+                });
+            }
+            // the doc-values and point queries' `visit`: a leaf on an accepted field
+            crate::extended_query::ExtendedQuery::NumericDocValuesRange(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            crate::extended_query::ExtendedQuery::IndexSortRange(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            crate::extended_query::ExtendedQuery::PointRange(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            crate::extended_query::ExtendedQuery::PointInSet(q) => {
+                leaf_on(visitor, &q.field, clause);
             }
             crate::extended_query::ExtendedQuery::Document(d) => {
                 if d.query.field().is_none_or(|f| visitor.accept_field(f)) {
@@ -748,6 +775,57 @@ mod tests {
             false,
         )));
         assert_eq!(seen(score), ["b"]);
+    }
+
+    #[test]
+    fn index_or_doc_values_visits_both_and_ranges_only_on_accepted_fields() {
+        use crate::extended_query::{
+            ExtendedQuery, IndexOrDocValuesQuery, NumericDocValuesRangeQuery,
+        };
+        use crate::query::PointsRangeQuery;
+        struct Leaves {
+            field: &'static str,
+            leaves: Vec<String>,
+        }
+        impl QueryVisitor for Leaves {
+            fn accept_field(&self, field: &str) -> bool {
+                field == self.field
+            }
+            fn visit_leaf(&mut self, query: &Clause) {
+                self.leaves.push(match query {
+                    Clause::PointsRange(_) => "points".into(),
+                    Clause::Extended(e) => e.name().into(),
+                    _ => "other".into(),
+                });
+            }
+        }
+        let q: Clause = IndexOrDocValuesQuery::new(
+            PointsRangeQuery::new("num", 1, 5),
+            NumericDocValuesRangeQuery::new("num", 1, 5),
+        )
+        .into();
+        let mut other = Leaves {
+            field: "body",
+            leaves: Vec::new(),
+        };
+        visit(&q, &mut other);
+        assert!(other.leaves.is_empty());
+        let mut num = Leaves {
+            field: "num",
+            leaves: Vec::new(),
+        };
+        visit(&q, &mut num);
+        assert_eq!(num.leaves.len(), 2);
+        assert_eq!(num.leaves[0], "points");
+        let dv = Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(
+            NumericDocValuesRangeQuery::new("num", 1, 5),
+        )));
+        let mut other = Leaves {
+            field: "body",
+            leaves: Vec::new(),
+        };
+        visit(&dv, &mut other);
+        assert!(other.leaves.is_empty());
     }
 
     #[test]
