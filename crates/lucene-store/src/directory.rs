@@ -234,17 +234,47 @@ impl Input {
         }
     }
 
-    fn advise_random_range(&self, offset: usize, len: usize) {
-        match self {
+    /// Applies `advice` ([`crate::read_advice`]) to a mapped input:
+    /// [`Self::advise_random_and_warm`] for random advice (without the
+    /// warm-up when [`crate::read_advice::warm_random`] is off),
+    /// `MADV_SEQUENTIAL` for sequential, [`Self::will_need`] over all of it
+    /// for will-need, nothing for normal.
+    pub fn advise(&self, advice: crate::read_advice::ReadAdvice) {
+        use crate::read_advice::ReadAdvice;
+        match advice {
+            ReadAdvice::Normal => {}
+            ReadAdvice::Random if crate::read_advice::warm_random() => {
+                self.advise_random_and_warm()
+            }
+            ReadAdvice::Random => self.advise_random(),
             #[cfg(unix)]
+            ReadAdvice::Sequential => self.advise_range(memmap2::Advice::Sequential, 0, self.len()),
+            #[cfg(not(unix))]
+            ReadAdvice::Sequential => {}
+            ReadAdvice::WillNeed => {
+                let _ = self.will_need(0, self.len());
+            }
+        }
+    }
+
+    fn advise_random_range(&self, offset: usize, len: usize) {
+        #[cfg(unix)]
+        self.advise_range(memmap2::Advice::Random, offset, len);
+        #[cfg(not(unix))]
+        let _ = (offset, len);
+    }
+
+    #[cfg(unix)]
+    fn advise_range(&self, advice: memmap2::Advice, offset: usize, len: usize) {
+        match self {
             Input::Mapped(m) if len > 0 => {
-                let _ = m.advise_range(memmap2::Advice::Random, offset, len);
+                let _ = m.advise_range(advice, offset, len);
             }
             Input::Slice { base, start, .. } => {
-                base.advise_random_range(start.saturating_add(offset), len)
+                base.advise_range(advice, start.saturating_add(offset), len)
             }
             #[cfg(any(test, feature = "test-util"))]
-            Input::Tracked(t) => t.input.advise_random_range(offset, len),
+            Input::Tracked(t) => t.input.advise_range(advice, offset, len),
             _ => {}
         }
     }
