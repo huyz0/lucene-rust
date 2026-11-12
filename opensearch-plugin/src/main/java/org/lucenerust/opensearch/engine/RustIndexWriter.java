@@ -110,6 +110,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private volatile Iterable<Map.Entry<String, String>> liveCommitData;
     private IndexDeletionPolicy deletionPolicy;
     private LongSupplier minRetainedSeqNo;
+    /** {@link SeqNoSettings#DISABLE_SEQUENCE_NUMBERS}; under {@link #lock}. */
+    private boolean seqNoSentinels;
     private CircuitBreaker breaker;
     /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
@@ -897,7 +899,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     private void applyRetention() throws IOException {
         if (minRetainedSeqNo != null) {
-            check(NativeBridge.writerSetRetention(handle, true, minRetainedSeqNo.getAsLong()), "setting retention");
+            check(NativeBridge.writerSetRetention(handle, true, seqNoSentinels, minRetainedSeqNo.getAsLong()), "setting retention");
+        }
+    }
+
+    /**
+     * {@link SeqNoSettings}: {@code _seq_no} without points, and merges writing sentinels for the
+     * sequence numbers retention no longer needs. Set before the first document.
+     */
+    void setSeqNoLayout(boolean docValuesOnly, boolean sentinels) throws IOException {
+        synchronized (lock) {
+            encoder.setSeqNoDocValuesOnly(docValuesOnly);
+            seqNoSentinels = sentinels;
+            applyRetention();
         }
     }
 

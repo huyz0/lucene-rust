@@ -336,12 +336,19 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
                 @Override
                 public int nextDoc() throws IOException {
-                    return values.nextDoc();
+                    return load(values.nextDoc());
                 }
 
                 @Override
                 public int advance(int target) throws IOException {
-                    return values.advance(target);
+                    return load(values.advance(target));
+                }
+
+                private int load(int doc) throws IOException {
+                    if (doc != NO_MORE_DOCS) {
+                        value = values.nextValue();
+                    }
+                    return doc;
                 }
 
                 @Override
