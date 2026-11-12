@@ -41,7 +41,7 @@ use lucene_search::document::{
 use lucene_search::extended_query::{
     AutomatonQuery, DocumentClause, ExtendedQuery, IndexOrDocValuesQuery, MultiTermQuery,
     MultiTermSource, NumericDocValuesRangeQuery, RewriteMethod, SubstringKind, SubstringQuery,
-    SynonymQuery,
+    SynonymQuery, VisitEvent, VisitRecord,
 };
 use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery, PointsRangeQuery};
 use lucene_search::reader::doc_values::get_sorted_numeric;
@@ -114,7 +114,27 @@ pub(crate) const NODE_MULTI_PHRASE: u8 = 51;
 /// highlighters: laid out as [`NODE_MULTI_PHRASE`] with `max_expansions:
 /// i32` after the slop, the last position's terms the prefixes.
 pub(crate) const NODE_MULTI_PHRASE_PREFIX: u8 = 52;
-pub(crate) const NODE_LAST: u8 = NODE_MULTI_PHRASE_PREFIX;
+/// `FuzzyQuery`, for the `plain` highlighter (which weights each term it
+/// expands to by its similarity, and keeps every one): `field`, `term:
+/// bytes`, `max_edits: u8`, `prefix_length: i32`, `transpositions: u8`.
+pub(crate) const NODE_FUZZY: u8 = 53;
+/// OpenSearch's `FunctionScoreQuery` as the `unified` highlighter reads it
+/// (its query visited as `MUST`, unknown to the phrase helper): the
+/// wrapped query, a node.
+pub(crate) const NODE_VISIT_ONLY: u8 = 54;
+/// A query the `unified` highlighter reads only through its `visit`: what
+/// that visit did, a record -- `count: i32`, then per event a kind
+/// (`VISIT_*`) and: terms, a guard (`present: u8`, field) then `count: i32`
+/// `(field, term)` pairs; a leaf, a guard; a sub-visitor, `occur: u8` (0
+/// `MUST`, 1 `FILTER`, 2 `SHOULD`, 3 `MUST_NOT`) and a record; a query
+/// handed over whole, a node.
+pub(crate) const NODE_VISITED: u8 = 55;
+pub(crate) const NODE_LAST: u8 = NODE_VISITED;
+
+const VISIT_TERMS: u8 = 0;
+const VISIT_LEAF: u8 = 1;
+const VISIT_SUB: u8 = 2;
+const VISIT_NODE: u8 = 3;
 
 /// [`NODE_SUBSTRING`]'s kinds.
 pub(crate) const SUBSTRING_WILDCARD: u8 = 0;
@@ -531,6 +551,33 @@ pub(crate) fn decode(
                 .with_slop(slop);
             return Ok(Clause::MultiPhrase(phrase));
         }
+        NODE_VISITED => {
+            let record = visit_record(c, depth + 1, nodes)?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::Visited(record))));
+        }
+        NODE_VISIT_ONLY => {
+            let inner = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::VisitOnly(
+                Box::new(inner),
+            ))));
+        }
+        NODE_FUZZY => {
+            let field = field(c)?;
+            let term = c.bytes()?.to_vec();
+            let max_edits = c.u8()?;
+            if max_edits > 2 {
+                return Err(invalid(format!("query tree: fuzzy max edits {max_edits}")));
+            }
+            let prefix_length = usize::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a fuzzy with a negative prefix length"))?;
+            let transpositions = c.u8()? != 0;
+            return Ok(Clause::Fuzzy(
+                lucene_search::query::FuzzyQuery::new(field, term)
+                    .with_max_edits(max_edits)
+                    .with_prefix_length(prefix_length)
+                    .with_transpositions(transpositions),
+            ));
+        }
         NODE_SUBSTRING => {
             let field = field(c)?;
             let kind = match c.u8()? {
@@ -688,6 +735,77 @@ impl LongValuesSource for FirstValueSource {
     fn describe(&self) -> String {
         format!("long({})", self.0)
     }
+}
+
+/// A [`NODE_VISITED`] record.
+fn visit_record(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<VisitRecord, FfiStatus> {
+    use crate::clauses::MAX_CLAUSE_DEPTH;
+    use lucene_search::query_visitor::{Occur, Term};
+    if depth >= MAX_CLAUSE_DEPTH {
+        return Err(invalid(format!(
+            "query tree: nesting depth exceeds the maximum of {MAX_CLAUSE_DEPTH}"
+        )));
+    }
+    let utf8 = |b: &[u8]| {
+        std::str::from_utf8(b)
+            .map(str::to_owned)
+            .map_err(|_| FfiStatus::InvalidUtf8)
+    };
+    let guard = |c: &mut Cursor<'_>| -> Result<Option<String>, FfiStatus> {
+        match c.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(utf8(c.bytes()?)?)),
+            other => Err(invalid(format!(
+                "query tree: visit guard flag {other} (expected 0..=1)"
+            ))),
+        }
+    };
+    let count = c.len()?;
+    *nodes = nodes.saturating_add(count);
+    check_clause_count(*nodes)?;
+    let mut events = Vec::with_capacity(count); // alloc-ok: count is within the clause limit
+    for _ in 0..count {
+        events.push(match c.u8()? {
+            VISIT_TERMS => {
+                let guard = guard(c)?;
+                let n = c.len()?;
+                *nodes = nodes.saturating_add(n);
+                check_clause_count(*nodes)?;
+                let mut terms = Vec::with_capacity(n); // alloc-ok: n is within the clause limit
+                for _ in 0..n {
+                    let field = utf8(c.bytes()?)?;
+                    terms.push(Term::new(field, c.bytes()?.to_vec()));
+                }
+                VisitEvent::Terms { guard, terms }
+            }
+            VISIT_LEAF => VisitEvent::Leaf { guard: guard(c)? },
+            VISIT_SUB => {
+                let occur = match c.u8()? {
+                    0 => Occur::Must,
+                    1 => Occur::Filter,
+                    2 => Occur::Should,
+                    3 => Occur::MustNot,
+                    other => {
+                        return Err(invalid(format!(
+                            "query tree: unknown Occur tag {other} (expected 0..=3)"
+                        )))
+                    }
+                };
+                VisitEvent::Sub(occur, visit_record(c, depth + 1, nodes)?)
+            }
+            VISIT_NODE => VisitEvent::Node(crate::jvm_reader::decode_node(c, depth + 1, nodes)?),
+            other => {
+                return Err(invalid(format!(
+                    "query tree: unknown visit event {other} (expected 0..=3)"
+                )))
+            }
+        });
+    }
+    Ok(VisitRecord { events })
 }
 
 #[cfg(test)]

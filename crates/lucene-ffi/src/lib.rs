@@ -88,6 +88,8 @@ mod jvm_analysis;
 mod jvm_fetch;
 mod jvm_function_score;
 mod jvm_highlight;
+mod jvm_highlight_fvh;
+mod jvm_highlight_plain;
 mod jvm_invert;
 mod jvm_join;
 mod jvm_knn;

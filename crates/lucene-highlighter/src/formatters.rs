@@ -349,6 +349,18 @@ impl SimpleSpanFragmenter {
             text_size: 0,
         }
     }
+
+    /// `waitForPos`: the position after the span being read, which no
+    /// fragment starts before; -1 for none. `start` keeps it, so a
+    /// fragmenter used again goes on waiting for the span of the text before.
+    pub fn wait_for_pos(&self) -> i32 {
+        self.wait_for_pos
+    }
+
+    /// Sets [`Self::wait_for_pos`], as a fragmenter used before had left it.
+    pub fn set_wait_for_pos(&mut self, wait_for_pos: i32) {
+        self.wait_for_pos = wait_for_pos;
+    }
 }
 
 impl Fragmenter for SimpleSpanFragmenter {
