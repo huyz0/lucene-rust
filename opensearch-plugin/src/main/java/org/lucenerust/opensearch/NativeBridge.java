@@ -128,6 +128,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle KNN_RECALL_STATS = bind("ffi_knn_recall_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
             "ffi_jvm_reader_doc_freq",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -782,6 +783,24 @@ public final class NativeBridge {
             MemorySegment out = s.alloc(2 * Long.BYTES);
             int rc = (int) H.PARENT_CACHE_STATS.invokeExact(out);
             return rc == OK ? new long[] { out.get(JAVA_LONG, 0), out.get(JAVA_LONG, Long.BYTES) } : new long[] { -1, -1 };
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * What each recall-targeted k-NN tuner on this node measured, as a JSON object keyed by {@code
+     * <index uuid>/<shard>/<field>}; null when the native call fails.
+     */
+    public static String knnRecallStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.KNN_RECALL_STATS.invokeExact(ptrOf(slot), lenOf(slot));
+            if (rc != OK) {
+                return null;
+            }
+            byte[] json = take(slot);
+            return json == null ? "{}" : new String(json, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             throw rethrow(t);
         }
