@@ -54,7 +54,7 @@ not ask, start the node with `lucene_rust.engine.default: false`.
 | `lucene_rust.search.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/lucene_rust/stats` |
 | `lucene_rust.fetch.reader_wrapper` | node | `true`, `false` with the security plugin | install the reader wrapper native stored-field reads need. The security plugin needs the index's one reader wrapper slot for field- and document-level security, so with it installed the default is off |
 | `index.lucene_rust.engine` | index, final | the node default | `true`: the index's shards are written by the Rust engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
-| `lucene_rust.engine.default` | node | `true` | the default of the setting above, for every index without its own setting: new ones, ones created before the plugin, and system indices. An index that only inherits it stores no setting (a node without the plugin opens it unchanged) and falls back to OpenSearch's engine where the Rust one would refuse it. `false` is the opt-out: OpenSearch's engine for every index that does not ask |
+| `lucene_rust.engine.default` | node | `true` | the default of the setting above, for every index without its own setting: new ones, ones created before the plugin (on OpenSearch 3.x; 2.x-created indices keep OpenSearch's engine), and system indices. An index that only inherits it stores no setting (a node without the plugin opens it unchanged) and falls back to OpenSearch's engine where the Rust one would refuse it. `false` is the opt-out: OpenSearch's engine for every index that does not ask |
 | `lucene_rust.engine.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for Rust-engine indices. Used for rolling back and for mixed clusters |
 | `breaker.lucene_rust_writer.limit` | node | 3 × `indices.memory.index_buffer_size` + `lucene_rust.store.page_cache.size` | circuit breaker for the Rust writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
 | `-Dlucene_rust.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
@@ -226,8 +226,9 @@ set of answers checked after every step; timings below).
    `lucene_rust.engine.default` (on), stores no setting, and keeps its stock
    segments, which the Rust engine reads and merges as they are. While the
    restart runs, an index has copies on both engines, which replicate to each
-   other. Eligible searches run natively from the moment a shard is on an
-   upgraded node. To keep existing indices on OpenSearch's engine, start the
+   other. Indices created on OpenSearch 2.x (Lucene 9 segments) are the
+   exception: they stay on OpenSearch's engine until reindexed. Eligible
+   searches run natively from the moment a shard is on an upgraded node. To keep existing indices on OpenSearch's engine, start the
    upgraded nodes with `lucene_rust.engine.default: false`.
 2. **Check.** Watch `native_errors` (0) and the fallback mix
    (`fallback-report.py`). To take native search back off one index, set

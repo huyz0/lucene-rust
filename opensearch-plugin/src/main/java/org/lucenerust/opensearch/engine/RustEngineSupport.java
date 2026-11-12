@@ -331,9 +331,20 @@ public final class RustEngineSupport {
         }
         return ENGINE_ENABLED.exists(settings)
             || REALTIME_SEARCH.get(settings)
-            || (CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
+            || (inheritsOntoLucene10(settings)
+                && CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
                 && (org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false
                     || unsupportedSort(settings) == null));
+    }
+
+    /**
+     * Whether an index that only inherits {@link #ENGINE_DEFAULT} may move onto the Rust engine:
+     * one created on a node whose Lucene is 10 or later. An index created on OpenSearch 2.x (Lucene
+     * 9 segments, restored from a snapshot or upgraded in place) stays on OpenSearch's engine
+     * until it is reindexed.
+     */
+    public static boolean inheritsOntoLucene10(org.opensearch.common.settings.Settings settings) {
+        return org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings).luceneVersion.major >= 10;
     }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */

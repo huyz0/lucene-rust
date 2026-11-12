@@ -278,6 +278,8 @@ def verify(plugin, stock):
     on(plugin)
     s = vo.stats()
     print(f"plugin stats: {json.dumps(s, sort_keys=True)}")
+    # Indices created on 2.x (Lucene 9 segments) do not inherit the accelerated engine default.
+    vo.check(s["engines"]["rust"] == 0, f"2.x-created indices stay on OpenSearch's engine: {s['engines']}")
     print(f"verify_upgrade: {vo.CHECKS[0]} checks, {len(vo.FAILURES)} failures, {len(vo.UNVERIFIABLE)} rows "
           f"the stock node failed; {total} shard queries ran native")
     return total
