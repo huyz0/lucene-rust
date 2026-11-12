@@ -114,7 +114,11 @@ pub(crate) const NODE_MULTI_PHRASE: u8 = 51;
 /// highlighters: laid out as [`NODE_MULTI_PHRASE`] with `max_expansions:
 /// i32` after the slop, the last position's terms the prefixes.
 pub(crate) const NODE_MULTI_PHRASE_PREFIX: u8 = 52;
-pub(crate) const NODE_LAST: u8 = NODE_MULTI_PHRASE_PREFIX;
+/// `FuzzyQuery`, for the `plain` highlighter (which weights each term it
+/// expands to by its similarity, and keeps every one): `field`, `term:
+/// bytes`, `max_edits: u8`, `prefix_length: i32`, `transpositions: u8`.
+pub(crate) const NODE_FUZZY: u8 = 53;
+pub(crate) const NODE_LAST: u8 = NODE_FUZZY;
 
 /// [`NODE_SUBSTRING`]'s kinds.
 pub(crate) const SUBSTRING_WILDCARD: u8 = 0;
@@ -530,6 +534,23 @@ pub(crate) fn decode(
                 .map_err(|e| invalid(format!("query tree: {e}")))?
                 .with_slop(slop);
             return Ok(Clause::MultiPhrase(phrase));
+        }
+        NODE_FUZZY => {
+            let field = field(c)?;
+            let term = c.bytes()?.to_vec();
+            let max_edits = c.u8()?;
+            if max_edits > 2 {
+                return Err(invalid(format!("query tree: fuzzy max edits {max_edits}")));
+            }
+            let prefix_length = usize::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a fuzzy with a negative prefix length"))?;
+            let transpositions = c.u8()? != 0;
+            return Ok(Clause::Fuzzy(
+                lucene_search::query::FuzzyQuery::new(field, term)
+                    .with_max_edits(max_edits)
+                    .with_prefix_length(prefix_length)
+                    .with_transpositions(transpositions),
+            ));
         }
         NODE_SUBSTRING => {
             let field = field(c)?;

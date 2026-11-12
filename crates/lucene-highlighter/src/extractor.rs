@@ -317,6 +317,7 @@ pub struct WeightedSpanTermExtractor {
     expand_multi_term_query: bool,
     max_doc_chars_to_analyze: i32,
     use_payloads: bool,
+    opensearch: bool,
 }
 
 impl Default for WeightedSpanTermExtractor {
@@ -343,7 +344,16 @@ impl WeightedSpanTermExtractor {
             expand_multi_term_query: false,
             max_doc_chars_to_analyze: 0,
             use_payloads: false,
+            opensearch: false,
         }
+    }
+
+    /// OpenSearch's `CustomQueryScorer.CustomWeightedSpanTermExtractor`: a
+    /// query it knows nothing about gives its terms when nothing else has,
+    /// `has_child`/`has_parent` give none, and an `IndexOrDocValuesQuery` is
+    /// read as its index query.
+    pub fn set_opensearch(&mut self, opensearch: bool) {
+        self.opensearch = opensearch;
     }
 
     /// `setExpandMultiTermQuery(expand)`.
@@ -519,10 +529,22 @@ impl Run<'_, '_> {
                 Ok(())
             }
             Clause::MultiPhrase(m) => self.extract_multi_phrase(m, boost),
+            Clause::TermInSet(q) => self.extract_multi_term(query, &q.field, boost),
             Clause::MatchAllDocs(_) => Ok(()),
             Clause::Extended(e) => match e.as_ref() {
                 ExtendedQuery::Synonym(_) => self.extract_weighted_terms(query, boost),
                 ExtendedQuery::Span(node) => self.extract_weighted_span_terms(node, boost),
+                // the query's own `rewrite` over the document, then read again
+                ExtendedQuery::MultiPhrasePrefix(q) => {
+                    self.ensure_leaf()?;
+                    let rewritten = q.rewrite_over(&self.leaf.terms);
+                    self.extract(&rewritten, boost)
+                }
+                ExtendedQuery::MultiTerm(m) => self.extract_multi_term(query, m.field(), boost),
+                ExtendedQuery::LateJoin(_) if self.cfg.opensearch => Ok(()),
+                ExtendedQuery::IndexOrDocValues(q) if self.cfg.opensearch => {
+                    self.extract(&q.index_query, boost)
+                }
                 _ => self.extract_other(query, boost),
             },
             _ => self.extract_other(query, boost),
@@ -546,7 +568,11 @@ impl Run<'_, '_> {
         }
         self.ensure_leaf()?;
         let Some(field) = field else {
-            // `extractUnknownQuery`: nothing
+            // `extractUnknownQuery`: nothing, or OpenSearch's: the query's
+            // terms when there are none yet
+            if self.cfg.opensearch && self.out.is_empty() {
+                return self.extract_weighted_terms(query, 1.0);
+            }
             return Ok(());
         };
         // `SCORING_BOOLEAN_REWRITE`: a boosted `TermQuery` per matching term
@@ -559,6 +585,48 @@ impl Run<'_, '_> {
                     WeightedSpanTerm::new(boost * term_boost, text),
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// A multi-term query given as its automaton (or terms), rewritten with
+    /// `SCORING_BOOLEAN_REWRITE` over the document's terms: each term it
+    /// accepts, weighted `boost`.
+    fn extract_multi_term(&mut self, query: &Clause, field: &str, boost: f32) -> Result<()> {
+        if !self.cfg.expand_multi_term_query || !self.field_ok(field) {
+            return Ok(());
+        }
+        self.ensure_leaf()?;
+        struct Accepted<'t> {
+            terms: &'t [Vec<u8>],
+            out: Vec<Vec<u8>>,
+        }
+        impl QueryVisitor for Accepted<'_> {
+            fn consume_terms(&mut self, _query: &Clause, terms: &[Term]) {
+                for t in terms {
+                    if self.terms.binary_search(&t.bytes).is_ok() {
+                        self.out.push(t.bytes.clone());
+                    }
+                }
+            }
+            fn consume_terms_matching(
+                &mut self,
+                _query: &Clause,
+                _field: &str,
+                matcher: &dyn lucene_search::query_visitor::TermMatcher,
+            ) {
+                self.out
+                    .extend(self.terms.iter().filter(|t| matcher.matches(t)).cloned());
+            }
+        }
+        let mut accepted = Accepted {
+            terms: &self.leaf.terms,
+            out: Vec::new(),
+        };
+        query_visitor::visit(query, &mut accepted);
+        for term in accepted.out {
+            let text = text_of(&term);
+            self.put(text.clone(), WeightedSpanTerm::new(boost, text));
         }
         Ok(())
     }
@@ -975,6 +1043,7 @@ pub struct QueryScorer {
     skip_init_extractor: bool,
     max_chars_to_analyze: i32,
     use_payloads: bool,
+    opensearch: bool,
 }
 
 impl QueryScorer {
@@ -993,7 +1062,18 @@ impl QueryScorer {
             skip_init_extractor: false,
             max_chars_to_analyze: 0,
             use_payloads: false,
+            opensearch: false,
         }
+    }
+
+    /// OpenSearch's `CustomQueryScorer` over `query`: the terms of `field`
+    /// alone, or of every field when `None`, read by OpenSearch's extractor
+    /// ([`WeightedSpanTermExtractor::set_opensearch`]).
+    pub fn opensearch(query: &Clause, field: Option<&str>) -> Self {
+        let mut s = Self::new(query);
+        s.field = field.map(str::to_string);
+        s.opensearch = true;
+        s
     }
 
     /// `new QueryScorer(query)`.
@@ -1097,6 +1177,7 @@ impl Scorer for QueryScorer {
         qse.set_max_doc_chars_to_analyze(self.max_chars_to_analyze);
         qse.set_expand_multi_term_query(self.expand_multi_term_query);
         qse.set_use_payloads(self.use_payloads);
+        qse.set_opensearch(self.opensearch);
         let extraction = match &self.reader {
             None => qse.get_weighted_span_terms(&query, 1.0, stream, self.field.as_deref())?,
             Some(r) => qse.get_weighted_span_terms_with_scores(

@@ -395,7 +395,7 @@ public class RustSearchPlugin extends Plugin implements
                 }
             });
         }
-        // A search's unified highlighting runs natively while index.lucene_rust.highlight.enabled is on.
+        // A search's unified and plain highlighting run natively while index.lucene_rust.highlight.enabled is on.
         if (org.lucenerust.opensearch.highlight.HighlightRouting.available()) {
             FetchFlag highlight = new FetchFlag(HIGHLIGHT_ENABLED.get(indexModule.getSettings()));
             indexModule.addSettingsUpdateConsumer(HIGHLIGHT_ENABLED, highlight::set);
@@ -482,8 +482,9 @@ public class RustSearchPlugin extends Plugin implements
     }
 
     /**
-     * Whether a search's {@code unified} highlighting (the default highlighter) runs natively
-     * ({@code NativeUnifiedHighlighter}); off, OpenSearch's highlighter runs it.
+     * Whether a search's {@code unified} highlighting (the default highlighter) and {@code plain}
+     * highlighting run natively ({@code NativeUnifiedHighlighter}, {@code NativePlainHighlighter});
+     * off, OpenSearch's highlighters run them.
      */
     public static final Setting<Boolean> HIGHLIGHT_ENABLED = Setting.boolSetting(
         "index.lucene_rust.highlight.enabled",
@@ -606,12 +607,14 @@ public class RustSearchPlugin extends Plugin implements
         return analyzers;
     }
 
-    /** OpenSearch's {@code unified} highlighter run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
+    /** OpenSearch's {@code unified} and {@code plain} highlighters run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
     @Override
     public Map<String, org.opensearch.search.fetch.subphase.highlight.Highlighter> getHighlighters() {
         return Map.of(
             org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter.NAME,
-            new org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter(readers, stats)
+            new org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter(readers, stats),
+            org.lucenerust.opensearch.highlight.NativePlainHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativePlainHighlighter(stats)
         );
     }
 

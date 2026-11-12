@@ -8,7 +8,8 @@ Usage: highlight_bench.py [load|run|all] [DOCS] [SECONDS]
   (default 12) a node, the two nodes alternating in rounds, and prints the
   median and p90 milliseconds and the stock/plugin ratio of the medians. The
   `no_highlight` rows are the same searches without highlighting: the cost
-  around the highlighter. CASES (comma-separated) runs only those cases."""
+  around the highlighter; the `plain_` rows are the plain highlighter's, on
+  the re-analysis index only. CASES (comma-separated) runs only those cases."""
 import json, os, random, statistics, sys, time
 import requests
 
@@ -32,6 +33,11 @@ CASES = {
     "phrase_prefix": ({"match_phrase_prefix": {"body": "quick br"}}, {"fields": {"body": {}}}),
     "all_fragments": ({"match": {"body": "fox"}}, {"fields": {"body": {"number_of_fragments": 0}}}),
 }
+# The plain highlighter re-analyzes every value whatever the index holds: one index is enough.
+PLAIN_CASES = {
+    f"plain_{k}": (q, {**h, "type": "plain"}) for k, (q, h) in CASES.items()
+}
+PLAIN_CASES["plain_simple"] = ({"match": {"body": "quick brown gold"}}, {"type": "plain", "fragmenter": "simple", "fields": {"body": {}}})
 
 
 def load(docs):
@@ -70,7 +76,10 @@ def run(seconds, size=50):
     print(f"{'index':14} {'case':16} {'plugin p50':>10} {'p90':>7} {'stock p50':>10} {'p90':>7} {'stock/plugin':>12}")
     for index in INDICES:
         only = os.environ.get("CASES")
-        for case, (query, highlight) in list(CASES.items()) + [("no_highlight", (CASES["terms"][0], None))]:
+        cases = list(CASES.items()) + [("no_highlight", (CASES["terms"][0], None))]
+        if index == "hlb_analysis":
+            cases += list(PLAIN_CASES.items())
+        for case, (query, highlight) in cases:
             if only and case not in only.split(","):
                 continue
             body = {"query": query, "size": size, "_source": False}

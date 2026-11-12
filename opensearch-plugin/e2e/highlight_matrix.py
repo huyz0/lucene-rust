@@ -6,6 +6,7 @@ Usage: highlight_matrix.py [load|check|all] [DOCS]
   PLUGIN (default http://localhost:9200) is a node with the plugin, STOCK
   (default http://localhost:9201) a stock one. `load` creates and fills the
   indices on both, `check` runs the matrix, `all` (the default) does both.
+  HL_TYPES (default unified,plain) picks the highlighters whose option sets run.
 
 The corpus is generated (seeded): sentences of English words with
 abbreviations, numbers, punctuation, HTML-special characters, accented and
@@ -221,6 +222,28 @@ OPTIONS = {
     "title_en": {"fields": {"title.en": {}, "title": {}}},
 }
 
+# The plain highlighter: each option set above as `type: plain`, and its own fragmenters.
+PLAIN_OPTIONS = {f"plain_{k}": {**v, "type": "plain"} for k, v in OPTIONS.items() if k != "unified_named"}
+PLAIN_OPTIONS.update({
+    "plain_simple": {"type": "plain", "fragmenter": "simple", "fields": {"body": {"fragment_size": 30, "number_of_fragments": 4}}},
+    "plain_simple_score": {"type": "plain", "fragmenter": "simple", "order": "score", "fields": {"body": {"fragment_size": 25, "number_of_fragments": 3}}},
+    "plain_span": {"type": "plain", "fragmenter": "span", "fields": {"body": {"fragment_size": 50, "number_of_fragments": 2}}},
+    "plain_frags0_multi": {"type": "plain", "fields": {"multi": {"number_of_fragments": 0}}},
+    "plain_simple_frags0": {"type": "plain", "fragmenter": "simple", "fields": {"body": {"number_of_fragments": 0, "no_match_size": 30}}},
+    "plain_field_type": {"fields": {"body": {"type": "plain", "fragment_size": 60}, "title": {}}},
+    "plain_html_score": {"type": "plain", "encoder": "html", "order": "score", "fields": {"body": {"number_of_fragments": 4, "fragment_size": 30}}},
+})
+TYPES = os.environ.get("HL_TYPES", "unified,plain").split(",")
+
+
+def option_sets():
+    out = {}
+    if "unified" in TYPES:
+        out.update(OPTIONS)
+    if "plain" in TYPES:
+        out.update(PLAIN_OPTIONS)
+    return out
+
 
 def search(base, index, query, hl, size):
     body = {"query": query, "highlight": hl, "size": size, "sort": ["_score", {"num": "asc"}, "_doc"]}
@@ -235,7 +258,7 @@ def check(size):
     rows = bad = 0
     for index in INDICES:
         for qn, q in QUERIES.items():
-            for on, o in OPTIONS.items():
+            for on, o in option_sets().items():
                 rows += 1
                 a = search(PLUGIN, index, q, o, size)
                 b = search(STOCK, index, q, o, size)

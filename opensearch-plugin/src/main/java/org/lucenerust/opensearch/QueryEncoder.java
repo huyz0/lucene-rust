@@ -178,6 +178,27 @@ public final class QueryEncoder {
         }
     }
 
+    /** Whether the highlighter query being encoded is the {@code plain} highlighter's ({@link #encodeForPlainHighlight}). */
+    private static final ThreadLocal<Boolean> PLAIN = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /**
+     * {@code query} as the {@code plain} highlighter's {@code CustomWeightedSpanTermExtractor} reads
+     * it: as {@link #encodeForHighlight}, but a {@code function_score} is read as its query whatever
+     * it holds, and a {@link FuzzyQuery} is sent as itself ({@code NODE_FUZZY}), as each term it
+     * expands to is weighted by its similarity.
+     */
+    public static Encoded encodeForPlainHighlight(Query query) {
+        PLAIN.set(Boolean.TRUE);
+        try {
+            return encodeForHighlight(query);
+        } finally {
+            PLAIN.set(Boolean.FALSE);
+        }
+    }
+
+    /** {@code NODE_FUZZY} in {@code jvm_queries.rs}: a fuzzy query, for the {@code plain} highlighter. */
+    private static final byte NODE_FUZZY = 53;
+
     /** The exact classes {@link #encodeForHighlight} writes; besides these, any point range or set. */
     private static final java.util.Set<Class<?>> HIGHLIGHT_CLASSES = java.util.Set.of(
         TermQuery.class,
@@ -325,6 +346,15 @@ public final class QueryEncoder {
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
             return "highlight_" + name(q);
         }
+        if (PLAIN.get() && q instanceof FuzzyQuery fq) {
+            out.write(NODE_FUZZY);
+            writeBytes(out, fq.getField().getBytes(StandardCharsets.UTF_8));
+            writeBytes(out, fq.getTerm().bytes());
+            out.write(fq.getMaxEdits());
+            writeInt(out, fq.getPrefixLength());
+            out.write(fq.getTranspositions() ? 1 : 0);
+            return "";
+        }
         if (q instanceof MultiTermQuery) {
             String reason = multiTerm(q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
             return reason == null ? "" : reason;
@@ -333,7 +363,13 @@ public final class QueryEncoder {
             // The highlighter's query visitor reads through it to its query, and its phrase
             // helper does not know it (so a phrase in it highlights as its single terms).
             Query sub = fs.getSubQuery();
-            if (hasPositional(sub)) {
+            if (PLAIN.get()) {
+                // CustomWeightedSpanTermExtractor reads its query with Lucene's extractor, which
+                // does not know a function_score directly inside it.
+                if (sub instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery) {
+                    return "highlight_function_score_nested";
+                }
+            } else if (hasPositional(sub)) {
                 return "highlight_function_score_phrase";
             }
             String reason = node(sub, out, fieldOk, depth + 1, nodes);

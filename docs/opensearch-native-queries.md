@@ -284,8 +284,39 @@ A field falls back to OpenSearch's highlighter (counted in the stats'
 (`highlight_<Class>`: `nested`, joins, scripts), a `function_score` around a phrase or span
 (`highlight_function_score_phrase`), a needed analyzer cannot be described
 (the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
-(`index.lucene_rust.highlight.enabled: false`). `plain` and `fvh` stay
-OpenSearch's.
+(`index.lucene_rust.highlight.enabled: false`).
+
+### The `plain` highlighter
+
+`plain` fields are pointed the same way at `rust_plain`
+(`highlight/NativePlainHighlighter.java` over
+`lucene-highlighter/src/opensearch_plain.rs`): the classic `Highlighter`
+with OpenSearch's `CustomQueryScorer` (its extractor reads a
+`function_score` or an `IndexOrDocValuesQuery` as its query, skips
+`has_child`/`has_parent`, and gives an unknown query's terms when nothing
+else has), the `span`/`simple`/none fragmenter, the field's tags and
+encoder. Per field and search the Java side writes one request
+(`lucene-ffi/src/jvm_highlight_plain.rs`): the query, the field's index
+analyzer and the options; per hit it sends the converted (and
+`max_analyzer_offset`-cut) values and, with `no_match_size`, the first
+raw value for the summary. The fragments are scored natively and ordered
+and picked in Java with stock's comparator. Stock keeps one fragmenter per
+field for the whole fetch phase, and `SimpleSpanFragmenter` does not reset
+the span it waits for between texts, so a span read to the end of one
+value delays the next value's (or next hit's) first cut: the plugin hands
+that state from one call to the next. A `FuzzyQuery` is sent as itself
+(`NODE_FUZZY`), as each term it expands to is weighted by its similarity.
+
+`e2e/highlight_matrix.py` runs every option set above as `type: plain`
+and seven of plain's own (fragmenters, sizes, score order, `html`), all
+identical to stock. Falls back: the reasons above but the realtime view
+(the plain highlighter reads no index), a `function_score` directly in a
+`function_score` (`highlight_function_score_nested`), an unknown
+`fragmenter` or a `max_analyzer_offset` over the index limit (stock's
+errors), and per hit a value past `index.highlight.max_analyzed_offset`
+(stock's error) or holding a lone surrogate (`highlight_lone_surrogate`:
+Java's tokenizers read one, often left by a `max_analyzer_offset` cut, in
+ways the native text cannot hold). `fvh` stays OpenSearch's.
 
 ### What runs native around the others
 

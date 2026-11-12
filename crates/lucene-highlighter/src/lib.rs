@@ -42,6 +42,7 @@ pub use match_highlight::{
     PassageSelector, QueryOffsetRange, StoredValues,
 };
 pub mod highlighter;
+pub mod opensearch_plain;
 pub use term_vector::{TokenSources, TokenStreamFromTermVector};
 pub use word_break::{Kind as BreakKind, RuleBreakIterator};
 
@@ -180,6 +181,15 @@ pub trait Fragmenter {
     fn is_new_fragment(&mut self, token: &AttributeSource) -> bool;
 }
 
+impl<F: Fragmenter + ?Sized> Fragmenter for Box<F> {
+    fn start(&mut self, original_text: &str) {
+        (**self).start(original_text);
+    }
+    fn is_new_fragment(&mut self, token: &AttributeSource) -> bool {
+        (**self).is_new_fragment(token)
+    }
+}
+
 /// `Formatter`: marks up a group of matching tokens.
 pub trait Formatter {
     /// `highlightTerm(originalText, tokenGroup)`.
@@ -190,6 +200,12 @@ pub trait Formatter {
 pub trait Encoder {
     /// `encodeText(originalText)`.
     fn encode_text(&self, original_text: &str) -> String;
+}
+
+impl<E: Encoder + ?Sized> Encoder for Box<E> {
+    fn encode_text(&self, original_text: &str) -> String {
+        (**self).encode_text(original_text)
+    }
 }
 
 /// `TokenGroup`: tokens whose offsets overlap, which are marked up together.

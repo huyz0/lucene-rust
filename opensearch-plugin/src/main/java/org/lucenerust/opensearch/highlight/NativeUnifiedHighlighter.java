@@ -219,6 +219,11 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         return new HighlightField(fieldContext.fieldName, Text.convertFromStringArray(fragments));
     }
 
+    /** {@code UnifiedHighlighter.convertFieldValue}, for {@link NativePlainHighlighter}. */
+    static String convert(MappedFieldType type, Object value) {
+        return convertFieldValue(type, value);
+    }
+
     /** {@code UnifiedHighlighter.buildHighlighter}'s inputs as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) {
         // A realtime view adds the writer's buffers as leaves the native reader does not hold.
