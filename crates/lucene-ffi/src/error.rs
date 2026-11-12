@@ -84,6 +84,35 @@ thread_local! {
     /// second case can be backfilled with [`FfiStatus::default_message`]
     /// rather than reported as if it were this call's diagnosis.
     static ERROR_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The shard paths the running [`guard`] call read through
+    /// ([`note_shard`]), and how deep in nested guard calls this thread is.
+    static CALL_SHARDS: RefCell<Vec<std::sync::Arc<str>>> = const { RefCell::new(Vec::new()) };
+    static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Notes that the running call reads the shard at `path`: if a page of a
+/// file under it fails to decode while the call runs (an encrypted chunk
+/// that fails authentication), [`guard`] fails the call with that error.
+pub(crate) fn note_shard(path: &std::sync::Arc<str>) {
+    CALL_SHARDS.with(|c| {
+        let mut shards = c.borrow_mut();
+        if !shards.iter().any(|s| std::sync::Arc::ptr_eq(s, path)) {
+            shards.push(std::sync::Arc::clone(path));
+        }
+    });
+}
+
+/// A recorded read failure under one of the shards the running call read
+/// ([`lucene_store::read_failures`]); one atomic load while none is.
+fn shard_read_failure() -> Option<String> {
+    if lucene_store::read_failures::count() == 0 {
+        return None;
+    }
+    CALL_SHARDS.with(|c| {
+        c.borrow()
+            .iter()
+            .find_map(|path| lucene_store::read_failures::failure_under(path))
+    })
 }
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
@@ -151,11 +180,29 @@ where
     install_panic_hook();
     crate::register_codecs();
     ERROR_RECORDED.with(|c| c.set(false));
+    let depth = GUARD_DEPTH.with(|d| {
+        let depth = d.get();
+        d.set(depth.saturating_add(1));
+        depth
+    });
+    if depth == 0 {
+        CALL_SHARDS.with(|c| c.borrow_mut().clear());
+    }
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);
-    CAPTURING_PANIC.with(|c| c.set(false));
+    GUARD_DEPTH.with(|d| d.set(depth));
+    // A nested call returns into its caller's guard, which is still running.
+    CAPTURING_PANIC.with(|c| c.set(depth > 0));
     match outcome {
-        Ok(Ok(())) => FfiStatus::Ok.code(),
+        Ok(Ok(())) => match shard_read_failure() {
+            // The call read a page that failed to decode, and zeros stood
+            // in for it: its result cannot be trusted.
+            Some(message) => {
+                set_last_error(format!("reading the shard failed: {message}"));
+                FfiStatus::Io.code()
+            }
+            None => FfiStatus::Ok.code(),
+        },
         Ok(Err(status)) => {
             // Every non-`Ok` return must leave a message describing *this*
             // call -- a body that returned early without calling

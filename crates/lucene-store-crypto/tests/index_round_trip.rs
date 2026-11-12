@@ -180,30 +180,39 @@ fn an_encrypted_blob_store_index_round_trips() {
     }
 }
 
-/// The same index with files demand-decrypted (where `userfaultfd` is
-/// available) under a budget of a few chunks, over a memory-mapped and a
-/// blob directory: writes, merges, `CheckIndex` and searches all read
-/// through the pager while it keeps evicting.
+/// The same index over a local directory that reads through the demand
+/// pager (where `userfaultfd` is available), under a budget of a few
+/// pages: each page of chunks is read with `O_DIRECT`, authenticated and
+/// decrypted as it comes in, and writes, merges, `CheckIndex` and searches
+/// all read through the pager while it keeps evicting. Small 4 KiB chunks
+/// give one chunk per page.
 #[test]
-fn a_demand_decrypted_index_round_trips_under_a_tiny_budget() {
+fn a_page_decrypted_index_round_trips_under_a_tiny_budget() {
     #[cfg(target_os = "linux")]
-    if let Some(pager) = lucene_store_crypto::lazy::Pager::global() {
-        pager.set_budget(256 * 1024);
+    let pager = lucene_store::paged_input::Pager::global();
+    #[cfg(target_os = "linux")]
+    let before = pager.map(|p| (p.budget(), p.faults()));
+    #[cfg(target_os = "linux")]
+    if let Some(p) = pager {
+        p.set_budget(256 * 1024);
     }
-    let tmp = TempDir::new("crypto-index-lazy");
-    let mmap = lucene_store::MmapDirectory::open(tmp.path());
+    let tmp = TempDir::new("crypto-index-paged");
+    let config = lucene_store::PagedFsConfig {
+        page_size: 4096,
+        pinned_extensions: Vec::new(),
+        adaptive: false,
+        ..lucene_store::PagedFsConfig::default()
+    };
+    let paged = lucene_store::PagedFsDirectory::with_config(tmp.path(), config);
     index_and_verify(
-        &EncryptedDirectory::new(mmap, keys())
+        &EncryptedDirectory::new(paged, keys())
             .with_chunk_size(4096)
-            .unwrap()
-            .with_lazy_decrypt(true),
+            .unwrap(),
     );
-    let blob = BlobDirectory::new(InMemoryBlobStore::new());
-    index_and_verify(&EncryptedDirectory::new(blob, keys()).with_lazy_decrypt(true));
     #[cfg(target_os = "linux")]
-    if let Some(pager) = lucene_store_crypto::lazy::Pager::global() {
-        assert!(pager.faults() > 0, "reads went through the pager");
-        pager.set_budget(lucene_store_crypto::lazy::DEFAULT_BUDGET);
+    if let (Some(p), Some((budget, faults))) = (pager, before) {
+        assert!(p.faults() > faults, "reads went through the pager");
+        p.set_budget(budget);
     }
 }
 
