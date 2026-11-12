@@ -115,8 +115,19 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
 - Reads use `O_DIRECT` where the file system takes it, so a page is held
   once, in the budget, not again in the kernel's page cache. A read goes
   into a reused per-thread buffer and from there straight into the mapping
-  (`UFFDIO_COPY`); each fault wakes one handler thread (`EPOLLEXCLUSIVE`),
-  of four per CPU (16 to 64), so faults wait on the disk in parallel.
+  (`UFFDIO_COPY`). A fault is served on the faulting thread: the
+  `userfaultfd` raises `SIGBUS` there (`UFFD_FEATURE_SIGBUS`), the pager's
+  handler reads the page and returns, and the access runs again. That
+  saves the two thread hand-offs a handler thread costs per fault (4 KiB
+  faults: 1 thread 14.8k to 24k/s against `pread` 27-29k, 16 threads 65k
+  to 100k/s). A `SIGBUS` anywhere else goes to the handler installed
+  before (the JVM's), and an open puts the pager's handler back in front
+  if a library replaced it. Where the kernel lacks the feature (before
+  4.14), or with `PAGE_CACHE_FAULT_HANDLING=threads`, faults wake one of the
+  pager's handler threads instead (`EPOLLEXCLUSIVE`, four per CPU, 16 to
+  64). Either way a kernel access to a missing page (`write(2)` from a
+  mapping) fails with `EFAULT`, as under a user-mode-only `userfaultfd`,
+  and the index output copies those bytes through a buffer.
 - Every open of one file shares its pages: a merge reading a segment the
   search reader has open reads the pages the reader holds, and no page is
   held twice. Files read whole at open are shared the same way.
@@ -136,7 +147,8 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   after the faulting page is read on an I/O thread while the faulting page
   is read alone, so the reader runs on as the rest arrives. A batch of
   scattered pages (a prefetch) is read on the calling thread and 16 I/O
-  threads at once. HNSW asks for each expanded node's neighbours' vectors in
+  threads at once; a prefetch over many files (a query over many segments)
+  puts every file's reads on the I/O threads together. HNSW asks for each expanded node's neighbours' vectors in
   one batch, disk HNSW for each beam's records, IVF for its probed clusters
   and its rerank candidates. A file whose pages are all resident costs a
   prefetch one counter read.
