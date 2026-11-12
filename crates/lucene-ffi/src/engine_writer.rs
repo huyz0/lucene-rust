@@ -6873,6 +6873,23 @@ mod tests {
                 );
                 let aggs = |r: u64| crate::jvm_aggs::aggregate_tree_blobs(r, &q, &tree).unwrap();
                 assert_eq!(aggs(lean), aggs(whole), "round {round}: {term} aggs");
+                // The aggregation segment cache keeps no buffer's part: the
+                // views' answers stay the buffers' as they are now.
+                lucene_search::bucket_aggs::segment_cache::AggSegmentCache::global()
+                    .set_budget(64 << 20);
+                let cached = |r: u64| {
+                    crate::jvm_aggs::aggregate_tree_blobs_cached(r, &q, &tree, true).unwrap()
+                };
+                assert_eq!(
+                    cached(lean),
+                    aggs(whole),
+                    "round {round}: {term} cached aggs"
+                );
+                assert_eq!(
+                    cached(whole),
+                    aggs(whole),
+                    "round {round}: {term} cached aggs"
+                );
                 let sort = crate::jvm_reader::tests::sort_blob_terms(
                     &[(crate::jvm_reader::SORT_LONG, 1, "_seq_no", 0)],
                     None,
