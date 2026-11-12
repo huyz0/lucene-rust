@@ -394,6 +394,37 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_alloc(
     })
 }
 
+/// [`ffi_jvm_reader_aggregate_tree_alloc`], each committed segment's
+/// collected part read from and kept in the process's aggregation segment
+/// cache ([`crate::jvm_aggs::ffi_agg_segment_cache_set_budget`]): the same
+/// results, and with the cache off the same pass.
+///
+/// # Safety
+/// As [`ffi_jvm_reader_aggregate_tree_alloc`].
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_cached_alloc(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    tree: *const u8,
+    tree_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let tree_blob = unsafe { bytes_from_raw(tree, tree_len)? };
+        let encoded = crate::jvm_aggs::aggregate_tree_blobs_cached(handle, blob, tree_blob, true)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`jvm_reader::search_hybrid_blobs`]: a hybrid query's shard phase, its
 /// slices' answers encoded in an owned buffer.
 ///
