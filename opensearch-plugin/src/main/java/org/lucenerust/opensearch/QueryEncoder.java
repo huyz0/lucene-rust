@@ -251,12 +251,45 @@ public final class QueryEncoder {
         return found[0];
     }
 
+    /** {@code MultiPhrasePrefixQuery.maxExpansions}, which it has no getter for; null when it cannot be read. */
+    private static final java.lang.reflect.Field MAX_EXPANSIONS = maxExpansionsField();
+
+    private static java.lang.reflect.Field maxExpansionsField() {
+        try {
+            java.lang.reflect.Field f = org.opensearch.common.lucene.search.MultiPhrasePrefixQuery.class.getDeclaredField("maxExpansions");
+            f.setAccessible(true);
+            return f;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static Integer maxExpansions(org.opensearch.common.lucene.search.MultiPhrasePrefixQuery q) {
+        if (MAX_EXPANSIONS == null) {
+            return null;
+        }
+        try {
+            return MAX_EXPANSIONS.getInt(q);
+        } catch (IllegalAccessException e) {
+            return null;
+        }
+    }
+
     /**
      * A multi-phrase node ({@code NODE_MULTI_PHRASE} or {@code NODE_MULTI_PHRASE_PREFIX}): the field
      * (its terms', as neither query exposes its own), the slop, and each position with its terms;
      * {@code empty} when there is no position or one holds no term.
      */
-    private static String multiPhrase(byte kind, Term[][] arrays, int[] positions, int slop, String empty, ByteArrayOutputStream out, int[] nodes) {
+    private static String multiPhrase(
+        byte kind,
+        Term[][] arrays,
+        int[] positions,
+        int slop,
+        int maxExpansions,
+        String empty,
+        ByteArrayOutputStream out,
+        int[] nodes
+    ) {
         if (arrays.length == 0 || arrays.length != positions.length) {
             return empty;
         }
@@ -269,6 +302,9 @@ public final class QueryEncoder {
         out.write(kind);
         writeBytes(out, field.getBytes(StandardCharsets.UTF_8));
         writeInt(out, slop);
+        if (kind == NODE_MULTI_PHRASE_PREFIX) {
+            writeInt(out, maxExpansions);
+        }
         writeInt(out, arrays.length);
         for (int i = 0; i < arrays.length; i++) {
             nodes[0] += Math.max(1, arrays[i].length);
@@ -304,14 +340,19 @@ public final class QueryEncoder {
             return reason == null ? "" : reason;
         }
         if (q instanceof org.apache.lucene.search.MultiPhraseQuery mp) {
-            return multiPhrase(NODE_MULTI_PHRASE, mp.getTermArrays(), mp.getPositions(), mp.getSlop(), "highlight_MultiPhraseQuery", out, nodes);
+            return multiPhrase(NODE_MULTI_PHRASE, mp.getTermArrays(), mp.getPositions(), mp.getSlop(), 0, "highlight_MultiPhraseQuery", out, nodes);
         }
         if (q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery mpp) {
+            Integer maxExpansions = maxExpansions(mpp);
+            if (maxExpansions == null) {
+                return "highlight_MultiPhrasePrefixQuery";
+            }
             return multiPhrase(
                 NODE_MULTI_PHRASE_PREFIX,
                 mpp.getTerms(),
                 mpp.getPositions(),
                 mpp.getSlop(),
+                maxExpansions,
                 "highlight_MultiPhrasePrefixQuery",
                 out,
                 nodes

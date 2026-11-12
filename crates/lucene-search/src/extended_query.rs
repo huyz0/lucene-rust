@@ -873,6 +873,8 @@ pub struct MultiPhrasePrefixQuery {
     /// `positions`, one per entry of `term_arrays`, increasing.
     pub positions: Vec<i32>,
     pub slop: u32,
+    /// `maxExpansions`: how many terms the prefixes expand to, at most.
+    pub max_expansions: i32,
 }
 
 impl MultiPhrasePrefixQuery {
@@ -897,7 +899,75 @@ impl MultiPhrasePrefixQuery {
             term_arrays,
             positions,
             slop,
+            max_expansions: Self::DEFAULT_MAX_EXPANSIONS,
         })
+    }
+
+    /// `maxExpansions`' default, `Integer.MAX_VALUE`.
+    pub const DEFAULT_MAX_EXPANSIONS: i32 = i32::MAX;
+
+    /// `setMaxExpansions(max)`.
+    pub fn with_max_expansions(mut self, max: i32) -> Self {
+        self.max_expansions = max;
+        self
+    }
+
+    /// `rewrite(searcher)` over a reader of one leaf whose terms are `terms`
+    /// (sorted, each once): the whole positions and the prefixes' terms as a
+    /// multi-phrase, each prefix's terms in order until there are
+    /// `max_expansions` of them. With no term for the prefixes, a query that
+    /// matches nothing -- around the whole positions' multi-phrase when
+    /// there are any, as Java keeps it for the highlighters.
+    pub fn rewrite_over(&self, terms: &[Vec<u8>]) -> Clause {
+        use crate::query::{BooleanQuery, MatchNoDocsQuery, MultiPhraseQuery};
+        let Some((suffixes, whole)) = self.term_arrays.split_last() else {
+            return Clause::MatchNoDocs(MatchNoDocsQuery::new());
+        };
+        let mut expanded: Vec<Vec<u8>> = Vec::new();
+        let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        let max = usize::try_from(self.max_expansions).unwrap_or(0);
+        'suffixes: for prefix in suffixes {
+            let start = terms.partition_point(|t| t.as_slice() < prefix.as_slice());
+            for t in &terms[start..] {
+                if !t.starts_with(prefix) {
+                    break;
+                }
+                if seen.insert(t.as_slice()) {
+                    expanded.push(t.clone());
+                }
+                if expanded.len() >= max {
+                    break;
+                }
+            }
+            if expanded.len() > max {
+                break 'suffixes;
+            }
+        }
+        let mut arrays: Vec<(Vec<Vec<u8>>, i32)> = whole
+            .iter()
+            .cloned()
+            .zip(self.positions.iter().copied())
+            .collect();
+        if expanded.is_empty() {
+            if whole.is_empty() {
+                return Clause::MatchNoDocs(MatchNoDocsQuery::new());
+            }
+            let phrase = MultiPhraseQuery::with_positions(self.field.clone(), arrays)
+                .map(|p| p.with_slop(self.slop));
+            return match phrase {
+                Ok(p) => Clause::Boolean(Box::new(BooleanQuery::new().with_must([
+                    Clause::MultiPhrase(p),
+                    Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+                ]))),
+                Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+            };
+        }
+        let last = self.positions.last().copied().unwrap_or(0);
+        arrays.push((expanded, last));
+        match MultiPhraseQuery::with_positions(self.field.clone(), arrays) {
+            Ok(p) => Clause::MultiPhrase(p.with_slop(self.slop)),
+            Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+        }
     }
 }
 

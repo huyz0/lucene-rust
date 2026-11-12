@@ -305,6 +305,7 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
         q.push(crate::jvm_queries::NODE_MULTI_PHRASE_PREFIX);
         put_bytes(q, b"offs");
         put_i32(q, 0);
+        put_i32(q, 50);
         put_i32(q, 2);
         put_i32(q, 0);
         put_i32(q, 1);
@@ -320,6 +321,7 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
         q.push(crate::jvm_queries::NODE_MULTI_PHRASE_PREFIX);
         put_bytes(q, b"offs");
         put_i32(q, 0);
+        put_i32(q, 50);
         put_i32(q, 0);
     });
     assert!(highlight(h, &Req::new("offs", empty, 1).bytes(), 0, 0, &utf16(D0)).is_err());

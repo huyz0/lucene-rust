@@ -903,6 +903,62 @@ mod tests {
     }
 
     #[test]
+    fn a_phrase_prefix_rewrites_over_the_terms_it_completes() {
+        use crate::extended_query::MultiPhrasePrefixQuery;
+        use crate::query::MultiPhraseQuery;
+        let terms: Vec<Vec<u8>> = ["brown", "quack", "quick", "quiet", "zoo"]
+            .iter()
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
+        let q = |arrays: Vec<Vec<&str>>, max: i32| {
+            let n = arrays.len() as i32;
+            MultiPhrasePrefixQuery::new(
+                "f",
+                arrays
+                    .into_iter()
+                    .map(|a| a.into_iter().map(|t| t.as_bytes().to_vec()).collect())
+                    .collect(),
+                (0..n).collect(),
+                1,
+            )
+            .unwrap()
+            .with_max_expansions(max)
+        };
+        let expected = MultiPhraseQuery::with_positions(
+            "f",
+            [
+                (vec![b"brown".to_vec()], 0),
+                (vec![b"quick".to_vec(), b"quiet".to_vec()], 1),
+            ],
+        )
+        .unwrap()
+        .with_slop(1);
+        assert_eq!(
+            q(vec![vec!["brown"], vec!["qui"]], 50).rewrite_over(&terms),
+            Clause::MultiPhrase(expected)
+        );
+        // one expansion per prefix until there are more than the maximum
+        let Clause::MultiPhrase(m) = q(vec![vec!["q", "z"]], 1).rewrite_over(&terms) else {
+            panic!("a multi-phrase")
+        };
+        assert_eq!(m.term_arrays, [vec![b"quack".to_vec(), b"zoo".to_vec()]]);
+        let Clause::MultiPhrase(m) = q(vec![vec!["q", "z", "b"]], 1).rewrite_over(&terms) else {
+            panic!("a multi-phrase")
+        };
+        assert_eq!(m.term_arrays.len(), 1);
+        assert_eq!(m.term_arrays[0].len(), 2);
+        assert!(matches!(
+            q(vec![vec!["x"]], 50).rewrite_over(&terms),
+            Clause::MatchNoDocs(_)
+        ));
+        let Clause::Boolean(b) = q(vec![vec!["brown"], vec!["x"]], 50).rewrite_over(&terms) else {
+            panic!("a boolean")
+        };
+        assert!(matches!(b.must[0], Clause::MultiPhrase(_)));
+        assert!(matches!(b.must[1], Clause::MatchNoDocs(_)));
+    }
+
+    #[test]
     fn empty_visitor_accepts_nothing_and_must_not_is_skipped() {
         let mut b = BooleanQuery::new();
         b.must

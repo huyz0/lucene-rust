@@ -111,8 +111,8 @@ pub(crate) const NODE_PHRASE_POSITIONS: u8 = 50;
 /// (`bytes`).
 pub(crate) const NODE_MULTI_PHRASE: u8 = 51;
 /// OpenSearch's `MultiPhrasePrefixQuery` (`match_phrase_prefix`), for the
-/// highlighter: laid out as [`NODE_MULTI_PHRASE`], the last position's
-/// terms the prefixes.
+/// highlighters: laid out as [`NODE_MULTI_PHRASE`] with `max_expansions:
+/// i32` after the slop, the last position's terms the prefixes.
 pub(crate) const NODE_MULTI_PHRASE_PREFIX: u8 = 52;
 pub(crate) const NODE_LAST: u8 = NODE_MULTI_PHRASE_PREFIX;
 
@@ -493,6 +493,11 @@ pub(crate) fn decode(
             let field = field(c)?;
             let slop = u32::try_from(c.i32()?)
                 .map_err(|_| invalid("query tree: a multi-phrase with a negative slop"))?;
+            let max_expansions = if kind == NODE_MULTI_PHRASE_PREFIX {
+                c.i32()?
+            } else {
+                0
+            };
             let count = c.len()?;
             if count == 0 {
                 return Err(invalid("query tree: a multi-phrase with no terms"));
@@ -517,7 +522,8 @@ pub(crate) fn decode(
                 let q = lucene_search::extended_query::MultiPhrasePrefixQuery::new(
                     field, terms, positions, slop,
                 )
-                .map_err(|e| invalid(format!("query tree: {e}")))?;
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .with_max_expansions(max_expansions);
                 return Ok(q.into());
             }
             let phrase = lucene_search::query::MultiPhraseQuery::with_positions(field, arrays)
