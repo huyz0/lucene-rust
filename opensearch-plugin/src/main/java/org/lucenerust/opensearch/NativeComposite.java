@@ -73,7 +73,7 @@ final class NativeComposite {
         // OpenSearch's filter rewrite answers a lone date_histogram source from the points
         // (FilterRewriteOptimizationContext): faster than reading every document.
         // Both early-terminating paths below are slower shapes: native only under
-        // `native_shapes: all`.
+        // `accelerated_shapes: all`.
         boolean allShapes = RustQueryPhaseSearcher.allShapes(ctx);
         Object rewrite = get(agg, "filterRewriteOptimizationContext");
         if (allShapes == false && rewrite != null && Boolean.TRUE.equals(get(rewrite, "canOptimize"))) {

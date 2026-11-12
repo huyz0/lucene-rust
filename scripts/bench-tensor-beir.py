@@ -75,7 +75,7 @@ def main():
     try:
         must = check.must
         must("PUT", "/beir", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
-                                            "index.lucene_rust.engine": True},
+                                            "index.engine.accelerated": True},
                                # The token vectors stay out of _source: each hit's fetch otherwise
                                # reads its whole stored _source, every token's numbers as JSON.
                                "mappings": {"_source": {"excludes": ["colbert"]},
@@ -136,7 +136,7 @@ def main():
         after = must("GET", "/_plugins/lucene_rust/stats")
         fb = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
               if v != before.get("fallbacks", {}).get(k, 0)}
-        print(f"# shard queries in Rust {after['native_queries'] - before['native_queries']}, fallbacks {fb}")
+        print(f"# shard queries in Rust {after['accelerated_queries'] - before['accelerated_queries']}, fallbacks {fb}")
     finally:
         if not keep:
             check.stop()

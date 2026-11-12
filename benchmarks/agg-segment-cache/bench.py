@@ -50,7 +50,7 @@ if LOAD:
         pass
     settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1"}
     if CACHE:
-        settings["lucene_rust.search.aggregation_segment_cache"] = True
+        settings["search.aggregation_segment_cache.enabled"] = True
     req("PUT", "/logs", {"settings": {"index": settings}, "mappings": {"dynamic": "strict", "properties": {
         "@timestamp": {"type": "date", "format": "epoch_millis"},
         "source": {"type": "keyword"}, "host": {"type": "keyword"}, "level": {"type": "keyword"},
@@ -80,7 +80,7 @@ if LOAD:
 else:
     load_s = None
     # A copied data directory: the index's own setting, as this config wants it.
-    req("PUT", "/logs/_settings", {"index": {"lucene_rust.search.aggregation_segment_cache": CACHE}}) if "--plugin" in sys.argv else None
+    req("PUT", "/logs/_settings", {"index": {"search.aggregation_segment_cache.enabled": CACHE}}) if "--plugin" in sys.argv else None
 
 def window(e, span, extra=None):
     f = [{"range": {"@timestamp": {"gte": e - span, "lte": e, "format": "epoch_millis"}}}]
@@ -132,10 +132,10 @@ checked = [0]
 def verify(label, body):
     """The same request with the cache off and on, over the same reader: identical answers."""
     def aggs(on):
-        req("PUT", "/logs/_settings", {"index": {"lucene_rust.search.aggregation_segment_cache": on}})
+        req("PUT", "/logs/_settings", {"index": {"search.aggregation_segment_cache.enabled": on}})
         return req("POST", "/logs/_search?request_cache=false", body)["aggregations"]
     off, on, again = aggs(False), aggs(True), aggs(True)
-    req("PUT", "/logs/_settings", {"index": {"lucene_rust.search.aggregation_segment_cache": CACHE}})
+    req("PUT", "/logs/_settings", {"index": {"search.aggregation_segment_cache.enabled": CACHE}})
     checked[0] += 1
     if not (off == on == again):
         mismatches.append(label)

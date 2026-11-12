@@ -19,7 +19,7 @@ import org.lucenerust.opensearch.NativeBridge;
 import org.lucenerust.opensearch.substring.RustWildcardFieldMapper;
 import org.opensearch.index.mapper.ParseContext;
 
-/** An index of {@code rust_wildcard} values written by the Rust engine's writer, for the self test. */
+/** An index of {@code compact_wildcard} values written by the Rust engine's writer, for the self test. */
 public final class SubstringTestIndex {
     private SubstringTestIndex() {}
 

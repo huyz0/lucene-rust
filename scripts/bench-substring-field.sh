@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Substring search over log lines: the RustSubstring BINARY doc values field
+# Substring search over log lines: the Substring90 BINARY doc values field
 # (this port) against stock Lucene's text field and OpenSearch's `wildcard`
 # field layout over the same corpus and queries.
 #

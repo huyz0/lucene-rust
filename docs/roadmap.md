@@ -1,6 +1,6 @@
 # Delivery roadmap
 
-End-to-end milestones from today's state to a production-candidate Rust engine inside
+End-to-end milestones from today's state to a production-candidate accelerated engine inside
 OpenSearch. Complements [`PLAN.md`](../PLAN.md) — which is organised by *subsystem phase* —
 by organising the same work by *shippable increment*. Each milestone has one goal, a task
 list, and acceptance criteria that can be objectively checked.
@@ -22,9 +22,9 @@ breakdown with file paths, risks, and exit artifacts — in
 | Read path (P1–P2) | Effectively complete for the pinned Lucene 10.5.0 codec |
 | Search (P3) | Broad: boolean/phrase/dismax/span/wildcard/fuzzy/regexp/points/DV-range, sort, facets, collapse, highlight, explain, concurrent search |
 | FFI (P4, Rust half) | 76 `extern "C"` entry points, handle registry, `catch_unwind` on every boundary |
-| FFI (P4, Java half) | **Delivered (M2, 2026-09-25)**: `opensearch-plugin/` is an installable OpenSearch 3.8.0 plugin serving the query phase from Rust (over JNI at M2; through Panama FFM downcalls on JDK 25 since 2026-09-28), per query, with measured routing and fallback to Lucene — see `docs/opensearch-native-queries.md` |
+| FFI (P4, Java half) | **Delivered (M2, 2026-09-25)**: `opensearch-plugin/` is an installable OpenSearch 3.8.0 plugin serving the query phase from Rust (over JNI at M2; through Panama FFM downcalls on JDK 25 since 2026-09-28), per query, with measured routing and fallback to Lucene — see `docs/accelerated-queries.md` |
 | Write path (P5) | **Proven end to end (M3, 2026-09-25)**: real Lucene opens a 120 000-document, seven-segment index written through `IndexWriter`, `CheckIndex` is clean, and 57 queries return the same top 50 as this port's searcher. **Hardened (M4, 2026-09-25)**: crash-safe under simulated power loss and `kill -9`, multi-threaded indexing with a merge thread, interchangeable with Java in both directions |
-| Engine integration (P6) | **Delivered (M2 + M5, 2026-09-25)**: the query phase runs natively (M2), and `RustEngine` indexes through the Rust writer (M5) with document replication, peer recovery and mixed Rust/Java clusters — see `docs/opensearch-engine.md` |
+| Engine integration (P6) | **Delivered (M2 + M5, 2026-09-25)**: the query phase runs natively (M2), and `RustEngine` indexes through the accelerated writer (M5) with document replication, peer recovery and mixed Rust/Java clusters — see `docs/opensearch-engine.md` |
 | Performance (P7) | **Measured (M1), then swept (M1.6).** The decode kernels are now *faster* than Lucene's: `ForUtil.decode` 2.30×, posting-list `nextDoc()` 1.69×, both against Lucene's own numbers on identical bytes (`scripts/bench-micro.sh`). `DirectReader.get` 1.82×. End-to-end queries remain 3×–6× slower and the M1 gate is still FAIL at 1/20. **Reader open, however, is 135× slower than Lucene** (560 ms vs 4.2 ms on 15 segments) because the whole term dictionary is materialized at open — an M2/M5 blocker no query benchmark could have found. Recall now matches Java exactly on **both** corpus variants. See `docs/benchmarks/verdict-m1.6.md` and `docs/sweep/findings.md` |
 | CI | **Added in M0** — `.github/workflows/ci.yml`: gate on x64 + arm64, plus fixture and write-path jobs |
 
@@ -168,7 +168,7 @@ instead of the price of a Java plugin. If the answer is no, everything after M1 
 > booleans) are 4–8× slower natively and are routed to Lucene; that is the next
 > engine performance item.
 
-**Goal:** an OpenSearch node answers `_search` requests out of the Rust engine, over
+**Goal:** an OpenSearch node answers `_search` requests out of the accelerated engine, over
 Java-written segments, with clean fallback to Java Lucene for anything unsupported.
 
 **Why now:** this is `PLAN.md`'s Phase 4 milestone and the first point where the project
@@ -192,11 +192,11 @@ produces user-visible value. The Rust side is already built; the entire gap is J
 
 **Acceptance criteria**
 
-- The OpenSearch REST search test suite passes on the Rust engine for the supported matrix,
+- The OpenSearch REST search test suite passes on the accelerated engine for the supported matrix,
   with fallback covering the rest.
 - A fuzz and fault-injection run over the FFI surface produces zero JVM crashes and zero
   leaked handles.
-- Killing and restarting a node with the Rust engine loaded recovers cleanly.
+- Killing and restarting a node with the accelerated engine loaded recovers cleanly.
 - End-to-end query latency improvement is consistent with M1's standalone measurement.
 - A documented, published table of which queries run native and which fall back.
 
@@ -294,7 +294,7 @@ Java's — indexes written by either engine fully usable by the other.
 **Vector search.** The core reads and writes flat and HNSW vector files,
 builds and merges graphs, and performs approximate and filtered k-NN search
 ([codec parity](parity/codecs.md)). OpenSearch integration remains incomplete:
-the Rust engine refuses vector fields and `knn_vector` mappings
+the accelerated engine refuses vector fields and `knn_vector` mappings
 ([engine field matrix](opensearch-engine.md)). Core HNSW support does not yet
 provide end-to-end native OpenSearch vector indexing and search.
 
@@ -325,9 +325,9 @@ provide end-to-end native OpenSearch vector indexing and search.
 **Acceptance criteria**
 
 - OpenSearch `:server` engine tests plus the full REST suite for index/search/get/delete pass
-  on the Rust engine for the supported matrix.
+  on the accelerated engine for the supported matrix.
 - Peer recovery and segment replication work end-to-end between a Rust primary and replicas.
-- A Rust-engine panic fails exactly one shard, and the node survives.
+- A accelerated-engine panic fails exactly one shard, and the node survives.
 
 **Effort:** XL — the largest milestone, and the one most dependent on OpenSearch internals.
 
@@ -348,7 +348,7 @@ provide end-to-end native OpenSearch vector indexing and search.
   one-off measurement.
 - Complete `docs/parity.md` for the supported matrix, and publish a supported-vs-unsupported
   feature table for operators.
-- Upgrade and rollback story: how a cluster moves onto and off the Rust engine, given that
+- Upgrade and rollback story: how a cluster moves onto and off the accelerated engine, given that
   backward-codecs are out of scope (force-merge is the escape hatch).
 - Licensing and attribution audit — Apache-2.0 derivative work, `NOTICE` correctness.
 
@@ -357,7 +357,7 @@ provide end-to-end native OpenSearch vector indexing and search.
 - Every structure that can accumulate held to a bound by a test seen to fail against its defect;
   `CheckIndex` clean after the NRT refresh loop.
 - M1's performance bar still met on the final build.
-- A rollback from the Rust engine to the Java engine executed successfully on a test cluster.
+- A rollback from the accelerated engine to the Java engine executed successfully on a test cluster.
 
 **Effort:** M.
 
@@ -380,7 +380,7 @@ benchmark against Lucene, `parity.md` updated in the same commit):
 | | Milestone | Delivers | Effort |
 |---|---|---|---|
 | M7 | [`lucene-core` complete](milestones/m7-core-complete.md) | the rest of core -- `document`, similarities, the remaining queries, per-field and quantized formats, writer gaps, `StandardTokenizer` -- and `check-port-inventory.py`, the gate that makes "fully ported" checkable. **Delivered (2026-10-01), all 5 criteria met:** every `lucene-core` class ported or not needed (`--milestone M7` passes), the tokenizer verified on a 4.9 MB corpus, and every new query and similarity benchmarked against Lucene at or above 1.0 (or inside the noise floor). `CombinedFieldQuery` and `IndriAndQuery` are at 1.89x / 2.74x, and the constant-score multi-term rewrites at 1.35x / 1.37x after streaming their expansion | XL |
-| M8 | [Backward codecs](milestones/m8-backward-codecs.md) | reading and merging Lucene 9.x-10.4 segments: existing OpenSearch indices on the Rust engine without a reindex | XL |
+| M8 | [Backward codecs](milestones/m8-backward-codecs.md) | reading and merging Lucene 9.x-10.4 segments: existing OpenSearch indices on the accelerated engine without a reindex | XL |
 | M9 | [Geo and spatial](milestones/m9-geo-and-spatial.md) | `geo_point`/`geo_shape` natively; `spatial3d`, `spatial-extras`. **Delivered (2026-10-03), all 4 criteria met:** OpenSearch's geo queries and `_geo_distance` sort run natively and agree with a stock node; the Tessellator matches Lucene triangle for triangle on 4,193 real-world polygons; the spatial-extras cases below Lucene (RPT intersects, heatmaps) closed at 1.17x-1.24x | L |
 | M10 | [Joins, grouping, `queries`](milestones/m10-joins-grouping-queries.md) | `nested`, `has_child`, `collapse`, `function_score`, `intervals` natively | L |
 | M11 | [Text analysis](milestones/m11-analysis-common.md) | all of `analysis-common`: indexing text without a JVM | XL |

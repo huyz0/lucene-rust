@@ -1,4 +1,4 @@
-//! The value blocks of the `RustAdaptive` doc-values format: a NUMERIC or
+//! The value blocks of the `Adaptive90` doc-values format: a NUMERIC or
 //! SORTED_NUMERIC value array cut into blocks of [`BLOCK_SIZE`] values, each
 //! block encoded with whichever chain of transforms makes it smallest.
 //!

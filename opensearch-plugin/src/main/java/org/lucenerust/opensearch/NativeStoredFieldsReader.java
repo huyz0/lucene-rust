@@ -52,7 +52,7 @@ import java.util.function.BooleanSupplier;
  * native handle is the query phase's own ({@link NativeReaders#peek}, keyed by that cache key), never
  * opened here: a reader no search has opened natively -- the realtime get's internal reader -- is
  * read by Lucene. A reader the native side cannot open, or a document it
- * fails to read, is read by Lucene, as is every document while {@code index.lucene_rust.fetch.enabled}
+ * fails to read, is read by Lucene, as is every document while {@code index.fetch.accelerated}
  * is off.
  */
 final class NativeStoredFieldsReader extends FilterDirectoryReader {
@@ -82,7 +82,7 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
     static final class Shared {
         final NativeReaders readers;
         final SearchStats stats;
-        /** Whether documents are read natively ({@code index.lucene_rust.fetch.enabled}). */
+        /** Whether documents are read natively ({@code index.fetch.accelerated}). */
         final BooleanSupplier enabled;
         /**
          * The index derives {@code _source} ({@code index.derived_source.enabled}): its mappers read

@@ -12,15 +12,15 @@ package org.lucenerust.opensearch.engine;
  * KNN990HnswBinaryVectorsFormat} and {@code hnsw_half:<m>:<beam>} for its {@code
  * KNN1040HnswHalfFloatVectorsFormat}, and {@code ivf:<target cluster size>:<rerank encoding>} (1-bit
  * codes) or {@code ivf:<target cluster size>:<rerank encoding>:<quantizer>} for this engine's {@code
- * LuceneRustIvfVectorsFormat}, and {@code hnsw_rq:<quantizer>:<m>:<beam>} for its {@code
- * LuceneRustHnswQuantizedVectorsFormat} ({@code encoding} is {@code ScalarEncoding}'s wire number, the
+ * IvfVectorsFormat}, and {@code hnsw_rq:<quantizer>:<m>:<beam>} for its {@code
+ * HnswQuantizedVectorsFormat} ({@code encoding} is {@code ScalarEncoding}'s wire number, the
  * rerank encoding's for {@code ivf} and the quantizer's for {@code hnsw_rq}; an IVF field's cluster
  * size rides in {@code maxConn}, its quantizer in {@code beamWidth}).
  * The attribute stays in the segments' field infos, so a reopened writer merges the field in the
  * same format ({@code engine_writer.rs}'s {@code parse_vectors_format}).
  */
 public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encoding) {
-    public static final String ATTRIBUTE = "lucene_rust.knn_format";
+    public static final String ATTRIBUTE = "accelerated.vectors_format";
 
     /** The codec's default, {@code Lucene99HnswVectorsFormat()}. */
     public static final VectorsFormatSpec DEFAULT = new VectorsFormatSpec(0, 0, 0, 0);

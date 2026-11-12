@@ -34,9 +34,9 @@ pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldKnnVectorsFormat.suffix";
 /// `Lucene99HnswVectorsFormat`'s SPI name.
 pub const HNSW_NAME: &str = "Lucene99HnswVectorsFormat";
 /// [`KnnVectorsFormat::Ivf`]'s SPI name.
-pub const IVF_NAME: &str = "LuceneRustIvfVectorsFormat";
+pub const IVF_NAME: &str = "IvfVectorsFormat";
 /// [`KnnVectorsFormat::HnswQuantized`]'s SPI name.
-pub const HNSW_QUANTIZED_NAME: &str = "LuceneRustHnswQuantizedVectorsFormat";
+pub const HNSW_QUANTIZED_NAME: &str = "HnswQuantizedVectorsFormat";
 
 /// [`KnnVectorsFormat::Ivf`]'s rerank vector encodings, by wire number:
 /// `f32`, `f16`, `bf16` and 8-bit residuals (`lucene_ivf::VectorEncoding`).

@@ -91,7 +91,7 @@ def run(seconds, size=50):
             print(f"{index:14} {case:16} {p50:10.2f} {p[int(len(p) * .9)]:7.2f} {s50:10.2f} "
                   f"{s[int(len(s) * .9)]:7.2f} {s50 / p50:11.2f}x", flush=True)
     stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
-    print("native_highlights", stats.get("native_highlights"), "native_errors", stats.get("native_errors"))
+    print("accelerated_highlights", stats.get("accelerated_highlights"), "accelerated_errors", stats.get("accelerated_errors"))
     print("highlight fallbacks", {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k})
 
 

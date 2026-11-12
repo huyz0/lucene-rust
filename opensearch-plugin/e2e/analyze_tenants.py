@@ -5,7 +5,7 @@ Usage:
   analyze_tenants.py BASE CONTAINER LABEL OUT_DIR SETTINGS_JSON [--tenants N] [--docs N] [--perf PERF]
 
 SETTINGS_JSON adds index settings to bench_tenants.py's (for example
-'{"lucene_rust.partition_field": "tenant", "lucene_rust.partition_pool_docs": 0}'
+'{"segment_partition.field": "tenant"}'
 or '{"sort.field": "tenant"}'). Written to OUT_DIR/LABEL-*:
   - stats.json: node stats after load (refresh, flush, merge totals), segment
     count and sizes, heap after GC, and search latency for each query shape as
@@ -176,7 +176,7 @@ def run(base, container, label, out, settings_extra, tenants, ndocs, perf):
     with open(os.path.join(out, f"{label}-histo.txt"), "w") as fh:
         fh.write(sh(container, f"{JDK}jcmd {ctx['jpid']} GC.class_histogram | head -45"))
 
-    wraps = ["term", "bool"] if "lucene_rust.partition_field" in settings or "sort.field" in settings else ["term"]
+    wraps = ["term", "bool"] if "segment_partition.field" in settings or "sort.field" in settings else ["term"]
     result["search"] = time_shapes(sizes, 5, wraps)
     for cls, ks in bt.classes(sizes).items():
         b = {"query": filtered(ks[0], SHAPES[0][1], "bool"), "profile": True}

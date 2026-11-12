@@ -704,7 +704,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     }
 
     /**
-     * The index's {@code index.lucene_rust.knn.target_recall} for this shard's field, or null when it
+     * The index's {@code index.knn.target_recall} for this shard's field, or null when it
      * is off or the query asks for its own depth ({@code ef_search} or {@code nprobes}), which is
      * then searched as asked.
      */

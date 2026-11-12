@@ -1,6 +1,6 @@
 //! Build time, size, recall and latency of one KNN field through the real
 //! index path (IndexWriter, segment reader, `knn_top_hits`) per vectors
-//! format: HNSW, scalar-quantized HNSW and `LuceneRustIvfVectorsFormat`.
+//! format: HNSW, scalar-quantized HNSW and `IvfVectorsFormat`.
 //!
 //! ```text
 //! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]

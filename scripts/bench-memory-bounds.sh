@@ -36,7 +36,7 @@ docker run -d --name "$name" -p "$PORT:9200" --memory="$MEM" --memory-swap="$MEM
     -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
     -e cluster.routing.allocation.disk.threshold_enabled=false \
     -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms$HEAP -Xmx$HEAP" \
-    ${ENGINE_ARGS--e lucene_rust.engine.default=true} ${EXTRA:-} "$IMAGE" >/dev/null
+    ${ENGINE_ARGS--e indices.engine.accelerated.default=true} ${EXTRA:-} "$IMAGE" >/dev/null
 trap 'docker logs "$name" > "$OUT/$LABEL.log" 2>&1 || true; docker inspect -f "{{.State.OOMKilled}} {{.State.ExitCode}}" "$name" > "$OUT/$LABEL.state" 2>&1 || true; docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
 curl -sf "localhost:$PORT/_cluster/health/membounds?wait_for_status=yellow&timeout=120s" >/dev/null || true

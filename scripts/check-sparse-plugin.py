@@ -81,7 +81,7 @@ def wait(port):
 def create(port, index, params, docs, rust, merge=False):
     settings = {"index.sparse": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
     if rust is not None:
-        settings["index.lucene_rust.engine"] = rust
+        settings["index.engine.accelerated"] = rust
     mapping = {"properties": {"tag": {"type": "keyword"}, "feat": {"type": "rank_features"},
                "emb": {"type": "sparse_vector", "method": {"name": "seismic", "parameters": params}}}}
     req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
@@ -188,7 +188,7 @@ def main():
             failures.append(f"neural stats: ours {answers[0]}, stock {answers[1]}")
         print(f"neural stats: {answers[0]}")
         after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")

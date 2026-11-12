@@ -20,17 +20,17 @@ import org.lucenerust.opensearch.knn.KnnFieldConfig;
  * Here a search walks the graph on the raw vectors, so Lucene's own paths return exact scores, and a
  * segment this side writes has the graph alone, which the Rust engine searches on the raw vectors.
  */
-public final class LuceneRustHnswQuantizedVectorsFormat extends KnnVectorsFormat {
-    public static final String NAME = "LuceneRustHnswQuantizedVectorsFormat";
+public final class HnswQuantizedVectorsFormat extends KnnVectorsFormat {
+    public static final String NAME = "HnswQuantizedVectorsFormat";
 
     private final Lucene99HnswVectorsFormat delegate;
 
     /** The SPI instance: a reader takes the graph parameters from the files. */
-    public LuceneRustHnswQuantizedVectorsFormat() {
+    public HnswQuantizedVectorsFormat() {
         this(KnnFieldConfig.DEFAULT_M, KnnFieldConfig.DEFAULT_EF_CONSTRUCTION);
     }
 
-    public LuceneRustHnswQuantizedVectorsFormat(int maxConn, int beamWidth) {
+    public HnswQuantizedVectorsFormat(int maxConn, int beamWidth) {
         super(NAME);
         this.delegate = new Lucene99HnswVectorsFormat(maxConn, beamWidth);
     }
