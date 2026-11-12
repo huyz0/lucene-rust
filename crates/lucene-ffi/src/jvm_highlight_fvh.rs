@@ -131,7 +131,7 @@ fn node(c: &mut Cursor<'_>, depth: usize) -> Result<QueryPhraseMap, FfiStatus> {
     let boost = f32::from_bits(c.i32()?.cast_unsigned());
     let number = c.i32()?;
     let n = count(c, "sub terms")?;
-    let mut subs = HashMap::with_capacity(n);
+    let mut subs = HashMap::with_capacity(n); // alloc-ok: count() bounds it by the request's bytes
     for _ in 0..n {
         let term = string(c, "a term")?;
         let sub = node(c, depth + 1)?;
@@ -162,17 +162,17 @@ fn decode(blob: &[u8]) -> Result<Fvh, FfiStatus> {
         .collect::<Result<Vec<_>, _>>()?;
     let field_match = c.u8()? != 0;
     let n = count(&mut c, "root maps")?;
-    let mut roots = HashMap::with_capacity(n);
+    let mut roots = HashMap::with_capacity(n); // alloc-ok: count() bounds it by the request's bytes
     for _ in 0..n {
         let k = key(&mut c)?;
         roots.insert(k, node(&mut c, 0)?);
     }
     let n = count(&mut c, "term sets")?;
-    let mut term_sets = HashMap::with_capacity(n);
+    let mut term_sets = HashMap::with_capacity(n); // alloc-ok: count() bounds it by the request's bytes
     for _ in 0..n {
         let k = key(&mut c)?;
         let terms = count(&mut c, "terms")?;
-        let mut set = HashSet::with_capacity(terms);
+        let mut set = HashSet::with_capacity(terms); // alloc-ok: count() bounds it by the request's bytes
         for _ in 0..terms {
             set.insert(string(&mut c, "a term")?);
         }
@@ -195,7 +195,7 @@ fn decode(blob: &[u8]) -> Result<Fvh, FfiStatus> {
     let kind = c.u8()?;
     let max_scan = c.i32()?;
     let n = count(&mut c, "boundary chars")?;
-    let mut chars = Vec::with_capacity(n);
+    let mut chars = Vec::with_capacity(n); // alloc-ok: count() bounds it by the request's bytes
     for _ in 0..n {
         let lo = c.u8()?;
         let hi = c.u8()?;
@@ -299,7 +299,7 @@ fn fragments(
         h.matched.iter().map(String::as_str).collect()
     };
     let num_docs = f64::from(segment.max_doc);
-    let mut lists = Vec::with_capacity(fields.len());
+    let mut lists = Vec::with_capacity(fields.len()); // alloc-ok: the fields already read
     for field in &fields {
         let vector = match (&tvs, segment.field_infos().field_by_name(field)) {
             (Some(tvs), Some(info)) if h.query.term_set(field).is_some() => {
