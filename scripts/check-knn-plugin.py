@@ -516,7 +516,7 @@ def ivf_check(failures):
     ]
     off = [("ivf off the accelerated engine", ivf_mapping(), False), ("extended hnsw off the accelerated engine", rust_hnsw_mapping(), False)]
     for label, m, rust in [(label, m, True) for label, m in bad] + off:
-        settings = {"index.knn": True, **({"index.engine.accelerated": True} if rust else {})}
+        settings = {"index.knn": True, "index.engine.accelerated": rust}
         r = req(OURS[1], "PUT", "/bad-mapping", {"settings": settings,
                                                  "mappings": {"properties": {"v": m}}}, ok_errors=True)
         if r.get("status", 200) != 400:
