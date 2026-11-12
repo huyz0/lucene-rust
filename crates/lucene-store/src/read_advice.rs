@@ -13,8 +13,11 @@
 //!
 //! The defaults here advise random reads for the files a vector search reads
 //! a vector at a time: flat vectors (`vec`), the HNSW graph (`vex`), IVF
-//! rerank vectors (`ivv`) and quantized vector codes (`veq`, `vqd`). Every
-//! other file keeps the OS default. [`set`] replaces the table; `*` sets the
+//! rerank vectors (`ivv`) and quantized vector codes (`veq`, `vqd`). Stored
+//! fields (`fdt`) are advised [`ReadAdvice::Auto`]: random once the file is
+//! too large to stay in memory, the stored-fields reader then reading each
+//! chunk it needs in one `MADV_WILLNEED`. Every other file keeps the OS
+//! default. [`set`] replaces the table; `*` sets the
 //! advice of every extension not listed (Lucene's
 //! `org.apache.lucene.store.defaultReadAdvice`).
 //!
@@ -41,17 +44,25 @@ pub enum ReadAdvice {
     /// The whole file is read in at open (`MADV_WILLNEED`), then the OS
     /// default: OpenSearch's `index.store.preload`.
     WillNeed,
+    /// [`ReadAdvice::Random`] when the file is larger than an eighth of the
+    /// memory this process may use (it will not stay in the page cache),
+    /// [`ReadAdvice::Normal`] otherwise; never read in at open
+    /// ([`resolve`]). The default for stored fields (`fdt`), whose reader
+    /// then advises each chunk it reads in (`MADV_WILLNEED`), so a chunk
+    /// still arrives in one read.
+    Auto,
 }
 
 impl ReadAdvice {
     /// The advice named `name` (Lucene's `ReadAdvice` names, any case,
-    /// plus `willneed`/`preload`).
+    /// plus `willneed`/`preload` and `auto`).
     pub fn parse(name: &str) -> Option<ReadAdvice> {
         match name.trim().to_ascii_lowercase().as_str() {
             "normal" => Some(ReadAdvice::Normal),
             "random" => Some(ReadAdvice::Random),
             "sequential" => Some(ReadAdvice::Sequential),
             "willneed" | "will_need" | "preload" => Some(ReadAdvice::WillNeed),
+            "auto" => Some(ReadAdvice::Auto),
             _ => None,
         }
     }
@@ -60,6 +71,10 @@ impl ReadAdvice {
 /// The extensions advised [`ReadAdvice::Random`] unless [`set`] says
 /// otherwise.
 pub const DEFAULT_RANDOM_EXTENSIONS: [&str; 5] = ["vec", "vex", "ivv", "veq", "vqd"];
+
+/// The extensions advised [`ReadAdvice::Auto`] unless [`set`] says
+/// otherwise.
+pub const DEFAULT_AUTO_EXTENSIONS: [&str; 1] = ["fdt"];
 
 struct Table {
     /// `(extension, advice)`, as [`set`] gave them.
@@ -86,7 +101,25 @@ pub fn for_extension(ext: &str) -> ReadAdvice {
             .find(|(e, _)| e == ext)
             .map_or(t.other, |&(_, a)| a),
         None if DEFAULT_RANDOM_EXTENSIONS.contains(&ext) => ReadAdvice::Random,
+        None if DEFAULT_AUTO_EXTENSIONS.contains(&ext) => ReadAdvice::Auto,
         None => ReadAdvice::Normal,
+    }
+}
+
+/// The advice `advice` stands for on a file of `len` bytes: for
+/// [`ReadAdvice::Auto`], [`ReadAdvice::Random`] when `len` is more than an
+/// eighth of [`crate::directory::memory_available`] and
+/// [`ReadAdvice::Normal`] otherwise (or when the memory is unknown); any
+/// other advice as given.
+pub fn resolve(advice: ReadAdvice, len: u64) -> ReadAdvice {
+    match advice {
+        ReadAdvice::Auto
+            if crate::directory::memory_available().is_some_and(|avail| len > avail / 8) =>
+        {
+            ReadAdvice::Random
+        }
+        ReadAdvice::Auto => ReadAdvice::Normal,
+        other => other,
     }
 }
 
@@ -121,7 +154,7 @@ pub fn set(spec: &str) -> Result<()> {
             .ok_or_else(|| Error::Io(bad(format!("read advice entry '{entry}' has no advice"))))?;
         let advice = ReadAdvice::parse(advice).ok_or_else(|| {
             Error::Io(bad(format!(
-                "unknown read advice '{advice}' (normal, random, sequential or willneed)"
+                "unknown read advice '{advice}' (normal, random, sequential, willneed or auto)"
             )))
         })?;
         let ext = ext.trim().trim_start_matches('.');
@@ -165,7 +198,12 @@ mod tests {
             for_extension("_0_Lucene99HnswVectorsFormat_0.veq"),
             ReadAdvice::Random
         );
-        assert_eq!(for_extension("fdt"), ReadAdvice::Normal);
+        assert_eq!(for_extension("fdt"), ReadAdvice::Auto);
+        assert_eq!(for_extension("tim"), ReadAdvice::Normal);
+        assert_eq!(resolve(ReadAdvice::Auto, 0), ReadAdvice::Normal);
+        assert_eq!(resolve(ReadAdvice::Auto, u64::MAX), ReadAdvice::Random);
+        assert_eq!(resolve(ReadAdvice::Sequential, 0), ReadAdvice::Sequential);
+        assert_eq!(ReadAdvice::parse(" AUTO "), Some(ReadAdvice::Auto));
 
         set("fdt:random, .tvd=Random ,doc:sequential,*:normal,kdd:preload").unwrap();
         assert_eq!(for_extension("fdt"), ReadAdvice::Random);
