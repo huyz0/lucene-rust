@@ -177,6 +177,18 @@ fn main() {
         &plain
     };
     println!("mode {mode}, index {:.1} MB", dir_size(path) as f64 / 1e6);
+    // MERGE_LIVE=1: the merge runs on the index the reader has open, as a
+    // node merges the segments it searches.
+    let live = std::env::var("MERGE_LIVE").is_ok_and(|v| v == "1");
+    let scratch = root.join(format!("merge-{mode}"));
+    let path = if live {
+        copy_dir(path, &scratch);
+        let _ = std::process::Command::new("sync").status();
+        let _ = std::fs::write("/proc/sys/vm/drop_caches", "1");
+        &scratch
+    } else {
+        path
+    };
     report("start", 0.0);
     {
         let dir = open_mode(&mode, path);
@@ -217,10 +229,22 @@ fn main() {
         report("query-p50", passes[passes.len() / 2]);
         report("query-min", passes[0]);
         println!("hits {hits}");
+        if live {
+            let t = Instant::now();
+            let mut w = IndexWriter::open(&*dir, Vec::new(), "Lucene104", version()).unwrap();
+            w.force_merge(1).unwrap();
+            w.commit().unwrap();
+            report("merge-live", t.elapsed().as_secs_f64() * 1e3);
+        }
     }
-    let scratch = root.join(format!("merge-{mode}"));
+    if live {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return;
+    }
     copy_dir(path, &scratch);
-    // The copy sits in the kernel's cache: drop it so the merge reads disk.
+    // The copy sits in the kernel's cache, dirty until written back: write
+    // it and drop it so the merge reads the disk in every mode.
+    let _ = std::process::Command::new("sync").status();
     let _ = std::fs::write("/proc/sys/vm/drop_caches", "1");
     {
         let dir = open_mode(&mode, &scratch);
