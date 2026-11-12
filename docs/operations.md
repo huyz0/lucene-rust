@@ -91,9 +91,30 @@ The plugin allocates native memory the JVM heap does not see. Leave headroom
 beyond `-Xmx` for it:
 
 - **Search**, per segment of 10,000 documents or more: the query cache (at most
-  1,000 entries and 16 MB), and for sorted searches decoded sort columns (at
-  most 32 MB per segment and 512 MB per process). Both are freed with the
+  1,000 entries and 16 MB per segment, and `indices.queries.cache.size`
+  across every segment of the node, least recently used sets evicted first,
+  whichever segment holds them), and for sorted searches decoded sort columns
+  (at most 32 MB per segment and 512 MB per process). Both are freed with the
   segment.
+- **Each native search, aggregation and rescore** is charged to OpenSearch's
+  `request` circuit breaker while it runs, as OpenSearch's own aggregators
+  charge it: the library counts what the call allocates and asks the breaker
+  for more as it grows (at least 1 MB, then an eighth of what it holds). A
+  refused charge stops the call at its next checkpoint (every 1,024 documents
+  an aggregation collects, and before a count array sized by a field's
+  cardinality) and the search fails with the breaker's
+  `circuit_breaking_exception`, a 429, rather than running again on Lucene.
+  Native aggregation results count against `search.max_buckets` as
+  OpenSearch's do (`too_many_buckets_exception`).
+- **The node's bound**, `indices.memory.off_heap.limit` (dynamic): everything
+  the library holds outside the heap -- indexing buffers, caches, running
+  requests. `auto` (the default) is half of what the machine or container
+  (the JDK reads the cgroup limit) leaves after the heap and the page cache
+  budget, at least 256 MB; `0` turns it off. Past it, native searches fail
+  with a 429 until memory is freed; indexing goes on under its own breaker.
+  `GET /_plugins/lucene_rust/stats` reports it under `off_heap_memory`: bytes
+  held and the most held, the requests each bound stopped, the query caches'
+  bytes and evictions, and the largest request seen.
 - **Indexing**, per Rust-engine shard: the buffered documents until the next
   refresh. The writer flushes at `indices.memory.index_buffer_size` and
   stalls indexing at twice that, as Lucene's does; the `lucene_rust_writer`
@@ -318,12 +339,17 @@ The rehearsal found two defects, both fixed before these numbers:
 
 ## Known limits
 
-- **A native search cannot be cancelled mid-flight.** Cancellation and the
-  `timeout` are checked before and after the native call, not during it. A
-  search that runs over its `timeout` answers with every hit and is flagged
-  `timed_out` (see [the details](opensearch-native-queries.md#known-limits)).
-- **The native query cache is per segment** (1,000 entries, 16 MB). It sits
-  outside `indices.queries.cache.size` and its stats.
+- **A native search's `timeout` is checked before and after the native call,
+  not during it.** A search that runs over its `timeout` answers with every
+  hit and is flagged `timed_out` (see
+  [the details](opensearch-native-queries.md#known-limits)). A task cancelled
+  while the call runs (the tasks API, search backpressure) stops at the call's
+  next checkpoint, within about 100 ms.
+- **The native query cache** takes `indices.queries.cache.size` as its node
+  budget, but its sets are not in the `query_cache` section of
+  `_nodes/stats`; the plugin's stats report them.
+- **Fetch is not charged to a breaker.** A stored document is read whole, as
+  Lucene reads it; its bytes count toward `indices.memory.off_heap.limit`.
 - **Rust engine**: no `index.merge.policy.*`, and no merge statistics in
   `_stats`, because merges run inside commits. Segments are non-compound, so
   there are more files per segment. `_segments` counts only hard deletes. On
