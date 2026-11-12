@@ -864,7 +864,7 @@ pub(super) fn restore(asked: &[AggNode], results: &mut [super::AggResult]) {
 }
 
 /// The parts a pass keeps of a metric asked for `needs`
-/// ([`MetricState::collect_needs`]'s dispatch, which the windows share):
+/// ([`super::MetricCol::for_needs`], which the windows share):
 /// one extreme or the count alone, the count and sum together, or every
 /// part.
 fn collected(needs: u8) -> u8 {
@@ -962,7 +962,9 @@ fn parts_of(
 
 fn part_of(node: &AggNode, state: State, i: usize, globals: &Globals<'_>) -> Result<Part> {
     match (node, state) {
-        (AggNode::Metric { .. }, State::Metric(v)) => Ok(Part::Metric(v)),
+        (AggNode::Metric { .. }, State::Metric(v)) => {
+            Ok(Part::Metric((0..v.len()).map(|o| v.get(o)).collect()))
+        }
         (
             AggNode::Terms { field, .. },
             State::Keyed {
@@ -1023,6 +1025,9 @@ fn add(
 ) -> Result<bool> {
     match (node, state, part) {
         (AggNode::Metric { needs, .. }, State::Metric(dst), Part::Metric(src)) => {
+            let Some(dst) = dst.full() else {
+                return Err(mismatch());
+            };
             let sums = collected(*needs) & aggs::NEED_SUM != 0;
             for (o, s) in src.iter().enumerate() {
                 let Some(&to) = owners.get(o) else {

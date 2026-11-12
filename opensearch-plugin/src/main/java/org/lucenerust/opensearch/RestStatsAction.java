@@ -140,6 +140,7 @@ public final class RestStatsAction extends BaseRestHandler {
                 b.field("evictions", memory[8]);
                 b.endObject();
                 b.field("sort_columns_in_bytes", memory[9]);
+                b.field("global_ordinals_in_bytes", memory[10]);
                 b.endObject();
             }
             // The page cache (page_cache and encrypted shards): its memory is native, outside

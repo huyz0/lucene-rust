@@ -359,6 +359,10 @@ pub enum Error {
     /// ([`lucene_util::memory`]).
     #[error(transparent)]
     Memory(#[from] lucene_util::memory::Exceeded),
+    /// An aggregation made more buckets than the request allows
+    /// (`search.max_buckets`): at least the first number, over the second.
+    #[error("too many buckets: at least {0}, over the limit of {1}")]
+    TooManyBuckets(usize, usize),
     #[error(transparent)]
     BlockTree(#[from] blocktree::Error),
     /// A multi-term [`PhraseQuery`] needs an opened `.pos` file to check

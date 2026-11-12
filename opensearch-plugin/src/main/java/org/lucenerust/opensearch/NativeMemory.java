@@ -78,6 +78,10 @@ public final class NativeMemory {
     /** The innermost scope open on this thread. */
     private static final ThreadLocal<Scope> CURRENT = new ThreadLocal<>();
     private static volatile boolean installed;
+    /** The node's breakers, from the first request (for the global ordinals' fielddata charge). */
+    private static volatile CircuitBreakerService breakers;
+    /** What the global ordinals' bytes last charged the fielddata breaker; the watch thread only. */
+    private static long fielddataCharged;
     private static volatile long limit;
 
     private NativeMemory() {}
@@ -161,10 +165,12 @@ public final class NativeMemory {
 
     /**
      * The library's counters: bytes held, the most held, the bound, requests stopped by the request
-     * breaker, requests stopped by the bound, requests cancelled mid-call. Null when unavailable.
+     * breaker, requests stopped by the bound, requests cancelled mid-call, the query caches' bytes,
+     * budget and evictions, decoded sort columns' bytes, and the global ordinals' bytes. Null when
+     * unavailable.
      */
     public static long[] stats() {
-        long[] out = new long[10];
+        long[] out = new long[11];
         return NativeBridge.memoryStats(out) == NativeBridge.OK ? out : null;
     }
 
@@ -205,6 +211,9 @@ public final class NativeMemory {
     private static CircuitBreaker requestBreaker(SearchContext ctx) {
         try {
             CircuitBreakerService service = ctx.bigArrays().breakerService();
+            if (service != null && breakers == null) {
+                breakers = service;
+            }
             return service == null ? null : service.getBreaker(CircuitBreaker.REQUEST);
         } catch (RuntimeException e) {
             return null;
@@ -239,6 +248,7 @@ public final class NativeMemory {
         while (true) {
             try {
                 Thread.sleep(CANCEL_POLL_MILLIS);
+                syncFielddata();
                 for (Scope s : OPEN.values()) {
                     if (s.cancelSent == false && s.ctx.isCancelled()) {
                         s.cancelSent = true;
@@ -250,6 +260,29 @@ public final class NativeMemory {
             } catch (Throwable t) {
                 logger.debug("lucene-rust: memory cancel watch", t);
             }
+        }
+    }
+
+    /**
+     * Brings the {@code fielddata} breaker to what the library's global ordinals hold now, as
+     * OpenSearch charges it for the global ordinals it builds on the heap: they outlive the request
+     * that built them, so the parent breaker counts them until the reader holding them closes. The
+     * charge follows the library's count; it never refuses, since the ordinals are already built.
+     */
+    private static void syncFielddata() {
+        CircuitBreakerService service = breakers;
+        if (service == null) {
+            return;
+        }
+        long[] s = stats();
+        if (s == null) {
+            return;
+        }
+        long now = Math.max(0, s[10]);
+        long delta = now - fielddataCharged;
+        if (delta != 0) {
+            service.getBreaker(CircuitBreaker.FIELDDATA).addWithoutBreaking(delta);
+            fielddataCharged = now;
         }
     }
 

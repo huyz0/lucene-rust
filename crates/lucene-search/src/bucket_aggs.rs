@@ -1012,6 +1012,10 @@ pub struct Globals<'g> {
     /// Each keyword `missing` term's place among its field's global
     /// ordinals ([`resolve_missing`]).
     missing: HashMap<(String, Vec<u8>), MissingTerm>,
+    /// The most buckets the request may still make (`search.max_buckets`
+    /// less what it made already): a pass whose buckets pass it stops with
+    /// [`crate::Error::TooManyBuckets`] instead of building them all.
+    bucket_limit: usize,
 }
 
 /// A keyword `missing` term among the global ordinals.
@@ -1029,7 +1033,15 @@ impl<'g> Globals<'g> {
         Globals {
             ords,
             missing: HashMap::new(),
+            bucket_limit: usize::MAX,
         }
+    }
+
+    /// These globals with a bucket limit ([`Globals::bucket_limit`]).
+    #[must_use]
+    pub fn with_bucket_limit(mut self, limit: usize) -> Self {
+        self.bucket_limit = limit;
+        self
     }
 
     fn missing(&self, field: &str, term: &[u8]) -> Result<MissingTerm> {
@@ -1129,9 +1141,111 @@ struct SortedState {
     scores: FastMap<i32, f32>,
 }
 
+/// [`State::Metric`]: each owning bucket's metric, as only the parts its
+/// node reads ([`aggs::MetricSlot`]): an `avg` keeps 24 bytes a bucket, a
+/// `min` or `max` 8, a `stats` all 56.
+enum MetricCol {
+    All(Vec<MetricState>),
+    CountSum(Vec<aggs::CountSum>),
+    Count(Vec<aggs::Count>),
+    Min(Vec<aggs::MinOf>),
+    Max(Vec<aggs::MaxOf>),
+}
+
+/// `$body` with `$v` bound to the [`MetricCol`]'s vector, whatever its form.
+macro_rules! with_metric_col {
+    ($col:expr, $v:ident => $body:expr) => {
+        match $col {
+            MetricCol::All($v) => $body,
+            MetricCol::CountSum($v) => $body,
+            MetricCol::Count($v) => $body,
+            MetricCol::Min($v) => $body,
+            MetricCol::Max($v) => $body,
+        }
+    };
+}
+
+impl MetricCol {
+    /// The form keeping the parts `needs` names, as `collect_needs` reads
+    /// them: a mix it does not single out keeps every part.
+    fn for_needs(needs: u8) -> Self {
+        use aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
+        match needs {
+            NEED_MIN => Self::Min(Vec::new()),
+            NEED_MAX => Self::Max(Vec::new()),
+            NEED_COUNT => Self::Count(Vec::new()),
+            n if n & !(NEED_COUNT | NEED_SUM) == 0 => Self::CountSum(Vec::new()),
+            _ => Self::All(Vec::new()),
+        }
+    }
+
+    /// The parts kept.
+    fn needs(&self) -> u8 {
+        fn of<S: aggs::MetricSlot>(_: &[S]) -> u8 {
+            S::NEEDS
+        }
+        with_metric_col!(self, v => of(v))
+    }
+
+    /// `owner`'s state, the default when it collected nothing.
+    fn get(&self, owner: usize) -> MetricState {
+        // FBS: `v` is a slot slice, not a bitset; `get` is bounds-checked.
+        with_metric_col!(self, v => v.get(owner).map(aggs::MetricSlot::state).unwrap_or_default())
+    }
+
+    /// The owners held.
+    fn len(&self) -> usize {
+        with_metric_col!(self, v => v.len())
+    }
+
+    /// Every owner's full state, the column turned into [`MetricCol::All`]
+    /// first if it keeps fewer parts (to fold in states collected
+    /// elsewhere, such as a cached segment's).
+    fn full(&mut self) -> Option<&mut Vec<MetricState>> {
+        if !matches!(self, MetricCol::All(_)) {
+            let all = (0..self.len()).map(|o| self.get(o)).collect();
+            *self = MetricCol::All(all);
+        }
+        match self {
+            MetricCol::All(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+/// At most how many buckets `nodes`' results will hold, from below: what
+/// `consumeBucketsAndMaybeBreak` will count when they are built. Every
+/// histogram bucket collected is built, a terms aggregation builds up to
+/// its shard size (each owner's, so at least the smaller of that and all its
+/// keys), a range or filters aggregation its fixed buckets per owner.
+fn buckets_made(nodes: &[AggNode], states: &[State]) -> usize {
+    let mut made = 0usize;
+    for (node, state) in nodes.iter().zip(states) {
+        let (own, subs) = match (node, state) {
+            (
+                AggNode::Histogram { .. } | AggNode::DateHistogram { .. },
+                State::Keyed { keys, subs, .. },
+            ) => (keys.len(), subs.as_slice()),
+            (
+                AggNode::Terms { shard_size, .. } | AggNode::NumericTerms { shard_size, .. },
+                State::Keyed { keys, subs, .. },
+            ) => (keys.len().min(*shard_size), subs.as_slice()),
+            (AggNode::Range { .. } | AggNode::Filters { .. }, State::Fixed { docs, subs, .. }) => {
+                (docs.len(), subs.as_slice())
+            }
+            (_, State::Keyed { subs, .. } | State::Fixed { subs, .. }) => (0, subs.as_slice()),
+            _ => (0, &[][..]),
+        };
+        made = made
+            .saturating_add(own)
+            .saturating_add(buckets_made(node.subs(), subs));
+    }
+    made
+}
+
 /// The collected state of one aggregation (`BucketsAggregator` and kin).
 enum State {
-    Metric(Vec<MetricState>),
+    Metric(MetricCol),
     /// Each owning bucket's t-digest, made when the bucket collects its
     /// first document (`getExistingOrNewHistogram`), whether or not it has
     /// a value; `nan` once a value was NaN, which Java refuses.
@@ -1195,7 +1309,7 @@ impl State {
     fn new(node: &AggNode) -> State {
         let subs = || node.subs().iter().map(State::new).collect();
         match node {
-            AggNode::Metric { .. } => State::Metric(Vec::new()),
+            AggNode::Metric { needs, .. } => State::Metric(MetricCol::for_needs(*needs)),
             AggNode::Percentiles { hdr: true, .. } => State::Recorded(Vec::new()),
             AggNode::Percentiles { compression, .. } => State::Digests {
                 compression: *compression,
@@ -1827,12 +1941,8 @@ fn open_leaf<'a>(
                 None
             };
             if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
-                let s = slot(states, 0);
-                if *source == Source::PointsMin {
-                    s.min_of_mins = aggs::java_min(s.min_of_mins, v);
-                } else {
-                    s.max_of_maxes = aggs::java_max(s.max_of_maxes, v);
-                }
+                let is_min = *source == Source::PointsMin;
+                with_metric_col!(states, st => aggs::MetricSlot::bound(slot(st, 0), is_min, v));
             }
             Col::Values(aggs::open_values(reader, field)?, bound.is_some())
         }
@@ -2169,6 +2279,14 @@ struct KeyOrds {
     /// eighths full: short probe runs, whose branches predict well. A free
     /// slot's ordinal is [`KeyOrds::EMPTY`].
     slots: Vec<KeySlot>,
+    /// Owner 0's bucket of each key in `0..dense.len()` ([`KeyOrds::EMPTY`]
+    /// until it has one), when [`KeyOrds::densify`] chose it: a top-level
+    /// keyword `terms` whose global ordinals the matches will mostly reach
+    /// keeps 4 bytes an ordinal instead of a slot per bucket. Every other
+    /// key lives in `slots`.
+    dense: Vec<u32>,
+    /// The keys in `slots`.
+    hashed: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -2202,12 +2320,46 @@ impl KeyOrds {
         64 - len.trailing_zeros()
     }
 
+    /// Whether owner 0's keys `0..keys` should be looked up in a dense array
+    /// rather than the table: a lookup is 2-3x cheaper and holds 4 bytes a
+    /// key rather than 16 a slot (at most five eighths full), which pays
+    /// once the matches reach about one key in eight
+    /// (`perf/memory-bounds/raw/followup`); past that the table, sized by
+    /// the buckets made, holds less.
+    fn dense_pays(keys: usize, matches: u64) -> bool {
+        keys > 0 && (keys as u64) <= matches.saturating_mul(8)
+    }
+
+    /// Looks up owner 0's keys `0..keys` in a dense array from now on, when
+    /// the request's memory allows it; before any bucket is made.
+    fn densify(&mut self, keys: usize) {
+        if self.hashed > 0 || !self.dense.is_empty() {
+            return;
+        }
+        let bytes = keys.saturating_mul(std::mem::size_of::<u32>());
+        if lucene_util::memory::reserve(bytes).is_ok() {
+            self.dense = vec![Self::EMPTY; keys];
+        }
+    }
+
     /// The bucket of `(owning, key)`, appended to `keys` when new.
     #[inline]
     fn ord(&mut self, keys: &mut Vec<(u32, i64)>, owning: u32, key: i64) -> u32 {
+        if owning == 0 {
+            if let Some(d) = usize::try_from(key)
+                .ok()
+                .and_then(|k| self.dense.get_mut(k))
+            {
+                if *d == Self::EMPTY {
+                    *d = keys.len() as u32;
+                    keys.push((0, key));
+                }
+                return *d;
+            }
+        }
         // ARITH: at most `u32::MAX - 1` buckets (an ordinal is a `u32`).
         #[allow(clippy::arithmetic_side_effects)]
-        if (keys.len() + 1) * 8 > self.slots.len() * 5 {
+        if (self.hashed + 1) * 8 > self.slots.len() * 5 {
             self.grow(keys);
         }
         let mask = self.slots.len() - 1;
@@ -2219,6 +2371,11 @@ impl KeyOrds {
                 let ord = keys.len() as u32;
                 *slot = KeySlot { key, owning, ord };
                 keys.push((owning, key));
+                // ARITH: below `keys.len()`.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    self.hashed += 1;
+                }
                 return ord;
             }
             if slot.key == key && slot.owning == owning {
@@ -2244,7 +2401,11 @@ impl KeyOrds {
         self.slots = vec![Self::FREE; len];
         let mask = len - 1;
         let shift = Self::shift(len);
+        let dense = self.dense.len();
         for (ord, &(owning, key)) in keys.iter().enumerate() {
+            if owning == 0 && usize::try_from(key).is_ok_and(|k| k < dense) {
+                continue;
+            }
             let mut i = Self::slot_of(owning, key, shift);
             // FBS: `i <= mask`; the table has room for every key.
             while self.slots.get(i).is_some_and(|s| s.ord != Self::EMPTY) {
@@ -2328,10 +2489,11 @@ fn collect_window(
     let prefetched = leaf.pre_len > 0 && !leaf.pre_multi;
     match (node, &mut *state) {
         (AggNode::Metric { kind, needs, .. }, State::Metric(states)) if prefetched => {
-            // `collect_needs`'s dispatch, once for the window.
-            use aggs::{NEED_ALL, NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
-            fn run<const N: u8>(
-                states: &mut Vec<aggs::MetricState>,
+            // `collect_needs`'s dispatch, once for the window: the state
+            // keeps only the parts `needs` names (`MetricCol`).
+            use aggs::{MetricSlot, NEED_MAX, NEED_MIN};
+            fn run<S: MetricSlot>(
+                states: &mut Vec<S>,
                 leaf: &Leaf<'_>,
                 kind: ValueKind,
                 docs: &[i32],
@@ -2345,8 +2507,8 @@ fn collect_window(
                 if let Some(&top) = owners.iter().max() {
                     slot(states, top as usize);
                 }
-                fn go<const N: u8>(
-                    states: &mut [aggs::MetricState],
+                fn go<S: MetricSlot>(
+                    states: &mut [S],
                     leaf: &Leaf<'_>,
                     docs: &[i32],
                     owners: &[u32],
@@ -2356,18 +2518,18 @@ fn collect_window(
                         if let (Some(Some(v)), Some(state)) =
                             (leaf.prefetched(doc), states.get_mut(owner as usize))
                         {
-                            state.one::<N>(to_double(v));
+                            state.one(to_double(v));
                         }
                     }
                 }
                 match kind {
-                    ValueKind::Long => go::<N>(states, leaf, docs, owners, |v| {
+                    ValueKind::Long => go(states, leaf, docs, owners, |v| {
                         aggs::to_double(ValueKind::Long, v)
                     }),
-                    ValueKind::Double => go::<N>(states, leaf, docs, owners, |v| {
+                    ValueKind::Double => go(states, leaf, docs, owners, |v| {
                         aggs::to_double(ValueKind::Double, v)
                     }),
-                    ValueKind::Float => go::<N>(states, leaf, docs, owners, |v| {
+                    ValueKind::Float => go(states, leaf, docs, owners, |v| {
                         aggs::to_double(ValueKind::Float, v)
                     }),
                 }
@@ -2376,47 +2538,33 @@ fn collect_window(
             /// whole window (a top-level metric): folded as integers and
             /// handed over once. `long -> double` is monotonic, so the
             /// extreme of the converted values is the converted extreme.
-            fn run_extreme<const N: u8>(
-                states: &mut Vec<aggs::MetricState>,
+            fn run_extreme<const MIN: bool, S: MetricSlot>(
+                states: &mut Vec<S>,
                 leaf: &Leaf<'_>,
                 docs: &[i32],
                 owner: u32,
             ) {
-                let mut best = if N == NEED_MIN { i64::MAX } else { i64::MIN };
+                let mut best = if MIN { i64::MAX } else { i64::MIN };
                 let mut any = false;
                 for &doc in docs {
                     if let Some(Some(v)) = leaf.prefetched(doc) {
                         any = true;
-                        best = if N == NEED_MIN {
-                            best.min(v)
-                        } else {
-                            best.max(v)
-                        };
+                        best = if MIN { best.min(v) } else { best.max(v) };
                     }
                 }
                 if any {
-                    slot(states, owner as usize).many::<N>(ValueKind::Long, &[best]);
+                    slot(states, owner as usize).many(ValueKind::Long, &[best]);
                 }
             }
             let one_owner = owners
                 .first()
                 .filter(|&&o| owners.iter().all(|&x| x == o))
                 .copied();
-            match (*needs, *kind, one_owner) {
-                (NEED_MIN, ValueKind::Long, Some(o)) => {
-                    run_extreme::<NEED_MIN>(states, leaf, docs, o)
-                }
-                (NEED_MAX, ValueKind::Long, Some(o)) => {
-                    run_extreme::<NEED_MAX>(states, leaf, docs, o)
-                }
-                (NEED_MIN, ..) => run::<NEED_MIN>(states, leaf, *kind, docs, owners),
-                (NEED_MAX, ..) => run::<NEED_MAX>(states, leaf, *kind, docs, owners),
-                (NEED_COUNT, ..) => run::<NEED_COUNT>(states, leaf, *kind, docs, owners),
-                (n, ..) if n & !(NEED_COUNT | NEED_SUM) == 0 => {
-                    run::<{ NEED_COUNT | NEED_SUM }>(states, leaf, *kind, docs, owners)
-                }
-                _ => run::<NEED_ALL>(states, leaf, *kind, docs, owners),
-            }
+            with_metric_col!(states, st => match (*needs, *kind, one_owner) {
+                (NEED_MIN, ValueKind::Long, Some(o)) => run_extreme::<true, _>(st, leaf, docs, o),
+                (NEED_MAX, ValueKind::Long, Some(o)) => run_extreme::<false, _>(st, leaf, docs, o),
+                _ => run(st, leaf, *kind, docs, owners),
+            });
             return Ok(());
         }
         (
@@ -3158,7 +3306,10 @@ fn collect(
             if matches!(leaf.col, Col::Values(_, true)) || !leaf.read(doc)? {
                 return Ok(());
             }
-            slot(states, owning as usize).collect_needs(*needs, *kind, &leaf.buf);
+            debug_assert_eq!(states.needs(), MetricCol::for_needs(*needs).needs());
+            with_metric_col!(states, st => {
+                aggs::MetricSlot::many(slot(st, owning as usize), *kind, &leaf.buf)
+            });
         }
         (AggNode::Percentiles { kind, .. }, State::Recorded(values)) => {
             let bucket = slot(values, owning as usize).get_or_insert_with(Vec::new);
@@ -4235,6 +4386,7 @@ pub fn aggregate_tree_cached(
     let resolved = Globals {
         ords: globals.ords,
         missing: resolve_missing(nodes, globals, readers)?,
+        bucket_limit: globals.bucket_limit,
     };
     let globals = &resolved;
     // The request's key, when the cache can answer it at all: the tree's and
@@ -4335,6 +4487,12 @@ pub fn aggregate_tree_cached(
                 // Buckets grow with the documents collected: the request's
                 // memory bound (or a cancel) stops it here.
                 lucene_util::memory::checkpoint()?;
+                if globals.bucket_limit != usize::MAX {
+                    let made = buckets_made(nodes, states);
+                    if made > globals.bucket_limit {
+                        return Err(crate::Error::TooManyBuckets(made, globals.bucket_limit));
+                    }
+                }
                 for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
                     if l.done {
                     } else if no_windows() {
@@ -4515,9 +4673,28 @@ pub fn aggregate_tree_cached(
     // `Err(Inexact)` when a cached part cannot be added in exactly as
     // collecting its segment would have (a sum past 2^53): the pass then
     // runs again without the cache.
+    let matches = crate::slices::estimated_matches(segments, query);
+    let all_docs: u64 = segments
+        .iter()
+        .map(|s| u64::try_from(s.max_doc.unwrap_or(0)).unwrap_or(0))
+        .fold(0, u64::saturating_add);
     let one =
         |slice: &[usize]| -> Result<std::result::Result<Vec<AggResult>, segment_cache::Inexact>> {
             let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+            let slice_docs: u64 = slice
+                .iter()
+                .filter_map(|&i| segments.get(i))
+                .map(|s| u64::try_from(s.max_doc.unwrap_or(0)).unwrap_or(0))
+                .fold(0, u64::saturating_add);
+            // ARITH: u128 products of u64s; `all_docs` is not 0 there.
+            #[allow(clippy::arithmetic_side_effects)]
+            let slice_matches = if all_docs == 0 {
+                0
+            } else {
+                u64::try_from(u128::from(matches) * u128::from(slice_docs) / u128::from(all_docs))
+                    .unwrap_or(u64::MAX)
+            };
+            densify_top_terms(nodes, &mut states, globals, slice_matches);
             let mut docs_buf = Vec::new();
             let mut match_bits: Vec<u64> = Vec::new();
             let mut window_docs: Vec<i32> = Vec::with_capacity(WINDOW as usize);
@@ -4582,6 +4759,13 @@ pub fn aggregate_tree_cached(
                     }
                 }
             }
+            // Buckets counted from the points, read from the cache, or made
+            // after the last window's check, are counted here, before any
+            // result is built.
+            let made = buckets_made(nodes, &states);
+            if made > globals.bucket_limit {
+                return Err(crate::Error::TooManyBuckets(made, globals.bucket_limit));
+            }
             let mut terms = TermLookup::new(readers);
             let mut results = nodes
                 .iter()
@@ -4623,6 +4807,24 @@ pub fn aggregate_tree_cached(
         }
     }
     Ok(out)
+}
+
+/// Top-level keyword `terms` states whose matches will reach about one
+/// global ordinal in eight or more look their buckets up by ordinal
+/// ([`KeyOrds::densify`]); a top-level node's buckets all have owner 0.
+fn densify_top_terms(nodes: &[AggNode], states: &mut [State], globals: &Globals<'_>, matches: u64) {
+    for (node, state) in nodes.iter().zip(states) {
+        let (AggNode::Terms { field, .. }, State::Keyed { ords, .. }) = (node, state) else {
+            continue;
+        };
+        let Some(global) = globals.ords.get(field) else {
+            continue;
+        };
+        let keys = global.value_count();
+        if KeyOrds::dense_pays(keys, matches) {
+            ords.densify(keys);
+        }
+    }
 }
 
 /// A global ordinal's term, read from the first segment holding it.
@@ -4939,10 +5141,7 @@ fn finish(
                 .collect(),
         )),
         (AggNode::Metric { .. }, State::Metric(states)) => Ok(AggResult::Metric(
-            owners
-                .iter()
-                .map(|&o| states.get(o as usize).copied().unwrap_or_default())
-                .collect(),
+            owners.iter().map(|&o| states.get(o as usize)).collect(),
         )),
         (
             AggNode::Cardinality {
@@ -5393,7 +5592,26 @@ mod tests {
     /// ordinal would, across its growth.
     #[test]
     fn key_ords_number_keys_as_a_map_does() {
+        key_ords_match_a_map(None);
+    }
+
+    /// With owner 0's keys below 5000 looked up densely, the rest hashed
+    /// (other owners, negatives, keys past the array), every key keeps one
+    /// bucket, and the table holds only its own keys.
+    #[test]
+    fn dense_key_ords_number_keys_as_a_map_does() {
+        key_ords_match_a_map(Some(5000));
+        assert!(KeyOrds::dense_pays(10_000, 2_000));
+        assert!(!KeyOrds::dense_pays(10_000, 1_000));
+        assert!(!KeyOrds::dense_pays(0, 1_000));
+    }
+
+    fn key_ords_match_a_map(dense: Option<usize>) {
         let mut ords = KeyOrds::default();
+        if let Some(n) = dense {
+            ords.densify(n);
+            assert_eq!(ords.dense.len(), n);
+        }
         let mut keys = Vec::new();
         let mut want: FastMap<(u32, i64), u32> = FastMap::default();
         let mut x = 0x2545_f491_4f6c_dd1du64;
@@ -5416,7 +5634,13 @@ mod tests {
         for (&k, &o) in &want {
             assert_eq!(keys[o as usize], k);
         }
-        assert!(ords.slots.len() * 5 >= keys.len() * 8);
+        assert!(ords.slots.len() * 5 >= ords.hashed * 8);
+        let n = dense.unwrap_or(0);
+        let in_dense = keys
+            .iter()
+            .filter(|&&(o, k)| o == 0 && usize::try_from(k).is_ok_and(|k| k < n))
+            .count();
+        assert_eq!(ords.hashed + in_dense, keys.len());
     }
 
     /// Bounded selection keeps what sorting every bucket and truncating
@@ -5927,6 +6151,16 @@ mod tests {
         nodes: &[AggNode],
         slices: &[Vec<usize>],
     ) -> Result<Vec<Vec<AggResult>>> {
+        run_limited(reader, query, nodes, slices, usize::MAX)
+    }
+
+    fn run_limited(
+        reader: &DirectoryReader,
+        query: &BooleanQuery,
+        nodes: &[AggNode],
+        slices: &[Vec<usize>],
+        bucket_limit: usize,
+    ) -> Result<Vec<Vec<AggResult>>> {
         let mut opened = reader.open_segments().unwrap();
         opened.open_points().unwrap();
         let segments = opened.as_open_segments();
@@ -5943,7 +6177,7 @@ mod tests {
             reader.segment_readers(),
             query,
             nodes,
-            &Globals::new(&ords),
+            &Globals::new(&ords).with_bucket_limit(bucket_limit),
             slices,
             None,
         )
@@ -6203,6 +6437,58 @@ mod tests {
                 let AggResult::Metric(g) = s else { panic!() };
                 assert_eq!(bits(&g[0]), bits(&want[i]));
             }
+        }
+    }
+
+    #[test]
+    fn a_pass_over_the_bucket_limit_stops_before_building_results() {
+        let reader = fixture("metric_aggs_index");
+        let histogram = |subs| AggNode::Histogram {
+            missing: None,
+            field: "i".to_string(),
+            kind: ValueKind::Long,
+            interval: 1.0,
+            offset: 0.0,
+            hard_bounds: (None, None),
+            subs,
+        };
+        for node in [
+            histogram(Vec::new()),
+            histogram(vec![metric("ml", ValueKind::Long)]),
+            AggNode::Range {
+                missing: None,
+                field: "i".to_string(),
+                kind: ValueKind::Long,
+                ranges: vec![(f64::NEG_INFINITY, 0.0), (0.0, f64::INFINITY)],
+                subs: vec![histogram(Vec::new())],
+            },
+        ] {
+            let nodes = std::slice::from_ref(&node);
+            let all_buckets = |r: &AggResult| -> usize {
+                fn count(r: &AggResult) -> usize {
+                    match r {
+                        AggResult::Histogram { buckets, subs } => {
+                            buckets.iter().map(Vec::len).sum::<usize>()
+                                + subs.iter().map(count).sum::<usize>()
+                        }
+                        AggResult::Fixed { docs, subs, .. } => {
+                            docs.len() + subs.iter().map(count).sum::<usize>()
+                        }
+                        _ => 0,
+                    }
+                }
+                count(r)
+            };
+            let full = run(&reader, &all(), nodes, &whole(&reader)).unwrap();
+            let made = all_buckets(&full[0][0]);
+            assert!(made > 2, "{made} buckets");
+            let at = run_limited(&reader, &all(), nodes, &whole(&reader), made).unwrap();
+            assert_eq!(at, full, "a limit the buckets reach is not passed");
+            let over = run_limited(&reader, &all(), nodes, &whole(&reader), made - 1);
+            assert!(
+                matches!(over, Err(crate::Error::TooManyBuckets(n, l)) if n > l && l == made - 1),
+                "{over:?}"
+            );
         }
     }
 
