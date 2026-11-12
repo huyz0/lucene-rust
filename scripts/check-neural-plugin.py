@@ -899,6 +899,9 @@ def warmup(c, ours, stock):
 
 
 PREFIXES = ("knn.", "plugins.neural_search.", "index.knn.", "index.neural_search.", "seismic_thread_pool.")
+# The plugin's own k-NN index settings, which stock has no counterpart for.
+EXTENSIONS = ("index.knn.target_recall", "index.knn.target_recall_sample_rate", "index.knn.target_recall_check_budget",
+              "index.knn.ivf.partition_min_vectors")
 
 
 def settings(c, ours, stock):
@@ -915,7 +918,8 @@ def settings(c, ours, stock):
         n.call("DELETE", "/sset")
         n.ok("PUT", "/sset", {"settings": {"index.knn": True}})
         r = n.ok("GET", "/sset/_settings?include_defaults=true&flat_settings=true")["sset"]
-        return {k: v for part in ("settings", "defaults") for k, v in r.get(part, {}).items() if k.startswith(PREFIXES)}
+        return {k: v for part in ("settings", "defaults") for k, v in r.get(part, {}).items()
+                if k.startswith(PREFIXES) and k not in EXTENSIONS}
     a, b = index_flat(ours), index_flat(stock)
     for k in sorted(set(a) | set(b)):
         compare(c, f"index setting {k}", a.get(k, "<missing>"), b.get(k, "<missing>"))
