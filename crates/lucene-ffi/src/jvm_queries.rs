@@ -96,7 +96,7 @@ pub(crate) const NODE_JOIN: u8 = 46;
 /// longs. Kept a choice so a cheap lead (a tenant's doc-id run) checks its
 /// documents' doc values instead of collecting the range's points.
 pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 48;
-/// A query on the plugin's `rust_wildcard` field ([`SubstringQuery`]):
+/// A query on the plugin's `compact_wildcard` field ([`SubstringQuery`]):
 /// `field`, `kind: u8` ([`SUBSTRING_WILDCARD`], [`SUBSTRING_REGEXP`],
 /// [`SUBSTRING_CONTAINS`] or [`SUBSTRING_EXACT`]), `case_insensitive: u8`,
 /// `pattern: bytes` (UTF-8). Constant-scored 1.

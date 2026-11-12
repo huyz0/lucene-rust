@@ -133,7 +133,7 @@ import java.util.function.Supplier;
 /**
  * lucene-rust for OpenSearch: serves the query phase of supported searches from the Rust engine
  * ({@link RustQueryPhaseSearcher}) and everything else from Lucene, and -- for an index created with
- * {@code index.lucene_rust.engine: true} -- indexes through the Rust writer ({@link
+ * {@code index.engine.accelerated: true} -- indexes through the Rust writer ({@link
  * RustEngineFactory}).
  *
  * <p>The native library is loaded, and its ABI checked, in the constructor: a plugin whose library
@@ -157,7 +157,7 @@ public class RustSearchPlugin extends Plugin implements
      * with OpenSearch's own engine -- a mixed cluster, one index.
      */
     public static final Setting<Boolean> NODE_ENGINE_ENABLED = Setting.boolSetting(
-        "lucene_rust.engine.node_enabled",
+        "indices.engine.accelerated.node_enabled",
         true,
         Setting.Property.NodeScope
     );
@@ -169,26 +169,26 @@ public class RustSearchPlugin extends Plugin implements
      * plugin is installed beside this one.
      */
     public static final Setting<Boolean> NODE_FETCH_WRAPPER = Setting.boolSetting(
-        "lucene_rust.fetch.reader_wrapper",
+        "indices.fetch.accelerated_reader",
         true,
         Setting.Property.NodeScope
     );
 
     /**
-     * Whether the Rust engine decrypts {@code rust_encrypted} shard files page by page on first touch,
+     * Whether the Rust engine decrypts {@code encrypted} shard files page by page on first touch,
      * keeping at most {@link #NODE_DECRYPT_CACHE} of them resident, instead of decrypting each file
      * whole into memory when it opens. Needs Linux with {@code userfaultfd} permitted (container
      * runtimes' default seccomp profiles block it); elsewhere files are decrypted whole.
      */
     public static final Setting<Boolean> NODE_LAZY_DECRYPT = Setting.boolSetting(
-        "lucene_rust.store.encrypted.lazy_decrypt",
+        "indices.store.encrypted.lazy_decrypt",
         false,
         Setting.Property.NodeScope
     );
 
     /** Decrypted bytes kept resident across all demand-decrypted shard files on this node. */
     public static final Setting<ByteSizeValue> NODE_DECRYPT_CACHE = Setting.byteSizeSetting(
-        "lucene_rust.store.encrypted.decrypt_cache_size",
+        "indices.store.encrypted.decrypt_cache_size",
         new ByteSizeValue(512, ByteSizeUnit.MB),
         new ByteSizeValue(1, ByteSizeUnit.MB),
         new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
@@ -196,11 +196,11 @@ public class RustSearchPlugin extends Plugin implements
     );
 
     /**
-     * Bytes the page cache keeps resident across every shard whose {@code index.lucene_rust.store_mode}
+     * Bytes the page cache keeps resident across every shard whose {@code index.store.read_mode}
      * is {@code page_cache}; pages past it are released and read again from disk on their next touch.
      */
     public static final Setting<ByteSizeValue> NODE_PAGE_CACHE_SIZE = Setting.byteSizeSetting(
-        "lucene_rust.store.page_cache.size",
+        "indices.store.page_cache.size",
         new ByteSizeValue(1, ByteSizeUnit.GB),
         new ByteSizeValue(1, ByteSizeUnit.MB),
         new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
@@ -302,7 +302,7 @@ public class RustSearchPlugin extends Plugin implements
     }
 
     /**
-     * The {@code rust_encrypted} store type: encryption at rest with keys from a KMS, which Lucene
+     * The {@code encrypted} store type: encryption at rest with keys from a KMS, which Lucene
      * and the Rust engine both read and write ({@link RustEncryptedDirectoryFactory}).
      */
     @Override
@@ -312,7 +312,7 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * The breaker the Rust writers' buffers are accounted to -- native memory the JVM's own breakers
-     * cannot see. {@code breaker.lucene_rust_writer.limit} sets it. The default is three times
+     * cannot see. {@code breaker.indexing_buffers.limit} sets it. The default is three times
      * {@code indices.memory.index_buffer_size} (30% of the heap by default): a writer stalls
      * indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's does, so
      * under steady load the buffer sits near that bound, and the breaker must sit above it. It trips
@@ -397,7 +397,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         // Every searcher OpenSearch hands out for the index -- the fetch
         // phase's, the get API's -- reads stored fields natively while
-        // index.lucene_rust.fetch.enabled is on, and with Lucene otherwise
+        // index.fetch.accelerated is on, and with Lucene otherwise
         // (either way timed, SearchStats.fetchTime).
         if (fetchWrapper) {
             FetchFlag flag = new FetchFlag(FETCH_ENABLED.get(indexModule.getSettings()));
@@ -470,7 +470,7 @@ public class RustSearchPlugin extends Plugin implements
 
     /** Whether the index's stored fields are read natively. */
     public static final Setting<Boolean> FETCH_ENABLED = Setting.boolSetting(
-        "index.lucene_rust.fetch.enabled",
+        "index.fetch.accelerated",
         true,
         Setting.Property.IndexScope,
         Setting.Property.Dynamic

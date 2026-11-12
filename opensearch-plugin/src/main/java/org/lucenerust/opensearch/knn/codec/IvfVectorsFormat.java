@@ -31,12 +31,12 @@ import org.lucenerust.opensearch.knn.KnnFieldConfig;
  * search scores every accepted vector, so Lucene's own paths (and a segment this side wrote, which
  * has the raw vectors alone) still return exact results.
  */
-public final class LuceneRustIvfVectorsFormat extends KnnVectorsFormat {
-    public static final String NAME = "LuceneRustIvfVectorsFormat";
+public final class IvfVectorsFormat extends KnnVectorsFormat {
+    public static final String NAME = "IvfVectorsFormat";
 
     private static final FlatVectorsFormat FLAT = new Lucene99FlatVectorsFormat(DefaultFlatVectorScorer.INSTANCE);
 
-    public LuceneRustIvfVectorsFormat() {
+    public IvfVectorsFormat() {
         super(NAME);
     }
 

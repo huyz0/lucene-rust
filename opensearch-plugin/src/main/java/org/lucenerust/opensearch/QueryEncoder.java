@@ -121,7 +121,7 @@ public final class QueryEncoder {
      * Whether the native engine is measured at least as fast as Lucene on {@code q}'s shape. That
      * is every shape this class encodes (boosts, {@code must_not}s, mixed booleans and {@code
      * constant_score} wrappers run 1.2-6.7x Lucene in process), so an encodable query is a fast
-     * one and the {@code native_shapes} setting has nothing to exclude.
+     * one and the {@code accelerated_shapes} setting has nothing to exclude.
      */
     public static boolean isFast(Query q) {
         return encode(q, field -> true).blob() != null;
@@ -231,7 +231,7 @@ public final class QueryEncoder {
     /**
      * Whether a points query on {@code field} runs on its doc values instead: {@code _seq_no} of a
      * search whose segments index it without points ({@code
-     * index.lucene_rust.seq_no.index_options: doc_values_only}). Without the search's reader both
+     * index.seq_no.index_options: doc_values_only}). Without the search's reader both
      * layouts carry the doc values, so they are used.
      */
     private static boolean seqNoOnDocValues(String field) {

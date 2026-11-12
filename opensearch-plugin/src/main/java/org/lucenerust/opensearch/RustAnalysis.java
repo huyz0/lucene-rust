@@ -38,8 +38,8 @@ import java.util.Map;
  * must be registered in {@code lucene-ffi}'s build; {@link AnalyzerSpec} maps every
  * {@link RustTokenizer} by its SPI name and arguments, so nothing else changes on either side.
  *
- * <p>The language modules' tokenizers ({@code rust_japanese}, {@code rust_korean},
- * {@code rust_chinese}) read their dictionaries from data packs, which a node opts into by
+ * <p>The language modules' tokenizers ({@code japanese}, {@code korean},
+ * {@code chinese}) read their dictionaries from data packs, which a node opts into by
  * putting the pack directories (from {@code scripts/make-data-packs.sh}) under
  * {@code <config>/lucene-rust/packs/}. OpenSearch builds every registered tokenizer for every
  * index, so a tokenizer whose pack is missing is not registered at all (the node logs which pack it
@@ -80,7 +80,7 @@ final class RustAnalysis {
         /** Builds the Rust tokenizer once: a missing data pack throws, naming the pack's file. */
         void check() {
             if (AnalyzerSpec.rust(spec, "", "") == null) {
-                throw new IllegalArgumentException("[" + name + "]: the Rust tokenizer is unavailable: " + NativeBridge.lastError());
+                throw new IllegalArgumentException("[" + name + "]: the accelerated tokenizer is unavailable: " + NativeBridge.lastError());
             }
         }
     }
@@ -92,8 +92,8 @@ final class RustAnalysis {
         TokenStream normalize(TokenStream in);
     }
 
-    /** {@code rust_thai}: Lucene's {@code ThaiAnalyzer} chain over ICU's Thai dictionary in Rust. */
-    static final Entry THAI = new Entry("rust_thai", "thai", null, Map.of(), ThaiAnalyzer.getDefaultStopSet(), new Chain() {
+    /** {@code thai_dictionary}: Lucene's {@code ThaiAnalyzer} chain over ICU's Thai dictionary in Rust. */
+    static final Entry THAI = new Entry("thai_dictionary", "thai", null, Map.of(), ThaiAnalyzer.getDefaultStopSet(), new Chain() {
         @Override
         public TokenStream filters(Tokenizer source, CharArraySet stopWords) {
             TokenStream result = new LowerCaseFilter(source);
@@ -107,12 +107,12 @@ final class RustAnalysis {
         }
     });
 
-    /** {@code rust_japanese}: Lucene's {@code JapaneseTokenizer} (IPADIC; the {@code kuromoji} pack). */
-    static final Entry JAPANESE = new Entry("rust_japanese", "japanese", "kuromoji", Map.of(), null, null);
-    /** {@code rust_korean}: Lucene's {@code KoreanTokenizer} (mecab-ko-dic; the {@code nori} pack). */
-    static final Entry KOREAN = new Entry("rust_korean", "korean", "nori", Map.of(), null, null);
-    /** {@code rust_chinese}: Lucene's {@code HMMChineseTokenizer} (the {@code smartcn} pack). */
-    static final Entry CHINESE = new Entry("rust_chinese", "hmmChinese", "smartcn", Map.of(), null, null);
+    /** {@code japanese}: Lucene's {@code JapaneseTokenizer} (IPADIC; the {@code kuromoji} pack). */
+    static final Entry JAPANESE = new Entry("japanese", "japanese", "kuromoji", Map.of(), null, null);
+    /** {@code korean}: Lucene's {@code KoreanTokenizer} (mecab-ko-dic; the {@code nori} pack). */
+    static final Entry KOREAN = new Entry("korean", "korean", "nori", Map.of(), null, null);
+    /** {@code chinese}: Lucene's {@code HMMChineseTokenizer} (the {@code smartcn} pack). */
+    static final Entry CHINESE = new Entry("chinese", "hmmChinese", "smartcn", Map.of(), null, null);
 
     /** Every {@code rust_*} tokenizer the plugin registers. */
     static final List<Entry> TOKENIZERS = List.of(THAI, JAPANESE, KOREAN, CHINESE);

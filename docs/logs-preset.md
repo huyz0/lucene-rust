@@ -5,8 +5,8 @@ nothing until an index template names them in `composed_of`:
 
 | Template | What it sets |
 |---|---|
-| `lucene_rust_logs@settings` | the Rust engine (`index.lucene_rust.engine`), index sort `@timestamp` descending, paged zstd stored fields (`index.lucene_rust.stored_fields.paged_zstd`), zstd term blocks (`index.lucene_rust.zstd_terms`), adaptive doc values (`index.lucene_rust.adaptive_doc_values`) |
-| `lucene_rust_logs@mappings` | `@timestamp` as `date` with a doc-values skip index (`skip_list`) beside its points; `host.name`, `service.name`, `log.level` as `keyword` with doc values only (`index: false`); `http.response.status_code`, `event.duration` and every dynamically mapped number as doc values with a skip index only; other dynamic strings as `keyword` (`ignore_above: 1024`); `message` as `text` without norms (positions kept, so phrases stay fast); `trace.id` and `span.id` as `hex_id` (lowercase hex ids indexed and doc-valued as their bytes) |
+| `logs_preset@settings` | the accelerated engine (`index.engine.accelerated`), index sort `@timestamp` descending, paged zstd stored fields (`index.codec.stored_fields.page_aligned`), zstd term blocks (`index.codec.terms_compression: zstd`), adaptive doc values (`index.codec.adaptive_doc_values`) |
+| `logs_preset@mappings` | `@timestamp` as `date` with a doc-values skip index (`skip_list`) beside its points; `host.name`, `service.name`, `log.level` as `keyword` with doc values only (`index: false`); `http.response.status_code`, `event.duration` and every dynamically mapped number as doc values with a skip index only; other dynamic strings as `keyword` (`ignore_above: 1024`); `message` as `text` without norms (positions kept, so phrases stay fast); `trace.id` and `span.id` as `hex_id` (lowercase hex ids indexed and doc-valued as their bytes) |
 
 Opt in per index template:
 
@@ -15,7 +15,7 @@ PUT _index_template/logs
 {
   "index_patterns": ["logs-*"],
   "data_stream": {},
-  "composed_of": ["lucene_rust_logs@settings", "lucene_rust_logs@mappings"],
+  "composed_of": ["logs_preset@settings", "logs_preset@mappings"],
   "template": {
     "settings": { "index.derived_source.enabled": true },
     "mappings": { "properties": { "message": { "type": "pattern_text" } } }
@@ -40,14 +40,14 @@ keeps `message` as `text`.
 
 The elected cluster manager puts each template when it is missing or has a
 lower `version` than this plugin's, so upgrading the plugin updates them. Copy
-one under your own name to change it. `lucene_rust.logs_preset.templates.enabled:
+one under your own name to change it. `indices.logs_preset.enabled:
 false` (node setting) stops the registration.
 
 ## Compatibility
 
-The settings template's `lucene_rust` settings need this plugin, and three of
-them write formats only this plugin reads: `RustZstd104` terms, `RustAdaptive`
-doc values and `LuceneRustZstdPaged104` stored fields. To make an index
+The settings template's `extended` settings need this plugin, and three of
+them write formats only this plugin reads: `ZstdTerms104` terms, `Adaptive90`
+doc values and `PagedZstd104` stored fields. To make an index
 stock-readable again, close it, set those three to `false`, reopen it and
 force-merge to rewrite every segment. The mappings template uses stock mapping
 options except `hex_id`, a type of this plugin whose segments are plain Lucene

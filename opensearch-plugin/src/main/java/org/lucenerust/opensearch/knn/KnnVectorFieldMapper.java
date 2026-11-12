@@ -200,9 +200,9 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                 throw new MapperParsingException(
                     "["
                         + CONTENT_TYPE
-                        + "] the [lucene_rust] engine's ["
+                        + "] the [extended] engine's ["
                         + (config.ivf() ? "ivf" : "hnsw")
-                        + "] needs an index on the Rust engine ([index.lucene_rust.engine: true])"
+                        + "] needs an index on the accelerated engine ([index.engine.accelerated: true])"
                 );
             }
             return builder;

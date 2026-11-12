@@ -10,7 +10,7 @@ import org.opensearch.common.crypto.MasterKeyProvider;
 
 /**
  * Data keys from an OpenSearch {@link MasterKeyProvider}: a {@code CryptoKeyProviderPlugin} such as
- * {@code crypto-kms} (AWS KMS), configured by the index's {@code index.store.rust_encrypted.*}
+ * {@code crypto-kms} (AWS KMS), configured by the index's {@code index.store.encrypted.*}
  * settings. The KMS draws each data key ({@code generateDataPair}) and unwraps it ({@code
  * decryptKey}); the key-encryption key never leaves it. For a FIPS deployment the provider must use
  * the KMS's FIPS endpoints.

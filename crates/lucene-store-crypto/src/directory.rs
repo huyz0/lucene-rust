@@ -182,7 +182,7 @@ impl<D: Directory> EncryptedDirectory<D> {
 
     /// Stores commit metadata ([`is_commit_metadata`]) in plaintext and
     /// encrypts everything else. Off by default; the OpenSearch plugin's
-    /// `rust_encrypted` store turns it on, on both its Java and Rust sides,
+    /// `encrypted` store turns it on, on both its Java and Rust sides,
     /// because OpenSearch reads `segments_N` and `.si` files without the
     /// store's directory when it allocates a shard after a restart.
     pub fn with_plaintext_commit_metadata(mut self) -> Self {

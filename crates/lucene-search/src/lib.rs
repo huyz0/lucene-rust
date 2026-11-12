@@ -436,7 +436,7 @@ pub enum Error {
     /// who sent a bad request (see `lucene_ffi::vectors`).
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
-    /// The IVF index of a `LuceneRustIvfVectorsFormat` field.
+    /// The IVF index of a `IvfVectorsFormat` field.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
     /// A KNN query this segment cannot answer as asked -- Java's

@@ -52,5 +52,5 @@ bench() { # name image label [docker-run args...]
 }
 trap 'docker rm -f bench-stock bench-plugin >/dev/null 2>&1 || true' EXIT
 bench bench-stock "opensearch-stock-min:${VERSION}" stock
-bench bench-plugin "$IMAGE" plugin -e lucene_rust.engine.default=true
+bench bench-plugin "$IMAGE" plugin -e indices.engine.accelerated.default=true
 echo "bench-opensearch: results in $OUT/stock-$DOCS.json and $OUT/plugin-$DOCS.json"

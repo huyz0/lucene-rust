@@ -51,7 +51,7 @@ const DATA_CODEC_BEST_COMPRESSION: &str = "Lucene90StoredFieldsHighData";
 pub const DATA_CODEC_ZSTD: &str = "CustomStoredFieldsZstd";
 pub const DATA_CODEC_ZSTD_NO_DICT: &str = "CustomStoredFieldsZstdNoDict";
 /// The Rust engine's paged zstd stored fields ([`Mode::ZstdPaged`]).
-pub const DATA_CODEC_ZSTD_PAGED: &str = "RustZstdPagedStoredFieldsData";
+pub const DATA_CODEC_ZSTD_PAGED: &str = "PagedZstdStoredFieldsData";
 /// The page [`Mode::ZstdPaged`] packs chunks into: a chunk that starts
 /// inside a page also ends inside it, so reading one page is enough to
 /// decode every chunk that starts there. A storage layer that caches whole
@@ -66,7 +66,7 @@ const _: () = assert!(lucene_store::alignment::is_valid_hint(ZSTD_PAGED_PAGE_SIZ
 /// The `.si` attribute of a segment with [`Mode::ZstdPaged`] stored fields
 /// (value [`ZSTD_PAGED_MODE_VALUE`]); the plugin's Java format reads it to
 /// pick its reader.
-pub const ZSTD_PAGED_MODE_ATTRIBUTE: &str = "LuceneRustStoredFieldsFormat.mode";
+pub const ZSTD_PAGED_MODE_ATTRIBUTE: &str = "PagedZstdStoredFieldsFormat.mode";
 /// [`ZSTD_PAGED_MODE_ATTRIBUTE`]'s value.
 pub const ZSTD_PAGED_MODE_VALUE: &str = "ZSTD_PAGED";
 

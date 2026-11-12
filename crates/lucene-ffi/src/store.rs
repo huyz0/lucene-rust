@@ -1,7 +1,7 @@
 //! Which directory the engine opens at a shard path: plain, or encrypted
 //! with keys the JVM supplies.
 //!
-//! The plugin's `rust_encrypted` store type binds its shard path here
+//! The plugin's `encrypted` store type binds its shard path here
 //! ([`ffi_store_bind_encrypted`]) before the engine's writer or a reader
 //! opens it, and unbinds it ([`ffi_store_unbind`]) when the store closes.
 //! [`shard_directory`] is what [`crate::engine_writer`] and

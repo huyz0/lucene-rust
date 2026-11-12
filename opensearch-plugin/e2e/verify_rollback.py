@@ -13,15 +13,15 @@ Forward -- adopting the Rust engine:
   F2. Rolling restart onto the plugin image. `legacy` stays on OpenSearch's
       engine (it never asked for the Rust one); searches on it go native.
   F3. Adoption: reindex `legacy` into `adopted`, created with
-      `index.lucene_rust.engine: true`, and move the alias `app` over.
+      `index.engine.accelerated: true`, and move the alias `app` over.
 
 Backward -- rolling back off it:
-  B1. Rolling restart with `lucene_rust.engine.node_enabled: false`:
+  B1. Rolling restart with `indices.engine.accelerated.node_enabled: false`:
       OpenSearch's engine serves the Rust-written shards; writes continue.
   B2. Force merge `adopted` to one segment under OpenSearch's engine, then
       reindex it into `restored` (no plugin setting) and move the alias:
       a node without the plugin refuses an index that carries the final
-      `index.lucene_rust.engine`, so a rolling removal needs it gone.
+      `index.engine.accelerated`, so a rolling removal needs it gone.
   B3. Rolling restart onto OpenSearch without the plugin; every document and
       every answer stays.
 
@@ -45,6 +45,15 @@ WARNINGS = set()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_opensearch as v  # noqa: E402
+
+# The plugin's own index settings (stock ones, such as index.knn, excluded).
+PLUGIN_SETTINGS = (
+    "index.engine.accelerated", "index.search.realtime.", "index.search.accelerated", "index.search.approximation.",
+    "index.fetch.accelerated", "index.codec.adaptive_doc_values", "index.codec.terms_compression",
+    "index.codec.stored_fields.", "index.store.read_mode", "index.store.encrypted.", "index.segment_partition.",
+    "index.merge.reorder.", "index.knn.target_recall", "index.knn.ivf.", "index.seq_no.", "index.disable_sequence_numbers",
+    "index.testing.",
+)
 
 NODES = [("os1", 9201, 9301), ("os2", 9202, 9302), ("os3", 9203, 9303)]
 PLUGIN_IMAGE = os.environ.get("PLUGIN_IMAGE", "lucene-rust-opensearch:3.9.0")
@@ -107,7 +116,7 @@ def node(name, http, transport, image, enabled=True):
         "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
     ]
     if image == PLUGIN_IMAGE:
-        env += ["-e", f"lucene_rust.engine.node_enabled={'true' if enabled else 'false'}"]
+        env += ["-e", f"indices.engine.accelerated.node_enabled={'true' if enabled else 'false'}"]
     r = docker("run", "-d", "--name", name, "--network", "container:lucene-rust-net",
                "-v", f"{DATA}/{name}:/usr/share/opensearch/data", *env, image)
     check(r.returncode == 0, f"start {name} on {image}: {r.stderr[:300]}")
@@ -317,11 +326,11 @@ def main():
     model.verify("legacy", "F2")
     same_answers(ref, "legacy", "F2")
     e = engines()
-    check(all(x is not None and x["rust"] == 0 for x in e.values()),
+    check(all(x is not None and x["accelerated"] == 0 for x in e.values()),
           f"F2: legacy stays on OpenSearch's engine: {e}")
-    before = sum(req("GET", "/_plugins/lucene_rust/stats")["native_queries"] for _ in [0])
+    before = sum(req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] for _ in [0])
     req("POST", "/legacy/_search", {"query": {"match": {"body": "alpha"}}})
-    check(req("GET", "/_plugins/lucene_rust/stats")["native_queries"] >= before, "F2: the plugin serves searches")
+    check(req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] >= before, "F2: the plugin serves searches")
     churn(model, "legacy", 3, 1000)
     model.verify("legacy", "F2 after writes")
 
@@ -331,7 +340,7 @@ def main():
     t0 = time.time()
     body = req("GET", "/legacy/_mapping")["legacy"]["mappings"]
     req("PUT", "/adopted", {"settings": {"number_of_shards": 3, "number_of_replicas": 1,
-                                         "index.lucene_rust.engine": True,
+                                         "index.engine.accelerated": True,
                                          "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}}},
                             "mappings": body})
     req("POST", "/_aliases", {"actions": [{"add": {"index": "legacy", "alias": "app"}}]})
@@ -346,7 +355,7 @@ def main():
     model.verify("adopted", "F3", alias="app")
     same_answers(ref, "adopted", "F3")
     e = engines()
-    check(sum(x["rust"] for x in e.values() if x) > 0, f"F3: adopted is on the Rust engine: {e}")
+    check(sum(x["accelerated"] for x in e.values() if x) > 0, f"F3: adopted is on the accelerated engine: {e}")
     churn(model, "adopted", 4)
     model.verify("adopted", "F3 after writes")
     ref2 = answers("adopted", "F3 after writes")
@@ -355,7 +364,7 @@ def main():
     # B1: OpenSearch's engine for every shard, the plugin still installed.
     TIMINGS["B1_rolling_restart_s"] = rolling(PLUGIN_IMAGE, False, "B1")
     e = engines()
-    check(all(x is not None and x["rust"] == 0 and x["java"] > 0 for x in e.values()),
+    check(all(x is not None and x["accelerated"] == 0 and x["standard"] > 0 for x in e.values()),
           f"B1: every shard on OpenSearch's engine: {e}")
     model.verify("adopted", "B1")
     same_answers(ref2, "adopted", "B1")
@@ -365,7 +374,7 @@ def main():
 
     # B2: force merge under OpenSearch's engine -- the Rust-written segments
     # rewritten by it -- then a reindex into an index without the plugin's
-    # settings. `index.lucene_rust.engine` is final, and a node without the
+    # settings. `index.engine.accelerated` is final, and a node without the
     # plugin refuses a shard of an index that carries it ("unknown setting");
     # OpenSearch archives unknown settings only when a full-cluster restart
     # loads the metadata, never during a rolling one.
@@ -402,8 +411,8 @@ def main():
     # B3: OpenSearch without the plugin.
     TIMINGS["B3_rolling_restart_s"] = rolling(STOCK_IMAGE, True, "B3")
     s = req("GET", "/_all/_settings?flat_settings=true")
-    check(not any("lucene_rust" in k for i in s.values() for k in i["settings"]),
-          f"B3: no index carries a plugin setting: {[(n, k) for n, i in s.items() for k in i['settings'] if 'lucene_rust' in k]}")
+    check(not any(k.startswith(PLUGIN_SETTINGS) for i in s.values() for k in i["settings"]),
+          f"B3: no index carries a plugin setting: {[(n, k) for n, i in s.items() for k in i['settings'] if k.startswith(PLUGIN_SETTINGS)]}")
     model.verify("restored", "B3", alias="app")
     same_answers(ref3, "restored", "B3")
     churn(model, "restored", 6)

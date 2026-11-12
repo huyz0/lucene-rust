@@ -297,7 +297,7 @@ pub fn knn_top_hits(
 }
 
 /// [`knn_top_hits`] probing `ivf_nprobes` clusters in each segment whose
-/// field has an IVF index (`LuceneRustIvfVectorsFormat`); `0` probes the
+/// field has an IVF index (`IvfVectorsFormat`); `0` probes the
 /// depth each segment calibrated. Other formats ignore it.
 ///
 /// # Errors

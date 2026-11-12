@@ -12,7 +12,7 @@ libc.workspace = true
 # starts would inherit (`yield_to_searches`).
 rayon.workspace = true
 lucene-store = { path = "../lucene-store" }
-# The `rust_encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
+# The `encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
 # module with feature `fips` (build with `--no-default-features`, see
 # scripts/build-fips.sh).
 lucene-store-crypto = { path = "../lucene-store-crypto", default-features = false }

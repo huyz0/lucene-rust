@@ -1,4 +1,4 @@
-//! BINARY doc values in the `RustSubstring` format: flushed, deleted from and
+//! BINARY doc values in the `Substring90` format: flushed, deleted from and
 //! force-merged, searched by substring, wildcard and regexp, case sensitive
 //! and not -- each search's documents equal a scan of every value and the
 //! same search over a plain BINARY field of the same documents.
@@ -226,10 +226,7 @@ fn substring_searches_match_a_scan_and_plain_binary_values() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert!(
-        names.iter().any(|n| n.contains("RustSubstring")),
-        "{names:?}"
-    );
+    assert!(names.iter().any(|n| n.contains("Substring90")), "{names:?}");
 }
 
 #[test]

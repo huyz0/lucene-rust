@@ -313,7 +313,7 @@ pub enum Error {
     /// share one `Error` type, the way they share one on-disk format family.
     #[error(transparent)]
     Vectors(#[from] vectors::Error),
-    /// The IVF index of a `LuceneRustIvfVectorsFormat` instance.
+    /// The IVF index of a `IvfVectorsFormat` instance.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
     #[error("set_vector_field: no field named {0:?} in this writer's field list")]
@@ -2235,7 +2235,7 @@ impl IndexingConfig {
             vemf: Input,
             graph: Option<(Input, Input)>,
             quantized: Option<(Input, Input)>,
-            /// A `LuceneRustIvfVectorsFormat` group's `.ivm`, `.ivp`, `.ivv`.
+            /// A `IvfVectorsFormat` group's `.ivm`, `.ivp`, `.ivv`.
             ivf: Option<crate::ivf_vectors::IvfInputs>,
         }
         type RawVectorFiles = Vec<RawVectorGroup>;
@@ -6562,7 +6562,7 @@ impl<'d> IndexWriter<'d> {
     /// [`Self::set_doc_values_format_for_field`] nor by the codec to anything
     /// else. Flushes and merges after this call write it; existing segments
     /// keep theirs until merged. [`Lucene90DocValuesFormat::rust_adaptive`]
-    /// here is the plugin's `index.lucene_rust.adaptive_doc_values`; setting the
+    /// here is the plugin's `index.codec.adaptive_doc_values`; setting the
     /// default back restores stock-readable segments from then on.
     ///
     /// [`Lucene90DocValuesFormat::rust_adaptive`]: per_field_doc_values::Lucene90DocValuesFormat::rust_adaptive
@@ -6579,7 +6579,7 @@ impl<'d> IndexWriter<'d> {
     /// else. Flushes and merges after this call write it; existing segments
     /// keep theirs until merged.
     /// [`Lucene104PostingsFormat::rust_zstd`] here is the plugin's
-    /// `index.lucene_rust.zstd_terms`; setting the default back restores
+    /// `index.codec.terms_compression: zstd`; setting the default back restores
     /// stock-readable segments from then on.
     ///
     /// [`Lucene104PostingsFormat::rust_zstd`]: per_field_postings::Lucene104PostingsFormat::rust_zstd
@@ -6598,7 +6598,7 @@ impl<'d> IndexWriter<'d> {
     /// [`segment_writer::LZ4_HC_ATTRIBUTE`], so a later merge copies its
     /// chunks as they are instead of compressing them again; a source without
     /// it is recompressed once. The plugin's
-    /// `index.lucene_rust.stored_fields.merge_lz4_high_compression`.
+    /// `index.codec.stored_fields.recompress_on_merge`.
     pub fn set_merge_lz4_high_compression(&mut self, on: bool) {
         self.cfg_mut().merge_lz4_high_compression = on;
     }

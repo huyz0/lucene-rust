@@ -1,6 +1,6 @@
 //! [`IndexWriter::set_default_postings_format`] with
 //! [`Lucene104PostingsFormat::rust_zstd`]: flushed and merged segments put
-//! every field nothing else routes into one `RustZstd104` group with zstd
+//! every field nothing else routes into one `ZstdTerms104` group with zstd
 //! term blocks, deletes by term find their documents, and `check_index` walks
 //! every field clean. Setting the default back writes stock segments again.
 // Test-support code opts out of the arithmetic gate at the file boundary:
@@ -97,20 +97,20 @@ fn zstd_term_blocks_flush_merge_and_check_clean() {
         }])
         .unwrap();
     writer.commit().unwrap();
-    assert_eq!(suffixes(&dir), vec![vec!["RustZstd104_0".to_string()]; 3]);
+    assert_eq!(suffixes(&dir), vec![vec!["ZstdTerms104_0".to_string()]; 3]);
     check(&dir);
 
     writer.force_merge(1).unwrap();
     writer.commit().unwrap();
-    assert_eq!(suffixes(&dir), vec![vec!["RustZstd104_0".to_string()]]);
+    assert_eq!(suffixes(&dir), vec![vec!["ZstdTerms104_0".to_string()]]);
     let infos = segment_infos::read_latest(&dir).unwrap();
     let seg = &infos.segments[0];
     let tim = dir
-        .open(&format!("{}_RustZstd104_0.tim", seg.segment_name))
+        .open(&format!("{}_ZstdTerms104_0.tim", seg.segment_name))
         .unwrap();
     assert_eq!(
         lucene_store::codec_util::peek_codec_name(&tim).as_deref(),
-        Some("RustZstdBlockTreeTermsDict")
+        Some("ZstdBlockTreeTermsDict")
     );
     assert_eq!(seg.del_count, 0, "the merge dropped the deleted document");
     check(&dir);

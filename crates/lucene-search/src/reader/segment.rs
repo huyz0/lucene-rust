@@ -640,7 +640,7 @@ impl BinaryDocValues for SegBinary<'_> {
     }
 }
 
-/// BINARY values of the `RustSubstring` format, decompressed a block at a
+/// BINARY values of the `Substring90` format, decompressed a block at a
 /// time.
 struct SegSubstring<'a> {
     cur: DvCursor<'a>,
@@ -1415,7 +1415,7 @@ impl SegmentReader {
         }
     }
 
-    /// `field`'s `RustSubstring` index, when its BINARY doc values are
+    /// `field`'s `Substring90` index, when its BINARY doc values are
     /// written in that format ([`lucene_codecs::substring`]).
     pub fn substring_index(
         &self,

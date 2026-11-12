@@ -84,7 +84,7 @@ pub enum ExtendedQuery {
     /// [`ExtendedQuery::PhraseWildcardWeight`] before it is searched.
     PhraseWildcard(crate::sandbox::search::PhraseWildcardQuery),
     PhraseWildcardWeight(crate::sandbox::search::ResolvedPhraseWildcard),
-    /// A substring, wildcard or regexp search over a `RustSubstring`
+    /// A substring, wildcard or regexp search over a `Substring90`
     /// doc-values field ([`SubstringQuery`]).
     Substring(SubstringQuery),
     /// A query only tests build ([`crate::test_support::TestQuery`]).
@@ -857,7 +857,7 @@ pub enum SubstringKind {
     Exact,
 }
 
-/// A search over a BINARY doc-values field of the `RustSubstring` format
+/// A search over a BINARY doc-values field of the `Substring90` format
 /// ([`lucene_codecs::substring`]) -- OpenSearch's `wildcard` field
 /// queries: the field's trigram index narrows the blocks, the values settle
 /// each document. On a segment where the field's doc values are plain

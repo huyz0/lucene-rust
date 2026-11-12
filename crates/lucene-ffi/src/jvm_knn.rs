@@ -14,12 +14,12 @@
 //! query-tree node, whose bit sets are cached as a nested query's are) and
 //! `expand: u8` (`expand_nested_docs`) follow, and last `nprobes: i32`: the
 //! clusters probed in each segment whose field has an IVF index
-//! (`LuceneRustIvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
+//! (`IvfVectorsFormat`; `method_parameters.nprobes`), `0` for the
 //! depth each segment calibrated, for a nested search too (more when fewer
 //! than `k` parents are in reach).
 //!
 //! An optional tail asks for a recall-targeted search
-//! ([`lucene_search::knn_recall`], `index.lucene_rust.knn.target_recall`):
+//! ([`lucene_search::knn_recall`], `index.knn.target_recall`):
 //! `recall: f64`, `sample_rate: f64`, `budget: f64` and the tuner's key
 //! (`i32 len`, UTF-8; the plugin names the index, shard and field). The
 //! search then runs at the depth the key's tuner has tuned, and a sampled

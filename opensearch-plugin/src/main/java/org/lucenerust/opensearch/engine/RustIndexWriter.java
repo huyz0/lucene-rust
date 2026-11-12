@@ -116,13 +116,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
     /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
-    /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
+    /** Whether searches read the buffered documents ({@code index.search.realtime.enabled}). */
     private boolean liveSearch;
-    /** How old a view of the buffers a search may read ({@code index.lucene_rust.realtime_max_staleness}). */
+    /** How old a view of the buffers a search may read ({@code index.search.realtime.max_staleness}). */
     private volatile long liveStalenessNanos;
     /** The reader over the view searches share under {@link #liveStalenessNanos}, kept until a refresh. */
     private final SharedLiveReader sharedLive = new SharedLiveReader();
-    /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
+    /** The field whose value is a document's partition ({@code index.segment_partition.field}), or null. */
     private String partitionField;
     /** The newest segment list version whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
     private long liveReleased = -1;
@@ -248,7 +248,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             out
         );
         if (status != NativeBridge.OK) {
-            throw new IOException("cannot open the Rust writer at [" + indexPath + "]: " + NativeBridge.lastError());
+            throw new IOException("cannot open the accelerated writer at [" + indexPath + "]: " + NativeBridge.lastError());
         }
         RustIndexWriter w = new RustIndexWriter(
             directory,
@@ -311,7 +311,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (status == NativeBridge.INVALID_ARGUMENT || status == NativeBridge.DECODE) {
             throw new IllegalArgumentException(message);
         }
-        IOException e = new IOException(what + " failed in the Rust writer (status " + status + "): " + message);
+        IOException e = new IOException(what + " failed in the accelerated writer (status " + status + "): " + message);
         if (tragic == null) {
             tragic = e;
         }
@@ -359,7 +359,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         long estimate = reservation(op.length());
         if (breaker != null) {
             if (REFUSABLE.get()) {
-                breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
+                breaker.addEstimateBytesAndMaybeBreak(estimate, "indexing_buffers");
             } else {
                 breaker.addWithoutBreaking(estimate);
             }
@@ -844,7 +844,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.lucene_rust.bp_reorder.*}
+     * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.merge.reorder.*}
      * describes it; sent again only when a value changed.
      */
     void setBpReorder(BpReorderSettings.Values values) throws IOException {
@@ -877,7 +877,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * {@code index.lucene_rust.knn.ivf_partition_clusters}: IVF fields clustered per partition of the
+     * {@code index.knn.ivf.partition_min_vectors}: IVF fields clustered per partition of the
      * index sort's first field, {@code 0} off.
      */
     void setIvfPartitionClusters(int minVectors) throws IOException {
@@ -1341,7 +1341,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public IndexWriter getAccumulatingIndexWriter() {
-        throw new UnsupportedOperationException("the Rust engine has no Lucene IndexWriter");
+        throw new UnsupportedOperationException("the accelerated engine has no Lucene IndexWriter");
     }
 
     @Override

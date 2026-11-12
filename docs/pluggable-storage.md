@@ -145,9 +145,9 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   under a hard memory limit (the bench needed about 15% at 256 MiB).
 - `Pager::stats` counts faults, refaults, fault time and evictions.
 
-In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
+In OpenSearch, `index.store.read_mode` picks it per index: `mmap` (the
 default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
-mapped). `lucene_rust.store.page_cache.size` (default 1 GB) is the node's
+mapped). `indices.store.page_cache.size` (default 1 GB) is the node's
 budget. A node where `userfaultfd` is blocked keeps every index mapped and
 says so at startup.
 
@@ -262,30 +262,30 @@ AWS-LC's current CMVP certificate for the resolved `aws-lc-fips-sys`. A
 key provider over a KMS must itself use FIPS endpoints for an end-to-end
 FIPS deployment.
 
-## In OpenSearch: the `rust_encrypted` store type
+## In OpenSearch: the `encrypted` store type
 
-The plugin adds the store type `rust_encrypted`. Both Lucene (the JVM) and
-the Rust engine read and write a shard's files in the format above, with the
+The plugin adds the store type `encrypted`. Both Lucene (the JVM) and
+the accelerated engine read and write a shard's files in the format above, with the
 same keys.
 
 ```yaml
-index.store.type: rust_encrypted
-index.store.rust_encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
-index.store.rust_encrypted.key_provider: my-kms           # its name
-index.store.rust_encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
-index.store.rust_encrypted.kms.encryption_context: tenant=a
+index.store.type: encrypted
+index.store.encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
+index.store.encrypted.key_provider: my-kms           # its name
+index.store.encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
+index.store.encrypted.kms.encryption_context: tenant=a
 # optional
-index.store.rust_encrypted.chunk_size: 64kb
-index.store.rust_encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
-index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
+index.store.encrypted.chunk_size: 64kb
+index.store.encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
+index.store.encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
 ```
 
 - **Keys:** keys come from OpenSearch's `MasterKeyProvider`, through any
   installed `CryptoKeyProviderPlugin` (`crypto-kms` for AWS KMS). The
   key-encryption key never leaves the KMS.
-  - The provider type `lucene_rust_local` instead wraps data keys with a
-    key in the node keystore (`lucene_rust.store.local_key`, base64 of 32
-    bytes; id `lucene_rust.store.local_key_id`). It is meant for tests and
+  - The provider type `local_keystore` instead wraps data keys with a
+    key in the node keystore (`indices.store.encrypted.local_key`, base64 of 32
+    bytes; id `indices.store.encrypted.local_key_id`). It is meant for tests and
     for clusters without a KMS.
 - **How the engine gets keys:** when the plugin creates the directory, it
   binds the shard path in the native library to the same key source
@@ -306,9 +306,9 @@ index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps w
   `fileLength` counts the complete chunks of a file that ends inside its
   header or a chunk instead of failing; opening such a file still fails.
 - **No silent plaintext:**
-  - The Rust engine refuses an index whose `index.store.type` it cannot
+  - The accelerated engine refuses an index whose `index.store.type` it cannot
     write through (another plugin's encryption, say). Use
-    `rust_encrypted` for encryption at rest.
+    `encrypted` for encryption at rest.
   - The native read path declines any store directory that changes bytes on
     disk.
 - **FIPS:** the plugin built with `gradle -Pfips bundlePlugin` produces
@@ -331,11 +331,11 @@ reader holds it.
 
 With demand decryption on (`EncryptedDirectory::with_lazy_decrypt`, the
 store wrapper setting `encryption.lazy_decrypt`, or the plugin's node
-setting `lucene_rust.store.encrypted.lazy_decrypt`), an encrypted file is
+setting `indices.store.encrypted.lazy_decrypt`), an encrypted file is
 instead authenticated in full when it opens, then mapped and decrypted
 chunk by chunk on first touch (`lucene-store-crypto/src/lazy.rs`). Decrypted
 chunks stay resident up to a process-wide budget (default 512 MiB; the
-plugin's `lucene_rust.store.encrypted.decrypt_cache_size`); past it the
+plugin's `indices.store.encrypted.decrypt_cache_size`); past it the
 oldest are dropped, and the next touch decrypts that chunk again from the
 ciphertext in the page cache. Plaintext is never written to disk.
 

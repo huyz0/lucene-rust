@@ -1,5 +1,5 @@
 //! Nested KNN ([`knn_top_hits_nested_with`]) over a field in
-//! `LuceneRustIvfVectorsFormat`: the clusters are probed for the best child
+//! `IvfVectorsFormat`: the clusters are probed for the best child
 //! of each parent, checked against an exhaustive scan, with a filter on the
 //! children and with deletions.
 

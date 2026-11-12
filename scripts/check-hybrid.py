@@ -53,7 +53,7 @@ def docs():
 def setup(port, rust, index="h"):
     settings = {"index": {"knn": True, "number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1}}
     if rust:
-        settings["index"]["lucene_rust.engine"] = True
+        settings["index"]["engine.accelerated"] = True
     ck.req(port, "PUT", f"/{index}", {"settings": settings, "mappings": {"properties": {
         "t": {"type": "text"}, "tag": {"type": "keyword"}, "n": {"type": "integer"},
         "v": {"type": "knn_vector", "dimension": DIM, "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}}}}})
@@ -352,7 +352,7 @@ def main():
             if o != s:
                 failures.append(f"pipeline {json.dumps(body)}: ours {o}, stock {s}")
         after = ck.req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")

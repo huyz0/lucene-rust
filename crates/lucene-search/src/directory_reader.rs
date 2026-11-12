@@ -331,11 +331,11 @@ struct CodecFiles {
     meta: Arc<Input>,
     /// The HNSW graph's `.vem`, beside its `.vex` in [`Self::index`].
     graph_meta: Option<Arc<Input>>,
-    /// A `LuceneRustIvfVectorsFormat` instance's IVF index.
+    /// A `IvfVectorsFormat` instance's IVF index.
     ivf: Option<IvfFiles>,
     /// A `Lucene104(Hnsw)ScalarQuantizedVectorsFormat` instance's codes.
     scalar_quantized: Option<ScalarQuantizedFiles>,
-    /// A `LuceneRustHnswQuantizedVectorsFormat` instance's codes.
+    /// A `HnswQuantizedVectorsFormat` instance's codes.
     hnsw_codes: Option<HnswCodesFiles>,
     /// The vectors instance's flat reader, detached from its file: opened
     /// (header, footer, metadata) on first use, then shared by every read.
@@ -1653,7 +1653,7 @@ impl SegmentReader {
     }
 
     /// The IVF index of the instance field `field_number` was written with
-    /// (`LuceneRustIvfVectorsFormat`), opened once per segment; `None` when
+    /// (`IvfVectorsFormat`), opened once per segment; `None` when
     /// that instance has none or the index does not hold the field (a byte
     /// field).
     ///
@@ -1693,7 +1693,7 @@ impl SegmentReader {
     }
 
     /// The quantized HNSW codes of the instance field `field_number` was
-    /// written with (`LuceneRustHnswQuantizedVectorsFormat`), opened once per
+    /// written with (`HnswQuantizedVectorsFormat`), opened once per
     /// segment; `None` when that instance has none or holds no codes for the
     /// field (a byte field).
     ///

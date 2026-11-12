@@ -164,12 +164,12 @@ pub enum GraphReader<'d> {
         graph: Option<HnswVectorsReader<'d>>,
         codes: lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'d>,
     },
-    /// `LuceneRustIvfVectorsFormat`: a float query probes the field's
+    /// `IvfVectorsFormat`: a float query probes the field's
     /// clusters and reranks on its rerank vectors ([`ivf_leaf_results`]),
     /// keeping the best child per parent for a diversifying search; a byte
     /// field and a selective filter scan the raw vectors exhaustively.
     Ivf(std::sync::Arc<lucene_ivf::IvfReader>),
-    /// `LuceneRustHnswQuantizedVectorsFormat`: the HNSW graph (`None` for a
+    /// `HnswQuantizedVectorsFormat`: the HNSW graph (`None` for a
     /// field indexed without one) walked on the field's quantized codes,
     /// the candidates reranked on the raw vectors; the exhaustive branch, a
     /// diversifying search and a byte field score the raw vectors.
@@ -427,7 +427,7 @@ pub struct KnnFloatVectorQuery {
     /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
     pub filtered_search_threshold: i32,
     /// The clusters an IVF field's search probes in each segment
-    /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
+    /// (`IvfVectorsFormat`); `0` leaves it to the depth each
     /// segment calibrated when it was written. Other formats ignore it.
     pub ivf_nprobes: usize,
     /// A scale on an IVF leaf's search depth, `1.0` (the default) leaving
@@ -458,7 +458,7 @@ pub struct KnnByteVectorQuery {
     /// `FilteredHnswGraphSearcher`. `0`, Lucene's default, never does.
     pub filtered_search_threshold: i32,
     /// The clusters an IVF field's search probes in each segment
-    /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
+    /// (`IvfVectorsFormat`); `0` leaves it to the depth each
     /// segment calibrated when it was written. Other formats ignore it.
     pub ivf_nprobes: usize,
     /// A scale on an IVF leaf's search depth, `1.0` (the default) leaving
