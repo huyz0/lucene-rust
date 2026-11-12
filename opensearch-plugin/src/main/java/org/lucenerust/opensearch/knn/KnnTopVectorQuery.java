@@ -46,7 +46,7 @@ import java.util.Objects;
  * of those parents that passes the filter and has a vector, each scored.
  *
  * <p>{@code nprobes} ({@code method_parameters.nprobes}) is the clusters probed in each segment
- * whose field has an IVF index ({@code LuceneRustIvfVectorsFormat}), {@code 0} for the depth each
+ * whose field has an IVF index ({@code IvfVectorsFormat}), {@code 0} for the depth each
  * segment calibrated, nested searches included; other formats ignore it.
  */
 public final class KnnTopVectorQuery extends Query {
@@ -82,7 +82,7 @@ public final class KnnTopVectorQuery extends Query {
     private final RecallTarget recall;
 
     /**
-     * A recall-targeted search ({@code index.lucene_rust.knn.target_recall}): the target, the
+     * A recall-targeted search ({@code index.knn.target_recall}): the target, the
      * sample rate and check budget, and the key naming the tuner (index, shard and field) whose
      * tuned depth the search runs at.
      */

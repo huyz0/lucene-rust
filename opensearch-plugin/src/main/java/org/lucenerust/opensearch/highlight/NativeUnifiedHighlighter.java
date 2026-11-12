@@ -53,7 +53,7 @@ import java.util.Set;
  */
 public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
     /** The name it is registered under; {@link HighlightRouting} points {@code unified} fields at it. */
-    public static final String NAME = "rust_unified";
+    public static final String NAME = "accelerated_unified";
 
     private static final Logger logger = LogManager.getLogger(NativeUnifiedHighlighter.class);
 

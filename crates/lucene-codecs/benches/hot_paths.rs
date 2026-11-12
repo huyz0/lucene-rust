@@ -942,7 +942,7 @@ fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
     });
 }
 
-/// A dense NUMERIC field under Lucene90's encoding and under `RustAdaptive`'s
+/// A dense NUMERIC field under Lucene90's encoding and under `Adaptive90`'s
 /// blocks: a full in-order scan (`for_each_value`, as an aggregation over
 /// all documents), 512-document windows (`fill_window`) and scattered
 /// single-document reads (`value`, as a sort's competitive check), for

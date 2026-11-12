@@ -62,7 +62,7 @@ import java.util.function.Function;
  */
 public final class DerivedSource {
     /** The field attribute the Rust writer lists a field for ({@code engine_writer.rs}). */
-    public static final String FIELD_ATTRIBUTE = "lucene_rust.derived_source";
+    public static final String FIELD_ATTRIBUTE = "accelerated.derived_source";
     /** {@code KNN10010DerivedSourceStoredFieldsWriter.MASK}. */
     static final Byte MASK = 0x1;
 

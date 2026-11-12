@@ -6,7 +6,7 @@ search in Rust when the request is inside the table below, and on Lucene
 otherwise — per query, transparently. The fetch phase and the get API are
 OpenSearch's own code, but their stored-fields reads (`_source`, `_id`,
 `stored_fields`, highlighting's source) come from the native reader through an
-index reader wrapper (read path R6; `index.lucene_rust.fetch.enabled`, default
+index reader wrapper (read path R6; `index.fetch.accelerated`, default
 on). `docvalue_fields`, indexing, refresh and every other API are OpenSearch's
 own code, unchanged.
 
@@ -23,7 +23,7 @@ that the plugin's own counters show the query ran where this table says.
 
 A request runs native when **all** of these hold:
 
-- the index has `index.lucene_rust.search.enabled: true` (the default);
+- the index has `index.search.accelerated: true` (the default);
 - it is a top-hits request, by score or by a sort the native side encodes
   (`docs/milestones/m5-6-native-read.md`, R4), with or without
   `search_after`, `post_filter`, `timeout`, a `scroll`, `terminate_after`
@@ -66,7 +66,7 @@ A request runs native when **all** of these hold:
 - every field in the index uses a default postings format some Lucene
   9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
   `Lucene103`, `Lucene104`; M8 T8.5), the engine's zstd term-block format
-  `RustZstd104` (`index.lucene_rust.zstd_terms`), or a completion format
+  `ZstdTerms104` (`index.codec.terms_compression: zstd`), or a completion format
   (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
   an index an OpenSearch 2.x node wrote is served natively after the upgrade
   to 3.9.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
@@ -174,9 +174,9 @@ where the native call's fixed cost shows -- see
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
-| `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`lucene_rust_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
+| `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`accelerated_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
-| `term`, `terms`, `prefix`, `wildcard`, `regexp`, `match` (and `query_string` wildcards) on a `rust_wildcard` field | `RustWildcardQuery`: the value test of OpenSearch's `wildcard` field, over the field's doc values | yes (node 49): the `RustSubstring` blocks' trigram index, then the same test on candidates; on plain `BINARY` doc values (an index OpenSearch's engine wrote) every value is tested. A `regexp` with `flags` other than `ALL` falls back (`substring_regexp_flags`) |
+| `term`, `terms`, `prefix`, `wildcard`, `regexp`, `match` (and `query_string` wildcards) on a `compact_wildcard` field | `RustWildcardQuery`: the value test of OpenSearch's `wildcard` field, over the field's doc values | yes (node 49): the `Substring90` blocks' trigram index, then the same test on candidates; on plain `BINARY` doc values (an index OpenSearch's engine wrote) every value is tested. A `regexp` with `flags` other than `ALL` falls back (`substring_regexp_flags`) |
 
 ### Lucene-side leaves (Track A, 2026-10-30)
 
@@ -192,7 +192,7 @@ where the native call's fixed cost shows -- see
 | a `TermQuery` carrying `TermStates` built for another reader (`terms` lookup, `more_like_this`, percolate) or with no statistics | `TermQuery` | yes: rebuilt from the searcher's reader, or matching nothing, as `TermWeight` does |
 | any scoring query on a field mapped with `similarity`: `BM25` (any `k1`, `b`, `discount_overlaps`), `boolean`, `DFR`, `IB`, `DFI`, `LMDirichlet`, `LMJelinekMercer` | the same queries, under OpenSearch's per-field similarity | yes: each scored field's similarity sent in front of the query (`SimilarityEncoder`, `jvm_similarity.rs`), scored by the port of the same Lucene class |
 
-`index.lucene_rust.search.native_shapes` (`fast`/`all`) predates read path
+`index.search.accelerated_shapes` (`fast`/`all`) predates read path
 R1, when mixed booleans measured slower and were routed to Lucene
 (`slower_shape`); since R1 every encodable shape runs native under both
 values.
@@ -203,7 +203,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 
 | Reason | What it means |
 |---|---|
-| `disabled` | `index.lucene_rust.search.enabled: false` |
+| `disabled` | `index.search.accelerated: false` |
 | `aggregations`, `collectors` | the request adds a collector the native side does not run |
 | `min_score` | `min_score` behind a scroll or `terminate_after` |
 | `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort over anything but a plain `TermQuery`, which alone the query cache never holds; a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
@@ -237,7 +237,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `RustZstd104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104`, `ZstdTerms104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
 
@@ -251,7 +251,7 @@ replace one.
 
 ### The `unified` highlighter
 
-The plugin adds its own, `rust_unified`
+The plugin adds its own, `accelerated_unified`
 (`highlight/NativeUnifiedHighlighter.java` over
 `lucene-highlighter/src/unified/opensearch.rs`), and a search operation
 listener (`HighlightRouting`, `onPreFetchPhase`) points every field whose
@@ -284,7 +284,7 @@ A field falls back to OpenSearch's highlighter (counted in the stats'
 (`highlight_<Class>`: `nested`, joins, scripts), a `function_score` around a phrase or span
 (`highlight_function_score_phrase`), a needed analyzer cannot be described
 (the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
-(`index.lucene_rust.highlight.enabled: false`). `plain` and `fvh` stay
+(`index.highlight.accelerated: false`). `plain` and `fvh` stay
 OpenSearch's.
 
 ### What runs native around the others

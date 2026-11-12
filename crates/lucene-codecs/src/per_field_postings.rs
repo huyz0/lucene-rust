@@ -197,7 +197,7 @@ pub struct Lucene104PostingsFormat {
 }
 
 /// The name of [`Lucene104PostingsFormat::rust_zstd`]'s format.
-pub const RUST_ZSTD_FORMAT_NAME: &str = "RustZstd104";
+pub const RUST_ZSTD_FORMAT_NAME: &str = "ZstdTerms104";
 
 impl Default for Lucene104PostingsFormat {
     fn default() -> Self {
@@ -303,11 +303,11 @@ impl Lucene104PostingsFormat {
         }
     }
 
-    /// `RustZstd104`: `Lucene104PostingsFormat()`'s postings under a terms
+    /// `ZstdTerms104`: `Lucene104PostingsFormat()`'s postings under a terms
     /// dictionary whose blocks are zstd-compressed at `level` where that
     /// pays, a large field's against a dictionary trained on its own blocks
     /// ([`WriteOptions::zstd_term_blocks`]). Stock Lucene cannot read it;
-    /// the plugin's Java side reads it as `RustZstd104`.
+    /// the plugin's Java side reads it as `ZstdTerms104`.
     ///
     /// # Errors
     /// `level` is not a zstd level.
