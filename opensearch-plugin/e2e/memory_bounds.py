@@ -197,7 +197,8 @@ def main():
     if len(sys.argv) > 5 and sys.argv[5] == "load":
         load(base)
     result = {"label": label, "baseline_rss_mb": round(cgroup_rss(container) / 2**20), "cases": {}}
-    for name, body in cases().items():
+    heavy = {} if os.environ.get("ONLY_LATENCY") else cases()
+    for name, body in heavy.items():
         r = run_case(base, container, name, body, ROUNDS)
         r["off_heap"] = plugin_stats(base)
         result["cases"][name] = r
@@ -225,6 +226,10 @@ def main():
         print(label, name, json.dumps(result["cases"][name]), flush=True)
     # Many heavy requests at once.
     body = cases()["terms_unique_ids_sub_avg"]
+    if os.environ.get("ONLY_LATENCY"):
+        with open(out_path, "w") as f:
+            json.dump(result, f, indent=1)
+        return
     r = concurrent_case(base, container, "concurrent", body, CONCURRENCY)
     r["off_heap"] = plugin_stats(base)
     result["cases"]["concurrent_%d" % CONCURRENCY] = r
