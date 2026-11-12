@@ -281,7 +281,7 @@ A field falls back to OpenSearch's highlighter (counted in the stats'
 (`highlight_<Class>`: `match_phrase_prefix`'s `MultiPhrasePrefixQuery`,
 `nested`, joins, scripts), a `function_score` around a phrase or span
 (`highlight_function_score_phrase`), a needed analyzer cannot be described
-(the analyzer's reason), or the highlighter is switched off
+(the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
 (`index.lucene_rust.highlight.enabled: false`). `plain` and `fvh` stay
 OpenSearch's.
 

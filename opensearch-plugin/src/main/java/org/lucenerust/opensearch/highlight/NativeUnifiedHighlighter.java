@@ -9,6 +9,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.search.uhighlight.UnifiedHighlighter.OffsetSource;
 import org.apache.lucene.util.CollectionUtil;
 import org.lucenerust.opensearch.AnalyzerSpec;
+import org.lucenerust.opensearch.LiveDirectoryReader;
 import org.lucenerust.opensearch.NativeBridge;
 import org.lucenerust.opensearch.NativeReaders;
 import org.lucenerust.opensearch.QueryEncoder;
@@ -220,6 +221,10 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
 
     /** {@code UnifiedHighlighter.buildHighlighter}'s inputs as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) {
+        // A realtime view adds the writer's buffers as leaves the native reader does not hold.
+        if (LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
+            return new Prepared(null, 0, "highlight_live_view");
+        }
         long handle = readers.peek(fieldContext.hitContext.topLevelReader());
         if (handle == 0) {
             return new Prepared(null, 0, "highlight_reader");
