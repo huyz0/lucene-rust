@@ -343,13 +343,15 @@ public class RustSearchPlugin extends Plugin implements
      * {@code indices.memory.index_buffer_size} (30% of the heap by default): a writer stalls
      * indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's does, so
      * under steady load the buffer sits near that bound, and the breaker must sit above it. It trips
-     * on its own limit. The parent breaker adds it in only with
-     * {@code indices.breaker.total.use_real_memory: false}; with the default real-memory parent,
-     * native bytes are outside the heap it measures.
+     * on its own limit. The page cache's resident bytes are charged to it too ({@link
+     * org.lucenerust.opensearch.store.PageCacheAccounting}), never refusing anything, and the
+     * default limit adds {@code lucene_rust.store.page_cache.size} for them. The parent breaker adds
+     * it in only with {@code indices.breaker.total.use_real_memory: false}; with the default
+     * real-memory parent, native bytes are outside the heap it measures.
      */
     @Override
     public BreakerSettings getCircuitBreaker(Settings settings) {
-        long defaultLimit = 3 * indexBufferBytes(settings);
+        long defaultLimit = 3 * indexBufferBytes(settings) + NODE_PAGE_CACHE_SIZE.get(settings).getBytes();
         return BreakerSettings.updateFromSettings(
             new BreakerSettings(
                 RustEngineSupport.BREAKER_NAME,
@@ -860,6 +862,7 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
+        org.lucenerust.opensearch.store.PageCacheAccounting.start(threadPool);
         NeuralQueryBuilder.initialize(mlClient());
         NeuralSparseQueryBuilder.initialize(mlClient());
         this.xContentRegistry = xContentRegistry;
