@@ -331,6 +331,21 @@ fn filters_and_deletions_hold_through_the_ivf_index() {
     assert!(r >= 0.9, "recall after deletes {r}");
 }
 
+#[test]
+fn a_small_share_filter_on_an_hnsw_field_is_scored_exactly() {
+    let tmp = TempDir::new("knn-hnsw-filter-share");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir, KnnVectorsFormat::hnsw(16, 100).unwrap());
+    // One centre: a twentieth of each segment, above `perLeafTopK`, scanned
+    // exactly instead of walked.
+    let centre = Clause::Term(TermQuery::new("centre", b"7".to_vec()));
+    assert_eq!(recall(&dir, 10, Some(&centre), |id| id % 20 == 7), 1.0);
+    // Half the documents: walked.
+    let even = Clause::Term(TermQuery::new("parity", b"even".to_vec()));
+    let r = recall(&dir, 10, Some(&even), |id| id.is_multiple_of(2));
+    assert!(r >= 0.9, "filtered recall {r}");
+}
+
 /// Documents of one large segment around 40 centres, with a `centre` term:
 /// a tenant per centre, each one region of the vector space.
 const REGION_DOCS: usize = 16_000;

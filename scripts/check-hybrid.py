@@ -294,11 +294,27 @@ STATS_CALLS = [
 ]
 
 
+def stats_diff(o, s):
+    """The paths where two stats answers differ, each with both values."""
+    out = []
+    def walk(a, b, at):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for k in sorted(set(a) | set(b)):
+                walk(a.get(k, "<missing>"), b.get(k, "<missing>"), f"{at}.{k}" if at else k)
+        elif isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)) and len(a) == len(b):
+            for i, (x, y) in enumerate(zip(a, b)):
+                walk(x, y, f"{at}[{i}]")
+        elif a != b:
+            out.append(f"{at}: ours {json.dumps(a)[:200]}, stock {json.dumps(b)[:200]}")
+    walk(o, s, "")
+    return "; ".join(out[:20])
+
+
 def compare_stats(failures):
     for path in STATS_CALLS:
         o, s = stats_answer(OURS[1], path), stats_answer(STOCK[1], path)
         if o != s:
-            failures.append(f"stats {path}:\n  ours  {json.dumps(o)[:1500]}\n  stock {json.dumps(s)[:1500]}")
+            failures.append(f"stats {path}: {stats_diff(o, s)}")
 
 
 def main():

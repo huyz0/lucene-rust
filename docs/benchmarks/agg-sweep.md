@@ -88,8 +88,60 @@ own merge ordered documents differently (last-digit float sums, tie order).
   the competitive iterator, in Lucene too.
 - Stored fetch: LZ4 decompression dominates (~2.8 us a document). Doc-values
   fetch: 0.7 us a hit.
-- Open: `top_hits` buffers every scored match before ranking (16 MB peak at
-  1M matches); numeric `terms` peaks at 69 MB for 630k keys; the range shape
-  is still ~1.25x the plugin's Java path, which counts ranges from the points
-  with sub-aggregations (filter rewrite).
+- Open: the range shape is still ~1.25x the plugin's Java path, which counts
+  ranges from the points with sub-aggregations (filter rewrite). (`top_hits`
+  and numeric `terms` memory: see below.)
 - Highlighting runs in Java Lucene in the plugin (no native path).
+
+## Bounded `top_hits` and numeric `terms` memory (2026-11-12)
+
+What a pass held that grew with the matches or keys:
+
+- `top_hits` (and a sorted one) read every match's score from a list of the
+  whole segment's matches and scores built before collecting (16 MB at 1M
+  matches). The segment is now scored a range of 65,536 documents at a time
+  (`BulkScorer.score(collector, acceptDocs, min, max)`, `aggs::ScoredRanges`),
+  so a pass holds one range's matches; a tree with `nested` or
+  `reverse_nested` (whose subs see documents outside the range) still scores
+  the segment at once. The score is found from where the last lookup ended
+  instead of a binary search per collected document.
+- A sorted `top_hits` with `track_scores` kept every collected document's
+  score. It now keeps the scores of documents that enter its queue, and drops
+  those the queue no longer holds once the map reaches twice the queue (at
+  least 1024).
+- `LongKeyedBucketOrds` (numeric `terms`, `histogram`, `date_histogram`,
+  keyword `terms`' keyed path, `significant_terms`) was a hash map of
+  `(owner, key)` beside the key list. It is now an open-addressing table of
+  16-byte slots (key, owner, ordinal) at most five eighths full, rebuilt from
+  the key list when it grows (the old table freed first).
+- Numeric `terms`' `shard_size` selection sorted a copy of every bucket; it
+  now keeps a bounded batch (`BucketPriorityQueue`'s bound) and reads a lone
+  owner's buckets in place.
+
+In process (`sweep`, merged 1M corpus, best of two, digests identical):
+
+| shape | time main -> branch | peak main -> branch |
+|---|---|---|
+| top_hits 10 (match_all, t0, t5) | 0.31-0.34x | 16 MB -> 0.53 MB |
+| terms cat > top_hits 3 | 0.38-0.43x | 16 MB -> 0.57 MB |
+| terms cat > top_hits 3 by num, track_scores | 0.27-0.29x | 26.5 MB -> 0.69 MB |
+| numeric terms 25 (630k keys) | 0.56-0.60x | 69 MB -> 41 MB |
+| terms keyword > terms cat | 0.80-0.90x | 34 MB -> 23 MB |
+| date_histogram > terms cat | 0.90x | |
+| everything else | within run-to-run noise (+-5%) | same |
+
+End to end (`run.sh`, one merged segment, ms, every shape's result equal to
+the plugin's Java path):
+
+| shape | stock | plugin Java | main | branch |
+|---|---|---|---|---|
+| t0, top_hits 10 | 26.5 | 23.1 | 51.5 | 21.2 |
+| t8, terms tag > top_hits 3 | 40.5 | 37.0 | 32.8 | 18.6 |
+| terms category > top_hits num desc tracked | 60.8 | 55.6 | 151.4 | 46.6 |
+| terms num (numeric) 25 | 214.6 | 209.6 | 137.8 | 81.9 |
+| terms tag > terms num 10 | 266.4 | 245.4 | 174.9 | 136.9 |
+| date_histogram day > terms category | 107.8 | 111.7 | 53.5 | 48.5 |
+
+The other 19 shapes are within 0.91-1.08x of main between runs (cardinality
+tag read 0.92x in one run and 1.18x in the other; the code it runs did not
+change).

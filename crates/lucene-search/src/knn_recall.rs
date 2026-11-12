@@ -440,6 +440,7 @@ pub fn knn_top_hits_tuned(
         nested,
         ivf_nprobes,
         buffers,
+        None,
         search.effort,
     );
     tuner.searched(&search);
@@ -462,6 +463,7 @@ pub fn knn_top_hits_tuned(
         nested,
         ivf_nprobes,
         buffers,
+        None,
         tuner,
         &search,
         &hits,
@@ -474,7 +476,8 @@ pub fn knn_top_hits_tuned(
 /// again at the [`NEIGHBOURS`] levels on either side, and records the recalls in `tuner`.
 /// An unsampled search is not checked. Neither is a search over `buffers`
 /// nor an expanded nested one: there is no exact search to compare them
-/// with here, and their sample is given back.
+/// with here, and their sample is given back. The levels searched again
+/// keep the search's `exploration_slack`.
 ///
 /// # Errors
 /// As [`crate::knn_search::knn_top_hits`].
@@ -489,6 +492,7 @@ pub fn check_sample(
     nested: Option<(&dyn BitSetProducer, bool)>,
     ivf_nprobes: usize,
     buffers: &[BufferedVectors<'_>],
+    exploration_slack: Option<f32>,
     tuner: &RecallTuner,
     search: &TunedSearch,
     hits: &[ScoreDoc],
@@ -519,11 +523,13 @@ pub fn check_sample(
         let exact = run(Depth {
             effort: 1.0,
             exact: true,
+            exploration_slack: None,
         })?;
         let at = |level: usize| {
             run(Depth {
                 effort: effort(level),
                 exact: false,
+                exploration_slack,
             })
         };
         let level = search.level;
@@ -553,7 +559,8 @@ pub fn check_sample(
 
 /// [`crate::knn_search::knn_top_hits_buffered`] (or, with `nested`,
 /// [`crate::knn_search::knn_top_hits_nested_with`]) at a fixed search
-/// effort: what a tuned search runs at its level ([module doc](self)).
+/// effort: what a tuned search runs at its level ([module doc](self)),
+/// with the graph walks' optional `exploration_slack`.
 ///
 /// # Errors
 /// As [`crate::knn_search::knn_top_hits`].
@@ -568,6 +575,7 @@ pub fn knn_top_hits_at_effort(
     nested: Option<(&dyn BitSetProducer, bool)>,
     ivf_nprobes: usize,
     buffers: &[BufferedVectors<'_>],
+    exploration_slack: Option<f32>,
     effort: f32,
 ) -> Result<Vec<ScoreDoc>> {
     top_hits(
@@ -583,6 +591,7 @@ pub fn knn_top_hits_at_effort(
         Depth {
             effort,
             exact: false,
+            exploration_slack,
         },
     )
 }
@@ -615,6 +624,7 @@ pub fn knn_top_hits_exact(
         Depth {
             effort: 1.0,
             exact: true,
+            exploration_slack: None,
         },
     )
 }
