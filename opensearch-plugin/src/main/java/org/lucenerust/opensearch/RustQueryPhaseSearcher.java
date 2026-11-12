@@ -166,11 +166,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasTimeout
     ) throws IOException {
         PainlessScore.beginRequest(() -> ctx.request().source() == null ? null : ctx.request().source().toString());
+        // QueryPhase took the timeout's start just before calling here.
+        NativeMemory.queryStarted(hasTimeout ? ctx.timeout().nanos() : 0);
         try {
             return containsHybrid(query)
                 ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
                 : searchPlain(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         } finally {
+            NativeMemory.queryStarted(0);
             PainlessScore.endRequest();
         }
     }
@@ -380,6 +383,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             sortBlob = sorted.blob();
         }
         NativeReaders.Acquired acquired = null;
+        boolean memoryTimedOut = false;
         if (reason == null) {
             acquired = readers.acquire(searcher.getIndexReader());
             reason = acquired.fallbackReason();
@@ -448,10 +452,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     memory.close();
                     stats.nativeMemory(memory.peak());
                 }
+                memoryTimedOut = memory.timedOut();
             }
             if (reason == null) {
                 stats.nativeQuery();
-                if (hasTimeout && deadlinePassed(ctx)) {
+                if (memoryTimedOut || hasTimeout && deadlinePassed(ctx)) {
                     timedOut(ctx);
                 }
                 stats.nativeTime(System.nanoTime() - start);
@@ -562,7 +567,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return "native_error";
         }
         NativeHybrid.store(ctx, out[0], enc.blobs().size());
-        if (hasTimeout && deadlinePassed(ctx)) {
+        if (memory.timedOut() || hasTimeout && deadlinePassed(ctx)) {
             timedOut(ctx);
         }
         return null;
@@ -1625,8 +1630,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * A native search that ran past its timeout, answered as QueryPhase answers one: the task
      * cancelled fails it, as the TaskCancelledException ContextIndexSearcher does not catch would;
      * otherwise the request fails without {@code allow_partial_search_results} and is flagged
-     * {@code timed_out} with it. Its results are complete -- the native search is not interrupted
-     * part way (docs/accelerated-queries.md, Known limits) -- which a partial answer allows.
+     * {@code timed_out} with it. Its results are what it collected by the deadline: the native
+     * collection stops there, between windows of documents, as Lucene's under QueryPhase's timeout
+     * check does.
      */
     static void timedOut(SearchContext ctx) {
         // Only a registered low_level_cancellation check sees the task; the
