@@ -8,7 +8,7 @@ Usage: highlight_bench.py [load|run|all] [DOCS] [SECONDS]
   (default 12) a node, the two nodes alternating in rounds, and prints the
   median and p90 milliseconds and the stock/plugin ratio of the medians. The
   `no_highlight` rows are the same searches without highlighting: the cost
-  around the highlighter."""
+  around the highlighter. CASES (comma-separated) runs only those cases."""
 import json, os, random, statistics, sys, time
 import requests
 
@@ -29,6 +29,7 @@ CASES = {
     "terms": ({"match": {"body": "quick brown gold"}}, {"fields": {"body": {}}}),
     "phrase": ({"match_phrase": {"body": "brown fox"}}, {"fields": {"body": {}}}),
     "prefix": ({"prefix": {"body": "sea"}}, {"fields": {"body": {}}}),
+    "phrase_prefix": ({"match_phrase_prefix": {"body": "quick br"}}, {"fields": {"body": {}}}),
     "all_fragments": ({"match": {"body": "fox"}}, {"fields": {"body": {"number_of_fragments": 0}}}),
 }
 
@@ -68,7 +69,10 @@ def timed(base, index, body):
 def run(seconds, size=50):
     print(f"{'index':14} {'case':16} {'plugin p50':>10} {'p90':>7} {'stock p50':>10} {'p90':>7} {'stock/plugin':>12}")
     for index in INDICES:
+        only = os.environ.get("CASES")
         for case, (query, highlight) in list(CASES.items()) + [("no_highlight", (CASES["terms"][0], None))]:
+            if only and case not in only.split(","):
+                continue
             body = {"query": query, "size": size, "_source": False}
             if highlight is not None:
                 body["highlight"] = highlight

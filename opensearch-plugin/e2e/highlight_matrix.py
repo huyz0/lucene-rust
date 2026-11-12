@@ -188,6 +188,13 @@ QUERIES = {
     "match_all": {"match_all": {}},
     "function_score": {"function_score": {"query": {"match": {"body": "fox"}}, "field_value_factor": {"field": "num"}}},
     "phrase_prefix": {"match_phrase_prefix": {"body": "quick br"}},
+    "phrase_prefix_one": {"match_phrase_prefix": {"body": "qui"}},
+    "phrase_prefix_slop": {"match_phrase_prefix": {"body": {"query": "brown qu", "slop": 2}}},
+    "phrase_prefix_stop": {"match_phrase_prefix": {"body": "over the la"}},
+    "phrase_prefix_fo": {"match_phrase_prefix": {"body": "quick fo"}},
+    "phrase_prefix_none": {"match_phrase_prefix": {"body": "quick zzz"}},
+    "phrase_prefix_and_term": {"bool": {"must": [{"match_phrase_prefix": {"body": "lazy d"}}], "should": [{"match": {"body": "gold"}}]}},
+    "phrase_prefix_multi_match": {"multi_match": {"query": "lazy do", "fields": ["body", "title"], "type": "phrase_prefix"}},
     "title_en": {"match": {"title.en": "jumping foxes"}},
 }
 
