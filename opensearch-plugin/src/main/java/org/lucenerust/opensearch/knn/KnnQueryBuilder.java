@@ -72,6 +72,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     private Float minScore;
     private Integer efSearch;
     private Integer nprobes;
+    /** {@code method_parameters.exploration_slack}: this plugin's opt-in adaptive beam stop. */
+    private Float explorationSlack;
     private QueryBuilder filter;
     /** {@code rescore}: null unset, false off, true on (with {@link #oversample} when given). */
     private Boolean rescore;
@@ -101,6 +103,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         oversample = in.readOptionalFloat();
         expandNested = in.readOptionalBoolean();
         ignoreUnmapped = in.readBoolean();
+        explorationSlack = in.readOptionalFloat();
     }
 
     /**
@@ -126,6 +129,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         out.writeOptionalFloat(oversample);
         out.writeOptionalBoolean(expandNested);
         out.writeBoolean(ignoreUnmapped);
+        out.writeOptionalFloat(explorationSlack);
     }
 
     /**
@@ -298,6 +302,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                 Object np = methodParameters.get("nprobes");
                 b.efSearch = ef == null ? null : ((Number) ef).intValue();
                 b.nprobes = np == null ? null : ((Number) np).intValue();
+                b.explorationSlack = KnnQueryParsers.explorationSlack(methodParameters);
             }
             if (rescoreContext != null) {
                 b.rescore = rescoreContext.isRescoreEnabled();
@@ -467,6 +472,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             Object np = methodParameters.get("nprobes");
             efSearch = ef == null ? null : ((Number) ef).intValue();
             nprobes = np == null ? null : ((Number) np).intValue();
+            explorationSlack = KnnQueryParsers.explorationSlack(methodParameters);
             methodParameters = null;
         }
         if (Boolean.TRUE.equals(rescore) && oversample != null) {
@@ -494,13 +500,16 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (filter != null) {
             builder.field(FILTER_FIELD.getPreferredName(), filter);
         }
-        if (efSearch != null || nprobes != null) {
+        if (efSearch != null || nprobes != null || explorationSlack != null) {
             builder.startObject(METHOD_PARAMETERS_FIELD.getPreferredName());
             if (efSearch != null) {
                 builder.field("ef_search", efSearch);
             }
             if (nprobes != null) {
                 builder.field("nprobes", nprobes);
+            }
+            if (explorationSlack != null) {
+                builder.field(KnnQueryParsers.EXPLORATION_SLACK, explorationSlack);
             }
             builder.endObject();
         }
@@ -545,6 +554,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         c.minScore = minScore;
         c.efSearch = efSearch;
         c.nprobes = nprobes;
+        c.explorationSlack = explorationSlack;
         c.filter = filter;
         c.rescore = rescore;
         c.oversample = oversample;
@@ -634,7 +644,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                 ).withRecallTarget(recall);
             }
             int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
-            return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
+            KnnTopVectorQuery q = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
+            return explorationSlack == null ? q : q.withExplorationSlack(explorationSlack);
         }
         float threshold;
         if (maxDistance != null) {
@@ -736,6 +747,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             && Objects.equals(minScore, o.minScore)
             && Objects.equals(efSearch, o.efSearch)
             && Objects.equals(nprobes, o.nprobes)
+            && Objects.equals(explorationSlack, o.explorationSlack)
             && Objects.equals(filter, o.filter)
             && Objects.equals(rescore, o.rescore)
             && Objects.equals(oversample, o.oversample)
@@ -745,7 +757,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
 
     @Override
     protected int doHashCode() {
-        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, filter, rescore, oversample, expandNested, ignoreUnmapped);
+        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, explorationSlack, filter, rescore, oversample, expandNested, ignoreUnmapped);
     }
 
     @Override

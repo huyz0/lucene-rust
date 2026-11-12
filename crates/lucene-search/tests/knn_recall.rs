@@ -194,8 +194,20 @@ fn effort_one_is_the_search_as_asked_and_more_effort_finds_more() {
             let segs = opened.as_open_segments();
             let candidates = if ivf { K } else { 40 };
             let at = |q: usize, e: f32| {
-                knn_top_hits_at_effort(&segs, "v", &target(q), K, candidates, None, None, 0, &[], e)
-                    .unwrap()
+                knn_top_hits_at_effort(
+                    &segs,
+                    "v",
+                    &target(q),
+                    K,
+                    candidates,
+                    None,
+                    None,
+                    0,
+                    &[],
+                    None,
+                    e,
+                )
+                .unwrap()
             };
             for q in 0..5 {
                 let plain =
@@ -277,6 +289,7 @@ fn an_unsampled_search_is_not_checked() {
             None,
             0,
             &[],
+            None,
             second.effort,
         )
         .unwrap();
@@ -291,6 +304,7 @@ fn an_unsampled_search_is_not_checked() {
                 None,
                 0,
                 &[],
+                None,
                 &tuner,
                 search,
                 &hits,

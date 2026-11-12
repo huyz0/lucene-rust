@@ -8565,7 +8565,7 @@ mod tests {
         for &x in &target {
             request = request.f32(x);
         }
-        let request = request.i32(10).i32(100).u8(0).u8(0).i32(0).0;
+        let request = request.i32(10).i32(100).u8(0).u8(0).i32(0).u8(0).0;
         let (mut first, mut second) = (Vec::new(), Vec::new());
         for _ in 0..rounds {
             add(next, next + step);
@@ -8730,7 +8730,7 @@ mod tests {
                 None => request.u8(0),
                 Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
             };
-            let request = request.u8(0).i32(0).0;
+            let request = request.u8(0).i32(0).u8(0).0;
             let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
             // SAFETY: live request and buffers of 64.
             let rc = unsafe {
@@ -8890,10 +8890,11 @@ mod tests {
     fn a_view_searches_the_buffer_graph() {
         let recall = buffer_index_knn("engine-writer-live-knn-graph", "hnsw:8:50", 300, 0, false);
         // Uniform random 64-d vectors under M 8 and 50 candidates are hard
-        // for any graph: the flushed segment, which holds the same graph,
-        // finds about as many.
+        // for any graph. The flushed segment holds the same graph but scans
+        // its half-passing filter exactly (the walk would cost about as
+        // much), so it finds at least as many.
         assert!(
-            recall.0 >= 0.8 && recall.0 >= recall.1 - 0.05,
+            recall.0 >= 0.8 && recall.1 >= recall.0 - 0.05,
             "recall {recall:?}"
         );
     }
@@ -9047,7 +9048,7 @@ mod tests {
                 None => request.u8(0),
                 Some(w) => request.u8(1).u8(0).bytes(b"body").bytes(w.as_bytes()),
             };
-            let request = request.u8(0).i32(nprobes).0;
+            let request = request.u8(0).i32(nprobes).u8(0).0;
             let (mut docs, mut scores, mut n) = ([0i32; 64], [0f32; 64], 0usize);
             // SAFETY: live request and buffers of 64.
             let rc = unsafe {
@@ -9221,7 +9222,7 @@ mod tests {
         for x in target {
             request = request.f32(x);
         }
-        let request = request.i32(5).i32(40).u8(0).u8(0).i32(0).0;
+        let request = request.i32(5).i32(40).u8(0).u8(0).i32(0).u8(0).0;
         let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
         // SAFETY: live request and buffers of 5.
         let rc = unsafe {
