@@ -35,13 +35,16 @@ import java.util.function.LongSupplier;
  */
 public final class RustEngineSupport {
     /**
-     * What an index that does not set {@code index.engine.accelerated} gets, on this node -- so a
-     * node can serve every index, system indices included, with the Rust engine, as the REST
-     * suites' run of {@code scripts/verify-opensearch.sh --engine} does.
+     * What an index that does not set {@code index.engine.accelerated} gets, on this node: every
+     * such index, system indices and indices created before the plugin included, is served by the
+     * accelerated engine where it can be, and by OpenSearch's where it needs something the
+     * accelerated writer refuses. On by default: the segments are stock Lucene's either way and such an index stores
+     * no setting, so a node without the plugin opens it unchanged. {@code false} keeps OpenSearch's
+     * engine for every index that does not ask.
      */
     public static final Setting<Boolean> ENGINE_DEFAULT = Setting.boolSetting(
         "indices.engine.accelerated.default",
-        false,
+        true,
         Setting.Property.NodeScope
     );
 
@@ -330,9 +333,20 @@ public final class RustEngineSupport {
         }
         return ENGINE_ENABLED.exists(settings)
             || REALTIME_SEARCH.get(settings)
-            || (CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
+            || (inheritsOntoLucene10(settings)
+                && CODECS.containsKey(EngineConfig.INDEX_CODEC_SETTING.get(settings))
                 && (org.opensearch.index.IndexSortConfig.INDEX_SORT_FIELD_SETTING.exists(settings) == false
                     || unsupportedSort(settings) == null));
+    }
+
+    /**
+     * Whether an index that only inherits {@link #ENGINE_DEFAULT} may move onto the accelerated engine:
+     * one created on a node whose Lucene is 10 or later. An index created on OpenSearch 2.x (Lucene
+     * 9 segments, restored from a snapshot or upgraded in place) stays on OpenSearch's engine
+     * until it is reindexed.
+     */
+    public static boolean inheritsOntoLucene10(org.opensearch.common.settings.Settings settings) {
+        return org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings).luceneVersion.major >= 10;
     }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */
