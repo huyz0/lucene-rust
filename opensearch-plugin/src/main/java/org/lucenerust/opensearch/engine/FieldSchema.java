@@ -21,7 +21,8 @@ import java.util.TreeMap;
  * FieldSchema.assertSameSchema} requires.
  */
 final class FieldSchema {
-    final String name;
+    /** Set at construction or by {@link #reset}; a registered schema is a {@link #copy} and never changes. */
+    String name;
     IndexOptions indexOptions = IndexOptions.NONE;
     boolean omitNorms;
     boolean storeTermVectors;
@@ -39,6 +40,43 @@ final class FieldSchema {
 
     FieldSchema(String name) {
         this.name = name;
+    }
+
+    /** Back to a new schema for {@code name}, so a thread can reuse it for the next document. */
+    void reset(String name) {
+        this.name = name;
+        indexOptions = IndexOptions.NONE;
+        omitNorms = false;
+        storeTermVectors = false;
+        docValuesType = DocValuesType.NONE;
+        skipIndex = DocValuesSkipIndexType.NONE;
+        pointDimensionCount = 0;
+        pointIndexDimensionCount = 0;
+        pointNumBytes = 0;
+        vectorDimension = 0;
+        vectorEncoding = VectorEncoding.FLOAT32;
+        vectorSimilarity = VectorSimilarityFunction.EUCLIDEAN;
+        softDeletes = false;
+        attributes.clear();
+    }
+
+    /** An independent copy, for the registry to keep while this one is reused. */
+    FieldSchema copy() {
+        FieldSchema c = new FieldSchema(name);
+        c.indexOptions = indexOptions;
+        c.omitNorms = omitNorms;
+        c.storeTermVectors = storeTermVectors;
+        c.docValuesType = docValuesType;
+        c.skipIndex = skipIndex;
+        c.pointDimensionCount = pointDimensionCount;
+        c.pointIndexDimensionCount = pointIndexDimensionCount;
+        c.pointNumBytes = pointNumBytes;
+        c.vectorDimension = vectorDimension;
+        c.vectorEncoding = vectorEncoding;
+        c.vectorSimilarity = vectorSimilarity;
+        c.softDeletes = softDeletes;
+        c.attributes.putAll(attributes);
+        return c;
     }
 
     /** {@code IndexingChain.updateDocFieldSchema}: folds one instance's type into this schema. */

@@ -73,6 +73,7 @@ PREFIXES = {
     "SortEncoder.java": "SORT_",
     "NativeCollapse.java": "COLLAPSE_",
     "RustAdaptiveDocValuesProducer.java": "DOC_VALUES_TYPE_",
+    "RustSubstringDocValuesFormat.java": "DOC_VALUES_TYPE_",
 }
 
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
@@ -109,6 +110,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("KnnHitsMemo.java", "PER_CONTEXT"): "how many queries' k-NN hits a reader context keeps in Java between phases",
     ("HexIdCodec.java", "HEX"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
     ("HexIdCodec.java", "TEXT"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
     ("MMROverSampleProcessor.java", "DEFAULT_QUERY_SIZE_INDICATOR"): "k-NN's MMR search-pipeline parameter, applied in Java around the search",

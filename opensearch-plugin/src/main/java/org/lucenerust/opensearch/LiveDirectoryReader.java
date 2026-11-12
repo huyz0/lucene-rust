@@ -169,7 +169,11 @@ public final class LiveDirectoryReader extends FilterDirectoryReader {
             for (int c = 0; c < leaves.length; c++) {
                 leaves[c] = new LiveLeafReader(view, view.chunkBuffer(c), view.chunkStart(c), view.chunkMaxDoc(c), infos);
             }
-            return OpenSearchDirectoryReader.wrap(new LiveDirectoryReader(base, view, leaves), base.shardId());
+            // Buffered documents of a doc-values-only `_seq_no` show it as points, as the segments do.
+            return OpenSearchDirectoryReader.wrap(
+                org.lucenerust.opensearch.engine.SeqNoPointsReader.wrapIfNeeded(new LiveDirectoryReader(base, view, leaves)),
+                base.shardId()
+            );
         } catch (IOException | RuntimeException e) {
             try {
                 view.close();
