@@ -877,7 +877,8 @@ def check_exact_approximation(index, shards, label):
     """With `native_approximate` at its default, the rows OpenSearch would approximate run
     natively: their hits are the exact ones (OpenSearch's with `track_total_hits: true`, which
     turns the approximation off), their totals OpenSearch's own."""
-    rows = [(n, b) for n, b, e in matrix() if e == "approximate"]
+    # A post_filter's approximation is not the query's: those rows stay on OpenSearch either way.
+    rows = [(n, b) for n, b, e in matrix() if e == "approximate" and "post_filter" not in b]
     check(rows, f"{label} {index}: no approximate rows")
     set_native(index, False)
     approx, exact = {}, {}
