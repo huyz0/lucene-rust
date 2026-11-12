@@ -345,13 +345,15 @@ public class RustSearchPlugin extends Plugin implements
      * {@code indices.memory.index_buffer_size} (30% of the heap by default): a writer stalls
      * indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's does, so
      * under steady load the buffer sits near that bound, and the breaker must sit above it. It trips
-     * on its own limit. The parent breaker adds it in only with
-     * {@code indices.breaker.total.use_real_memory: false}; with the default real-memory parent,
-     * native bytes are outside the heap it measures.
+     * on its own limit. The page cache's resident bytes are charged to it too ({@link
+     * org.lucenerust.opensearch.store.PageCacheAccounting}), never refusing anything, and the
+     * default limit adds {@code lucene_rust.store.page_cache.size} for them. The parent breaker adds
+     * it in only with {@code indices.breaker.total.use_real_memory: false}; with the default
+     * real-memory parent, native bytes are outside the heap it measures.
      */
     @Override
     public BreakerSettings getCircuitBreaker(Settings settings) {
-        long defaultLimit = 3 * indexBufferBytes(settings);
+        long defaultLimit = 3 * indexBufferBytes(settings) + NODE_PAGE_CACHE_SIZE.get(settings).getBytes();
         return BreakerSettings.updateFromSettings(
             new BreakerSettings(
                 RustEngineSupport.BREAKER_NAME,
@@ -421,6 +423,19 @@ public class RustSearchPlugin extends Plugin implements
             indexModule.addSettingsUpdateConsumer(IndexSettings.INDEX_DOC_ID_FUZZY_SET_ENABLED_SETTING, enabled -> {}, enabled -> {
                 if (enabled) {
                     throw new IllegalArgumentException(RustEngineSupport.FUZZY_SET_REFUSED);
+                }
+            });
+        }
+        // A search's unified highlighting runs natively while index.lucene_rust.highlight.enabled is on.
+        if (org.lucenerust.opensearch.highlight.HighlightRouting.available()) {
+            FetchFlag highlight = new FetchFlag(HIGHLIGHT_ENABLED.get(indexModule.getSettings()));
+            indexModule.addSettingsUpdateConsumer(HIGHLIGHT_ENABLED, highlight::set);
+            indexModule.addSearchOperationListener(new SearchOperationListener() {
+                @Override
+                public void onPreFetchPhase(SearchContext context) {
+                    if (highlight.enabled()) {
+                        org.lucenerust.opensearch.highlight.HighlightRouting.route(context);
+                    }
                 }
             });
         }
@@ -496,6 +511,17 @@ public class RustSearchPlugin extends Plugin implements
             return enabled;
         }
     }
+
+    /**
+     * Whether a search's {@code unified} highlighting (the default highlighter) runs natively
+     * ({@code NativeUnifiedHighlighter}); off, OpenSearch's highlighter runs it.
+     */
+    public static final Setting<Boolean> HIGHLIGHT_ENABLED = Setting.boolSetting(
+        "index.lucene_rust.highlight.enabled",
+        true,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
 
     /** Whether the index's stored fields are read natively. */
     public static final Setting<Boolean> FETCH_ENABLED = Setting.boolSetting(
@@ -611,6 +637,15 @@ public class RustSearchPlugin extends Plugin implements
         return analyzers;
     }
 
+    /** OpenSearch's {@code unified} highlighter run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
+    @Override
+    public Map<String, org.opensearch.search.fetch.subphase.highlight.Highlighter> getHighlighters() {
+        return Map.of(
+            org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter(readers, stats)
+        );
+    }
+
     @Override
     public Optional<QueryPhaseSearcher> getQueryPhaseSearcher() {
         return Optional.of(new RustQueryPhaseSearcher(readers, stats));
@@ -622,6 +657,7 @@ public class RustSearchPlugin extends Plugin implements
         settings.addAll(List.of(
             RustQueryPhaseSearcher.ENABLED,
             FETCH_ENABLED,
+            HIGHLIGHT_ENABLED,
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
             RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
@@ -863,6 +899,7 @@ public class RustSearchPlugin extends Plugin implements
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
         HybridSearch.initialize(threadPool);
+        org.lucenerust.opensearch.store.PageCacheAccounting.start(threadPool);
         NeuralQueryBuilder.initialize(mlClient());
         NeuralSparseQueryBuilder.initialize(mlClient());
         this.xContentRegistry = xContentRegistry;

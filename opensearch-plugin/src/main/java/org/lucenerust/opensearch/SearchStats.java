@@ -90,6 +90,17 @@ public final class SearchStats {
         return nativeDocValues.sum();
     }
 
+    private final LongAdder nativeHighlights = new LongAdder();
+
+    /** A field of a search highlighted natively ({@code NativeUnifiedHighlighter}), counted once per search. */
+    public void nativeHighlight() {
+        nativeHighlights.increment();
+    }
+
+    public long highlightCount() {
+        return nativeHighlights.sum();
+    }
+
     public long sequentialFetchCount() {
         return nativeSequentialFetches.sum();
     }

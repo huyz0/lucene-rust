@@ -45,7 +45,7 @@ pub use nrt_caching_directory::NrtCachingDirectory;
 pub use page_cache::{
     PageCache, PageCacheConfig, PageCacheStats, PageCodec, PageDecoder, UnitLayout,
 };
-pub use paged_fs_directory::{PagedFsConfig, PagedFsDirectory};
+pub use paged_fs_directory::{whole_file_bytes, PagedFsConfig, PagedFsDirectory};
 pub use rate_limiter::{RateLimitedIndexOutput, RateLimiter, SimpleRateLimiter};
 pub use store_registry::{
     register_store_type, register_store_wrapper, StoreProvider, StoreSettings, StoreSpec,

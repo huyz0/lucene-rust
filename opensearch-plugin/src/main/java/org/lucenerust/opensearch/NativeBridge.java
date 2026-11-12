@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 144;
+    public static final int EXPECTED_ABI_VERSION = 149;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -269,6 +269,11 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
         );
         static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
+        static final MethodHandle STORE_PAGE_CACHE_STATS = bind("ffi_store_page_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle HIGHLIGHT_UNIFIED = bind(
+            "ffi_jvm_highlight_unified_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1758,6 +1763,28 @@ public final class NativeBridge {
         }
     }
 
+    /** How many values {@link #storePageCacheStats} returns. */
+    public static final int PAGE_CACHE_STATS = 8;
+
+    /**
+     * The page cache's numbers: {@code [budget, resident bytes, bytes of files read whole at open,
+     * faults, pages read again after eviction, evictions, pages that could not be read, nanoseconds
+     * serving faults]}; every value -1 if the call fails.
+     */
+    public static long[] storePageCacheStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(PAGE_CACHE_STATS * Long.BYTES);
+            int rc = (int) H.STORE_PAGE_CACHE_STATS.invokeExact(out);
+            long[] values = new long[PAGE_CACHE_STATS];
+            for (int i = 0; i < PAGE_CACHE_STATS; i++) {
+                values[i] = rc == OK ? out.get(JAVA_LONG, (long) i * Long.BYTES) : -1;
+            }
+            return values;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Bytes the page cache holds resident now, across every bound shard. */
     public static long storePageCacheResidentBytes() {
         try {
@@ -1775,6 +1802,47 @@ public final class NativeBridge {
         byte[] utf8 = dir.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         try (Scratch s = Scratch.open()) {
             return (int) H.ADD_DATA_PACK_DIR.invokeExact(s.bytes(utf8), (long) utf8.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's unified-highlighter snippets ({@code jvm_highlight.rs}): segment {@code segment}'s
+     * document {@code doc} of {@code handle}'s reader, whose loaded value is {@code content},
+     * highlighted as the field's {@code request} asks; the result in {@code out[0]}.
+     */
+    public static int highlightUnified(long handle, byte[] request, int segment, int doc, String content, byte[][] out) {
+        if (request == null || content == null) {
+            return nullArgument(request == null ? "request" : "content");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int n = content.length();
+            MemorySegment chars = s.alloc((long) n * Character.BYTES);
+            MemorySegment.copy(content.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, 0, n);
+            int rc = (int) H.HIGHLIGHT_UNIFIED.invokeExact(
+                handle,
+                s.bytes(request),
+                (long) request.length,
+                segment,
+                doc,
+                chars,
+                (long) n,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the snippets");
+                }
+                out[0] = encoded;
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
