@@ -115,8 +115,19 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
 - Reads use `O_DIRECT` where the file system takes it, so a page is held
   once, in the budget, not again in the kernel's page cache. A read goes
   into a reused per-thread buffer and from there straight into the mapping
-  (`UFFDIO_COPY`); each fault wakes one handler thread (`EPOLLEXCLUSIVE`),
-  of four per CPU (16 to 64), so faults wait on the disk in parallel.
+  (`UFFDIO_COPY`). A fault is served on the faulting thread: the
+  `userfaultfd` raises `SIGBUS` there (`UFFD_FEATURE_SIGBUS`), the pager's
+  handler reads the page and returns, and the access runs again. That
+  saves the two thread hand-offs a handler thread costs per fault (4 KiB
+  faults: 1 thread 14.8k to 24k/s against `pread` 27-29k, 16 threads 65k
+  to 100k/s). A `SIGBUS` anywhere else goes to the handler installed
+  before (the JVM's), and an open puts the pager's handler back in front
+  if a library replaced it. Where the kernel lacks the feature (before
+  4.14), or with `PAGE_CACHE_FAULT_HANDLING=threads`, faults wake one of the
+  pager's handler threads instead (`EPOLLEXCLUSIVE`, four per CPU, 16 to
+  64). Either way a kernel access to a missing page (`write(2)` from a
+  mapping) fails with `EFAULT`, as under a user-mode-only `userfaultfd`,
+  and the index output copies those bytes through a buffer.
 - Every open of one file shares its pages: a merge reading a segment the
   search reader has open reads the pages the reader holds, and no page is
   held twice. Files read whole at open are shared the same way.
@@ -136,7 +147,8 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   after the faulting page is read on an I/O thread while the faulting page
   is read alone, so the reader runs on as the rest arrives. A batch of
   scattered pages (a prefetch) is read on the calling thread and 16 I/O
-  threads at once. HNSW asks for each expanded node's neighbours' vectors in
+  threads at once; a prefetch over many files (a query over many segments)
+  puts every file's reads on the I/O threads together. HNSW asks for each expanded node's neighbours' vectors in
   one batch, disk HNSW for each beam's records, IVF for its probed clusters
   and its rerank candidates. A file whose pages are all resident costs a
   prefetch one counter read.
@@ -250,6 +262,8 @@ The search reader advises each mapped file by extension
 (`lucene_store::read_advice`). By default the files a vector search reads a
 vector at a time are advised random: flat vectors (`vec`), the HNSW graph
 (`vex`), IVF rerank vectors (`ivv`) and quantized codes (`veq`, `vqd`).
+Stored fields (`fdt`) are advised `auto`: random when the file is larger
+than an eighth of available memory, the OS default otherwise (see below).
 Every other file keeps the OS default. Merges open their own mappings and
 are never advised. A file advised random that is at most an eighth of
 available memory (`MemAvailable`, capped by the memory cgroup's limit) is
@@ -259,8 +273,8 @@ exhaustive (filtered) scans read their vectors ahead in 1 MiB windows.
 In OpenSearch, two node settings change it:
 
 - `lucene_rust.store.mmap.read_advice`: a list of `ext:advice` entries
-  (`normal`, `random`, `sequential`, `willneed`; `*` for every extension not
-  listed, as Lucene's `defaultReadAdvice`). A list replaces the whole table,
+  (`normal`, `random`, `sequential`, `willneed`, `auto`; `*` for every
+  extension not listed, as Lucene's `defaultReadAdvice`). A list replaces the whole table,
   so `["vec:random", "vex:random", "fdt:random"]` leaves `veq` at `normal`.
   `willneed` reads the whole file in at open, as OpenSearch's
   `index.store.preload` does.
@@ -283,6 +297,53 @@ EBS):
 Filtered to 2% (an exhaustive scan per segment) in the same setup: 3.5 s,
 1.25 s and 1.32 s per query. The pager reads as `mmap` with random advice
 does; it does not beat it.
+
+### Stored fields
+
+A fetch reads one chunk of the `.fdt` per document: about 60 KB for the
+default codec (`best_speed`, 1 KB documents), more for `best_compression`,
+the whole document for one larger than a chunk. Read through the OS
+default, a fault reads 128 KiB around the faulting page, about twice what a
+small-document chunk needs. Advised random alone, a fault reads one page:
+a chunk arrives a few pages at a time and a 1 MB document 256 times, which
+is 10x slower on gp3. So when the `.fdt` is advised random (the `auto`
+default once the file is larger than an eighth of available memory, or an
+explicit `fdt:random`), the stored-fields reader advises each chunk it is
+about to read `MADV_WILLNEED`: the fetch phase's prefetch does it for all its
+documents at once, and a read without a prefetch (a get by id) does it for
+its own chunk. A chunk already in memory is skipped (one `mincore`; chunks
+over 256 KiB are always advised). A file that fits keeps the OS default, so
+an index in memory pays nothing; a mapped file is the only one advised, the
+page cache and blob stores prefetch by range as before, and merges are never
+advised.
+
+`stored_fetch` example (`crates/lucene-search/examples/stored_fetch.rs`), 4
+threads, documents drawn uniformly over the index, caches dropped before
+each cold run. gp3 is emulated with a blkio throttle of 3000 read IOPS and
+125 MB/s on this VM's disk (an emulation, not EBS). Fetches per second:
+
+| index (`.fdt` size), fetch | memory | OS default | random | sequential | **auto (new default)** |
+|---|---|---|---|---|---|
+| 2M x 1 KB `best_speed` (1.3 GB), 10 docs | cached | 42-45k | 34-40k | 44k | 41-42k |
+| | 4 GB, cold, gp3 | 27-29k | 100 | 27k | 24k |
+| | 256 MB, gp3 | 110 | 97 | 130 | **268** |
+| 2M x 1 KB `best_compression` (0.7 GB), 10 docs | cached | 3.8-3.9k | 3.9k | 3.8k | 3.9k |
+| | 4 GB, cold, gp3 | 3.1-3.2k | 54 | 3.2k | 3.1k |
+| | 256 MB, gp3 | 70 | 43 | 86 | **106** |
+| 1500 x 1 MB (1 GB), 1 doc | cached | 4.8-5.6k | 5.1k | 5.6k | 5.2k |
+| | 4 GB, cold, gp3 | 3.7-4.2k | 22 | 4.0k | 3.8k |
+| | 256 MB, gp3 | 200 | 21 | 224 | **241** |
+
+`random` is random advice without the chunk read-in. Starved, `auto` reads
+the same bytes per second as the OS default but only the chunks asked for:
+small documents 2.4x, `best_compression` 1.5x, 1 MB documents 1.2x the
+fetches. The one case it costs is a file advised random that stays cached
+(the 4 GB row for small documents, a file a third of memory): about 1 µs per
+document for the `mincore`, 10% of this bench's bare fetch, a few percent of
+an OpenSearch fetch phase. A force merge of four segments (1.3 GB) alone
+takes the same time either way (22.0 s, 22.1 s, 512 MB, gp3); under a 4-thread
+fetch load it took 70 s instead of 62 s while the fetches ran 2.4x faster
+(235 against 96 per second), the two sharing the volume's budget.
 
 Quantized HNSW (`Lucene104` 7-bit codes, `.veq` 72 MB, graph 21 MB, raw
 vectors 256 MB for rescoring; `knn_formats --mmap`, 500 queries) in a 64 MB

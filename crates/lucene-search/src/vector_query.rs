@@ -63,6 +63,7 @@ use lucene_codecs::vectors::{FlatFieldEntry, FlatVectorsReader};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::{ScoreDoc, ScoringCollector};
+use crate::knn_collectors::{AdaptiveBeamCollector, FilteredWalkPlanner};
 use crate::multi_segment::merge_multi_segment_scored;
 use crate::{Error, Result};
 
@@ -266,6 +267,24 @@ impl LeafGraph<'_, '_> {
             // Patience and deadlines wrap the collector; see [`approximate`].
             return approximate(scorer, self, k, visit_limit, options, extras);
         }
+        if let (Some((hits, slack)), Some(similarity)) =
+            (extras.exploration_slack, extras.similarity)
+        {
+            if scorer.max_ord() <= 0 || k == 0 {
+                return Ok((Vec::new(), false));
+            }
+            if let Some(mut c) = AdaptiveBeamCollector::new(
+                KnnCollector::new(k, visit_limit),
+                hits,
+                slack,
+                similarity,
+            ) {
+                self.search_with(scorer, &mut c, options)?;
+                let c = c.into_inner();
+                let early = c.early_terminated();
+                return Ok((c.top_docs(), early));
+            }
+        }
         Ok(match self {
             LeafGraph::Lucene99(graph) => {
                 hnsw_vectors::search(scorer, graph.as_ref(), k, visit_limit, options)?
@@ -430,6 +449,17 @@ pub struct KnnFloatVectorQuery {
     /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
     /// segment calibrated when it was written. Other formats ignore it.
     pub ivf_nprobes: usize,
+    /// `(hits, slack)`: an HNSW walk stops once its best unexplored
+    /// candidate is farther than `1 + slack` times the `hits`-th best node
+    /// it collected, instead of once it no longer beats the worst of its
+    /// `k` ([`crate::knn_collectors::AdaptiveBeamCollector`], Vespa's
+    /// `exploration-slack`). Opt-in, with no Lucene equivalent: the walk's
+    /// depth then follows the query's neighbourhood, which finds more of the
+    /// true `hits` nearest per visited node than a wider `ef_search`
+    /// (`docs/benchmarks/hnsw.md`, "Adaptive beam"). `k` still sizes the
+    /// collector. Ignored by maximum inner product fields, IVF fields, and
+    /// searches with a patience or a deadline.
+    pub exploration_slack: Option<(usize, f32)>,
     /// A scale on an IVF leaf's search depth, `1.0` (the default) leaving
     /// it as asked: its probes and its rerank cap are multiplied by it. A
     /// recall-targeted search ([`crate::knn_recall`]) sets it, scaling an
@@ -461,6 +491,8 @@ pub struct KnnByteVectorQuery {
     /// (`LuceneRustIvfVectorsFormat`); `0` leaves it to the depth each
     /// segment calibrated when it was written. Other formats ignore it.
     pub ivf_nprobes: usize,
+    /// See [`KnnFloatVectorQuery::exploration_slack`].
+    pub exploration_slack: Option<(usize, f32)>,
     /// A scale on an IVF leaf's search depth, `1.0` (the default) leaving
     /// it as asked: its probes and its rerank cap are multiplied by it. A
     /// recall-targeted search ([`crate::knn_recall`]) sets it, scaling an
@@ -484,6 +516,7 @@ macro_rules! knn_query_impl {
                     similarity: None,
                     filtered_search_threshold: 0,
                     ivf_nprobes: 0,
+                    exploration_slack: None,
                     search_effort: 1.0,
                 })
             }
@@ -523,6 +556,19 @@ macro_rules! knn_query_impl {
                 self.filtered_search_threshold = threshold;
                 self
             }
+
+            /// See [`KnnFloatVectorQuery::exploration_slack`]. A `slack`
+            /// that is not a non-negative number, or `hits` of `0`, is
+            /// rejected.
+            pub fn with_exploration_slack(mut self, hits: usize, slack: f32) -> Result<Self> {
+                if hits == 0 || !slack.is_finite() || slack < 0.0 {
+                    return Err(Error::InvalidKnnQuery(format!(
+                        "exploration slack needs hits >= 1 and a finite slack >= 0, got {hits} and {slack}"
+                    )));
+                }
+                self.exploration_slack = Some((hits, slack));
+                Ok(self)
+            }
         }
 
         impl KnnQuery for $t {
@@ -552,6 +598,9 @@ macro_rules! knn_query_impl {
             fn ivf_nprobes(&self) -> usize {
                 self.ivf_nprobes
             }
+            fn exploration_slack(&self) -> Option<(usize, f32)> {
+                self.exploration_slack
+            }
             fn search_effort(&self) -> f32 {
                 self.search_effort
             }
@@ -575,6 +624,9 @@ trait KnnQuery {
     fn similarity(&self) -> Option<VectorSimilarityFunction>;
     fn filtered_search_threshold(&self) -> i32;
     fn ivf_nprobes(&self) -> usize;
+    fn exploration_slack(&self) -> Option<(usize, f32)> {
+        None
+    }
     fn search_effort(&self) -> f32;
 }
 
@@ -1006,6 +1058,70 @@ fn exact_search<S: VectorScorer>(
     Ok(collector.top_docs())
 }
 
+/// The cost of one node a filtered graph walk visits, in vectors an exact
+/// scan scores: a visit reads a neighbour list and a vector from a random
+/// place and updates the walk's queues, the scan scores the passing vectors
+/// in order (`docs/benchmarks/hnsw.md`, "Filtered searches").
+const HNSW_VISIT_COST: f64 = 4.0;
+
+/// A filter whose exact scan costs less than this many unfiltered walks is
+/// scanned without probing the graph: even a walk that found only passing
+/// nodes would save little.
+const HNSW_PROBE_GAIN: f64 = 4.0;
+
+/// The visits over which a probing walk measures the share of nodes near
+/// the query that the filter passes.
+const HNSW_PROBE_VISITS: u64 = 256;
+
+/// How a filtered leaf passing more than `perLeafTopK` documents is searched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FilteredWalk {
+    /// Score the passing vectors exactly.
+    Scan,
+    /// Lucene's walk, with its fallback to the scan after visiting as many
+    /// nodes as pass.
+    Walk,
+    /// A walk that switches to the scan after [`HNSW_PROBE_VISITS`] when the
+    /// filter passes too few of the nodes it met for the rest of the walk
+    /// to cost less than the scan ([`FilteredWalkPlanner`]).
+    Probe {
+        unfiltered_visits: f64,
+        share: f64,
+        scan_visits: u64,
+    },
+}
+
+/// The cost model choosing between [`FilteredWalk`]s for a filter passing
+/// `passing` of a graph's `size` vectors, walked with a queue of
+/// `collector_k`. An unfiltered walk visits about `ln(size) * collector_k`
+/// nodes (Lucene's `expectedVisitedNodes`); one under a filter unrelated to
+/// the query about that divided by the share of vectors passing. The scan
+/// costs `passing / HNSW_VISIT_COST` visits. A walk predicted to cost no
+/// more than the scan is Lucene's. Otherwise the filter may still be
+/// correlated with the query's neighbourhood (a tenant queried from inside
+/// its own region), which only the walk itself can see, so it probes --
+/// unless the scan is cheap next to any walk.
+///
+/// Lucene walks every filter passing more than `perLeafTopK` documents and
+/// falls back to the scan after visiting as many nodes as pass, which at a
+/// few percent of a segment costs the walk and then the scan.
+fn filtered_walk_plan(passing: usize, size: usize, collector_k: usize) -> FilteredWalk {
+    let unfiltered_visits = (size.max(1) as f64).ln() * collector_k as f64;
+    let share = passing as f64 / size.max(1) as f64;
+    let scan = passing as f64 / HNSW_VISIT_COST;
+    if unfiltered_visits <= scan * share {
+        FilteredWalk::Walk
+    } else if scan < HNSW_PROBE_GAIN * unfiltered_visits {
+        FilteredWalk::Scan
+    } else {
+        FilteredWalk::Probe {
+            unfiltered_visits,
+            share,
+            scan_visits: scan as u64,
+        }
+    }
+}
+
 /// The fewest accepted ordinals in a read-ahead window for
 /// [`read_ahead_dense`] to read it ahead: a quarter of the ~256 pages it
 /// spans, below which the scan touches too few of its pages for one large
@@ -1090,6 +1206,16 @@ struct LeafExtras {
     filtered_search_threshold: i32,
     /// [`KnnFloatVectorQuery::ivf_nprobes`].
     ivf_nprobes: usize,
+    /// [`KnnFloatVectorQuery::exploration_slack`].
+    exploration_slack: Option<(usize, f32)>,
+    /// The field's similarity, set per leaf for
+    /// [`Self::exploration_slack`].
+    similarity: Option<VectorSimilarityFunction>,
+    /// The live documents the filter passes over every leaf of the search,
+    /// counted only for a search reaching an IVF field; `None` otherwise or
+    /// when a leaf is searched alone (its own count stands in). It counts
+    /// documents without a vector too, so it errs towards probing.
+    search_passing: Option<usize>,
     /// [`KnnFloatVectorQuery::search_effort`]; `0.0` (the default) is `1.0`.
     search_effort: f32,
 }
@@ -1319,47 +1445,86 @@ fn leaf_results_rescored<S: VectorScorer>(
     } else {
         let bits = accept_bits.expect("a filtered leaf always has an accept set");
         let cost = bits.cardinality();
-        if cost <= per_leaf_top_k {
-            // "If there are <= perLeafTopK possible matches, short-circuit
-            // and perform exact search, since HNSW must always visit at
-            // least perLeafTopK documents."
-            //
-            // Seeding does not reach here, exactly as in Java: the search
-            // strategy is read by `HnswGraphSearcher.search`, and this branch
-            // never calls it.
-            let (hits, rescore) = exact_hits(
-                scorer,
-                rescore.as_deref_mut().filter(|_| exact_on_rescore),
-                bits,
-                cost,
-                plan.k,
-            )?;
-            needs_rescore = rescore;
-            (hits, false, false)
+        // Lucene scans exactly below `perLeafTopK` passing documents; past
+        // that the leaf's cost model decides ([`filtered_walk_plan`]). An
+        // exact scan it chooses scores on the rescoring vectors when there
+        // are any: the exact top `k`, not `k` codes' estimates rescored.
+        let walk = if cost <= per_leaf_top_k {
+            None
+        } else if !matches!(graph, LeafGraph::Lucene99(Some(_))) {
+            // Retired formats keep Lucene's rule: `Lucene90` reports a
+            // walk's ordinals as documents, which the scan does not.
+            Some(FilteredWalk::Walk)
         } else {
-            // "We pass cost + 1 here to account for the edge case when we
-            // explore exactly cost vectors."
-            let limit = plan.visited_limit.min(cost as u64 + 1);
-            let (hits, early) = graph.search(
-                scorer,
-                collector_k,
-                limit,
-                SearchOptions {
+            match filtered_walk_plan(cost, size, collector_k) {
+                FilteredWalk::Scan => None,
+                walk => Some(walk),
+            }
+        };
+        // Whether the cost model rather than Lucene's rule chose the scan.
+        let mut planned_scan = cost > per_leaf_top_k && walk.is_none();
+        let walked = match walk {
+            None => None,
+            Some(walk) => {
+                // "We pass cost + 1 here to account for the edge case when
+                // we explore exactly cost vectors."
+                let limit = plan.visited_limit.min(cost as u64 + 1);
+                let options = SearchOptions {
                     accept_ords: Some(bits),
                     filtered_doc_count: Some(cost as i32),
                     seed_ords,
                     filtered_search_threshold: plan.extras.filtered_search_threshold,
-                },
-                &plan.extras,
-            )?;
-            if (!early && hits.len() >= per_leaf_top_k) || plan.extras.timed_out() {
-                (hits, early, true)
-            } else {
-                // "We stopped the kNN search because it visited too many
-                // nodes, so fall back to exact search."
+                };
+                let (hits, early, gave_up) = match walk {
+                    FilteredWalk::Probe {
+                        unfiltered_visits,
+                        share,
+                        scan_visits,
+                    } if plan.extras.patience.is_none()
+                        && plan.extras.deadline.is_none()
+                        && plan.extras.exploration_slack.is_none() =>
+                    {
+                        let mut c = FilteredWalkPlanner::new(
+                            KnnCollector::new(collector_k, limit),
+                            unfiltered_visits,
+                            share,
+                            scan_visits,
+                            HNSW_PROBE_VISITS,
+                        );
+                        graph.search_with(scorer, &mut c, options)?;
+                        let gave_up = c.gave_up();
+                        let inner = c.into_inner();
+                        let early = inner.early_terminated();
+                        (inner.top_docs(), early, gave_up)
+                    }
+                    _ => {
+                        let (hits, early) =
+                            graph.search(scorer, collector_k, limit, options, &plan.extras)?;
+                        (hits, early, false)
+                    }
+                };
+                planned_scan = gave_up;
+                if !gave_up && ((!early && hits.len() >= per_leaf_top_k) || plan.extras.timed_out())
+                {
+                    Some((hits, early))
+                } else {
+                    // "We stopped the kNN search because it visited too
+                    // many nodes, so fall back to exact search."
+                    None
+                }
+            }
+        };
+        match walked {
+            Some((hits, early)) => (hits, early, true),
+            None => {
+                // Seeding does not reach here, exactly as in Java: the
+                // search strategy is read by `HnswGraphSearcher.search`, and
+                // this branch never calls it.
                 let (hits, rescore) = exact_hits(
                     scorer,
-                    rescore.as_deref_mut().filter(|_| exact_on_rescore),
+                    rescore
+                        .as_deref_mut()
+                        .filter(|_| exact_on_rescore || planned_scan),
                     bits,
                     cost,
                     plan.k,
@@ -1415,6 +1580,13 @@ fn search_leaf(
     seed_ords: Option<&[i32]>,
     diversify: Option<Option<&FixedBitSet>>,
 ) -> Result<(LeafHits, bool)> {
+    let plan = &LeafPlan {
+        extras: LeafExtras {
+            similarity: Some(resolved.entry.similarity),
+            ..plan.extras
+        },
+        ..*plan
+    };
     let graph = leaf_graph(
         input,
         resolved.field_number,
@@ -1582,11 +1754,13 @@ const IVF_EXACT_COST_RATIO: usize = 8;
 /// planned probes ([`IVF_EXACT_COST_RATIO`]). The flag is set when the
 /// leaf's deadline passed before the probes reached `k` accepted documents.
 /// A filter on a partition of a field clustered per partition is scored
-/// exactly when it passes at most this many times the accepted target: a
-/// partition's few clusters are probed nearly all, with quantization error,
-/// where its documents' exact scores cost little more (`docs/benchmarks/ivf.md`,
-/// "Clusters per partition").
-const IVF_PARTITION_EXACT_RATIO: usize = 16;
+/// exactly when it passes at most this many times the accepted target over
+/// every leaf of the search: a partition's few clusters are probed nearly
+/// all, with quantization error, where its documents' exact scores cost
+/// little more. Counted over the search and not per leaf, so a partition
+/// spread over many segments is probed as it would be in a few
+/// (`docs/benchmarks/ivf.md`, "Clusters per partition").
+const IVF_PARTITION_EXACT_RATIO: usize = 32;
 
 /// Most runs of set bits a filter may have for a filtered IVF search to
 /// prune clusters by document range: a partition's documents are one run
@@ -1596,6 +1770,24 @@ const IVF_FILTER_RUNS: usize = 256;
 /// The clusters whose document range (`ranges`, lowest and highest
 /// document) holds a document `filter` passes, or `None` when the filter
 /// has more than [`IVF_FILTER_RUNS`] runs of documents.
+/// The most documents a leaf's filter on a partition may pass to be scored
+/// exactly: all of them while the search's documents of the partition
+/// (`search_passing`, or the leaf's own `passing`) fit
+/// [`IVF_PARTITION_EXACT_RATIO`], else the probes' accepted target `want`.
+fn partition_exact_below(
+    passing: usize,
+    search_passing: Option<usize>,
+    want: usize,
+    k: usize,
+) -> usize {
+    let all = search_passing.unwrap_or(passing).max(passing);
+    if all <= ivf_accepted_target(k).saturating_mul(IVF_PARTITION_EXACT_RATIO) {
+        passing
+    } else {
+        want
+    }
+}
+
 fn clusters_holding(ranges: &[(i32, i32)], filter: &FixedBitSet) -> Option<Vec<usize>> {
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut from = 0usize;
@@ -1656,10 +1848,7 @@ fn ivf_leaf_results(
             .clamp(1, IVF_MAX_GROUP_SPREAD)
     }));
     // The parents that can be found: at most those still live.
-    let reachable = parents.map_or(0, |p| match input.live_docs {
-        Some(live) => FixedBitSet::intersection_count(p, live),
-        None => p.cardinality(),
-    });
+    let reachable = parents.map_or(0, |p| live_passing(Some(p), input.live_docs, input.max_doc));
     let grouped = parents.is_some();
     // Once the shortlist holds every entry, a grouped search's candidates
     // are every probed child.
@@ -1751,12 +1940,9 @@ fn ivf_leaf_results(
         }
         Some(filter) => {
             // The live documents the filter passes that have a vector here.
-            let live_passing = match input.live_docs {
-                Some(live) => FixedBitSet::intersection_count(filter, live),
-                None => filter.cardinality(),
-            };
+            let filter_live = live_passing(Some(filter), input.live_docs, input.max_doc);
             let passing = if field.count() >= input.max_doc as usize {
-                live_passing
+                filter_live
             } else {
                 // Some documents have no vector (a nested field's parents, a
                 // sparse field): a filter passing at most
@@ -1768,7 +1954,7 @@ fn ivf_leaf_results(
                 let values = input.flat.float_vector_values(resolved.field_number)?;
                 let mut ords = values.doc_to_ord()?;
                 let max_doc = usize::try_from(input.max_doc).unwrap_or(0);
-                let exact = live_passing <= IVF_PASSING_SAMPLE;
+                let exact = filter_live <= IVF_PASSING_SAMPLE;
                 let step = if exact {
                     1
                 } else {
@@ -1798,7 +1984,7 @@ fn ivf_leaf_results(
                 if exact {
                     n
                 } else {
-                    ((live_passing as f64) * n as f64 / seen.max(1) as f64) as usize
+                    ((filter_live as f64) * n as f64 / seen.max(1) as f64) as usize
                 }
             };
             // A filter passing no more documents than the accepted target
@@ -1855,7 +2041,7 @@ fn ivf_leaf_results(
             let mut nprobe = base.max(need.min(space_clusters as f64) as usize);
             let planned = nprobe.saturating_mul(per_cluster);
             let exact_below = match &among {
-                Some(_) => want.saturating_mul(IVF_PARTITION_EXACT_RATIO),
+                Some(_) => partition_exact_below(passing, plan.extras.search_passing, want, k),
                 None => want,
             };
             if passing <= exact_below || passing.saturating_mul(IVF_EXACT_COST_RATIO) <= planned {
@@ -2033,6 +2219,7 @@ fn search_one_segment<Q: KnnQuery>(input: &VectorsInput<'_>, query: &Q) -> Resul
         extras: LeafExtras {
             filtered_search_threshold: query.filtered_search_threshold(),
             ivf_nprobes: query.ivf_nprobes(),
+            exploration_slack: query.exploration_slack(),
             search_effort: query.search_effort(),
             ..LeafExtras::default()
         },
@@ -2150,6 +2337,15 @@ fn plan_leaves<Q: KnnQuery>(
     let index_max_doc: i64 = segments.iter().map(|s| s.vectors.max_doc as i64).sum();
     let mut resolved = Vec::with_capacity(segments.len());
     let mut plans = Vec::with_capacity(segments.len());
+    let search_passing = segments
+        .iter()
+        .any(|s| s.vectors.filter.is_some() && matches!(s.vectors.hnsw, Some(GraphReader::Ivf(_))))
+        .then(|| {
+            segments
+                .iter()
+                .map(|s| live_passing(s.vectors.filter, s.vectors.live_docs, s.vectors.max_doc))
+                .fold(0usize, usize::saturating_add)
+        });
     for seg in segments {
         resolved.push(resolve_field(&seg.vectors, query)?);
         // Java's `ctx.reader().maxDoc() / (float) ctx.parent.reader().maxDoc()`.
@@ -2167,12 +2363,29 @@ fn plan_leaves<Q: KnnQuery>(
             extras: LeafExtras {
                 filtered_search_threshold: query.filtered_search_threshold(),
                 ivf_nprobes: query.ivf_nprobes(),
+                exploration_slack: query.exploration_slack(),
+                search_passing,
                 search_effort: query.search_effort(),
                 ..extras
             },
         });
     }
     Ok((resolved, plans))
+}
+
+/// The live documents of one leaf its filter passes, every live document
+/// when it has none.
+fn live_passing(
+    filter: Option<&FixedBitSet>,
+    live_docs: Option<&FixedBitSet>,
+    max_doc: i32,
+) -> usize {
+    match (filter, live_docs) {
+        (Some(f), Some(l)) => FixedBitSet::intersection_count(f, l),
+        (Some(f), None) => f.cardinality(),
+        (None, Some(l)) => l.cardinality(),
+        (None, None) => usize::try_from(max_doc).unwrap_or(0),
+    }
 }
 
 fn merge_leaves(
@@ -3640,6 +3853,86 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_filtered_walk_plan_follows_the_cost_model() {
+        // 390k vectors, a queue of 100: about 1_287 unfiltered visits.
+        let n = 390_000;
+        // 70% passing: the walk is predicted cheap.
+        assert_eq!(filtered_walk_plan(270_000, n, 100), FilteredWalk::Walk);
+        // 1%: the scan is cheap next to any walk.
+        assert_eq!(filtered_walk_plan(4_000, n, 100), FilteredWalk::Scan);
+        // 5%: still cheap to scan.
+        assert_eq!(filtered_walk_plan(20_000, n, 100), FilteredWalk::Scan);
+        // 10%: a walk only pays if the filter passes the neighbourhood.
+        match filtered_walk_plan(40_000, n, 100) {
+            FilteredWalk::Probe {
+                unfiltered_visits,
+                share,
+                scan_visits,
+            } => {
+                assert!((unfiltered_visits - (n as f64).ln() * 100.0).abs() < 1e-9);
+                assert!((share - 40_000.0 / n as f64).abs() < 1e-12);
+                assert_eq!(scan_visits, 10_000);
+            }
+            other => panic!("{other:?}"),
+        }
+        // A narrower queue makes walks cheaper: 10% walks at 50.
+        assert_eq!(filtered_walk_plan(40_000, n, 50), FilteredWalk::Walk);
+        // Degenerate sizes do not divide by zero.
+        assert_eq!(filtered_walk_plan(1, 0, 10), FilteredWalk::Walk);
+    }
+
+    #[test]
+    fn exploration_slack_is_checked() {
+        let q = KnnFloatVectorQuery::new("v", vec![1.0], 5).unwrap();
+        assert!(q.clone().with_exploration_slack(0, 0.1).is_err());
+        assert!(q.clone().with_exploration_slack(5, -0.1).is_err());
+        assert!(q.clone().with_exploration_slack(5, f32::NAN).is_err());
+        assert!(q.clone().with_exploration_slack(5, f32::INFINITY).is_err());
+        let q = q.with_exploration_slack(5, 0.2).unwrap();
+        assert_eq!(KnnQuery::exploration_slack(&q), Some((5, 0.2)));
+        let b = KnnByteVectorQuery::new("v", vec![1], 5)
+            .unwrap()
+            .with_exploration_slack(3, 0.0)
+            .unwrap();
+        assert_eq!(KnnQuery::exploration_slack(&b), Some((3, 0.0)));
+    }
+
+    #[test]
+    fn a_partition_is_scored_exactly_by_its_documents_over_the_search() {
+        let budget = ivf_accepted_target(10) * IVF_PARTITION_EXACT_RATIO;
+        let want = ivf_accepted_target(10);
+        // Within the budget over the search: exact in every leaf.
+        assert_eq!(partition_exact_below(5_000, Some(budget), want, 10), 5_000);
+        // Small in this leaf, too large over the search: probed.
+        assert_eq!(
+            partition_exact_below(5_000, Some(budget + 1), want, 10),
+            want
+        );
+        // A leaf searched alone counts its own documents.
+        assert_eq!(partition_exact_below(budget, None, want, 10), budget);
+        assert_eq!(partition_exact_below(budget + 1, None, want, 10), want);
+        // The search's count is never below the leaf's own.
+        assert_eq!(partition_exact_below(budget + 1, Some(0), want, 10), want);
+    }
+
+    #[test]
+    fn live_passing_counts_the_live_documents_the_filter_passes() {
+        let bits = |len: usize, every: usize| {
+            let mut b = FixedBitSet::new(len);
+            for i in (0..len).step_by(every) {
+                b.set(i);
+            }
+            b
+        };
+        let (filter, live) = (bits(100, 2), bits(100, 3));
+        assert_eq!(live_passing(Some(&filter), Some(&live), 100), 17);
+        assert_eq!(live_passing(Some(&filter), None, 100), 50);
+        assert_eq!(live_passing(None, Some(&live), 100), 34);
+        assert_eq!(live_passing(None, None, 100), 100);
+        assert_eq!(live_passing(None, None, -1), 0);
+    }
 
     /// `HitQueue`'s order through `Float.compare`: `-0.0` below `0.0`,
     /// every `NaN` equal and above everything; a lower score is "worse",
