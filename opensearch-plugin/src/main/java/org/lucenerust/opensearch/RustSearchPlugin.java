@@ -252,6 +252,8 @@ public class RustSearchPlugin extends Plugin implements
     );
 
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
+    /** Per thread, the memory scopes of the fetch phases running on it, innermost first. */
+    private static final ThreadLocal<java.util.ArrayDeque<NativeMemory.Scope>> FETCH_MEMORY = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
     private final SetOnce<org.opensearch.cluster.service.ClusterService> clusterService = new SetOnce<>();
     private final SetOnce<IndexNameExpressionResolver> resolver = new SetOnce<>();
@@ -482,6 +484,9 @@ public class RustSearchPlugin extends Plugin implements
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
                         NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
+                        // What the fetch phase's native reads hold is the request's: charged to its
+                        // request breaker, under the node's off-heap bound, and stopped by a cancel.
+                        FETCH_MEMORY.get().push(NativeMemory.open(context, "accelerated_fetch"));
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -504,12 +509,21 @@ public class RustSearchPlugin extends Plugin implements
 
                     @Override
                     public void onFetchPhase(SearchContext context, long tookInNanos) {
-                        NativeStoredFieldsReader.fetchEnded();
+                        fetchEnded();
                     }
 
                     @Override
                     public void onFailedFetchPhase(SearchContext context) {
+                        fetchEnded();
+                    }
+
+                    private void fetchEnded() {
                         NativeStoredFieldsReader.fetchEnded();
+                        NativeMemory.Scope memory = FETCH_MEMORY.get().poll();
+                        if (memory != null) {
+                            memory.close();
+                            stats.nativeMemory(memory.peak());
+                        }
                     }
                 });
             } catch (SetOnce.AlreadySetException e) {

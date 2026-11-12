@@ -418,19 +418,18 @@ nodes.
   `.cfs` segment into memory (OpenSearch's small, freshly flushed segments are
   compound); only non-compound segments are memory-mapped. Released with the
   reader either way.
-- **A native query phase is not interruptible.** Cancellation is checked before
-  the native call, not during it; the Java path checks it per segment. A
-  native query runs to completion (one call, no per-document crossings). A
-  request with a `timeout` runs native: the deadline is checked before the
-  call (already past: Lucene answers) and after it, where a search that ran
-  over is flagged `timed_out` (or fails without
-  `allow_partial_search_results`), as `QueryPhase` does -- but with every
-  hit, where Lucene would have stopped at the next segment and answered
-  part of them. The check after the call is also a little stricter than
-  Lucene's: it counts the aggregation pass and building the result, which
-  Lucene's per-segment checks never see, so a search finishing just past its
-  deadline without `allow_partial_search_results` fails where Lucene's would
-  not.
+- **A native query phase stops at its deadline and at a cancel between
+  windows of documents.** Within a segment, scoring runs in windows that grow
+  from 4,096 to about a million documents, as OpenSearch's cancellable bulk
+  scorer does; between windows the call checks the request's `timeout` and
+  its cancel. Past the deadline it stops collecting and answers what it has,
+  flagged `timed_out` (or fails without `allow_partial_search_results`), as
+  `QueryPhase` does. Lucene checks its deadline against a clock cached about
+  every 200 ms, so a search with a short `timeout` stops sooner here (a
+  50 ms `timeout` on a 2M-document terms aggregation: 82-87 ms against
+  150-330 ms). An aggregation that runs over its own index structure rather
+  than the matching documents (`cardinality`) is not windowed and finishes
+  its segment.
 - **The native query cache is per segment, not node-wide.** It follows
   Lucene's `LRUQueryCache` policy but is bounded per segment (1,000 entries,
   16 MB), outside `indices.queries.cache.size` and its stats; a shard with

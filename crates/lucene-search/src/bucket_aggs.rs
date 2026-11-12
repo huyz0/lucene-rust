@@ -4528,6 +4528,10 @@ pub fn aggregate_tree_cached(
             |states: &mut [State], leaves: &mut [Leaf<'_>], docs: &[i32]| -> Result<()> {
                 let mut i = 0;
                 while let Some(&first) = docs.get(i) {
+                    // A search's `timeout`: what was collected is the answer.
+                    if lucene_util::memory::past_deadline() {
+                        break;
+                    }
                     let base = first - first.rem_euclid(WINDOW);
                     let end = base.saturating_add(WINDOW).min(max_doc).max(first + 1);
                     let j = i + docs[i..].partition_point(|&d| d < end);
@@ -4583,6 +4587,9 @@ pub fn aggregate_tree_cached(
                     let first = usize::try_from(lo / WINDOW).unwrap_or(0);
                     let last = usize::try_from((hi + WINDOW - 1) / WINDOW).unwrap_or(0);
                     for (w, chunk) in match_bits.chunks(WORDS).enumerate().take(last).skip(first) {
+                        if lucene_util::memory::past_deadline() {
+                            break;
+                        }
                         if chunk.iter().all(|&x| x == 0) {
                             continue;
                         }
@@ -4635,7 +4642,7 @@ pub fn aggregate_tree_cached(
                         ..ctx
                     };
                     let mut ranges = aggs::ScoredRanges::open(&ctx, query, live, m.min, lo)?;
-                    loop {
+                    while !lucene_util::memory::past_deadline() {
                         let more = {
                             let mut c = scored_chunk.borrow_mut();
                             let c = &mut *c;
@@ -4651,7 +4658,7 @@ pub fn aggregate_tree_cached(
                 }
                 Matches::All => {
                     let mut base = lo;
-                    while base < hi {
+                    while base < hi && !lucene_util::memory::past_deadline() {
                         let end = base.saturating_add(WINDOW).min(hi);
                         window(&mut leaves, base, end, (end - base) as usize)?;
                         live_window.clear();
@@ -4750,7 +4757,13 @@ pub fn aggregate_tree_cached(
                     drop(ranges);
                     for (&b, f) in missed.iter().zip(fresh) {
                         let part = segment_cache::SegmentPart::of(nodes, f, i, globals)?;
-                        found[b] = Some(entries[b].2.put(part));
+                        // A part its deadline cut short is this request's
+                        // alone.
+                        found[b] = Some(if lucene_util::memory::past_deadline() {
+                            std::sync::Arc::new(part)
+                        } else {
+                            entries[b].2.put(part)
+                        });
                     }
                 }
                 for part in found.into_iter().flatten() {

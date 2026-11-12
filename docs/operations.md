@@ -359,17 +359,23 @@ The rehearsal found two defects, both fixed before these numbers:
 
 ## Known limits
 
-- **A native search's `timeout` is checked before and after the native call,
-  not during it.** A search that runs over its `timeout` answers with every
-  hit and is flagged `timed_out` (see
+- **A native search stops at its `timeout` between windows of documents**,
+  answering what it collected, flagged `timed_out` (see
   [the details](accelerated-queries.md#known-limits)). A task cancelled
   while the call runs (the tasks API, search backpressure) stops at the call's
   next checkpoint, within about 100 ms.
 - **The native query cache** takes `indices.queries.cache.size` as its node
   budget, but its sets are not in the `query_cache` section of
   `_nodes/stats`; the plugin's stats report them.
-- **Fetch is not charged to a breaker.** A stored document is read whole, as
-  Lucene reads it; its bytes count toward `indices.memory.off_heap.limit`.
+- **A fetched document is charged to the request breaker.** Its bytes count
+  twice (the copy on the heap and the one in the response) for the length of
+  the fetch phase, so concurrent fetches of very large documents are refused
+  with `circuit_breaking_exception` (429) rather than running the heap out:
+  eight concurrent 300 MB fetches on a 2 GB heap answer two and refuse six,
+  where the standard path ends the node. The native read itself counts
+  toward the request breaker and `indices.memory.off_heap.limit`. A document
+  is still decompressed whole, so `_source: false` on a 100 MB document costs
+  about 240 ms (Lucene stops before the `_source` field).
 - **Rust engine**: no `index.merge.policy.*`, and no merge statistics in
   `_stats`, because merges run inside commits. Segments are non-compound, so
   there are more files per segment. `_segments` counts only hard deletes. On

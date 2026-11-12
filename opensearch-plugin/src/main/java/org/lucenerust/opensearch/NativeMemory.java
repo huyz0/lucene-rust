@@ -77,6 +77,8 @@ public final class NativeMemory {
     private static final AtomicLong TOKENS = new AtomicLong();
     /** The innermost scope open on this thread. */
     private static final ThreadLocal<Scope> CURRENT = new ThreadLocal<>();
+    /** Per thread, when the query phase running on it must stop collecting ({@link System#nanoTime}); 0 for never. */
+    private static final ThreadLocal<long[]> DEADLINE = ThreadLocal.withInitial(() -> new long[1]);
     private static volatile boolean installed;
     /** The node's breakers, from the first request (for the global ordinals' fielddata charge). */
     private static volatile CircuitBreakerService breakers;
@@ -170,8 +172,16 @@ public final class NativeMemory {
      * unavailable.
      */
     public static long[] stats() {
-        long[] out = new long[11];
+        long[] out = new long[12];
         return NativeBridge.memoryStats(out) == NativeBridge.OK ? out : null;
+    }
+
+    /**
+     * The query phase on this thread starts, with a {@code timeout} of {@code timeoutNanos} (0: none,
+     * and 0 again when it ends): scopes opened in it stop their native collection at that deadline.
+     */
+    public static void queryStarted(long timeoutNanos) {
+        DEADLINE.get()[0] = timeoutNanos <= 0 ? 0 : System.nanoTime() + timeoutNanos;
     }
 
     /** Opens a scope on this thread for {@code ctx}'s native calls; close it after them. */
@@ -187,6 +197,11 @@ public final class NativeMemory {
             OPEN.remove(token);
             logger.warn("lucene-rust: cannot open a memory scope ({}): {}", rc, NativeBridge.lastError());
             s.opened = false;
+        } else {
+            long deadline = DEADLINE.get()[0];
+            if (deadline != 0) {
+                NativeBridge.memoryScopeSetDeadline(token, deadline - System.nanoTime());
+            }
         }
         return s;
     }
@@ -206,6 +221,20 @@ public final class NativeMemory {
             : rc == NativeBridge.CANCELLED ? new TaskCancelledException("cancelled while a native call ran")
             : new CircuitBreakingException("[" + OFF_HEAP_LIMIT.getKey() + "] " + message, CircuitBreaker.Durability.TRANSIENT);
         throw e;
+    }
+
+    /**
+     * Charges {@code bytes} the current scope's request copies onto the heap (a fetched document)
+     * to its request breaker until the scope closes, throwing the breaker's exception when it
+     * refuses them; no-op outside a scope.
+     */
+    public static void chargeHeap(long bytes) {
+        Scope s = CURRENT.get();
+        if (s == null || s.breaker == null || bytes <= 0) {
+            return;
+        }
+        s.breaker.addEstimateBytesAndMaybeBreak(bytes, s.label);
+        s.charged.addAndGet(bytes);
     }
 
     private static CircuitBreaker requestBreaker(SearchContext ctx) {
@@ -299,12 +328,18 @@ public final class NativeMemory {
         Scope outer;
         private boolean closed;
         private long peak;
+        private boolean timedOut;
 
         Scope(long token, SearchContext ctx, CircuitBreaker breaker, String label) {
             this.token = token;
             this.ctx = ctx;
             this.breaker = breaker;
             this.label = label;
+        }
+
+        /** Whether the native calls stopped collecting at the query phase's deadline, once closed. */
+        public boolean timedOut() {
+            return timedOut;
         }
 
         /** The most the request's native calls held, once closed. */
@@ -346,9 +381,10 @@ public final class NativeMemory {
                 CURRENT.set(outer);
             }
             if (opened) {
-                long[] out = new long[3];
+                long[] out = new long[4];
                 if (NativeBridge.memoryScopeEnd(out) == NativeBridge.OK) {
                     peak = out[1];
+                    timedOut = out[3] != 0;
                 }
                 OPEN.remove(token);
             }
