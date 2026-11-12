@@ -205,6 +205,26 @@ impl Input {
         }
     }
 
+    /// Whether the kernel's page cache holds `offset..offset + len` (clamped
+    /// to the input) of a mapped input now (`mincore`). Inputs that are not
+    /// mappings are in memory and answer `true`.
+    pub fn is_resident(&self, offset: usize, len: usize) -> bool {
+        let end = offset.saturating_add(len).min(self.len());
+        if offset >= end {
+            return true;
+        }
+        match self {
+            #[cfg(target_os = "linux")]
+            Input::Mapped(m) => m.get(offset..end).is_none_or(pages_resident),
+            Input::Slice { base, start, .. } => {
+                base.is_resident(start.saturating_add(offset), end.saturating_sub(offset))
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            Input::Tracked(t) => t.input.is_resident(offset, len),
+            _ => true,
+        }
+    }
+
     /// Advises the kernel that a mapped input is read at random, so a page
     /// fault reads that page alone instead of the read-around window
     /// (`MADV_RANDOM`; Lucene's `ReadAdvice.RANDOM`). For files a search
@@ -238,23 +258,30 @@ impl Input {
     /// [`Self::advise_random_and_warm`] for random advice (without the
     /// warm-up when [`crate::read_advice::warm_random`] is off),
     /// `MADV_SEQUENTIAL` for sequential, [`Self::will_need`] over all of it
-    /// for will-need, nothing for normal.
-    pub fn advise(&self, advice: crate::read_advice::ReadAdvice) {
+    /// for will-need, nothing for normal; auto advice is first resolved
+    /// against the input's length ([`crate::read_advice::resolve`]) and,
+    /// resolved to random, never warmed. Returns the advice applied.
+    pub fn advise(&self, advice: crate::read_advice::ReadAdvice) -> crate::read_advice::ReadAdvice {
         use crate::read_advice::ReadAdvice;
-        match advice {
-            ReadAdvice::Normal => {}
-            ReadAdvice::Random if crate::read_advice::warm_random() => {
+        let resolved = crate::read_advice::resolve(advice, self.len() as u64);
+        match (advice, resolved) {
+            (ReadAdvice::Auto, ReadAdvice::Random) => self.advise_random(),
+            (_, ReadAdvice::Normal | ReadAdvice::Auto) => {}
+            (_, ReadAdvice::Random) if crate::read_advice::warm_random() => {
                 self.advise_random_and_warm()
             }
-            ReadAdvice::Random => self.advise_random(),
+            (_, ReadAdvice::Random) => self.advise_random(),
             #[cfg(unix)]
-            ReadAdvice::Sequential => self.advise_range(memmap2::Advice::Sequential, 0, self.len()),
+            (_, ReadAdvice::Sequential) => {
+                self.advise_range(memmap2::Advice::Sequential, 0, self.len())
+            }
             #[cfg(not(unix))]
-            ReadAdvice::Sequential => {}
-            ReadAdvice::WillNeed => {
+            (_, ReadAdvice::Sequential) => {}
+            (_, ReadAdvice::WillNeed) => {
                 let _ = self.will_need(0, self.len());
             }
         }
+        resolved
     }
 
     fn advise_random_range(&self, offset: usize, len: usize) {
@@ -353,6 +380,44 @@ fn cgroup_memory_limit() -> Option<u64> {
         }
     }
     None
+}
+
+/// Whether every page holding `bytes`, a part of a mapping, is in the page
+/// cache: see [`Input::is_resident`].
+#[cfg(target_os = "linux")]
+fn pages_resident(bytes: &[u8]) -> bool {
+    const MAX: usize = 64;
+    // SAFETY: `sysconf` has no preconditions.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .ok()
+        .filter(|p| p.is_power_of_two())
+        .unwrap_or(4096);
+    let addr = bytes.as_ptr() as usize;
+    let start = addr & !page.wrapping_sub(1);
+    let end = addr.saturating_add(bytes.len());
+    let pages = end.saturating_sub(start).div_ceil(page);
+    let mut vec = [0u8; MAX];
+    let mut at = start;
+    let mut left = pages;
+    while left > 0 {
+        let n = left.min(MAX);
+        // SAFETY: `at..at + n * page` covers only whole pages of the mapping
+        // that holds `bytes`, mapped while the borrow lives, and `vec` has a
+        // byte for each of those `n <= MAX` pages; `mincore` only reports.
+        let rc = unsafe {
+            libc::mincore(
+                at as *mut libc::c_void,
+                n.saturating_mul(page),
+                vec.as_mut_ptr(),
+            )
+        };
+        if rc != 0 || vec.iter().take(n).any(|b| b & 1 == 0) {
+            return false;
+        }
+        at = at.saturating_add(n.saturating_mul(page));
+        left = left.saturating_sub(n);
+    }
+    true
 }
 
 /// `MADV_WILLNEED` over the pages holding `bytes`: see
@@ -1547,6 +1612,31 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_mapping_is_resident() {
+        let tmp = lucene_util::test_support::TempDir::new("store-resident");
+        let root = tmp.path().to_path_buf();
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| i as u8).collect();
+        std::fs::write(root.join("f.bin"), &bytes).unwrap();
+        let input = Arc::new(
+            MmapDirectory::with_read_threshold(&root, 0)
+                .open("f.bin")
+                .unwrap(),
+        );
+        assert!(matches!(*input, Input::Mapped(_)));
+        // Every byte read, so every page is in the page cache (more than one
+        // `mincore` batch of them).
+        assert_eq!(&input[..], &bytes[..]);
+        assert!(input.is_resident(0, input.len()));
+        let member = Input::slice_of(&input, 4097, 200_000).unwrap();
+        assert!(member.is_resident(0, member.len()));
+        assert!(input.is_resident(4095, 2));
+        assert!(input.is_resident(input.len(), 10));
+        assert!(input.is_resident(10, usize::MAX));
+        let owned = Input::Owned(vec![1, 2, 3]);
+        assert!(owned.is_resident(0, 3));
+    }
+
     #[test]
     fn memory_available_is_known_on_linux() {
         assert!(memory_available().is_some_and(|b| b > 0));
