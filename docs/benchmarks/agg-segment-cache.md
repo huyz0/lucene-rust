@@ -76,6 +76,36 @@ How to reproduce: [`benchmarks/agg-segment-cache`](../../benchmarks/agg-segment-
 | d7_bytes | miss | 383.6 | 114.8 | 142.5 | 0.81x |
 | all | repeat | 4.4-5.3 | 4.5-6.1 | 4.3-6.4 | (request cache) |
 
+### On main after the aggregation sweep (#273)
+
+main's sweep made every dashboard faster without the cache, and OpenSearch's
+date ranges now reach the native pass as points-or-doc-values queries, which
+the cache keys and narrows like a bare points range. The same build with the
+cache off and on, each from a copy of the same loaded data (6 segments):
+
+| dashboard | phase | cache off | cache on | on vs off |
+|---|---|---:|---:|---:|
+| d24 | sliding | 38.9 | 12.8 | 3.0x |
+| d7 | sliding | 99.1 | 25.6 | 3.9x |
+| d24_bgl | sliding | 26.7 | 11.5 | 2.3x |
+| d7_bytes | sliding | 145.1 | 26.4 | 5.5x |
+| d24 | append | 37.1 | 11.8 | 3.1x |
+| d7 | append | 100.1 | 25.9 | 3.9x |
+| d24_bgl | append | 25.7 | 13.2 | 2.0x |
+| d7_bytes | append | 147.1 | 33.8 | 4.4x |
+| d24 | mixed | 34.5 | 35.4 | 0.97x |
+| d7 | mixed | 111.4 | 119.0 | 0.94x |
+| d24_bgl | mixed | 23.9 | 23.7 | 1.0x |
+| d7_bytes | mixed | 162.4 | 176.7 | 0.92x |
+| d24 | miss | 34.4 | 37.8 | 0.91x |
+| d7 | miss | 102.4 | 100.2 | 1.0x |
+| d24_bgl | miss | 22.5 | 24.5 | 0.92x |
+| d7_bytes | miss | 111.7 | 153.9 | 0.73x |
+
+The verify configuration on this build: 220 same-reader checks with the
+cache off and on, 0 differences. The first table is the build before that merge, against stock and the main
+of then.
+
 p90 and every other number: `out/*.json` of a run. A second cache run
 right after (the verify configuration in `run.sh`) gave the same within
 noise: sliding 21.3 / 31.5 / 17.4 / 38.3, append 21.4 / 37.7 / 14.2 / 47.8.
@@ -89,7 +119,8 @@ noise: sliding 21.3 / 31.5 / 17.4 / 38.3, append 21.4 / 37.7 / 14.2 / 47.8.
   cache until two requests find it unchanged, which keeps the cost within
   2-10% of main.
 - **Cold**: a tree's first request costs up to 24% more than main (building
-  and storing each segment's part), most for the 81k-host terms.
+  and storing each segment's part), most for the 81k-host terms; up to 38%
+  (d7_bytes, whose host terms carry an average each) on the faster main.
 
 ## How a moving window keeps hitting
 
@@ -139,6 +170,6 @@ of the budget is not kept. Counters: `aggregation_segment_cache` in
 ## Recommendation
 
 Turn it on for log and metrics indices queried by dashboards (append-mostly,
-time-ranged aggregations): 1.6-7x on the dashboards here, and identical
-answers. On an index updated all over it gains nothing and costs up to 10%;
+time-ranged aggregations): 2-5.5x on the dashboards here over current main,
+and identical answers. On an index updated all over it gains nothing and costs up to 10%;
 leave it off there.
