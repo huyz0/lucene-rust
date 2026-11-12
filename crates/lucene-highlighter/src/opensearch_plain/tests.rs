@@ -228,7 +228,10 @@ fn an_unknown_query_after_a_should_adds_no_terms() {
     b.should.push(term("body", "fox"));
     b.filter.push(visited.clone());
     let both = run(options(), Clause::Boolean(Box::new(b))).concat();
-    assert!(both.contains("<em>fox</em>") && !both.contains("<em>dog</em>"), "{both}");
+    assert!(
+        both.contains("<em>fox</em>") && !both.contains("<em>dog</em>"),
+        "{both}"
+    );
     let mut alone = BooleanQuery::new();
     alone.filter.push(visited);
     let alone = run(options(), Clause::Boolean(Box::new(alone))).concat();
