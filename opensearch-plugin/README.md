@@ -193,7 +193,7 @@ name: escaped wildcards, non-default regexp flags, phrases with position
 gaps), and so does an index with `completion` fields (the Completion90-104
 postings formats are read natively; the suggesters read Lucene's reader).
 Term vectors, which `fvh` reads, are Lucene's.
-See [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md#suggesters-and-highlighters).
+See [`docs/accelerated-queries.md`](../docs/accelerated-queries.md#suggesters-and-highlighters).
 
 Native memory the JVM does not see, per segment of 10,000 documents or more:
 the query cache (at most 16 MB) and, for sorted searches, decoded sort columns
