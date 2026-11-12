@@ -47,8 +47,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -129,6 +132,7 @@ public final class NativeSelfTest {
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
         realtimePrimary();
+        sparseCodec();
 
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
@@ -148,6 +152,12 @@ public final class NativeSelfTest {
         if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
+        // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
+        if ("substring".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (substring only): %d queries compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSubstring.encoded, checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
         // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
@@ -191,6 +201,8 @@ public final class NativeSelfTest {
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
         NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
+        NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSubstring.encoded >= 150, "rust_wildcard queries compared: " + NativeSelfTestSubstring.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -289,6 +301,72 @@ public final class NativeSelfTest {
                 .settings(settings)
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
+        }
+    }
+
+    /**
+     * The codec OpenSearch's engine writes an {@code index.sparse} index with: every flushed and
+     * merged segment gets {@code .sit}/{@code .sip}, with terms only for a field at or over its
+     * threshold, and the segments read back under {@code Sparse10010Codec}.
+     */
+    private static void sparseCodec() throws IOException {
+        org.apache.lucene.document.FieldType vector = new org.apache.lucene.document.FieldType();
+        vector.setDocValuesType(org.apache.lucene.index.DocValuesType.BINARY);
+        vector.putAttribute("sparse_vector_field", "true");
+        vector.putAttribute("approximate_threshold", "20");
+        vector.putAttribute("cluster_ratio", "0.1");
+        vector.freeze();
+        Path dir = Files.createTempDirectory("sparse-codec");
+        org.apache.lucene.index.IndexWriterConfig config = new org.apache.lucene.index.IndexWriterConfig()
+            .setCodec(new org.lucenerust.opensearch.sparse.SparseCodec(org.apache.lucene.codecs.Codec.getDefault()))
+            .setUseCompoundFile(false)
+            .setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+        Map<String, Long> sizes = new HashMap<>();
+        try (
+            org.apache.lucene.store.Directory d = org.apache.lucene.store.FSDirectory.open(dir);
+            org.apache.lucene.index.IndexWriter w = new org.apache.lucene.index.IndexWriter(d, config)
+        ) {
+            // Segment _0: 30 docs, over the threshold; _1: 5 docs, under it.
+            for (int[] seg : new int[][] { { 0, 30 }, { 30, 35 } }) {
+                for (int i = seg[0]; i < seg[1]; i++) {
+                    java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(16);
+                    b.putInt(i % 4).putFloat(0.5f + i / 40f).putInt(100 + i).putFloat(1.0f);
+                    org.apache.lucene.document.Document doc = new org.apache.lucene.document.Document();
+                    doc.add(new org.apache.lucene.document.Field("emb", b.array(), vector));
+                    doc.add(new org.apache.lucene.document.NumericDocValuesField("n", i));
+                    doc.add(new org.apache.lucene.document.StringField("id", "d" + i, org.apache.lucene.document.Field.Store.NO));
+                    w.addDocument(doc);
+                }
+                w.commit();
+            }
+            for (String f : d.listAll()) {
+                sizes.put(f, d.fileLength(f));
+            }
+            check(sizes.containsKey("_0.sit") && sizes.containsKey("_0.sip"), "flushed sparse segment has .sit/.sip: " + sizes.keySet());
+            check(sizes.containsKey("_1.sit") && sizes.containsKey("_1.sip"), "segment under the threshold has .sit/.sip: " + sizes.keySet());
+            check(sizes.getOrDefault("_0.sip", 0L) > sizes.getOrDefault("_1.sip", 0L), "clustered segment's postings are written: " + sizes);
+            // A doc values update generation leaves the segment's clustered postings alone.
+            w.updateNumericDocValue(new org.apache.lucene.index.Term("id", "d3"), "n", -1);
+            w.commit();
+            List<String> generations = Arrays.stream(d.listAll()).filter(f -> f.endsWith(".sit") && f.indexOf('_', 1) > 0).toList();
+            check(generations.isEmpty(), "doc values updates write no .sit: " + generations);
+            w.getConfig().setMergePolicy(new org.apache.lucene.index.TieredMergePolicy());
+            w.forceMerge(1);
+            w.commit();
+            Set<String> files = Set.of(d.listAll());
+            check(files.contains("_2.sit") && files.contains("_2.sip"), "merged sparse segment has .sit/.sip: " + files);
+            try (org.apache.lucene.index.DirectoryReader r = org.apache.lucene.index.DirectoryReader.open(d)) {
+                org.apache.lucene.index.SegmentInfos infos = org.apache.lucene.index.SegmentInfos.readLatestCommit(d);
+                check(infos.size() == 1 && infos.info(0).info.getCodec().getName().equals("Sparse10010Codec"), "merged segment records Sparse10010Codec");
+                org.apache.lucene.index.BinaryDocValues v = r.leaves().get(0).reader().getBinaryDocValues("emb");
+                int n = 0;
+                while (v.nextDoc() != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS) {
+                    n++;
+                }
+                check(n == 35, "sparse forward index reads back: " + n);
+            }
+        } finally {
+            org.apache.lucene.util.IOUtils.rm(dir);
         }
     }
 
@@ -400,6 +478,24 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        // A range with doc values is one node (kind 48) after the tree tag; any other
+        // IndexOrDocValuesQuery is its index side.
+        byte[] both = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 5)
+            ),
+            f -> true
+        ).blob();
+        check(both != null && both[1] == 48, "a long range with doc values encodes as one node");
+        byte[] other = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 6)
+            ),
+            f -> true
+        ).blob();
+        check(other != null && other[1] == 11, "a range whose sides differ encodes its index side");
         // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
@@ -491,7 +587,7 @@ public final class NativeSelfTest {
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
                 // `range`, `term` and `terms` on the other numeric widths and
                 // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
-                case 10 -> switch (r.nextInt(6)) {
+                case 10 -> switch (r.nextInt(7)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
                     case 2 -> {
@@ -503,6 +599,15 @@ public final class NativeSelfTest {
                         // A range on an index-sorted shard's sort field: encoded as its fallback.
                         long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
                         yield new org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery("sl", a, b, LongPoint.newRangeQuery("sl", a, b));
+                    }
+                    case 5 -> {
+                        // A long range on a field with doc values, as OpenSearch builds it: one
+                        // node, either side per segment.
+                        long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
+                        yield new org.apache.lucene.search.IndexOrDocValuesQuery(
+                            LongPoint.newRangeQuery("sl", a, b),
+                            org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("sl", a, b)
+                        );
                     }
                     default -> new BoostQuery(IntPoint.newRangeQuery("si", 10, 20), 2f);
                 };
@@ -1539,12 +1644,19 @@ public final class NativeSelfTest {
                 DirectoryReader plain = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, false);
                 org.apache.lucene.index.LeafReader leaf0 = plain.leaves().get(0).reader();
                 check(leaf0.getSortedNumericDocValues("num") instanceof NativeDocValues.Numbers == false, "plain index: Lucene's doc values");
-                NativeStoredFieldsReader.fetchStarted();
+                NativeStoredFieldsReader.fetchStarted(true);
                 try {
                     check(leaf0.getSortedSetDocValues("kw") instanceof NativeDocValues.Terms, "fetch phase: native doc values");
+                    check(NativeStoredFieldsReader.vectorsDropped(), "a fetch phase dropping vectors");
+                    // A fetch phase run inside another (inner hits, top hits) has its own filter.
+                    NativeStoredFieldsReader.fetchStarted(false);
+                    check(NativeStoredFieldsReader.vectorsDropped() == false, "an inner fetch phase keeping vectors");
+                    NativeStoredFieldsReader.fetchEnded();
+                    check(NativeStoredFieldsReader.vectorsDropped(), "the outer fetch phase again");
                 } finally {
                     NativeStoredFieldsReader.fetchEnded();
                 }
+                check(NativeStoredFieldsReader.vectorsDropped() == false, "outside a fetch phase, vectors are read");
                 check(leaf0.getSortedSetDocValues("missing") == null, "an absent field has none");
                 check(leaf0.getSortedSetDocValues("num") == null, "a field of another doc-values type has none");
             }

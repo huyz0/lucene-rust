@@ -164,6 +164,10 @@ pub enum Error {
         "doc-values skip index offset/length ({0}, {1}) is out of range for a {2}-byte .dvs slice"
     )]
     SkipIndexOutOfRange(i64, i64, usize),
+    /// A `RustSubstring` entry's values are compressed blocks, read through
+    /// [`BinaryReader::value_ref`] rather than sliced in place.
+    #[error("field {0}'s values are compressed blocks; read them with BinaryReader::value_ref")]
+    CompressedBinary(i32),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -290,6 +294,9 @@ pub struct BinaryEntry {
     /// `None` for fixed-length fields (`min_length == max_length`), where an
     /// entry's offset is computed directly as `ordinal * max_length`.
     pub addresses: Option<BinaryAddresses>,
+    /// The `RustSubstring` format's blocks and gram index, in place of one
+    /// byte run ([`crate::substring`]).
+    pub substring: Option<Box<crate::substring::SubstringEntry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +600,23 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
     let min_length = input.read_i32()?;
     let max_length = input.read_i32()?;
 
+    if min_length == crate::substring::MIN_LENGTH_MARKER {
+        let substring = crate::substring::read_meta(input)?;
+        return Ok(BinaryEntry {
+            field_number,
+            docs_with_field_offset,
+            docs_with_field_length,
+            jump_table_entry_count,
+            dense_rank_power,
+            num_docs_with_field,
+            min_length,
+            max_length,
+            data_offset,
+            data_length,
+            addresses: None,
+            substring: Some(Box::new(substring)),
+        });
+    }
     let addresses = if min_length < max_length {
         let addresses_offset = input.read_i64()?;
         // ARITH: `num_docs_with_field` is an `i32` widened to `i64`, so the
@@ -626,6 +650,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
         data_offset,
         data_length,
         addresses,
+        substring: None,
     })
 }
 
@@ -1522,6 +1547,30 @@ impl<'a> NumericReader<'a> {
         self.fast.as_ref().and_then(|f| f.get(doc))
     }
 
+    /// [`Self::value`] for a dense varying-bits-per-value field when `doc`
+    /// falls in the block the last read decoded: one packed read, inline.
+    /// `None` means "ask [`Self::value`]" (never "no value"), as for
+    /// [`Self::dense_value`].
+    #[inline]
+    pub fn block_value(&self, doc: i32) -> Option<i64> {
+        let b = self.block.as_ref()?;
+        let shift = self.entry.block_shift?;
+        if !self.entry.is_dense() || self.entry.adaptive.is_some() {
+            return None;
+        }
+        let ordinal = i64::from(doc);
+        if ordinal < 0 || ordinal >= self.entry.num_values || ordinal >> shift != b.index {
+            return None;
+        }
+        if b.bits_per_value == 0 {
+            return Some(b.delta);
+        }
+        let values = self.data.get(b.values_start..b.values_end)?;
+        let raw =
+            direct_reader::get_fast(values, b.bits_per_value, ordinal & low_bits_mask(shift))?;
+        Some(self.entry.gcd.wrapping_mul(raw).wrapping_add(b.delta))
+    }
+
     /// This document's value, or `None` when it legitimately has none.
     /// Identical to `numeric_value(data, entry, doc)`, just without the
     /// per-call rederivation.
@@ -2284,6 +2333,9 @@ fn decode_value_varying_bpv(
 /// (fixed/variable). `data` is the whole `.dvd` file's bytes. `Ok(None)`
 /// means `doc` legitimately has no value.
 pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result<Option<&'d [u8]>> {
+    if entry.substring.is_some() {
+        return Err(Error::CompressedBinary(entry.field_number));
+    }
     if doc < 0 {
         return Err(Error::DocOutOfRange(doc, entry.num_docs_with_field as i64));
     }
@@ -2380,6 +2432,13 @@ pub struct BinaryReader<'a> {
     /// `None` when a region is not inside `data`, and each lookup then takes
     /// [`binary_value_at_ordinal`], which reports it.
     resolved: Option<ResolvedBinary<'a>>,
+    /// A `RustSubstring` entry's index and its last decompressed block.
+    substring: Option<
+        Box<(
+            crate::substring::SubstringIndex<'a>,
+            crate::substring::Block,
+        )>,
+    >,
 }
 
 /// [`BinaryReader`]'s per-iterator state.
@@ -2444,7 +2503,12 @@ impl<'a> BinaryReader<'a> {
                     )
                 })
         };
-        let resolved = if entry.is_empty_field() {
+        let substring = entry.substring.as_deref().and_then(|e| {
+            crate::substring::SubstringIndex::new(data, e)
+                .ok()
+                .map(|index| Box::new((index, crate::substring::Block::new())))
+        });
+        let resolved = if entry.is_empty_field() || entry.substring.is_some() {
             None
         } else {
             ResolvedBinary::new(data, entry)
@@ -2454,6 +2518,24 @@ impl<'a> BinaryReader<'a> {
             entry,
             docs,
             resolved,
+            substring,
+        }
+    }
+
+    /// This document's value, or `None` when it has none: [`Self::value`],
+    /// and for a `RustSubstring` entry the value decompressed into this
+    /// reader (so it lives until the next call).
+    pub fn value_ref(&mut self, doc: i32) -> Result<Option<&[u8]>> {
+        if self.entry.substring.is_none() {
+            return self.value(doc);
+        }
+        match self.substring.as_deref_mut() {
+            Some((index, block)) => index.value(doc, block),
+            // The index did not open: its error.
+            None => match self.entry.substring.as_deref() {
+                Some(e) => crate::substring::SubstringIndex::new(self.data, e).map(|_| None),
+                None => Ok(None),
+            },
         }
     }
 
@@ -2462,6 +2544,9 @@ impl<'a> BinaryReader<'a> {
     /// rederivation. Ascending `doc` walks the region once; going backwards
     /// rewinds the cursor, which costs a re-walk and still allocates nothing.
     pub fn value(&mut self, doc: i32) -> Result<Option<&'a [u8]>> {
+        if self.entry.substring.is_some() {
+            return Err(Error::CompressedBinary(self.entry.field_number));
+        }
         if doc < 0 {
             return Err(Error::DocOutOfRange(
                 doc,
@@ -3543,6 +3628,10 @@ pub struct Lucene90DocValuesFormat {
     /// [`crate::adaptive_values`] blocks: the `RustAdaptive` format
     /// ([`Self::rust_adaptive`]), which Lucene cannot read.
     adaptive: bool,
+    /// The block shift BINARY values are written in as
+    /// [`crate::substring`] blocks: the `RustSubstring` format
+    /// ([`Self::rust_substring`]), which Lucene cannot read.
+    substring: Option<u8>,
 }
 
 impl Lucene90DocValuesFormat {
@@ -3564,6 +3653,7 @@ impl Lucene90DocValuesFormat {
             instance: 0,
             name: Self::NAME,
             adaptive: false,
+            substring: None,
         })
     }
 
@@ -3586,6 +3676,28 @@ impl Lucene90DocValuesFormat {
     /// Whether this is the `RustAdaptive` format.
     pub fn is_adaptive(&self) -> bool {
         self.adaptive
+    }
+
+    /// `getName()` of [`Self::rust_substring`].
+    pub const RUST_SUBSTRING_NAME: &'static str = "RustSubstring";
+
+    /// The `RustSubstring` format: Lucene90's files, with each BINARY field
+    /// written as [`crate::substring`] blocks of `2^block_shift` documents
+    /// (capped at [`crate::substring::MAX_BLOCK_SHIFT`]) with a trigram
+    /// index, searchable by substring, wildcard and regexp. Stock Lucene has
+    /// no format by this name, so it refuses such a field rather than
+    /// misreading it.
+    pub fn rust_substring(block_shift: u8) -> Self {
+        Lucene90DocValuesFormat {
+            name: Self::RUST_SUBSTRING_NAME,
+            substring: Some(block_shift.min(crate::substring::MAX_BLOCK_SHIFT)),
+            ..Self::default()
+        }
+    }
+
+    /// The block shift of the `RustSubstring` format, `None` for any other.
+    pub fn substring_block_shift(&self) -> Option<u8> {
+        self.substring
     }
 
     /// The interval size this format writes skip indexes with.
@@ -3620,6 +3732,7 @@ impl Default for Lucene90DocValuesFormat {
             instance: 0,
             name: Self::NAME,
             adaptive: false,
+            substring: None,
         }
     }
 }
@@ -3693,7 +3806,6 @@ pub fn write_fields_with_format(
         }
     }
 
-    let adaptive = format.adaptive;
     let mut meta = new_meta_output(segment_id, segment_suffix);
     let mut data = new_data_output(segment_id, segment_suffix);
     let mut skip_index = new_skip_index_output(segment_id, segment_suffix);
@@ -3708,7 +3820,7 @@ pub fn write_fields_with_format(
             // (its type byte leads it) and spliced around the skip index.
             let stream = field.skip_index_stream(max_doc)?;
             let mut entry = Vec::new();
-            write_field_entry(&mut entry, &mut data, field, max_doc, adaptive)?;
+            write_field_entry(&mut entry, &mut data, field, max_doc, &format)?;
             meta.push(entry[0]);
             write_skip_index(
                 &mut meta,
@@ -3718,7 +3830,7 @@ pub fn write_fields_with_format(
             );
             meta.extend_from_slice(&entry[1..]);
         } else {
-            write_field_entry(&mut meta, &mut data, field, max_doc, adaptive)?;
+            write_field_entry(&mut meta, &mut data, field, max_doc, &format)?;
         }
     }
 
@@ -3750,8 +3862,47 @@ fn write_field_entry(
     data: &mut Vec<u8>,
     field: &DenseField<'_>,
     max_doc: i32,
-    adaptive: bool,
+    format: &Lucene90DocValuesFormat,
 ) -> WriteResult<()> {
+    let adaptive = format.adaptive;
+    if let Some(shift) = format.substring {
+        match field {
+            DenseField::Binary(_, values) => {
+                let docs: Vec<i32> = (0..values.len() as i32).collect();
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_substring_entry_body(meta, data, &docs, |i| &values[i], max_doc, shift);
+                return Ok(());
+            }
+            DenseField::SparseBinary(_, pairs) => {
+                let sorted = sort_sparse_pairs(pairs, max_doc)?;
+                let docs: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_substring_entry_body(meta, data, &docs, |i| &sorted[i].1, max_doc, shift);
+                return Ok(());
+            }
+            DenseField::BinaryColumn(_, column) => {
+                check_ascending_docs(&column.docs, max_doc)?;
+                let mut starts = Vec::with_capacity(column.lengths.len() + 1);
+                let mut at = 0usize;
+                for &l in &column.lengths {
+                    starts.push(at);
+                    at = at.saturating_add(l as usize);
+                }
+                starts.push(at);
+                meta.push(DOC_VALUES_TYPE_BINARY);
+                write_substring_entry_body(
+                    meta,
+                    data,
+                    &column.docs,
+                    |i| &column.bytes[starts[i]..starts[i + 1]],
+                    max_doc,
+                    shift,
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
     {
         match field {
             DenseField::Numeric(_, values) => {
@@ -4259,6 +4410,35 @@ fn write_numeric_values_body_with(
     data.extend_from_slice(&addr_meta);
     data.write_i64(addresses_offset);
     data.write_i64(addresses_length);
+}
+
+/// A BINARY entry body in the `RustSubstring` layout: Lucene90's prefix
+/// (data region, docs with a value, value count) with
+/// [`crate::substring::MIN_LENGTH_MARKER`] as `minLength`, then the
+/// substring metadata.
+// ARITH: lengths and offsets of in-memory, append-only buffers.
+#[allow(clippy::arithmetic_side_effects)]
+fn write_substring_entry_body<'v>(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    value: impl Fn(usize) -> &'v [u8],
+    max_doc: i32,
+    block_shift: u8,
+) {
+    let max_length = (0..doc_ids.len())
+        .map(|i| value(i).len())
+        .max()
+        .unwrap_or(0) as i32;
+    let data_offset = data.len() as i64;
+    let substring_meta = crate::substring::write_data(data, doc_ids, value, max_doc, block_shift);
+    meta.write_i64(data_offset);
+    meta.write_i64(data.len() as i64 - data_offset);
+    write_docs_with_field(meta, data, doc_ids, max_doc);
+    meta.write_i32(doc_ids.len() as i32);
+    meta.write_i32(crate::substring::MIN_LENGTH_MARKER);
+    meta.write_i32(max_length);
+    meta.extend_from_slice(&substring_meta);
 }
 
 /// A BINARY entry body for a column that may be sparse -- the sparse
@@ -7148,6 +7328,7 @@ mod tests {
             data_offset,
             data_length,
             addresses: None,
+            substring: None,
         }
     }
 
@@ -7210,6 +7391,7 @@ mod tests {
                 length: addr_bytes.len() as i64,
                 meta: addr_meta,
             }),
+            substring: None,
         };
         let mut data = addr_bytes.to_vec();
         data.extend_from_slice(blob);

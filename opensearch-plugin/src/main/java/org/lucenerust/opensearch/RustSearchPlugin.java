@@ -101,6 +101,7 @@ import org.lucenerust.opensearch.ml.HfAnalysis;
 import org.opensearch.index.analysis.PreBuiltAnalyzerProviderFactory;
 import org.opensearch.index.analysis.PreConfiguredTokenizer;
 import org.opensearch.plugins.IngestPlugin;
+import org.lucenerust.opensearch.sparse.SparseCodecService;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
@@ -411,7 +412,7 @@ public class RustSearchPlugin extends Plugin implements
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
-                        NativeStoredFieldsReader.fetchStarted();
+                        NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -477,14 +478,20 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * {@code KNNPlugin.getCustomCodecServiceFactory}: OpenSearch's engine writes a k-NN index's
-     * vector fields in the formats their mappings resolve to, as the Rust writer does.
+     * vector fields in the formats their mappings resolve to, as the Rust writer does. neural-search's:
+     * it writes an {@code index.sparse} index's segments with their clustered postings, as the Rust
+     * writer does, so a {@code neural_sparse} search scores them as stock's does whichever engine
+     * wrote them.
      */
     @Override
     public Optional<CodecServiceFactory> getCustomCodecServiceFactory(IndexSettings indexSettings) {
-        if (stockKnn || KnnSettings.KNN_INDEX.get(indexSettings.getSettings()) == false) {
-            return Optional.empty();
+        if (stockKnn == false && KnnSettings.KNN_INDEX.get(indexSettings.getSettings())) {
+            return Optional.of(KnnCodecService::new);
         }
-        return Optional.of(KnnCodecService::new);
+        if (SparseSettings.SPARSE_INDEX.get(indexSettings.getSettings())) {
+            return Optional.of(SparseCodecService::new);
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -588,6 +595,7 @@ public class RustSearchPlugin extends Plugin implements
             FETCH_ENABLED,
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
+            RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
             RustEngineSupport.ENGINE_ENABLED,
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
@@ -600,12 +608,16 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.STORE_MODE,
             RustEngineSupport.PARTITION_FIELD,
             RustEngineSupport.IVF_PARTITION_CLUSTERS,
+            RustEngineSupport.KNN_TARGET_RECALL,
+            RustEngineSupport.KNN_RECALL_SAMPLE_RATE,
+            RustEngineSupport.KNN_RECALL_CHECK_BUDGET,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
             NODE_LAZY_DECRYPT,
             NODE_DECRYPT_CACHE,
             NODE_PAGE_CACHE_SIZE,
+            org.lucenerust.opensearch.logs.LogsPreset.ENABLED,
             SparseSettings.SPARSE_INDEX
         ));
         settings.addAll(NeuralSearchSettings.all());
@@ -613,6 +625,7 @@ public class RustSearchPlugin extends Plugin implements
             settings.addAll(KnnSettings.settings());
         }
         settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
+        settings.addAll(org.lucenerust.opensearch.engine.SeqNoSettings.settings());
         if (stockMl == false) {
             settings.addAll(MlSettings.all());
         }
@@ -631,6 +644,10 @@ public class RustSearchPlugin extends Plugin implements
         mappers.put(org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.CONTENT_TYPE, org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.PARSER);
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
         mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
+        mappers.put(
+            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.CONTENT_TYPE,
+            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.PARSER
+        );
         if (stockKnn == false) {
             mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }
@@ -823,6 +840,9 @@ public class RustSearchPlugin extends Plugin implements
             semanticMappingTransformer.setModelResolver(modelResolver);
         }
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
+        if (org.lucenerust.opensearch.logs.LogsPreset.ENABLED.get(environment.settings())) {
+            clusterService.addListener(new org.lucenerust.opensearch.logs.LogsPreset(client));
+        }
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
             MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);

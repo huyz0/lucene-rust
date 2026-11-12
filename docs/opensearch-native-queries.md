@@ -50,7 +50,9 @@ A request runs native when **all** of these hold:
   `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (M13 T13.6: a
   `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range`
   and `term` on every numeric type, `date` and `ip` (`PointRangeQuery` of
-  any width) and `terms` on them (`PointInSetQuery`), and `exists`
+  any width; a `long`, `date` or `double` range with doc values keeps its
+  `IndexOrDocValuesQuery`, which takes the doc-values side per segment when
+  a cheaper clause leads, as Lucene's does) and `terms` on them (`PointInSetQuery`), and `exists`
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
   (`geo_bounding_box`, `geo_distance`, `geo_polygon`, `geo_shape` with every
@@ -174,6 +176,7 @@ where the native call's fixed cost shows -- see
 | `more_like_this`, `common`, `parent_id` | rewritten by OpenSearch to booleans of term queries | when the rewrite is a native shape |
 | `has_child`, `has_parent`, any `score_mode`, `min_children`/`max_children`, with or without `inner_hits` | `JoinUtil`'s global-ordinal joins: `JoinRequestFilter` wraps each join of a search request (`lucene_rust_join`), whose Lucene query on a native index defers the late-parsing query; the native search runs the from side and the join with the reader's cached global ordinals | yes; a join under `nested`, `function_score` or `hybrid`, a realtime view or a profiled search runs it in Java |
 | `script_score` | OpenSearch's `ScriptScoreQuery` | no (`query_ScriptScoreQuery`) |
+| `term`, `terms`, `prefix`, `wildcard`, `regexp`, `match` (and `query_string` wildcards) on a `rust_wildcard` field | `RustWildcardQuery`: the value test of OpenSearch's `wildcard` field, over the field's doc values | yes (node 49): the `RustSubstring` blocks' trigram index, then the same test on candidates; on plain `BINARY` doc values (an index OpenSearch's engine wrote) every value is tested. A `regexp` with `flags` other than `ALL` falls back (`substring_regexp_flags`) |
 
 ### Lucene-side leaves (Track A, 2026-10-30)
 

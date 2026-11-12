@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 127;
+    public static final int EXPECTED_ABI_VERSION = 147;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -128,6 +128,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle KNN_RECALL_STATS = bind("ffi_knn_recall_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
             "ffi_jvm_reader_doc_freq",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -223,6 +224,10 @@ public final class NativeBridge {
         );
         static final MethodHandle DERIVED_SOURCE = bind(
             "ffi_jvm_reader_derived_source_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle STORED_SOURCE = bind(
+            "ffi_jvm_reader_stored_source_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
         static final MethodHandle PREFETCH_DOCUMENTS = bind(
@@ -419,6 +424,19 @@ public final class NativeBridge {
         static final MethodHandle ML_HF_ANALYZE = bind(
             "ffi_ml_hf_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_OPEN = bind(
+            "ffi_sparse_clusterer_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_ADD = bind(
+            "ffi_sparse_clusterer_add",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_CLOSE = bind("ffi_sparse_clusterer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle SPARSE_POSTINGS_WRITE = bind(
+            "ffi_sparse_postings_write_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_SPARSE_ENCODING_OPEN = bind(
             "ffi_ml_sparse_encoding_open",
@@ -778,6 +796,24 @@ public final class NativeBridge {
             MemorySegment out = s.alloc(2 * Long.BYTES);
             int rc = (int) H.PARENT_CACHE_STATS.invokeExact(out);
             return rc == OK ? new long[] { out.get(JAVA_LONG, 0), out.get(JAVA_LONG, Long.BYTES) } : new long[] { -1, -1 };
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * What each recall-targeted k-NN tuner on this node measured, as a JSON object keyed by {@code
+     * <index uuid>/<shard>/<field>}; null when the native call fails.
+     */
+    public static String knnRecallStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.KNN_RECALL_STATS.invokeExact(ptrOf(slot), lenOf(slot));
+            if (rc != OK) {
+                return null;
+            }
+            byte[] json = take(slot);
+            return json == null ? "{}" : new String(json, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1565,6 +1601,14 @@ public final class NativeBridge {
     }
 
     /**
+     * {@link #derivedSource} as stored: each k-NN vector's masked value (the number {@code 1}) where
+     * the vector would go, for a fetch whose {@code _source} filter drops every vector field.
+     */
+    public static int storedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
+        return lendOwned(H.STORED_SOURCE, handle, segment, doc, use);
+    }
+
+    /**
      * {@code StoredFields.prefetch} for the documents {@code docs} (segment-local) of segment {@code
      * segment}: their stored-fields chunks fetched together where the segment is read by range, so
      * the fetch phase's reads one at a time find them local. Nothing to do for files on local disk.
@@ -1974,6 +2018,73 @@ public final class NativeBridge {
         try (Scratch s = Scratch.open()) {
             MemorySegment slot = ownedSlot(s);
             int rc = (int) H.ML_HF_ANALYZE.invokeExact(handle, s.bytes(text), (long) text.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a clusterer for {@code sparse_vector} field {@code number} ({@code name}) of a segment of
+     * {@code maxDoc} documents, its attributes encoded as a little-endian {@code u32} count then per
+     * entry a {@code u32} length and UTF-8 key, a {@code u32} length and UTF-8 value; its handle goes
+     * to {@code outHandle[0]}.
+     */
+    public static int sparseClustererOpen(byte[] name, int number, byte[] attributes, int maxDoc, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.SPARSE_CLUSTERER_OPEN.invokeExact(
+                s.bytes(name),
+                (long) name.length,
+                number,
+                s.bytes(attributes),
+                (long) attributes.length,
+                maxDoc,
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Adds {@code doc}'s forward-index value, {@code length} bytes of {@code bytes} from {@code offset}. */
+    public static int sparseClustererAdd(long handle, int doc, byte[] bytes, int offset, int length) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment value = s.alloc(length);
+            MemorySegment.copy(bytes, offset, value, JAVA_BYTE, 0, length);
+            return (int) H.SPARSE_CLUSTERER_ADD.invokeExact(handle, doc, value, (long) length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a clusterer {@link #sparsePostingsWrite} did not take. */
+    public static int sparseClustererClose(long handle) {
+        try {
+            return (int) H.SPARSE_CLUSTERER_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Clusters the fields of {@code handles} (in field-name order, each released whatever the
+     * outcome) and encodes the segment's {@code .sit} and {@code .sip}: the {@code .sit} length as
+     * a little-endian {@code u64}, then {@code .sit}, then {@code .sip}. {@code null} on failure,
+     * with the reason in {@link #lastError}.
+     */
+    public static byte[] sparsePostingsWrite(long[] handles, byte[] segmentId) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            MemorySegment hs = handles.length == 0 ? s.alloc(Long.BYTES) : s.longs(handles);
+            int rc = (int) H.SPARSE_POSTINGS_WRITE.invokeExact(hs, (long) handles.length, s.bytes(segmentId), ptrOf(slot), lenOf(slot));
             return rc == OK ? take(slot) : null;
         } catch (Throwable t) {
             throw rethrow(t);
@@ -2555,10 +2666,15 @@ public final class NativeBridge {
         }
     }
 
-    /** Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by merges. */
-    public static int writerSetRetention(long handle, boolean enabled, long minRetainedSeqNo) {
+    /**
+     * Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by
+     * merges; with {@code seqNoSentinels}, merges also write {@code UNASSIGNED_SEQ_NO} and {@code
+     * UNASSIGNED_PRIMARY_TERM} for every document below it.
+     */
+    public static int writerSetRetention(long handle, boolean enabled, boolean seqNoSentinels, long minRetainedSeqNo) {
         try {
-            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, (byte) (enabled ? 1 : 0), minRetainedSeqNo);
+            byte flags = (byte) ((enabled ? 1 : 0) | (seqNoSentinels ? 2 : 0));
+            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, flags, minRetainedSeqNo);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -2811,20 +2927,20 @@ public final class NativeBridge {
     // ---- Live search of the writer's buffers (live.rs). ----
 
     /**
-     * Opens a view of the documents buffered in writer {@code writer} that a reader of commit
-     * {@code commitGeneration} lacks: its handle into {@code outView[0]}, its blob ({@code published:
+     * Opens a view of the documents buffered in writer {@code writer} that a reader of the segment
+     * list at version {@code readerVersion} (a commit's or an NRT snapshot's) lacks: its handle into {@code outView[0]}, its blob ({@code published:
      * i64}, {@code count: i32}, then per buffer {@code maxDoc: i32}, {@code deleted: i32} and that many
      * deleted documents, little-endian) into {@code outBlob[0]}. {@link #INVALID_ARGUMENT} when the
-     * buffers cannot be read for that commit; the caller then searches the reader alone.
+     * buffers cannot be read for that list; the caller then searches the reader alone.
      */
-    public static int liveViewOpen(long writer, long commitGeneration, long[] outView, byte[][] outBlob) {
+    public static int liveViewOpen(long writer, long readerVersion, long[] outView, byte[][] outBlob) {
         if (outView == null || outView.length < 1 || outBlob == null || outBlob.length < 1) {
             return fail(INVALID_ARGUMENT, "outView and outBlob need a slot each");
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment view = s.alloc(Long.BYTES);
             MemorySegment blob = ownedSlot(s);
-            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, commitGeneration, view, ptrOf(blob), lenOf(blob));
+            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, readerVersion, view, ptrOf(blob), lenOf(blob));
             if (rc == OK) {
                 long id = view.get(JAVA_LONG, 0);
                 byte[] bytes = take(blob);
@@ -2957,10 +3073,10 @@ public final class NativeBridge {
         }
     }
 
-    /** Lets go of the buffers a reader of commit {@code generation} already has, once no view reads them. */
-    public static int writerReleaseLive(long writer, long generation) {
+    /** Lets go of the buffers a reader of the segment list at {@code version} already has, once no view reads them. */
+    public static int writerReleaseLive(long writer, long version) {
         try {
-            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, version);
         } catch (Throwable t) {
             throw rethrow(t);
         }

@@ -213,6 +213,30 @@ impl<'a> DirectReader<'a> {
     }
 }
 
+/// [`DirectReader::get`]'s fast body alone, without building a reader: the
+/// `index`-th value, or `None` where [`get`] must answer (an unsupported
+/// width, an index the fast read cannot reach).
+#[inline(always)]
+pub fn get_fast(slice: &[u8], bits_per_value: u8, index: i64) -> Option<i64> {
+    match bits_per_value {
+        1 => read_at_width::<1>(slice, index),
+        2 => read_at_width::<2>(slice, index),
+        4 => read_at_width::<4>(slice, index),
+        8 => read_at_width::<8>(slice, index),
+        12 => read_at_width::<12>(slice, index),
+        16 => read_at_width::<16>(slice, index),
+        20 => read_at_width::<20>(slice, index),
+        24 => read_at_width::<24>(slice, index),
+        28 => read_at_width::<28>(slice, index),
+        32 => read_at_width::<32>(slice, index),
+        40 => read_at_width::<40>(slice, index),
+        48 => read_at_width::<48>(slice, index),
+        56 => read_at_width::<56>(slice, index),
+        64 => read_at_width::<64>(slice, index),
+        _ => None,
+    }
+}
+
 /// A computation over a [`DirectReader`] at a compile-time width; see
 /// [`DirectReader::with_width`].
 pub trait WidthVisitor {

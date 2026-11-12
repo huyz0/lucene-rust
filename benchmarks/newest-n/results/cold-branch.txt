@@ -1,0 +1,42 @@
+match_all ts desc,10,27.982
+match_all ts desc,10,28.400
+match_all ts desc,10,25.872
+match_all ts asc,10,26.543
+match_all ts asc,10,26.881
+match_all ts asc,10,25.473
+src=openssh ts desc,10,42.772
+src=openssh ts desc,10,43.881
+src=openssh ts desc,10,42.514
+src=hdfs ts desc,10,54.070
+src=hdfs ts desc,10,50.819
+src=hdfs ts desc,10,59.492
+range24h ts desc,10,26.855
+range24h ts desc,10,25.889
+range24h ts desc,10,23.935
+range24h&hdfs ts desc,10,53.441
+range24h&hdfs ts desc,10,49.846
+range24h&hdfs ts desc,10,54.153
+match_all tsec(ties) desc,10,28.992
+match_all tsec(ties) desc,10,28.785
+match_all tsec(ties) desc,10,28.710
+match_all tmiss desc missing_last,10,25.964
+match_all tmiss desc missing_last,10,27.698
+match_all tmiss desc missing_last,10,27.015
+match_all ts desc search_after,10,32.027
+match_all ts desc search_after,10,29.129
+match_all ts desc search_after,10,27.839
+match_all ts desc,100,21.942
+match_all ts desc,100,24.655
+match_all ts desc,100,23.274
+src=openssh ts desc,100,64.443
+src=openssh ts desc,100,58.025
+src=openssh ts desc,100,55.068
+range24h ts desc,100,24.771
+range24h ts desc,100,28.505
+range24h ts desc,100,25.843
+match_all ts desc,1000,28.193
+match_all ts desc,1000,26.393
+match_all ts desc,1000,26.833
+range24h ts desc,1000,25.253
+range24h ts desc,1000,27.866
+range24h ts desc,1000,29.020

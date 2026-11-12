@@ -138,6 +138,13 @@ final class KnnEncoder {
             request.write(1);
             writeInt(request, Float.floatToIntBits(q.explorationSlack()));
         }
+        KnnTopVectorQuery.RecallTarget recall = q.recallTarget();
+        if (recall != null) {
+            writeLong(request, Double.doubleToLongBits(recall.recall()));
+            writeLong(request, Double.doubleToLongBits(recall.sampleRate()));
+            writeLong(request, Double.doubleToLongBits(recall.budget()));
+            writeString(request, recall.key());
+        }
         byte[] blob = request.toByteArray();
         // An expanded search returns every scored child of the k parents: a few per parent, usually.
         int room = q.expand() ? (int) Math.min((long) q.k() * 8, Integer.MAX_VALUE - 8) : q.k();
@@ -211,6 +218,11 @@ final class KnnEncoder {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         writeInt(out, b.length);
         out.writeBytes(b);
+    }
+
+    private static void writeLong(ByteArrayOutputStream out, long v) {
+        writeInt(out, (int) v);
+        writeInt(out, (int) (v >>> 32));
     }
 
     private static void writeInt(ByteArrayOutputStream out, int v) {
