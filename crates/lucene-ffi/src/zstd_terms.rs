@@ -1,4 +1,4 @@
-//! Zstd decoding for the plugin's Java reader of `RustZstd104` terms
+//! Zstd decoding for the plugin's Java reader of `ZstdTerms104` terms
 //! dictionaries ([`lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd`]):
 //! a field's dictionary is prepared once behind a handle, and each zstd term
 //! block's bare frame (`lucene_zstd::BareDecompressor`) is decoded against it.

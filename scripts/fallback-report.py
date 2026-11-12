@@ -35,7 +35,7 @@ def reading(base):
         if s is None:
             print(f"warning: node {n['name']} at {addr} unreachable; left out", file=sys.stderr)
             continue
-        out[n["name"]] = {"native": s["native_queries"], "fallbacks": s.get("fallbacks", {})}
+        out[n["name"]] = {"native": s["accelerated_queries"], "fallbacks": s.get("fallbacks", {})}
     return out
 
 

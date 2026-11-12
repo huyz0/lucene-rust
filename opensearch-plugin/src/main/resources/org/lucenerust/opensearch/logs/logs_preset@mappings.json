@@ -7,9 +7,9 @@
   "template": {
     "mappings": {
       "dynamic_templates": [
-        { "lucene_rust_logs_longs": { "match_mapping_type": "long", "mapping": { "type": "long", "index": false, "skip_list": true } } },
-        { "lucene_rust_logs_doubles": { "match_mapping_type": "double", "mapping": { "type": "double", "index": false, "skip_list": true } } },
-        { "lucene_rust_logs_strings": { "match_mapping_type": "string", "mapping": { "type": "keyword", "ignore_above": 1024 } } }
+        { "logs_preset_longs": { "match_mapping_type": "long", "mapping": { "type": "long", "index": false, "skip_list": true } } },
+        { "logs_preset_doubles": { "match_mapping_type": "double", "mapping": { "type": "double", "index": false, "skip_list": true } } },
+        { "logs_preset_strings": { "match_mapping_type": "string", "mapping": { "type": "keyword", "ignore_above": 1024 } } }
       ],
       "properties": {
         "@timestamp": { "type": "date", "skip_list": true },

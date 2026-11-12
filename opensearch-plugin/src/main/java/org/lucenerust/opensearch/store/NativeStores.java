@@ -51,15 +51,15 @@ public final class NativeStores {
                 }
                 encrypted = true;
             } else if (trusted.test(f.getClass()) == false) {
-                return "the store directory is wrapped by [" + f.getClass().getName() + "], which the Rust engine cannot read through";
+                return "the store directory is wrapped by [" + f.getClass().getName() + "], which the accelerated engine cannot read through";
             }
             d = f.getDelegate();
         }
         if (d instanceof FSDirectory == false) {
-            return "the Rust engine needs a filesystem directory, and the store's is a [" + d.getClass().getName() + "]";
+            return "the accelerated engine needs a filesystem directory, and the store's is a [" + d.getClass().getName() + "]";
         }
         if (trusted.test(d.getClass()) == false) {
-            return "the store directory is a [" + d.getClass().getName() + "], which the Rust engine cannot read through";
+            return "the store directory is a [" + d.getClass().getName() + "], which the accelerated engine cannot read through";
         }
         return null;
     }

@@ -49,7 +49,7 @@ import org.lucenerust.opensearch.store.StoreCrypto;
 import org.opensearch.index.mapper.ParseContext;
 
 /**
- * The {@code rust_encrypted} store end to end in one JVM: Lucene writes an encrypted index and the
+ * The {@code encrypted} store end to end in one JVM: Lucene writes an encrypted index and the
  * native reader searches it; the Rust engine writes one and Lucene's CheckIndex reads it; nothing
  * reaches disk in plaintext, the wrong key is refused, and a changed byte is caught.
  */

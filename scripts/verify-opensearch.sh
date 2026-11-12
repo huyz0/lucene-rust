@@ -11,11 +11,11 @@
 # OpenSearch's business, a difference between the two nodes is ours. Then
 # e2e/highlight_matrix.py requires every highlight on the two to be identical.
 #
-# Without --engine the plugin node runs with lucene_rust.engine.default: false,
+# Without --engine the plugin node runs with indices.engine.accelerated.default: false,
 # the opt-out: OpenSearch's engine for every index that does not ask, native
 # search on top. With --engine it keeps the default (true), so it serves every
 # index -- system indices and every index the YAML suites create included --
-# with the Rust engine, and the e2e stage is
+# with the accelerated engine, and the e2e stage is
 # opensearch-plugin/e2e/verify_engine.py: the Rust engine against OpenSearch's
 # own, operation for operation, through restarts, SIGKILL, a writer panic and
 # a tripped breaker.
@@ -63,7 +63,7 @@ fi
 docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 # The disk-watermark block is off: a CI runner's or container's disk can sit
 # past the flood stage, and a node refusing to create indices tests nothing.
-NODE_ENV=(-e lucene_rust.engine.default=false)
+NODE_ENV=(-e indices.engine.accelerated.default=false)
 if [[ $ENGINE == 1 ]]; then
     NODE_ENV=()
 fi
@@ -141,7 +141,7 @@ if [[ $YAML == 1 && $status == 0 ]]; then
         echo "verify-opensearch: the YAML suites fail differently with the plugin" >&2
         status=1
     fi
-    if ! grep -q '"native_errors":0' <<<"$stats" || grep -q '"native_queries":0' <<<"$stats"; then
+    if ! grep -q '"accelerated_errors":0' <<<"$stats" || grep -q '"accelerated_queries":0' <<<"$stats"; then
         echo "verify-opensearch: native errors during the YAML suites, or nothing ran native" >&2
         status=1
     fi

@@ -3,7 +3,7 @@
 `scripts/bench-opensearch.sh 1000000` (`opensearch-plugin/e2e/bench_nodes.py`)
 indexes one synthetic corpus into a stock OpenSearch 3.9.0 node and into a node
 with the plugin serving the index on the Rust engine
-(`lucene_rust.engine.default: true`) and native search. The nodes run one
+(`indices.engine.accelerated.default: true`) and native search. The nodes run one
 after the other, each alone, with a 2 GB heap, on a 4-core, 15 GB container
 (2026-11-05).
 

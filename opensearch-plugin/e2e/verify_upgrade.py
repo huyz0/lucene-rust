@@ -174,7 +174,7 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         expect = expect_override or expect
         if expect == "dfs_multi":
             expect = "dfs" if shards > 1 else "native"
-        # The plugin node runs the default native_shapes: fast.
+        # The plugin node runs the default accelerated_shapes: fast.
         if expect == "slow":
             expect = "slower_shape"
         if expect == "slow_agg":
@@ -185,8 +185,8 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         after = vo.stats()
         diff = vo.same(got, reference[name])
         vo.check(diff is None, f"{label} {index} [{name}]: the plugin node differs from the stock node: {diff}")
-        ran = after["native_queries"] - before["native_queries"]
-        errors = after["native_errors"] - before["native_errors"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
+        errors = after["accelerated_errors"] - before["accelerated_errors"]
         delta = vo.fallback_delta(before, after)
         vo.check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
         if expect == "either":
@@ -279,7 +279,7 @@ def verify(plugin, stock):
     s = vo.stats()
     print(f"plugin stats: {json.dumps(s, sort_keys=True)}")
     # Indices created on 2.x (Lucene 9 segments) do not inherit the accelerated engine default.
-    vo.check(s["engines"]["rust"] == 0, f"2.x-created indices stay on OpenSearch's engine: {s['engines']}")
+    vo.check(s["engines"]["accelerated"] == 0, f"2.x-created indices stay on OpenSearch's engine: {s['engines']}")
     print(f"verify_upgrade: {vo.CHECKS[0]} checks, {len(vo.FAILURES)} failures, {len(vo.UNVERIFIABLE)} rows "
           f"the stock node failed; {total} shard queries ran native")
     return total
