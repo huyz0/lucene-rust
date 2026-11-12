@@ -430,6 +430,8 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             }
             boolean derived = shared.derivedSource;
             int rc = NativeBridge.document(h, ord, docID, bytes -> {
+                // The replay copies the document onto the heap, and the response copies it again.
+                NativeMemory.chargeHeap(2 * bytes.byteSize());
                 SourceLoader source = (fi, v) -> derivedSource(h, docID, fi, v, lucene);
                 if (derived && bytes.byteSize() <= KEEP_BYTES) {
                     // Kept for the reads that follow: the bytes are freed once this returns.
@@ -443,6 +445,9 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 }
                 replay(fieldInfos, bytes, visitor, source);
             });
+            // The fetch phase's memory bound or a cancel: the request fails as the breaker or the
+            // task says, rather than reading the document again on the heap.
+            NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 shared.stats.nativeError();
                 logger.warn("lucene-rust: native stored fields failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());

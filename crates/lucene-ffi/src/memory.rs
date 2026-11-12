@@ -90,8 +90,9 @@ pub unsafe extern "C" fn ffi_memory_scope_begin(
 }
 
 /// Closes this thread's innermost scope: `out[0..n]` gets the bytes granted
-/// (the host releases them now), the most the request held, and what it
-/// still held at the end, as far as `n` reaches.
+/// (the host releases them now), the most the request held, what it still
+/// held at the end, and `1` when its deadline passed while it collected
+/// ([`ffi_memory_scope_set_deadline`]), else `0`, as far as `n` reaches.
 ///
 /// # Safety
 /// `out` valid for `n` writes (null when 0).
@@ -108,7 +109,12 @@ pub unsafe extern "C" fn ffi_memory_scope_end(out: *mut i64, n: usize) -> i32 {
         let scope = Arc::clone(entered.scope());
         drop(entered);
         lock(open_scopes()).remove(&token);
-        let values = [scope.granted(), scope.peak(), scope.used()];
+        let values = [
+            scope.granted(),
+            scope.peak(),
+            scope.used(),
+            i64::from(scope.timed_out()),
+        ];
         for (i, v) in values.iter().take(n).enumerate() {
             // SAFETY: `out` is valid for `n > i` writes (caller contract).
             unsafe { *out.add(i) = *v };
@@ -131,6 +137,23 @@ pub extern "C" fn ffi_memory_scope_cancel(token: i64) -> i32 {
     })
 }
 
+/// Gives the request opened with `token` a deadline `nanos` from now (`0` or
+/// less: already passed): once it passes, the request collects no more and
+/// answers with what it collected, a search `timeout`'s partial result. Any
+/// thread may call it; a token with no open scope is a no-op.
+#[no_mangle]
+pub extern "C" fn ffi_memory_scope_set_deadline(token: i64, nanos: i64) -> i32 {
+    guard(|| {
+        let scope = lock(open_scopes()).get(&token).and_then(Weak::upgrade);
+        if let Some(s) = scope {
+            s.set_deadline(std::time::Duration::from_nanos(
+                u64::try_from(nanos).unwrap_or(0),
+            ));
+        }
+        Ok(())
+    })
+}
+
 /// Sets the process bound in bytes (`0`: none): past it, requests fail at
 /// their next checkpoint.
 #[no_mangle]
@@ -145,8 +168,8 @@ pub extern "C" fn ffi_memory_set_process_limit(bytes: i64) -> i32 {
 /// held, the process bound, requests stopped by their grant, requests
 /// stopped by the process bound, requests cancelled; then the query caches'
 /// bytes, their node budget and sets evicted, decoded sort columns' bytes,
-/// and the global ordinals' bytes (what the host charges its `fielddata`
-/// breaker).
+/// the global ordinals' bytes (what the host charges its `fielddata`
+/// breaker), and requests that stopped collecting at their deadline.
 ///
 /// # Safety
 /// `out` valid for `n` writes (null when 0).
@@ -171,6 +194,7 @@ pub unsafe extern "C" fn ffi_memory_stats(out: *mut i64, n: usize) -> i32 {
             i64::try_from(qc_evictions).unwrap_or(i64::MAX),
             i(lucene_search::sort_column_bytes()),
             lucene_search::ordinal_map::held_bytes(),
+            s.timed_out,
         ];
         for (i, v) in values.iter().take(n).enumerate() {
             // SAFETY: `out` is valid for `n > i` writes (caller contract).
@@ -246,10 +270,32 @@ mod tests {
     }
 
     #[test]
-    fn stats_report_the_counters() {
-        let mut out = [0i64; 11];
+    fn a_deadline_reaches_the_open_scope_and_its_end_reports_it() {
+        let label = b"d";
+        // SAFETY: valid label.
+        assert_eq!(
+            unsafe { ffi_memory_scope_begin(43, 0, label.as_ptr(), label.len()) },
+            0
+        );
+        assert_eq!(ffi_memory_scope_set_deadline(43, 3_600_000_000_000), 0);
+        assert!(!memory::past_deadline());
+        std::thread::spawn(|| assert_eq!(ffi_memory_scope_set_deadline(43, -1), 0))
+            .join()
+            .unwrap();
+        assert!(memory::past_deadline());
+        let mut out = [9i64; 4];
         // SAFETY: valid out.
-        assert_eq!(unsafe { ffi_memory_stats(out.as_mut_ptr(), 11) }, 0);
+        assert_eq!(unsafe { ffi_memory_scope_end(out.as_mut_ptr(), 4) }, 0);
+        assert_eq!(out[3], 1);
+        assert_eq!(ffi_memory_scope_set_deadline(43, 0), 0, "closed: a no-op");
+    }
+
+    #[test]
+    fn stats_report_the_counters() {
+        let mut out = [0i64; 12];
+        // SAFETY: valid out.
+        assert_eq!(unsafe { ffi_memory_stats(out.as_mut_ptr(), 12) }, 0);
+        assert!(out[11] >= 0, "requests stopped at their deadline");
         assert!(out[1] >= out[0].min(0));
         assert!(out[7] > 0, "the query caches have a budget");
     }
