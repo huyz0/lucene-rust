@@ -458,6 +458,24 @@ pub trait TermsEnum {
     fn total_term_freq(&mut self) -> Result<i64>;
     /// `postings(null, flags)` of the current term.
     fn postings(&mut self, flags: PostingsFlags) -> Result<Box<dyn PostingsEnum>>;
+    /// `postings(null, OFFSETS).advance(doc)` then each `nextPosition()`'s
+    /// `startOffset()`/`endOffset()`: the current term's occurrences in `doc`
+    /// as offset pairs, `None` when `doc` does not hold the term. An
+    /// implementation that can read one document's occurrences without the
+    /// rest of the postings overrides it.
+    fn doc_offsets(&mut self, doc: i32) -> Result<Option<Vec<(i32, i32)>>> {
+        let mut pe = self.postings(PostingsFlags::Offsets)?;
+        if pe.advance(doc)? != doc {
+            return Ok(None);
+        }
+        let freq = pe.freq();
+        let mut offsets = Vec::with_capacity(usize::try_from(freq).unwrap_or(0));
+        for _ in 0..freq {
+            pe.next_position()?;
+            offsets.push((pe.start_offset(), pe.end_offset()));
+        }
+        Ok(Some(offsets))
+    }
     /// `impacts(flags)`: a [`SlowImpactsEnum`] unless the implementation
     /// knows the real impacts.
     fn impacts(&mut self, flags: PostingsFlags) -> Result<Box<dyn ImpactsEnum>> {
