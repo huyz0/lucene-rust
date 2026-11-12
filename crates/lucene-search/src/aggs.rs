@@ -689,6 +689,14 @@ fn slice_states(
     global: Option<&crate::GlobalStats>,
 ) -> Result<SliceStates> {
     let mut seen = Vec::with_capacity(slice.len());
+    // A count per global ordinal: as large as the field's cardinality, so
+    // asked of the request's memory bound before it is allocated.
+    lucene_util::memory::reserve(
+        globals
+            .iter()
+            .map(|g| g.value_count().saturating_mul(8))
+            .fold(0, usize::saturating_add),
+    )?;
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
     let mut term_extra: Vec<std::collections::HashMap<Vec<u8>, u64>> =
         vec![std::collections::HashMap::new(); globals.len()];

@@ -18,6 +18,7 @@ pub mod java_random;
 pub mod live_docs;
 pub mod math_util;
 pub mod max_sim;
+pub mod memory;
 pub mod numeric_utils;
 pub mod packed;
 pub mod packed_longs;
