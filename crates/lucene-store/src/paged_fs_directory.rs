@@ -670,10 +670,13 @@ mod local {
         units: u64,
     }
 
+    /// A stashed head: the file's name, its first bytes and its length.
+    type Stashed = (String, Arc<Vec<u8>>, u64);
+
     thread_local! {
         /// The head of the file being opened decoded on this thread (its
         /// name and first bytes), served to the decoder's header reads.
-        static STASH: std::cell::RefCell<Option<(String, Arc<Vec<u8>>, u64)>> =
+        static STASH: std::cell::RefCell<Option<Stashed>> =
             const { std::cell::RefCell::new(None) };
     }
 

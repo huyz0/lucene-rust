@@ -16,7 +16,7 @@
 //! Modes: `plain-mmap`, `plain-paged` (the demand pager), `enc-whole`
 //! (encrypted, decrypted whole at open), `enc-paged` (encrypted, decrypted
 //! page by page into the demand pager). `BUDGET_MB` sets the pager's
-//! budget.
+//! budget, `PAGE_KB` a fixed page size for every paged file.
 #![allow(clippy::arithmetic_side_effects)]
 
 use std::path::{Path, PathBuf};
@@ -153,15 +153,31 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// The paged directory: `PAGE_KB` sets its page size (fixed for every
+/// file), otherwise the defaults.
+fn paged(path: &Path) -> PagedFsDirectory {
+    match std::env::var("PAGE_KB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(kb) => PagedFsDirectory::with_config(
+            path,
+            lucene_store::PagedFsConfig {
+                page_size: kb << 10,
+                adaptive: false,
+                ..lucene_store::PagedFsConfig::default()
+            },
+        ),
+        None => PagedFsDirectory::open(path),
+    }
+}
+
 fn open_mode(mode: &str, path: &Path) -> Box<dyn Directory> {
     match mode {
         "plain-mmap" => Box::new(MmapDirectory::open(path)),
-        "plain-paged" => Box::new(PagedFsDirectory::open(path)),
+        "plain-paged" => Box::new(paged(path)),
         "enc-whole" => Box::new(EncryptedDirectory::new(MmapDirectory::open(path), keys())),
-        "enc-paged" => Box::new(EncryptedDirectory::new(
-            PagedFsDirectory::open(path),
-            keys(),
-        )),
+        "enc-paged" => Box::new(EncryptedDirectory::new(paged(path), keys())),
         other => panic!("unknown mode {other}"),
     }
 }
