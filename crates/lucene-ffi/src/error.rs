@@ -41,6 +41,9 @@ pub enum FfiStatus {
     MemoryLimit = 12,
     /// The host cancelled the request mid-call ([`crate::memory`]).
     Cancelled = 13,
+    /// An aggregation made more buckets than the request allows; the last
+    /// error is the count, in decimal ([`crate::jvm_aggs`]).
+    TooManyBuckets = 14,
 }
 
 impl FfiStatus {
@@ -72,6 +75,7 @@ impl FfiStatus {
             FfiStatus::HandleLimit => "handle registry exhausted: too many open handles",
             FfiStatus::MemoryLimit => "the request is over its memory limit",
             FfiStatus::Cancelled => "the request was cancelled",
+            FfiStatus::TooManyBuckets => "an aggregation made too many buckets",
         }
     }
 }

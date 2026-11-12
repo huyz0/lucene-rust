@@ -201,6 +201,47 @@ pub enum Reason {
     Cancelled = 3,
 }
 
+/// Bytes a long-lived structure keeps, added to a node gauge while it
+/// lives and taken off when it is dropped: what the host reports to its own
+/// breakers for memory that outlives any request (OpenSearch's
+/// `fielddata` breaker for global ordinals). Clones are not counted twice:
+/// share one `Held` behind an `Arc`.
+#[derive(Debug)]
+pub struct Held {
+    gauge: &'static AtomicI64,
+    bytes: i64,
+}
+
+impl Held {
+    /// `bytes` held from now on, added to `gauge`.
+    pub fn new(gauge: &'static AtomicI64, bytes: usize) -> Self {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        gauge.fetch_add(bytes, Relaxed);
+        Self { gauge, bytes }
+    }
+
+    /// The bytes counted.
+    pub fn bytes(&self) -> i64 {
+        self.bytes
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.gauge.fetch_sub(self.bytes, Relaxed);
+    }
+}
+
+/// Every [`Held`] is equal: the count is bookkeeping, not part of the value
+/// that holds it.
+impl PartialEq for Held {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Held {}
+
 /// A request stopped by a bound or cancelled.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
@@ -576,5 +617,17 @@ mod tests {
         assert!(checkpoint().is_ok());
         assert!(reserve(1 << 40).is_ok());
         on_free(64 << 20);
+    }
+
+    #[test]
+    fn held_bytes_leave_the_gauge_when_dropped() {
+        static GAUGE: AtomicI64 = AtomicI64::new(0);
+        let a = Arc::new(Held::new(&GAUGE, 100));
+        let b = Arc::clone(&a);
+        assert_eq!(GAUGE.load(Relaxed), 100);
+        drop(a);
+        assert_eq!(GAUGE.load(Relaxed), 100, "a clone still holds it");
+        drop(b);
+        assert_eq!(GAUGE.load(Relaxed), 0);
     }
 }
