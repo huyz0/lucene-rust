@@ -864,7 +864,7 @@ pub(super) fn restore(asked: &[AggNode], results: &mut [super::AggResult]) {
 }
 
 /// The parts a pass keeps of a metric asked for `needs`
-/// ([`MetricState::collect_needs`]'s dispatch, which the windows share):
+/// ([`super::MetricCol::for_needs`], which the windows share):
 /// one extreme or the count alone, the count and sum together, or every
 /// part.
 fn collected(needs: u8) -> u8 {
