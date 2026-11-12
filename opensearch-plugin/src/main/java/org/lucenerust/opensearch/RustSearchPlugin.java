@@ -210,6 +210,19 @@ public class RustSearchPlugin extends Plugin implements
     );
 
     /**
+     * Bytes the aggregation segment cache keeps collected parts in, across every index on this node
+     * that opts in with {@code index.lucene_rust.search.aggregation_segment_cache}; least recently
+     * used parts past it are dropped. 0 turns the cache off.
+     */
+    public static final Setting<ByteSizeValue> NODE_AGG_SEGMENT_CACHE_SIZE = Setting.byteSizeSetting(
+        "lucene_rust.search.aggregation_segment_cache.size",
+        new ByteSizeValue(256, ByteSizeUnit.MB),
+        new ByteSizeValue(0, ByteSizeUnit.BYTES),
+        new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
+        Setting.Property.NodeScope
+    );
+
+    /**
      * How the Rust engine advises the kernel to read each mapped shard file, by extension, as
      * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
      * {@code willneed} or {@code auto}; {@code *} for every extension not listed, Lucene's
@@ -299,7 +312,15 @@ public class RustSearchPlugin extends Plugin implements
         }
         configureLazyDecrypt(settings);
         configurePageCache(settings);
+        configureAggSegmentCache(settings);
         configureReadAdvice(settings);
+    }
+
+    private static void configureAggSegmentCache(Settings settings) {
+        int rc = NativeBridge.aggCacheSetBudget(NODE_AGG_SEGMENT_CACHE_SIZE.get(settings).getBytes());
+        if (rc != 0) {
+            throw new IllegalStateException("lucene-rust: cannot configure the aggregation segment cache (status " + rc + ")");
+        }
     }
 
     private static void configureReadAdvice(Settings settings) {
@@ -661,6 +682,8 @@ public class RustSearchPlugin extends Plugin implements
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
             RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
+            RustQueryPhaseSearcher.AGG_SEGMENT_CACHE,
+            NODE_AGG_SEGMENT_CACHE_SIZE,
             RustEngineSupport.ENGINE_ENABLED,
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
