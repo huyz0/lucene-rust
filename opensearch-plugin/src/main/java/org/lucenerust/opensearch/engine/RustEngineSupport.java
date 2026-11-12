@@ -609,6 +609,10 @@ public final class RustEngineSupport {
         boolean success = false;
         try {
             writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
+            writer.setSeqNoLayout(
+                SeqNoSettings.docValuesOnly(indexSettings.getSettings()),
+                SeqNoSettings.sentinels(indexSettings.getSettings())
+            );
             refreshMergePolicy(writer, config);
             int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
             if (ivfPartitionClusters > 0) {

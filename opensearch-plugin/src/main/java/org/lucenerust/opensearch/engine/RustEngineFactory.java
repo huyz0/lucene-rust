@@ -34,15 +34,19 @@ public final class RustEngineFactory implements EngineFactory {
 
     private final boolean nodeEnabled;
 
+    static final String SEQ_NO_NEEDS_ENGINE = "[index.lucene_rust.seq_no.index_options: doc_values_only] needs the Rust engine:"
+        + " set [index.lucene_rust.engine] or [lucene_rust.engine.default] on this node";
+
     public RustEngineFactory(boolean nodeEnabled) {
         this.nodeEnabled = nodeEnabled;
     }
 
     @Override
     public Engine newReadWriteEngine(EngineConfig config) {
+        boolean seqNoDocValuesOnly = SeqNoSettings.docValuesOnly(config.getIndexSettings().getSettings());
         if (config.isReadOnlyReplica()) {
             NRT_REPLICA.incrementAndGet();
-            return new NRTReplicationEngine(config);
+            return seqNoDocValuesOnly ? new SeqNoReplicaEngine(config) : new NRTReplicationEngine(config);
         }
         // Another engine plugin's PrimaryOperationPolicy: an index that only inherits the node
         // default gets OpenSearch's engine, one that asked for the Rust engine its refusal.
@@ -50,6 +54,10 @@ public final class RustEngineFactory implements EngineFactory {
         if (nodeEnabled && (asked || RustEngineSupport.unsupportedPolicy(config) == null)) {
             RUST.incrementAndGet();
             return new RustEngine(config);
+        }
+        if (seqNoDocValuesOnly) {
+            // OpenSearch's engine would run its history and retention ranges on points these segments lack.
+            throw new IllegalArgumentException(SEQ_NO_NEEDS_ENGINE);
         }
         JAVA.incrementAndGet();
         return new InternalEngine(config);

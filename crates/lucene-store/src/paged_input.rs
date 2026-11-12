@@ -21,12 +21,15 @@
 //!
 //! A memory access cannot return an error, and the process never aborts
 //! for a page it cannot serve. A page that cannot be read (an I/O error)
-//! is retried for about two seconds; if it still cannot be read, zeros are
-//! installed in its place so the faulting thread runs on, the failure is
-//! recorded under the file's name in [`crate::read_failures`], where the
-//! call that read it finds it and fails, and after [`UNREADABLE_HOLD`] the
-//! zeros are dropped, so the next touch reads the disk again and a disk
-//! that recovers serves the file again. A page that is read but fails to
+//! is retried for about two seconds. If it still cannot be read and the
+//! faulting thread runs a checked call ([`crate::read_failures::set_checked`]:
+//! one that fails when a failure is recorded under its shard), zeros are
+//! installed in its place so the thread runs on, the failure is recorded
+//! under the file's name in [`crate::read_failures`], where the call finds
+//! it and fails, and after [`UNREADABLE_HOLD`] the zeros are dropped, so
+//! the next touch reads the disk again and a disk that recovers serves the
+//! file again. Any other thread (a merge, a warmer), which nothing would
+//! fail, keeps retrying until the read succeeds. A page that is read but fails to
 //! decode (an encrypted chunk that fails authentication; the filler
 //! reports it with [`undecodable`]) is not retried: it is bad on disk, so
 //! zeros stay in its place and the file is marked failed until it is
@@ -140,6 +143,8 @@ const EVICT_BATCH: usize = 64;
 const EVICT_SLACK: u64 = 256;
 const UFFDIO_COPY: libc::c_ulong = 0xC028_AA03;
 const UFFDIO_REGISTER_MODE_MISSING: u64 = 1;
+/// Fault messages carry the faulting thread's id.
+const UFFD_FEATURE_THREAD_ID: u64 = 1 << 8;
 const UFFD_EVENT_PAGEFAULT: u8 = 0x12;
 
 #[repr(C)]
@@ -201,6 +206,9 @@ const PREFETCH_FILES: usize = 8;
 /// two seconds in all; then the page is served as zeros and its reads
 /// fail ([`crate::read_failures`]).
 const FAULT_RETRIES: [u64; 6] = [10, 50, 100, 250, 500, 1000];
+/// Milliseconds between attempts to read a page that cannot be read, once
+/// the retries are spent, for a thread that is not in a checked call.
+const UNCHECKED_RETRY_MS: u64 = 1000;
 /// How long zeros stand in for a page that could not be read before they
 /// are dropped and the next touch reads the disk again.
 pub const UNREADABLE_HOLD: Duration = Duration::from_secs(1);
@@ -220,6 +228,11 @@ fn own_pidfd() -> Option<OwnedFd> {
 /// every registered file, and the resident budget.
 pub struct Pager {
     uffd: OwnedFd,
+    /// Whether fault messages name the faulting thread
+    /// (`UFFD_FEATURE_THREAD_ID`): only then can a thread in a checked call
+    /// ([`crate::read_failures::set_checked`]) be handed zeros for a page
+    /// that cannot be read.
+    thread_ids: bool,
     os_page: usize,
     files: RwLock<BTreeMap<usize, Weak<File>>>,
     resident: Mutex<Queues>,
@@ -325,6 +338,9 @@ struct File {
     /// [`UNREADABLE_HOLD`] passes.
     unreadable: Vec<AtomicBool>,
     unreadable_count: AtomicUsize,
+    /// Held while [`Self::unreadable_count`] moves to or from zero and the
+    /// failure is recorded or cleared, so the two cannot interleave.
+    unreadable_lock: Mutex<()>,
 }
 
 /// A demand-filled file, as [`ExternalBytes`].
@@ -757,10 +773,12 @@ impl Pager {
             &[full, user]
         };
         let mut fd = -1;
+        let mut flags_used = 0;
         for &flags in modes {
             // SAFETY: a plain syscall with integer arguments.
             fd = unsafe { libc::syscall(libc::SYS_userfaultfd, flags) } as libc::c_int;
             if fd >= 0 {
+                flags_used = flags;
                 break;
             }
         }
@@ -768,21 +786,37 @@ impl Pager {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: `fd` is a fresh descriptor this function owns.
-        let uffd = unsafe { OwnedFd::from_raw_fd(fd) };
-        let mut api = UffdioApi {
-            api: UFFD_API,
-            features: 0,
-            ioctls: 0,
+        let mut uffd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let handshake = |fd: libc::c_int, features: u64| {
+            let mut api = UffdioApi {
+                api: UFFD_API,
+                features,
+                ioctls: 0,
+            };
+            // SAFETY: `api` is a valid `struct uffdio_api` for the call.
+            unsafe { libc::ioctl(fd, UFFDIO_API, &mut api) == 0 }
         };
-        // SAFETY: `api` is a valid `struct uffdio_api` for the call.
-        if unsafe { libc::ioctl(fd, UFFDIO_API, &mut api) } != 0 {
-            return Err(std::io::Error::last_os_error());
+        let thread_ids = handshake(uffd.as_raw_fd(), UFFD_FEATURE_THREAD_ID);
+        if !thread_ids {
+            // A refused handshake leaves the descriptor unusable: start over
+            // on a new one without thread ids.
+            // SAFETY: as above.
+            let fd = unsafe { libc::syscall(libc::SYS_userfaultfd, flags_used) } as libc::c_int;
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: `fd` is a fresh descriptor this function owns.
+            uffd = unsafe { OwnedFd::from_raw_fd(fd) };
+            if !handshake(fd, 0) {
+                return Err(std::io::Error::last_os_error());
+            }
         }
         // SAFETY: sysconf has no preconditions.
         let os_page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| std::io::Error::other("page size"))?;
         Ok(Pager {
             uffd,
+            thread_ids,
             os_page,
             files: RwLock::new(BTreeMap::new()),
             resident: Mutex::new(Queues::default()),
@@ -921,6 +955,7 @@ impl Pager {
             failed: OnceLock::new(),
             unreadable: (0..pages).map(|_| AtomicBool::new(false)).collect(),
             unreadable_count: AtomicUsize::new(0),
+            unreadable_lock: Mutex::new(()),
         });
         if map_len > 0 {
             self.files
@@ -992,7 +1027,11 @@ impl Pager {
         for m in &msgs[..count] {
             if m.event == UFFD_EVENT_PAGEFAULT {
                 let started = std::time::Instant::now();
-                self.resolve(m.address as usize);
+                // `feat.ptid`: the first four bytes of the last field.
+                let tid = self.thread_ids.then(|| {
+                    u32::from_ne_bytes(m._feat.to_ne_bytes()[..4].try_into().unwrap_or([0; 4]))
+                });
+                self.resolve(m.address as usize, tid);
                 let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
                 self.fault_nanos.fetch_add(nanos, Ordering::Relaxed);
             }
@@ -1000,8 +1039,9 @@ impl Pager {
         true
     }
 
-    /// Fills and installs the page holding `addr`.
-    fn resolve(&'static self, addr: usize) {
+    /// Fills and installs the page holding `addr`, for the faulting thread
+    /// `tid` when the kernel names it.
+    fn resolve(&'static self, addr: usize, tid: Option<u32>) {
         let file = {
             let files = match self.files.read() {
                 Ok(f) => f,
@@ -1067,13 +1107,28 @@ impl Pager {
                         let e = other
                             .err()
                             .map_or_else(|| "no page returned".to_string(), |e| e.to_string());
-                        self.serve_unreadable(&file, index, &e);
-                        break;
+                        if tid.is_some_and(crate::read_failures::is_checked) {
+                            self.serve_unreadable(&file, index, &e);
+                            break;
+                        }
+                        // Not in a checked call (a merge, a warmer): zeros
+                        // would reach it unnoticed, and a merge would write
+                        // them into a new segment. It waits for the disk.
+                        if attempt == FAULT_RETRIES.len() {
+                            self.read_errors.fetch_add(1, Ordering::Relaxed);
+                            eprintln!(
+                                "lucene-store: page {index} of {} cannot be read ({e}); retrying",
+                                file.name
+                            );
+                        }
                     }
                 }
             }
             std::thread::sleep(Duration::from_millis(
-                FAULT_RETRIES.get(attempt).copied().unwrap_or(15000),
+                FAULT_RETRIES
+                    .get(attempt)
+                    .copied()
+                    .unwrap_or(UNCHECKED_RETRY_MS),
             ));
             attempt = attempt.saturating_add(1);
         }
@@ -1089,21 +1144,25 @@ impl Pager {
     /// the calls that read the file ([`crate::read_failures`]). The zeros
     /// are dropped after [`UNREADABLE_HOLD`].
     fn serve_unreadable(&'static self, file: &Arc<File>, index: usize, error: &str) {
-        let zeros = vec![0u8; file.page];
-        if !self.copy_in(file, index, &zeros) {
-            // Installed by another thread meanwhile: nothing stands in.
-            return;
-        }
         self.read_errors.fetch_add(1, Ordering::Relaxed);
-        if !file.unreadable[index].swap(true, Ordering::AcqRel)
-            && file.unreadable_count.fetch_add(1, Ordering::AcqRel) == 0
+        // Recorded before the zeros go in: installing them wakes the
+        // faulting thread, whose call must find the failure when it ends.
         {
-            crate::read_failures::record(
-                file.unreadable_owner(),
-                &file.name,
-                &format!("page {index} of {} could not be read: {error}", file.name),
-            );
+            let _held = lock_ignoring_poison(&file.unreadable_lock);
+            if !file.unreadable[index].swap(true, Ordering::AcqRel)
+                && file.unreadable_count.fetch_add(1, Ordering::AcqRel) == 0
+            {
+                crate::read_failures::record(
+                    file.unreadable_owner(),
+                    &file.name,
+                    &format!("page {index} of {} could not be read: {error}", file.name),
+                );
+            }
         }
+        // Another thread may have installed the page meanwhile: it is then
+        // dropped and read again with the zeros' hold all the same.
+        let zeros = vec![0u8; file.page];
+        self.copy_in(file, index, &zeros);
         lock_ignoring_poison(&self.unreadable).push((
             Arc::downgrade(file),
             index,
@@ -1160,6 +1219,7 @@ impl Pager {
             // SAFETY: drops one page of a registered mapping that `file`
             // keeps alive; it is not resident, so the next access faults.
             unsafe { libc::madvise(start as *mut libc::c_void, len, libc::MADV_DONTNEED) };
+            let _held = lock_ignoring_poison(&file.unreadable_lock);
             if file.unreadable[index].swap(false, Ordering::AcqRel)
                 && file.unreadable_count.fetch_sub(1, Ordering::AcqRel) == 1
             {
@@ -1823,9 +1883,11 @@ mod tests {
         let root = format!("{}unreadable", std::path::MAIN_SEPARATOR);
         let input = pager.open(100_000, page, p.clone(), &name).unwrap();
         let started = crate::read_failures::epoch();
-        // Every attempt fails: the fault is served as zeros, not an abort.
+        // Every attempt fails: a checked call is served zeros, not an abort.
         p.fail_first.store(usize::MAX, Ordering::Relaxed);
+        crate::read_failures::set_checked(true);
         assert_eq!(input.bytes()[20_000], 0);
+        crate::read_failures::set_checked(false);
         assert_eq!(pager.stats().read_errors, 1);
         let recorded = crate::read_failures::failure_under(&root, started).expect("recorded");
         assert!(recorded.contains("could not be read"), "{recorded}");
@@ -1842,6 +1904,35 @@ mod tests {
         assert_eq!(
             crate::read_failures::failure_under(&root, crate::read_failures::epoch()),
             None
+        );
+    }
+
+    #[test]
+    fn a_thread_outside_a_checked_call_waits_for_the_disk() {
+        let Some(pager) = Pager::spawn(false) else {
+            return;
+        };
+        let page = 16 * 1024;
+        let p = pattern(100_000, page);
+        let input = pager
+            .open(100_000, page, p.clone(), "/waits/f.doc")
+            .unwrap();
+        p.fail_first.store(usize::MAX, Ordering::Relaxed);
+        let healer = {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(3000));
+                p.fail_first.store(0, Ordering::Relaxed);
+            })
+        };
+        // Past the retries the read keeps waiting, then gets the real bytes.
+        assert_eq!(input.bytes()[40_000], byte(40_000));
+        healer.join().unwrap();
+        assert!(pager.stats().read_errors >= 1);
+        assert_eq!(
+            crate::read_failures::failure_under("/waits", 0),
+            None,
+            "nothing was served as zeros"
         );
     }
 

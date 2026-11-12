@@ -97,7 +97,13 @@ thread_local! {
 /// file under it fails to decode (an encrypted chunk that fails
 /// authentication) or cannot be read from disk while the call runs,
 /// [`guard`] fails the call with that error.
+///
+/// Noting a shard makes the call checked
+/// ([`lucene_store::read_failures::set_checked`]) until it ends: only then
+/// may a page that cannot be read be handed to it as zeros, since only then
+/// does the failure fail the call.
 pub(crate) fn note_shard(path: &std::sync::Arc<str>) {
+    lucene_store::read_failures::set_checked(true);
     CALL_SHARDS.with(|c| {
         let mut shards = c.borrow_mut();
         if !shards.iter().any(|s| std::sync::Arc::ptr_eq(s, path)) {
@@ -197,6 +203,9 @@ where
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);
     GUARD_DEPTH.with(|d| d.set(depth));
+    if depth == 0 {
+        lucene_store::read_failures::set_checked(false);
+    }
     // A nested call returns into its caller's guard, which is still running.
     CAPTURING_PANIC.with(|c| c.set(depth > 0));
     match outcome {
