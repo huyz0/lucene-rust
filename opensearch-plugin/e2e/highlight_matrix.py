@@ -6,6 +6,8 @@ Usage: highlight_matrix.py [load|check|all] [DOCS]
   PLUGIN (default http://localhost:9200) is a node with the plugin, STOCK
   (default http://localhost:9201) a stock one. `load` creates and fills the
   indices on both, `check` runs the matrix, `all` (the default) does both.
+  HL_TYPES (default unified,plain,fvh) picks the highlighters whose option sets run; the fvh
+  sets run on the indices with term vectors (and one without, for the error).
 
 The corpus is generated (seeded): sentences of English words with
 abbreviations, numbers, punctuation, HTML-special characters, accented and
@@ -13,7 +15,8 @@ CJK text, emoji (surrogate pairs), newlines, multi-valued fields and long
 values, so passages break on every kind of boundary the break iterators
 know. A row prints `ok` or the first differing hit; the plugin's stats show
 how many fields ran natively and every fallback reason."""
-import json, os, random, sys
+import concurrent.futures
+import json, os, random, sys, threading
 import requests
 
 PLUGIN = os.environ.get("PLUGIN", "http://localhost:9200")
@@ -65,6 +68,9 @@ def doc(rnd, i):
         "num": rnd.randint(0, 1000),
         "date": f"2026-{rnd.randint(1, 12):02d}-{rnd.randint(1, 28):02d}",
     }
+    extra = random.Random(i)  # its own stream, so the fields above stay as they were
+    d["comments"] = [{"text": sentence(extra)} for _ in range(extra.randint(0, 3))]
+    d["loc"] = {"lat": extra.uniform(-60, 60), "lon": extra.uniform(-170, 170)}
     if i % 11 == 0:
         d["body"] = ""  # empty value
     if i % 13 == 0:
@@ -104,6 +110,8 @@ def mapping(body):
             "kw": {"type": "keyword"},
             "num": {"type": "integer"},
             "date": {"type": "date"},
+            "comments": {"type": "nested", "properties": {"text": {"type": "text"}}},
+            "loc": {"type": "geo_point"},
         }
     }
 
@@ -120,6 +128,30 @@ INDICES = {
     "hl_ngram": mapping(text_field("ngram")),
     "hl_stored": mapping(text_field(store=True)),
 }
+
+TV = "with_positions_offsets"
+
+
+def fvh_mapping(analyzer=None, **kw):
+    """Term vectors on every text field, and an english subfield for matched_fields."""
+    en = {"type": "text", "analyzer": "english", "term_vector": TV}
+    m = mapping(text_field(analyzer, term_vector=TV, fields={"en": en}, **kw))
+    m["properties"]["title"] = {"type": "text", "term_vector": TV, "fields": {"en": en}}
+    return m
+
+
+# The fvh highlighter's own indices: stored or not, and analyzers that break it (edge_ngram).
+FVH_INDICES = {
+    "hl_fvh": fvh_mapping(),
+    "hl_fvh_stored": fvh_mapping(store=True),
+    "hl_fvh_ngram": fvh_mapping("ngram"),
+    "hl_fvh_ngram_stored": fvh_mapping("ngram", store=True),
+    "hl_fvh_syn": fvh_mapping("syn"),
+    "hl_fvh_english": fvh_mapping("english"),
+}
+TYPES = os.environ.get("HL_TYPES", "unified,plain,fvh").split(",")
+if "fvh" in TYPES:
+    INDICES.update(FVH_INDICES)
 
 
 def load(docs):
@@ -196,6 +228,26 @@ QUERIES = {
     "phrase_prefix_and_term": {"bool": {"must": [{"match_phrase_prefix": {"body": "lazy d"}}], "should": [{"match": {"body": "gold"}}]}},
     "phrase_prefix_multi_match": {"multi_match": {"query": "lazy do", "fields": ["body", "title"], "type": "phrase_prefix"}},
     "title_en": {"match": {"title.en": "jumping foxes"}},
+    "nested": {"nested": {"path": "comments", "query": {"match": {"comments.text": "fox dog"}}}},
+    "nested_and_body": {"bool": {"must": [{"match": {"body": "lazy"}}], "should": [{"nested": {"path": "comments", "query": {"match_phrase": {"comments.text": "quick brown"}}}}]}},
+    "script_filter": {"bool": {"must": [{"match": {"body": "fox"}}], "filter": [{"script": {"script": "doc['num'].value > 300"}}]}},
+    "script_score_phrase": {"script_score": {"query": {"match_phrase": {"body": "lazy dog"}}, "script": {"source": "_score * 2"}}},
+    "intervals": {"intervals": {"body": {"match": {"query": "quick fox", "max_gaps": 3}}}},
+    "combined_fields": {"combined_fields": {"query": "fox dog", "fields": ["body", "title"]}},
+    "match_bool_prefix": {"match_bool_prefix": {"body": "quick br"}},
+    "geo_filter": {"bool": {"must": [{"match": {"body": "lazy"}}], "filter": [{"geo_distance": {"distance": "3000km", "loc": {"lat": 10, "lon": 20}}}]}},
+    "more_like_this": {"more_like_this": {"fields": ["body"], "like": "quick brown fox jumps over the lazy dog", "min_term_freq": 1, "min_doc_freq": 1}},
+    "exists_filter": {"bool": {"must": [{"match": {"body": "gold"}}], "filter": [{"exists": {"field": "title"}}]}},
+    "ids_filter": {"bool": {"must": [{"match": {"body": "fox"}}], "filter": [{"ids": {"values": [str(i) for i in range(0, 3000, 3)]}}]}},
+    "terms_set": {"terms_set": {"body": {"terms": ["fox", "dog", "gold"], "minimum_should_match_script": {"source": "1"}}}},
+    "distance_feature": {"bool": {"must": [{"match": {"body": "fox"}}], "should": [{"distance_feature": {"field": "date", "pivot": "30d", "origin": "2026-06-01"}}]}},
+    "boosting": {"boosting": {"positive": {"match": {"body": "fox"}}, "negative": {"match": {"body": "dog"}}, "negative_boost": 0.5}},
+    "should_then_filter": {"bool": {"should": [{"match": {"body": "fox"}}], "filter": [{"intervals": {"body": {"match": {"query": "dog"}}}}]}},
+    "boost_twice": {"bool": {"should": [{"term": {"body": {"value": "fox", "boost": 5}}}, {"term": {"body": {"value": "dog", "boost": 2}}}], "filter": [{"term": {"body": "fox"}}]}},
+    "function_score_nested": {"function_score": {"query": {"nested": {"path": "comments", "query": {"match_phrase": {"comments.text": "quick brown"}}}}, "field_value_factor": {"field": "num"}}},
+    "nested_function_score": {"nested": {"path": "comments", "query": {"function_score": {"query": {"match_phrase": {"comments.text": "quick brown"}}}}}},
+    "query_string_mixed": {"query_string": {"query": "fox OR (lazy AND dog) OR gold", "default_field": "body"}},
+    "query_string_proximity": {"query_string": {"query": "\"quick fox\"~3 OR lazy", "default_field": "body"}},
 }
 
 OPTIONS = {
@@ -219,37 +271,117 @@ OPTIONS = {
     "max_offset": {"fields": {"body": {"max_analyzer_offset": 50}}},
     "unified_named": {"fields": {"body": {"type": "unified"}}},
     "title_en": {"fields": {"title.en": {}, "title": {}}},
+    "nested_field": {"fields": {"comments.text": {}, "body": {}}},
 }
+
+# The plain highlighter: each option set above as `type: plain`, and its own fragmenters.
+PLAIN_OPTIONS = {f"plain_{k}": {**v, "type": "plain"} for k, v in OPTIONS.items() if k != "unified_named"}
+PLAIN_OPTIONS.update({
+    "plain_simple": {"type": "plain", "fragmenter": "simple", "fields": {"body": {"fragment_size": 30, "number_of_fragments": 4}}},
+    "plain_simple_score": {"type": "plain", "fragmenter": "simple", "order": "score", "fields": {"body": {"fragment_size": 25, "number_of_fragments": 3}}},
+    "plain_span": {"type": "plain", "fragmenter": "span", "fields": {"body": {"fragment_size": 50, "number_of_fragments": 2}}},
+    "plain_frags0_multi": {"type": "plain", "fields": {"multi": {"number_of_fragments": 0}}},
+    "plain_simple_frags0": {"type": "plain", "fragmenter": "simple", "fields": {"body": {"number_of_fragments": 0, "no_match_size": 30}}},
+    "plain_field_type": {"fields": {"body": {"type": "plain", "fragment_size": 60}, "title": {}}},
+    "plain_html_score": {"type": "plain", "encoder": "html", "order": "score", "fields": {"body": {"number_of_fragments": 4, "fragment_size": 30}}},
+})
+
+# The fvh highlighter: each option set above as `type: fvh`, and its own options.
+FVH_OPTIONS = {f"fvh_{k}": {**v, "type": "fvh"} for k, v in OPTIONS.items() if k != "unified_named"}
+FVH_OPTIONS.update({
+    "fvh_matched": {"type": "fvh", "fields": {"body": {"matched_fields": ["body", "body.en"]}}},
+    "fvh_matched_score": {"type": "fvh", "order": "score", "fields": {"body": {"matched_fields": ["body.en", "body"], "number_of_fragments": 3, "fragment_size": 30}}},
+    "fvh_offset": {"type": "fvh", "fields": {"body": {"fragment_offset": 5, "fragment_size": 40}}},
+    "fvh_phrase_limit": {"type": "fvh", "fields": {"body": {"phrase_limit": 1}}},
+    "fvh_chars": {"type": "fvh", "fields": {"body": {"boundary_chars": ".", "boundary_max_scan": 5, "fragment_size": 30}}},
+    "fvh_force_source": {"type": "fvh", "force_source": True, "fields": {"body": {"number_of_fragments": 2, "fragment_size": 30}}},
+    "fvh_frags0_multi": {"type": "fvh", "fields": {"multi": {"number_of_fragments": 0}}},
+    "fvh_multi_score": {"type": "fvh", "order": "score", "fields": {"multi": {"number_of_fragments": 3, "fragment_size": 20}}},
+    "fvh_no_match_multi": {"type": "fvh", "fields": {"multi": {"no_match_size": 20}}},
+    "fvh_word_locale": {"type": "fvh", "boundary_scanner": "word", "boundary_scanner_locale": "en-US", "fields": {"body": {"fragment_size": 30}}},
+    "fvh_sentence_frags": {"type": "fvh", "boundary_scanner": "sentence", "fields": {"body": {"fragment_size": 30, "number_of_fragments": 4}}},
+    "fvh_highlight_filter": {"type": "fvh", "highlight_filter": True, "fields": {"body": {}}},
+    "fvh_field_type": {"fields": {"body": {"type": "fvh", "fragment_size": 60}, "title": {}}},
+})
+# fvh needs term vectors: its sets run on these (hl_standard for the refusal).
+FVH_RUN_ON = set(FVH_INDICES) | {"hl_tv", "hl_offsets_tv", "hl_standard"}
+
+
+def option_sets(index):
+    out = {}
+    if "unified" in TYPES and index not in FVH_INDICES:
+        out.update(OPTIONS)
+    if "plain" in TYPES and index not in FVH_INDICES:
+        out.update(PLAIN_OPTIONS)
+    if "fvh" in TYPES and index in FVH_RUN_ON:
+        out.update(FVH_OPTIONS)
+    return out
+
+
+# HL_QUERIES=a,b runs only those queries; HL_TRACE=1 prints each query's fallbacks.
+ONLY = [q for q in os.environ.get("HL_QUERIES", "").split(",") if q]
+TRACE = os.environ.get("HL_TRACE") == "1"
+
+
+def fallbacks():
+    stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
+    return {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k}
+
+
+# HL_WORKERS rows run at once (each search is its own request, so stock's per-search
+# highlighter state is the same either way); a trace runs one at a time.
+WORKERS = 1 if TRACE else int(os.environ.get("HL_WORKERS", "6"))
+LOCAL = threading.local()
+
+
+def session():
+    if not hasattr(LOCAL, "s"):
+        LOCAL.s = requests.Session()
+    return LOCAL.s
 
 
 def search(base, index, query, hl, size):
     body = {"query": query, "highlight": hl, "size": size, "sort": ["_score", {"num": "asc"}, "_doc"]}
-    r = S.post(f"{base}/{index}/_search", json=body)
+    r = session().post(f"{base}/{index}/_search", json=body)
     if not r.ok:
         return {"error": r.json().get("error", {}).get("root_cause", [{}])[0].get("type"), "status": r.status_code}
     hits = r.json()["hits"]["hits"]
     return [(h["_id"], h.get("highlight")) for h in hits]
 
 
+def compare(index, qn, q, on, o, size):
+    """The row's difference report, or None when the plugin's highlights are stock's."""
+    a = search(PLUGIN, index, q, o, size)
+    b = search(STOCK, index, q, o, size)
+    if a == b:
+        return None
+    if isinstance(a, dict) or isinstance(b, dict):
+        return f"DIFF {index} {qn} {on}: plugin {str(a)[:200]} stock {str(b)[:200]}"
+    for (ia, ha), (ib, hb) in zip(a, b):
+        if ia != ib or ha != hb:
+            return f"DIFF {index} {qn} {on} id {ia}/{ib}:\n  plugin {json.dumps(ha, ensure_ascii=False)[:600]}\n  stock  {json.dumps(hb, ensure_ascii=False)[:600]}"
+    return f"DIFF {index} {qn} {on}: {len(a)} vs {len(b)} hits"
+
+
 def check(size):
     rows = bad = 0
-    for index in INDICES:
-        for qn, q in QUERIES.items():
-            for on, o in OPTIONS.items():
-                rows += 1
-                a = search(PLUGIN, index, q, o, size)
-                b = search(STOCK, index, q, o, size)
-                if a != b:
-                    bad += 1
-                    if isinstance(a, dict) or isinstance(b, dict):
-                        print(f"DIFF {index} {qn} {on}: plugin {str(a)[:200]} stock {str(b)[:200]}")
-                        continue
-                    for (ia, ha), (ib, hb) in zip(a, b):
-                        if ia != ib or ha != hb:
-                            print(f"DIFF {index} {qn} {on} id {ia}/{ib}:\n  plugin {json.dumps(ha, ensure_ascii=False)[:600]}\n  stock  {json.dumps(hb, ensure_ascii=False)[:600]}")
-                            break
-                    else:
-                        print(f"DIFF {index} {qn} {on}: {len(a)} vs {len(b)} hits")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for index in INDICES:
+            for qn, q in QUERIES.items():
+                if ONLY and qn not in ONLY:
+                    continue
+                before = fallbacks() if TRACE else None
+                sets = option_sets(index)
+                for report in pool.map(lambda item: compare(index, qn, q, item[0], item[1], size), sets.items()):
+                    rows += 1
+                    if report is not None:
+                        bad += 1
+                        print(report)
+                if TRACE:
+                    after = fallbacks()
+                    delta = {k: v - before.get(k, 0) for k, v in after.items() if v != before.get(k, 0)}
+                    if delta:
+                        print(f"FALLBACK {index} {qn} {delta}")
     stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
     print(f"{rows - bad}/{rows} rows identical")
     print("accelerated_highlights", stats.get("accelerated_highlights"), "accelerated_errors", stats.get("accelerated_errors"))
