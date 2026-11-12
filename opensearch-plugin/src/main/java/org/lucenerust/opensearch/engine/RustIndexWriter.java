@@ -882,7 +882,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      */
     void setIvfPartitionClusters(int minVectors) throws IOException {
         synchronized (lock) {
-            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting ivf_partition_clusters");
+            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting index.knn.ivf.partition_min_vectors");
         }
     }
 

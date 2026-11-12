@@ -45,10 +45,10 @@ false` (node setting) stops the registration.
 
 ## Compatibility
 
-The settings template's `extended` settings need this plugin, and three of
+The settings template's accelerated-engine and codec settings need this plugin, and three of
 them write formats only this plugin reads: `ZstdTerms104` terms, `Adaptive90`
 doc values and `PagedZstd104` stored fields. To make an index
-stock-readable again, close it, set those three to `false`, reopen it and
+stock-readable again, close it, set `index.codec.terms_compression` to `none` and the other two to `false`, reopen it and
 force-merge to rewrite every segment. The mappings template uses stock mapping
 options except `hex_id`, a type of this plugin whose segments are plain Lucene
 terms and `SORTED_SET` doc values; on a stock node map those two fields as

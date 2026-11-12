@@ -29,7 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The plugin's {@code rust_*} tokenizers and analyzers: Rust tokenizers ({@link RustTokenizer})
+ * The plugin's own tokenizers and analyzers ({@code thai_dictionary}, {@code japanese}, {@code korean}, {@code chinese}): Rust tokenizers ({@link RustTokenizer})
  * under an OpenSearch name, each with an optional analyzer chain around it.
  *
  * <p>Adding one is a row in {@link #TOKENIZERS}: the OpenSearch name, the Rust factory's SPI name
@@ -51,7 +51,7 @@ final class RustAnalysis {
     private static final Logger logger = LogManager.getLogger(RustAnalysis.class);
 
     /**
-     * One {@code rust_*} tokenizer, and the analyzer of the same name if {@code chain} is set;
+     * One of the plugin's tokenizers, and the analyzer of the same name if {@code chain} is set;
      * {@code pack} names the data pack it reads, if any.
      */
     static final class Entry {
@@ -114,7 +114,7 @@ final class RustAnalysis {
     /** {@code chinese}: Lucene's {@code HMMChineseTokenizer} (the {@code smartcn} pack). */
     static final Entry CHINESE = new Entry("chinese", "hmmChinese", "smartcn", Map.of(), null, null);
 
-    /** Every {@code rust_*} tokenizer the plugin registers. */
+    /** Every tokenizer the plugin registers. */
     static final List<Entry> TOKENIZERS = List.of(THAI, JAPANESE, KOREAN, CHINESE);
 
     /** The entries this node registers: those reading no data pack, and those whose pack is there. */

@@ -146,9 +146,9 @@ check against `wildcard` under both engines).
 | `index.search.accelerated_shapes` (index, dynamic, `fast`/`all`, default `fast`) | `all` also runs shapes that are correct natively but measured slower. Every encodable shape currently measures faster, so the two values agree |
 | `index.fetch.accelerated` (index, dynamic, default `true`) | read this index's stored fields (`_source`, `_id`, `stored_fields`) natively in the fetch phase and the get API |
 | `indices.fetch.accelerated_reader` (node, default `true` unless the security plugin is installed) | install the index reader wrapper native stored fields need. An index takes one reader wrapper and the security plugin claims it for field- and document-level security, so with it installed the default is off and stored fields are read by Lucene; if another plugin set a wrapper first, this one logs and stands down |
-| `index.merge.reorder.enabled` (index, dynamic, default `false`) | Lucene's `BPReorderingMergePolicy` around the shard's merge policy: forced merges, and natural merges of at least `bp_reorder.min_merge_docs` (default 65536) documents, renumber documents so ones sharing terms sit together (smaller postings, faster queries). Output segments are ordinary Lucene segments. Tuning: `bp_reorder.fields` (default every indexed field), `min_doc_freq` (4096), `max_doc_freq` (1.0), `min_partition_size` (32), `max_iters` (20), `ram_budget` (256mb), `min_merge_ratio` (0.0). Ignored on sorted and sparse indexes, and a merge of segments holding nested documents keeps their order (Lucene needs a parent field to keep blocks together, and OpenSearch sets none) |
+| `index.merge.reorder.enabled` (index, dynamic, default `false`) | Lucene's `BPReorderingMergePolicy` around the shard's merge policy: forced merges, and natural merges of at least `index.merge.reorder.min_merge_docs` (default 65536) documents, renumber documents so ones sharing terms sit together (smaller postings, faster queries). Output segments are ordinary Lucene segments. Tuning: `index.merge.reorder.fields` (default every indexed field), `min_doc_freq` (4096), `max_doc_freq` (1.0), `min_partition_size` (32), `max_iters` (20), `ram_budget` (256mb), `min_merge_ratio` (0.0). Ignored on sorted and sparse indexes, and a merge of segments holding nested documents keeps their order (Lucene needs a parent field to keep blocks together, and OpenSearch sets none) |
 | `logs_preset@settings`, `logs_preset@mappings` (component templates) | the logs preset, opt-in per index template: see [`docs/logs-preset.md`](../docs/logs-preset.md). `indices.logs_preset.enabled` (node, default `true`) registers them |
-| `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`native_fetches`, `native_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
+| `GET /_plugins/lucene_rust/stats` | native queries, native errors, fallbacks by reason, open native readers, native stored-fields reads (`accelerated_fetches`, `accelerated_sequential_fetches`) and `StoredFields.document` time per path (`fetch_nanos`) |
 
 ### Encryption at rest
 
@@ -174,7 +174,7 @@ change bytes on disk, rather than bypass them. Settings, key rotation and
 FIPS:
 [`docs/pluggable-storage.md`](../docs/pluggable-storage.md#in-opensearch-the-encrypted-store-type).
 
-A native failure is logged, counted as `native_errors`, and the query is re-run
+A native failure is logged, counted as `accelerated_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.
 
 Highlighters, suggesters and the query-string parsers stay OpenSearch's own:

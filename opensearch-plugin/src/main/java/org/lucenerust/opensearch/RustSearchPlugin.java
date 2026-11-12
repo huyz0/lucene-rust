@@ -276,7 +276,7 @@ public class RustSearchPlugin extends Plugin implements
             throw new IllegalStateException("lucene-rust: cannot configure the page cache (status " + rc + ")");
         }
         if (NativeBridge.storePageCacheAvailable() == false) {
-            logger.info("lucene-rust: userfaultfd is unavailable here; indices with store_mode [page_cache] stay mapped");
+            logger.info("lucene-rust: userfaultfd is unavailable here; indices with index.store.read_mode [page_cache] stay mapped");
         }
     }
 
