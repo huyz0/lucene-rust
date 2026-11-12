@@ -612,10 +612,13 @@ impl IndexingConfig {
             // allocation per document and no byte comparison; only a
             // document with equal hashes walks the set, which finds the
             // first real repeat in order (or none, for a collision).
-            sorted.clear();
-            sorted.extend_from_slice(inv.terms.hashes());
-            sorted.sort_unstable();
-            let repeats = sorted.windows(2).any(|w| w[0] == w[1]);
+            // A field of one term (a keyword, an id) cannot repeat one.
+            let repeats = inv.terms.len() > 1 && {
+                sorted.clear();
+                sorted.extend_from_slice(inv.terms.hashes());
+                sorted.sort_unstable();
+                sorted.windows(2).any(|w| w[0] == w[1])
+            };
             let mut terms = BTreeSet::new();
             for t in inv.terms.iter() {
                 if repeats && !terms.insert(t.term) {
@@ -1208,6 +1211,7 @@ impl IndexingConfig {
                         self.knn_vectors_direct(),
                         buf.limit.is_none(),
                         buf.graphs,
+                        buf.old_to_new,
                         &self.ivf_clusters,
                         &segment_id,
                     )?

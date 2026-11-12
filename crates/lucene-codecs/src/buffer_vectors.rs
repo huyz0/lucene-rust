@@ -11,6 +11,10 @@
 //! finished are searched through the graph, the ones it has not reached yet
 //! are scored exactly. Nothing a search reads takes the buffer's lock.
 //!
+//! A buffer without realtime search keeps a [`FlushGraph`] instead, only
+//! for its flush: its indexing thread inserts each vector as it adds it, as
+//! Lucene's HNSW field writer does.
+//!
 //! The vectors are shared with the buffer's documents (`Arc`s), not copied.
 
 use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
@@ -20,8 +24,8 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::field_infos::{VectorEncoding, VectorSimilarityFunction};
 use crate::hnsw::{
-    HnswGraphSearcher, KnnCollector, NeighborArray, OnHeapHnswGraph, UpdateableVectorScorer,
-    VectorScorer,
+    HnswGraphBuilder, HnswGraphSearcher, KnnCollector, NeighborArray, OnHeapHnswGraph,
+    UpdateableVectorScorer, VectorScorer,
 };
 use crate::hnsw_concurrent::{ConcurrentHnswGraph, GraphInserter};
 use crate::vectors::{cosine_with_norm, normalize_to_unit_interval, query_norm, Error, Result};
@@ -636,6 +640,275 @@ pub(crate) fn count_set(bits: &FixedBitSet, n: usize) -> usize {
     count
 }
 
+/// The flat format's scorers over vectors one owner appends to: what
+/// [`FlushGraph`] builds with. The same scores, bit for bit, as
+/// [`ColumnScorer`] and the flushed `.vec` give.
+struct ListScorer {
+    similarity: VectorSimilarityFunction,
+    vectors: Vec<BufferVector>,
+    query: BufferQuery,
+    /// `query . query`, for a cosine float scorer.
+    query_norm: f32,
+}
+
+impl ListScorer {
+    fn vector(&self, ord: i32) -> Result<&BufferVector> {
+        usize::try_from(ord)
+            .ok()
+            .and_then(|o| self.vectors.get(o))
+            .ok_or_else(|| Error::InvalidGraphParameter(format!("no vector at ordinal {ord}")))
+    }
+}
+
+impl VectorScorer for ListScorer {
+    fn score(&mut self, node: i32) -> Result<f32> {
+        let similarity = self.similarity;
+        Ok(match (&self.query, self.vector(node)?) {
+            (BufferQuery::Float32(q), BufferVector::Float32(c)) => {
+                if similarity == VectorSimilarityFunction::Cosine {
+                    normalize_to_unit_interval(cosine_with_norm(q, self.query_norm, c))
+                } else {
+                    similarity.score(q, c)
+                }
+            }
+            (BufferQuery::Byte(q), BufferVector::Byte(c)) => similarity.score_bytes(q, c),
+            _ => {
+                return Err(Error::InvalidGraphParameter(format!(
+                    "ordinal {node} is of another encoding than the query"
+                )))
+            }
+        })
+    }
+
+    fn max_ord(&self) -> i32 {
+        i32::try_from(self.vectors.len()).unwrap_or(i32::MAX)
+    }
+
+    fn prefetch(&self, nodes: &[i32]) {
+        for &n in nodes {
+            match usize::try_from(n).ok().and_then(|o| self.vectors.get(o)) {
+                Some(BufferVector::Float32(v)) => prefetch_all(v),
+                Some(BufferVector::Byte(v)) => lucene_util::simd::prefetch_bytes(v),
+                None => {}
+            }
+        }
+    }
+
+    fn bulk_score(&mut self, nodes: &[i32], scores: &mut [f32]) -> Result<f32> {
+        if nodes.len() > 1 {
+            self.prefetch(nodes);
+        }
+        let mut max = f32::NEG_INFINITY;
+        for (&node, out) in nodes.iter().zip(scores.iter_mut()) {
+            *out = self.score(node)?;
+            max = max.max(*out);
+        }
+        Ok(max)
+    }
+}
+
+impl UpdateableVectorScorer for ListScorer {
+    fn set_scoring_ordinal(&mut self, ord: i32) -> Result<()> {
+        let at = usize::try_from(ord).ok();
+        match (&mut self.query, at.and_then(|o| self.vectors.get(o))) {
+            (BufferQuery::Float32(q), Some(BufferVector::Float32(v))) => {
+                q.clear();
+                q.extend_from_slice(v);
+                self.query_norm = query_norm(q);
+            }
+            (BufferQuery::Byte(q), Some(BufferVector::Byte(v))) => {
+                q.clear();
+                q.extend_from_slice(v);
+            }
+            _ => {
+                return Err(Error::InvalidGraphParameter(format!(
+                    "no vector of the field's encoding at ordinal {ord}"
+                )))
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One vector field's graph over an indexing buffer that keeps it only for
+/// its flush (no realtime search reads it): `HnswGraphBuilder` itself, fed
+/// one vector at a time by the buffer's indexing thread, as Lucene's
+/// `Lucene99HnswVectorsWriter.FieldWriter.addValue` feeds its builder. With
+/// nothing reading the graph while it grows it needs none of
+/// [`BufferGraph`]'s locks, and its vectors are a plain list of the ones the
+/// documents hold. The graph is the one [`BufferGraph`] builds over the
+/// same vectors.
+pub struct FlushGraph {
+    state: Mutex<FlushState>,
+    encoding: VectorEncoding,
+    similarity: VectorSimilarityFunction,
+    dimension: usize,
+    m: i32,
+    beam_width: i32,
+}
+
+struct FlushState {
+    /// `None` once the graph is taken, retired or failed.
+    builder: Option<HnswGraphBuilder<ListScorer>>,
+    /// Ordinal to the buffer's document.
+    docs: Vec<i32>,
+}
+
+impl std::fmt::Debug for FlushGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlushGraph")
+            .field("vectors", &self.len())
+            .field("m", &self.m)
+            .field("beam_width", &self.beam_width)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FlushGraph {
+    /// An empty graph: see [`BufferGraph::new`].
+    ///
+    /// # Errors
+    /// Parameters out of range.
+    pub fn new(
+        encoding: VectorEncoding,
+        similarity: VectorSimilarityFunction,
+        dimension: usize,
+        m: i32,
+        beam_width: i32,
+        seed: u64,
+    ) -> Result<Self> {
+        let query = match encoding {
+            VectorEncoding::Float32 => BufferQuery::Float32(vec![0.0; dimension]),
+            VectorEncoding::Byte => BufferQuery::Byte(vec![0; dimension]),
+        };
+        let scorer = ListScorer {
+            similarity,
+            vectors: Vec::new(),
+            query,
+            query_norm: 0.0,
+        };
+        let builder = HnswGraphBuilder::new(scorer, m, beam_width, seed)?;
+        Ok(FlushGraph {
+            state: Mutex::new(FlushState {
+                builder: Some(builder),
+                docs: Vec::new(),
+            }),
+            encoding,
+            similarity,
+            dimension,
+            m,
+            beam_width,
+        })
+    }
+
+    /// Its state; a panic while it was held left no graph to take.
+    fn state(&self) -> std::sync::MutexGuard<'_, FlushState> {
+        self.state.lock().unwrap_or_else(|e| {
+            let mut s = e.into_inner();
+            s.builder = None;
+            s
+        })
+    }
+
+    /// The `(m, beam_width)` it is built with.
+    pub fn params(&self) -> (i32, i32) {
+        (self.m, self.beam_width)
+    }
+
+    /// How many vectors were added.
+    pub fn len(&self) -> i32 {
+        i32::try_from(self.state().docs.len()).unwrap_or(i32::MAX)
+    }
+
+    /// Whether none was.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The field's encoding, similarity and dimension.
+    pub fn shape(&self) -> (VectorEncoding, VectorSimilarityFunction, usize) {
+        (self.encoding, self.similarity, self.dimension)
+    }
+
+    /// The buffer's documents by ordinal.
+    pub fn docs(&self) -> Vec<i32> {
+        self.state().docs.clone()
+    }
+
+    /// About the heap it holds beyond the vectors, which the documents
+    /// share: per vector its slot and document, and its level-0 neighbour
+    /// array (the upper levels add about `1 / m` of that).
+    // ARITH: a few small sizes, and a count of vectors times them.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn ram_bytes(&self) -> usize {
+        let m = usize::try_from(self.m).unwrap_or(0);
+        let per_vector = std::mem::size_of::<BufferVector>()
+            + std::mem::size_of::<i32>()
+            + std::mem::size_of::<Vec<NeighborArray>>()
+            + std::mem::size_of::<NeighborArray>()
+            + (2 * m + 1) * 8;
+        self.state().docs.len() * per_vector
+    }
+
+    /// Adds document `doc`'s vector, the next ordinal, to the graph (one
+    /// thread adds, in document order).
+    ///
+    /// # Errors
+    /// A vector of another encoding or dimension than the field's, what
+    /// inserting it fails with, or no graph left to add to.
+    pub fn add(&self, doc: i32, vector: BufferVector) -> Result<()> {
+        let (encoding, len) = match &vector {
+            BufferVector::Float32(v) => (VectorEncoding::Float32, v.len()),
+            BufferVector::Byte(v) => (VectorEncoding::Byte, v.len()),
+        };
+        if encoding != self.encoding || len != self.dimension {
+            return Err(Error::InvalidGraphParameter(format!(
+                "a {encoding:?} vector of {len} dimensions for a {:?} field of {}",
+                self.encoding, self.dimension
+            )));
+        }
+        let mut state = self.state();
+        let ord = i32::try_from(state.docs.len())
+            .map_err(|_| Error::InvalidGraphParameter("too many vectors".into()))?;
+        let Some(b) = state.builder.as_mut() else {
+            return Err(Error::InvalidGraphParameter("no graph to add to".into()));
+        };
+        b.scorer_mut().vectors.push(vector);
+        if let Err(e) = b.add_graph_node(ord) {
+            state.builder = None;
+            return Err(e);
+        }
+        state.docs.push(doc);
+        Ok(())
+    }
+
+    /// The graph over all `n` vectors added, which only the first call gets:
+    /// what `HnswGraphBuilder` builds over them.
+    ///
+    /// # Errors
+    /// Not `n` vectors added, an insertion that failed, or the graph already
+    /// taken.
+    pub fn graph(&self, n: i32) -> Result<OnHeapHnswGraph> {
+        let mut state = self.state();
+        if usize::try_from(n).ok() != Some(state.docs.len()) {
+            return Err(Error::InvalidGraphParameter(format!(
+                "a graph of {n} vectors from a buffer of {}",
+                state.docs.len()
+            )));
+        }
+        let builder = state
+            .builder
+            .take()
+            .ok_or_else(|| Error::InvalidGraphParameter("no graph to take".into()))?;
+        Ok(builder.into_graph())
+    }
+
+    /// Lets go of the graph and its vectors.
+    pub fn retire(&self) {
+        self.state().builder = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // ARITH: test fixtures of a few thousand vectors.
@@ -893,6 +1166,135 @@ mod tests {
             assert_eq!(edges(&ours), edges(&built), "{similarity:?}");
             assert_eq!(g.shape(), (VectorEncoding::Byte, similarity, 12));
         }
+    }
+
+    /// A flush-only graph is the flush builder's too, float and byte, and
+    /// hands its graph over once.
+    #[test]
+    fn a_flush_graph_is_the_flush_builders() {
+        let vs = vectors(1200, 24);
+        for similarity in [
+            VectorSimilarityFunction::DotProduct,
+            VectorSimilarityFunction::Cosine,
+            VectorSimilarityFunction::Euclidean,
+        ] {
+            let g = FlushGraph::new(
+                VectorEncoding::Float32,
+                similarity,
+                24,
+                16,
+                100,
+                DEFAULT_RAND_SEED,
+            )
+            .unwrap();
+            assert!(g.is_empty());
+            for (i, v) in vs.iter().enumerate() {
+                g.add(3 * i as i32, BufferVector::Float32(Arc::new(v.clone())))
+                    .unwrap();
+            }
+            assert_eq!(g.len(), 1200);
+            assert_eq!(g.docs()[7], 21);
+            assert_eq!(g.params(), (16, 100));
+            assert_eq!(g.shape(), (VectorEncoding::Float32, similarity, 24));
+            assert!(g.ram_bytes() > 1200 * 33 * 8);
+            let id = *b"buffervectors003";
+            let field = crate::vectors::FlatVectorsField {
+                field_number: 0,
+                similarity,
+                dimension: 24,
+                docs: (0..1200).collect(),
+                values: crate::vectors::FieldVectorData::Float32(
+                    vs.iter().flatten().copied().collect(),
+                ),
+            };
+            let (vec, vemf) = crate::vectors::write_flat_vectors(&[field], 1200, &id, "").unwrap();
+            let flat = crate::vectors::FlatVectorsReader::open(&vemf, &vec, &id, "").unwrap();
+            let values = flat.float_vector_values(0).unwrap();
+            let built = HnswGraphBuilder::new(values.ord_scorer(), 16, 100, DEFAULT_RAND_SEED)
+                .unwrap()
+                .build(1200)
+                .unwrap();
+            assert!(g.graph(1199).is_err(), "not every vector");
+            let ours = g.graph(1200).unwrap();
+            assert_eq!(edges(&ours), edges(&built), "{similarity:?}");
+            assert_eq!(ours.entry_node(), built.entry_node());
+            assert!(g.graph(1200).is_err(), "taken once");
+            assert!(g
+                .add(9999, BufferVector::Float32(Arc::new(vs[0].clone())))
+                .is_err());
+        }
+
+        let bytes: Vec<Vec<u8>> = vectors(500, 12)
+            .iter()
+            .map(|v| v.iter().map(|x| (x * 120.0) as i8 as u8).collect())
+            .collect();
+        let g = FlushGraph::new(
+            VectorEncoding::Byte,
+            VectorSimilarityFunction::Euclidean,
+            12,
+            8,
+            40,
+            DEFAULT_RAND_SEED,
+        )
+        .unwrap();
+        for (i, v) in bytes.iter().enumerate() {
+            g.add(i as i32, BufferVector::Byte(Arc::new(v.clone())))
+                .unwrap();
+        }
+        let id = *b"buffervectors004";
+        let field = crate::vectors::FlatVectorsField {
+            field_number: 0,
+            similarity: VectorSimilarityFunction::Euclidean,
+            dimension: 12,
+            docs: (0..500).collect(),
+            values: crate::vectors::FieldVectorData::Byte(
+                bytes.iter().flatten().copied().collect(),
+            ),
+        };
+        let (vec, vemf) = crate::vectors::write_flat_vectors(&[field], 500, &id, "").unwrap();
+        let flat = crate::vectors::FlatVectorsReader::open(&vemf, &vec, &id, "").unwrap();
+        let values = flat.byte_vector_values(0).unwrap();
+        let built = HnswGraphBuilder::new(values.ord_scorer(), 8, 40, DEFAULT_RAND_SEED)
+            .unwrap()
+            .build(500)
+            .unwrap();
+        assert_eq!(edges(&g.graph(500).unwrap()), edges(&built));
+    }
+
+    /// A flush-only graph refuses a vector of another shape, and one
+    /// retired takes no more.
+    #[test]
+    fn a_flush_graph_refuses_bad_vectors_and_retires() {
+        let g = FlushGraph::new(
+            VectorEncoding::Float32,
+            VectorSimilarityFunction::DotProduct,
+            4,
+            8,
+            20,
+            DEFAULT_RAND_SEED,
+        )
+        .unwrap();
+        assert!(g
+            .add(0, BufferVector::Float32(Arc::new(vec![0.0; 3])))
+            .is_err());
+        assert!(g.add(0, BufferVector::Byte(Arc::new(vec![0; 4]))).is_err());
+        g.add(0, BufferVector::Float32(Arc::new(vec![1.0, 0.0, 0.0, 0.0])))
+            .unwrap();
+        assert!(format!("{g:?}").contains("FlushGraph"));
+        g.retire();
+        assert!(g
+            .add(1, BufferVector::Float32(Arc::new(vec![0.0, 1.0, 0.0, 0.0])))
+            .is_err());
+        assert!(g.graph(1).is_err());
+        assert!(FlushGraph::new(
+            VectorEncoding::Byte,
+            VectorSimilarityFunction::DotProduct,
+            4,
+            0,
+            20,
+            DEFAULT_RAND_SEED
+        )
+        .is_err());
     }
 
     /// A failed graph is never handed to a flush and schedules no more

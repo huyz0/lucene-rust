@@ -47,8 +47,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -129,6 +132,7 @@ public final class NativeSelfTest {
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
         realtimePrimary();
+        sparseCodec();
 
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
@@ -297,6 +301,72 @@ public final class NativeSelfTest {
                 .settings(settings)
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
+        }
+    }
+
+    /**
+     * The codec OpenSearch's engine writes an {@code index.sparse} index with: every flushed and
+     * merged segment gets {@code .sit}/{@code .sip}, with terms only for a field at or over its
+     * threshold, and the segments read back under {@code Sparse10010Codec}.
+     */
+    private static void sparseCodec() throws IOException {
+        org.apache.lucene.document.FieldType vector = new org.apache.lucene.document.FieldType();
+        vector.setDocValuesType(org.apache.lucene.index.DocValuesType.BINARY);
+        vector.putAttribute("sparse_vector_field", "true");
+        vector.putAttribute("approximate_threshold", "20");
+        vector.putAttribute("cluster_ratio", "0.1");
+        vector.freeze();
+        Path dir = Files.createTempDirectory("sparse-codec");
+        org.apache.lucene.index.IndexWriterConfig config = new org.apache.lucene.index.IndexWriterConfig()
+            .setCodec(new org.lucenerust.opensearch.sparse.SparseCodec(org.apache.lucene.codecs.Codec.getDefault()))
+            .setUseCompoundFile(false)
+            .setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+        Map<String, Long> sizes = new HashMap<>();
+        try (
+            org.apache.lucene.store.Directory d = org.apache.lucene.store.FSDirectory.open(dir);
+            org.apache.lucene.index.IndexWriter w = new org.apache.lucene.index.IndexWriter(d, config)
+        ) {
+            // Segment _0: 30 docs, over the threshold; _1: 5 docs, under it.
+            for (int[] seg : new int[][] { { 0, 30 }, { 30, 35 } }) {
+                for (int i = seg[0]; i < seg[1]; i++) {
+                    java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(16);
+                    b.putInt(i % 4).putFloat(0.5f + i / 40f).putInt(100 + i).putFloat(1.0f);
+                    org.apache.lucene.document.Document doc = new org.apache.lucene.document.Document();
+                    doc.add(new org.apache.lucene.document.Field("emb", b.array(), vector));
+                    doc.add(new org.apache.lucene.document.NumericDocValuesField("n", i));
+                    doc.add(new org.apache.lucene.document.StringField("id", "d" + i, org.apache.lucene.document.Field.Store.NO));
+                    w.addDocument(doc);
+                }
+                w.commit();
+            }
+            for (String f : d.listAll()) {
+                sizes.put(f, d.fileLength(f));
+            }
+            check(sizes.containsKey("_0.sit") && sizes.containsKey("_0.sip"), "flushed sparse segment has .sit/.sip: " + sizes.keySet());
+            check(sizes.containsKey("_1.sit") && sizes.containsKey("_1.sip"), "segment under the threshold has .sit/.sip: " + sizes.keySet());
+            check(sizes.getOrDefault("_0.sip", 0L) > sizes.getOrDefault("_1.sip", 0L), "clustered segment's postings are written: " + sizes);
+            // A doc values update generation leaves the segment's clustered postings alone.
+            w.updateNumericDocValue(new org.apache.lucene.index.Term("id", "d3"), "n", -1);
+            w.commit();
+            List<String> generations = Arrays.stream(d.listAll()).filter(f -> f.endsWith(".sit") && f.indexOf('_', 1) > 0).toList();
+            check(generations.isEmpty(), "doc values updates write no .sit: " + generations);
+            w.getConfig().setMergePolicy(new org.apache.lucene.index.TieredMergePolicy());
+            w.forceMerge(1);
+            w.commit();
+            Set<String> files = Set.of(d.listAll());
+            check(files.contains("_2.sit") && files.contains("_2.sip"), "merged sparse segment has .sit/.sip: " + files);
+            try (org.apache.lucene.index.DirectoryReader r = org.apache.lucene.index.DirectoryReader.open(d)) {
+                org.apache.lucene.index.SegmentInfos infos = org.apache.lucene.index.SegmentInfos.readLatestCommit(d);
+                check(infos.size() == 1 && infos.info(0).info.getCodec().getName().equals("Sparse10010Codec"), "merged segment records Sparse10010Codec");
+                org.apache.lucene.index.BinaryDocValues v = r.leaves().get(0).reader().getBinaryDocValues("emb");
+                int n = 0;
+                while (v.nextDoc() != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS) {
+                    n++;
+                }
+                check(n == 35, "sparse forward index reads back: " + n);
+            }
+        } finally {
+            org.apache.lucene.util.IOUtils.rm(dir);
         }
     }
 
