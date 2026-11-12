@@ -408,6 +408,24 @@ fn agg_cases() -> Vec<(&'static str, Vec<u8>)> {
             }),
         ),
         (
+            "top_hits10",
+            tree(|b| {
+                b.u8(1).u8(TOP_HITS).i32(10).u8(0);
+            }),
+        ),
+        (
+            "terms_cat>top_hits_num_tracked",
+            tree(|b| {
+                b.u8(1);
+                terms(b, "cat", 10);
+                b.u8(1).u8(TOP_HITS).i32(3).u8(1);
+                let mut s = Blob::default();
+                s.u8(1).u8(SORT_LONG).u8(1).s("num").i64(i64::MAX);
+                s.u8(0).u8(1).i32(0);
+                b.bytes(&s.0);
+            }),
+        ),
+        (
             "filters>stats",
             tree(|b| {
                 b.u8(1).u8(FILTERS).i32(3);

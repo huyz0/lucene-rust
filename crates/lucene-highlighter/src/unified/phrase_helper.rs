@@ -6,10 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::super::extractor::{collect_span_query_fields, must_rewrite};
-use super::super::Result;
+use super::super::{Error, Result};
 use super::passage::{OfPostings, OffsetsEnum};
 use super::strategies::FieldMatcher;
-use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::extended_query::{ExtendedQuery, MAX_CLAUSE_COUNT};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{Clause, MultiPhraseQuery, PhraseQuery};
@@ -84,6 +84,11 @@ impl PhraseHelper {
                 ExtendedQuery::IndexOrDocValues(q) => self.extract(&q.index_query, ignore),
                 ExtendedQuery::FunctionScore(q) => self.extract(&q.in_query, ignore),
                 ExtendedQuery::Span(node) => self.extract_weighted_span_terms(node, ignore),
+                ExtendedQuery::MultiPhrasePrefix(q) => {
+                    if let Some(node) = phrase_prefix_span(q) {
+                        self.extract_weighted_span_terms(&node, ignore);
+                    }
+                }
                 _ => {}
             },
             // `MatchAllDocsQuery`, and what is unsupported
@@ -251,6 +256,14 @@ impl PhraseHelper {
             if node.needs_rewrite() {
                 node = node.rewrite(&searcher)?;
             }
+            // `IndexSearcher.rewrite`'s clause-count visitor: it refuses a
+            // term once more than `maxClauseCount` are counted.
+            let terms = node.term_count();
+            if terms > MAX_CLAUSE_COUNT + 1 {
+                return Err(Error::Search(lucene_search::Error::InvalidQuery(format!(
+                    "maxClauseCount is set to {MAX_CLAUSE_COUNT}"
+                ))));
+            }
             let Some(mut spans) = spans_with(&ctx, &node, false)? else {
                 continue;
             };
@@ -365,6 +378,64 @@ impl SpanCollector for OffsetSpanCollector<'_> {
     }
 
     fn reset(&mut self) {}
+}
+
+/// OpenSearch's `CustomUnifiedHighlighter.rewriteCustomQuery` of a
+/// `MultiPhrasePrefixQuery` (its `preSpanQueryRewrite`): a span term per
+/// whole term, a `SpanMultiTermQueryWrapper` of a `PrefixQuery` per prefix,
+/// a `SpanOrQuery` where a position holds more than one, and the positions
+/// in a `SpanNearQuery` whose slop takes in the position gaps, in order when
+/// the slop is 0. `None` for a query of no positions.
+pub(crate) fn phrase_prefix_span(
+    q: &lucene_search::extended_query::MultiPhrasePrefixQuery,
+) -> Option<SpanNode> {
+    use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
+    use lucene_search::query::PrefixQuery;
+    let last = q.term_arrays.len().checked_sub(1)?;
+    let mut clauses: Vec<SpanNode> = q
+        .term_arrays
+        .iter()
+        .enumerate()
+        .map(|(i, terms)| {
+            let mut inner: Vec<SpanNode> = terms
+                .iter()
+                .map(|t| {
+                    if i == last {
+                        SpanNode::multi_term(MultiTermQuery::new(
+                            MultiTermSource::Prefix(PrefixQuery::new(q.field.clone(), t.clone())),
+                            RewriteMethod::default(),
+                        ))
+                    } else {
+                        SpanNode::term(q.field.clone(), t.clone())
+                    }
+                })
+                .collect();
+            if inner.len() > 1 {
+                SpanNode::Or { clauses: inner }
+            } else {
+                inner.pop().unwrap_or_else(|| SpanNode::Or {
+                    clauses: Vec::new(),
+                })
+            }
+        })
+        .collect();
+    if clauses.len() == 1 {
+        return clauses.pop();
+    }
+    let n = i32::try_from(q.positions.len()).unwrap_or(i32::MAX);
+    let position_gaps = match (q.positions.first(), q.positions.last()) {
+        (Some(&first), Some(&end)) if n >= 2 => {
+            i32::try_from((i64::from(end) - i64::from(first) - i64::from(n) + 1).max(0))
+                .unwrap_or(i32::MAX)
+        }
+        _ => 0,
+    };
+    let slop = i32::try_from(q.slop).unwrap_or(i32::MAX);
+    Some(SpanNode::Near {
+        clauses,
+        slop: slop.saturating_add(position_gaps),
+        in_order: slop == 0,
+    })
 }
 
 #[cfg(test)]
