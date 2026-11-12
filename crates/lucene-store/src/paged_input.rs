@@ -1160,14 +1160,16 @@ impl Pager {
             }
         }
         // Another thread may have installed the page meanwhile: it is then
-        // dropped and read again with the zeros' hold all the same.
+        // dropped and read again with the zeros' hold all the same. The
+        // zeros are listed for dropping, under the list's lock, before they
+        // go in: the woken thread may drop them at once (a disk that came
+        // back), and must find them listed.
         let zeros = vec![0u8; file.page];
-        self.copy_in(file, index, &zeros);
-        lock_ignoring_poison(&self.unreadable).push((
-            Arc::downgrade(file),
-            index,
-            std::time::Instant::now(),
-        ));
+        {
+            let mut held = lock_ignoring_poison(&self.unreadable);
+            held.push((Arc::downgrade(file), index, std::time::Instant::now()));
+            self.copy_in(file, index, &zeros);
+        }
         self.sweeper.call_once(|| {
             let _ = std::thread::Builder::new()
                 .name("lucene-page-unreadable".into())
