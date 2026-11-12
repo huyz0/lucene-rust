@@ -1125,29 +1125,16 @@ struct RawVectorValues<'a> {
     ord_to_doc: OrdToDoc,
 }
 
-/// About how many bytes of vectors an exhaustive scan reads ahead at a
-/// time ([`crate::hnsw::VectorScorer::read_ahead`]).
-const READ_AHEAD_BYTES: usize = 1 << 20;
-
 impl RawVectorValues<'_> {
-    /// [`crate::hnsw::VectorScorer::read_ahead_span`]: the ordinals in about
-    /// [`READ_AHEAD_BYTES`] of vectors.
+    /// [`crate::hnsw::VectorScorer::read_ahead_span`].
     fn read_ahead_span(&self) -> usize {
-        READ_AHEAD_BYTES
-            .checked_div(self.vector_bytes)
-            .unwrap_or(0)
-            .max(1)
+        crate::hnsw::read_ahead_span(self.vector_bytes)
     }
 
     /// [`crate::hnsw::VectorScorer::read_ahead`]: the vectors of ordinals
     /// `from..to`, clamped to the field.
     fn read_ahead(&self, from: i32, to: i32) {
-        let clamped = |o: i32| usize::try_from(o.clamp(0, self.size)).unwrap_or(0);
-        let start = clamped(from).saturating_mul(self.vector_bytes);
-        let end = clamped(to).saturating_mul(self.vector_bytes);
-        if let Some(bytes) = self.slice.get(start..end) {
-            lucene_store::read_ahead(bytes);
-        }
+        crate::hnsw::read_ahead_rows(self.slice, self.size, self.vector_bytes, from, to);
     }
 
     /// Two byte vectors' score under this field's scoring: its similarity,

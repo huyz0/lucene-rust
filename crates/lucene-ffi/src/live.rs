@@ -1910,6 +1910,7 @@ fn build_view_reader(
             live_docs,
             deleted,
             commit_live: Mutex::new(None),
+            path: Arc::clone(&h.path),
         },
     ))
 }
