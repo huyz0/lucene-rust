@@ -1125,7 +1125,31 @@ struct RawVectorValues<'a> {
     ord_to_doc: OrdToDoc,
 }
 
+/// About how many bytes of vectors an exhaustive scan reads ahead at a
+/// time ([`crate::hnsw::VectorScorer::read_ahead`]).
+const READ_AHEAD_BYTES: usize = 1 << 20;
+
 impl RawVectorValues<'_> {
+    /// [`crate::hnsw::VectorScorer::read_ahead_span`]: the ordinals in about
+    /// [`READ_AHEAD_BYTES`] of vectors.
+    fn read_ahead_span(&self) -> usize {
+        READ_AHEAD_BYTES
+            .checked_div(self.vector_bytes)
+            .unwrap_or(0)
+            .max(1)
+    }
+
+    /// [`crate::hnsw::VectorScorer::read_ahead`]: the vectors of ordinals
+    /// `from..to`, clamped to the field.
+    fn read_ahead(&self, from: i32, to: i32) {
+        let clamped = |o: i32| usize::try_from(o.clamp(0, self.size)).unwrap_or(0);
+        let start = clamped(from).saturating_mul(self.vector_bytes);
+        let end = clamped(to).saturating_mul(self.vector_bytes);
+        if let Some(bytes) = self.slice.get(start..end) {
+            lucene_store::read_ahead(bytes);
+        }
+    }
+
     /// Two byte vectors' score under this field's scoring: its similarity,
     /// or [`hamming_score`] for a [`HAMMING_FORMAT_NAME`] field.
     #[inline]
@@ -2173,6 +2197,14 @@ pub(crate) fn query_norm(query: &[f32]) -> f32 {
 }
 
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        self.values.values.read_ahead_span()
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        self.values.values.read_ahead(from, to)
+    }
+
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector_ref(node, &mut self.scratch)?;
         Ok(if self.similarity == VectorSimilarityFunction::Cosine {
@@ -2248,6 +2280,14 @@ pub struct ByteVectorScorer<'a> {
 }
 
 impl crate::hnsw::VectorScorer for ByteVectorScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        self.values.values.read_ahead_span()
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        self.values.values.read_ahead(from, to)
+    }
+
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector(node)?;
         Ok(self.values.values.score_bytes(&self.query, candidate))
