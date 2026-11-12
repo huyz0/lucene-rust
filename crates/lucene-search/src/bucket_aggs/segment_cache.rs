@@ -62,6 +62,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 use super::{keyed_ord, slot, AggNode, Globals, State};
 use crate::aggs::{self, MetricState, ValueKind};
 use crate::directory_reader::SegmentReader;
+use crate::extended_query::ExtendedQuery;
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::Result;
@@ -576,7 +577,6 @@ fn boolean_cacheable(q: &BooleanQuery) -> bool {
 }
 
 fn clause_cacheable(c: &Clause) -> bool {
-    use crate::extended_query::ExtendedQuery;
     match c {
         Clause::Term(_)
         | Clause::TermInSet(_)
@@ -590,10 +590,15 @@ fn clause_cacheable(c: &Clause) -> bool {
         Clause::Boolean(b) => boolean_cacheable(b),
         Clause::ConstantScore(cs) => clause_cacheable(&cs.inner),
         Clause::Boost(b) => clause_cacheable(&b.inner),
-        Clause::Extended(e) => matches!(
-            **e,
-            ExtendedQuery::PointRange(_) | ExtendedQuery::PointInSet(_)
-        ),
+        Clause::Extended(e) => match &**e {
+            ExtendedQuery::PointRange(_)
+            | ExtendedQuery::PointInSet(_)
+            | ExtendedQuery::NumericDocValuesRange(_) => true,
+            ExtendedQuery::IndexOrDocValues(q) => {
+                clause_cacheable(&q.index_query) && clause_cacheable(&q.dv_query)
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -707,6 +712,41 @@ fn narrow(
                 b.inner = Box::new(clause(&b.inner, points, bounds, cut));
                 Clause::Boost(Box::new(b))
             }
+            // Both sides match the same documents: the doc-values side of a
+            // range over the same field narrows with the points side.
+            Clause::Extended(e) => match &**e {
+                ExtendedQuery::IndexOrDocValues(q) => {
+                    let index = clause(&q.index_query, points, bounds, cut);
+                    let dv = match (&*q.index_query, &index, &*q.dv_query) {
+                        (_, Clause::MatchNoDocs(_), _) => return index,
+                        (
+                            Clause::PointsRange(was),
+                            Clause::PointsRange(now),
+                            Clause::Extended(d),
+                        ) => match &**d {
+                            ExtendedQuery::NumericDocValuesRange(r)
+                                if r.field == was.field
+                                    && r.lower == was.min
+                                    && r.upper == was.max =>
+                            {
+                                let mut r = r.clone();
+                                r.lower = now.min;
+                                r.upper = now.max;
+                                Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(r)))
+                            }
+                            _ => (*q.dv_query).clone(),
+                        },
+                        _ => (*q.dv_query).clone(),
+                    };
+                    Clause::Extended(Box::new(ExtendedQuery::IndexOrDocValues(
+                        crate::extended_query::IndexOrDocValuesQuery {
+                            index_query: Box::new(index),
+                            dv_query: Box::new(dv),
+                        },
+                    )))
+                }
+                _ => c.clone(),
+            },
             _ => c.clone(),
         }
     }
@@ -739,6 +779,10 @@ fn has_range(q: &BooleanQuery) -> bool {
             Clause::Boolean(b) => has_range(b),
             Clause::ConstantScore(cs) => clause(&cs.inner),
             Clause::Boost(b) => clause(&b.inner),
+            Clause::Extended(e) => match &**e {
+                ExtendedQuery::IndexOrDocValues(q) => clause(&q.index_query),
+                _ => false,
+            },
             _ => false,
         }
     }

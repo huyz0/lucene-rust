@@ -23,6 +23,7 @@ use lucene_search::bucket_aggs::{
     TermsOrder,
 };
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
+use lucene_search::extended_query::{IndexOrDocValuesQuery, NumericDocValuesRangeQuery};
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BoostQuery, ConstantScoreQuery, MatchAllDocsQuery, PointsRangeQuery};
 use lucene_search::{BooleanQuery, Clause, TermQuery};
@@ -196,6 +197,19 @@ fn range(min: i64, max: i64) -> Clause {
     Clause::PointsRange(PointsRangeQuery::new("ts", min, max))
 }
 
+/// A date range as OpenSearch's search hands it over: points or doc values,
+/// under a constant score and a zero boost.
+fn date_range(min: i64, max: i64) -> Clause {
+    let either = IndexOrDocValuesQuery::new(
+        PointsRangeQuery::new("ts", min, max),
+        NumericDocValuesRangeQuery::new("ts", min, max),
+    );
+    Clause::Boost(Box::new(BoostQuery::new(
+        Clause::ConstantScore(Box::new(ConstantScoreQuery::new(either, 1.0))),
+        0.0,
+    )))
+}
+
 fn filtered(clauses: Vec<Clause>) -> BooleanQuery {
     let mut q = BooleanQuery::new();
     q.filter = clauses;
@@ -296,6 +310,7 @@ fn queries(end: i64) -> Vec<BooleanQuery> {
     out.push(filtered(vec![Clause::PointsRange(PointsRangeQuery::new(
         "dur", 0, 100,
     ))]));
+    out.push(filtered(vec![date_range(end - 3_500, end + 20)]));
     out
 }
 
@@ -383,7 +398,7 @@ fn cached_parts_answer_as_collecting_does_through_refreshes_deletes_updates_and_
     let merged = phases("agg-segment-cache", &cache);
     // The merged segment, under 2^16 documents, is one entry per tree and
     // query.
-    assert!(merged.entries <= 5 * 9, "{merged:?}");
+    assert!(merged.entries <= 5 * 10, "{merged:?}");
 }
 
 /// The same with blocks of 64 documents: a range cutting a segment keys
@@ -394,7 +409,7 @@ fn cached_blocks_answer_as_collecting_does() {
     let merged = phases("agg-segment-cache-blocks", &cache);
     // The merged segment's 800 documents in blocks, for the ranges cutting
     // it.
-    assert!(merged.entries > 5 * 9, "{merged:?}");
+    assert!(merged.entries > 5 * 10, "{merged:?}");
 }
 
 /// Refreshes, deletes, a doc-values update and a merge, each checked; what
@@ -545,4 +560,62 @@ fn a_small_budget_evicts_as_parts_come_in() {
     assert!(s.evictions > 0 && s.bytes <= 48 << 10, "{s:?}");
     // The process's cache is off until given a budget.
     assert_eq!(AggSegmentCache::global().budget(), 0);
+}
+
+/// A dashboard's window moving forward, in OpenSearch's form of a date range:
+/// the segments it covers are read back, and the answers stay the
+/// collecting pass's.
+#[test]
+fn a_sliding_date_range_reads_covered_segments_back() {
+    let cache = AggSegmentCache::with_block_docs(64 << 20, 64);
+    let tmp = TempDir::new("agg-segment-cache-slide");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    add(&mut w, 0, 600, 150);
+    let reader = open(&dir);
+    let mut opened = reader.open_segments().unwrap();
+    opened.open_points().unwrap();
+    let segments = opened.as_open_segments();
+    let readers: Vec<SegmentReader> = reader.segment_readers().to_vec();
+    let mut ords = HashMap::new();
+    ords.insert(
+        "host".to_string(),
+        Arc::new(lucene_search::terms_agg::GlobalOrds::build(&readers, "host").unwrap()),
+    );
+    let globals = Globals::new(&ords);
+    let ids = identities(&segments, &readers);
+    let request = CacheRequest {
+        cache: &cache,
+        segments: &ids,
+    };
+    let slices = vec![(0..segments.len()).collect::<Vec<_>>()];
+    let end = 1_000 + 600 * 10;
+    for nodes in trees() {
+        for step in 0..6 {
+            let query = filtered(vec![date_range(end - 3_000 + step * 7, end + step * 7)]);
+            let plain =
+                aggregate_tree(&segments, &readers, &query, &nodes, &globals, &slices, None)
+                    .unwrap();
+            let before = cache.stats();
+            let cached = aggregate_tree_cached(
+                &segments,
+                &readers,
+                &query,
+                &nodes,
+                &globals,
+                &slices,
+                None,
+                Some(&request),
+            )
+            .unwrap();
+            assert_eq!(cached, plain, "step {step}");
+            let after = cache.stats();
+            if step > 0 {
+                assert!(
+                    after.hits > before.hits,
+                    "step {step}: {before:?} -> {after:?}"
+                );
+            }
+        }
+    }
 }
