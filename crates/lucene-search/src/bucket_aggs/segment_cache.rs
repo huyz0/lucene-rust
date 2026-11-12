@@ -962,7 +962,9 @@ fn parts_of(
 
 fn part_of(node: &AggNode, state: State, i: usize, globals: &Globals<'_>) -> Result<Part> {
     match (node, state) {
-        (AggNode::Metric { .. }, State::Metric(v)) => Ok(Part::Metric(v)),
+        (AggNode::Metric { .. }, State::Metric(v)) => {
+            Ok(Part::Metric((0..v.len()).map(|o| v.get(o)).collect()))
+        }
         (
             AggNode::Terms { field, .. },
             State::Keyed {
@@ -1023,6 +1025,9 @@ fn add(
 ) -> Result<bool> {
     match (node, state, part) {
         (AggNode::Metric { needs, .. }, State::Metric(dst), Part::Metric(src)) => {
+            let Some(dst) = dst.full() else {
+                return Err(mismatch());
+            };
             let sums = collected(*needs) & aggs::NEED_SUM != 0;
             for (o, s) in src.iter().enumerate() {
                 let Some(&to) = owners.get(o) else {

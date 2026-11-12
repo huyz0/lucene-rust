@@ -1115,8 +1115,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return "intra_segment";
             }
             byte[][] result = new byte[1][];
-            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), flags(ctx).aggCache(), result);
+            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), flags(ctx).aggCache(), result);
             if (rc != NativeBridge.OK) {
+                NativeAggregations.checkBuckets(ctx, rc);
                 NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());

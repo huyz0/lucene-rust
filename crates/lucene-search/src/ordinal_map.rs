@@ -228,6 +228,19 @@ pub struct OrdinalMap {
     /// [`Self::first_segments`]'s segment. Java derives this from
     /// `globalOrdDeltas`; the same number, stored rather than reconstructed.
     first_segment_ords: Arc<[i64]>,
+    /// The map's bytes, in [`held_bytes`] while it lives.
+    held: Arc<lucene_util::memory::Held>,
+}
+
+/// The bytes every live [`OrdinalMap`] holds: global ordinals outlive the
+/// requests that build them, so the host charges these to its own
+/// `fielddata` breaker. A map sharing another's segment ordinals counts them
+/// again.
+static HELD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// See [`HELD`].
+pub fn held_bytes() -> i64 {
+    HELD.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A map's distinct terms in global-ordinal order.
@@ -242,6 +255,24 @@ pub enum SegmentSource<'a> {
 }
 
 impl OrdinalMap {
+    fn from_parts(
+        segment_to_global: Vec<Arc<[i64]>>,
+        value_count: i64,
+        first_segments: Arc<[u32]>,
+        first_segment_ords: Arc<[i64]>,
+    ) -> Self {
+        let bytes = segment_to_global.iter().map(|s| s.len() * 8).sum::<usize>()
+            + first_segments.len() * 4
+            + first_segment_ords.len() * 8;
+        Self {
+            segment_to_global,
+            value_count,
+            first_segments,
+            first_segment_ords,
+            held: Arc::new(lucene_util::memory::Held::new(&HELD, bytes)),
+        }
+    }
+
     /// `OrdinalMap.build(owner, TermsEnum[], weights, acceptableOverheadRatio)`
     /// over already-materialized term lists.
     ///
@@ -407,12 +438,12 @@ impl OrdinalMap {
             first_segment_ords.push(first_segment_ord);
         }
 
-        Ok(OrdinalMap {
-            segment_to_global: segment_to_global.into_iter().map(Arc::from).collect(),
+        Ok(OrdinalMap::from_parts(
+            segment_to_global.into_iter().map(Arc::from).collect(),
             value_count,
-            first_segments: first_segments.into(),
-            first_segment_ords: first_segment_ords.into(),
-        })
+            first_segments.into(),
+            first_segment_ords.into(),
+        ))
     }
 
     /// This map's terms over other segments, each one of this map's own
@@ -467,12 +498,12 @@ impl OrdinalMap {
                 .enumerate()
                 .all(|(i, s)| matches!(s, SegmentSource::Kept(old) if *old == i));
         if prefix {
-            return Ok(Some(OrdinalMap {
+            return Ok(Some(OrdinalMap::from_parts(
                 segment_to_global,
-                value_count: self.value_count,
-                first_segments: Arc::clone(&self.first_segments),
-                first_segment_ords: Arc::clone(&self.first_segment_ords),
-            }));
+                self.value_count,
+                Arc::clone(&self.first_segments),
+                Arc::clone(&self.first_segment_ords),
+            )));
         }
         let count = usize::try_from(self.value_count).unwrap_or(0);
         let mut first_segments = vec![u32::MAX; count];
@@ -505,12 +536,12 @@ impl OrdinalMap {
         if unset > 0 {
             return Ok(None);
         }
-        Ok(Some(OrdinalMap {
+        Ok(Some(OrdinalMap::from_parts(
             segment_to_global,
-            value_count: self.value_count,
-            first_segments: first_segments.into(),
-            first_segment_ords: first_segment_ords.into(),
-        }))
+            self.value_count,
+            first_segments.into(),
+            first_segment_ords.into(),
+        )))
     }
 
     /// `OrdinalMap.getValueCount()` — the number of distinct terms across
@@ -647,6 +678,20 @@ mod tests {
     /// The exact worked example in `OrdinalMap`'s own class javadoc:
     /// global `bar -> 0, cat -> 1, dog -> 2, foo -> 3`; segment 0 holds
     /// `bar, foo`, segment 1 holds `cat, dog`.
+    #[test]
+    fn a_map_counts_its_bytes_while_it_lives() {
+        let map = OrdinalMap::build(&[terms(&["bar", "foo"]), terms(&["cat", "dog"])]);
+        // Two segments of two ordinals (8 bytes each), four first segments
+        // (4) and their ordinals (8).
+        assert_eq!(map.held.bytes(), 4 * 8 + 4 * 4 + 4 * 8);
+        assert!(held_bytes() >= map.held.bytes());
+        let clone = map.clone();
+        assert!(
+            Arc::ptr_eq(&map.held, &clone.held),
+            "a clone is not counted again"
+        );
+    }
+
     #[test]
     fn javadoc_worked_example() {
         let map = OrdinalMap::build(&[terms(&["bar", "foo"]), terms(&["cat", "dog"])]);

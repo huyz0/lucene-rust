@@ -316,6 +316,16 @@ pub(crate) const MAX_COLUMN_BYTES: usize = 32 << 20;
 /// Decoded sort columns across every segment of the process: the host (a
 /// JVM) cannot see this memory, so it is bounded here.
 pub(crate) const MAX_TOTAL_COLUMN_BYTES: usize = 512 << 20;
+/// [`MAX_TOTAL_COLUMN_BYTES`], or an eighth of the node's off-heap bound
+/// when that is less ([`lucene_util::memory::process_limit`]): a small node
+/// streams its sort values from the doc values instead of holding them.
+fn total_column_budget() -> usize {
+    match usize::try_from(lucene_util::memory::process_limit()) {
+        Ok(limit) if limit > 0 => MAX_TOTAL_COLUMN_BYTES.min(limit / 8),
+        _ => MAX_TOTAL_COLUMN_BYTES,
+    }
+}
+
 /// Bytes of decoded sort columns held now, process-wide.
 static TOTAL_COLUMN_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -543,10 +553,7 @@ impl SegmentQueryCache {
         let reserved = TOTAL_COLUMN_BYTES.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
-            |t| {
-                t.checked_add(bytes)
-                    .filter(|&n| n <= MAX_TOTAL_COLUMN_BYTES)
-            },
+            |t| t.checked_add(bytes).filter(|&n| n <= total_column_budget()),
         );
         if reserved.is_err() {
             return Ok(None);
