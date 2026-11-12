@@ -157,6 +157,173 @@ public final class QueryEncoder {
     /** The reader context of the search being encoded, for {@link #encode(Query, Predicate, IndexReaderContext)}. */
     private static final ThreadLocal<IndexReaderContext> TOP = new ThreadLocal<>();
 
+    /** Whether the query being encoded is a highlighter's ({@link #encodeForHighlight}). */
+    private static final ThreadLocal<Boolean> HIGHLIGHT = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /**
+     * {@code query} as the unified highlighter sees it, unrewritten: what it visits for terms and
+     * automata, and what its {@code PhraseHelper} turns into span queries ({@code
+     * jvm_highlight.rs}). A multi-term query is sent as itself (its automaton is what the
+     * highlighter matches terms with, whatever its rewrite), and a phrase with position gaps with
+     * its positions ({@code NODE_PHRASE_POSITIONS}). Only the query classes whose visit and span
+     * extraction the native highlighter is checked to mirror are written ({@link
+     * #HIGHLIGHT_CLASSES}); any other falls the field back to OpenSearch's highlighter.
+     */
+    public static Encoded encodeForHighlight(Query query) {
+        HIGHLIGHT.set(Boolean.TRUE);
+        try {
+            return encodeRoot(query, field -> true);
+        } finally {
+            HIGHLIGHT.set(Boolean.FALSE);
+        }
+    }
+
+    /** The exact classes {@link #encodeForHighlight} writes; besides these, any point range or set. */
+    private static final java.util.Set<Class<?>> HIGHLIGHT_CLASSES = java.util.Set.of(
+        TermQuery.class,
+        SynonymQuery.class,
+        BooleanQuery.class,
+        BoostQuery.class,
+        ConstantScoreQuery.class,
+        DisjunctionMaxQuery.class,
+        PhraseQuery.class,
+        MatchAllDocsQuery.class,
+        MatchNoDocsQuery.class,
+        FieldExistsQuery.class,
+        PrefixQuery.class,
+        WildcardQuery.class,
+        RegexpQuery.class,
+        FuzzyQuery.class,
+        TermRangeQuery.class,
+        TermInSetQuery.class,
+        AutomatonQuery.class,
+        IndexOrDocValuesQuery.class,
+        IndexSortSortedNumericDocValuesRangeQuery.class,
+        ApproximateScoreQuery.class,
+        org.apache.lucene.search.MultiPhraseQuery.class,
+        org.apache.lucene.queries.spans.SpanTermQuery.class,
+        org.apache.lucene.queries.spans.SpanNearQuery.class,
+        org.apache.lucene.queries.spans.SpanOrQuery.class,
+        org.apache.lucene.queries.spans.SpanFirstQuery.class,
+        org.apache.lucene.queries.spans.SpanPositionRangeQuery.class,
+        org.apache.lucene.queries.spans.SpanNotQuery.class,
+        org.apache.lucene.queries.spans.SpanContainingQuery.class,
+        org.apache.lucene.queries.spans.SpanWithinQuery.class,
+        org.apache.lucene.queries.spans.FieldMaskingSpanQuery.class,
+        org.opensearch.common.lucene.search.function.FunctionScoreQuery.class
+    );
+
+    /** {@code NODE_PHRASE_POSITIONS} in {@code jvm_queries.rs}: a phrase with its own positions, for the highlighter. */
+    private static final byte NODE_PHRASE_POSITIONS = 50;
+    /** {@code NODE_MULTI_PHRASE} in {@code jvm_queries.rs}, for the highlighter. */
+    private static final byte NODE_MULTI_PHRASE = 51;
+
+    /** Whether {@code q} holds a phrase or span query: their positions are what the highlighter's phrase helper reads. */
+    private static boolean hasPositional(Query q) {
+        boolean[] found = new boolean[1];
+        q.visit(new QueryVisitor() {
+            private void check(Query query) {
+                found[0] |= query instanceof PhraseQuery
+                    || query instanceof org.apache.lucene.search.MultiPhraseQuery
+                    || query instanceof org.apache.lucene.queries.spans.SpanQuery;
+            }
+
+            @Override
+            public void consumeTerms(Query query, Term... terms) {
+                check(query);
+            }
+
+            @Override
+            public void visitLeaf(Query query) {
+                check(query);
+            }
+
+            @Override
+            public QueryVisitor getSubVisitor(BooleanClause.Occur occur, Query parent) {
+                check(parent);
+                return this;
+            }
+        });
+        return found[0];
+    }
+
+    /** In highlight mode, {@code q} written as the highlighter sees it, or the reason it is not; null to encode it as usual. */
+    private static String highlightNode(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
+            return "highlight_" + name(q);
+        }
+        if (q instanceof MultiTermQuery) {
+            String reason = multiTerm(q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
+            return reason == null ? "" : reason;
+        }
+        if (q instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery fs) {
+            // The highlighter's query visitor reads through it to its query, and its phrase
+            // helper does not know it (so a phrase in it highlights as its single terms).
+            Query sub = fs.getSubQuery();
+            if (hasPositional(sub)) {
+                return "highlight_function_score_phrase";
+            }
+            String reason = node(sub, out, fieldOk, depth + 1, nodes);
+            return reason == null ? "" : reason;
+        }
+        if (q instanceof org.apache.lucene.search.MultiPhraseQuery mp) {
+            Term[][] arrays = mp.getTermArrays();
+            int[] positions = mp.getPositions();
+            String field = null;
+            for (Term[] a : arrays) {
+                if (a.length > 0) {
+                    field = a[0].field();
+                    break;
+                }
+            }
+            if (field == null) {
+                return "highlight_MultiPhraseQuery";
+            }
+            out.write(NODE_MULTI_PHRASE);
+            writeBytes(out, field.getBytes(StandardCharsets.UTF_8));
+            writeInt(out, mp.getSlop());
+            writeInt(out, arrays.length);
+            for (int i = 0; i < arrays.length; i++) {
+                nodes[0] += Math.max(1, arrays[i].length);
+                if (nodes[0] > MAX_NODES) {
+                    return "query_too_large";
+                }
+                writeInt(out, positions[i]);
+                writeInt(out, arrays[i].length);
+                for (Term t : arrays[i]) {
+                    writeBytes(out, t.bytes());
+                }
+            }
+            return "";
+        }
+        if (q.getClass() == PhraseQuery.class) {
+            PhraseQuery pq = (PhraseQuery) q;
+            Term[] terms = pq.getTerms();
+            int[] positions = pq.getPositions();
+            boolean gaps = false;
+            for (int i = 0; i < positions.length; i++) {
+                gaps |= positions[i] - positions[0] != i;
+            }
+            if (terms.length == 0 || gaps == false) {
+                return null;
+            }
+            nodes[0] += terms.length;
+            if (nodes[0] > MAX_NODES) {
+                return "query_too_large";
+            }
+            out.write(NODE_PHRASE_POSITIONS);
+            writeBytes(out, pq.getField().getBytes(StandardCharsets.UTF_8));
+            writeInt(out, pq.getSlop());
+            writeInt(out, terms.length);
+            for (int i = 0; i < terms.length; i++) {
+                writeInt(out, positions[i]);
+                writeBytes(out, terms[i].bytes());
+            }
+            return "";
+        }
+        return null;
+    }
+
     private static Encoded encodeRoot(Query query, Predicate<String> fieldOk) {
         query = unwrapUnitBoost(query);
         if (query instanceof TermQuery tq && tq.getTermStates() == null) {
@@ -251,6 +418,12 @@ public final class QueryEncoder {
             return "query_too_large";
         }
         q = unwrapUnitBoost(q);
+        if (HIGHLIGHT.get()) {
+            String written = highlightNode(q, out, fieldOk, depth, nodes);
+            if (written != null) {
+                return written.isEmpty() ? null : written;
+            }
+        }
         if (q instanceof TermQuery tq) {
             if (tq.getClass() != TermQuery.class) {
                 return "term_states";
