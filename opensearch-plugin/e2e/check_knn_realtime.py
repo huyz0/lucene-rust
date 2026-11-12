@@ -37,13 +37,13 @@ METHODS = {
     "lucene_hnsw": {"method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}},
     "lucene_sq": {"method": {"name": "hnsw", "engine": "lucene", "space_type": "l2",
                              "parameters": {"encoder": {"name": "sq", "parameters": {"bits": 7}}}}},
-    "rust_hnsw_rabitq": {"method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2",
+    "extended_hnsw_rabitq": {"method": {"name": "hnsw", "engine": "extended", "space_type": "l2",
                                     "parameters": {"quantizer": "rabitq"}}},
-    "rust_hnsw_erq4": {"method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2",
+    "extended_hnsw_erq4": {"method": {"name": "hnsw", "engine": "extended", "space_type": "l2",
                                   "parameters": {"quantizer": "erq4"}}},
-    "ivf": {"method": {"name": "ivf", "engine": "lucene_rust", "space_type": "l2",
+    "ivf": {"method": {"name": "ivf", "engine": "extended", "space_type": "l2",
                        "parameters": {"target_cluster_size": 64}}},
-    "ivf_auto": {"method": {"name": "ivf", "engine": "lucene_rust", "space_type": "l2",
+    "ivf_auto": {"method": {"name": "ivf", "engine": "extended", "space_type": "l2",
                             "parameters": {"quantizer": "auto"}}},
     "default": {},
 }
@@ -66,7 +66,7 @@ def run(name, method, nested, sort, rng):  # sort: realtime refuses an index sor
     else:
         props["emb"] = field
     settings = {"number_of_shards": 1, "number_of_replicas": 0, "index.knn": True,
-                "index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms"}
+                "index.search.realtime.enabled": True, "index.search.realtime.max_staleness": "0ms"}
     if sort:
         settings.update({"index.sort.field": "tenant"})
     req("PUT", f"/{index}", {"settings": settings, "mappings": {"properties": props}})

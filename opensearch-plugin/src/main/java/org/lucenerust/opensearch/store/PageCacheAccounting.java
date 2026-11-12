@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Charges the page cache's resident bytes to the plugin's native-memory breaker ({@code
- * lucene_rust_writer}), so they show in {@code _nodes/stats/breaker} and count toward the parent
+ * indexing_buffers}), so they show in {@code _nodes/stats/breaker} and count toward the parent
  * breaker where it sums its children ({@code indices.breaker.total.use_real_memory: false}). The
  * page cache holds at most its budget, and the breaker's default limit is raised by the budget, so
  * the charge never refuses an index operation the writer's own share would allow. It is refreshed

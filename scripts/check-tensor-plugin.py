@@ -169,7 +169,7 @@ def main():
         for index, engine in (("rust", True), ("lucene", False)):
             settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
             if engine:
-                settings["index.lucene_rust.engine"] = True
+                settings["index.engine.accelerated"] = True
             props = {"tag": {"type": "keyword"}, "text": {"type": "text"}, "rank": {"type": "long"},
                      "o": {"properties": {"mv": {"type": "multi_vector", "dimension": DIM}}}}
             for e in ENCODINGS:
@@ -285,7 +285,7 @@ def main():
             failures.append("_source does not keep the vectors as sent")
 
         after = must("GET", "/_plugins/lucene_rust/stats")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")

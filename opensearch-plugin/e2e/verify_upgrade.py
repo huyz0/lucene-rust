@@ -174,7 +174,7 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         expect = expect_override or expect
         if expect == "dfs_multi":
             expect = "dfs" if shards > 1 else "native"
-        # The plugin node runs the default native_shapes: fast.
+        # The plugin node runs the default accelerated_shapes: fast.
         if expect == "slow":
             expect = "slower_shape"
         if expect == "slow_agg":
@@ -189,8 +189,8 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         after = vo.stats()
         diff = vo.same(got, reference[name])
         vo.check(diff is None, f"{label} {index} [{name}]: the plugin node differs from the stock node: {diff}")
-        ran = after["native_queries"] - before["native_queries"]
-        errors = after["native_errors"] - before["native_errors"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
+        errors = after["accelerated_errors"] - before["accelerated_errors"]
         delta = vo.fallback_delta(before, after)
         vo.check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
         if expect == "either":

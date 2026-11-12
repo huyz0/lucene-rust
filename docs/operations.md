@@ -3,8 +3,8 @@
 For whoever installs and runs the plugin on an OpenSearch 3.9.0 cluster:
 install, configure, watch, upgrade and roll back. What the plugin does and does
 not handle is [`feature-matrix.md`](feature-matrix.md); how the two halves work
-inside is [`opensearch-native-queries.md`](opensearch-native-queries.md) (native
-search) and [`opensearch-engine.md`](opensearch-engine.md) (the Rust engine).
+inside is [`accelerated-queries.md`](accelerated-queries.md) (native
+search) and [`opensearch-engine.md`](opensearch-engine.md) (the accelerated engine).
 
 ## Requirements
 
@@ -14,7 +14,7 @@ search) and [`opensearch-engine.md`](opensearch-engine.md) (the Rust engine).
 | JDK | the one OpenSearch 3.9.0 bundles (25); the plugin uses the Foreign Function & Memory API |
 | Platform | Linux x86_64 or aarch64, glibc ≥ 2.34 (the `opensearchproject/opensearch:3.9.0` image has 2.34). No Windows or macOS |
 | Other plugins | none that registers a `QueryPhaseSearcher` (`neural-search` does; OpenSearch accepts one per node). The security plugin works, with native stored-field reads off (below) |
-| Storage | a local file system. Remote-backed storage and searchable snapshots are not supported: native search falls back and the Rust engine refuses them |
+| Storage | a local file system. Remote-backed storage and searchable snapshots are not supported: native search falls back and the accelerated engine refuses them |
 
 ## Install
 
@@ -36,34 +36,51 @@ mismatch stops the node with one line naming the file and the platform. That is
 the only way the plugin can stop a node.
 
 Installing changes nothing about existing indices' data. Native search starts
-serving eligible searches on every index at once; the Rust engine serves only
+serving eligible searches on every index at once; the accelerated engine serves only
 indices that ask for it.
+
+## Vocabulary
+
+The plugin's settings, stats and messages use four words, each for one thing:
+
+| Word | Means | Where it appears |
+|---|---|---|
+| accelerated | the plugin's own execution path: its engine (writer, merges, realtime), query phase, fetch, analysis | `index.engine.accelerated`, `index.search.accelerated`, `index.fetch.accelerated`, stats `accelerated_*`, messages "the accelerated engine" |
+| standard | OpenSearch's own engine, when a whole index or node uses it | stats `engines.standard` |
+| fallback | OpenSearch's path for one query or fetch the accelerated path does not serve | stats `fallbacks.*`, `*.fallback` |
+| extended | the k-NN engine with index types stock does not have (IVF, disk HNSW, RaBitQ/OSQ quantizers, partition clusters) | `method.engine: extended` only |
+
+A `knn_vector` field on the stock `lucene` k-NN engine also runs accelerated;
+only `extended` adds the extra index types. "Engine" means two things here:
+`index.engine.accelerated` picks the index engine (how documents are
+written), `method.engine` picks the k-NN engine. `extended` needs
+`index.engine.accelerated: true`.
 
 ## Configure
 
 | Setting | Scope | Default | Meaning |
 |---|---|---|---|
-| `index.lucene_rust.search.enabled` | index, dynamic | `true` | run this index's eligible searches natively. `false` sends every search to OpenSearch (counted as `disabled`) |
-| `index.lucene_rust.fetch.enabled` | index, dynamic | `true` | read stored fields (`_source`, `_id`, `stored_fields`, get/mget) natively |
-| `index.lucene_rust.search.native_shapes` | index, dynamic | `fast` | kept for compatibility; `fast` and `all` behave the same since every native shape measures faster |
-| `index.lucene_rust.search.native_approximate` | index, dynamic | `true` | a `match_all` or `range` that OpenSearch would answer with its approximation (sorted by the range's field, `track_total_hits` not `true`) runs natively and returns the exact top hits, 4-5x faster. They can differ from OpenSearch's only in which documents of the last hit's value are kept when that value is tied across a BKD leaf: they are the hits OpenSearch returns with `track_total_hits: true` (see [benchmarks/newest-n.md](benchmarks/newest-n.md)). `false` keeps OpenSearch's approximate answer |
-| `index.lucene_rust.search.aggregation_segment_cache` | index, dynamic | `false` | keep each committed segment's collected aggregation part in the node's aggregation segment cache, so a dashboard repeated after a refresh collects only the new segments. Same results; see [the benchmark](benchmarks/agg-segment-cache.md) |
-| `lucene_rust.search.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/lucene_rust/stats` |
-| `lucene_rust.fetch.reader_wrapper` | node | `true`, `false` with the security plugin | install the reader wrapper native stored-field reads need. The security plugin needs the index's one reader wrapper slot for field- and document-level security, so with it installed the default is off |
-| `index.lucene_rust.engine` | index, final | the node default | `true`: the index's shards are written by the Rust engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
-| `lucene_rust.engine.default` | node | `false` | the default of the setting above. An index that only inherits it falls back to OpenSearch's engine where the Rust one would refuse it |
-| `index.lucene_rust.stored_fields.merge_lz4_high_compression` | index | `true` | Rust engine, `index.codec: default`: merges write stored fields with a high-compression LZ4 match finder. Same LZ4 format, so OpenSearch's engine and stock Lucene read it; merged stored fields 9-28% smaller and fetches up to 30% faster, for about 1.4 CPU-s more per million log events indexed (see [benchmarks/settings-defaults.md](benchmarks/settings-defaults.md)). `false` writes stock's fast LZ4 |
-| `lucene_rust.engine.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for Rust-engine indices. Used for rolling back and for mixed clusters |
-| `breaker.lucene_rust_writer.limit` | node | 3 × `indices.memory.index_buffer_size` + `lucene_rust.store.page_cache.size` | circuit breaker for the Rust writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
+| `index.search.accelerated` | index, dynamic | `true` | run this index's eligible searches natively. `false` sends every search to OpenSearch (counted as `disabled`) |
+| `index.fetch.accelerated` | index, dynamic | `true` | read stored fields (`_source`, `_id`, `stored_fields`, get/mget) natively |
+| `index.search.accelerated_shapes` | index, dynamic | `fast` | `all` also runs shapes measured slower on the accelerated path; every shape measures faster today, so the two agree |
+| `index.search.approximation.exact` | index, dynamic | `true` | a `match_all` or `range` that OpenSearch would answer with its approximation (sorted by the range's field, `track_total_hits` not `true`) runs natively and returns the exact top hits, 4-5x faster. They can differ from OpenSearch's only in which documents of the last hit's value are kept when that value is tied across a BKD leaf: they are the hits OpenSearch returns with `track_total_hits: true` (see [benchmarks/newest-n.md](benchmarks/newest-n.md)). `false` keeps OpenSearch's approximate answer |
+| `index.search.aggregation_segment_cache.enabled` | index, dynamic | `false` | keep each committed segment's collected aggregation part in the node's aggregation segment cache, so a dashboard repeated after a refresh collects only the new segments. Same results; see [the benchmark](benchmarks/agg-segment-cache.md) |
+| `indices.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/lucene_rust/stats` |
+| `indices.fetch.accelerated_reader` | node | `true`, `false` with the security plugin | install the reader wrapper native stored-field reads need. The security plugin needs the index's one reader wrapper slot for field- and document-level security, so with it installed the default is off |
+| `index.engine.accelerated` | index, final | the node default | `true`: the index's shards are written by the accelerated engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
+| `indices.engine.accelerated.default` | node | `false` | the default of the setting above. An index that only inherits it falls back to OpenSearch's engine where the Rust one would refuse it |
+| `index.codec.stored_fields.recompress_on_merge` | index | `true` | accelerated engine, `index.codec: default`: merges write stored fields with a high-compression LZ4 match finder. Same LZ4 format, so OpenSearch's engine and stock Lucene read it; merged stored fields 9-28% smaller and fetches up to 30% faster, for about 1.4 CPU-s more per million log events indexed (see [benchmarks/settings-defaults.md](benchmarks/settings-defaults.md)). `false` writes stock's fast LZ4 |
+| `indices.engine.accelerated.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for accelerated-engine indices. Used for rolling back and for mixed clusters |
+| `breaker.indexing_buffers.limit` | node | 3 × `indices.memory.index_buffer_size` + `indices.store.page_cache.size` | circuit breaker for the accelerated writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
 | `-Dlucene_rust.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
 
-`index.lucene_rust.engine.fault_injection` exists for tests only. Do not set
+`index.testing.fault_injection` exists for tests only. Do not set
 it: with it on, a document carrying a `__lucene_rust_panic` field makes the
 writer panic.
 
 ### Language data packs
 
-The plugin's `rust_japanese`, `rust_korean` and `rust_chinese` tokenizers
+The plugin's `japanese`, `korean` and `chinese` tokenizers
 (Lucene's `JapaneseTokenizer`, `KoreanTokenizer` and `HMMChineseTokenizer`,
 run in Rust on the index and query side alike) need their dictionaries,
 which the plugin zip leaves out to stay small. Opt a node in per language:
@@ -79,7 +96,7 @@ carries all of them, about 21 MB). Restart the node after adding a pack. A
 tokenizer whose pack is missing is not registered (OpenSearch builds every
 registered tokenizer for every index), so an index naming it is refused as
 naming an unknown tokenizer; the node logs at startup which pack it lacks:
-`[rust_japanese] not registered, its data pack [kuromoji] is not installed`.
+`[japanese] not registered, its data pack [kuromoji] is not installed`.
 A library built with `cargo build --release -p lucene-ffi --features
 embedded-data` has every pack compiled in and needs no directory.
 
@@ -115,7 +132,7 @@ beyond `-Xmx` for it:
   bytes and evictions, and the largest request seen.
 - **Indexing**, per Rust-engine shard: the buffered documents until the next
   refresh. The writer flushes at `indices.memory.index_buffer_size` and
-  stalls indexing at twice that, as Lucene's does; the `lucene_rust_writer`
+  stalls indexing at twice that, as Lucene's does; the `indexing_buffers`
   breaker (three times the buffer by default) refuses documents beyond it.
   The real-memory parent breaker does not see them.
 - **Reads**: segments are memory-mapped, as OpenSearch's `mmapfs`/`hybridfs`
@@ -128,7 +145,7 @@ beyond `-Xmx` for it:
 The heap keeps OpenSearch's own work: bulk and search requests while they
 are handled (parsed `_source`, `IndexRequest`s, responses), translog writes,
 cluster state and mappings, aggregation reduction, and the request and
-fielddata caches. The Rust engine takes Lucene's indexing buffers out of it,
+fielddata caches. The accelerated engine takes Lucene's indexing buffers out of it,
 so a plugin node needs less heap than a stock node for the same indexing
 load. On the 1M-document benchmark (`scripts/bench-opensearch.sh`, one shard,
 four bulk clients), the most the heap held after a young collection during
@@ -156,12 +173,13 @@ This is per node. Its counters are totals since the node started:
 
 | Field | Meaning | Healthy |
 |---|---|---|
-| `native_queries` | searches answered natively | most of your searches ([below](#how-much-runs-native)) |
+| `accelerated_queries` | searches answered on the accelerated path | most of your searches ([below](#how-much-runs-native)) |
 | `fallbacks.<reason>` | searches OpenSearch answered, by reason ([the list](feature-matrix.md#falls-back-and-why)) | stable; a reason you did not expect is a query shape to look at |
-| `native_errors` | native calls that failed and were re-run on OpenSearch's path | **0**. Each one is logged; see [Failure signatures](#failure-signatures) |
-| `open_native_readers` | native readers held (one per open searcher reader) | tracks refreshes; steady growth under steady traffic is a leak |
-| `native_fetches`, `native_sequential_fetches`, `fetch_nanos` | native stored-field reads and their time | |
-| `engines.rust`, `engines.java`, `engines.nrt_replica`, `engines.rust_indexer` | engines built on this node, by kind | `rust` matches the Rust-engine shard copies placed here |
+| `accelerated_errors` | accelerated calls that failed and were re-run on the fallback path | **0**. Each one is logged; see [Failure signatures](#failure-signatures) |
+| `open_accelerated_readers` | accelerated readers held (one per open searcher reader) | tracks refreshes; steady growth under steady traffic is a leak |
+| `accelerated_fetches`, `accelerated_sequential_fetches`, `fetch_nanos` (`accelerated`, `fallback`) | accelerated stored-field reads and the time on each path | |
+| `query_phase_nanos` (`accelerated`, `fallback`), `analyzed_values` (`accelerated`, `fallback`) | query-phase time and analyzed text values, per path | |
+| `engines.accelerated`, `engines.standard`, `engines.nrt_replica`, `engines.accelerated_indexer` | engines built on this node, by kind | `accelerated` matches the accelerated-engine shard copies placed here |
 
 ### How much runs native
 
@@ -179,7 +197,7 @@ A node restarted between the readings is counted from zero again.
 
 ### Logs
 
-Every plugin message starts with `lucene-rust:` (the Rust engine's own
+Every plugin message starts with `lucene-rust:` (the accelerated engine's own
 messages are OpenSearch's engine messages: it is `InternalEngine` with the
 writer swapped out).
 
@@ -205,19 +223,19 @@ lucene-rust: native reader open failed for [<path>] (<status>): <message>
 | 6 `Search` | the query could not run on this index |
 | 9 `Panic` | a Rust panic, caught at the boundary. Always a bug: report it with the message |
 | 10 `InvalidArgument` | the plugin sent something the library rejected: a plugin/library mismatch, or a bug |
-| 11 `HandleLimit` | too many native handles open: a leak. `open_native_readers` will show it |
+| 11 `HandleLimit` | too many native handles open: a leak. `open_accelerated_readers` will show it |
 | 1-3, 7, 8 | internal argument errors; report them |
 
-A few `native_errors` against a corrupt shard are expected: OpenSearch's own
+A few `accelerated_errors` against a corrupt shard are expected: OpenSearch's own
 path then fails the same way. A steady rate on healthy shards is a bug. To stop
-it while it is investigated, set `index.lucene_rust.search.enabled: false` on
+it while it is investigated, set `index.search.accelerated: false` on
 the affected index; this takes effect at once and needs no restart.
 
-**The Rust engine** reports writer failures as OpenSearch reports
+**The accelerated engine** reports writer failures as OpenSearch reports
 `IndexWriter` failures, with the operation and status in the message:
 
 ```
-<operation> failed in the Rust writer (status <code>): <message>
+<operation> failed in the accelerated writer (status <code>): <message>
 ```
 
 - A **document the engine refuses** (a term vector, a vector field, a payload,
@@ -243,38 +261,38 @@ set of answers checked after every step; timings below).
    re-enable allocation and wait for green. Existing indices stay on
    OpenSearch's engine. Their eligible searches run natively from the moment a
    shard is on an upgraded node.
-2. **Check.** Watch `native_errors` (0) and the fallback mix
+2. **Check.** Watch `accelerated_errors` (0) and the fallback mix
    (`fallback-report.py`). To take native search back off one index, set
-   `index.lucene_rust.search.enabled: false` on it.
-3. **Adopt the Rust engine, per index, by reindex** (optional). The engine is
-   chosen at creation (`index.lucene_rust.engine` is final), so an existing
+   `index.search.accelerated: false` on it.
+3. **Adopt the accelerated engine, per index, by reindex** (optional). The engine is
+   chosen at creation (`index.engine.accelerated` is final), so an existing
    index moves by reindexing into a new one:
    ```
-   PUT new-index   { "settings": { "index.lucene_rust.engine": true, ... }, "mappings": ... }
+   PUT new-index   { "settings": { "index.engine.accelerated": true, ... }, "mappings": ... }
    POST _reindex   { "source": { "index": "old-index" }, "dest": { "index": "new-index" } }
    POST _aliases   { "actions": [ { "remove": { "index": "old-index", "alias": "app" } },
                                   { "add":    { "index": "new-index", "alias": "app" } } ] }
    ```
    Writes that arrive during the reindex must go to both, or be replayed, as
-   for any reindex migration. `lucene_rust.engine.default: true` makes every
-   *new* index use the Rust engine where it can.
+   for any reindex migration. `indices.engine.accelerated.default: true` makes every
+   *new* index use the accelerated engine where it can.
 
 ## Rolling back
 
 Rust-written segments are ordinary Lucene 10.5 segments, so going back needs
 no data conversion. OpenSearch's engine opens them as they are.
 
-1. **Stop using the Rust engine.** Rolling restart with
-   `lucene_rust.engine.node_enabled: false` on every node. OpenSearch's engine
+1. **Stop using the accelerated engine.** Rolling restart with
+   `indices.engine.accelerated.node_enabled: false` on every node. OpenSearch's engine
    now serves the Rust-written shards. Writes and searches continue
    throughout.
 2. **Rewrite the Rust-written segments** (optional): force merge each
-   Rust-engine index to one segment. Afterwards everything on disk was written
+   accelerated-engine index to one segment. Afterwards everything on disk was written
    by OpenSearch's engine.
-3. **Move each index created with `index.lucene_rust.engine: true` to one
+3. **Move each index created with `index.engine.accelerated: true` to one
    without it**, by reindex and an alias swap, as in the adoption step:
    ```
-   PUT restored-index  { "settings": { ... without index.lucene_rust.* ... }, "mappings": ... }
+   PUT restored-index  { "settings": { ... without the plugin's settings ... }, "mappings": ... }
    POST _reindex        { "source": { "index": "rust-index" }, "dest": { "index": "restored-index" } }
    POST _aliases        { "actions": [ { "remove": { "index": "rust-index", "alias": "app" } },
                                        { "add":    { "index": "restored-index", "alias": "app" } } ] }
@@ -283,22 +301,22 @@ no data conversion. OpenSearch's engine opens them as they are.
    This step is required before a rolling removal. The setting is final, so
    it cannot be taken off the index. A node without the plugin refuses a shard
    of an index that carries it: allocation fails with `unknown setting
-   [index.lucene_rust.engine]`, and the replicas stay unassigned. The
+   [index.engine.accelerated]`, and the replicas stay unassigned. The
    rehearsal hit exactly that before this step existed.
 
-   Indices that only inherited `lucene_rust.engine.default` carry no setting
-   and need nothing. Nor do indices that never used the Rust engine.
+   Indices that only inherited `indices.engine.accelerated.default` carry no setting
+   and need nothing. Nor do indices that never used the accelerated engine.
 4. **Remove the plugin.** Rolling restart onto nodes without it
    (`bin/opensearch-plugin remove lucene-rust`, and remove the JVM option).
 
 A full-cluster restart can replace steps 3 and 4: stop every node, remove the
 plugin, start them all. OpenSearch archives unknown index settings
-(`archived.index.lucene_rust.*`) when it loads the cluster metadata at startup.
+(`archived.index.engine.accelerated` and the like) when it loads the cluster metadata at startup.
 That route costs downtime instead of a reindex, and the rehearsal did not run
 it.
 
 To take native search off without restarting anything, set
-`index.lucene_rust.search.enabled: false` (and `index.lucene_rust.fetch.enabled:
+`index.search.accelerated: false` (and `index.fetch.accelerated:
 false`) on the indices concerned.
 
 ### Timings
@@ -312,8 +330,8 @@ shapes answered as before. The final run passed all 1,058 checks.
 | Step | Time |
 |---|---|
 | Rolling restart onto the plugin (per node, flush to green) | 17.9 – 19.5 s |
-| Adoption: reindex into a Rust-engine index, alias swap | 33.8 s |
-| Rolling restart with `lucene_rust.engine.node_enabled: false` (per node) | 17.3 – 20.7 s |
+| Adoption: reindex into a accelerated-engine index, alias swap | 33.8 s |
+| Rolling restart with `indices.engine.accelerated.node_enabled: false` (per node) | 17.3 – 20.7 s |
 | Force merge of the Rust-written index to one segment | 5.2 s |
 | Reindex into an index without the plugin setting, alias swap | 24.0 s |
 | Rolling restart onto OpenSearch without the plugin (per node) | 17.4 – 18.7 s |
@@ -323,7 +341,7 @@ Plan them on your own data: these are one host's numbers at 200,000 small
 documents.
 
 The rehearsal found two defects, both fixed before these numbers:
-- On a Rust-engine index with deletes, a fetch of adjacent documents failed
+- On a accelerated-engine index with deletes, a fetch of adjacent documents failed
   the shard. The soft-deletes reader was not a `CodecReader`, which
   OpenSearch's sequential stored-fields path needs.
 - The procedure above lacked step 3.
@@ -333,7 +351,7 @@ The rehearsal found two defects, both fixed before these numbers:
 - **A native search's `timeout` is checked before and after the native call,
   not during it.** A search that runs over its `timeout` answers with every
   hit and is flagged `timed_out` (see
-  [the details](opensearch-native-queries.md#known-limits)). A task cancelled
+  [the details](accelerated-queries.md#known-limits)). A task cancelled
   while the call runs (the tasks API, search backpressure) stops at the call's
   next checkpoint, within about 100 ms.
 - **The native query cache** takes `indices.queries.cache.size` as its node
@@ -350,7 +368,7 @@ The rehearsal found two defects, both fixed before these numbers:
 - **Only Lucene 10.5's default codec** is read natively, with any of its stored
   fields: LZ4 (`default`), DEFLATE (`best_compression`), or the custom-codecs
   plugin's `zstd` and `zstd_no_dict`. Indices from older Lucene majors, or
-  with a custom per-field format, are answered by OpenSearch. The Rust engine
+  with a custom per-field format, are answered by OpenSearch. The accelerated engine
   writes those four codecs; `zstd` needs the bundled `opensearch-custom-codecs`
   plugin installed, as it does for OpenSearch's own engine.
 
@@ -362,6 +380,6 @@ Before rolling a new build out, run the proofs a release is held to:
 |---|---|
 | `scripts/docker-test.sh gate` | the workspace gate: lint, tests, coverage, fixtures, licences |
 | `scripts/verify-opensearch.sh --yaml` | a real 3.9.0 node: native against OpenSearch's answer, SIGKILL, force merge, OpenSearch's REST YAML suites |
-| `scripts/verify-opensearch.sh --engine --yaml` | the same with every index on the Rust engine |
+| `scripts/verify-opensearch.sh --engine --yaml` | the same with every index on the accelerated engine |
 | `scripts/verify-opensearch-cluster.sh` | three nodes: replication, recovery, failover, relocation between the engines |
 | `scripts/verify-rollback.sh` | this page's upgrade and rollback |

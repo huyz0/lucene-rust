@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.function.Function;
 
 /**
- * {@code index.lucene_rust.bp_reorder.*}: Lucene's {@code BPReorderingMergePolicy} around the
+ * {@code index.merge.reorder.*}: Lucene's {@code BPReorderingMergePolicy} around the
  * shard's merge policy. Merges big enough, and every forced merge, renumber their documents with
  * {@code BPIndexReorderer} (recursive graph bisection), so documents that share terms sit together:
  * postings get smaller and queries faster. The merged segments are ordinary Lucene segments that any
@@ -21,7 +21,7 @@ import java.util.function.Function;
 public final class BpReorderSettings {
     private BpReorderSettings() {}
 
-    private static final String PREFIX = "index.lucene_rust.bp_reorder.";
+    private static final String PREFIX = "index.merge.reorder.";
 
     /** Whether merges reorder documents. */
     public static final Setting<Boolean> ENABLED = Setting.boolSetting(

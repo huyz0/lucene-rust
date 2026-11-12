@@ -81,9 +81,9 @@ import java.util.List;
 public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     private static final Logger logger = LogManager.getLogger(RustQueryPhaseSearcher.class);
 
-    /** Per-index switch, dynamic: {@code PUT idx/_settings {"index.lucene_rust.search.enabled": false}}. */
+    /** Per-index switch, dynamic: {@code PUT idx/_settings {"index.search.accelerated": false}}. */
     public static final Setting<Boolean> ENABLED = Setting.boolSetting(
-        "index.lucene_rust.search.enabled",
+        "index.search.accelerated",
         true,
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
@@ -92,15 +92,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     /**
      * Which encodable shapes run native: {@code fast} (default) only those measured at least as fast
      * as Lucene ({@link QueryEncoder#isFast}); {@code all} every shape the engine answers correctly.
-     * The two agree, since every encodable shape is measured faster; the setting stays so that
-     * indices which set it keep opening.
+     * The two agree today, since every encodable shape is measured faster.
      */
     public static final Setting<String> NATIVE_SHAPES = new Setting<>(
-        "index.lucene_rust.search.native_shapes",
+        "index.search.accelerated_shapes",
         "fast",
         v -> {
             if (v.equals("fast") == false && v.equals("all") == false) {
-                throw new IllegalArgumentException("index.lucene_rust.search.native_shapes must be [fast] or [all], got [" + v + "]");
+                throw new IllegalArgumentException("index.search.accelerated_shapes must be [fast] or [all], got [" + v + "]");
             }
             return v;
         },
@@ -110,12 +109,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /**
      * Per-index opt-in, dynamic: aggregations keep each committed segment's collected part in the
-     * node's aggregation segment cache ({@code lucene_rust.search.aggregation_segment_cache.size}),
+     * node's aggregation segment cache ({@code indices.aggregation_segment_cache.size}),
      * so a dashboard repeated after a refresh collects only the segments the refresh added. Off by
      * default; results are the same either way.
      */
     public static final Setting<Boolean> AGG_SEGMENT_CACHE = Setting.boolSetting(
-        "index.lucene_rust.search.aggregation_segment_cache",
+        "index.search.aggregation_segment_cache.enabled",
         false,
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
@@ -132,7 +131,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * OpenSearch's approximate answer.
      */
     public static final Setting<Boolean> NATIVE_APPROXIMATE = Setting.boolSetting(
-        "index.lucene_rust.search.native_approximate",
+        "index.search.approximation.exact",
         true,
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
@@ -394,7 +393,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 reason = "timeout";
             } else {
                 // What the native calls allocate is charged to the request breaker while they run.
-                NativeMemory.Scope memory = NativeMemory.open(ctx, "native_search");
+                NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_search");
                 try {
                     // The writer's buffered documents too, when the searcher has a view of them and
                     // the request is one the buffers answer; otherwise the reader's documents alone.
@@ -550,7 +549,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (topN <= 0) return "hybrid_no_hits";
         byte[][] out = new byte[1][];
         int rc;
-        NativeMemory.Scope memory = NativeMemory.open(ctx, "native_hybrid_search");
+        NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_hybrid_search");
         try {
             rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices), out);
             NativeMemory.check(rc);
@@ -978,7 +977,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         return f;
     }
 
-    /** Whether {@code ctx}'s index runs every shape native ({@code native_shapes: all}). */
+    /** Whether {@code ctx}'s index runs every shape native ({@code accelerated_shapes: all}). */
     static boolean allShapes(SearchContext ctx) {
         return flags(ctx).allShapes();
     }
@@ -987,7 +986,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * Runs the blob and stores the result; returns null, or the fallback reason when it did not.
      *
      * <p>Cancellation is checked before the call, not during it: a native search runs to completion
-     * (see docs/opensearch-native-queries.md, Known limits).
+     * (see docs/accelerated-queries.md, Known limits).
      */
     private String searchNative(
         SearchContext ctx,
@@ -1626,7 +1625,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * cancelled fails it, as the TaskCancelledException ContextIndexSearcher does not catch would;
      * otherwise the request fails without {@code allow_partial_search_results} and is flagged
      * {@code timed_out} with it. Its results are complete -- the native search is not interrupted
-     * part way (docs/opensearch-native-queries.md, Known limits) -- which a partial answer allows.
+     * part way (docs/accelerated-queries.md, Known limits) -- which a partial answer allows.
      */
     static void timedOut(SearchContext ctx) {
         // Only a registered low_level_cancellation check sees the task; the

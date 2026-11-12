@@ -27,7 +27,7 @@ import java.util.Map;
  * are, so the chain around it runs natively too.
  */
 public final class RustTokenizer extends Tokenizer {
-    /** The plugin's name for it ({@code rust_thai}), for errors. */
+    /** The plugin's name for it ({@code thai_dictionary}), for errors. */
     final String name;
     /** The Rust factory's SPI name ({@code thai}). */
     final String spi;
@@ -67,7 +67,7 @@ public final class RustTokenizer extends Tokenizer {
         String text = wellFormed(sb);
         AnalyzerSpec.Tokens got = AnalyzerSpec.rust(spec, "", text);
         if (got == null) {
-            throw new IllegalStateException(name + ": Rust analysis failed: " + NativeBridge.lastError());
+            throw new IllegalStateException(name + ": accelerated analysis failed: " + NativeBridge.lastError());
         }
         tokens = got.tokens();
         finalOffset = correctOffset(got.endOffset());

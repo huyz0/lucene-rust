@@ -38,8 +38,8 @@ import org.lucenerust.opensearch.substring.RustWildcardFieldMapper.RustWildcardF
 import org.lucenerust.opensearch.substring.RustWildcardQuery;
 
 /**
- * The {@code rust_wildcard} shapes in {@link NativeSelfTest}: an index the Rust engine's writer wrote
- * ({@code RustSubstring} blocks, flushed, then merged by a writer reopened on it) and one Lucene
+ * The {@code compact_wildcard} shapes in {@link NativeSelfTest}: an index the Rust engine's writer wrote
+ * ({@code Substring90} blocks, flushed, then merged by a writer reopened on it) and one Lucene
  * wrote (plain BINARY, as under OpenSearch's engine). Over each, the field reads back value for value
  * through Lucene, every query of the field type matches the documents whose value its test accepts,
  * and each encoded query's native hits and scores equal Lucene's ({@code NativeSelfTest.compare}).
@@ -181,7 +181,7 @@ final class NativeSelfTestSubstring {
                     for (LeafReaderContext leaf : reader.leaves()) {
                         FieldInfo fi = leaf.reader().getFieldInfos().fieldInfo("msg");
                         String format = fi == null ? null : fi.getAttribute("PerFieldDocValuesFormat.format");
-                        String want = which.equals("rust") ? "RustSubstring" : "Lucene90";
+                        String want = which.equals("rust") ? "Substring90" : "Lucene90";
                         check.accept(want.equals(format), "substring " + which + ": a segment's msg is in " + format + ", not " + want);
                         StoredFields stored = leaf.reader().storedFields();
                         BinaryDocValues dv = leaf.reader().getBinaryDocValues("msg");

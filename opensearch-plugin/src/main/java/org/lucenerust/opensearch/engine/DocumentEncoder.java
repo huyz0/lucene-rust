@@ -82,10 +82,10 @@ final class DocumentEncoder {
     private volatile boolean seqNoDocValuesOnly;
 
     /**
-     * {@code lucene_rust.native_analysis=false} keeps every field's analysis in the JVM (the Rust
+     * {@code accelerated.analysis=false} keeps every field's analysis in the JVM (the Rust
      * side then only lays out what Java inverted, as before).
      */
-    static final boolean NATIVE_ANALYSIS = Boolean.parseBoolean(System.getProperty("lucene_rust.native_analysis", "true"));
+    static final boolean NATIVE_ANALYSIS = Boolean.parseBoolean(System.getProperty("accelerated.analysis", "true"));
 
     /** Field instances analyzed in Rust, and in Java, since startup (the plugin's stats). */
     static final AtomicLong ANALYZED_NATIVELY = new AtomicLong();

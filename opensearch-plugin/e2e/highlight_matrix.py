@@ -252,9 +252,9 @@ def check(size):
                         print(f"DIFF {index} {qn} {on}: {len(a)} vs {len(b)} hits")
     stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
     print(f"{rows - bad}/{rows} rows identical")
-    print("native_highlights", stats.get("native_highlights"), "native_errors", stats.get("native_errors"))
+    print("accelerated_highlights", stats.get("accelerated_highlights"), "accelerated_errors", stats.get("accelerated_errors"))
     print("highlight fallbacks", {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k})
-    return bad + (stats.get("native_errors") or 0)
+    return bad + (stats.get("accelerated_errors") or 0)
 
 
 if __name__ == "__main__":

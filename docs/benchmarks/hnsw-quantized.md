@@ -1,6 +1,6 @@
 # HNSW walked on RaBitQ and Extended RaBitQ codes
 
-The `lucene_rust` engine's `hnsw` method (`LuceneRustHnswQuantizedVectorsFormat`)
+The `extended` engine's `hnsw` method (`HnswQuantizedVectorsFormat`)
 builds the Lucene99 graph on the raw vectors and stores the quantized codes
 next to it (`.vqm`/`.vqd`). A search walks the graph on the codes and reranks
 the `ef` candidates on the raw vectors. These numbers compare that with

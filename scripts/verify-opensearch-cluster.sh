@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # the cluster proof: three OpenSearch 3.9.0 nodes with the lucene-rust plugin,
 # two serving Rust-engine indices with the Rust writer and one
-# (lucene_rust.engine.node_enabled: false) with OpenSearch's own engine, then
+# (indices.engine.accelerated.node_enabled: false) with OpenSearch's own engine, then
 # opensearch-plugin/e2e/verify_cluster.py: document replication, peer recovery,
 # primary failover, primary relocation between the two kinds of node in both
 # directions, and segment replication -- native replicas of a Java primary,
@@ -65,7 +65,7 @@ start() { # name http-port transport-port rust-enabled
         -e transport.host=127.0.0.1 -e transport.port="$3" \
         -e discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303 \
         -e cluster.initial_cluster_manager_nodes=os1,os2,os3 \
-        -e lucene_rust.engine.node_enabled="$4" \
+        -e indices.engine.accelerated.node_enabled="$4" \
         -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
         -e cluster.routing.allocation.disk.threshold_enabled=false \
         -e OPENSEARCH_JAVA_OPTS="-Xms768m -Xmx768m" \

@@ -49,7 +49,7 @@
 //! As with [`crate::norms`], docs-with-a-value is one of empty/dense/sparse
 //! (dense: implicit by doc id; sparse: via [`crate::indexed_disi`]).
 //!
-//! The `RustAdaptive` format ([`Lucene90DocValuesFormat::rust_adaptive`])
+//! The `Adaptive90` format ([`Lucene90DocValuesFormat::rust_adaptive`])
 //! writes these same files, except that a NUMERIC or SORTED_NUMERIC value
 //! array may instead be [`crate::adaptive_values`] blocks where those are
 //! smaller (see [`AdaptiveEntry`]). Stock Lucene does not know the format
@@ -75,7 +75,7 @@ const DATA_META_CODEC: &str = "Lucene90DocValuesData";
 
 const META_CODEC: &str = "Lucene90DocValuesMetadata";
 /// The `tableSize` that marks a value array of [`crate::adaptive_values`]
-/// blocks, which only the `RustAdaptive` format writes: below every
+/// blocks, which only the `Adaptive90` format writes: below every
 /// `-2 - blockShift` Lucene90 writes. The rest of such an entry keeps
 /// Lucene90's shape, so Lucene's own `.dvm` parser walks past it; the
 /// format's name in the field's `PerFieldDocValuesFormat.format` attribute is
@@ -164,7 +164,7 @@ pub enum Error {
         "doc-values skip index offset/length ({0}, {1}) is out of range for a {2}-byte .dvs slice"
     )]
     SkipIndexOutOfRange(i64, i64, usize),
-    /// A `RustSubstring` entry's values are compressed blocks, read through
+    /// A `Substring90` entry's values are compressed blocks, read through
     /// [`BinaryReader::value_ref`] rather than sliced in place.
     #[error("field {0}'s values are compressed blocks; read them with BinaryReader::value_ref")]
     CompressedBinary(i32),
@@ -201,12 +201,12 @@ pub struct NumericEntry {
     /// when [`block_shift`](Self::block_shift) is `Some`.
     pub value_jump_table_offset: i64,
     /// `Some` when the values are [`crate::adaptive_values`] blocks (only in
-    /// a `RustAdaptive` file); `bits_per_value`, `min_value`, `gcd` and
+    /// a `Adaptive90` file); `bits_per_value`, `min_value`, `gcd` and
     /// `table` then describe nothing.
     pub adaptive: Option<Box<AdaptiveEntry>>,
 }
 
-/// Where a `RustAdaptive` value array's blocks are. The blocks fill the
+/// Where a `Adaptive90` value array's blocks are. The blocks fill the
 /// entry's `values_offset`/`values_length` region (padding included); the
 /// entry's `valueJumpTableOffset` points at a descriptor in `.dvd` --
 /// `vint blockShift`, the `DirectMonotonic` metadata, `i64 offset` and
@@ -294,7 +294,7 @@ pub struct BinaryEntry {
     /// `None` for fixed-length fields (`min_length == max_length`), where an
     /// entry's offset is computed directly as `ordinal * max_length`.
     pub addresses: Option<BinaryAddresses>,
-    /// The `RustSubstring` format's blocks and gram index, in place of one
+    /// The `Substring90` format's blocks and gram index, in place of one
     /// byte run ([`crate::substring`]).
     pub substring: Option<Box<crate::substring::SubstringEntry>>,
 }
@@ -833,7 +833,7 @@ fn read_adaptive_numeric_entry(
 }
 
 /// [`parse_meta`]'s check that adaptive value arrays appear only where the
-/// `RustAdaptive` format writes them: NUMERIC and SORTED_NUMERIC values,
+/// `Adaptive90` format writes them: NUMERIC and SORTED_NUMERIC values,
 /// never SORTED or SORTED_SET ordinals.
 fn check_adaptive_entries(meta: &DocValuesMeta) -> Result<()> {
     let adaptive = |e: &NumericEntry| e.adaptive.is_some();
@@ -2432,7 +2432,7 @@ pub struct BinaryReader<'a> {
     /// `None` when a region is not inside `data`, and each lookup then takes
     /// [`binary_value_at_ordinal`], which reports it.
     resolved: Option<ResolvedBinary<'a>>,
-    /// A `RustSubstring` entry's index and its last decompressed block.
+    /// A `Substring90` entry's index and its last decompressed block.
     substring: Option<
         Box<(
             crate::substring::SubstringIndex<'a>,
@@ -2523,7 +2523,7 @@ impl<'a> BinaryReader<'a> {
     }
 
     /// This document's value, or `None` when it has none: [`Self::value`],
-    /// and for a `RustSubstring` entry the value decompressed into this
+    /// and for a `Substring90` entry the value decompressed into this
     /// reader (so it lives until the next call).
     pub fn value_ref(&mut self, doc: i32) -> Result<Option<&[u8]>> {
         if self.entry.substring.is_none() {
@@ -3625,11 +3625,11 @@ pub struct Lucene90DocValuesFormat {
     /// `Asserting`).
     name: &'static str,
     /// Whether NUMERIC and SORTED_NUMERIC values may be written as
-    /// [`crate::adaptive_values`] blocks: the `RustAdaptive` format
+    /// [`crate::adaptive_values`] blocks: the `Adaptive90` format
     /// ([`Self::rust_adaptive`]), which Lucene cannot read.
     adaptive: bool,
     /// The block shift BINARY values are written in as
-    /// [`crate::substring`] blocks: the `RustSubstring` format
+    /// [`crate::substring`] blocks: the `Substring90` format
     /// ([`Self::rust_substring`]), which Lucene cannot read.
     substring: Option<u8>,
 }
@@ -3658,9 +3658,9 @@ impl Lucene90DocValuesFormat {
     }
 
     /// `getName()` of [`Self::rust_adaptive`].
-    pub const RUST_ADAPTIVE_NAME: &'static str = "RustAdaptive";
+    pub const RUST_ADAPTIVE_NAME: &'static str = "Adaptive90";
 
-    /// The `RustAdaptive` format: Lucene90's files, with each NUMERIC or
+    /// The `Adaptive90` format: Lucene90's files, with each NUMERIC or
     /// SORTED_NUMERIC value array written as [`crate::adaptive_values`]
     /// blocks whenever that is smaller. Stock Lucene has no format by this
     /// name, so it refuses such a field rather than misreading it; the
@@ -3673,15 +3673,15 @@ impl Lucene90DocValuesFormat {
         }
     }
 
-    /// Whether this is the `RustAdaptive` format.
+    /// Whether this is the `Adaptive90` format.
     pub fn is_adaptive(&self) -> bool {
         self.adaptive
     }
 
     /// `getName()` of [`Self::rust_substring`].
-    pub const RUST_SUBSTRING_NAME: &'static str = "RustSubstring";
+    pub const RUST_SUBSTRING_NAME: &'static str = "Substring90";
 
-    /// The `RustSubstring` format: Lucene90's files, with each BINARY field
+    /// The `Substring90` format: Lucene90's files, with each BINARY field
     /// written as [`crate::substring`] blocks of `2^block_shift` documents
     /// (capped at [`crate::substring::MAX_BLOCK_SHIFT`]) with a trigram
     /// index, searchable by substring, wildcard and regexp. Stock Lucene has
@@ -3695,7 +3695,7 @@ impl Lucene90DocValuesFormat {
         }
     }
 
-    /// The block shift of the `RustSubstring` format, `None` for any other.
+    /// The block shift of the `Substring90` format, `None` for any other.
     pub fn substring_block_shift(&self) -> Option<u8> {
         self.substring
     }
@@ -4412,7 +4412,7 @@ fn write_numeric_values_body_with(
     data.write_i64(addresses_length);
 }
 
-/// A BINARY entry body in the `RustSubstring` layout: Lucene90's prefix
+/// A BINARY entry body in the `Substring90` layout: Lucene90's prefix
 /// (data region, docs with a value, value count) with
 /// [`crate::substring::MIN_LENGTH_MARKER`] as `minLength`, then the
 /// substring metadata.
