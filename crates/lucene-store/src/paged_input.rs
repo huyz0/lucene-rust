@@ -131,6 +131,8 @@ const UFFDIO_API: libc::c_ulong = 0xC018_AA3F;
 const UFFDIO_REGISTER: libc::c_ulong = 0xC020_AA00;
 const UFFDIO_UNREGISTER: libc::c_ulong = 0x8010_AA01;
 const UFFDIO_WAKE: libc::c_ulong = 0x8010_AA02;
+/// At most this many pages are dropped per eviction pass.
+const EVICT_BATCH: usize = 64;
 const UFFDIO_COPY: libc::c_ulong = 0xC028_AA03;
 const UFFDIO_REGISTER_MODE_MISSING: u64 = 1;
 const UFFD_EVENT_PAGEFAULT: u8 = 0x12;
@@ -1182,15 +1184,33 @@ impl Pager {
     /// except that a page a prefetch announced since it was queued is
     /// protected instead, and a protected one gets one more pass.
     fn evict(&self) {
+        while self.evict_batch() {}
+    }
+
+    /// One pass of [`Self::evict`], dropping at most [`EVICT_BATCH`]
+    /// pages: whether it dropped any.
+    fn evict_batch(&self) -> bool {
         let budget = self.budget.load(Ordering::Relaxed);
         if self.resident_bytes.load(Ordering::Relaxed) <= budget {
-            return;
+            return false;
         }
         let cap = (budget / 4).saturating_mul(PROTECTED_SHARE);
+        // Victims are chosen under the queue lock and dropped after it is
+        // released: each drop is a syscall that flushes every CPU's TLB
+        // entries for the range, which would otherwise serialize every
+        // fault behind the lock.
+        let mut drops: Vec<(Arc<File>, usize, usize)> = Vec::with_capacity(EVICT_BATCH);
+        let mut pending: u64 = 0;
         let mut q = lock_ignoring_poison(&self.resident);
         // Each page can be passed over once per call, so the loop ends.
         let mut second_chances = q.probation.len().saturating_add(q.protected.len());
-        while self.resident_bytes.load(Ordering::Relaxed) > budget {
+        while self
+            .resident_bytes
+            .load(Ordering::Relaxed)
+            .saturating_sub(pending)
+            > budget
+            && drops.len() < EVICT_BATCH
+        {
             while q.protected_bytes > cap {
                 let Some(entry) = q.pop_protected() else {
                     break;
@@ -1227,8 +1247,15 @@ impl Pager {
             let len = file
                 .page
                 .min(file.map_len.saturating_sub(index.saturating_mul(file.page)));
-            // SAFETY: drops the pages of one page of a live registered
-            // mapping; the next access faults it back in, identical.
+            pending = pending.saturating_add(file.page as u64);
+            drops.push((file, start, len));
+        }
+        drop(q);
+        let dropped = !drops.is_empty();
+        for (file, start, len) in drops {
+            // SAFETY: drops the pages of one page of a registered mapping
+            // that `file` keeps alive; the page is no longer live, so the
+            // next access faults it back in, identical.
             unsafe { libc::madvise(start as *mut libc::c_void, len, libc::MADV_DONTNEED) };
             let _ = self
                 .resident_bytes
@@ -1236,6 +1263,7 @@ impl Pager {
                     Some(r.saturating_sub(file.page as u64))
                 });
         }
+        dropped
     }
 }
 
@@ -1307,6 +1335,30 @@ mod tests {
             fail_first: AtomicUsize::new(0),
             background: AtomicBool::new(false),
         })
+    }
+
+    #[test]
+    fn a_file_is_wholly_resident_once_every_page_is_read_within_budget() {
+        let Some(pager) = Pager::spawn(false) else {
+            return;
+        };
+        let page = 16 * 1024;
+        let len = 8 * page;
+        let input = pager.open(len, page, pattern(len, page), "whole").unwrap();
+        assert!(!input.file.all_resident());
+        let bytes = input.bytes();
+        for i in 0..len / page {
+            assert_eq!(bytes[i * page], byte(i * page));
+        }
+        // A handler marks a page live just after waking its reader.
+        let waited = std::time::Instant::now();
+        while !input.file.all_resident() {
+            assert!(waited.elapsed() < Duration::from_secs(5), "never resident");
+            std::thread::yield_now();
+        }
+        // Over budget, residency can change at any fault: not settled.
+        pager.set_budget(4 * page as u64);
+        assert!(!input.file.all_resident() || pager.resident_bytes() <= pager.budget());
     }
 
     #[test]
