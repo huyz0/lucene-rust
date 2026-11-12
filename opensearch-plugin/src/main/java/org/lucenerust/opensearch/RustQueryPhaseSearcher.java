@@ -379,53 +379,61 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             } else if (hasTimeout && deadlinePassed(ctx)) {
                 reason = "timeout";
             } else {
-                // The writer's buffered documents too, when the searcher has a view of them and
-                // the request is one the buffers answer; otherwise the reader's documents alone.
-                LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
-                boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
-                    && rescores == null && sort == null && terminateAfter == 0;
-                if (live == null) {
-                    reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
-                } else if (liveIneligible(ctx) != null) {
-                    // Lucene sees the view's documents as deleted and answers from the reader's.
-                    reason = "realtime_view";
-                } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
-                    // A k-NN search's hits, found when the query was rewritten: nothing of the
-                    // buffers is read again.
-                    storeKnnHits(ctx, hits);
-                } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
-                    // Everything else reads the buffers written as segments, one per leaf of the
-                    // view: aggregations, sorts, collapse, rescore, and what the plain path's
-                    // buffers cannot answer.
-                    if (ctx.mapperService().hasNested()) {
-                        // The fetch phase finds a buffered hit's root document by doc values the
-                        // view's leaves read only from the buffers given to Lucene as segments.
-                        readByLucene(ctx, searcher, live);
-                    }
-                    long[] whole = new long[1];
-                    long built = System.nanoTime();
-                    // The request's terms only: the hits query's (the post_filter's terms with the
-                    // query's), the rescore queries' and the aggregation tree's.
-                    byte[] request = hitsBlob;
-                    byte[][] rescoreBlobs = rescores == null ? null : rescores.stream().map(NativeRescore::blob).toArray(byte[][]::new);
-                    int[][] treeSlices = tree == null ? null : NativeAggregations.slices(ctx);
-                    byte[] treeBlob = treeSlices == null ? null : tree.blob(treeSlices);
-                    if (tree != null && treeBlob == null) {
-                        request = null;
-                    }
-                    int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
-                    if (rc == NativeBridge.OK) {
-                        stats.liveReaderTime(System.nanoTime() - built);
-                    }
-                    if (rc != NativeBridge.OK) {
-                        logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
+                // What the native calls allocate is charged to the request breaker while they run.
+                NativeMemory.Scope memory = NativeMemory.open(ctx, "native_search");
+                try {
+                    // The writer's buffered documents too, when the searcher has a view of them and
+                    // the request is one the buffers answer; otherwise the reader's documents alone.
+                    LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+                    boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
+                        && rescores == null && sort == null && terminateAfter == 0;
+                    if (live == null) {
+                        reason = searchNative(ctx, acquired.handle(), blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, false);
+                    } else if (liveIneligible(ctx) != null) {
+                        // Lucene sees the view's documents as deleted and answers from the reader's.
                         reason = "realtime_view";
-                    } else {
-                        reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
-                        if (reason == null) {
-                            stats.liveQuery();
+                    } else if (plain && plainIneligible(ctx) == false && query instanceof KnnHitsQuery hits) {
+                        // A k-NN search's hits, found when the query was rewritten: nothing of the
+                        // buffers is read again.
+                        storeKnnHits(ctx, hits);
+                    } else if (plain == false || plainIneligible(ctx) || searchLive(ctx, acquired.handle(), live, blob) == false) {
+                        // Everything else reads the buffers written as segments, one per leaf of the
+                        // view: aggregations, sorts, collapse, rescore, and what the plain path's
+                        // buffers cannot answer.
+                        if (ctx.mapperService().hasNested()) {
+                            // The fetch phase finds a buffered hit's root document by doc values the
+                            // view's leaves read only from the buffers given to Lucene as segments.
+                            readByLucene(ctx, searcher, live);
+                        }
+                        long[] whole = new long[1];
+                        long built = System.nanoTime();
+                        // The request's terms only: the hits query's (the post_filter's terms with the
+                        // query's), the rescore queries' and the aggregation tree's.
+                        byte[] request = hitsBlob;
+                        byte[][] rescoreBlobs = rescores == null ? null : rescores.stream().map(NativeRescore::blob).toArray(byte[][]::new);
+                        int[][] treeSlices = tree == null ? null : NativeAggregations.slices(ctx);
+                        byte[] treeBlob = treeSlices == null ? null : tree.blob(treeSlices);
+                        if (tree != null && treeBlob == null) {
+                            request = null;
+                        }
+                        int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
+                        if (rc == NativeBridge.OK) {
+                            stats.liveReaderTime(System.nanoTime() - built);
+                        }
+                        if (rc != NativeBridge.OK) {
+                            NativeMemory.check(rc);
+                            logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
+                            reason = "realtime_view";
+                        } else {
+                            reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
+                            if (reason == null) {
+                                stats.liveQuery();
+                            }
                         }
                     }
+                } finally {
+                    memory.close();
+                    stats.nativeMemory(memory.peak());
                 }
             }
             if (reason == null) {
@@ -527,7 +535,15 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int topN = NativeHybrid.numHits(ctx, hybrid);
         if (topN <= 0) return "hybrid_no_hits";
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices), out);
+        int rc;
+        NativeMemory.Scope memory = NativeMemory.open(ctx, "native_hybrid_search");
+        try {
+            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices), out);
+            NativeMemory.check(rc);
+        } finally {
+            memory.close();
+            stats.nativeMemory(memory.peak());
+        }
         if (rc != NativeBridge.OK) {
             logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
             return "native_error";
@@ -652,6 +668,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         long[] counts = new long[4];
         int rc = NativeBridge.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
+            NativeMemory.check(rc);
             stats.nativeError();
             if (scriptFailed()) {
                 throw scriptFailure(ctx.searcher().getIndexReader(), true);
@@ -1065,11 +1082,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, countHere ? countLimit : -1, total, perSegment
             );
             if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
             aggResult = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
+            NativeAggregations.consumeBuckets(ctx, aggResult);
             if (countHere && total[0] >= 0) {
                 counted = total;
                 if (total[2] == 1) {
@@ -1084,6 +1103,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             byte[][] result = new byte[1][];
             int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), result);
             if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
@@ -1099,6 +1119,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
                 return "native_error";
             }
+            NativeAggregations.consumeBuckets(ctx, aggResult);
         }
         String reason = collapseBlob != null ? searchCollapsed(ctx, handle, hitsBlob, sortBlob, collapseBlob, Math.max(1, numDocs))
             : sortBlob != null
@@ -1155,6 +1176,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 counts
             );
             if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
@@ -1166,6 +1188,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         } else {
             int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
             if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
@@ -1324,6 +1347,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         long[] out = new long[1];
         int rc = NativeBridge.countTerminates(handle, blob, spec.toByteArray(), out);
         if (rc != NativeBridge.OK) {
+            NativeMemory.check(rc);
             stats.nativeError();
             logger.warn("lucene-rust: native count replay failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
             return null;
@@ -1451,6 +1475,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             int rc = NativeBridge.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
             if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
                 stats.nativeError();
                 logger.warn("lucene-rust: native rescore failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
                 return "native_error";
@@ -1473,6 +1498,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         byte[][] out = new byte[1][];
         int rc = NativeBridge.searchCollapsed(handle, blob, sortBlob, collapseBlob, numDocs, out);
         if (rc != NativeBridge.OK) {
+            NativeMemory.check(rc);
             String message = NativeBridge.lastError();
             if (NativeCollapse.refused(message)) {
                 // A multi-valued collapse field: Lucene's collector raises the request's error.
@@ -1530,6 +1556,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         byte[][] terms = new byte[1][];
         int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts, terms);
         if (rc != NativeBridge.OK) {
+            NativeMemory.check(rc);
             stats.nativeError();
             logger.warn("lucene-rust: native sorted search failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
             return "native_error";
@@ -1685,6 +1712,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 out
             );
             if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
                 throw new IOException("native docFreq failed (" + rc + "): " + NativeBridge.lastError());
             }
             return Math.toIntExact(out[0]);
