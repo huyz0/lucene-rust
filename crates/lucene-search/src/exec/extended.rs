@@ -252,6 +252,9 @@ pub(crate) fn build<'a>(
         }
         // `PhraseWildcardQuery.createWeight` expands its multi-terms over
         // the whole reader.
+        ExtendedQuery::MultiPhrasePrefix(_) => Err(crate::Error::IllegalState(
+            "MultiPhrasePrefixQuery is only highlighted".into(),
+        )),
         ExtendedQuery::PhraseWildcard(_) => Err(crate::Error::IllegalState(
             "PhraseWildcardQuery must be rewritten against the searcher \
              (rescorer::rewrite_rescore_clauses) before it is searched"
