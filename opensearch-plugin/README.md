@@ -177,15 +177,22 @@ FIPS:
 A native failure is logged, counted as `native_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.
 
-Highlighters, suggesters and the query-string parsers stay OpenSearch's own:
-`NamedRegistry` refuses a plugin that registers a built-in name again, so
-they cannot be replaced. The query
-phase they ride on runs natively, `query_string` and `simple_query_string`
-included (but for the shapes that fall back by name: escaped wildcards,
-non-default regexp flags, phrases with position gaps), and so does an index
-with `completion` fields (the Completion90-104
+The `unified` highlighter (named, or the default when a field names no
+`type`) runs natively: `NamedRegistry` refuses a plugin that registers a
+built-in name again, so the plugin registers it as `rust_unified` and points
+each search's `unified` fields at it before the fetch phase. Its snippets are
+stock's, on every offset source (postings, term vectors, re-analysis with the
+field's analyzer built natively). `index.lucene_rust.highlight.enabled`
+(dynamic, default `true`) turns it off per index. A field whose query or
+analyzer cannot be sent falls back to OpenSearch's highlighter under a named
+reason (`highlight_<Class>`, `highlight_function_score_phrase`, an analyzer
+reason). `plain` and `fvh`, the suggesters and the query-string parsers stay
+OpenSearch's own; the query phase they ride on runs natively, `query_string`
+and `simple_query_string` included (but for the shapes that fall back by
+name: escaped wildcards, non-default regexp flags, phrases with position
+gaps), and so does an index with `completion` fields (the Completion90-104
 postings formats are read natively; the suggesters read Lucene's reader).
-Term vectors, which `fvh` and the unified highlighter may read, are Lucene's.
+Term vectors, which `fvh` reads, are Lucene's.
 See [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md#suggesters-and-highlighters).
 
 Native memory the JVM does not see, per segment of 10,000 documents or more:
