@@ -11,6 +11,10 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 /// `SEISMIC_HEAP_SIZE`: how many top scores decide whether a cluster is skipped.
 const SKIP_HEAP_SIZE: usize = 10;
 
+/// How many docs of a cluster ahead of the one scored its forward vector is
+/// asked for.
+const PREFETCH_AHEAD: usize = 4;
+
 /// Defaults of `SparseConstants`.
 const DEFAULT_CEILING_INGEST: f32 = 3.0;
 const DEFAULT_CEILING_SEARCH: f32 = 16.0;
@@ -319,6 +323,23 @@ impl ForwardVectors {
         Ok(out)
     }
 
+    /// Starts loading where `doc`'s vector starts, for
+    /// [`Self::prefetch_vector`] a few docs later.
+    #[inline]
+    fn prefetch_start(&self, doc: usize) {
+        lucene_util::simd::prefetch(&self.starts, doc);
+    }
+
+    /// Starts loading `doc`'s tokens and weights, so the dot product a few
+    /// docs later does not stall on them.
+    #[inline]
+    fn prefetch_vector(&self, doc: usize) {
+        if let Some(&start) = self.starts.get(doc) {
+            lucene_util::simd::prefetch(&self.tokens, start);
+            lucene_util::simd::prefetch(&self.weights, start);
+        }
+    }
+
     /// `SparseVector.dotProduct` of `doc`'s vector with the dense query,
     /// `None` when the document has no vector.
     fn dot(&self, doc: usize, dense: &[u8]) -> Option<i32> {
@@ -397,19 +418,38 @@ pub fn search(
     let mut visited = FixedBitSet::new(max_doc);
     let mut skip_heap = ScoreHeap::new(SKIP_HEAP_SIZE);
     let mut results = ScoreHeap::new(query.k);
+    let mut docs: Vec<i32> = Vec::new();
     for token in &query.top_tokens {
-        let Some(clusters) = segment.postings.clusters(field.number, token.as_bytes())? else {
+        let Some(mut clusters) = segment.postings.cursor(field.number, token.as_bytes())? else {
             continue;
         };
-        for cluster in clusters {
+        while let Some(cluster) = clusters.next()? {
             if !cluster.should_not_skip && skip_heap.is_full() {
-                let summary_score = cluster.summary.as_ref().map_or(0, |s| s.dot(&query.dense));
+                let summary_score = cluster.summary_dot(&query.dense)?;
                 let bound = skip_heap.min_score().unwrap_or(0) as f32 / query.heap_factor;
                 if (summary_score as f32) < bound {
                     continue;
                 }
             }
-            for &doc in &cluster.docs {
+            cluster.docs_into(&mut docs)?;
+            // A cluster's docs are scattered over the forward index: each
+            // vector is two dependent loads away (where it starts, then its
+            // tokens), so the start is asked for two strides ahead and the
+            // tokens one stride ahead, once the start is in cache.
+            if let Some(f) = segment.forward {
+                for &d in docs.iter().take(2 * PREFETCH_AHEAD) {
+                    f.prefetch_start(usize::try_from(d).unwrap_or(usize::MAX));
+                }
+            }
+            for (i, &doc) in docs.iter().enumerate() {
+                if let Some(f) = segment.forward {
+                    if let Some(&ahead) = docs.get(i.saturating_add(2 * PREFETCH_AHEAD)) {
+                        f.prefetch_start(usize::try_from(ahead).unwrap_or(usize::MAX));
+                    }
+                    if let Some(&ahead) = docs.get(i.saturating_add(PREFETCH_AHEAD)) {
+                        f.prefetch_vector(usize::try_from(ahead).unwrap_or(usize::MAX));
+                    }
+                }
                 let Ok(d) = usize::try_from(doc) else {
                     continue;
                 };
