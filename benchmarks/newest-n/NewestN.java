@@ -126,6 +126,17 @@ public class NewestN {
       s.add(new Shape("match_all ts desc search_after", all, desc, n, true));
       s.add(new Shape("src=hdfs tsec(ties) desc search_after", hdfs, ties, n, true));
     }
+    // Filters whose best matches lie far from the key's best, which the
+    // bounded search hands back to a whole pass (after the shapes above, so
+    // their indices stay put).
+    Query oldHalf = LongPoint.newRangeQuery("tsec", T0, T0 + SPAN / 2);
+    Query middle = LongPoint.newRangeQuery("tsec", T0 + SPAN / 3, T0 + 2 * SPAN / 3);
+    for (int n : new int[] {10, 100, 1000}) {
+      s.add(new Shape("src=openssh ts asc", ssh, asc, n, false));
+      s.add(new Shape("tsec(old half) ts desc", oldHalf, desc, n, false));
+      s.add(new Shape("tsec(middle third) ts desc", middle, desc, n, false));
+      s.add(new Shape("tsec(middle third) ts asc", middle, asc, n, false));
+    }
     return s;
   }
 

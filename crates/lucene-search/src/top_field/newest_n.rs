@@ -21,7 +21,8 @@
 //! keeps: the same documents in the same order, ties broken by document as
 //! everywhere else. Otherwise (a selective query, deletions, several values a
 //! document) `k` grows and the search runs again, until the range would cover
-//! most of the index, where the ordinary search runs instead.
+//! most of the index, where one pass over the rest of the matches finishes
+//! it (see [`rest`]).
 //!
 //! The total is counted on its own, up to the search's threshold: exact below
 //! it, a lower bound (`GreaterThanOrEqualTo`) once it is reached -- what
@@ -31,7 +32,10 @@
 use lucene_codecs::field_infos::DocValuesType;
 use lucene_codecs::points::{PointTreeNode, PointsReader};
 
-use super::{search_segments, FieldDoc, Run, Selector, SortField, SortType, TopFieldDocs};
+use super::{
+    leaf_context, open_leaf, rewritten_clause, search_segments, FieldDoc, LeafKey, Pruning, Run,
+    Selector, SortField, SortType, TopField, TopFieldDocs,
+};
 use crate::collector::{TotalHits, TotalHitsRelation};
 use crate::exec::{self, Mode, NO_MORE_DOCS};
 use crate::extended_query::{ExtendedQuery, NumericDocValuesRangeQuery};
@@ -439,14 +443,14 @@ pub(super) fn search(run: &Run<'_, '_>) -> Result<Option<TopFieldDocs>> {
             if prev.is_none() {
                 return Ok(None);
             }
-            // The rest of the range: the ordinary search after the last bound.
+            // The rest of the range: one pass after the last bound.
             let r = Run {
                 top_n: remaining,
                 total_hits_threshold: 0,
                 after: after.as_ref(),
                 ..*run
             };
-            hits.extend(search_segments(&r, &all)?.hits);
+            hits.extend(rest(&r)?);
             return Ok(Some(finish(run, hits, n)?));
         };
         let q = restricted(run.query, key, tv, prev, points_cover);
@@ -484,6 +488,104 @@ pub(super) fn search(run: &Run<'_, '_>) -> Result<Option<TopFieldDocs>> {
         k = next.max(k.saturating_mul(2));
         prev = Some(tv);
     }
+}
+
+/// The rest of the range once the slices stop: the top `run.top_n` after
+/// `run.after`, by the one key.
+///
+/// The total is counted on its own (see [`finish`]), so nothing here needs
+/// the collector's count, and the queue need not be the collector's either:
+/// every match below the bound is read and kept in a buffer, which is cut
+/// back to the best `top_n` (a selection, not a heap) whenever it fills, the
+/// worst kept becoming the bar a later match must clear. The kept hits are
+/// those of the ordinary search -- the same order, ties broken by document --
+/// at a fraction of its cost where most matches are competitive: segments
+/// whose values grow with the document, read against a descending sort.
+fn rest(run: &Run<'_, '_>) -> Result<Vec<FieldDoc>> {
+    #[cfg(test)]
+    tests::RESTS.with(|c| c.set(c.get().saturating_add(1)));
+    let key = &run.sort[0];
+    let top_n = run.top_n;
+    if top_n == 0 {
+        return Ok(Vec::new());
+    }
+    // The order: better key first, then the smaller document.
+    let rank = |g: i128, doc: i32| (g, std::cmp::Reverse(doc));
+    let after = match run.after {
+        None => None,
+        Some(a) => match a.values.first() {
+            Some(&v) => Some(rank(good(key, v), a.doc)),
+            None => return ordinary(run),
+        },
+    };
+    let mut tf = TopField::new(run.sort, top_n, 0, run.after);
+    for c in &mut tf.comps {
+        c.pruning = Pruning::None;
+    }
+    let clause = rewritten_clause(run.query);
+    let cap = top_n.saturating_mul(4).max(256);
+    let mut buf: Vec<(i128, i32, i64)> = Vec::with_capacity(cap.min(1 << 14));
+    // The worst hit kept after the last cut, once `top_n` are kept.
+    let mut bar: Option<(i128, std::cmp::Reverse<i32>)> = None;
+    let cut = |buf: &mut Vec<(i128, i32, i64)>| {
+        if buf.len() > top_n {
+            buf.select_nth_unstable_by(top_n - 1, |a, b| rank(b.0, b.1).cmp(&rank(a.0, a.1)));
+            buf.truncate(top_n);
+        }
+        if buf.len() == top_n {
+            buf.iter().map(|h| rank(h.0, h.1)).min()
+        } else {
+            None
+        }
+    };
+    for (i, (seg, reader)) in run.segments.iter().zip(run.readers).enumerate() {
+        let ctx = leaf_context(run, seg, i);
+        let Some(child) = exec::build::child(&ctx, &clause, 1.0, Mode::NoScores, true)? else {
+            continue;
+        };
+        let mut scorer = child.into_scorer(Mode::NoScores);
+        let mut leaf = open_leaf(&mut tf, reader, seg, scorer.cost())?;
+        let Some(LeafKey::Numeric(column)) = leaf.keys.first_mut() else {
+            return ordinary(run);
+        };
+        let base = seg.doc_base;
+        let two_phase = scorer.two_phase();
+        let mut doc = scorer.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            if seg.live_docs.is_none_or(|l| l.get_doc(doc)) && (!two_phase || scorer.matches()?) {
+                let v = match column.quick_value(doc) {
+                    Some(v) => v,
+                    None => column.value(doc)?,
+                };
+                let g = good(key, v);
+                let global = base.saturating_add(doc);
+                let r = rank(g, global);
+                if after.is_none_or(|a| r < a) && bar.is_none_or(|b| r > b) {
+                    buf.push((g, global, v));
+                    if buf.len() >= cap {
+                        bar = cut(&mut buf);
+                    }
+                }
+            }
+            doc = scorer.next_doc()?;
+        }
+    }
+    cut(&mut buf);
+    buf.sort_unstable_by_key(|h| std::cmp::Reverse(rank(h.0, h.1)));
+    Ok(buf
+        .into_iter()
+        .map(|(_, doc, v)| FieldDoc {
+            doc,
+            values: vec![v],
+            terms: Vec::new(),
+        })
+        .collect())
+}
+
+/// [`rest`] by the ordinary search, for what it does not read itself.
+fn ordinary(run: &Run<'_, '_>) -> Result<Vec<FieldDoc>> {
+    let all: Vec<usize> = (0..run.segments.len().min(run.readers.len())).collect();
+    Ok(search_segments(run, &all)?.hits)
 }
 
 /// The hits, with the total counted for the original query.
