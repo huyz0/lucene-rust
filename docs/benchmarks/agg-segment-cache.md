@@ -4,8 +4,8 @@ The aggregation segment cache keeps what an aggregation collected from each
 segment, so a dashboard asked again after a refresh collects only the segments
 that changed. OpenSearch's shard request cache keys a whole shard's answer by
 its reader, so a refresh or a moved time window misses it. The cache is
-`index.lucene_rust.search.aggregation_segment_cache` (index, dynamic, default
-`false`), within the node's `lucene_rust.search.aggregation_segment_cache.size`
+`index.search.aggregation_segment_cache.enabled` (index, dynamic, default
+`false`), within the node's `indices.aggregation_segment_cache.size`
 (default `256mb`). See [operations](../operations.md).
 
 How to reproduce: [`benchmarks/agg-segment-cache`](../../benchmarks/agg-segment-cache/README.md)

@@ -100,7 +100,7 @@ def main():
         bn.req("POST", "/bench/_refresh", timeout=3600)
         print("merged")
     elif cmd == "java":
-        bn.req("PUT", "/bench/_settings", {"index.lucene_rust.search.enabled": sys.argv[3] == "on"})
+        bn.req("PUT", "/bench/_settings", {"index.search.accelerated": sys.argv[3] == "on"})
 
 
 main()

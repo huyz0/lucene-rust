@@ -7,7 +7,7 @@ import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 
 /**
  * The reader over the view of the buffers searches share under a staleness bound ({@code
- * index.lucene_rust.realtime_max_staleness}): the native engine gives every search of a shared
+ * index.search.realtime.max_staleness}): the native engine gives every search of a shared
  * view the same handle, so a search that gets the handle the kept reader reads, over the same
  * commit's reader, takes that reader instead of wrapping its own.
  */

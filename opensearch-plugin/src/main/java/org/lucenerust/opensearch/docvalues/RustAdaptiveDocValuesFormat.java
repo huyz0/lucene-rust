@@ -12,20 +12,20 @@ import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
 
 /**
- * The {@code RustAdaptive} doc-values format the Rust engine writes under {@code
- * index.lucene_rust.adaptive_doc_values}: {@code Lucene90DocValuesFormat}'s files, in which a NUMERIC or
+ * The {@code Adaptive90} doc-values format the Rust engine writes under {@code
+ * index.codec.adaptive_doc_values}: {@code Lucene90DocValuesFormat}'s files, in which a NUMERIC or
  * SORTED_NUMERIC field's values may be stored as adaptive blocks (delta, offset, GCD and decimal
  * transforms, then bit-packing; {@code lucene-codecs/src/adaptive_values.rs}). Every other field,
  * the skip indexes and the checksums are Lucene90's own, read by Lucene90's producer.
  *
  * <p>Java writes it as plain Lucene90 (adaptive blocks are optional per field): a doc-values update
- * generation on a RustAdaptive field, which Lucene writes under the field's existing format name,
+ * generation on a Adaptive90 field, which Lucene writes under the field's existing format name,
  * stays readable. A Java merge writes its own codec's formats, so it rewrites the fields
  * stock-readable.
  */
 public final class RustAdaptiveDocValuesFormat extends DocValuesFormat {
     /** {@code Lucene90DocValuesFormat::RUST_ADAPTIVE_NAME} in {@code doc_values.rs}. */
-    public static final String NAME = "RustAdaptive";
+    public static final String NAME = "Adaptive90";
 
     private final Lucene90DocValuesFormat lucene90 = new Lucene90DocValuesFormat();
 

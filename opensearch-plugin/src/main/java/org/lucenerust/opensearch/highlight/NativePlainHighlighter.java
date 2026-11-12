@@ -45,7 +45,7 @@ import java.util.Map;
  */
 public final class NativePlainHighlighter extends PlainHighlighter {
     /** The name it is registered under; {@link HighlightRouting} points {@code plain} fields at it. */
-    public static final String NAME = "rust_plain";
+    public static final String NAME = "accelerated_plain";
 
     private static final Logger logger = LogManager.getLogger(NativePlainHighlighter.class);
 

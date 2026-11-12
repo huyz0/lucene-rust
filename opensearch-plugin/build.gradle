@@ -254,9 +254,9 @@ def engineWriterTest = tasks.register('engineWriterTest', JavaExec) {
     systemProperty 'lucene_rust.library.path', nativeLib.absolutePath
     jvmArgs nativeAccess, '-ea'
 }
-// The rust_encrypted store: Lucene and the Rust engine reading and writing one encrypted index.
+// The encrypted store: Lucene and the Rust engine reading and writing one encrypted index.
 def encryptedStoreTest = tasks.register('encryptedStoreTest', JavaExec) {
-    description = 'The rust_encrypted store end to end: Java writes / Rust reads, Rust writes / Java reads.'
+    description = 'The encrypted store end to end: Java writes / Rust reads, Rust writes / Java reads.'
     dependsOn tasks.named('testClasses'), cargoBuild
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.lucenerust.opensearch.engine.EncryptedStoreTest'

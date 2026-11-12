@@ -84,7 +84,7 @@ public final class SparseVectorQuery extends Query {
 
     @Override
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) {
-        throw new IllegalStateException("[neural_sparse] on a [sparse_vector] field is searched by the Rust engine only");
+        throw new IllegalStateException("[neural_sparse] on a [sparse_vector] field is searched by the accelerated engine only");
     }
 
     @Override

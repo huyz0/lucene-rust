@@ -199,7 +199,7 @@ client pinned to the fourth), index of the same 6.45M lines in 4 segments,
 
 Stock OpenSearch rewrites a sorted range or `match_all` into its
 `ApproximatePointRangeQuery`, which the plugin used to hand back to Java. The
-new index setting `index.lucene_rust.search.native_approximate` (default
+new index setting `index.search.approximation.exact` (default
 `false`, dynamic) keeps those queries native.
 
 | shape | size | stock OpenSearch | plugin (default) | plugin, `native_approximate` | hits identical |

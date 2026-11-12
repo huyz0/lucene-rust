@@ -1,4 +1,4 @@
-//! The `RustSubstring` doc-values format's BINARY entries
+//! The `Substring90` doc-values format's BINARY entries
 //! ([`crate::doc_values::Lucene90DocValuesFormat::rust_substring`]): a
 //! field whose values can be searched by substring, wildcard and regexp
 //! without a term per value -- what Elasticsearch's and OpenSearch's

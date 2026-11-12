@@ -21,9 +21,9 @@ import org.apache.lucene.search.Weight;
 import org.apache.lucene.util.BytesRef;
 
 /**
- * A query on a {@code rust_wildcard} field: the documents whose value passes {@link #matcher}, the
+ * A query on a {@code compact_wildcard} field: the documents whose value passes {@link #matcher}, the
  * test OpenSearch's {@code wildcard} field runs on each candidate (its {@code WildcardMatchingQuery}'s
- * second phase), constant-scored. The native engine answers it from the field's {@code RustSubstring}
+ * second phase), constant-scored. The native engine answers it from the field's {@code Substring90}
  * blocks and trigram index ({@code NODE_SUBSTRING}); Lucene, here, tests every value.
  *
  * <p>{@link #kind} and {@link #pattern} are what the native side runs ({@code SubstringQuery}); a

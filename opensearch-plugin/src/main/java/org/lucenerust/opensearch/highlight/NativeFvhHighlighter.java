@@ -54,7 +54,7 @@ import java.util.Set;
  */
 public final class NativeFvhHighlighter extends FastVectorHighlighter {
     /** The name it is registered under; {@link HighlightRouting} points {@code fvh} fields at it. */
-    public static final String NAME = "rust_fvh";
+    public static final String NAME = "accelerated_fvh";
 
     private static final Logger logger = LogManager.getLogger(NativeFvhHighlighter.class);
 

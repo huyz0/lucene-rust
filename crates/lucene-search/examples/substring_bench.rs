@@ -1,6 +1,6 @@
 //! Substring search over a log corpus: the Rust side of
 //! `docs/benchmarks/substring-field.md`. One line per document, `msg` a
-//! BINARY doc values field in the `RustSubstring` format (or plain BINARY),
+//! BINARY doc values field in the `Substring90` format (or plain BINARY),
 //! `line` its line number.
 //!
 //! ```text

@@ -1,4 +1,4 @@
-//! The `RustAdaptive` doc-values format end to end at the codec layer: what
+//! The `Adaptive90` doc-values format end to end at the codec layer: what
 //! [`doc_values::write_fields_with_format`] writes under it reads back value
 //! for value through every reader path, a Lucene90 file never carries an
 //! adaptive value array, and the format falls back to Lucene90's encodings
@@ -285,9 +285,9 @@ fn lucene90_encodings_win_where_they_are_smaller() {
             Lucene90DocValuesFormat::default(),
             &[],
         );
-        // The same bytes as Lucene90 wrote, under a segment suffix 4 bytes
-        // longer.
-        assert_eq!(data.len(), ldata.len() + 4);
+        // The same bytes as Lucene90 wrote, under a segment suffix 2 bytes
+        // longer ("Adaptive90" against "Lucene90").
+        assert_eq!(data.len(), ldata.len() + 2);
         let parsed = parse(&meta, &data, format, &fis);
         let entry = parsed.numeric_entry(0).unwrap();
         assert!(entry.adaptive.is_none());

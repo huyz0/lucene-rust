@@ -1,7 +1,7 @@
 # Leaner sequence numbers on a logs index
 
-What `index.lucene_rust.seq_no.index_options: doc_values_only` and
-`index.lucene_rust.disable_sequence_numbers: true` (see
+What `index.seq_no.index_options: doc_values_only` and
+`index.disable_sequence_numbers: true` (see
 [opensearch-engine.md](../opensearch-engine.md#leaner-sequence-numbers)) save
 on a logs index, and what they cost.
 

@@ -1,4 +1,4 @@
-# Substring field (`RustSubstring` doc values)
+# Substring field (`Substring90` doc values)
 
 `scripts/bench-substring-field.sh` (2026-11-11, 4 vCPU Xeon 2.3 GHz cloud
 VM, one thread, query cache off). Corpus: 6,454,808 log lines (856 MB),
@@ -9,7 +9,7 @@ by token wildcard, regexp, term or AND. `wildcard` is OpenSearch's
 `wildcard` field layout: anchored 3-grams (docs only) plus sorted-set doc
 values, searched by `WildcardMatchingQuery` (gram approximation, then
 every candidate's value through the pattern). This port writes `msg` as
-BINARY doc values in the `RustSubstring` format and searches it with
+BINARY doc values in the `Substring90` format and searches it with
 `SubstringQuery`. Every index flushes 256 MB buffers without merging, then
 force-merges to one segment.
 
@@ -58,10 +58,10 @@ Sorting on the field (`STRING_VAL`) is refused with a typed error.
 | `text` (stock) | 192.2 | 26.6 | 242k | 7.1 |
 | `wildcard` (stock, OpenSearch layout) | 784.9 | 74.4 | 87k | 15.7 |
 | plain BINARY doc values | 837.7 | 8.9 | 727k | 4.0 |
-| `RustSubstring` shift 3 (8 docs/block) | 681.6 | 27.1 | 238k | 22.7 |
-| `RustSubstring` shift 4 (16) | 503.9 | 25.4 | 254k | 20.4 |
-| **`RustSubstring` shift 5 (32, default)** | **382.6** | 22.7 | 285k | 18.2 |
-| `RustSubstring` shift 6 (64) | 303.4 | 21.4 | 302k | 15.7 |
+| `Substring90` shift 3 (8 docs/block) | 681.6 | 27.1 | 238k | 22.7 |
+| `Substring90` shift 4 (16) | 503.9 | 25.4 | 254k | 20.4 |
+| **`Substring90` shift 5 (32, default)** | **382.6** | 22.7 | 285k | 18.2 |
+| `Substring90` shift 6 (64) | 303.4 | 21.4 | 302k | 15.7 |
 
 LZ4 high compression saved only 5% (365.2 MiB at shift 5, 283.0 at
 shift 6) for 20% more write time, so blocks use the fast table. The

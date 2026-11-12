@@ -235,7 +235,7 @@ Keep OpenSearch's aggregation framework on the JVM and feed it from Rust:
       (`scripts/verify-opensearch-cluster.sh`: every copy checked against a
       model of what was acknowledged).
 - [x] A **mixed cluster** operates correctly. Rust-engine nodes alongside a
-      node with `lucene_rust.engine.node_enabled: false`, primaries relocated
+      node with `indices.engine.accelerated.node_enabled: false`, primaries relocated
       between the two kinds in both directions, and failover.
 - [x] Sequence numbers, local checkpoint and commit user data are
       byte-compatible with `InternalEngine`'s. Java's engine recovers shards
@@ -247,7 +247,7 @@ Keep OpenSearch's aggregation framework on the JVM and feed it from Rust:
 - [x] A Rust-engine panic **fails exactly one shard**; the node survives and
       continues serving other shards. The shard recovers from its translog.
 - [x] Circuit-breaker accounting reflects Rust-side memory: a lowered
-      `lucene_rust_writer` limit trips with a 429, node stats list the
+      `indexing_buffers` limit trips with a 429, node stats list the
       breaker and its trip, and a refresh releases the accounting.
 - [x] Aggregation results are identical to the Java engine's across terms,
       histogram, date_histogram, avg/sum/min/max, cardinality, percentiles,

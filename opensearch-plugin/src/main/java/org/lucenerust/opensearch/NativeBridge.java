@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 167;
+    public static final int EXPECTED_ABI_VERSION = 168;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -2152,7 +2152,7 @@ public final class NativeBridge {
     public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
     public static final int STORED_FIELDS_ZSTD = 2;
     public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
-    /** The Rust engine's paged zstd stored fields ({@code index.lucene_rust.stored_fields.paged_zstd}). */
+    /** The Rust engine's paged zstd stored fields ({@code index.codec.stored_fields.page_aligned}). */
     public static final int STORED_FIELDS_ZSTD_PAGED = 4;
 
     // ---- ml-commons local models (ml.rs). ----
@@ -2585,8 +2585,8 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format; {@code zstdTerms} writes every field's terms in the {@code
-     * RustZstd104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
+     * the {@code Adaptive90} format; {@code zstdTerms} writes every field's terms in the {@code
+     * ZstdTerms104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
      * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions;
      * {@code knn} writes a k-NN index's segments under the k-NN codec's name, listing the fields
@@ -3590,7 +3590,7 @@ public final class NativeBridge {
         }
     }
 
-    // ---- RustZstd104 terms dictionaries (zstd_terms.rs). ----
+    // ---- ZstdTerms104 terms dictionaries (zstd_terms.rs). ----
 
     /** Prepares a field's zstd term-block dictionary; its handle into {@code outHandle[0]}. */
     public static int zstdTermsDictionaryOpen(byte[] dictionary, long[] outHandle) {
