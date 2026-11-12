@@ -1214,8 +1214,8 @@ pub(crate) struct ScoredRanges<'a> {
 }
 
 impl<'a> ScoredRanges<'a> {
-    /// `query` over the segment of `ctx`, scored in `COMPLETE` mode behind
-    /// `min_score` `min`.
+    /// `query` over the segment of `ctx` from document `from` on, scored in
+    /// `COMPLETE` mode behind `min_score` `min`.
     ///
     /// # Errors
     /// What building the scorer reports.
@@ -1224,24 +1224,26 @@ impl<'a> ScoredRanges<'a> {
         query: &BooleanQuery,
         live: Option<&'a FixedBitSet>,
         min: f32,
+        from: i32,
     ) -> Result<Self> {
         Ok(ScoredRanges {
             bulk: exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)?,
             live,
             min,
-            next: 0,
+            next: from,
         })
     }
 
-    /// The matches of the next range of `width` documents, by document, in
-    /// `docs` and their scores in `scores`; `false` once the segment is
-    /// done (nothing left to score). A range may hold no match.
+    /// The matches of the next range of `width` documents below `end`, by
+    /// document, in `docs` and their scores in `scores`; `false` once
+    /// nothing is left to score below `end`. A range may hold no match.
     ///
     /// # Errors
     /// What scoring reports.
     pub(crate) fn next(
         &mut self,
         width: i32,
+        end: i32,
         docs: &mut Vec<i32>,
         scores: &mut Vec<f32>,
     ) -> Result<bool> {
@@ -1257,10 +1259,10 @@ impl<'a> ScoredRanges<'a> {
         let Some(bulk) = self.bulk.as_mut() else {
             return Ok(false);
         };
-        if self.next == exec::NO_MORE_DOCS {
+        if self.next >= end {
             return Ok(false);
         }
-        let max = self.next.saturating_add(width);
+        let max = self.next.saturating_add(width).min(end);
         let mut sink = Hits(docs, scores);
         let mut passing = crate::collector::MinScoreCollector::new(&mut sink, self.min);
         self.next = bulk.score(Mode::Complete, self.live, &mut passing, self.next, max)?;
