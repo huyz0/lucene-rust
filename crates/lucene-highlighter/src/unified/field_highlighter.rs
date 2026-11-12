@@ -122,14 +122,14 @@ impl FieldHighlighter {
     }
 
     /// The queue's order: weakest first, then the earlier start.
-    fn weaker(left: &Passage, right: &Passage) -> Ordering {
+    pub(crate) fn weaker(left: &Passage, right: &Passage) -> Ordering {
         left.score()
             .partial_cmp(&right.score())
             .unwrap_or(Ordering::Equal)
             .then(left.start_offset().cmp(&right.start_offset()))
     }
 
-    fn head(queue: &[Passage]) -> usize {
+    pub(crate) fn head(queue: &[Passage]) -> usize {
         let mut head = 0;
         for i in 1..queue.len() {
             if Self::weaker(&queue[i], &queue[head]) == Ordering::Less {
@@ -139,7 +139,7 @@ impl FieldHighlighter {
         head
     }
 
-    fn maybe_add_passage(
+    pub(crate) fn maybe_add_passage(
         &self,
         queue: &mut Vec<Passage>,
         mut passage: Passage,
