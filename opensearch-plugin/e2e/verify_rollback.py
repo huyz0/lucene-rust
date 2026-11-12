@@ -10,8 +10,10 @@ as they did at the start (native or not, the answers are Lucene's).
 Forward -- adopting the Rust engine:
   F1. The cluster runs OpenSearch without the plugin; index `legacy` is
       written by OpenSearch's engine.
-  F2. Rolling restart onto the plugin image. `legacy` stays on OpenSearch's
-      engine (it never asked for the Rust one); searches on it go native.
+  F2. Rolling restart onto the plugin image. `legacy` moves onto the accelerated
+      engine shard by shard (it inherits `indices.engine.accelerated.default`, on
+      by default), copies on both engines while the restart runs, and carries no
+      plugin setting; searches on it go native.
   F3. Adoption: reindex `legacy` into `adopted`, created with
       `index.engine.accelerated: true`, and move the alias `app` over.
 
@@ -23,7 +25,8 @@ Backward -- rolling back off it:
       a node without the plugin refuses an index that carries the final
       `index.engine.accelerated`, so a rolling removal needs it gone.
   B3. Rolling restart onto OpenSearch without the plugin; every document and
-      every answer stays.
+      every answer stays, `legacy` (written by the accelerated engine since F2)
+      included, with no reindex.
 
 Timings for each step go to the JSON file named by --out.
 Standard library only.
@@ -326,8 +329,10 @@ def main():
     model.verify("legacy", "F2")
     same_answers(ref, "legacy", "F2")
     e = engines()
-    check(all(x is not None and x["accelerated"] == 0 for x in e.values()),
-          f"F2: legacy stays on OpenSearch's engine: {e}")
+    check(all(x is not None and x["accelerated"] > 0 for x in e.values()),
+          f"F2: legacy moved onto the accelerated engine on every node: {e}")
+    s = req("GET", "/legacy/_settings?flat_settings=true")["legacy"]["settings"]
+    check(not any(k.startswith("index.engine.") for k in s), f"F2: legacy carries no plugin setting: {s}")
     before = sum(req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] for _ in [0])
     req("POST", "/legacy/_search", {"query": {"match": {"body": "alpha"}}})
     check(req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] >= before, "F2: the plugin serves searches")
