@@ -432,6 +432,14 @@ impl CodeScorer<'_> {
 }
 
 impl lucene_codecs::hnsw::VectorScorer for CodeScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        lucene_codecs::hnsw::read_ahead_span(self.code_len)
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        lucene_codecs::hnsw::read_ahead_rows(self.codes, self.count, self.code_len, from, to);
+    }
+
     fn score(&mut self, node: i32) -> std::result::Result<f32, lucene_codecs::vectors::Error> {
         Ok(self.scorer.score(self.code(node)?))
     }
