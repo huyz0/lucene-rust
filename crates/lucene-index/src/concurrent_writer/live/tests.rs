@@ -262,7 +262,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
     let tmp = TempDir::new("live-flushing");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
     for i in 0..5 {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
     }
@@ -302,7 +302,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
     // A commit holds every buffer; once released, an older reader is
     // refused rather than answered without them.
     w.commit().unwrap();
-    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = w.with_writer(|iw| iw.segment_infos().version);
     let snap = w
         .live_snapshot(&body(false, &["common"]), Some(generation))
         .unwrap();
@@ -337,7 +337,7 @@ fn released_buffers_go_when_their_last_view_closes() {
     let tmp = TempDir::new("live-release");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let generation = || w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = || w.with_writer(|iw| iw.segment_infos().version);
     let req = body(false, &["common"]);
     let mut gens = Vec::new();
     for i in 0..2 {
@@ -391,7 +391,7 @@ fn a_view_of_a_commit_carries_the_deletes_issued_since() {
     let tmp = TempDir::new("live-commit-deletes");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let generation = || w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = || w.with_writer(|iw| iw.segment_infos().version);
     let deletes = |g: i64| {
         let view = w.open_live_view(Some(g)).unwrap();
         w.close_live_view(&view);
@@ -451,6 +451,73 @@ fn a_view_of_a_commit_carries_the_deletes_issued_since() {
     // A rollback goes back to the last commit, which can be viewed again.
     w.rollback();
     assert!(deletes(g1).is_empty());
+}
+
+/// An NRT snapshot is a reader's segment list as a commit is, with no
+/// commit written: a view of its version reads the buffers it lacks and
+/// names the deletes issued since, a snapshot that changed nothing keeps
+/// the version, and releasing it lets older readers' buffers go.
+#[test]
+fn a_view_of_an_nrt_snapshot_reads_what_it_lacks() {
+    use crate::nrt::NrtSource;
+    let tmp = TempDir::new("live-nrt");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
+    for i in 0..3 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    w.delete_documents_by_term(&[id(0)]).unwrap();
+    let v0 = w.nrt_snapshot(true, true).unwrap().segment_infos.version;
+    assert!(v0 > start);
+    assert_eq!(
+        w.with_writer(|iw| iw.segment_infos().generation),
+        generation,
+        "no commit"
+    );
+    let view = w.open_live_view(Some(v0)).unwrap();
+    w.close_live_view(&view);
+    assert!(view.buffers.is_empty(), "the snapshot holds every document");
+    assert!(view.commit_deletes.is_empty(), "and the delete before it");
+
+    w.soft_update_explicit_documents(id(1), vec![doc(&f, 1)], &[soft_delete(1)])
+        .unwrap();
+    w.add_explicit_documents(vec![doc(&f, 3)]).unwrap();
+    let view = w.open_live_view(Some(v0)).unwrap();
+    w.close_live_view(&view);
+    let max_docs: Vec<i32> = view.buffers.iter().map(|b| b.max_doc).collect();
+    assert_eq!(max_docs, [2]);
+    let ids: Vec<&[u8]> = view.commit_deletes.iter().map(|t| &t.bytes[..]).collect();
+    assert_eq!(ids, [b"d1"]);
+
+    // A later snapshot holds them; one with nothing new is the same list.
+    let v1 = w.nrt_snapshot(true, true).unwrap().segment_infos.version;
+    assert!(v1 > v0);
+    assert_eq!(
+        w.nrt_snapshot(true, true).unwrap().segment_infos.version,
+        v1
+    );
+    let view = w.open_live_view(Some(v1)).unwrap();
+    w.close_live_view(&view);
+    assert!(view.buffers.is_empty() && view.commit_deletes.is_empty());
+    // The older reader still reads the published buffer until released.
+    let view = w.open_live_view(Some(v0)).unwrap();
+    w.close_live_view(&view);
+    assert_eq!(view.buffers.len(), 1);
+    w.release_live(v1).unwrap();
+    assert!(matches!(
+        w.open_live_view(Some(v0)),
+        Err(Error::LiveSearch(_))
+    ));
+    // A commit after them keys its own list, above every snapshot's.
+    w.add_explicit_documents(vec![doc(&f, 4)]).unwrap();
+    w.commit().unwrap();
+    let committed = w.with_writer(|iw| iw.segment_infos().version);
+    assert!(committed > v1);
+    let view = w.open_live_view(Some(committed)).unwrap();
+    w.close_live_view(&view);
+    assert!(view.buffers.is_empty());
 }
 
 /// A view of the buffers alone names no deletes: no reader needs them.
@@ -536,10 +603,10 @@ fn a_view_reads_its_buffers_as_of_its_opening() {
     assert!(w.live_document(&view, 1, 0).is_err());
 
     // Committed and released, the buffer stays while the view is open.
-    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
     let old = w.open_live_view(Some(start)).unwrap();
     w.commit().unwrap();
-    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = w.with_writer(|iw| iw.segment_infos().version);
     w.release_live(generation).unwrap();
     let snap = w
         .live_view_snapshot(&view, &body(false, &["common"]))
@@ -1065,7 +1132,7 @@ fn a_published_buffer_keeps_its_files_while_a_view_reads_it() {
     let tmp = TempDir::new("live-published-files");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
     let mut ids = Vec::new();
     for i in 0..2 {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
@@ -1088,7 +1155,7 @@ fn a_published_buffer_keeps_its_files_while_a_view_reads_it() {
     w.with_writer(|iw| iw.force_merge(1)).unwrap();
     assert_eq!(w.with_writer(|iw| iw.segment_infos().segments.len()), 1);
     w.commit().unwrap();
-    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = w.with_writer(|iw| iw.segment_infos().version);
     w.release_live(generation).unwrap();
     for name in &held {
         assert!(

@@ -23,8 +23,9 @@
 //! so it is one cut through the operations: an update's delete and its new
 //! document are both in it or both not, and a buffer is either still
 //! buffered, being flushed, or published (counted by
-//! [`LiveView::published`]), never two of these. Commits are known by
-//! generation, each holding the publishes before it. Reading a view's
+//! [`LiveView::published`]), never two of these. A reader's segment list
+//! (a commit or an NRT snapshot) is known by its version, each holding the
+//! publishes before it. Reading a view's
 //! terms holds the slots' locks while it decodes them: indexing waits for
 //! what the requested terms' postings cost to decode.
 //!
@@ -816,10 +817,11 @@ pub(super) struct LiveFlushes {
     unpinned: Vec<String>,
 }
 
-/// A commit this writer made.
+/// A segment list this writer made for readers: a commit, or an NRT
+/// snapshot, known by its version.
 #[derive(Debug, Clone, Copy)]
 struct Commit {
-    generation: i64,
+    version: i64,
     /// How many publishes it holds.
     held: u64,
     /// The log position up to which its segments had every delete.
@@ -860,15 +862,16 @@ impl LiveFlushes {
         std::mem::take(&mut self.unpinned)
     }
 
-    /// A commit at `generation` holds every publish so far, and every
-    /// delete up to log position `handed`. A commit that wrote nothing new
-    /// keeps the generation, and the position, of the one before.
-    pub(super) fn committed(&mut self, generation: i64, handed: usize) {
-        if self
-            .commits
-            .back()
-            .is_some_and(|c| c.generation == generation)
-        {
+    /// A reader of the segment list at `version` (a commit's, or an NRT
+    /// snapshot's) holds every publish so far, and every delete up to log
+    /// position `handed`. A list that changed nothing keeps the version of
+    /// the one before: its publishes and position move up to now, since a
+    /// publish that added no segment (all its documents deleted) or a
+    /// delete that matched nothing changes no segment either.
+    pub(super) fn committed(&mut self, version: i64, handed: usize) {
+        if let Some(c) = self.commits.back_mut().filter(|c| c.version == version) {
+            c.held = self.published;
+            c.handed = c.handed.max(handed);
             return;
         }
         if self.commits.len() == COMMITS_KEPT {
@@ -878,7 +881,7 @@ impl LiveFlushes {
             }
         }
         self.commits.push_back(Commit {
-            generation,
+            version,
             held: self.published,
             handed,
         });
@@ -989,15 +992,15 @@ impl LiveFlushes {
         })
     }
 
-    /// The commit at `generation`.
-    fn commit(&self, generation: i64) -> Result<Commit> {
+    /// The segment list at `version`.
+    fn commit(&self, version: i64) -> Result<Commit> {
         self.commits
             .iter()
-            .find(|c| c.generation == generation)
+            .find(|c| c.version == version)
             .copied()
             .ok_or_else(|| {
                 Error::LiveSearch(format!(
-                    "commit generation {generation} is not one this writer made"
+                    "segment list version {version} is not one this writer made"
                 ))
             })
     }
@@ -1320,13 +1323,13 @@ impl ConcurrentIndexWriter<'_> {
             .saturating_add(live.history_bytes)
     }
 
-    /// Stops reading the published buffers the commit at `generation` holds,
-    /// once no open view reads them: call it once no search reads from an
-    /// older commit. Their memory goes.
-    pub fn release_live(&self, generation: i64) -> Result<()> {
+    /// Stops reading the published buffers the segment list at `version` (a
+    /// commit's or an NRT snapshot's) holds, once no open view reads them:
+    /// call it once no search reads an older list. Their memory goes.
+    pub fn release_live(&self, version: i64) -> Result<()> {
         let unpinned = {
             let mut live = self.live_flushes();
-            let held = live.commit(generation)?.held;
+            let held = live.commit(version)?.held;
             live.release(held);
             live.take_unpinned()
         };
@@ -1365,8 +1368,8 @@ impl ConcurrentIndexWriter<'_> {
         Ok(cfg)
     }
 
-    /// Opens a view of every buffered document a reader of the commit at
-    /// `commit` lacks (with `None`, the documents in no published segment):
+    /// Opens a view of every buffered document a reader of the segment list
+    /// at version `commit` (a commit's or an NRT snapshot's) lacks (with `None`, the documents in no published segment):
     /// see the module doc. Close it with [`Self::close_live_view`].
     ///
     /// Fails for a writer without [`Self::enable_live_search`], for one that
@@ -1386,8 +1389,8 @@ impl ConcurrentIndexWriter<'_> {
         let from = commit.map_or(live.published, |c| c.held);
         if !live.keeps_from(from) {
             return Err(Error::LiveSearch(format!(
-                "the buffers published after commit {:?} were released",
-                commit.map(|c| c.generation)
+                "the buffers published after segment list version {:?} were released",
+                commit.map(|c| c.version)
             )));
         }
         let (slot_tails, flushing_tail) = {
@@ -1398,8 +1401,8 @@ impl ConcurrentIndexWriter<'_> {
         let commit_nodes = match &commit {
             Some(c) => Some(live.deletes_after(c, &flushing_tail).ok_or_else(|| {
                 Error::LiveSearch(format!(
-                    "the deletes since commit {} are no longer kept",
-                    c.generation
+                    "the deletes since segment list version {} are no longer kept",
+                    c.version
                 ))
             })?),
             None => None,

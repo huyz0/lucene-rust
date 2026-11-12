@@ -40,7 +40,8 @@ use lucene_search::document::{
 };
 use lucene_search::extended_query::{
     AutomatonQuery, DocumentClause, ExtendedQuery, IndexOrDocValuesQuery, MultiTermQuery,
-    MultiTermSource, NumericDocValuesRangeQuery, RewriteMethod, SynonymQuery,
+    MultiTermSource, NumericDocValuesRangeQuery, RewriteMethod, SubstringKind, SubstringQuery,
+    SynonymQuery,
 };
 use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery, PointsRangeQuery};
 use lucene_search::reader::doc_values::get_sorted_numeric;
@@ -95,7 +96,18 @@ pub(crate) const NODE_JOIN: u8 = 46;
 /// longs. Kept a choice so a cheap lead (a tenant's doc-id run) checks its
 /// documents' doc values instead of collecting the range's points.
 pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 48;
-pub(crate) const NODE_LAST: u8 = NODE_POINT_RANGE_OR_DV;
+/// A query on the plugin's `rust_wildcard` field ([`SubstringQuery`]):
+/// `field`, `kind: u8` ([`SUBSTRING_WILDCARD`], [`SUBSTRING_REGEXP`],
+/// [`SUBSTRING_CONTAINS`] or [`SUBSTRING_EXACT`]), `case_insensitive: u8`,
+/// `pattern: bytes` (UTF-8). Constant-scored 1.
+pub(crate) const NODE_SUBSTRING: u8 = 49;
+pub(crate) const NODE_LAST: u8 = NODE_SUBSTRING;
+
+/// [`NODE_SUBSTRING`]'s kinds.
+pub(crate) const SUBSTRING_WILDCARD: u8 = 0;
+pub(crate) const SUBSTRING_REGEXP: u8 = 1;
+pub(crate) const SUBSTRING_CONTAINS: u8 = 2;
+pub(crate) const SUBSTRING_EXACT: u8 = 3;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -443,6 +455,35 @@ pub(crate) fn decode(
                 NumericDocValuesRangeQuery::new(field, min, max),
             )
             .into());
+        }
+        NODE_SUBSTRING => {
+            let field = field(c)?;
+            let kind = match c.u8()? {
+                SUBSTRING_WILDCARD => SubstringKind::Wildcard,
+                SUBSTRING_REGEXP => SubstringKind::Regexp,
+                SUBSTRING_CONTAINS => SubstringKind::Contains,
+                SUBSTRING_EXACT => SubstringKind::Exact,
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: substring kind {other} (expected 0..=3)"
+                    )))
+                }
+            };
+            let case_insensitive = match c.u8()? {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: substring case flag {other} (expected 0..=1)"
+                    )))
+                }
+            };
+            let pattern = std::str::from_utf8(c.bytes()?)
+                .map_err(|_| FfiStatus::InvalidUtf8)?
+                .to_string();
+            let query = SubstringQuery::new(field, kind, pattern, case_insensitive)
+                .map_err(|e| invalid(format!("query tree: {e}")))?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::Substring(query))));
         }
         NODE_JOIN => {
             let join_field = std::str::from_utf8(c.bytes()?)
