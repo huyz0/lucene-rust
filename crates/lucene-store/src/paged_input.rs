@@ -232,10 +232,10 @@ enum Faults {
 }
 
 impl Faults {
-    /// `LUCENE_RUST_PAGER_FAULTS=threads` serves faults on handler
+    /// `PAGE_CACHE_FAULT_HANDLING=threads` serves faults on handler
     /// threads; anything else, on the faulting thread.
     fn from_env() -> Faults {
-        match std::env::var("LUCENE_RUST_PAGER_FAULTS") {
+        match std::env::var("PAGE_CACHE_FAULT_HANDLING") {
             Ok(v) if v.eq_ignore_ascii_case("threads") => Faults::Handlers,
             _ => Faults::OnThread,
         }

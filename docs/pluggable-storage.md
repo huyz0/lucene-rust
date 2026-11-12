@@ -123,7 +123,7 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   to 100k/s). A `SIGBUS` anywhere else goes to the handler installed
   before (the JVM's), and an open puts the pager's handler back in front
   if a library replaced it. Where the kernel lacks the feature (before
-  4.14), or with `LUCENE_RUST_PAGER_FAULTS=threads`, faults wake one of the
+  4.14), or with `PAGE_CACHE_FAULT_HANDLING=threads`, faults wake one of the
   pager's handler threads instead (`EPOLLEXCLUSIVE`, four per CPU, 16 to
   64). Either way a kernel access to a missing page (`write(2)` from a
   mapping) fails with `EFAULT`, as under a user-mode-only `userfaultfd`,
