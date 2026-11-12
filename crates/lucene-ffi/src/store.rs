@@ -433,8 +433,8 @@ pub extern "C" fn ffi_store_set_page_cache_budget(budget_bytes: u64) -> i32 {
 
 /// Sets how mapped shard files are read, by extension
 /// ([`lucene_store::read_advice::set`]): `spec` is comma-separated
-/// `ext:advice` entries (`normal`, `random`, `sequential`, `willneed`), `*`
-/// for every other extension, empty for the defaults. `warm_random` 1 reads
+/// `ext:advice` entries (`normal`, `random`, `sequential`, `willneed`,
+/// `auto`), `*` for every other extension, empty for the defaults. `warm_random` 1 reads
 /// a file advised random in at open when it is small next to available
 /// memory. Applies to readers opened afterwards.
 ///
@@ -649,7 +649,7 @@ mod tests {
         let rc = unsafe { ffi_store_set_read_advice(std::ptr::null(), 0, 1) };
         assert_eq!(rc, FfiStatus::Ok.code());
         assert_eq!(for_extension("vec"), ReadAdvice::Random);
-        assert_eq!(for_extension("fdt"), ReadAdvice::Normal);
+        assert_eq!(for_extension("fdt"), ReadAdvice::Auto);
         assert!(warm_random());
     }
 

@@ -211,13 +211,15 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * How the Rust engine advises the kernel to read each mapped shard file, by extension, as
-     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential} or
-     * {@code willneed}; {@code *} for every extension not listed, Lucene's
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
+     * {@code willneed} or {@code auto}; {@code *} for every extension not listed, Lucene's
      * {@code org.apache.lucene.store.defaultReadAdvice}). Empty (the default) advises random reads
      * for the files a vector search reads a vector at a time ({@code vec}, {@code vex},
-     * {@code ivv}, {@code veq}, {@code vqd}) and leaves every other file to the OS read-ahead. A
-     * list replaces the whole table. Random advice helps once those files no longer fit in memory,
-     * most on IOPS-capped volumes such as EBS gp3; on local NVMe with free memory it changes little.
+     * {@code ivv}, {@code veq}, {@code vqd}), {@code auto} for stored fields ({@code fdt}: random,
+     * each fetched chunk read in whole, once the file is larger than an eighth of memory; the OS
+     * read-ahead otherwise) and leaves every other file to the OS read-ahead. A list replaces the
+     * whole table. Random advice helps once those files no longer fit in memory, most on
+     * IOPS-capped volumes such as EBS gp3; on local NVMe with free memory it changes little.
      */
     public static final Setting<List<String>> NODE_READ_ADVICE = Setting.listSetting(
         "lucene_rust.store.mmap.read_advice",
