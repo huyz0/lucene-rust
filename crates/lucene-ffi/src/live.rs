@@ -1910,6 +1910,8 @@ fn build_view_reader(
             live_docs,
             deleted,
             commit_live: Mutex::new(None),
+            cacheable: h.reader.segment_readers().len(),
+            agg_identities: std::sync::OnceLock::new(),
             path: Arc::clone(&h.path),
         },
     ))

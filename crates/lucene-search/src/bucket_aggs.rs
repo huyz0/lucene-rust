@@ -59,6 +59,8 @@ use crate::terms_agg::{GlobalOrds, Ords};
 use crate::Result;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+pub mod segment_cache;
+
 /// An FxHash-style hasher for the bucket ordinals and the distinct values:
 /// integer keys, hashed once per document, where SipHash's cost shows.
 #[derive(Default, Clone, Copy)]
@@ -4047,11 +4049,52 @@ pub fn aggregate_tree(
     slices: &[Vec<usize>],
     min_score: Option<&aggs::MinScore<'_, '_>>,
 ) -> Result<Vec<Vec<AggResult>>> {
+    aggregate_tree_cached(
+        segments, readers, query, nodes, globals, slices, min_score, None,
+    )
+}
+
+/// [`aggregate_tree`], each cacheable segment's collected state taken from
+/// `cache` when it holds it, and put there when it does not
+/// ([`segment_cache`]). The answer is the same as without the cache: a
+/// tree or query the cache cannot answer exactly runs as without it.
+///
+/// # Errors
+/// As [`aggregate_tree`].
+#[allow(clippy::too_many_arguments)]
+pub fn aggregate_tree_cached(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    nodes: &[AggNode],
+    globals: &Globals<'_>,
+    slices: &[Vec<usize>],
+    min_score: Option<&aggs::MinScore<'_, '_>>,
+    cache: Option<&segment_cache::CacheRequest<'_>>,
+) -> Result<Vec<Vec<AggResult>>> {
+    let nodes_asked = nodes;
     let resolved = Globals {
         ords: globals.ords,
         missing: resolve_missing(nodes, globals, readers)?,
     };
     let globals = &resolved;
+    // The request's key, when the cache can answer it at all: the tree's and
+    // the query's, each segment's range clauses narrowed to its values.
+    let keyed = match cache {
+        Some(c) if min_score.is_none() => segment_cache::RequestKey::new(c, query, nodes),
+        _ => None,
+    };
+    // A cached pass collects whole-number sums with their bounds
+    // ([`segment_cache::collecting`]); the key is the tree as asked.
+    let collecting;
+    let nodes: &[AggNode] = if keyed.is_some() {
+        collecting = segment_cache::collecting(nodes);
+        &collecting
+    } else {
+        nodes
+    };
+    let asked = nodes_asked;
+    let original = query;
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = aggs::lone_clause(query);
@@ -4074,84 +4117,113 @@ pub fn aggregate_tree(
         bases.push(next);
         next = next.saturating_add(r.max_doc);
     }
-    let one = |slice: &[usize]| -> Result<Vec<AggResult>> {
-        let mut states: Vec<State> = nodes.iter().map(State::new).collect();
-        let mut docs_buf = Vec::new();
-        let mut match_bits: Vec<u64> = Vec::new();
-        let mut window_docs: Vec<i32> = Vec::with_capacity(WINDOW as usize);
-        let (mut scored_docs, mut scored) = (Vec::new(), Vec::new());
-        for &i in slice {
-            let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
-                return Err(crate::Error::SliceOutOfRange {
-                    segment: i,
-                    segments: segments.len().min(readers.len()),
-                });
-            };
+    // Segment `i`'s matches, each part's documents `lo..hi` collected into
+    // its own states.
+    let run_segment = |parts: &mut [(i32, i32, &mut [State])],
+                       i: usize,
+                       seg: &OpenSegment<'_>,
+                       reader: &SegmentReader,
+                       docs_buf: &mut Vec<i32>,
+                       match_bits: &mut Vec<u64>,
+                       window_docs: &mut Vec<i32>,
+                       scored_docs: &mut Vec<i32>,
+                       scored: &mut Vec<f32>|
+     -> Result<()> {
+        let ctx = exec::LeafContext {
+            global: global.as_ref(),
+            ..aggs::plain_context(seg)
+        };
+        let live: Option<&FixedBitSet> = seg.live_docs;
+        if let (true, Some((m, g))) = (needs_scores, scoring) {
             let ctx = exec::LeafContext {
-                global: global.as_ref(),
-                ..aggs::plain_context(seg)
+                norms: m.norms.get(i).copied().flatten(),
+                global: Some(g),
+                ..ctx
             };
-            let live: Option<&FixedBitSet> = seg.live_docs;
-            if let (true, Some((m, g))) = (needs_scores, scoring) {
-                let ctx = exec::LeafContext {
+            aggs::segment_matches_scored(&ctx, query, live, m.min, scored_docs, scored)?;
+        }
+        let view = SegmentView {
+            seg,
+            reader,
+            index: i,
+            top: true,
+            scores: needs_scores.then_some((&scored_docs[..], &scored[..])),
+            doc_base: bases.get(i).copied().unwrap_or(0),
+        };
+        let matched = match scoring {
+            Some(_) if needs_scores => Matches::List(&scored_docs[..]),
+            Some((m, g)) => {
+                let scored = exec::LeafContext {
                     norms: m.norms.get(i).copied().flatten(),
                     global: Some(g),
                     ..ctx
                 };
-                aggs::segment_matches_scored(
-                    &ctx,
-                    query,
-                    live,
-                    m.min,
-                    &mut scored_docs,
-                    &mut scored,
-                )?;
+                match aggs::segment_matches_scoring(&scored, query, live, m.min, docs_buf)? {
+                    None => Matches::None,
+                    Some(None) => Matches::All,
+                    Some(Some(docs)) => Matches::List(docs),
+                }
             }
-            let view = SegmentView {
-                seg,
-                reader,
-                index: i,
-                top: true,
-                scores: needs_scores.then_some((&scored_docs[..], &scored[..])),
-                doc_base: bases.get(i).copied().unwrap_or(0),
-            };
-            let mut leaves = Vec::with_capacity(nodes.len());
-            for (n, s) in nodes.iter().zip(&mut states) {
-                leaves.push(open_leaf(n, &view, globals, s)?);
-            }
-            let matched = match scoring {
-                Some(_) if needs_scores => Matches::List(&scored_docs[..]),
-                Some((m, g)) => {
-                    let scored = exec::LeafContext {
-                        norms: m.norms.get(i).copied().flatten(),
-                        global: Some(g),
-                        ..ctx
-                    };
-                    match aggs::segment_matches_scoring(&scored, query, live, m.min, &mut docs_buf)?
-                    {
-                        None => Matches::None,
-                        Some(None) => Matches::All,
-                        Some(Some(docs)) => Matches::List(docs),
+            None => match aggs::segment_match_bits(
+                &ctx,
+                query,
+                &clause,
+                live,
+                reader.max_doc,
+                match_bits,
+            )? {
+                None => Matches::None,
+                Some(false) => Matches::All,
+                Some(true) => Matches::Bits(&match_bits[..]),
+            },
+        };
+        let zeros = vec![0u32; WINDOW as usize];
+        let mut live_window: Vec<i32> = Vec::with_capacity(WINDOW as usize);
+        let visit_window =
+            |states: &mut [State], leaves: &mut [Leaf<'_>], docs: &[i32]| -> Result<()> {
+                for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
+                    if l.done {
+                    } else if no_windows() {
+                        for &doc in docs {
+                            collect(n, s, l, doc, 0)?;
+                        }
+                    } else {
+                        collect_window(n, s, l, docs, &zeros[..docs.len()])?;
                     }
                 }
-                None => match aggs::segment_match_bits(
-                    &ctx,
-                    query,
-                    &clause,
-                    live,
-                    reader.max_doc,
-                    &mut match_bits,
-                )? {
-                    None => Matches::None,
-                    Some(false) => Matches::All,
-                    Some(true) => Matches::Bits(&match_bits),
-                },
+                Ok(())
             };
+        // Windows of documents, each column read ahead for the window
+        // where the matches are dense enough to repay reading every
+        // document's value (one in eight).
+        let window = |leaves: &mut [Leaf<'_>], base: i32, end: i32, matches: usize| {
+            // ARITH: `base < end <= max_doc`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let len = (end - base) as usize;
+            for l in leaves.iter_mut().filter(|l| !l.done) {
+                if matches.saturating_mul(8) >= len && !no_windows() {
+                    l.prefetch(base, len)?;
+                } else {
+                    l.drop_prefetch();
+                }
+            }
+            Ok::<(), crate::Error>(())
+        };
+        let max_doc = reader.max_doc;
+        let whole = matches!(parts, [(0, hi, _)] if *hi >= max_doc);
+        for (lo, hi, states) in parts.iter_mut() {
+            let (lo, hi) = (*lo, (*hi).min(max_doc));
+            let states: &mut [State] = states;
+            let mut leaves = Vec::with_capacity(nodes.len());
+            for (n, s) in nodes.iter().zip(states.iter_mut()) {
+                leaves.push(open_leaf(n, &view, globals, s)?);
+            }
             // OpenSearch's filter rewrite: a top-level `date_histogram` or
             // `range` without sub-aggregations over a segment every document
             // of which matches is counted from the points.
-            if scoring.is_none() && seg.live_docs.is_none() && matches!(matched, Matches::All) {
-                for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+            let all = whole && scoring.is_none() && matches!(matched, Matches::All);
+            if all && seg.live_docs.is_none() {
+                for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
                     if let Some(counts) = count_from_points(n, seg)? {
                         apply_counts(s, counts);
                         l.done = true;
@@ -4161,52 +4233,19 @@ pub fn aggregate_tree(
                     continue;
                 }
             }
-            if scoring.is_none() && matches!(matched, Matches::All) {
-                for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+            if all {
+                for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
                     if !l.done && collect_composite_sorted(n, s, l, seg, reader)? {
                         l.done = true;
                     }
                 }
                 if leaves.iter().all(|l| l.done) {
-                    for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+                    for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
                         end_segment(n, s, l)?;
                     }
                     continue;
                 }
             }
-            let zeros = vec![0u32; WINDOW as usize];
-            let mut live_window: Vec<i32> = Vec::with_capacity(WINDOW as usize);
-            let visit_window =
-                |states: &mut [State], leaves: &mut [Leaf<'_>], docs: &[i32]| -> Result<()> {
-                    for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
-                        if l.done {
-                        } else if no_windows() {
-                            for &doc in docs {
-                                collect(n, s, l, doc, 0)?;
-                            }
-                        } else {
-                            collect_window(n, s, l, docs, &zeros[..docs.len()])?;
-                        }
-                    }
-                    Ok(())
-                };
-            // Windows of documents, each column read ahead for the window
-            // where the matches are dense enough to repay reading every
-            // document's value (one in eight).
-            let window = |leaves: &mut [Leaf<'_>], base: i32, end: i32, matches: usize| {
-                // ARITH: `base < end <= max_doc`.
-                #[allow(clippy::arithmetic_side_effects)]
-                let len = (end - base) as usize;
-                for l in leaves.iter_mut().filter(|l| !l.done) {
-                    if matches.saturating_mul(8) >= len && !no_windows() {
-                        l.prefetch(base, len)?;
-                    } else {
-                        l.drop_prefetch();
-                    }
-                }
-                Ok::<(), crate::Error>(())
-            };
-            let max_doc = reader.max_doc;
             match matched {
                 Matches::None => {}
                 Matches::Bits(match_bits) => {
@@ -4214,7 +4253,9 @@ pub fn aggregate_tree(
                     // listed from its words: the windows and documents the
                     // list below would visit.
                     const WORDS: usize = (WINDOW / 64) as usize;
-                    for (w, chunk) in match_bits.chunks(WORDS).enumerate() {
+                    let first = usize::try_from(lo / WINDOW).unwrap_or(0);
+                    let last = usize::try_from((hi + WINDOW - 1) / WINDOW).unwrap_or(0);
+                    for (w, chunk) in match_bits.chunks(WORDS).enumerate().take(last).skip(first) {
                         if chunk.iter().all(|&x| x == 0) {
                             continue;
                         }
@@ -4232,50 +4273,136 @@ pub fn aggregate_tree(
                                 bits &= bits - 1;
                             }
                         }
+                        // A part's ends need not fall on a window's.
+                        if base < lo || base.saturating_add(WINDOW) > hi {
+                            window_docs.retain(|&d| d >= lo && d < hi);
+                            if window_docs.is_empty() {
+                                continue;
+                            }
+                        }
                         let end = base.saturating_add(WINDOW).min(max_doc);
                         window(&mut leaves, base, end, window_docs.len())?;
-                        visit_window(&mut states, &mut leaves, &window_docs)?;
+                        visit_window(states, &mut leaves, window_docs)?;
                     }
                 }
                 Matches::List(docs) => {
-                    let mut i = 0;
-                    while let Some(&first) = docs.get(i) {
+                    let mut i = docs.partition_point(|&d| d < lo);
+                    let last = docs.partition_point(|&d| d < hi);
+                    while let Some(&first) = docs[..last].get(i) {
                         // Windows aligned as the whole-segment ones are, so
                         // a column's blocks can be read in one piece.
                         let base = first - first.rem_euclid(WINDOW);
                         let end = base.saturating_add(WINDOW).min(max_doc).max(first + 1);
-                        let j = i + docs[i..].partition_point(|&d| d < end);
+                        let j = i + docs[i..last].partition_point(|&d| d < end);
                         window(&mut leaves, base, end, j - i)?;
-                        visit_window(&mut states, &mut leaves, &docs[i..j])?;
+                        visit_window(states, &mut leaves, &docs[i..j])?;
                         i = j;
                     }
                 }
                 Matches::All => {
-                    let mut base = 0;
-                    while base < max_doc {
-                        let end = base.saturating_add(WINDOW).min(max_doc);
+                    let mut base = lo;
+                    while base < hi {
+                        let end = base.saturating_add(WINDOW).min(hi);
                         window(&mut leaves, base, end, (end - base) as usize)?;
                         live_window.clear();
                         match live {
                             None => live_window.extend(base..end),
                             Some(l) => live_window.extend((base..end).filter(|&d| l.get_doc(d))),
                         }
-                        visit_window(&mut states, &mut leaves, &live_window)?;
+                        visit_window(states, &mut leaves, &live_window)?;
                         base = end;
                     }
                 }
             }
-            for ((n, s), l) in nodes.iter().zip(&mut states).zip(&mut leaves) {
+            for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
                 end_segment(n, s, l)?;
             }
         }
-        let mut terms = TermLookup::new(readers);
-        nodes
-            .iter()
-            .zip(states)
-            .map(|(n, s)| finish(n, s, &[0], globals, &mut terms))
-            .collect()
+        Ok(())
     };
+    // `Err(Inexact)` when a cached part cannot be added in exactly as
+    // collecting its segment would have (a sum past 2^53): the pass then
+    // runs again without the cache.
+    let one =
+        |slice: &[usize]| -> Result<std::result::Result<Vec<AggResult>, segment_cache::Inexact>> {
+            let mut states: Vec<State> = nodes.iter().map(State::new).collect();
+            let mut docs_buf = Vec::new();
+            let mut match_bits: Vec<u64> = Vec::new();
+            let mut window_docs: Vec<i32> = Vec::with_capacity(WINDOW as usize);
+            let (mut scored_docs, mut scored) = (Vec::new(), Vec::new());
+            for &i in slice {
+                let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
+                    return Err(crate::Error::SliceOutOfRange {
+                        segment: i,
+                        segments: segments.len().min(readers.len()),
+                    });
+                };
+                let entries = keyed
+                    .as_ref()
+                    .and_then(|k| k.entries(i, original, seg, reader.max_doc));
+                let Some(entries) = entries else {
+                    run_segment(
+                        &mut [(0, reader.max_doc, &mut states[..])],
+                        i,
+                        seg,
+                        reader,
+                        &mut docs_buf,
+                        &mut match_bits,
+                        &mut window_docs,
+                        &mut scored_docs,
+                        &mut scored,
+                    )?;
+                    continue;
+                };
+                let mut found: Vec<Option<std::sync::Arc<segment_cache::SegmentPart>>> =
+                    entries.iter().map(|(_, _, e)| e.get()).collect();
+                let missed: Vec<usize> = (0..found.len()).filter(|&b| found[b].is_none()).collect();
+                if !missed.is_empty() {
+                    // The blocks not in the cache, collected in one reading of
+                    // the segment's matches.
+                    let mut fresh: Vec<Vec<State>> = missed
+                        .iter()
+                        .map(|_| nodes.iter().map(State::new).collect())
+                        .collect();
+                    let mut ranges: Vec<(i32, i32, &mut [State])> = missed
+                        .iter()
+                        .zip(fresh.iter_mut())
+                        .map(|(&b, f)| (entries[b].0, entries[b].1, &mut f[..]))
+                        .collect();
+                    run_segment(
+                        &mut ranges,
+                        i,
+                        seg,
+                        reader,
+                        &mut docs_buf,
+                        &mut match_bits,
+                        &mut window_docs,
+                        &mut scored_docs,
+                        &mut scored,
+                    )?;
+                    drop(ranges);
+                    for (&b, f) in missed.iter().zip(fresh) {
+                        let part = segment_cache::SegmentPart::of(nodes, f, i, globals)?;
+                        found[b] = Some(entries[b].2.put(part));
+                    }
+                }
+                for part in found.into_iter().flatten() {
+                    if !part.add_to(nodes, &mut states, i, globals)? {
+                        return Ok(Err(segment_cache::Inexact));
+                    }
+                }
+            }
+            let mut terms = TermLookup::new(readers);
+            let mut results = nodes
+                .iter()
+                .zip(states)
+                .map(|(n, s)| finish(n, s, &[0], globals, &mut terms))
+                .collect::<Result<Vec<_>>>()?;
+            if keyed.is_some() {
+                segment_cache::restore(asked, &mut results);
+            }
+            Ok(Ok(results))
+        };
     // With every document a match and none deleted (the filter rewrite's
     // case), a segment whose nodes are all counted from its points costs a
     // few tree walks: only the others' documents are work worth handing
@@ -4294,9 +4421,18 @@ pub fn aggregate_tree(
     } else {
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW
     };
-    crate::slices::run_slices_if(parallel, slices, one)
-        .into_iter()
-        .collect()
+    let mut out = Vec::with_capacity(slices.len());
+    for r in crate::slices::run_slices_if(parallel, slices, one) {
+        match r? {
+            Ok(results) => out.push(results),
+            Err(segment_cache::Inexact) => {
+                return aggregate_tree_cached(
+                    segments, readers, original, asked, globals, slices, min_score, None,
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// A global ordinal's term, read from the first segment holding it.
