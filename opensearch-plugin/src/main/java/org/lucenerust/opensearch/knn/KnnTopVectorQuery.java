@@ -77,13 +77,25 @@ public final class KnnTopVectorQuery extends Query {
     private final BitSetProducer parents;
     private final boolean expand;
     private final int nprobes;
+    private final RecallTarget recall;
+
+    /**
+     * A recall-targeted search ({@code index.lucene_rust.knn.target_recall}): the target, the
+     * sample rate and check budget, and the key naming the tuner (index, shard and field) whose
+     * tuned depth the search runs at.
+     */
+    public record RecallTarget(float recall, float sampleRate, float budget, String key) {
+        public RecallTarget {
+            Objects.requireNonNull(key);
+        }
+    }
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter) {
         this(field, target, k, candidates, filter, null, false);
     }
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter, BitSetProducer parents, boolean expand) {
-        this(field, target, k, candidates, filter, parents, expand, 0);
+        this(field, target, k, candidates, filter, parents, expand, 0, null);
     }
 
     private KnnTopVectorQuery(
@@ -94,7 +106,8 @@ public final class KnnTopVectorQuery extends Query {
         Query filter,
         BitSetProducer parents,
         boolean expand,
-        int nprobes
+        int nprobes,
+        RecallTarget recall
     ) {
         if (k <= 0) {
             throw new IllegalArgumentException("k must be at least 1");
@@ -113,15 +126,26 @@ public final class KnnTopVectorQuery extends Query {
             throw new IllegalArgumentException("nprobes must not be negative");
         }
         this.nprobes = nprobes;
+        this.recall = recall;
     }
 
     /** This query probing {@code nprobes} IVF clusters per segment. */
     public KnnTopVectorQuery withNprobes(int nprobes) {
-        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes);
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, recall);
+    }
+
+    /** This query searching at the depth tuned for {@code recall} (null: as asked). */
+    public KnnTopVectorQuery withRecallTarget(RecallTarget recall) {
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, recall);
     }
 
     public int nprobes() {
         return nprobes;
+    }
+
+    /** The recall target, or null. */
+    public RecallTarget recallTarget() {
+        return recall;
     }
 
     public String field() {
@@ -159,7 +183,7 @@ public final class KnnTopVectorQuery extends Query {
         if (filter != null) {
             Query f = searcher.rewrite(filter);
             if (f != filter) {
-                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes);
+                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes, recall);
             }
         }
         NativeSearch n = nativeSearch;
@@ -280,7 +304,7 @@ public final class KnnTopVectorQuery extends Query {
 
     @Override
     public String toString(String defaultField) {
-        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + ")";
+        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + (recall == null ? "" : ", target_recall=" + recall.recall()) + ")";
     }
 
     @Override
@@ -294,11 +318,12 @@ public final class KnnTopVectorQuery extends Query {
             && Objects.equals(filter, q.filter)
             && Objects.equals(parents, q.parents)
             && expand == q.expand
-            && nprobes == q.nprobes;
+            && nprobes == q.nprobes
+            && Objects.equals(recall, q.recall);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes);
+        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes, recall);
     }
 }
