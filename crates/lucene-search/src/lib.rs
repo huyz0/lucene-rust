@@ -291,6 +291,10 @@ pub use doc_value_query::{
     sort_by_numeric_doc_value, sort_top_n_by_numeric_doc_value, MissingValue,
 };
 pub use exec::cache::{sort_column_bytes, SegmentQueryCache};
+/// The node-wide budget of every segment's query cache.
+pub mod query_cache_budget {
+    pub use crate::exec::cache::{node_stats, set_node_budget, DEFAULT_NODE_BYTES};
+}
 pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{
@@ -351,6 +355,10 @@ impl std::error::Error for NodeCommunicationError {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The request was stopped by its memory bound or cancelled
+    /// ([`lucene_util::memory`]).
+    #[error(transparent)]
+    Memory(#[from] lucene_util::memory::Exceeded),
     #[error(transparent)]
     BlockTree(#[from] blocktree::Error),
     /// A multi-term [`PhraseQuery`] needs an opened `.pos` file to check

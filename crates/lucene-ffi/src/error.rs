@@ -36,6 +36,11 @@ pub enum FfiStatus {
     /// (never closing them); the fix is on the caller's side, so this is a
     /// distinct code rather than a generic failure.
     HandleLimit = 11,
+    /// The request outgrew the memory its host granted it, or the process
+    /// is over its bound ([`crate::memory`]); the message says which.
+    MemoryLimit = 12,
+    /// The host cancelled the request mid-call ([`crate::memory`]).
+    Cancelled = 13,
 }
 
 impl FfiStatus {
@@ -65,6 +70,8 @@ impl FfiStatus {
             FfiStatus::Panic => "a Rust panic was caught at the FFI boundary",
             FfiStatus::InvalidArgument => "invalid argument",
             FfiStatus::HandleLimit => "handle registry exhausted: too many open handles",
+            FfiStatus::MemoryLimit => "the request is over its memory limit",
+            FfiStatus::Cancelled => "the request was cancelled",
         }
     }
 }
