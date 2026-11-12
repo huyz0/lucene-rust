@@ -132,6 +132,12 @@ final class KnnEncoder {
             request.write(q.expand() ? 1 : 0);
         }
         writeInt(request, q.nprobes());
+        if (q.explorationSlack() == null) {
+            request.write(0);
+        } else {
+            request.write(1);
+            writeInt(request, Float.floatToIntBits(q.explorationSlack()));
+        }
         KnnTopVectorQuery.RecallTarget recall = q.recallTarget();
         if (recall != null) {
             writeLong(request, Double.doubleToLongBits(recall.recall()));
