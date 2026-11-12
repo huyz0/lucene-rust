@@ -493,7 +493,7 @@ pub(crate) fn decode(
             if count == 0 {
                 return Err(invalid("query tree: a multi-phrase with no terms"));
             }
-            let mut arrays = Vec::with_capacity(count.min(1024));
+            let mut arrays = crate::raw::try_with_capacity(count.min(1024))?;
             for _ in 0..count {
                 let position = c.i32()?;
                 let n = c.len()?;
@@ -502,7 +502,7 @@ pub(crate) fn decode(
                 }
                 *nodes = nodes.saturating_add(n);
                 crate::clauses::check_clause_count(*nodes)?;
-                let mut terms = Vec::with_capacity(n.min(1024));
+                let mut terms = crate::raw::try_with_capacity(n.min(1024))?;
                 for _ in 0..n {
                     terms.push(c.bytes()?.to_vec());
                 }
