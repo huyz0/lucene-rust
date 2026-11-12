@@ -214,6 +214,8 @@ public class RustSearchPlugin extends Plugin implements
 
     private final NativeReaders readers = new NativeReaders();
     private final SearchStats stats = new SearchStats();
+    /** The node's settings, for the highlighters that read node settings. */
+    private final Settings nodeSettings;
     private final String libraryPath;
     private final boolean nodeEngineEnabled;
     private final boolean fetchWrapper;
@@ -232,6 +234,7 @@ public class RustSearchPlugin extends Plugin implements
     private volatile SemanticModelResolver modelResolver;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
+        this.nodeSettings = settings;
         this.libraryPath = NativeLibrary.load(pluginDir());
         this.stockKnn = stockKnnInstalled();
         this.stockMl = MlCommons.stockInstalled(pluginDir());
@@ -482,8 +485,9 @@ public class RustSearchPlugin extends Plugin implements
     }
 
     /**
-     * Whether a search's {@code unified} highlighting (the default highlighter) and {@code plain}
-     * highlighting run natively ({@code NativeUnifiedHighlighter}, {@code NativePlainHighlighter});
+     * Whether a search's {@code unified} highlighting (the default highlighter), {@code plain} and
+     * {@code fvh} highlighting run natively ({@code NativeUnifiedHighlighter}, {@code
+     * NativePlainHighlighter}, {@code NativeFvhHighlighter});
      * off, OpenSearch's highlighters run them.
      */
     public static final Setting<Boolean> HIGHLIGHT_ENABLED = Setting.boolSetting(
@@ -607,14 +611,16 @@ public class RustSearchPlugin extends Plugin implements
         return analyzers;
     }
 
-    /** OpenSearch's {@code unified} and {@code plain} highlighters run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
+    /** OpenSearch's {@code unified}, {@code plain} and {@code fvh} highlighters run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
     @Override
     public Map<String, org.opensearch.search.fetch.subphase.highlight.Highlighter> getHighlighters() {
         return Map.of(
             org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter.NAME,
             new org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter(readers, stats),
             org.lucenerust.opensearch.highlight.NativePlainHighlighter.NAME,
-            new org.lucenerust.opensearch.highlight.NativePlainHighlighter(stats)
+            new org.lucenerust.opensearch.highlight.NativePlainHighlighter(stats),
+            org.lucenerust.opensearch.highlight.NativeFvhHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativeFvhHighlighter(nodeSettings, readers, stats)
         );
     }
 

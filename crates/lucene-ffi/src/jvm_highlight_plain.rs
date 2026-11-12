@@ -184,7 +184,11 @@ pub(crate) fn highlight(
 ///
 /// # Safety
 /// `ptr` must be valid for `len` `u16` reads.
-unsafe fn units<'a>(ptr: *const u16, len: usize, what: &str) -> Result<&'a [u16], FfiStatus> {
+pub(crate) unsafe fn units<'a>(
+    ptr: *const u16,
+    len: usize,
+    what: &str,
+) -> Result<&'a [u16], FfiStatus> {
     if len == 0 {
         return Ok(&[]);
     }

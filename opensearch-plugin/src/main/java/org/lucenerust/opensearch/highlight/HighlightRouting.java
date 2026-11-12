@@ -13,13 +13,13 @@ import java.lang.reflect.Field;
 /**
  * Points a search's {@code unified} highlighting -- named, or the default when a field names no
  * {@code type} -- at {@link NativeUnifiedHighlighter}, and its {@code plain} highlighting at {@link
- * NativePlainHighlighter}, before its fetch phase starts.
+ * NativePlainHighlighter} and its {@code fvh} highlighting at {@link NativeFvhHighlighter},
+ * before its fetch phase starts.
  *
  * <p>OpenSearch registers its highlighters by name and refuses a plugin that registers a built-in
  * name again, so the native one is registered as {@value NativeUnifiedHighlighter#NAME} and each
  * search's field options are retargeted to it here ({@code SearchOperationListener.onPreFetchPhase},
- * which runs before {@code HighlightPhase} picks a highlighter per field). {@code fvh} fields
- * keep OpenSearch's highlighter.
+ * which runs before {@code HighlightPhase} picks a highlighter per field).
  */
 public final class HighlightRouting {
     private static final Logger logger = LogManager.getLogger(HighlightRouting.class);
@@ -45,7 +45,7 @@ public final class HighlightRouting {
         return HIGHLIGHTER_TYPE != null;
     }
 
-    /** Retargets {@code context}'s {@code unified} and {@code plain} fields to the native highlighters. */
+    /** Retargets {@code context}'s {@code unified}, {@code plain} and {@code fvh} fields to the native highlighters. */
     public static void route(SearchContext context) {
         SearchHighlightContext highlight = context.highlight();
         if (highlight == null || HIGHLIGHTER_TYPE == null) {
@@ -55,6 +55,7 @@ public final class HighlightRouting {
             String type = field.fieldOptions().highlighterType();
             String target = type == null || type.equals("unified") ? NativeUnifiedHighlighter.NAME
                 : type.equals("plain") ? NativePlainHighlighter.NAME
+                : type.equals("fvh") ? NativeFvhHighlighter.NAME
                 : null;
             if (target != null) {
                 try {

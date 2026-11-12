@@ -316,7 +316,43 @@ identical to stock. Falls back: the reasons above but the realtime view
 errors), and per hit a value past `index.highlight.max_analyzed_offset`
 (stock's error) or holding a lone surrogate (`highlight_lone_surrogate`:
 Java's tokenizers read one, often left by a `max_analyzer_offset` cut, in
-ways the native text cannot hold). `fvh` stays OpenSearch's.
+ways the native text cannot hold).
+
+### The `fvh` highlighter
+
+`fvh` fields are pointed at `rust_fvh`
+(`highlight/NativeFvhHighlighter.java` over
+`lucene-highlighter/src/vectorhighlight` and
+`lucene-ffi/src/jvm_highlight_fvh.rs`). The field query is stock's own:
+the Java side builds OpenSearch's `CustomFieldQuery` as its highlighter
+does (and sets `highlight_filter` after it, in stock's order), and sends
+its phrase tries and term sets once per field and search, so every query
+`CustomFieldQuery` flattens is covered with no query encoding. Per hit the
+native side reads the matches from the hit's term vectors in its segment
+(the segment's `maxDoc` and `docFreq` weigh them, as the leaf reader does
+in stock), builds the fragment list (single for `number_of_fragments: 0`,
+simple with `fragment_offset` otherwise), and cuts the fragments from the
+values stock's fragments builder reads, which Java passes: the stored
+strings, or `_source` when the field is not stored or `force_source` is
+set. The builders follow stock's pick (Lucene's score-order builder over
+stored fields, OpenSearch's builders elsewhere, which move a fragment's
+start back to its first match when the analyzer has a filter that
+`breaksFastVectorHighlighter`, such as `edge_ngram`), with
+`search.highlight.term_vector_multi_value`, the boundary scanner
+(`chars`, `sentence`, `word`), tags, encoder, `matched_fields`,
+`phrase_limit` and the `no_match_size` summary.
+
+`e2e/highlight_matrix.py` runs every option set above as `type: fvh` and
+thirteen of fvh's own (`matched_fields`, `fragment_offset`,
+`phrase_limit`, `boundary_chars`, `force_source`, multi-valued fields,
+locales, `highlight_filter`) on six term-vector indices (stored or not,
+`edge_ngram`, synonyms, `english`), all identical to stock. Falls back: a
+field without term vectors (stock's error, `highlight_fvh_term_vectors`),
+a `fragment_size` under the fragment list's minimum or a negative
+`fragment_offset` (stock's errors), the realtime view, the reasons of the
+unified highlighter's reader and derived fields, Thai boundaries; per hit
+a value with a lone surrogate, and a hit stock's highlighter throws on or
+whose fragment would cut a surrogate pair (`highlight_fvh_hit`).
 
 ### What runs native around the others
 
@@ -324,7 +360,7 @@ ways the native text cannot hold). `fvh` stays OpenSearch's.
   including on an index with `completion` fields, which used to fall back
   whole (`postings_format`);
 - the stored fields the highlighters read their text from (the fetch
-  phase's native stored-fields reader, R6); term vectors (`fvh`) and the
+  phase's native stored-fields reader, R6) and term vectors (`fvh`); the
   suggesters' own reads (the completion FST, the term dictionary) are
   Lucene's, through the same reader;
 - `query_string` and `simple_query_string`: OpenSearch's parser builds the

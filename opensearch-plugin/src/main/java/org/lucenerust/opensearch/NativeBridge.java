@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 147;
+    public static final int EXPECTED_ABI_VERSION = 151;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -278,6 +278,10 @@ public final class NativeBridge {
             FunctionDescriptor.of(
                 JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS
             )
+        );
+        static final MethodHandle HIGHLIGHT_FVH = bind(
+            "ffi_jvm_highlight_fvh_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
@@ -1838,6 +1842,59 @@ public final class NativeBridge {
                 summaryChars,
                 summaryLen,
                 waitForPos,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the fragments");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's {@code fvh} fragments ({@code jvm_highlight_fvh.rs}): segment {@code segment}'s
+     * document {@code doc} of {@code handle}'s reader, whose values are {@code values}, highlighted
+     * as the field's {@code request} asks; the result in {@code out[0]}.
+     */
+    public static int highlightFvh(long handle, byte[] request, int segment, int doc, java.util.List<String> values, byte[][] out) {
+        if (request == null || values == null) {
+            return nullArgument(request == null ? "request" : "values");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            long total = 0;
+            for (String v : values) {
+                total += v.length();
+            }
+            MemorySegment chars = s.alloc(total * Character.BYTES);
+            MemorySegment lengths = s.alloc((long) values.size() * Integer.BYTES);
+            long at = 0;
+            for (int i = 0; i < values.size(); i++) {
+                String v = values.get(i);
+                MemorySegment.copy(v.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, at * Character.BYTES, v.length());
+                lengths.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, i, v.length());
+                at += v.length();
+            }
+            int rc = (int) H.HIGHLIGHT_FVH.invokeExact(
+                handle,
+                s.bytes(request),
+                (long) request.length,
+                segment,
+                doc,
+                chars,
+                total,
+                lengths,
+                (long) values.size(),
                 ptrOf(result),
                 lenOf(result)
             );

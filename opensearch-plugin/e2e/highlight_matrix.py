@@ -6,7 +6,8 @@ Usage: highlight_matrix.py [load|check|all] [DOCS]
   PLUGIN (default http://localhost:9200) is a node with the plugin, STOCK
   (default http://localhost:9201) a stock one. `load` creates and fills the
   indices on both, `check` runs the matrix, `all` (the default) does both.
-  HL_TYPES (default unified,plain) picks the highlighters whose option sets run.
+  HL_TYPES (default unified,plain,fvh) picks the highlighters whose option sets run; the fvh
+  sets run on the indices with term vectors (and one without, for the error).
 
 The corpus is generated (seeded): sentences of English words with
 abbreviations, numbers, punctuation, HTML-special characters, accented and
@@ -122,6 +123,30 @@ INDICES = {
     "hl_stored": mapping(text_field(store=True)),
 }
 
+TV = "with_positions_offsets"
+
+
+def fvh_mapping(analyzer=None, **kw):
+    """Term vectors on every text field, and an english subfield for matched_fields."""
+    en = {"type": "text", "analyzer": "english", "term_vector": TV}
+    m = mapping(text_field(analyzer, term_vector=TV, fields={"en": en}, **kw))
+    m["properties"]["title"] = {"type": "text", "term_vector": TV, "fields": {"en": en}}
+    return m
+
+
+# The fvh highlighter's own indices: stored or not, and analyzers that break it (edge_ngram).
+FVH_INDICES = {
+    "hl_fvh": fvh_mapping(),
+    "hl_fvh_stored": fvh_mapping(store=True),
+    "hl_fvh_ngram": fvh_mapping("ngram"),
+    "hl_fvh_ngram_stored": fvh_mapping("ngram", store=True),
+    "hl_fvh_syn": fvh_mapping("syn"),
+    "hl_fvh_english": fvh_mapping("english"),
+}
+TYPES = os.environ.get("HL_TYPES", "unified,plain,fvh").split(",")
+if "fvh" in TYPES:
+    INDICES.update(FVH_INDICES)
+
 
 def load(docs):
     for base in (PLUGIN, STOCK):
@@ -233,15 +258,36 @@ PLAIN_OPTIONS.update({
     "plain_field_type": {"fields": {"body": {"type": "plain", "fragment_size": 60}, "title": {}}},
     "plain_html_score": {"type": "plain", "encoder": "html", "order": "score", "fields": {"body": {"number_of_fragments": 4, "fragment_size": 30}}},
 })
-TYPES = os.environ.get("HL_TYPES", "unified,plain").split(",")
+
+# The fvh highlighter: each option set above as `type: fvh`, and its own options.
+FVH_OPTIONS = {f"fvh_{k}": {**v, "type": "fvh"} for k, v in OPTIONS.items() if k != "unified_named"}
+FVH_OPTIONS.update({
+    "fvh_matched": {"type": "fvh", "fields": {"body": {"matched_fields": ["body", "body.en"]}}},
+    "fvh_matched_score": {"type": "fvh", "order": "score", "fields": {"body": {"matched_fields": ["body.en", "body"], "number_of_fragments": 3, "fragment_size": 30}}},
+    "fvh_offset": {"type": "fvh", "fields": {"body": {"fragment_offset": 5, "fragment_size": 40}}},
+    "fvh_phrase_limit": {"type": "fvh", "fields": {"body": {"phrase_limit": 1}}},
+    "fvh_chars": {"type": "fvh", "fields": {"body": {"boundary_chars": ".", "boundary_max_scan": 5, "fragment_size": 30}}},
+    "fvh_force_source": {"type": "fvh", "force_source": True, "fields": {"body": {"number_of_fragments": 2, "fragment_size": 30}}},
+    "fvh_frags0_multi": {"type": "fvh", "fields": {"multi": {"number_of_fragments": 0}}},
+    "fvh_multi_score": {"type": "fvh", "order": "score", "fields": {"multi": {"number_of_fragments": 3, "fragment_size": 20}}},
+    "fvh_no_match_multi": {"type": "fvh", "fields": {"multi": {"no_match_size": 20}}},
+    "fvh_word_locale": {"type": "fvh", "boundary_scanner": "word", "boundary_scanner_locale": "en-US", "fields": {"body": {"fragment_size": 30}}},
+    "fvh_sentence_frags": {"type": "fvh", "boundary_scanner": "sentence", "fields": {"body": {"fragment_size": 30, "number_of_fragments": 4}}},
+    "fvh_highlight_filter": {"type": "fvh", "highlight_filter": True, "fields": {"body": {}}},
+    "fvh_field_type": {"fields": {"body": {"type": "fvh", "fragment_size": 60}, "title": {}}},
+})
+# fvh needs term vectors: its sets run on these (hl_standard for the refusal).
+FVH_RUN_ON = set(FVH_INDICES) | {"hl_tv", "hl_offsets_tv", "hl_standard"}
 
 
-def option_sets():
+def option_sets(index):
     out = {}
-    if "unified" in TYPES:
+    if "unified" in TYPES and index not in FVH_INDICES:
         out.update(OPTIONS)
-    if "plain" in TYPES:
+    if "plain" in TYPES and index not in FVH_INDICES:
         out.update(PLAIN_OPTIONS)
+    if "fvh" in TYPES and index in FVH_RUN_ON:
+        out.update(FVH_OPTIONS)
     return out
 
 
@@ -258,7 +304,7 @@ def check(size):
     rows = bad = 0
     for index in INDICES:
         for qn, q in QUERIES.items():
-            for on, o in option_sets().items():
+            for on, o in option_sets(index).items():
                 rows += 1
                 a = search(PLUGIN, index, q, o, size)
                 b = search(STOCK, index, q, o, size)
