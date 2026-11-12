@@ -6,9 +6,14 @@
 //! opens it, and unbinds it ([`ffi_store_unbind`]) when the store closes.
 //! [`shard_directory`] is what [`crate::engine_writer`] and
 //! [`crate::jvm_reader`] open: a bound path gets an
-//! [`EncryptedDirectory`] over the mapped directory, which reads and writes
-//! the LRSE format (`lucene-store-crypto/src/format.rs`) that the plugin's
-//! Java `RustEncryptedDirectory` reads and writes too.
+//! [`EncryptedDirectory`], which reads and writes the LRSE format
+//! (`lucene-store-crypto/src/format.rs`) that the plugin's Java
+//! `RustEncryptedDirectory` reads and writes too. Its files are read
+//! through the demand pager ([`PagedFsDirectory`]) where `userfaultfd` is
+//! available: ciphertext is read with `O_DIRECT`, each chunk is decrypted
+//! and authenticated once as its page is read in, and the plaintext lives
+//! only in the page cache's budget (`ffi_store_set_page_cache_budget`).
+//! Elsewhere each file is decrypted whole when it opens.
 //!
 //! Keys stay in the JVM's key provider (OpenSearch's `MasterKeyProvider`,
 //! over a KMS). Rust reaches it through one upcall,
@@ -91,35 +96,52 @@ fn paged_paths() -> &'static RwLock<HashMap<String, PagedFsConfig>> {
     PAGED.get_or_init(Default::default)
 }
 
-/// The directory the engine opens at `path`: an [`EncryptedDirectory`] over
-/// the mapped directory when the path is bound to the encrypted store, a
-/// [`PagedFsDirectory`] when it is bound to the page cache, else the mapped
-/// directory. An encrypted binding wins over a page-cache one.
+/// The directory the engine opens at `path`: an [`EncryptedDirectory`] when
+/// the path is bound to the encrypted store, a [`PagedFsDirectory`] when it
+/// is bound to the page cache, else the mapped directory. An encrypted
+/// binding wins over a page-cache one, and reads through the pager (with
+/// the page-cache binding's settings, if any) wherever the pager runs.
 pub(crate) fn shard_directory(path: &str) -> lucene_store::Result<Box<dyn Directory>> {
     let binding = bindings()
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .get(path)
         .cloned();
-    let mapped = MmapDirectory::open(path);
+    let paged = paged_paths()
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(path)
+        .cloned();
     Ok(match binding {
-        None => {
-            let paged = paged_paths()
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(path)
-                .cloned();
-            match paged {
-                Some(config) => Box::new(PagedFsDirectory::with_config(path, config)),
-                None => Box::new(mapped),
+        None => match paged {
+            Some(config) => Box::new(PagedFsDirectory::with_config(path, config)),
+            None => Box::new(MmapDirectory::open(path)),
+        },
+        Some(b) => {
+            let encrypted = |inner: Box<dyn Directory>| {
+                Ok::<_, lucene_store::Error>(Box::new(
+                    EncryptedDirectory::new(inner, b.keys.clone())
+                        .with_chunk_size(b.chunk_size)?
+                        .with_plaintext_commit_metadata()
+                        .with_plaintext_cache(b.cache.clone()),
+                ))
+            };
+            let config = paged
+                .map(|mut c| {
+                    // Every encrypted file goes through the pager, never a
+                    // mapping of its ciphertext.
+                    c.paged_extensions = None;
+                    c.mapped_extensions.clear();
+                    c
+                })
+                .unwrap_or_default();
+            let pager = PagedFsDirectory::with_config(path, config);
+            if pager.is_paged() {
+                encrypted(Box::new(pager))?
+            } else {
+                encrypted(Box::new(MmapDirectory::open(path)))?
             }
         }
-        Some(b) => Box::new(
-            EncryptedDirectory::new(mapped, b.keys)
-                .with_chunk_size(b.chunk_size)?
-                .with_plaintext_commit_metadata()
-                .with_plaintext_cache(b.cache),
-        ),
     })
 }
 
@@ -419,32 +441,12 @@ pub extern "C" fn ffi_store_page_cache_resident_bytes() -> u64 {
     0
 }
 
-/// Turns demand decryption of encrypted shards on (`enabled != 0`) or off
-/// for directories opened afterwards, and sets the decrypted bytes kept
-/// resident across all of them (`budget_bytes`; 0 keeps the current
-/// budget). Where demand decryption is unavailable it stays off;
-/// [`ffi_store_lazy_decrypt_active`] reports which.
-#[no_mangle]
-pub extern "C" fn ffi_store_set_lazy_decrypt(enabled: i32, budget_bytes: u64) -> i32 {
-    guard(|| {
-        let available = lucene_store_crypto::set_lazy_decrypt_default(enabled != 0);
-        #[cfg(target_os = "linux")]
-        if available && budget_bytes > 0 {
-            if let Some(pager) = lucene_store_crypto::lazy::Pager::global() {
-                pager.set_budget(budget_bytes);
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = (available, budget_bytes);
-        Ok(())
-    })
-}
-
-/// 1 when encrypted shards opened now are demand-decrypted: it was turned
-/// on and `userfaultfd` is available. Else 0.
+/// 1 when encrypted shards are decrypted page by page into the page cache
+/// (`userfaultfd` is available), else 0: each file is then decrypted whole
+/// when it opens.
 #[no_mangle]
 pub extern "C" fn ffi_store_lazy_decrypt_active() -> i32 {
-    i32::from(lucene_store_crypto::lazy_decrypt_default() && lucene_store_crypto::lazy_available())
+    ffi_store_page_cache_available()
 }
 
 /// 1 when this library's encryption runs in AWS-LC's FIPS 140-3 module in
@@ -460,6 +462,7 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+    use lucene_store::directory::Input;
     use lucene_store::DataOutput;
     use lucene_store_crypto::StaticKeyProvider;
     use lucene_util::test_support::TempDir;
@@ -593,19 +596,19 @@ mod tests {
         assert!(unbound.open("enc.bin").unwrap().starts_with(b"LRSE"));
     }
 
-    /// Demand decryption turned on through the FFI reads a bound shard back
-    /// (through the pager where `userfaultfd` is available), and the
-    /// writer's and a reader's directories at one path share the plaintext.
+    /// A bound shard is read through the page cache where the pager runs,
+    /// and the writer's and a reader's directories at one path share the
+    /// plaintext. A chunk that changes under an open reader fails the call
+    /// that reads it with an I/O error instead of ending the process.
     #[test]
-    fn lazy_decrypt_reads_a_bound_shard_and_shares_plaintext_per_path() {
+    fn encrypted_shards_read_through_the_page_cache_and_fail_bad_chunks_cleanly() {
         // SAFETY: a function with the upcall's contract.
         unsafe { ffi_store_set_key_upcall(Some(test_upcall)) };
-        assert_eq!(ffi_store_set_lazy_decrypt(1, 64 << 20), 0);
         assert_eq!(
             ffi_store_lazy_decrypt_active(),
-            i32::from(lucene_store_crypto::lazy_available())
+            ffi_store_page_cache_available()
         );
-        let tmp = TempDir::new("ffi-store-lazy");
+        let tmp = TempDir::new("ffi-store-paged");
         let path = tmp.path().to_str().unwrap().to_string();
         assert_eq!(bind(&path, 7, 0), 0);
         let writer = shard_directory(&path).unwrap();
@@ -616,8 +619,33 @@ mod tests {
         let b = reader.open("_0.fdt").unwrap();
         assert_eq!(&a[..], &body[..]);
         assert_eq!(a.as_ptr(), b.as_ptr(), "one plaintext per path");
-        assert_eq!(ffi_store_set_lazy_decrypt(0, 0), 0);
-        assert_eq!(ffi_store_lazy_decrypt_active(), 0);
+        drop((a, b));
+        if ffi_store_page_cache_available() == 1 {
+            let input = reader.open("_0.fdt").unwrap();
+            // Flip a byte of the third chunk's ciphertext on disk.
+            let file = tmp.path().join("_0.fdt");
+            let mut raw = std::fs::read(&file).unwrap();
+            let at = raw.len() / 2;
+            raw[at] ^= 1;
+            std::fs::write(&file, &raw).unwrap();
+            let shard: Arc<str> = Arc::from(path.as_str());
+            let held = std::panic::AssertUnwindSafe(&input);
+            let rc = guard(move || {
+                crate::error::note_shard(&shard);
+                // The page holding the flipped chunk reads as zeros.
+                let held = held;
+                let input: &Input = held.0;
+                let middle = input.len() / 2;
+                assert_eq!(input[middle..middle + 64], [0u8; 64]);
+                Ok(())
+            });
+            assert_eq!(rc, FfiStatus::Io.code());
+            let message = crate::error::last_error();
+            assert!(message.contains("failed authentication"), "{message}");
+            assert!(input.will_need(0, input.len()).is_err());
+            // A call on another shard is not failed by it.
+            assert_eq!(guard(|| Ok(())), 0);
+        }
         assert_eq!(unbind(&path), 0);
     }
 
