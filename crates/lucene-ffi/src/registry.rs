@@ -74,6 +74,9 @@ pub struct JvmReaderHandle {
     /// applied, as far as the last live search read them
     /// ([`crate::live::CommitLive`]).
     pub commit_live: std::sync::Mutex<Option<crate::live::CommitLive>>,
+    /// The shard path the reader's files are under, noted for each call
+    /// that reads them ([`crate::error::note_shard`]).
+    pub path: std::sync::Arc<str>,
 }
 
 /// Handles are `Arc`s so a search clones one out and runs with no lock held.

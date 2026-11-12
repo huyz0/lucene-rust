@@ -2189,7 +2189,26 @@ impl IndexingConfig {
     }
 
     /// [`Self::run_merge`] with no rate limit.
+    /// [`Self::run_merge_reading`], failed when a page of a file under
+    /// `dir` could not be read or decoded while it ran: zeros may have
+    /// stood in for it (`lucene_store::read_failures`), and the merged
+    /// segment would keep them.
     fn run_merge_unthrottled(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
+        let since = lucene_store::read_failures::epoch();
+        let outcome = self.run_merge_reading(dir, plan)?;
+        if let Some(root) = dir.fs_directory_path() {
+            if let Some(message) =
+                lucene_store::read_failures::failure_under(&root.to_string_lossy(), since)
+            {
+                return Err(Error::Store(lucene_store::Error::Io(
+                    std::io::Error::other(format!("merge read a page that failed: {message}")),
+                )));
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn run_merge_reading(&self, dir: &dyn Directory, plan: &MergePlan) -> Result<MergeOutcome> {
         /// Raw `.tim`/`.tip`/`.tmd`/`.doc` bytes for a source that has
         /// postings, plus its `.pos`/`.pay` when the segment has them --
         /// `None` when that source's `.si` lists no `.tim` file.
