@@ -110,7 +110,11 @@ pub(crate) const NODE_PHRASE_POSITIONS: u8 = 50;
 /// i32`, then per position `position: i32`, `terms: i32` and the terms
 /// (`bytes`).
 pub(crate) const NODE_MULTI_PHRASE: u8 = 51;
-pub(crate) const NODE_LAST: u8 = NODE_MULTI_PHRASE;
+/// OpenSearch's `MultiPhrasePrefixQuery` (`match_phrase_prefix`), for the
+/// highlighter: laid out as [`NODE_MULTI_PHRASE`], the last position's
+/// terms the prefixes.
+pub(crate) const NODE_MULTI_PHRASE_PREFIX: u8 = 52;
+pub(crate) const NODE_LAST: u8 = NODE_MULTI_PHRASE_PREFIX;
 
 /// [`NODE_SUBSTRING`]'s kinds.
 pub(crate) const SUBSTRING_WILDCARD: u8 = 0;
@@ -485,7 +489,7 @@ pub(crate) fn decode(
                 .with_slop(slop);
             return Ok(Clause::Phrase(phrase));
         }
-        NODE_MULTI_PHRASE => {
+        NODE_MULTI_PHRASE | NODE_MULTI_PHRASE_PREFIX => {
             let field = field(c)?;
             let slop = u32::try_from(c.i32()?)
                 .map_err(|_| invalid("query tree: a multi-phrase with a negative slop"))?;
@@ -507,6 +511,14 @@ pub(crate) fn decode(
                     terms.push(c.bytes()?.to_vec());
                 }
                 arrays.push((terms, position));
+            }
+            if kind == NODE_MULTI_PHRASE_PREFIX {
+                let (terms, positions) = arrays.into_iter().unzip();
+                let q = lucene_search::extended_query::MultiPhrasePrefixQuery::new(
+                    field, terms, positions, slop,
+                )
+                .map_err(|e| invalid(format!("query tree: {e}")))?;
+                return Ok(q.into());
             }
             let phrase = lucene_search::query::MultiPhraseQuery::with_positions(field, arrays)
                 .map_err(|e| invalid(format!("query tree: {e}")))?

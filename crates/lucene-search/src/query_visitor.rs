@@ -509,6 +509,28 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             crate::extended_query::ExtendedQuery::PointInSet(q) => {
                 leaf_on(visitor, &q.field, clause);
             }
+            // `MultiPhrasePrefixQuery.visit`: every position but the prefix one
+            crate::extended_query::ExtendedQuery::MultiPhrasePrefix(q) => {
+                if !visitor.accept_field(&q.field) {
+                    return;
+                }
+                let whole = &q.term_arrays[..q.term_arrays.len().saturating_sub(1)];
+                with_sub(visitor, Occur::Must, clause, &mut |v| {
+                    for position in whole {
+                        let terms: Vec<Term> = position
+                            .iter()
+                            .map(|t| Term::new(q.field.clone(), t.clone()))
+                            .collect();
+                        if terms.len() == 1 {
+                            v.consume_terms(clause, &terms);
+                        } else {
+                            with_sub(v, Occur::Should, clause, &mut |sv| {
+                                sv.consume_terms(clause, &terms)
+                            });
+                        }
+                    }
+                });
+            }
             crate::extended_query::ExtendedQuery::Document(d) => {
                 if d.query.field().is_none_or(|f| visitor.accept_field(f)) {
                     visitor.visit_leaf(clause);
@@ -826,6 +848,58 @@ mod tests {
         };
         visit(&dv, &mut other);
         assert!(other.leaves.is_empty());
+    }
+
+    #[test]
+    fn a_phrase_prefix_visits_its_whole_terms_and_no_leaf() {
+        use crate::extended_query::MultiPhrasePrefixQuery;
+        let q: Clause = MultiPhrasePrefixQuery::new(
+            "f",
+            vec![
+                vec![b"a".to_vec()],
+                vec![b"b".to_vec(), b"c".to_vec()],
+                vec![b"pre".to_vec()],
+            ],
+            vec![0, 1, 2],
+            0,
+        )
+        .unwrap()
+        .into();
+        let terms: Vec<_> = extract_terms(&q).into_iter().map(|t| t.bytes).collect();
+        assert_eq!(terms, [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        struct Seen {
+            field: &'static str,
+            leaf: bool,
+            terms: usize,
+        }
+        impl QueryVisitor for Seen {
+            fn accept_field(&self, field: &str) -> bool {
+                field == self.field
+            }
+            fn visit_leaf(&mut self, _query: &Clause) {
+                self.leaf = true;
+            }
+            fn consume_terms(&mut self, _query: &Clause, terms: &[Term]) {
+                self.terms += terms.len();
+            }
+        }
+        let mut on = Seen {
+            field: "f",
+            leaf: false,
+            terms: 0,
+        };
+        visit(&q, &mut on);
+        assert!(!on.leaf);
+        assert_eq!(on.terms, 3);
+        let mut off = Seen {
+            field: "g",
+            leaf: false,
+            terms: 0,
+        };
+        visit(&q, &mut off);
+        assert_eq!((off.leaf, off.terms), (false, 0));
+        assert!(MultiPhrasePrefixQuery::new("f", Vec::new(), Vec::new(), 0).is_err());
+        assert!(MultiPhrasePrefixQuery::new("f", vec![Vec::new()], vec![0], 0).is_err());
     }
 
     #[test]

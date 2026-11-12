@@ -87,6 +87,9 @@ pub enum ExtendedQuery {
     /// A substring, wildcard or regexp search over a `RustSubstring`
     /// doc-values field ([`SubstringQuery`]).
     Substring(SubstringQuery),
+    /// OpenSearch's `match_phrase_prefix` query
+    /// ([`MultiPhrasePrefixQuery`]); only highlighted, not searched.
+    MultiPhrasePrefix(MultiPhrasePrefixQuery),
     /// A query only tests build ([`crate::test_support::TestQuery`]).
     #[cfg(any(test, feature = "asserting"))]
     Test(crate::test_support::TestQuery),
@@ -121,6 +124,7 @@ into_clause! {
     IndexOrDocValuesQuery => IndexOrDocValues,
     DocumentClause => Document,
     SubstringQuery => Substring,
+    MultiPhrasePrefixQuery => MultiPhrasePrefix,
 }
 
 impl From<crate::function::FunctionQuery> for Clause {
@@ -186,6 +190,7 @@ impl ExtendedQuery {
             ExtendedQuery::DocAndScore(_) => "DocAndScoreQuery",
             ExtendedQuery::NumericDocValuesRange(_) => "SortedNumericDocValuesRangeQuery",
             ExtendedQuery::Substring(_) => "SubstringQuery",
+            ExtendedQuery::MultiPhrasePrefix(_) => "MultiPhrasePrefixQuery",
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
@@ -855,6 +860,45 @@ pub enum SubstringKind {
     Contains,
     /// The whole value.
     Exact,
+}
+
+/// OpenSearch's `MultiPhrasePrefixQuery`, what `match_phrase_prefix`
+/// builds: a multi-phrase whose last position's terms are prefixes. Every
+/// position but the last holds whole terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiPhrasePrefixQuery {
+    pub field: String,
+    /// `termArrays`: each position's terms, the last one's prefixes.
+    pub term_arrays: Vec<Vec<Vec<u8>>>,
+    /// `positions`, one per entry of `term_arrays`, increasing.
+    pub positions: Vec<i32>,
+    pub slop: u32,
+}
+
+impl MultiPhrasePrefixQuery {
+    /// A query over `term_arrays` at `positions`; the two must be as long
+    /// and neither empty, and no position may hold no term.
+    pub fn new(
+        field: impl Into<String>,
+        term_arrays: Vec<Vec<Vec<u8>>>,
+        positions: Vec<i32>,
+        slop: u32,
+    ) -> Result<Self> {
+        if term_arrays.is_empty()
+            || term_arrays.len() != positions.len()
+            || term_arrays.iter().any(Vec::is_empty)
+        {
+            return Err(Error::InvalidQuery(
+                "a phrase prefix needs one or more positions of one or more terms".into(),
+            ));
+        }
+        Ok(MultiPhrasePrefixQuery {
+            field: field.into(),
+            term_arrays,
+            positions,
+            slop,
+        })
+    }
 }
 
 /// A search over a BINARY doc-values field of the `RustSubstring` format

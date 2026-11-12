@@ -210,13 +210,16 @@ public final class QueryEncoder {
         org.apache.lucene.queries.spans.SpanContainingQuery.class,
         org.apache.lucene.queries.spans.SpanWithinQuery.class,
         org.apache.lucene.queries.spans.FieldMaskingSpanQuery.class,
-        org.opensearch.common.lucene.search.function.FunctionScoreQuery.class
+        org.opensearch.common.lucene.search.function.FunctionScoreQuery.class,
+        org.opensearch.common.lucene.search.MultiPhrasePrefixQuery.class
     );
 
     /** {@code NODE_PHRASE_POSITIONS} in {@code jvm_queries.rs}: a phrase with its own positions, for the highlighter. */
     private static final byte NODE_PHRASE_POSITIONS = 50;
     /** {@code NODE_MULTI_PHRASE} in {@code jvm_queries.rs}, for the highlighter. */
     private static final byte NODE_MULTI_PHRASE = 51;
+    /** {@code NODE_MULTI_PHRASE_PREFIX} in {@code jvm_queries.rs}: {@code match_phrase_prefix}, for the highlighter. */
+    private static final byte NODE_MULTI_PHRASE_PREFIX = 52;
 
     /** Whether {@code q} holds a phrase or span query: their positions are what the highlighter's phrase helper reads. */
     private static boolean hasPositional(Query q) {
@@ -225,6 +228,7 @@ public final class QueryEncoder {
             private void check(Query query) {
                 found[0] |= query instanceof PhraseQuery
                     || query instanceof org.apache.lucene.search.MultiPhraseQuery
+                    || query instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery
                     || query instanceof org.apache.lucene.queries.spans.SpanQuery;
             }
 
@@ -247,6 +251,39 @@ public final class QueryEncoder {
         return found[0];
     }
 
+    /**
+     * A multi-phrase node ({@code NODE_MULTI_PHRASE} or {@code NODE_MULTI_PHRASE_PREFIX}): the field
+     * (its terms', as neither query exposes its own), the slop, and each position with its terms;
+     * {@code empty} when there is no position or one holds no term.
+     */
+    private static String multiPhrase(byte kind, Term[][] arrays, int[] positions, int slop, String empty, ByteArrayOutputStream out, int[] nodes) {
+        if (arrays.length == 0 || arrays.length != positions.length) {
+            return empty;
+        }
+        for (Term[] a : arrays) {
+            if (a.length == 0) {
+                return empty;
+            }
+        }
+        String field = arrays[0][0].field();
+        out.write(kind);
+        writeBytes(out, field.getBytes(StandardCharsets.UTF_8));
+        writeInt(out, slop);
+        writeInt(out, arrays.length);
+        for (int i = 0; i < arrays.length; i++) {
+            nodes[0] += Math.max(1, arrays[i].length);
+            if (nodes[0] > MAX_NODES) {
+                return "query_too_large";
+            }
+            writeInt(out, positions[i]);
+            writeInt(out, arrays[i].length);
+            for (Term t : arrays[i]) {
+                writeBytes(out, t.bytes());
+            }
+        }
+        return "";
+    }
+
     /** In highlight mode, {@code q} written as the highlighter sees it, or the reason it is not; null to encode it as usual. */
     private static String highlightNode(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
@@ -267,34 +304,18 @@ public final class QueryEncoder {
             return reason == null ? "" : reason;
         }
         if (q instanceof org.apache.lucene.search.MultiPhraseQuery mp) {
-            Term[][] arrays = mp.getTermArrays();
-            int[] positions = mp.getPositions();
-            String field = null;
-            for (Term[] a : arrays) {
-                if (a.length > 0) {
-                    field = a[0].field();
-                    break;
-                }
-            }
-            if (field == null) {
-                return "highlight_MultiPhraseQuery";
-            }
-            out.write(NODE_MULTI_PHRASE);
-            writeBytes(out, field.getBytes(StandardCharsets.UTF_8));
-            writeInt(out, mp.getSlop());
-            writeInt(out, arrays.length);
-            for (int i = 0; i < arrays.length; i++) {
-                nodes[0] += Math.max(1, arrays[i].length);
-                if (nodes[0] > MAX_NODES) {
-                    return "query_too_large";
-                }
-                writeInt(out, positions[i]);
-                writeInt(out, arrays[i].length);
-                for (Term t : arrays[i]) {
-                    writeBytes(out, t.bytes());
-                }
-            }
-            return "";
+            return multiPhrase(NODE_MULTI_PHRASE, mp.getTermArrays(), mp.getPositions(), mp.getSlop(), "highlight_MultiPhraseQuery", out, nodes);
+        }
+        if (q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery mpp) {
+            return multiPhrase(
+                NODE_MULTI_PHRASE_PREFIX,
+                mpp.getTerms(),
+                mpp.getPositions(),
+                mpp.getSlop(),
+                "highlight_MultiPhrasePrefixQuery",
+                out,
+                nodes
+            );
         }
         if (q.getClass() == PhraseQuery.class) {
             PhraseQuery pq = (PhraseQuery) q;

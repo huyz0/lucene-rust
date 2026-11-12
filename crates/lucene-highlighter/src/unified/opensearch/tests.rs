@@ -225,3 +225,56 @@ fn the_bounded_scanner_moves_like_its_sentence_iterator() {
     assert!(next > 0);
     assert!(b.previous() < next);
 }
+
+fn phrase_prefix(arrays: &[&[&str]], slop: u32) -> Clause {
+    let terms: Vec<Vec<Vec<u8>>> = arrays
+        .iter()
+        .map(|a| a.iter().map(|t| t.as_bytes().to_vec()).collect())
+        .collect();
+    let positions = (0..terms.len() as i32).collect();
+    lucene_search::extended_query::MultiPhrasePrefixQuery::new("body", terms, positions, slop)
+        .unwrap()
+        .into()
+}
+
+#[test]
+fn a_phrase_prefix_highlights_the_phrase_it_completes() {
+    assert_eq!(
+        run(defaults(), &phrase_prefix(&[&["quick"], &["fo"]], 0), TEXT),
+        ["The last one has <em>quick</em> <em>foxes</em> running quickly over the hills and far away from the lazy dogs of the village"]
+    );
+}
+
+#[test]
+fn a_phrase_prefix_of_one_position_is_its_prefix() {
+    assert_eq!(
+        run(defaults(), &phrase_prefix(&[&["qui"]], 0), TEXT),
+        run(
+            defaults(),
+            &Clause::Prefix(PrefixQuery::new("body", b"qui".to_vec())),
+            TEXT
+        ),
+    );
+}
+
+#[test]
+fn a_sloppy_phrase_prefix_matches_out_of_order() {
+    // slop 2: "brown ... quick" within two moves
+    assert_eq!(
+        run(defaults(), &phrase_prefix(&[&["brown"], &["qu"]], 2), TEXT),
+        ["The <em>quick</em> <em>brown</em> fox jumps over the lazy dog."]
+    );
+}
+
+#[test]
+fn a_phrase_prefix_s_whole_terms_alone_do_not_highlight() {
+    // "lazy" is a whole term of the phrase: no "lazy z*" anywhere
+    let h = CustomUnifiedHighlighter::new(
+        defaults(),
+        &phrase_prefix(&[&["lazy"], &["z"]], 0),
+        analyzer(),
+    )
+    .unwrap();
+    assert!(!h.is_noop());
+    assert!(run(defaults(), &phrase_prefix(&[&["lazy"], &["z"]], 0), TEXT).is_empty());
+}
