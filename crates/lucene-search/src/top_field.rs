@@ -1039,6 +1039,8 @@ struct TopField {
     collected_hits: usize,
     /// `scoreMode.isExhaustive()`, fixed at construction.
     exhaustive: bool,
+    /// Hits that entered the queue (added, or replacing its bottom).
+    entered: u64,
 }
 
 impl TopField {
@@ -1134,6 +1136,7 @@ impl TopField {
             after: after.cloned(),
             collected_hits: 0,
             exhaustive: false,
+            entered: 0,
         };
         tf.exhaustive = tf.score_mode().is_exhaustive();
         match after {
@@ -1291,18 +1294,20 @@ impl FedTopField {
     }
 
     /// Collects `doc` of `leaf`'s segment, with its score (`NaN` when the
-    /// sort reads none).
+    /// sort reads none); `true` when it entered the queue.
     ///
     /// # Errors
     /// What reading the sort's columns reports.
-    pub fn collect(&mut self, leaf: &mut FedLeaf<'_>, doc: i32, score: f32) -> Result<()> {
+    pub fn collect(&mut self, leaf: &mut FedLeaf<'_>, doc: i32, score: f32) -> Result<bool> {
         let leaf = &mut leaf.0;
         if leaf.terminated {
-            return Ok(());
+            return Ok(false);
         }
         leaf.score = score;
         leaf.score_doc = doc;
-        leaf.collect(&mut self.0, doc, None)
+        let before = self.0.entered;
+        leaf.collect(&mut self.0, doc, None)?;
+        Ok(self.0.entered != before)
     }
 
     /// The end of `leaf`'s segment: its keyword keys read their terms, as
@@ -1312,6 +1317,11 @@ impl FedTopField {
     /// What reading the terms reports.
     pub fn finish(&mut self, mut leaf: FedLeaf<'_>) -> Result<()> {
         leaf.0.finish(&mut self.0)
+    }
+
+    /// The documents the queue holds now, in no order.
+    pub fn held_docs(&self) -> impl Iterator<Item = i32> + '_ {
+        self.0.queue.heap.iter().map(|e| e.doc)
     }
 
     /// The hits, best first, and the count (`topDocs()`).
@@ -3928,6 +3938,7 @@ impl<'a> Leaf<'a> {
             return Ok(());
         };
         self.copy(tf, bottom.slot, doc, scorer)?;
+        tf.entered = tf.entered.wrapping_add(1);
         tf.queue.heap[0].doc = self.doc_base + doc;
         tf.queue.update_top(&tf.comps);
         let slot = tf.queue.top().map_or(0, |e| e.slot);
@@ -3945,6 +3956,7 @@ impl<'a> Leaf<'a> {
     ) -> Result<()> {
         let slot = hits_collected - 1;
         self.copy(tf, slot, doc, scorer)?;
+        tf.entered = tf.entered.wrapping_add(1);
         tf.queue.add(
             &tf.comps,
             Entry {
