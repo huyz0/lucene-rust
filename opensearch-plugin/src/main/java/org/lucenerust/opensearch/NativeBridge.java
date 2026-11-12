@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 167;
+    public static final int EXPECTED_ABI_VERSION = 168;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -289,6 +289,16 @@ public final class NativeBridge {
         static final MethodHandle HIGHLIGHT_UNIFIED = bind(
             "ffi_jvm_highlight_unified_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle HIGHLIGHT_PLAIN = bind(
+            "ffi_jvm_highlight_plain_alloc",
+            FunctionDescriptor.of(
+                JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS
+            )
+        );
+        static final MethodHandle HIGHLIGHT_FVH = bind(
+            "ffi_jvm_highlight_fvh_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
@@ -1876,6 +1886,128 @@ public final class NativeBridge {
         byte[] utf8 = dir.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         try (Scratch s = Scratch.open()) {
             return (int) H.ADD_DATA_PACK_DIR.invokeExact(s.bytes(utf8), (long) utf8.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's {@code plain} fragments ({@code jvm_highlight_plain.rs}): {@code values} highlighted
+     * as {@code request} asks, and with no fragment, the end of {@code summary}'s {@code
+     * noMatchSize} summary ({@code summary} null for none); {@code waitForPos} is the span
+     * fragmenter's state the field's previous call returned (-1 at first).
+     */
+    public static int highlightPlain(
+        byte[] request,
+        java.util.List<String> values,
+        int noMatchSize,
+        String summary,
+        int waitForPos,
+        byte[][] out
+    ) {
+        if (request == null || values == null) {
+            return nullArgument(request == null ? "request" : "values");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            long total = 0;
+            for (String v : values) {
+                total += v.length();
+            }
+            MemorySegment chars = s.alloc(total * Character.BYTES);
+            MemorySegment lengths = s.alloc((long) values.size() * Integer.BYTES);
+            long at = 0;
+            for (int i = 0; i < values.size(); i++) {
+                String v = values.get(i);
+                MemorySegment.copy(v.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, at * Character.BYTES, v.length());
+                lengths.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, i, v.length());
+                at += v.length();
+            }
+            MemorySegment summaryChars = MemorySegment.NULL;
+            long summaryLen = -1;
+            if (summary != null) {
+                summaryChars = s.alloc((long) summary.length() * Character.BYTES);
+                MemorySegment.copy(summary.toCharArray(), 0, summaryChars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, 0, summary.length());
+                summaryLen = summary.length();
+            }
+            int rc = (int) H.HIGHLIGHT_PLAIN.invokeExact(
+                s.bytes(request),
+                (long) request.length,
+                chars,
+                total,
+                lengths,
+                (long) values.size(),
+                noMatchSize,
+                summaryChars,
+                summaryLen,
+                waitForPos,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the fragments");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's {@code fvh} fragments ({@code jvm_highlight_fvh.rs}): segment {@code segment}'s
+     * document {@code doc} of {@code handle}'s reader, whose values are {@code values}, highlighted
+     * as the field's {@code request} asks; the result in {@code out[0]}.
+     */
+    public static int highlightFvh(long handle, byte[] request, int segment, int doc, java.util.List<String> values, byte[][] out) {
+        if (request == null || values == null) {
+            return nullArgument(request == null ? "request" : "values");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            long total = 0;
+            for (String v : values) {
+                total += v.length();
+            }
+            MemorySegment chars = s.alloc(total * Character.BYTES);
+            MemorySegment lengths = s.alloc((long) values.size() * Integer.BYTES);
+            long at = 0;
+            for (int i = 0; i < values.size(); i++) {
+                String v = values.get(i);
+                MemorySegment.copy(v.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, at * Character.BYTES, v.length());
+                lengths.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, i, v.length());
+                at += v.length();
+            }
+            int rc = (int) H.HIGHLIGHT_FVH.invokeExact(
+                handle,
+                s.bytes(request),
+                (long) request.length,
+                segment,
+                doc,
+                chars,
+                total,
+                lengths,
+                (long) values.size(),
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the fragments");
+                }
+                out[0] = encoded;
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

@@ -8,7 +8,9 @@ Usage: highlight_bench.py [load|run|all] [DOCS] [SECONDS]
   (default 12) a node, the two nodes alternating in rounds, and prints the
   median and p90 milliseconds and the stock/plugin ratio of the medians. The
   `no_highlight` rows are the same searches without highlighting: the cost
-  around the highlighter. CASES (comma-separated) runs only those cases."""
+  around the highlighter; the `plain_` rows are the plain highlighter's, on
+  the re-analysis index only, the `fvh_` rows the fvh highlighter's, on the
+  term-vector index only. CASES (comma-separated) runs only those cases."""
 import json, os, random, statistics, sys, time
 import requests
 
@@ -31,7 +33,20 @@ CASES = {
     "prefix": ({"prefix": {"body": "sea"}}, {"fields": {"body": {}}}),
     "phrase_prefix": ({"match_phrase_prefix": {"body": "quick br"}}, {"fields": {"body": {}}}),
     "all_fragments": ({"match": {"body": "fox"}}, {"fields": {"body": {"number_of_fragments": 0}}}),
+    # read through their visit
+    "script_filter": ({"bool": {"must": [{"match": {"body": "fox"}}], "filter": [{"script": {"script": "doc['num'].value > 300"}}]}}, {"fields": {"body": {}}}),
+    "nested": ({"bool": {"must": [{"match": {"body": "lazy"}}], "should": [{"nested": {"path": "comments", "query": {"match": {"comments.text": "fox"}}}}]}}, {"fields": {"body": {}}}),
 }
+# The plain highlighter re-analyzes every value whatever the index holds: one index is enough.
+PLAIN_CASES = {
+    f"plain_{k}": (q, {**h, "type": "plain"}) for k, (q, h) in CASES.items()
+}
+PLAIN_CASES["plain_simple"] = ({"match": {"body": "quick brown gold"}}, {"type": "plain", "fragmenter": "simple", "fields": {"body": {}}})
+# The fvh highlighter reads term vectors: the term-vector index only.
+FVH_CASES = {
+    f"fvh_{k}": (q, {**h, "type": "fvh"}) for k, (q, h) in CASES.items()
+}
+FVH_CASES["fvh_score"] = ({"match": {"body": "quick brown gold"}}, {"type": "fvh", "order": "score", "fields": {"body": {"number_of_fragments": 3, "fragment_size": 40}}})
 
 
 def load(docs):
@@ -70,7 +85,12 @@ def run(seconds, size=50):
     print(f"{'index':14} {'case':16} {'plugin p50':>10} {'p90':>7} {'stock p50':>10} {'p90':>7} {'stock/plugin':>12}")
     for index in INDICES:
         only = os.environ.get("CASES")
-        for case, (query, highlight) in list(CASES.items()) + [("no_highlight", (CASES["terms"][0], None))]:
+        cases = list(CASES.items()) + [("no_highlight", (CASES["terms"][0], None))]
+        if index == "hlb_analysis":
+            cases += list(PLAIN_CASES.items())
+        if index == "hlb_tv":
+            cases += list(FVH_CASES.items())
+        for case, (query, highlight) in cases:
             if only and case not in only.split(","):
                 continue
             body = {"query": query, "size": size, "_source": False}

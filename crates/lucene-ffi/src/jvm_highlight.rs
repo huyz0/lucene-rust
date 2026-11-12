@@ -80,12 +80,12 @@ thread_local! {
     static CACHED: RefCell<Vec<(Box<[u8]>, Prepared)>> = const { RefCell::new(Vec::new()) };
 }
 
-fn invalid(message: impl Into<String>) -> FfiStatus {
+pub(crate) fn invalid(message: impl Into<String>) -> FfiStatus {
     set_last_error(message.into());
     FfiStatus::InvalidArgument
 }
 
-fn utf8<'a>(b: &'a [u8], what: &str) -> Result<&'a str, FfiStatus> {
+pub(crate) fn utf8<'a>(b: &'a [u8], what: &str) -> Result<&'a str, FfiStatus> {
     std::str::from_utf8(b).map_err(|_| invalid(format!("highlight request: {what} is not UTF-8")))
 }
 
@@ -94,10 +94,10 @@ fn utf8<'a>(b: &'a [u8], what: &str) -> Result<&'a str, FfiStatus> {
 /// (`UnifiedHighlighter.getLimitedOffsetAnalyzer`). A field without one
 /// gets `missing`, which never analyzes: a request whose highlighter would
 /// re-analyze such a field answers [`STATUS_NEEDS_ANALYZER`].
-struct Limited {
-    by_field: HashMap<String, Arc<lucene_analysis::factory::CustomAnalyzer>>,
-    missing: Analyzer,
-    limit: Option<i32>,
+pub(crate) struct Limited {
+    pub(crate) by_field: HashMap<String, Arc<lucene_analysis::factory::CustomAnalyzer>>,
+    pub(crate) missing: Analyzer,
+    pub(crate) limit: Option<i32>,
 }
 
 impl AnalyzerWrapper for Limited {
@@ -126,7 +126,7 @@ impl AnalyzerWrapper for Limited {
 }
 
 /// The query of a request, as the clause tree the highlighter visits.
-fn decode_clause(blob: &[u8]) -> Result<Clause, FfiStatus> {
+pub(crate) fn decode_clause(blob: &[u8]) -> Result<Clause, FfiStatus> {
     if blob.first() == Some(&jvm_reader::QUERY_TREE) {
         let mut c = Cursor::new(&blob[1..]);
         let mut nodes = 0usize;
@@ -296,7 +296,7 @@ fn with_prepared<T>(
     })
 }
 
-fn put_i32(out: &mut Vec<u8>, v: i32) {
+pub(crate) fn put_i32(out: &mut Vec<u8>, v: i32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 

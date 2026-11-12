@@ -430,3 +430,84 @@ fn the_per_thread_cache_keeps_the_latest_requests() {
     let key = req.bytes();
     CACHED.with(|c| assert_eq!(&*c.borrow().last().unwrap().0, &key[..]));
 }
+
+#[test]
+fn a_visit_only_node_highlights_its_phrase_as_terms() {
+    let h = open_fixture("uhighlight/index");
+    let wrapped = tree(|q| {
+        q.push(crate::jvm_queries::NODE_VISIT_ONLY);
+        q.push(crate::jvm_queries::NODE_PHRASE_POSITIONS);
+        put_bytes(q, b"offs");
+        put_i32(q, 0);
+        put_i32(q, 2);
+        put_i32(q, 0);
+        put_bytes(q, b"lazy");
+        put_i32(q, 1);
+        put_bytes(q, b"dog");
+    });
+    let (_, snippets) = run(h, &Req::new("offs", wrapped, 1), 0, D0);
+    assert!(
+        snippets
+            .iter()
+            .any(|(s, _)| s.contains("<em>dog</em> is <em>lazy</em>")),
+        "{snippets:?}"
+    );
+}
+
+/// A visited record's terms, behind a guard the field passes, inside a
+/// `MUST` sub-visitor.
+fn visited(guard: Option<&[u8]>, kind_override: Option<u8>) -> Vec<u8> {
+    tree(|q| {
+        q.push(crate::jvm_queries::NODE_VISITED);
+        put_i32(q, 1);
+        q.push(2); // sub
+        q.push(0); // MUST
+        put_i32(q, 2);
+        q.push(kind_override.unwrap_or(0)); // terms
+        match guard {
+            Some(g) => {
+                q.push(1);
+                put_bytes(q, g);
+            }
+            None => q.push(0),
+        }
+        put_i32(q, 2);
+        put_bytes(q, b"offs");
+        put_bytes(q, b"lazy");
+        put_bytes(q, b"offs");
+        put_bytes(q, b"dog");
+        q.push(3); // a node handed over whole
+        q.push(crate::jvm_queries::NODE_PHRASE_POSITIONS);
+        put_bytes(q, b"offs");
+        put_i32(q, 0);
+        put_i32(q, 1);
+        put_i32(q, 0);
+        put_bytes(q, b"fox");
+    })
+}
+
+#[test]
+fn a_visited_record_highlights_what_its_visit_consumed() {
+    let h = open_fixture("uhighlight/index");
+    let (status, snippets) = run(h, &Req::new("offs", visited(Some(b"offs"), None), 1), 0, D0);
+    assert_eq!(status, STATUS_SNIPPETS);
+    let all: String = snippets.iter().map(|(s, _)| s.as_str()).collect();
+    for word in ["dog", "lazy", "fox"] {
+        assert!(all.contains(&format!("<em>{word}</em>")), "{snippets:?}");
+    }
+    // the term collector accepts every field: a guard on any field, or none,
+    // consumes the same terms
+    for guard in [None, Some(&b"tv"[..])] {
+        assert_eq!(
+            run(h, &Req::new("offs", visited(guard, None), 1), 0, D0),
+            (status, snippets.clone())
+        );
+    }
+}
+
+#[test]
+fn a_visited_record_with_an_unknown_event_is_refused() {
+    let h = open_fixture("uhighlight/index");
+    let req = Req::new("offs", visited(None, Some(9)), 1).bytes();
+    assert!(highlight(h, &req, 0, 0, &utf16(D0)).is_err());
+}
