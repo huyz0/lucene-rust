@@ -79,7 +79,7 @@ fn vlong_len(input: &mut SliceInput, file: &str, what: &str) -> Result<usize> {
 }
 
 impl ClusteredPostings {
-    /// Reads `.sit` and keeps `.sip` for [`Self::clusters`]. Both files'
+    /// Reads `.sit` and keeps `.sip` for [`Self::cursor`]. Both files'
     /// headers are checked against `segment_id`; as in neural-search, the
     /// checksums are not verified on open.
     pub fn open(sit: &[u8], sip: Arc<Input>, segment_id: &[u8; ID_LENGTH]) -> Result<Self> {
@@ -126,9 +126,11 @@ impl ClusteredPostings {
         self.fields.contains_key(&field_number)
     }
 
-    /// The clusters of `term` in `field_number`, in stored order; `None`
-    /// when the term is absent or has no clusters.
-    pub fn clusters(&self, field_number: i32, term: &[u8]) -> Result<Option<Vec<Cluster>>> {
+    /// A cursor over the clusters of `term` in `field_number`, read in place
+    /// from `.sip` one at a time; `None` when the term is absent or has no
+    /// clusters. What a query walks: it decodes the docs of only the clusters
+    /// it visits and copies nothing out.
+    pub fn cursor(&self, field_number: i32, term: &[u8]) -> Result<Option<ClusterCursor<'_>>> {
         let Some(&offset) = self.fields.get(&field_number).and_then(|t| t.get(term)) else {
             return Ok(None);
         };
@@ -139,51 +141,163 @@ impl ClusteredPostings {
             .ok_or_else(|| corrupt(POSTINGS_EXTENSION, "postings offset out of range"))?;
         let mut input = SliceInput::new(&self.sip[..end]);
         input.seek(offset)?;
-        let count = vlong_len(&mut input, POSTINGS_EXTENSION, "cluster count")?;
-        if count == 0 {
+        let left = vlong_len(&mut input, POSTINGS_EXTENSION, "cluster count")?;
+        if left == 0 {
             return Ok(None);
         }
+        Ok(Some(ClusterCursor { input, left }))
+    }
+
+    /// The clusters of `term` in `field_number`, in stored order; `None`
+    /// when the term is absent or has no clusters.
+    pub fn clusters(&self, field_number: i32, term: &[u8]) -> Result<Option<Vec<Cluster>>> {
+        let Some(mut cursor) = self.cursor(field_number, term)? else {
+            return Ok(None);
+        };
         let mut clusters = Vec::new();
-        for _ in 0..count {
-            let docs_len = vlong_len(&mut input, POSTINGS_EXTENSION, "doc count")?;
-            // Each doc takes at least two bytes, which bounds the allocation.
-            if docs_len > input.remaining() / 2 {
-                return Err(corrupt(POSTINGS_EXTENSION, "doc count past the end"));
-            }
-            let mut docs = Vec::with_capacity(docs_len);
-            let mut weights = Vec::with_capacity(docs_len);
-            for _ in 0..docs_len {
-                docs.push(input.read_vint()?);
+        while let Some(c) = cursor.next()? {
+            let mut docs = Vec::new();
+            c.docs_into(&mut docs)?;
+            let mut weights = Vec::with_capacity(c.doc_count);
+            let mut input = SliceInput::new(c.docs);
+            for _ in 0..c.doc_count {
+                input.read_vint()?;
                 weights.push(input.read_byte()?);
             }
-            let should_not_skip = input.read_byte()? != 0;
-            let summary_len = vlong_len(&mut input, POSTINGS_EXTENSION, "summary size")?;
-            if summary_len > input.remaining() / 2 {
-                return Err(corrupt(POSTINGS_EXTENSION, "summary past the end"));
-            }
-            let summary =
-                if summary_len == 0 {
-                    None
-                } else {
-                    let mut tokens = Vec::with_capacity(summary_len);
-                    let mut ws = Vec::with_capacity(summary_len);
-                    for _ in 0..summary_len {
-                        let t = input.read_vint()?;
-                        tokens.push(u16::try_from(t).map_err(|_| {
-                            corrupt(POSTINGS_EXTENSION, "summary token out of range")
-                        })?);
-                        ws.push(input.read_byte()?);
-                    }
-                    Some(SparseVector::from_sorted(tokens, ws))
-                };
+            let summary = if c.summary_len == 0 {
+                None
+            } else {
+                let mut tokens = Vec::with_capacity(c.summary_len);
+                let mut ws = Vec::with_capacity(c.summary_len);
+                let mut input = SliceInput::new(c.summary);
+                for _ in 0..c.summary_len {
+                    // `next` checked every summary token fits.
+                    tokens.push(u16::try_from(input.read_vint()?).unwrap_or(u16::MAX));
+                    ws.push(input.read_byte()?);
+                }
+                Some(SparseVector::from_sorted(tokens, ws))
+            };
             clusters.push(Cluster {
                 docs,
                 weights,
-                should_not_skip,
+                should_not_skip: c.should_not_skip,
                 summary,
             });
         }
         Ok(Some(clusters))
+    }
+}
+
+/// The clusters of one term, in stored order, as [`ClusteredPostings::cursor`]
+/// reads them: each one checked as [`ClusteredPostings::clusters`] checks it,
+/// its docs and summary left in the file until asked for.
+pub struct ClusterCursor<'a> {
+    input: SliceInput<'a>,
+    left: usize,
+}
+
+/// One cluster under a [`ClusterCursor`]: its docs and summary as the bytes
+/// `.sip` holds them, already checked.
+#[derive(Debug, Clone, Copy)]
+pub struct ClusterRef<'a> {
+    /// Visit this cluster whatever its summary scores.
+    pub should_not_skip: bool,
+    /// `doc_count` `(VInt doc, byte weight)` pairs.
+    docs: &'a [u8],
+    doc_count: usize,
+    /// `summary_len` `(VInt token, byte weight)` pairs, tokens below 65536.
+    summary: &'a [u8],
+    summary_len: usize,
+}
+
+impl<'a> ClusterCursor<'a> {
+    /// The next cluster, `None` after the last.
+    ///
+    /// # Errors
+    /// The cluster runs past the end of the postings, or a summary token is
+    /// out of range.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<ClusterRef<'a>>> {
+        let Some(left) = self.left.checked_sub(1) else {
+            return Ok(None);
+        };
+        self.left = left;
+        let input = &mut self.input;
+        let doc_count = vlong_len(input, POSTINGS_EXTENSION, "doc count")?;
+        // Each doc takes at least two bytes.
+        if doc_count > input.remaining() / 2 {
+            return Err(corrupt(POSTINGS_EXTENSION, "doc count past the end"));
+        }
+        let start = input.position();
+        for _ in 0..doc_count {
+            input.read_vint()?;
+            input.read_byte()?;
+        }
+        let docs = input.slice(start, input.position())?;
+        let should_not_skip = input.read_byte()? != 0;
+        let summary_len = vlong_len(input, POSTINGS_EXTENSION, "summary size")?;
+        if summary_len > input.remaining() / 2 {
+            return Err(corrupt(POSTINGS_EXTENSION, "summary past the end"));
+        }
+        let start = input.position();
+        for _ in 0..summary_len {
+            let t = input.read_vint()?;
+            if u16::try_from(t).is_err() {
+                return Err(corrupt(POSTINGS_EXTENSION, "summary token out of range"));
+            }
+            input.read_byte()?;
+        }
+        let summary = input.slice(start, input.position())?;
+        Ok(Some(ClusterRef {
+            should_not_skip,
+            docs,
+            doc_count,
+            summary,
+            summary_len,
+        }))
+    }
+}
+
+impl ClusterRef<'_> {
+    /// How many docs the cluster holds.
+    pub fn doc_count(&self) -> usize {
+        self.doc_count
+    }
+
+    /// Replaces `out` with the cluster's doc ids, ascending.
+    ///
+    /// # Errors
+    /// None in practice: [`ClusterCursor::next`] read these bytes already.
+    pub fn docs_into(&self, out: &mut Vec<i32>) -> Result<()> {
+        out.clear();
+        out.reserve(self.doc_count);
+        let mut input = SliceInput::new(self.docs);
+        for _ in 0..self.doc_count {
+            out.push(input.read_vint()?);
+            input.read_byte()?;
+        }
+        Ok(())
+    }
+
+    /// `SparseVector.dotProduct` of the summary with the dense query; 0 for
+    /// a cluster written without one.
+    ///
+    /// # Errors
+    /// None in practice: [`ClusterCursor::next`] read these bytes already.
+    pub fn summary_dot(&self, dense: &[u8]) -> Result<i32> {
+        let mut input = SliceInput::new(self.summary);
+        let mut score = 0i32;
+        for _ in 0..self.summary_len {
+            let t = input.read_vint()?;
+            let w = input.read_byte()?;
+            // Tokens ascend, so the first one past the query ends the scan.
+            let Some(&q) = usize::try_from(t).ok().and_then(|t| dense.get(t)) else {
+                break;
+            };
+            // At most 255 * 255; the sum wraps as Java's int does.
+            score = score.wrapping_add(i32::from(w).wrapping_mul(i32::from(q)));
+        }
+        Ok(score)
     }
 }
 
@@ -363,6 +477,30 @@ mod tests {
         assert_eq!(p.clusters(3, b"13").unwrap(), None);
         assert_eq!(p.clusters(3, b"99").unwrap(), None);
         assert_eq!(p.clusters(4, b"12").unwrap(), None);
+
+        // The cursor reads the same clusters in place.
+        let mut cursor = p.cursor(3, b"12").unwrap().unwrap();
+        let mut docs = vec![99];
+        let first = cursor.next().unwrap().unwrap();
+        assert!(!first.should_not_skip);
+        assert_eq!(first.doc_count(), 2);
+        first.docs_into(&mut docs).unwrap();
+        assert_eq!(docs, vec![1, 4]);
+        let mut dense = vec![0u8; 3];
+        dense[2] = 5;
+        assert_eq!(first.summary_dot(&dense).unwrap(), 45);
+        // A query shorter than the summary's tokens stops the scan.
+        assert_eq!(first.summary_dot(&[1, 1]).unwrap(), 0);
+        let second = cursor.next().unwrap().unwrap();
+        assert!(second.should_not_skip);
+        second.docs_into(&mut docs).unwrap();
+        assert_eq!(docs, vec![6]);
+        assert_eq!(second.summary_dot(&dense).unwrap(), 0);
+        assert!(cursor.next().unwrap().is_none());
+        assert!(cursor.next().unwrap().is_none());
+        assert!(p.cursor(3, b"13").unwrap().is_none());
+        assert!(p.cursor(3, b"99").unwrap().is_none());
+        assert!(p.cursor(4, b"12").unwrap().is_none());
     }
 
     #[test]
@@ -398,6 +536,7 @@ mod tests {
         // A postings offset outside `.sip`.
         let p = ClusteredPostings::open(&sit(&[("1", 1 << 40)]), good_sip, &ID).unwrap();
         assert!(p.clusters(3, b"1").is_err());
+        assert!(p.cursor(3, b"1").is_err());
         // Counts larger than what is left.
         for body in [
             |o: &mut Vec<u8>| {
@@ -422,6 +561,7 @@ mod tests {
             let (sip, start) = sip(body);
             let p = ClusteredPostings::open(&sit(&[("1", start)]), sip, &ID).unwrap();
             assert!(p.clusters(3, b"1").is_err());
+            assert!(p.cursor(3, b"1").unwrap().unwrap().next().is_err());
         }
         let _ = start;
     }
