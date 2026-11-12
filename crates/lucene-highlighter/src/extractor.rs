@@ -331,8 +331,15 @@ impl Default for WeightedSpanTermExtractor {
 struct Leaf<'a> {
     stream: Option<DynStream<'a>>,
     replay: Option<DynStream<'a>>,
+    /// The tokens read, once a query needs the document.
+    tokens: Option<FieldTokens>,
+    /// The one-document index, built from `tokens` once a span query needs
+    /// positions.
     index: Option<Arc<lucene_search::memory::MemoryIndexReader>>,
+    /// The document's distinct terms, sorted, once a query expands over
+    /// them (`terms_ready`).
     terms: Vec<Vec<u8>>,
+    terms_ready: bool,
 }
 
 impl WeightedSpanTermExtractor {
@@ -390,8 +397,10 @@ impl WeightedSpanTermExtractor {
             leaf: Leaf {
                 stream: Some(token_stream),
                 replay: None,
+                tokens: None,
                 index: None,
                 terms: Vec::new(),
+                terms_ready: false,
             },
             out: HashMap::new(),
         };
@@ -455,9 +464,11 @@ impl Run<'_, '_> {
         self.out.insert(key, new);
     }
 
-    /// `getLeafContext()`: the stream indexed, on first need.
+    /// `getLeafContext()`: the stream read (and replayable), on first need.
+    /// The index itself ([`Self::ensure_index`]) and the terms
+    /// ([`Self::ensure_terms`]) are built only for the queries that read them.
     fn ensure_leaf(&mut self) -> Result<()> {
-        if self.leaf.index.is_some() {
+        if self.leaf.tokens.is_some() {
             return Ok(());
         }
         let stream = self
@@ -497,15 +508,41 @@ impl Run<'_, '_> {
             end_attributes: None,
         };
         cache.close()?;
-        let mut terms: Vec<Vec<u8>> = field_tokens.tokens.iter().map(|t| t.term.clone()).collect();
-        terms.sort_unstable();
-        terms.dedup();
-        let mut indexer = MemoryIndex::with_options(true, self.cfg.use_payloads);
-        indexer.add_field_tokens(SHADOW_FIELD, &field_tokens, 0, 1)?;
-        self.leaf.index = Some(indexer.create_reader()?);
-        self.leaf.terms = terms;
+        self.leaf.tokens = Some(field_tokens);
         self.leaf.replay = Some(cache);
         Ok(())
+    }
+
+    /// The document's distinct terms, sorted, in `self.leaf.terms`.
+    fn ensure_terms(&mut self) -> Result<()> {
+        self.ensure_leaf()?;
+        if !self.leaf.terms_ready {
+            let tokens = self.leaf.tokens.as_ref().map_or(&[][..], |t| &t.tokens[..]);
+            let mut terms: Vec<Vec<u8>> = tokens.iter().map(|t| t.term.clone()).collect();
+            terms.sort_unstable();
+            terms.dedup();
+            self.leaf.terms = terms;
+            self.leaf.terms_ready = true;
+        }
+        Ok(())
+    }
+
+    /// The document indexed (`MemoryIndex`), for span positions.
+    fn ensure_index(&mut self) -> Result<Arc<lucene_search::memory::MemoryIndexReader>> {
+        self.ensure_leaf()?;
+        if let Some(index) = &self.leaf.index {
+            return Ok(Arc::clone(index));
+        }
+        let tokens = self
+            .leaf
+            .tokens
+            .as_ref()
+            .ok_or_else(|| Error::IllegalArgument("the document is not read".to_string()))?;
+        let mut indexer = MemoryIndex::with_options(true, self.cfg.use_payloads);
+        indexer.add_field_tokens(SHADOW_FIELD, tokens, 0, 1)?;
+        let index = indexer.create_reader()?;
+        self.leaf.index = Some(Arc::clone(&index));
+        Ok(index)
     }
 
     /// `extract(query, boost, terms)`.
@@ -536,7 +573,7 @@ impl Run<'_, '_> {
                 ExtendedQuery::Span(node) => self.extract_weighted_span_terms(node, boost),
                 // the query's own `rewrite` over the document, then read again
                 ExtendedQuery::MultiPhrasePrefix(q) => {
-                    self.ensure_leaf()?;
+                    self.ensure_terms()?;
                     let rewritten = q.rewrite_over(&self.leaf.terms);
                     self.extract(&rewritten, boost)
                 }
@@ -576,6 +613,7 @@ impl Run<'_, '_> {
             return Ok(());
         };
         // `SCORING_BOOLEAN_REWRITE`: a boosted `TermQuery` per matching term
+        self.ensure_terms()?;
         let expanded = expand_clause(query, &self.leaf.terms)?;
         for (term, term_boost) in expanded.unwrap_or_default() {
             let text = text_of(&term);
@@ -596,7 +634,7 @@ impl Run<'_, '_> {
         if !self.cfg.expand_multi_term_query || !self.field_ok(field) {
             return Ok(());
         }
-        self.ensure_leaf()?;
+        self.ensure_terms()?;
         struct Accepted<'t> {
             terms: &'t [Vec<u8>],
             out: Vec<Vec<u8>>,
@@ -720,6 +758,7 @@ impl Run<'_, '_> {
         }
         self.ensure_leaf()?;
         let node = if must_rewrite(span_query, self.cfg.expand_multi_term_query) {
+            self.ensure_terms()?;
             match expand_node(span_query, &self.leaf.terms)? {
                 Some(n) => n,
                 None => return Ok(()),
@@ -739,12 +778,8 @@ impl Run<'_, '_> {
         let Some(shadowed) = shadow_node(&node)? else {
             return Ok(());
         };
-        let leaf = self
-            .leaf
-            .index
-            .as_ref()
-            .ok_or_else(|| Error::IllegalArgument("the document is not indexed".to_string()))?;
-        let span_positions = span_positions(leaf, &Clause::from(shadowed))?;
+        let leaf = self.ensure_index()?;
+        let span_positions = span_positions(&leaf, &Clause::from(shadowed))?;
         if span_positions.is_empty() {
             return Ok(());
         }
