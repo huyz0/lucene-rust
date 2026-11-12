@@ -6,10 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::super::extractor::{collect_span_query_fields, must_rewrite};
-use super::super::Result;
+use super::super::{Error, Result};
 use super::passage::{OfPostings, OffsetsEnum};
 use super::strategies::FieldMatcher;
-use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::extended_query::{ExtendedQuery, MAX_CLAUSE_COUNT};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{Clause, MultiPhraseQuery, PhraseQuery};
@@ -256,6 +256,14 @@ impl PhraseHelper {
             if node.needs_rewrite() {
                 node = node.rewrite(&searcher)?;
             }
+            // `IndexSearcher.rewrite`'s clause-count visitor: it refuses a
+            // term once more than `maxClauseCount` are counted.
+            let terms = node.term_count();
+            if terms > MAX_CLAUSE_COUNT + 1 {
+                return Err(Error::Search(lucene_search::Error::InvalidQuery(format!(
+                    "maxClauseCount is set to {MAX_CLAUSE_COUNT}"
+                ))));
+            }
             let Some(mut spans) = spans_with(&ctx, &node, false)? else {
                 continue;
             };
@@ -416,7 +424,10 @@ pub(crate) fn phrase_prefix_span(
     }
     let n = i32::try_from(q.positions.len()).unwrap_or(i32::MAX);
     let position_gaps = match (q.positions.first(), q.positions.last()) {
-        (Some(&first), Some(&end)) if n >= 2 => (end - first - n + 1).max(0),
+        (Some(&first), Some(&end)) if n >= 2 => {
+            i32::try_from((i64::from(end) - i64::from(first) - i64::from(n) + 1).max(0))
+                .unwrap_or(i32::MAX)
+        }
         _ => 0,
     };
     let slop = i32::try_from(q.slop).unwrap_or(i32::MAX);

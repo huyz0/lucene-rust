@@ -585,10 +585,9 @@ public final class QueryEncoder {
             return multiPhrase(NODE_MULTI_PHRASE, mp.getTermArrays(), mp.getPositions(), mp.getSlop(), 0, "highlight_MultiPhraseQuery", out, nodes);
         }
         if (q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery mpp) {
-            Integer maxExpansions = maxExpansions(mpp);
-            if (maxExpansions == null) {
-                return "highlight_MultiPhrasePrefixQuery";
-            }
+            // The highlighters' span rewrite does not read it: stock's default when it cannot be read.
+            Integer read = maxExpansions(mpp);
+            int maxExpansions = read == null ? 50 : read;
             return multiPhrase(
                 NODE_MULTI_PHRASE_PREFIX,
                 mpp.getTerms(),
