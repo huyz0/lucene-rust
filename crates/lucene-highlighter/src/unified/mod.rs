@@ -35,6 +35,7 @@
 pub mod break_iterators;
 pub mod field_highlighter;
 pub mod matches_enum;
+pub mod opensearch;
 pub mod passage;
 pub mod phrase_helper;
 pub mod strategies;
@@ -90,6 +91,9 @@ pub struct UnifiedHighlighter<'r> {
     formatter: Arc<dyn PassageFormatter + Send + Sync>,
     max_no_highlight_passages: i32,
     passage_sort_comparator: PassageOrder,
+    /// The offset source every field is highlighted from, whatever the
+    /// index says (a subclass's `getOffsetSource(field)` override).
+    forced_offset_source: Option<OffsetSource>,
 }
 
 impl<'r> UnifiedHighlighter<'r> {
@@ -109,7 +113,15 @@ impl<'r> UnifiedHighlighter<'r> {
             formatter: Arc::new(DefaultPassageFormatter::default()),
             max_no_highlight_passages: -1,
             passage_sort_comparator: passage_by_start_offset,
+            forced_offset_source: None,
         }
+    }
+
+    /// A `getOffsetSource(field)` override that answers `source` for every
+    /// field, masked ones included.
+    pub fn with_offset_source(mut self, source: OffsetSource) -> Self {
+        self.forced_offset_source = Some(source);
+        self
     }
 
     /// The flags `Builder.withHandleMultiTermQuery`,
@@ -222,6 +234,9 @@ impl<'r> UnifiedHighlighter<'r> {
 
     /// `getOffsetSource(field)`, from the index's merged field infos.
     pub fn offset_source(&self, field: &str) -> OffsetSource {
+        if let Some(source) = self.forced_offset_source {
+            return source;
+        }
         let Some(reader) = self.reader else {
             return OffsetSource::Analysis;
         };
@@ -258,7 +273,7 @@ impl<'r> UnifiedHighlighter<'r> {
     /// `getFieldHighlighter(field, query, allTerms, maxPassages)`: the
     /// strategies (several when the field masks others) and the passage
     /// logic.
-    fn field_highlighter(
+    pub(crate) fn field_highlighter(
         &self,
         field: &str,
         query: &Clause,

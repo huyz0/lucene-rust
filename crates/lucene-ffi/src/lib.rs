@@ -33,6 +33,7 @@ mod jvm_aggs;
 mod jvm_analysis;
 mod jvm_fetch;
 mod jvm_function_score;
+mod jvm_highlight;
 mod jvm_invert;
 mod jvm_join;
 mod jvm_knn;

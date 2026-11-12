@@ -101,7 +101,16 @@ pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 48;
 /// [`SUBSTRING_CONTAINS`] or [`SUBSTRING_EXACT`]), `case_insensitive: u8`,
 /// `pattern: bytes` (UTF-8). Constant-scored 1.
 pub(crate) const NODE_SUBSTRING: u8 = 49;
-pub(crate) const NODE_LAST: u8 = NODE_SUBSTRING;
+/// A `PhraseQuery` with its terms' own positions (a removed stopword leaves a
+/// gap): `field`, `slop: i32`, `count: i32`, then per term `position: i32`
+/// and the term. Only the highlighter's request holds one
+/// ([`crate::jvm_highlight`]): the search falls such a phrase back.
+pub(crate) const NODE_PHRASE_POSITIONS: u8 = 50;
+/// `MultiPhraseQuery`, for the highlighter: `field`, `slop: i32`, `count:
+/// i32`, then per position `position: i32`, `terms: i32` and the terms
+/// (`bytes`).
+pub(crate) const NODE_MULTI_PHRASE: u8 = 51;
+pub(crate) const NODE_LAST: u8 = NODE_MULTI_PHRASE;
 
 /// [`NODE_SUBSTRING`]'s kinds.
 pub(crate) const SUBSTRING_WILDCARD: u8 = 0;
@@ -455,6 +464,54 @@ pub(crate) fn decode(
                 NumericDocValuesRangeQuery::new(field, min, max),
             )
             .into());
+        }
+        NODE_PHRASE_POSITIONS => {
+            let field = field(c)?;
+            let slop = u32::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a phrase with a negative slop"))?;
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count);
+            crate::clauses::check_clause_count(*nodes)?;
+            if count == 0 {
+                return Err(invalid("query tree: a phrase with no terms"));
+            }
+            let mut terms = Vec::new();
+            for _ in 0..count {
+                let position = c.i32()?;
+                terms.push((c.bytes()?.to_vec(), position));
+            }
+            let phrase = lucene_search::query::PhraseQuery::with_positions(field, terms)
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .with_slop(slop);
+            return Ok(Clause::Phrase(phrase));
+        }
+        NODE_MULTI_PHRASE => {
+            let field = field(c)?;
+            let slop = u32::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a multi-phrase with a negative slop"))?;
+            let count = c.len()?;
+            if count == 0 {
+                return Err(invalid("query tree: a multi-phrase with no terms"));
+            }
+            let mut arrays = Vec::with_capacity(count.min(1024));
+            for _ in 0..count {
+                let position = c.i32()?;
+                let n = c.len()?;
+                if n == 0 {
+                    return Err(invalid("query tree: a multi-phrase position with no terms"));
+                }
+                *nodes = nodes.saturating_add(n);
+                crate::clauses::check_clause_count(*nodes)?;
+                let mut terms = Vec::with_capacity(n.min(1024));
+                for _ in 0..n {
+                    terms.push(c.bytes()?.to_vec());
+                }
+                arrays.push((terms, position));
+            }
+            let phrase = lucene_search::query::MultiPhraseQuery::with_positions(field, arrays)
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .with_slop(slop);
+            return Ok(Clause::MultiPhrase(phrase));
         }
         NODE_SUBSTRING => {
             let field = field(c)?;
