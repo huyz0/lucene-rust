@@ -395,6 +395,20 @@ public final class QueryEncoder {
     /** {@code NODE_POINT_RANGE_OR_DV} in {@code jvm_queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
     private static final byte NODE_POINT_RANGE_OR_DV = 48;
 
+    /**
+     * Whether a points query on {@code field} runs on its doc values instead: {@code _seq_no} of a
+     * search whose segments index it without points ({@code
+     * index.lucene_rust.seq_no.index_options: doc_values_only}). Without the search's reader both
+     * layouts carry the doc values, so they are used.
+     */
+    private static boolean seqNoOnDocValues(String field) {
+        if (field.equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME) == false) {
+            return false;
+        }
+        IndexReaderContext top = TOP.get();
+        return top == null || org.lucenerust.opensearch.engine.SeqNoQueries.docValuesOnly(top);
+    }
+
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (depth >= MAX_DEPTH) {
@@ -576,10 +590,30 @@ public final class QueryEncoder {
             if (pr.getNumDims() != 1 || pr.getBytesPerDim() != Long.BYTES) {
                 return GeoEncoder.node(pr, out);
             }
+            if (seqNoOnDocValues(pr.getField())) {
+                out.write(DocValuesEncoder.NODE_DV_NUMERIC_RANGE);
+                writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
+                writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
+                writeLong(out, NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0));
+                return null;
+            }
             out.write(NODE_POINT_RANGE);
             writeBytes(out, pr.getField().getBytes(StandardCharsets.UTF_8));
             writeLong(out, NumericUtils.sortableBytesToLong(pr.getLowerPoint(), 0));
             writeLong(out, NumericUtils.sortableBytesToLong(pr.getUpperPoint(), 0));
+            return null;
+        }
+        if (q instanceof PointInSetQuery ps
+            && ps.getNumDims() == 1
+            && ps.getBytesPerDim() == Long.BYTES
+            && seqNoOnDocValues(ps.getField())) {
+            java.util.Collection<byte[]> points = ps.getPackedPoints();
+            out.write(DocValuesEncoder.NODE_DV_NUMERIC_SET);
+            writeBytes(out, ps.getField().getBytes(StandardCharsets.UTF_8));
+            writeInt(out, points.size());
+            for (byte[] p : points) {
+                writeLong(out, NumericUtils.sortableBytesToLong(p, 0));
+            }
             return null;
         }
         if (q instanceof PointInSetQuery ps) {
