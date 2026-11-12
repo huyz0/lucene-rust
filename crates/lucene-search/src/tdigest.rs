@@ -32,7 +32,7 @@ pub struct MergingDigest {
     pub temp_used: usize,
     pub temp_weight: Vec<f64>,
     pub temp_mean: Vec<f64>,
-    order: Vec<usize>,
+    order: Vec<u32>,
     /// `AbstractTDigest.min`/`max`.
     pub min: f64,
     pub max: f64,
@@ -141,14 +141,15 @@ impl MergingDigest {
         }
         let total = self.total_weight;
         let mut cell = 0;
-        self.mean[0] = self.temp_mean[self.order[0]];
-        self.weight[0] = self.temp_weight[self.order[0]];
+        let first = self.order[0] as usize;
+        self.mean[0] = self.temp_mean[first];
+        self.weight[0] = self.temp_weight[first];
         let mut w_so_far = 0.0;
         // ScaleFunction.K_2.normalizer: compression / Z(compression, n).
         let normalizer = compression / (4.0 * (total / compression).ln() + 24.0);
         let max_q = |q: f64| q * (1.0 - q) / normalizer;
         for i in 1..count {
-            let ix = self.order[i];
+            let ix = self.order[i] as usize;
             let proposed = self.weight[cell] + self.temp_weight[ix];
             // useWeightLimit.
             let q0 = w_so_far / total;
@@ -188,19 +189,48 @@ impl MergingDigest {
 /// `Sort.stableSort(order, values, n)`: the indexes `0..n` ordered by
 /// `(values[i], i)` -- a total order, so the randomly pivoted quick sort
 /// and insertion sort Java runs leave exactly this.
-fn stable_sort(order: &mut [usize], values: &[f64]) {
-    for (i, o) in order.iter_mut().enumerate() {
-        *o = i;
+fn stable_sort(order: &mut [u32], values: &[f64]) {
+    thread_local! {
+        static KEYS: std::cell::RefCell<Vec<u128>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    order.sort_by(|&a, &b| {
-        let (x, y) = (values[a], values[b]);
-        // Java's `<` and `==`: -0.0 and 0.0 tie, broken by index.
-        if x < y {
-            std::cmp::Ordering::Less
-        } else if x > y {
-            std::cmp::Ordering::Greater
-        } else {
-            a.cmp(&b)
+    let values = &values[..order.len()];
+    if values.iter().any(|v| v.is_nan()) {
+        // NaN compares neither below nor above anything: no total order to
+        // key on, so the comparator as written.
+        for (i, o) in order.iter_mut().enumerate() {
+            *o = i as u32;
+        }
+        order.sort_by(|&a, &b| {
+            let (x, y) = (values[a as usize], values[b as usize]);
+            // Java's `<` and `==`: -0.0 and 0.0 tie, broken by index.
+            if x < y {
+                std::cmp::Ordering::Less
+            } else if x > y {
+                std::cmp::Ordering::Greater
+            } else {
+                a.cmp(&b)
+            }
+        });
+        return;
+    }
+    // `(values[i], i)` as one integer: the value's bits in an order-keeping
+    // form (-0.0 as 0.0, which Java's `<` ties with it) above the index. The
+    // keys are distinct, so any sort leaves the one order.
+    KEYS.with(|keys| {
+        let mut keys = keys.borrow_mut();
+        keys.clear();
+        keys.extend(values.iter().enumerate().map(|(i, &v)| {
+            let bits = if v == 0.0 { 0 } else { v.to_bits() };
+            let key = if bits >> 63 == 1 {
+                !bits
+            } else {
+                bits | 1 << 63
+            };
+            (u128::from(key) << 64) | i as u128
+        }));
+        keys.sort_unstable();
+        for (o, &k) in order.iter_mut().zip(keys.iter()) {
+            *o = k as u32;
         }
     });
 }
@@ -217,6 +247,47 @@ fn java_max(a: f64, b: f64) -> f64 {
 mod tests {
     use super::*;
     use lucene_util::java_random::JavaRandom;
+
+    /// The keyed sort orders as `Sort.stableSort`'s comparator does: by
+    /// value under Java's `<` (-0.0 ties 0.0), then by index.
+    #[test]
+    fn keyed_sort_is_the_comparator_order() {
+        let mut r = JavaRandom::new(7);
+        let pool = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e-300,
+            -1e-300,
+        ];
+        for n in [1usize, 2, 17, 300, 1500] {
+            let values: Vec<f64> = (0..n)
+                .map(|_| match r.next_int_bounded(3) {
+                    0 => pool[r.next_int_bounded(pool.len() as i32) as usize],
+                    1 => f64::from(r.next_int_bounded(5)),
+                    _ => r.next_double() * 2.0 - 1.0,
+                })
+                .collect();
+            let mut want: Vec<u32> = (0..n as u32).collect();
+            want.sort_by(|&a, &b| {
+                let (x, y) = (values[a as usize], values[b as usize]);
+                x.partial_cmp(&y).unwrap().then(a.cmp(&b))
+            });
+            let mut got = vec![0u32; n];
+            stable_sort(&mut got, &values);
+            assert_eq!(got, want, "n = {n}");
+        }
+        // With a NaN there is no total order: the comparator as written
+        // sorts, every index once.
+        let values = [2.0, f64::NAN, -1.0, 0.5];
+        let mut got = vec![0u32; values.len()];
+        stable_sort(&mut got, &values);
+        got.sort_unstable();
+        assert_eq!(got, [0, 1, 2, 3]);
+    }
 
     /// FNV-1a over the little-endian bytes of each value, as `GenTDigest` folds them.
     fn mix(h: &mut u64, v: i64) {

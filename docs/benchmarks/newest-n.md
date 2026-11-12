@@ -16,9 +16,10 @@ of collecting with comparator pruning across the whole index.
    If that slice yields fewer than N hits, `k` grows (×8 after an empty slice,
    otherwise at the observed hit rate, at least ×2) and the next slice runs.
 3. Once the slices would cover more than an eighth of the values (or the
-   query's estimated matches), the rest runs as the ordinary search after the
-   last bound, so a filter that matches only old documents costs about what it
-   did before.
+   query's estimated matches), the rest is one pass over the matches after the
+   last bound, kept by selection rather than a heap (see
+   [filtered-sort.md](filtered-sort.md)), so a filter that matches only old
+   documents costs about a pass over its matches.
 4. The total is counted separately up to the track-total-hits threshold, with
    `Weight::count` shortcuts per segment. It is exact up to the threshold and a
    lower bound (`GreaterThanOrEqualTo`) past it, as Lucene's collector reports.
@@ -163,10 +164,11 @@ the newest documents and `search_after` paging.
 | match_all ts desc search_after | 1000 | 814 | 1036 | 0.84 | 1236.7x |
 | src=hdfs tsec(ties) desc search_after | 1000 | 359 | 384 | 28 | 13.6x |
 
-On merged segments the selective `src=openssh` filter (0.6% of documents, none
-in the last day) falls back to the ordinary search almost at once and runs at
-main's speed, which is about 2.5x slower than Lucene there; that gap is in the
-ordinary filtered sorted search and is a follow-up. The 0-hit
+On merged segments the selective `src=openssh` filter (10% of documents, all
+in the oldest 40% of the time range) falls back to a whole pass almost at once.
+That pass, and the ordinary filtered sorted search, are now faster than Lucene
+there (9.4 ms against 16.8 at N=10): see [filtered-sort.md](filtered-sort.md),
+whose table supersedes these numbers. The 0-hit
 `range24h&openssh` shape pays about 0.25 ms for the walk.
 
 ## Cold, 26 segments (ms, reader open + one query)

@@ -7,15 +7,22 @@
 //! ```text
 //! local_vectors build-ivf <dir> [n] [dim]
 //! local_vectors build-hnsw <dir> [n] [dim]
+//! local_vectors build-hnsw-segs <dir> [n] [dim] [segments]
+//! local_vectors merge <dir>
 //! local_vectors gen-queries <dir> [nq]
 //! local_vectors query-ivf|query-hnsw <dir> mmap|paged [--budget-mb N] [--page-kb N]
 //!     [--pin ext,ext] [--page-sizes ext:kb,..] [--map ext,ext] [--fixed] [--queries N] [--passes N] [--nprobe N] [--rerank N] [--ef N]
+//!     [--advise] [--filter-frac F]
 //! ```
 //!
 //! The vectors are synthetic: Gaussian blobs around 2,000 random centres,
 //! and the queries perturbed base vectors. `--pin` adds extensions the pager
-//! reads whole at open (outside the budget). Each pass prints latency
-//! percentiles and memory as `local_store` does.
+//! reads whole at open (outside the budget). `--advise` advises the vector
+//! files random access as the search reader does
+//! (`Input::advise_random_and_warm`); `--filter-frac F` filters HNSW to the
+//! first F of the documents. `build-hnsw-segs` writes several segments and
+//! `merge` force-merges them, timed. Each pass prints latency percentiles
+//! and memory as `local_store` does.
 
 #![allow(clippy::arithmetic_side_effects)]
 
@@ -186,6 +193,47 @@ fn build_hnsw(path: &str, n: usize, dim: usize) {
     eprintln!("hnsw {n} x {dim} in {:.1?}", t.elapsed());
 }
 
+fn build_hnsw_segs(path: &str, n: usize, dim: usize, segs: usize) {
+    let t = Instant::now();
+    let base = data(n, dim);
+    std::fs::create_dir_all(path).unwrap();
+    let dir = MmapDirectory::open(path);
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.set_ram_buffer_size_mb(4096.0).unwrap();
+    let per = n.div_ceil(segs);
+    for i in 0..n {
+        let mut d = Document::new();
+        d.add(
+            KnnFloatVectorField::new(
+                "v",
+                base[i * dim..(i + 1) * dim].to_vec(),
+                VectorSimilarityFunction::Euclidean,
+            )
+            .unwrap(),
+        );
+        w.add_fields_document(&d).unwrap();
+        if (i + 1) % per == 0 {
+            w.commit().unwrap();
+        }
+    }
+    w.commit().unwrap();
+    write_meta(path, n, dim);
+    eprintln!("hnsw {n} x {dim} in {segs} segments, {:.1?}", t.elapsed());
+}
+
+fn merge_all(path: &str) {
+    let dir = MmapDirectory::open(path);
+    let t = Instant::now();
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.force_merge(1).unwrap();
+    w.commit().unwrap();
+    println!(
+        "force_merge {:.1} s, read_mib {:.0}",
+        t.elapsed().as_secs_f64(),
+        read_bytes() as f64 / 1048576.0
+    );
+}
+
 fn mib(b: u64) -> f64 {
     b as f64 / (1 << 20) as f64
 }
@@ -342,6 +390,9 @@ fn query_ivf(args: &[String]) {
     let meta = dir.open("_v.ivm").unwrap();
     let postings: Arc<Input> = Arc::new(dir.open("_v.ivp").unwrap());
     let vectors: Arc<Input> = Arc::new(dir.open("_v.ivv").unwrap());
+    if args.iter().any(|a| a == "--advise") {
+        vectors.advise_random_and_warm();
+    }
     let registry = QuantizerRegistry::with_builtins();
     let r = IvfReader::open(&meta, postings, vectors, &ID, "", &registry).unwrap();
     println!(
@@ -422,6 +473,17 @@ fn query_hnsw(args: &[String]) {
     let vec = dir.open(&vec_name).unwrap();
     let vem = dir.open(&find(".vem")).unwrap();
     let vex = dir.open(&find(".vex")).unwrap();
+    if args.iter().any(|a| a == "--advise") {
+        vec.advise_random_and_warm();
+        vex.advise_random_and_warm();
+    }
+    // `--filter-frac F`: accept the first F of the documents, a contiguous
+    // tenant (an exhaustive scan when F is small).
+    let filter = opt(args, "--filter-frac").map(|f| {
+        let mut bits = lucene_util::fixed_bit_set::FixedBitSet::new(n);
+        bits.set_range(0, (n as f64 * f.parse::<f64>().unwrap()) as usize);
+        bits
+    });
     let infos_f = field_infos::parse(&fnm, &seg.segment_id, "").unwrap();
     let input = VectorsInput {
         flat: FlatVectorsReader::open(&vemf, &vec, &seg.segment_id, &suffix).unwrap(),
@@ -432,7 +494,7 @@ fn query_hnsw(args: &[String]) {
         ),
         field_infos: &infos_f,
         live_docs: None,
-        filter: None,
+        filter: filter.as_ref(),
         max_doc: n as i32,
     };
     println!("open={:.1}ms ef={ef}", t.elapsed().as_secs_f64() * 1e3);
@@ -477,6 +539,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let num = |i: usize, d: usize| args.get(i).and_then(|a| a.parse().ok()).unwrap_or(d);
     match args.get(1).map(String::as_str) {
+        Some("build-hnsw-segs") => {
+            build_hnsw_segs(&args[2], num(3, 400_000), num(4, 128), num(5, 4))
+        }
+        Some("merge") => merge_all(&args[2]),
         Some("build-ivf") => build_ivf(&args[2], num(3, 2_000_000), num(4, 128)),
         Some("build-hnsw") => build_hnsw(&args[2], num(3, 500_000), num(4, 128)),
         Some("gen-queries") => gen_queries(&args[2], num(3, 5000)),

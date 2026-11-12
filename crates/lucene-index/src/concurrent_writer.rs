@@ -1544,9 +1544,21 @@ impl<'d> ConcurrentIndexWriter<'d> {
                                 .map(DocumentVector::ram_bytes)
                                 .fold(0usize, usize::saturating_add),
                         );
-                        if live.is_some() {
-                            dwpt.live.record_vectors(doc_id, &doc_vectors, &live_cfg);
+                        // The graphs grow as the documents arrive, as
+                        // `Lucene99HnswVectorsWriter` builds them, and are
+                        // charged as its `ramBytesUsed` charges them: the
+                        // flush writes them rather than building them.
+                        let graphs_before = dwpt.live.graph_ram_bytes();
+                        dwpt.live
+                            .record_vectors(doc_id, &doc_vectors, &live_cfg, live.is_some());
+                        let graphs_now = dwpt.live.graph_ram_bytes();
+                        if graphs_now < graphs_before {
+                            // A graph given up: its charge goes back.
+                            dwpt.ram_bytes = dwpt
+                                .ram_bytes
+                                .saturating_sub(graphs_before.saturating_sub(graphs_now));
                         }
+                        added = added.saturating_add(graphs_now.saturating_sub(graphs_before));
                         let at = usize::try_from(doc_id).unwrap_or(0);
                         dwpt.vectors.resize_with(at, Vec::new);
                         dwpt.vectors.push(doc_vectors);
@@ -2010,8 +2022,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             stored: stored.as_ref(),
             limit: None,
             partition,
-            // A sort renumbers the vectors: their graphs are built again.
-            graphs: if sort_map.is_some() { &[] } else { &graphs },
+            // Under a sort the flush renumbers them (`old_to_new`).
+            graphs: &graphs,
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,

@@ -173,6 +173,7 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 mod add_indexes;
 #[cfg(test)]
 mod block_tests;
+mod dv_columns;
 mod explicit;
 mod inverted_terms;
 mod lifecycle;
@@ -812,11 +813,24 @@ impl FlushDeletes<'_> {
 /// first field with a given name or number wins, as the `iter().find` scans
 /// these replace did: they ran per document and per value, so a wide schema
 /// paid O(fields) for every one.
+///
+/// Field numbers are small and dense (`FieldInfos.Builder` hands them out
+/// from 0), so the number lookup is an array indexed by number: it runs for
+/// every field of every document added, where a hash per lookup was a
+/// measurable share of the add. A number past [`DENSE_FIELD_NUMBERS`] (only
+/// a caller registering explicit numbers could make one) goes to a map.
 #[derive(Clone, Default)]
 pub(crate) struct FieldLookup {
     by_name: std::collections::HashMap<String, usize>,
-    by_number: std::collections::HashMap<i32, usize>,
+    /// Position by number, [`NO_FIELD`] where none.
+    by_number: Vec<u32>,
+    sparse_by_number: std::collections::HashMap<i32, usize>,
 }
+
+/// Field numbers below this are looked up by index.
+const DENSE_FIELD_NUMBERS: usize = 1 << 16;
+/// [`FieldLookup::by_number`]'s empty slot.
+const NO_FIELD: u32 = u32::MAX;
 
 impl FieldLookup {
     fn build(fields: &[FieldInfo]) -> Self {
@@ -829,7 +843,58 @@ impl FieldLookup {
 
     fn insert(&mut self, at: usize, info: &FieldInfo) {
         self.by_name.entry(info.name.clone()).or_insert(at);
-        self.by_number.entry(info.number).or_insert(at);
+        match (usize::try_from(info.number), u32::try_from(at)) {
+            (Ok(n), Ok(at32)) if n < DENSE_FIELD_NUMBERS && at32 != NO_FIELD => {
+                if self.by_number.len() <= n {
+                    self.by_number.resize(n.saturating_add(1), NO_FIELD);
+                }
+                if let Some(slot) = self.by_number.get_mut(n) {
+                    if *slot == NO_FIELD {
+                        *slot = at32;
+                    }
+                }
+            }
+            _ => {
+                self.sparse_by_number.entry(info.number).or_insert(at);
+            }
+        }
+    }
+
+    fn by_number(&self, number: i32) -> Option<usize> {
+        match usize::try_from(number) {
+            Ok(n) if n < DENSE_FIELD_NUMBERS => self
+                .by_number
+                .get(n)
+                .filter(|&&at| at != NO_FIELD)
+                .map(|&at| at as usize),
+            _ => self.sparse_by_number.get(&number).copied(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod field_lookup_tests {
+    use super::{FieldInfo, FieldLookup};
+
+    #[test]
+    fn numbers_resolve_dense_or_sparse_and_the_first_field_wins() {
+        let numbers = [0, 65_535, 65_536, i32::MAX, -1, 7, 65_536, 0];
+        let fields: Vec<FieldInfo> = numbers
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| FieldInfo::new(format!("f{i}"), n))
+            .collect();
+        let lookup = FieldLookup::build(&fields);
+        assert_eq!(lookup.by_number(0), Some(0));
+        assert_eq!(lookup.by_number(65_535), Some(1));
+        assert_eq!(lookup.by_number(65_536), Some(2));
+        assert_eq!(lookup.by_number(i32::MAX), Some(3));
+        assert_eq!(lookup.by_number(-1), Some(4));
+        assert_eq!(lookup.by_number(7), Some(5));
+        assert_eq!(lookup.by_number(6), None);
+        assert_eq!(lookup.by_number(8), None);
+        assert_eq!(lookup.by_number(1 << 20), None);
+        assert_eq!(lookup.by_number(i32::MIN), None);
     }
 }
 
@@ -1340,17 +1405,89 @@ pub(crate) struct DocumentBuffer<'b> {
     pub(crate) graphs: &'b [BufferGraphField],
 }
 
-/// The vector counts of the graphs live search kept that flushes wrote
+/// The segments whose flushes wrote a graph their buffer kept
 /// ([`IndexWriter::kept_graph`]).
 #[cfg(test)]
-pub(crate) static KEPT_GRAPHS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static KEPT_GRAPHS: std::sync::Mutex<Vec<[u8; ID_LENGTH]>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// A vector field's HNSW graph over a buffer's vectors, kept by live search
-/// as they arrive ([`lucene_codecs::buffer_vectors::BufferGraph`]).
+/// A vector field's HNSW graph over a buffer's vectors, built as they
+/// arrive.
 #[derive(Debug, Clone)]
 pub(crate) struct BufferGraphField {
     pub(crate) field_number: i32,
-    pub(crate) graph: std::sync::Arc<lucene_codecs::buffer_vectors::BufferGraph>,
+    pub(crate) graph: KeptGraph,
+}
+
+/// A buffer's graph: one live search reads while it grows
+/// ([`lucene_codecs::buffer_vectors::BufferGraph`]), or one only the
+/// buffer's flush reads ([`lucene_codecs::buffer_vectors::FlushGraph`]).
+#[derive(Debug, Clone)]
+pub(crate) enum KeptGraph {
+    Live(std::sync::Arc<lucene_codecs::buffer_vectors::BufferGraph>),
+    Flush(std::sync::Arc<lucene_codecs::buffer_vectors::FlushGraph>),
+}
+
+impl KeptGraph {
+    pub(crate) fn params(&self) -> (i32, i32) {
+        match self {
+            KeptGraph::Live(g) => g.params(),
+            KeptGraph::Flush(g) => g.params(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> i32 {
+        match self {
+            KeptGraph::Live(g) => g.len(),
+            KeptGraph::Flush(g) => g.len(),
+        }
+    }
+
+    pub(crate) fn shape(
+        &self,
+    ) -> (
+        lucene_codecs::field_infos::VectorEncoding,
+        lucene_codecs::field_infos::VectorSimilarityFunction,
+        usize,
+    ) {
+        match self {
+            KeptGraph::Live(g) => g.shape(),
+            KeptGraph::Flush(g) => g.shape(),
+        }
+    }
+
+    /// The buffer's documents by ordinal.
+    pub(crate) fn docs(&self) -> Option<Vec<i32>> {
+        match self {
+            KeptGraph::Live(g) => (0..g.len()).map(|ord| g.doc(ord)).collect(),
+            KeptGraph::Flush(g) => Some(g.docs()),
+        }
+    }
+
+    /// The graph over its `n` vectors.
+    pub(crate) fn graph(&self, n: i32) -> lucene_codecs::vectors::Result<hnsw::OnHeapHnswGraph> {
+        match self {
+            KeptGraph::Live(g) => g.graph(n),
+            KeptGraph::Flush(g) => g.graph(n),
+        }
+    }
+
+    /// See [`lucene_codecs::buffer_vectors::BufferGraph::ram_bytes`].
+    pub(crate) fn ram_bytes(&self) -> usize {
+        match self {
+            KeptGraph::Live(g) => g.ram_bytes(),
+            KeptGraph::Flush(g) => g.ram_bytes(),
+        }
+    }
+
+    /// Stops the graph growing and lets its vectors go once nothing else
+    /// holds them.
+    pub(crate) fn retire(&self) {
+        match self {
+            KeptGraph::Live(g) => g.retire(),
+            KeptGraph::Flush(g) => g.retire(),
+        }
+    }
 }
 
 /// A flush of a buffer's documents `start..docs` only, numbered from
@@ -1638,10 +1775,23 @@ impl ExplicitDocs<'_> {
                 Vec::with_capacity(p.len().min(end).saturating_sub(start)),
             )
         });
+        let docs = p.len().min(end).saturating_sub(start);
+        // Documents mostly share a shape, so after the first one each role
+        // makes room for every document's values like its, rather than
+        // regrowing (and refaulting) a flush-sized array by doubling. The
+        // estimate is bounded twice, so an odd first document cannot size
+        // the array: per document by `PACKED_ROLE_VALUES_PER_DOC`, and in
+        // all by what the packed bytes can hold (a packed value takes
+        // several bytes; past the bound the array grows as before).
+        let bound = p.ram_bytes() / PACKED_BYTES_PER_ROLE_VALUE;
         p.for_each_range(start, end, |i, d| {
             f(i, d)?;
             for ((values, ends), role) in roles.iter_mut().zip([Role::DocValues, Role::Points]) {
                 values.append(role.values_mut(d));
+                if ends.is_empty() {
+                    let per_doc = values.len().min(PACKED_ROLE_VALUES_PER_DOC);
+                    values.reserve(per_doc.saturating_mul(docs.saturating_sub(1)).min(bound));
+                }
                 ends.push(values.len());
             }
             Ok(())
@@ -1649,6 +1799,12 @@ impl ExplicitDocs<'_> {
         Ok(roles.map(|(values, ends)| RoleValues::Flat { values, ends }))
     }
 }
+
+/// [`ExplicitDocs::packed_roles`]' presizing: at most this many values per
+/// document, however many the first document has, ...
+const PACKED_ROLE_VALUES_PER_DOC: usize = 64;
+/// ... and at most one value per this many bytes of the packed buffer.
+const PACKED_BYTES_PER_ROLE_VALUE: usize = 4;
 
 /// Which per-document values a [`RoleValues`] holds.
 #[derive(Clone, Copy)]
@@ -1769,9 +1925,8 @@ impl IndexingConfig {
     /// The configured field numbered `number`.
     pub(crate) fn field_by_number(&self, number: i32) -> Option<&FieldInfo> {
         self.field_lookup
-            .by_number
-            .get(&number)
-            .and_then(|&at| self.fields.get(at))
+            .by_number(number)
+            .and_then(|at| self.fields.get(at))
     }
 
     /// Adds a field to the schema, keeping the lookups in step.
@@ -4309,6 +4464,7 @@ impl IndexingConfig {
                     self.knn_vectors_direct(),
                     buf.limit.is_none(),
                     buf.graphs,
+                    buf.old_to_new,
                     &self.ivf_clusters,
                     &segment_id,
                 )?
@@ -5710,6 +5866,10 @@ enum DenseColumn {
     SparseSorted(i32, Vec<(i32, Vec<u8>)>),
     SparseSortedNumeric(i32, Vec<(i32, Vec<i64>)>),
     SparseSortedSet(i32, Vec<(i32, Vec<Vec<u8>>)>),
+    /// A SORTED_NUMERIC column, dense or sparse, in flat form.
+    SortedNumericColumn(i32, doc_values::SortedNumericColumn),
+    /// A SORTED_SET column, dense or sparse, with its dictionary built.
+    SortedSetOrds(i32, doc_values::SortedSetOrdsColumn),
 }
 
 impl DenseColumn {
@@ -5727,6 +5887,10 @@ impl DenseColumn {
                 doc_values::DenseField::SparseSortedNumeric(*n, v)
             }
             DenseColumn::SparseSortedSet(n, v) => doc_values::DenseField::SparseSortedSet(*n, v),
+            DenseColumn::SortedNumericColumn(n, c) => {
+                doc_values::DenseField::SortedNumericColumn(*n, c)
+            }
+            DenseColumn::SortedSetOrds(n, c) => doc_values::DenseField::SortedSetOrds(*n, c),
         }
     }
 }
@@ -8021,14 +8185,14 @@ impl IndexingConfig {
     }
 
     /// An empty graph for vector field `name` that grows as its vectors
-    /// arrive and is the graph its flush builds: `None` for a field whose
-    /// format has no graph, scores bytes as Hamming distances, or under an
-    /// index sort (which renumbers the vectors at the flush).
-    pub(crate) fn buffer_graph_for(
-        &self,
-        name: &str,
-    ) -> Option<lucene_codecs::buffer_vectors::BufferGraph> {
-        if self.sorts_documents() {
+    /// arrive and is the graph its flush writes: `None` for a field whose
+    /// format has no graph or scores bytes as Hamming distances. One `live`
+    /// search reads as it grows, or one only the flush reads. Under an
+    /// index sort the flush renumbers the graph, as
+    /// `Lucene99HnswVectorsWriter.writeSortingField` does; live search
+    /// keeps none then.
+    pub(crate) fn buffer_graph_for(&self, name: &str, live: bool) -> Option<KeptGraph> {
+        if self.sorts_documents() && live {
             return None;
         }
         let (_, dimension, encoding, similarity) = self.vector_field_shape(name)?;
@@ -8040,15 +8204,23 @@ impl IndexingConfig {
             return None;
         }
         let (m, beam_width) = format.graph()?;
-        lucene_codecs::buffer_vectors::BufferGraph::new(
-            encoding,
-            similarity,
-            usize::try_from(dimension).ok()?,
-            m,
-            beam_width,
-            hnsw::DEFAULT_RAND_SEED,
-        )
-        .ok()
+        let dimension = usize::try_from(dimension).ok()?;
+        let seed = hnsw::DEFAULT_RAND_SEED;
+        Some(if live {
+            KeptGraph::Live(std::sync::Arc::new(
+                lucene_codecs::buffer_vectors::BufferGraph::new(
+                    encoding, similarity, dimension, m, beam_width, seed,
+                )
+                .ok()?,
+            ))
+        } else {
+            KeptGraph::Flush(std::sync::Arc::new(
+                lucene_codecs::buffer_vectors::FlushGraph::new(
+                    encoding, similarity, dimension, m, beam_width, seed,
+                )
+                .ok()?,
+            ))
+        })
     }
 
     /// Cluster lists for live search over a buffer's vectors of field
@@ -10696,9 +10868,15 @@ impl IndexWriter<'_> {
             };
         }
 
+        let mut routed = dv_columns::collect_columns(docs, configs)
+            .unwrap_or_default()
+            .into_iter();
         let columns: Vec<DenseColumn> = configs
             .iter()
-            .map(|config| Self::collect_dense_column(docs, config))
+            .map(|config| match routed.next().flatten() {
+                Some(column) => Ok(column),
+                None => Self::collect_dense_column(docs, config),
+            })
             .collect::<Result<Vec<_>>>()?;
         let fields: Vec<doc_values::DenseField<'_>> =
             columns.iter().map(DenseColumn::as_dense_field).collect();
@@ -11153,6 +11331,7 @@ impl IndexWriter<'_> {
         direct: bool,
         indexes: bool,
         graphs: &[BufferGraphField],
+        old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
@@ -11262,6 +11441,7 @@ impl IndexWriter<'_> {
                 max_doc,
                 indexes,
                 graphs,
+                old_to_new,
                 clusters,
                 segment_id,
                 &suffix,
@@ -11282,16 +11462,21 @@ impl IndexWriter<'_> {
         Ok(Some(output))
     }
 
-    /// The graph live search kept over `field`'s vectors as they arrived,
-    /// when it is the one this flush builds: the same vectors under the
+    /// The graph the buffer kept over `field`'s vectors as they arrived,
+    /// when it is the one this flush writes: the same vectors under the
     /// same ordinals, built with the same parameters and seed by one
     /// inserter in ordinal order, which is what
-    /// `HnswGraphBuilder::new(..).build(count)` does. A half-float format's
-    /// flush graph is built over the vectors as indexed, as the kept one is.
+    /// `HnswGraphBuilder::new(..).build(count)` does. Under an index sort
+    /// (`old_to_new`) it is renumbered to the sorted ordinals, as Lucene
+    /// writes the graph its `FieldWriter` built in arrival order. A
+    /// half-float format's flush graph is built over the vectors as
+    /// indexed, as the kept one is.
     fn kept_graph(
         graphs: &[BufferGraphField],
+        old_to_new: Option<&[usize]>,
         field: &FlatVectorsField,
         params: (i32, i32),
+        #[cfg_attr(not(test), allow(unused_variables))] segment_id: &[u8; ID_LENGTH],
     ) -> Option<hnsw::OnHeapHnswGraph> {
         let kept = graphs
             .iter()
@@ -11307,21 +11492,38 @@ impl IndexWriter<'_> {
         {
             return None;
         }
-        // The ordinals name the same documents.
-        let same_docs = field
-            .docs
-            .iter()
-            .enumerate()
-            .all(|(ord, &doc)| graph.doc(i32::try_from(ord).unwrap_or(-1)) == Some(doc));
-        if !same_docs {
-            return None;
-        }
+        let docs = graph.docs()?;
+        let renumber = match old_to_new {
+            // The ordinals name the same documents.
+            None => {
+                if docs != field.docs {
+                    return None;
+                }
+                None
+            }
+            // `Lucene99HnswVectorsWriter.writeSortingField`: the graph was
+            // built in arrival order, and each ordinal takes the place of
+            // its document in the sorted segment's ordinals.
+            Some(old_to_new) => {
+                let mut ords = Vec::with_capacity(field.docs.len());
+                for &old in &docs {
+                    let old = usize::try_from(old).ok()?;
+                    let new = i32::try_from(*old_to_new.get(old)?).ok()?;
+                    ords.push(i32::try_from(field.docs.binary_search(&new).ok()?).ok()?);
+                }
+                Some(ords)
+            }
+        };
         let graph = graph.graph(count).ok()?;
+        let graph = match renumber {
+            None => graph,
+            Some(ords) => graph.renumbered(&ords).ok()?,
+        };
         #[cfg(test)]
         KEPT_GRAPHS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(count);
+            .push(*segment_id);
         Some(graph)
     }
 
@@ -11339,6 +11541,7 @@ impl IndexWriter<'_> {
         max_doc: i32,
         indexes: bool,
         graphs: &[BufferGraphField],
+        old_to_new: Option<&[usize]>,
         clusters: &crate::ivf_vectors::ClusterSink,
         segment_id: &[u8; ID_LENGTH],
         suffix: &str,
@@ -11450,7 +11653,7 @@ impl IndexWriter<'_> {
                     let kept = if vectors::scores_hamming(suffix) {
                         None
                     } else {
-                        Self::kept_graph(graphs, field, (m, beam_width))
+                        Self::kept_graph(graphs, old_to_new, field, (m, beam_width), segment_id)
                     };
                     if let Some(graph) = kept {
                         return Ok(Some(graph));
