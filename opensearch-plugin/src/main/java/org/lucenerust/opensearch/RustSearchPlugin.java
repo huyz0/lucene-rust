@@ -648,6 +648,7 @@ public class RustSearchPlugin extends Plugin implements
             settings.addAll(KnnSettings.settings());
         }
         settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
+        settings.addAll(org.lucenerust.opensearch.engine.SeqNoSettings.settings());
         if (stockMl == false) {
             settings.addAll(MlSettings.all());
         }

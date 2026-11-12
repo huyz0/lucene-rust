@@ -91,6 +91,8 @@ const VERSION: LuceneVersion = LuceneVersion {
 /// The doc-values field OpenSearch keeps each document's sequence number in
 /// (`SeqNoFieldMapper.NAME`), which retention is decided by.
 const SEQ_NO_FIELD: &str = "_seq_no";
+/// OpenSearch's `SeqNoFieldMapper.PRIMARY_TERM_NAME`.
+const PRIMARY_TERM_FIELD: &str = "_primary_term";
 /// The field OpenSearch keeps each document's id in (`IdFieldMapper.NAME`),
 /// whose postings a retention merge prunes (`PrunePostingsMergePolicy`).
 const ID_FIELD: &str = "_id";
@@ -2353,22 +2355,43 @@ pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 
     })
 }
 
-/// Sets the soft-deletes retention merges apply: `enabled == 0` keeps every
-/// soft-deleted document, otherwise those whose `_seq_no` is below
-/// `min_retained_seq_no` are dropped.
+/// [`ffi_engine_writer_set_retention`] flag: retention is on.
+const RETENTION_ENABLED: u8 = 1;
+/// [`ffi_engine_writer_set_retention`] flag: merges write
+/// [`UNASSIGNED_SEQ_NO`] and [`UNASSIGNED_PRIMARY_TERM`] for every document
+/// whose `_seq_no` is below the retained minimum.
+const RETENTION_SEQ_NO_SENTINEL: u8 = 2;
+/// OpenSearch's `SequenceNumbers.UNASSIGNED_SEQ_NO`.
+const UNASSIGNED_SEQ_NO: i64 = -2;
+/// OpenSearch's `SequenceNumbers.UNASSIGNED_PRIMARY_TERM`.
+const UNASSIGNED_PRIMARY_TERM: i64 = 0;
+
+/// Sets the soft-deletes retention merges apply. `flags` without
+/// [`RETENTION_ENABLED`] keeps every soft-deleted document; with it, those
+/// whose `_seq_no` is below `min_retained_seq_no` are dropped, and with
+/// [`RETENTION_SEQ_NO_SENTINEL`] as well every document below it gets the
+/// sentinel `_seq_no` and `_primary_term`.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_set_retention(
     handle: u64,
-    enabled: u8,
+    flags: u8,
     min_retained_seq_no: i64,
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let retention = (enabled != 0).then(|| SoftDeletesRetention {
+            let retention = (flags & RETENTION_ENABLED != 0).then(|| SoftDeletesRetention {
                 seq_no_field: SEQ_NO_FIELD.to_string(),
                 min_retained_seq_no,
                 prune_postings_field: Some(ID_FIELD.to_string()),
                 prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
+                seq_no_sentinel: if flags & RETENTION_SEQ_NO_SENTINEL != 0 {
+                    vec![
+                        (SEQ_NO_FIELD.to_string(), UNASSIGNED_SEQ_NO),
+                        (PRIMARY_TERM_FIELD.to_string(), UNASSIGNED_PRIMARY_TERM),
+                    ]
+                } else {
+                    Vec::new()
+                },
             });
             w.writer()
                 .with_writer(|iw| iw.set_soft_deletes_retention(retention));
@@ -5581,6 +5604,112 @@ mod tests {
                 total,
             )
         })
+    }
+
+    /// A doc-values range and set on a `_seq_no` with a skip index and no
+    /// points find the buffered documents as they find committed ones.
+    #[test]
+    fn a_view_answers_doc_values_ranges_on_a_skip_indexed_field() {
+        use crate::live::{ffi_engine_writer_live_view_open, ffi_live_view_close};
+        let tmp = empty_index("engine-writer-live-dv-range");
+        let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+        let mut seq_spec = field("_seq_no", 0, 0, 1, 0);
+        // The byte after the doc-values type: a RANGE skip index.
+        let at = 4 + "_seq_no".len() + 5;
+        seq_spec[at] = 1;
+        let f = Numbers {
+            id: register(h, &field("_id", 1, 1, 0, 0)).unwrap(),
+            body: register(h, &field("body", 4, 0, 0, 0)).unwrap(),
+            seq: register(h, &seq_spec).unwrap(),
+            soft: register(h, &field("__soft_deletes", 0, 0, 1, 1)).unwrap(),
+        };
+        let add = |from: usize, to: usize| {
+            for i in from..to {
+                let b = doc(
+                    Blob::default().u8(OP_ADD).i32(1),
+                    &f,
+                    &format!("d{i}"),
+                    &["w"],
+                    i as i64,
+                    false,
+                );
+                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+            }
+        };
+        let gen = commit_settled(h);
+        let reader = open_reader(&tmp, gen);
+        add(0, 70);
+        let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+        // SAFETY: live out-pointers.
+        let rc = unsafe { ffi_engine_writer_live_view_open(h, gen, &mut view, &mut ptr, &mut len) };
+        assert_eq!(rc, 0, "{}", crate::error::last_error());
+        // SAFETY: the buffer the call gave, freed once.
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        let tree = |node: u8, tail: &[i64], count: Option<i32>| {
+            let mut b = vec![crate::jvm_reader::QUERY_TREE, node];
+            b.extend_from_slice(&("_seq_no".len() as i32).to_le_bytes());
+            b.extend_from_slice(b"_seq_no");
+            if let Some(n) = count {
+                b.extend_from_slice(&n.to_le_bytes());
+            }
+            for v in tail {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            b
+        };
+        let range =
+            |lo: i64, hi: i64| tree(crate::jvm_queries::NODE_DV_NUMERIC_RANGE, &[lo, hi], None);
+        let set = tree(
+            crate::jvm_queries::NODE_DV_NUMERIC_SET,
+            &[3, 50, 69, 100],
+            Some(4),
+        );
+        // As a search the plain path refuses: over the buffers written as segments.
+        let total = |q: &[u8]| {
+            assert!(search_live(reader, view, q).is_none());
+            let mut whole = 0u64;
+            // SAFETY: a live request slice and out-pointer.
+            let rc = unsafe {
+                crate::live::ffi_live_view_reader(
+                    reader,
+                    view,
+                    q.as_ptr(),
+                    q.len(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut whole,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            let (mut docs, mut scores) = ([0i32; 128], [0f32; 128]);
+            let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+            // SAFETY: live buffers of 128 and out-pointers.
+            let rc = unsafe {
+                crate::jvm_reader::ffi_jvm_reader_search(
+                    whole,
+                    q.as_ptr(),
+                    q.len(),
+                    128,
+                    i64::MAX,
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    128,
+                    &mut n,
+                    &mut total,
+                    &mut lower,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            total
+        };
+        assert_eq!(total(&range(30, 49)), 20);
+        assert_eq!(total(&range(45, 45)), 1);
+        assert_eq!(total(&range(i64::MIN, i64::MAX)), 70);
+        assert_eq!(total(&range(80, 90)), 0);
+        assert_eq!(total(&set), 3);
+        assert_eq!(ffi_live_view_close(view), 0);
     }
 
     /// [`OPEN_LIVE_SEARCH`]: a reader of the last commit and a view of the
