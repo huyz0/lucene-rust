@@ -2412,7 +2412,7 @@ fn collect_window(
                 };
                 let value = aggs::to_double(*kind, v);
                 if disjoint {
-                    let starts = ranges.iter().filter(|r| value >= r.0).count();
+                    let starts = ranges.partition_point(|r| value >= r.0);
                     if let Some(i) = starts.checked_sub(1) {
                         if value < ranges[i].1 {
                             let ord = (owning as usize * *width + i) as u32;
@@ -2659,7 +2659,9 @@ fn collect_window(
 /// or terms counts the document once per distinct first-source value; the
 /// sub-aggregations, replayed from the doc values, see every combination.
 /// `lead`: the first source's segment ordinal, in place of the document's
-/// own values (the sorted read's term). Returns the competitive keys placed.
+/// own values (the sorted read's term). Returns the competitive keys placed,
+/// or `None` when the document has no key to offer (a source without a value
+/// and without `missing_bucket`).
 #[allow(clippy::too_many_arguments)]
 fn collect_composite(
     sources: &[CompositeSource],
@@ -2670,9 +2672,9 @@ fn collect_composite(
     leaf_subs: &mut [Leaf<'_>],
     doc: i32,
     lead: Option<i64>,
-) -> Result<usize> {
+) -> Result<Option<usize>> {
     if size == 0 {
-        return Ok(0);
+        return Ok(None);
     }
     let mut placed = 0usize;
     for (i, ((s, l), values)) in sources
@@ -2699,7 +2701,7 @@ fn collect_composite(
         } else if s.missing_bucket {
             values.push(None);
         } else {
-            return Ok(0);
+            return Ok(None);
         }
     }
     if let ([s], [values]) = (sources, c.values.as_slice()) {
@@ -2720,7 +2722,7 @@ fn collect_composite(
             place(sources, size, subs, st, &[k], count, leaf_subs, doc)?;
             placed += 1;
         }
-        return Ok(placed);
+        return Ok(Some(placed));
     }
     let at = &mut c.at;
     at.clear();
@@ -2765,7 +2767,7 @@ fn collect_composite(
         let mut i = sources.len();
         loop {
             if i == 0 {
-                return Ok(placed);
+                return Ok(Some(placed));
             }
             i -= 1;
             at[i] += 1;
@@ -2781,8 +2783,10 @@ fn collect_composite(
 /// first source the aggregator reads sorted (a keyword over a `match_all`)
 /// walks that field's terms in order from `after`'s, each term's live
 /// documents collected with the term as their first-source key, and stops
-/// after a term (not the first) that placed no competitive key: every later
-/// term's keys sort past the worst kept one. Returns whether the segment
+/// after a term (not the first) whose documents offered keys none of which
+/// was competitive while the queue was full: every later term's keys sort
+/// past the worst kept one. As OpenSearch, documents without a first-source
+/// value are not visited. Returns whether the segment
 /// was collected; not when a sub-aggregation's columns need documents in
 /// order, or the field has no terms here.
 fn collect_composite_sorted(
@@ -2810,7 +2814,12 @@ fn collect_composite_sorted(
     let Some(first) = sources.first() else {
         return Ok(false);
     };
+    // `checkIfSortedDocsIsApplicable`: ascending, and a missing bucket only
+    // past an `after` and sorted first.
     if !c.sorted_lead
+        || first.reverse
+        || (first.missing_bucket
+            && (c.after.is_none() || matches!(first.missing_order, MissingOrder::Last)))
         || !matches!(first.values, CompositeValues::Keyword)
         || !leaf.subs.iter().all(any_order)
     {
@@ -2847,10 +2856,10 @@ fn collect_composite_sorted(
             )?
             .map(|p| p.docs)
             .unwrap_or_default();
-        let mut placed = 0usize;
+        let (mut collected, mut placed) = (false, 0usize);
         for doc in docs {
             if live.is_none_or(|l| l.get_doc(doc)) {
-                placed += collect_composite(
+                let offered = collect_composite(
                     sources,
                     *size,
                     subs,
@@ -2860,9 +2869,14 @@ fn collect_composite_sorted(
                     doc,
                     Some(ord as i64),
                 )?;
+                if let Some(n) = offered {
+                    collected = true;
+                    placed += n;
+                }
             }
         }
-        if placed == 0 && ord != from {
+        // `processBucket`: `queue.isFull() && hasCollected && none competitive`.
+        if collected && placed == 0 && ord != from && st.worst.is_some() {
             break;
         }
     }
@@ -6747,6 +6761,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The sorted walk stops on a term only when the queue is full and the
+    /// term offered keys none of which was competitive: a term whose
+    /// documents lack the second source offers none, and the walk goes on.
+    #[test]
+    fn composite_sorted_lead_goes_past_a_term_without_keys() {
+        use lucene_index::document::{Document, KeywordField, Store};
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::merge_policy::upgrade::LATEST;
+
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        {
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+            for (lead, second) in [
+                ("a", Some("x")),
+                ("b", None),
+                ("c", Some("y")),
+                ("d", Some("z")),
+            ] {
+                let mut d = Document::new();
+                d.add(KeywordField::new("lead", lead, Store::No));
+                if let Some(v) = second {
+                    d.add(KeywordField::new("second", v, Store::No));
+                }
+                w.add_fields_document(&d).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let source = |field: &str| CompositeSource {
+            field: field.to_string(),
+            values: CompositeValues::Keyword,
+            reverse: false,
+            missing_bucket: false,
+            missing_order: MissingOrder::Default,
+        };
+        for size in [1, 2, 10] {
+            let got = |sorted: bool| {
+                let node = AggNode::Composite {
+                    sources: vec![source("lead"), source("second")],
+                    size,
+                    after: None,
+                    sorted_lead: vec![sorted],
+                    subs: Vec::new(),
+                };
+                let r = run(&reader, &all(), &[node], &whole(&reader)).unwrap();
+                format!("{:?}", r[0][0])
+            };
+            assert_eq!(got(true), got(false), "size {size}");
+        }
+        let node = AggNode::Composite {
+            sources: vec![source("lead"), source("second")],
+            size: 10,
+            after: None,
+            sorted_lead: vec![true],
+            subs: Vec::new(),
+        };
+        let AggResult::Composite { buckets, .. } = run(&reader, &all(), &[node], &whole(&reader))
+            .unwrap()
+            .remove(0)
+            .remove(0)
+        else {
+            panic!()
+        };
+        assert_eq!(buckets.len(), 3);
     }
 
     /// A `composite` paged with `after` lists the same buckets as one page
