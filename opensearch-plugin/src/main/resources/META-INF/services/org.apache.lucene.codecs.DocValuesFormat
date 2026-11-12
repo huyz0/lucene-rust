@@ -1,1 +1,2 @@
 org.lucenerust.opensearch.docvalues.RustAdaptiveDocValuesFormat
+org.lucenerust.opensearch.docvalues.RustSubstringDocValuesFormat
