@@ -3156,24 +3156,12 @@ fn open_segment_file_aligned(
             None => dir.open(&name)?,
         },
     };
-    if is_random_access(ext) {
-        input.advise_random_and_warm();
-    }
+    // The file's read advice (`lucene_store::read_advice`: random for the
+    // files a vector search reads a vector at a time). Only the search
+    // reader advises: a merge opens its own mappings and reads them in
+    // order.
+    input.advise(lucene_store::read_advice::for_extension(ext));
     Ok(Some(Arc::new(input)))
-}
-
-/// Whether a search reads the file with extension `ext` (possibly behind a
-/// codec suffix) at scattered offsets a vector at a time, so its mapping is
-/// advised random access ([`Input::advise_random`], Lucene's
-/// `DataAccessHint.RANDOM` for the flat vectors and the graph): the flat
-/// vectors a graph walk scores (`.vec`), the graph itself (`.vex`) and an
-/// IVF index's rerank vectors (`.ivv`, whose reader prefetches the ranges it
-/// reranks). A file small next to free memory is read in once at open, so
-/// a cold start still warms it in large reads. Exhaustive scans read ahead
-/// explicitly (`VectorScorer::read_ahead`). Only the search reader advises: a merge
-/// opens its own mappings and reads them in order.
-fn is_random_access(ext: &str) -> bool {
-    matches!(ext.rsplit('.').next(), Some("vec" | "vex" | "ivv"))
 }
 
 /// A segment's stored-fields files and their codec suffix.

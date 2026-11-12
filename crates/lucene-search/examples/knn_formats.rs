@@ -14,6 +14,9 @@
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
 //!   --ef L        HNSW candidate counts to sweep (default 100)
 //!   --dir D       where the indexes are written (default a temporary directory)
+//!   --mmap        search through `MmapDirectory` (read advice applies;
+//!                 `READ_ADVICE` sets `lucene_store::read_advice`) instead
+//!                 of files read whole
 //!   --reuse       keep each format's index under D and search it again on
 //!                 later runs with the same data and build options
 //!   --targets L   recall targets: each format searched recall-targeted
@@ -121,6 +124,10 @@ fn main() {
     let formats = opt("--formats").unwrap_or_else(|| "hnsw,hnsw-int7,ivf,ivf-f16".into());
     let segments: usize = opt("--segments").map_or(1, |s| s.parse().unwrap());
     let merge = args.iter().any(|a| a == "--merge");
+    let mmap = args.iter().any(|a| a == "--mmap");
+    if let Ok(spec) = std::env::var("READ_ADVICE") {
+        lucene_store::read_advice::set(&spec).unwrap();
+    }
     let nprobes: Vec<usize> = opt("--nprobes")
         .unwrap_or_else(|| "0".into())
         .split(',')
@@ -224,7 +231,12 @@ fn main() {
         }
         let build = t.elapsed().as_secs_f64();
         let size = dir_size(&path) as f64 / 1e6;
-        let reader = DirectoryReader::open(&dir).unwrap();
+        let mapped = lucene_store::MmapDirectory::open(&path);
+        let reader = if mmap {
+            DirectoryReader::open(&mapped).unwrap()
+        } else {
+            DirectoryReader::open(&dir).unwrap()
+        };
         let opened = reader.open_segments().unwrap();
         let segs = opened.as_open_segments();
         // A merge may reorder documents: hits map back to base ordinals
