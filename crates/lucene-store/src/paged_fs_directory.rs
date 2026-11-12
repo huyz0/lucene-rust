@@ -26,6 +26,14 @@
 //! - A file larger than half the budget gets small pages (4 KiB for vector
 //!   data, 16 KiB otherwise; [`PagedFsConfig::page_size_for`]): it cannot
 //!   stay resident, and a smaller page brings in less it does not need.
+//! - A file an encrypting wrapper opens through
+//!   [`Directory::open_decoded`] is read the same way, its stored bytes
+//!   with `O_DIRECT`, and each page is decoded (decrypted and
+//!   authenticated) once, as it is read in: pages are whole decode units
+//!   (chunks), the mapping holds plaintext, and the stored bytes never sit
+//!   in the kernel's page cache. Only the header is read at open; a page
+//!   that fails to decode fails the reads of it with an error
+//!   ([`crate::read_failures`]), never the process.
 //! - Without `userfaultfd` (not Linux, or blocked by a seccomp policy)
 //!   every file opens as [`MmapDirectory`] opens it; [`PagedFsDirectory::is_paged`]
 //!   tells which.
@@ -39,7 +47,7 @@ use crate::directory::{Directory, Input, MmapDirectory};
 use crate::error::Result;
 use crate::index_output::FsIndexOutput;
 use crate::lock::Lock;
-use crate::page_cache::DEFAULT_PINNED_EXTENSIONS;
+use crate::page_cache::{PageDecoder, DEFAULT_PINNED_EXTENSIONS};
 
 /// The default page of a local file: 64 KiB. Local reads have no request
 /// latency to amortize, so pages are smaller than a remote store's; one
@@ -254,6 +262,53 @@ impl PagedFsDirectory {
         let _ = crate::paged_input::prefetch(&[bytes.get(..1).unwrap_or(&[]), &bytes[footer..]]);
         Ok(Some(Input::external_bytes(paged)))
     }
+
+    /// [`Directory::open_decoded`] through the pager: `None` where the
+    /// pager is unavailable or the decoder's units are not whole OS pages,
+    /// and the caller then decodes [`Directory::open`]'s bytes.
+    #[cfg(target_os = "linux")]
+    fn open_decoded_paged(&self, name: &str, decoder: &dyn PageDecoder) -> Result<Option<Input>> {
+        use crate::error::Error;
+        use crate::paged_input::{PageFiller, Pager};
+        use std::sync::Arc;
+
+        let Some(pager) = Pager::global() else {
+            return Ok(None);
+        };
+        self.inner.ensure_can_read(name)?;
+        let path = self.root.join(name);
+        let mut file = local::LocalFile::open(&path, self.config.direct_io)?;
+        let codec = decoder.codec(name, file.len(), self)?;
+        let layout = codec.layout();
+        let too_large = || Error::Corrupted(format!("{name}: too large to open"));
+        let unit = usize::try_from(layout.plain_unit).map_err(|_| too_large())?;
+        if unit == 0 || layout.stored_unit == 0 || !pager.supports(unit) {
+            return Ok(None);
+        }
+        let len = usize::try_from(layout.plain_len).map_err(|_| too_large())?;
+        let budget = pager.budget();
+        // Whole units per page, as close to the plain file's page as fits.
+        let want = self.config.page_size_for(name, layout.plain_len, budget);
+        let units = want.checked_div(unit).unwrap_or(1).max(1);
+        let page = units.saturating_mul(unit);
+        if !pager.supports(page) {
+            return Ok(None);
+        }
+        file.set_page(page);
+        file.set_decode(codec, layout, units as u64);
+        if self.config.pins(name, layout.plain_len, budget) || len <= page {
+            return Ok(Some(Input::Owned(file.read_whole_decoded(len)?)));
+        }
+        let filler: Arc<dyn PageFiller> = Arc::new(file);
+        let readahead = self.config.readahead.checked_div(page).unwrap_or(0).max(1);
+        // The full path names the file's failures (`read_failures`).
+        let label = path.to_string_lossy();
+        let paged = pager.open_with_readahead(len, page, filler, &label, readahead)?;
+        let bytes = crate::directory::ExternalBytes::bytes(&paged);
+        let footer = bytes.len().saturating_sub(crate::codec_util::FOOTER_LENGTH);
+        let _ = crate::paged_input::prefetch(&[bytes.get(..1).unwrap_or(&[]), &bytes[footer..]]);
+        Ok(Some(Input::external_bytes(paged)))
+    }
 }
 
 /// `name`'s extension, after its last dot (empty without one).
@@ -284,6 +339,16 @@ impl Directory for PagedFsDirectory {
 
     fn file_length(&self, name: &str) -> Result<u64> {
         self.inner.file_length(name)
+    }
+
+    fn open_decoded(&self, name: &str, decoder: &dyn PageDecoder) -> Option<Result<Input>> {
+        #[cfg(target_os = "linux")]
+        return self.open_decoded_paged(name, decoder).transpose();
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (name, decoder);
+            None
+        }
     }
 
     fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
@@ -366,7 +431,8 @@ mod local {
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
     use crate::error::{Error, Result};
-    use crate::paged_input::{BackgroundDone, PageFiller, PageSink};
+    use crate::page_cache::{PageCodec, UnitLayout};
+    use crate::paged_input::{undecodable, BackgroundDone, PageFiller, PageSink};
 
     /// `O_DIRECT` buffers, offsets and lengths are aligned to this; 4 KiB
     /// covers every logical block size in use.
@@ -381,6 +447,21 @@ mod local {
         /// A buffered descriptor on the same file, opened the first time an
         /// `O_DIRECT` read is refused and shared by every handle after.
         buffered: Arc<OnceLock<std::fs::File>>,
+        /// How stored pages decode, for a file opened decoded.
+        decode: Option<Arc<Decode>>,
+    }
+
+    /// A decoded file's codec and geometry: page `p` is stored units
+    /// `p * units .. (p + 1) * units`, decoded into `page` bytes.
+    pub(super) struct Decode {
+        codec: Arc<dyn PageCodec>,
+        layout: UnitLayout,
+        units: u64,
+    }
+
+    thread_local! {
+        /// Decoded bytes of the run being read, before they are installed.
+        static PLAIN: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
     impl LocalFile {
@@ -408,7 +489,54 @@ mod local {
                 page: ALIGN,
                 direct,
                 buffered: Arc::new(OnceLock::new()),
+                decode: None,
             })
+        }
+
+        /// Pages are decoded by `codec`: each is `units` stored units.
+        pub(super) fn set_decode(
+            &mut self,
+            codec: Arc<dyn PageCodec>,
+            layout: UnitLayout,
+            units: u64,
+        ) {
+            self.decode = Some(Arc::new(Decode {
+                codec,
+                layout,
+                units,
+            }));
+        }
+
+        /// Every decoded byte of the file (`len` of them).
+        pub(super) fn read_whole_decoded(&self, len: usize) -> Result<Vec<u8>> {
+            let mut out = vec![0u8; len];
+            let page = self.page.max(1);
+            let pages = len.div_ceil(page) as u64;
+            let per_read = MAX_CHUNK.checked_div(page).unwrap_or(1).max(1) as u64;
+            let mut first = 0u64;
+            while first < pages {
+                let count = per_read.min(pages.saturating_sub(first));
+                let into = Arc::new(Mutex::new(std::mem::take(&mut out)));
+                let target = Arc::clone(&into);
+                let sink: PageSink = Arc::new(move |p, bytes| {
+                    let mut out = crate::lock::lock_ignoring_poison(&target);
+                    let at = (p as usize).saturating_mul(page);
+                    if let Some(dst) = out.get_mut(at..at.saturating_add(bytes.len())) {
+                        dst.copy_from_slice(bytes);
+                    }
+                });
+                let read = self.read_run(first, count as usize, &sink);
+                drop(sink);
+                out = std::mem::take(&mut *crate::lock::lock_ignoring_poison(&into));
+                read.map_err(|e| match e {
+                    Error::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidData => {
+                        Error::Corrupted(io.to_string())
+                    }
+                    other => other,
+                })?;
+                first = first.saturating_add(count);
+            }
+            Ok(out)
         }
 
         pub(super) fn len(&self) -> u64 {
@@ -443,16 +571,22 @@ mod local {
             if want == 0 {
                 return Ok(());
             }
-            if self.direct && offset.is_multiple_of(ALIGN as u64) {
-                let aligned = want.div_ceil(ALIGN).saturating_mul(ALIGN);
+            if self.direct {
+                // O_DIRECT reads aligned blocks: read the ones around the
+                // range (a decoded file's pages start after its header).
+                let skip = offset.checked_rem(ALIGN as u64).unwrap_or(0) as usize;
+                let start = offset.saturating_sub(skip as u64);
+                let end = skip.saturating_add(want);
+                let aligned = end.div_ceil(ALIGN).saturating_mul(ALIGN);
                 let read = with_scratch(aligned, |buf| {
-                    match read_full(&self.file, buf, offset) {
-                        Ok(n) if n >= want => {
-                            sink(&buf[..want]);
+                    match read_full(&self.file, buf, start) {
+                        Ok(n) if n >= end => {
+                            sink(&buf[skip..end]);
                             Ok(true)
                         }
                         Ok(n) => Err(Error::Corrupted(format!(
-                            "short read: {n} of {want} bytes at {offset}"
+                            "short read: {} of {want} bytes at {offset}",
+                            n.saturating_sub(skip)
                         ))),
                         // A filesystem that opened with O_DIRECT but refuses
                         // this read: fall through to a buffered read.
@@ -557,12 +691,16 @@ mod local {
                 page: self.page,
                 direct: self.direct,
                 buffered: Arc::clone(&self.buffered),
+                decode: self.decode.clone(),
             }
         }
 
         /// The `count` pages from page `first`, read at once and handed to
         /// `sink` last to first.
         fn read_run(&self, first: u64, count: usize, sink: &PageSink) -> Result<()> {
+            if let Some(decode) = &self.decode {
+                return self.read_run_decoded(decode, first, count, sink);
+            }
             let offset = first.saturating_mul(self.page as u64);
             let len = count.saturating_mul(self.page);
             let page = self.page;
@@ -579,6 +717,66 @@ mod local {
                 )));
             }
             Ok(())
+        }
+    }
+
+    impl LocalFile {
+        /// [`Self::read_run`] for a decoded file: the run's stored units in
+        /// one read, decoded at once, handed to `sink` page by page, last
+        /// to first. A run that does not decode is [`undecodable`].
+        fn read_run_decoded(
+            &self,
+            decode: &Decode,
+            first: u64,
+            count: usize,
+            sink: &PageSink,
+        ) -> Result<()> {
+            let layout = decode.layout;
+            let page = self.page;
+            let stored_page = decode.units.saturating_mul(layout.stored_unit);
+            let offset = layout
+                .origin
+                .saturating_add(first.saturating_mul(stored_page));
+            let stored_len = usize::try_from(stored_page.saturating_mul(count as u64))
+                .map_err(|_| Error::Corrupted("decoded run too large".into()))?;
+            let plain_start = first.saturating_mul(page as u64);
+            let plain_want = usize::try_from(
+                (count as u64)
+                    .saturating_mul(page as u64)
+                    .min(layout.plain_len.saturating_sub(plain_start)),
+            )
+            .map_err(|_| Error::Corrupted("decoded run too large".into()))?;
+            if plain_want == 0 {
+                return Err(Error::Corrupted(format!(
+                    "page {first}: read past the end of the file"
+                )));
+            }
+            let mut outcome: Result<()> = Err(Error::Corrupted(format!(
+                "page {first}: read past the end of the file"
+            )));
+            self.read_into(offset, stored_len, &mut |stored| {
+                outcome = PLAIN.with(|cell| {
+                    let mut plain = cell.borrow_mut();
+                    if plain.len() < plain_want {
+                        plain.resize(plain_want, 0);
+                    }
+                    let out = &mut plain[..plain_want];
+                    decode
+                        .codec
+                        .decode(first.saturating_mul(decode.units), stored, out)
+                        .map_err(|e| undecodable(&e))?;
+                    for (i, bytes) in out.chunks(page).enumerate().rev() {
+                        sink(first.saturating_add(i as u64), bytes);
+                    }
+                    Ok(())
+                });
+            })
+            .map_err(|e| match e {
+                // Stored bytes missing (truncated): as undecodable as bad ones.
+                Error::Corrupted(_) => undecodable(&e),
+                other => other,
+            })?;
+            outcome
         }
     }
 
@@ -851,10 +1049,15 @@ mod tests {
         let input = dir.open("big.dat").unwrap();
         input.will_need(1 << 20, 512 << 10).unwrap();
         crate::prefetch(&[&input[2 << 20..(2 << 20) + 100]]).unwrap();
-        assert_eq!(&input[..], &bytes[..]);
         if dir.is_paged() {
             assert!(crate::is_prefetchable(&input));
+            assert!(crate::is_resident(&input[1 << 20..(1 << 20) + 10]));
+            assert!(!crate::is_resident(&input[(7 << 18)..(7 << 18) + 10]));
         }
+        assert_eq!(&input[..], &bytes[..]);
+        // Wholly resident now: a prefetch has nothing to do.
+        assert!(!crate::is_prefetchable(&input));
+        assert!(crate::is_resident(&input));
     }
 
     #[test]
@@ -908,12 +1111,12 @@ mod tests {
         let doc = dir.open("_0.doc").unwrap();
         let vec = dir.open("_0_X_0.vec").unwrap();
         assert!(matches!(doc, Input::Mapped(_)));
-        assert_eq!(&doc[..], &bytes[..]);
-        assert_eq!(&vec[..], &bytes[..]);
         if dir.is_paged() {
             assert!(crate::is_prefetchable(&vec));
             assert!(!crate::is_prefetchable(&doc));
         }
+        assert_eq!(&doc[..], &bytes[..]);
+        assert_eq!(&vec[..], &bytes[..]);
     }
 
     #[test]
@@ -963,5 +1166,213 @@ mod tests {
         let input = dir.open("d.dat").unwrap();
         dir.delete_file("d.dat").unwrap();
         assert_eq!(&input[..], &bytes[..]);
+    }
+
+    /// A test encoding: a 37-byte header (so units start unaligned), then
+    /// units of `UNIT` bytes XOR 0x5A followed by a 4-byte sum of them.
+    const UNIT: usize = 4096;
+    const HEADER: usize = 37;
+
+    fn sum(index: u64, plain: &[u8]) -> u32 {
+        plain.iter().fold(index as u32, |a, &b| {
+            a.wrapping_mul(31).wrapping_add(u32::from(b))
+        })
+    }
+
+    fn encode(plain: &[u8]) -> Vec<u8> {
+        let mut out = vec![7u8; HEADER];
+        for (i, unit) in plain.chunks(UNIT).enumerate() {
+            out.extend(unit.iter().map(|b| b ^ 0x5A));
+            out.extend_from_slice(&sum(i as u64, unit).to_le_bytes());
+        }
+        out
+    }
+
+    struct SumCodec {
+        plain_len: u64,
+    }
+
+    impl crate::page_cache::PageCodec for SumCodec {
+        fn layout(&self) -> crate::page_cache::UnitLayout {
+            crate::page_cache::UnitLayout {
+                origin: HEADER as u64,
+                stored_unit: UNIT as u64 + 4,
+                plain_unit: UNIT as u64,
+                plain_len: self.plain_len,
+            }
+        }
+
+        fn decode(&self, first_unit: u64, stored: &[u8], out: &mut [u8]) -> Result<()> {
+            let mut at = 0;
+            for (i, unit) in stored.chunks(UNIT + 4).enumerate() {
+                let n = unit.len() - 4;
+                let plain = &mut out[at..at + n];
+                for (o, b) in plain.iter_mut().zip(&unit[..n]) {
+                    *o = b ^ 0x5A;
+                }
+                let want = u32::from_le_bytes(unit[n..].try_into().unwrap());
+                if sum(first_unit + i as u64, plain) != want {
+                    return Err(crate::error::Error::Corrupted(format!(
+                        "unit {} failed its check",
+                        first_unit + i as u64
+                    )));
+                }
+                at += n;
+            }
+            assert_eq!(at, out.len(), "the stored units decode to exactly `out`");
+            Ok(())
+        }
+    }
+
+    struct SumDecoder;
+
+    impl PageDecoder for SumDecoder {
+        fn codec(
+            &self,
+            name: &str,
+            stored_len: u64,
+            dir: &dyn Directory,
+        ) -> Result<std::sync::Arc<dyn crate::page_cache::PageCodec>> {
+            assert_eq!(dir.read_at(name, 0, HEADER)?, vec![7u8; HEADER]);
+            let body = stored_len - HEADER as u64;
+            let units = body.div_ceil(UNIT as u64 + 4);
+            Ok(std::sync::Arc::new(SumCodec {
+                plain_len: body - 4 * units,
+            }))
+        }
+    }
+
+    fn decoded_dir(tmp: &TempDir, page: usize, pinned: bool) -> PagedFsDirectory {
+        PagedFsDirectory::with_config(
+            tmp.path(),
+            PagedFsConfig {
+                page_size: page,
+                adaptive: false,
+                pinned_extensions: if pinned {
+                    vec!["fdt".into()]
+                } else {
+                    Vec::new()
+                },
+                ..PagedFsConfig::default()
+            },
+        )
+    }
+
+    /// Decoded files read back through the pager at every tail length and
+    /// with pages of several units, pinned files read whole, and the
+    /// stored bytes are never what a reader sees.
+    #[test]
+    fn decoded_files_read_back_page_by_page() {
+        if crate::paged_input::Pager::global().is_none() {
+            return;
+        }
+        let tmp = TempDir::new("paged-fs-decoded");
+        for (page, pinned) in [(UNIT, false), (3 * UNIT, false), (UNIT, true)] {
+            let dir = decoded_dir(&tmp, page, pinned);
+            for len in [0usize, 1, UNIT - 1, UNIT, UNIT + 1, 10 * UNIT + 5, 300_000] {
+                let plain = pattern(len);
+                let name = format!("_{len}_{page}_{pinned}.fdt");
+                write(&dir, &name, &encode(&plain));
+                let input = dir.open_decoded(&name, &SumDecoder).unwrap().unwrap();
+                assert_eq!(input.len(), len);
+                // Out of order first, then all of it.
+                for at in (0..len).step_by(UNIT * 2 + 7).rev() {
+                    assert_eq!(input[at], plain[at], "{name}[{at}]");
+                }
+                assert!(input[..] == plain[..], "{name}");
+                input.will_need(0, len).unwrap();
+            }
+        }
+        // Where units are not whole OS pages the caller decodes instead.
+        struct Odd;
+        impl PageDecoder for Odd {
+            fn codec(
+                &self,
+                _: &str,
+                _: u64,
+                _: &dyn Directory,
+            ) -> Result<std::sync::Arc<dyn crate::page_cache::PageCodec>> {
+                struct C;
+                impl crate::page_cache::PageCodec for C {
+                    fn layout(&self) -> crate::page_cache::UnitLayout {
+                        crate::page_cache::UnitLayout {
+                            origin: 0,
+                            stored_unit: 100,
+                            plain_unit: 100,
+                            plain_len: 1000,
+                        }
+                    }
+                    fn decode(&self, _: u64, _: &[u8], _: &mut [u8]) -> Result<()> {
+                        unreachable!()
+                    }
+                }
+                Ok(std::sync::Arc::new(C))
+            }
+        }
+        let dir = decoded_dir(&tmp, UNIT, false);
+        write(&dir, "odd.fdt", &[0u8; 1000]);
+        assert!(dir.open_decoded("odd.fdt", &Odd).is_none());
+    }
+
+    /// A unit that fails its check fails announced reads with an error and
+    /// reads as zeros otherwise, recorded under the file's path until the
+    /// input is dropped; the process carries on. Truncation is reported the
+    /// same way.
+    #[test]
+    fn a_bad_unit_fails_reads_with_an_error_not_an_abort() {
+        // A closed file's record goes once the pager's last hold on it
+        // (a read in flight) ends.
+        let cleared = |root: &str| {
+            (0..200).any(|_| {
+                let gone = crate::read_failures::failure_under(root).is_none();
+                if !gone {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                gone
+            })
+        };
+        if crate::paged_input::Pager::global().is_none() {
+            return;
+        }
+        let tmp = TempDir::new("paged-fs-decoded-bad");
+        let root = tmp.path().to_string_lossy().to_string();
+        let dir = decoded_dir(&tmp, UNIT, false);
+        let plain = pattern(20 * UNIT);
+        write(&dir, "_1.fdt", &encode(&plain));
+        let input = dir.open_decoded("_1.fdt", &SumDecoder).unwrap().unwrap();
+        assert_eq!(input[3 * UNIT], plain[3 * UNIT]);
+        assert_eq!(crate::read_failures::failure_under(&root), None);
+        // Corrupt unit 7 on disk under the open input.
+        let path = tmp.path().join("_1.fdt");
+        let mut raw = std::fs::read(&path).unwrap();
+        raw[HEADER + 7 * (UNIT + 4) + 100] ^= 1;
+        std::fs::write(&path, &raw).unwrap();
+        assert_eq!(&input[7 * UNIT..7 * UNIT + 16], &[0u8; 16]);
+        let recorded = crate::read_failures::failure_under(&root).expect("recorded");
+        assert!(recorded.contains("unit 7 failed its check"), "{recorded}");
+        let err = input.will_need(0, 1).unwrap_err();
+        assert!(matches!(err, crate::error::Error::Corrupted(_)), "{err}");
+        assert!(crate::prefetch(&[&input[..1]]).is_err());
+        // Other pages still read.
+        assert_eq!(input[12 * UNIT + 9], plain[12 * UNIT + 9]);
+        drop(input);
+        assert!(cleared(&root));
+
+        // A unit corrupt at open time fails a pinned (whole) read.
+        let pinned = decoded_dir(&tmp, UNIT, true);
+        assert!(matches!(
+            pinned.open_decoded("_1.fdt", &SumDecoder).unwrap(),
+            Err(crate::error::Error::Corrupted(_))
+        ));
+        // A file truncated under an open input: its missing units fail too.
+        std::fs::write(&path, encode(&plain)).unwrap();
+        let input = dir.open_decoded("_1.fdt", &SumDecoder).unwrap().unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_len((HEADER + 15 * (UNIT + 4)) as u64).unwrap();
+        assert!(input.will_need(17 * UNIT, 1).is_err());
+        assert_eq!(input[18 * UNIT], 0);
+        assert!(crate::read_failures::failure_under(&root).is_some());
+        drop(input);
+        assert!(cleared(&root));
     }
 }

@@ -322,41 +322,58 @@ index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps w
   At startup the node checks that both are in FIPS mode, and refuses to
   start otherwise. The default zip uses the JDK's own providers.
 
-## Demand decryption
+## Decryption through the page cache
 
 An input is a whole contiguous file, which is what lets codecs read a
-memory-mapped file at memory speed. By default an encrypted file is
-therefore decrypted whole when it opens and costs its size in RAM while a
-reader holds it.
+memory-mapped file at memory speed. Over a directory that reads pages
+itself, an encrypted file is opened through `Directory::open_decoded`
+instead: only its header is read at open (a reader then checks the footer,
+as Lucene does), and each page of whole chunks is authenticated and
+decrypted once, as it is read into that directory's page cache. Readers see
+plain memory; nothing is decrypted per read.
 
-With demand decryption on (`EncryptedDirectory::with_lazy_decrypt`, the
-store wrapper setting `encryption.lazy_decrypt`, or the plugin's node
-setting `lucene_rust.store.encrypted.lazy_decrypt`), an encrypted file is
-instead authenticated in full when it opens, then mapped and decrypted
-chunk by chunk on first touch (`lucene-store-crypto/src/lazy.rs`). Decrypted
-chunks stay resident up to a process-wide budget (default 512 MiB; the
-plugin's `lucene_rust.store.encrypted.decrypt_cache_size`); past it the
-oldest are dropped, and the next touch decrypts that chunk again from the
-ciphertext in the page cache. Plaintext is never written to disk.
+- Local disk: `PagedFsDirectory` (the demand pager, `lucene-store/src/paged_input.rs`)
+  reads the ciphertext with `O_DIRECT`, so it never sits in the kernel's
+  page cache, and holds the plaintext in its process-wide budget (the
+  plugin's `lucene_rust.store.page_cache.size`, shared with
+  `store_mode: page_cache` shards). Pages are whole chunks: 64 KiB with the
+  default chunk size, sized up against the budget like plain files.
+- Blob store: `CachedBlobDirectory` caches pages of whole chunks as
+  ciphertext (in memory or on the NVMe tier) and decrypts into the reader's
+  mapping.
+- Any other directory, or Linux without `userfaultfd`: each file is
+  authenticated and decrypted whole when it opens and costs its size in RAM
+  while a reader holds it.
+
+The plugin's `rust_encrypted` shards always read through the pager where it
+runs. The node settings `lucene_rust.store.encrypted.lazy_decrypt` and
+`lucene_rust.store.encrypted.decrypt_cache_size` (the earlier demand mode,
+which authenticated whole files at open and decrypted from a mapping of the
+ciphertext) are deprecated and ignored.
 
 Opened plaintext is shared through a `PlaintextCache`: while any input of a
 file is alive, opening it again, from the same directory or from another
 one given the same cache, costs a reference count. In the plugin the
 writer's and the readers' directories of one shard share one cache.
 
-On a 1M-document encrypted index (143 MB; 4 cores; the
-`lucene-store-crypto` example `encrypted_memory`), with a reader open and
-term queries run:
+On a 2M-document index in 8+ segments (290 MB; 4 cores, local disk;
+`lucene-store-crypto` example `encrypted_store_bench`, kernel caches dropped
+before each run, mean of two runs), with a reader open and 116 term queries
+per pass:
 
-| | whole-file | demand |
-|---|---|---|
-| anonymous memory | 138 MB | 25 MB |
-| reader open | ~50 ms | ~75 ms |
-| first 16 term queries | 4.4 ms | 8 to 9 ms |
-| warm, best of 30 passes | 2.8 to 3.1 ms | 2.8 to 3.1 ms |
+| | plain, mmap | plain, pager | encrypted, whole-file | encrypted, earlier demand mode | encrypted, pager |
+|---|---|---|---|---|---|
+| reader open | 62 ms | 99 ms | 168 ms | 186 ms | 121 ms |
+| anonymous memory after the queries | 3 MB | 52 MB | 280 MB | 48 MB | 58 MB |
+| kernel page cache mapped | 45 MB | 7 MB | 7 MB | 284 MB (ciphertext) | 7 MB |
+| first (cold) pass | 27 to 46 ms | 40 to 44 ms | 19 to 21 ms | 35 to 44 ms | 50 to 55 ms |
+| warm pass, median of 20 | 15 ms | 14 to 18 ms | 16 ms | 16 to 17 ms | 17 to 18 ms |
+| force merge to one segment | 5.4 s | 6.1 s | 5.6 s | 5.4 s | 6.4 s |
 
-The budget should cover the hot working set: at 8 MiB against a 25 MB
-working set the same queries take ~35 ms.
+Whole-file decryption pays at open for what the first queries then find in
+memory, and holds the whole index on the heap. With a 32 MiB budget the
+paged reader holds 34 MB and its warm passes take 62 to 67 ms (53 to 57 ms
+plain, through the pager).
 
 What it needs and how it fails:
 
@@ -364,23 +381,30 @@ What it needs and how it fails:
   seccomp profiles (and Kubernetes `RuntimeDefault`) block it; a container
   needs a profile that allows `userfaultfd`. Where it is unavailable, or a
   file's chunk size is not a whole number of pages, files are decrypted
-  whole and the plugin logs a warning at startup.
+  whole.
 - A process without `CAP_SYS_PTRACE` (and with
   `vm.unprivileged_userfaultfd = 0`) gets user-mode-only faults: the kernel
   cannot fault a page in, so a system call reading straight from a page
   that is not resident fails with `EFAULT`. `FsIndexOutput` copies such
   bytes through a buffer and writes them again; other code handing input
   bytes to the kernel must do the same.
-- A chunk that fails authentication after the file opened means the
-  ciphertext changed under an open reader. A memory access cannot return an
-  error, so the process aborts rather than hand out unauthenticated bytes.
-- One handler thread serves every fault, so cold reads are serialized
-  behind it.
+- A chunk that fails authentication (the ciphertext changed or rotted under
+  an open reader) is not retried and does not end the process. Reads that
+  announce themselves (`Input::will_need`, `prefetch`) get a corruption
+  error, and so does every later one on that file. A plain memory access
+  cannot return an error, so the page reads as zeros, and the failure is
+  recorded under the file's path (`lucene-store/src/read_failures.rs`) until
+  the file is closed. The plugin's FFI layer fails any call that read the
+  shard while a failure is recorded under it (`Io`, "failed
+  authentication"); a merge reading the bad chunk fails its checksum check.
+  OpenSearch then fails the shard and recovers it from a replica.
+- An I/O error reading a page is retried for about a minute, then aborts
+  the process, as for an unencrypted paged shard.
 
 ## Limits to know
 
-- Without demand decryption, an encrypted or remote file is read whole into
-  memory when opened (see above).
+- Without the pager (no `userfaultfd`), an encrypted or remote file is read
+  whole into memory when opened (see above).
 - `BlobDirectory`'s default lock only excludes writers in one process. A store
   shared by several writer processes needs its own `LockFactory`.
 - File names are not encrypted, and file sizes are visible (plus a small
@@ -391,4 +415,4 @@ What it needs and how it fails:
   encrypted replica: peer recovery copies its files again.
 - In OpenSearch, Lucene's side reads an encrypted file a chunk at a time,
   decrypting the chunk under the read position. The Rust side decrypts
-  whole files when it opens them, or on demand as above.
+  each chunk once into the page cache, as above.

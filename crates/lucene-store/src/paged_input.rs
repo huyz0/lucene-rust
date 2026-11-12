@@ -19,10 +19,17 @@
 //! set, which the pager cannot see being read once its pages are present. Readers see a
 //! plain `&[u8]` throughout.
 //!
-//! A memory access cannot return an error: a page that still cannot be
-//! filled after retries aborts the process rather than hand a reader wrong
-//! bytes. Readers that announce their reads through `will_need` get the
-//! error instead.
+//! A memory access cannot return an error. A page that cannot be read
+//! (an I/O error) is retried, and one that still cannot be read after
+//! about a minute aborts the process rather than hand a reader wrong bytes.
+//! A page that is read but fails to decode (an encrypted chunk that fails
+//! authentication; the filler reports it with [`undecodable`]) is not
+//! retried: zeros are installed in its place, the file is marked failed,
+//! and the failure is recorded under the file's name in
+//! [`crate::read_failures`], where the call that read it finds it and
+//! fails. Readers that announce their reads through `will_need` or
+//! [`prefetch`] get the error directly, and every later announcement on a
+//! failed file fails too.
 //!
 //! [`Pager::global`] is `None` where `userfaultfd` is unavailable (not
 //! Linux, or a seccomp policy that blocks it); callers then read files whole.
@@ -79,6 +86,44 @@ pub(crate) trait PageFiller: Send + Sync {
 
 /// Runs when a [`PageFiller::fill_background`] read ends, with its result.
 pub(crate) type BackgroundDone = Box<dyn FnOnce(Result<()>) + Send>;
+
+/// The payload of a [`PageFiller`] error for a page that was read but
+/// cannot be decoded: retrying cannot help.
+#[derive(Debug)]
+struct Undecodable(String);
+
+impl std::fmt::Display for Undecodable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Undecodable {}
+
+/// The error a [`PageFiller`] returns for pages read but not decodable
+/// (`e` is the decoder's error): the pager neither retries nor aborts on
+/// it.
+pub(crate) fn undecodable(e: &Error) -> Error {
+    let message = match e {
+        Error::Corrupted(m) => m.clone(),
+        other => other.to_string(),
+    };
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        Undecodable(message),
+    ))
+}
+
+/// The decoder's message when `e` came from [`undecodable`].
+fn undecodable_message(e: &Error) -> Option<String> {
+    match e {
+        Error::Io(io) => io
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<Undecodable>())
+            .map(|u| u.0.clone()),
+        _ => None,
+    }
+}
 
 const UFFD_API: u64 = 0xAA;
 const UFFD_USER_MODE_ONLY: libc::c_int = 1;
@@ -234,6 +279,8 @@ struct File {
     /// How many pages are resident: all of them lets a prefetch skip the
     /// file without looking at each page.
     live_count: AtomicUsize,
+    /// Set once a page failed to decode: every later announced read fails.
+    failed: OnceLock<String>,
 }
 
 /// A demand-filled file, as [`ExternalBytes`].
@@ -254,6 +301,7 @@ impl ExternalBytes for PagedBytes {
     }
 
     fn will_need(&self, offset: usize, len: usize) -> Result<()> {
+        self.file.check()?;
         let missing = self.file.missing(&[(offset, len)]);
         self.file.fill(&missing)?;
         self.file.pager.evict();
@@ -295,11 +343,39 @@ impl File {
     }
 
     /// Fetches `pages` (sorted, distinct) in one batch and installs them.
+    /// A page that fails to decode fails the file ([`File::fail`]).
     fn fill(self: &Arc<Self>, pages: &[u64]) -> Result<()> {
+        self.check()?;
         if pages.is_empty() {
             return Ok(());
         }
-        self.filler.fill_into(pages, &self.sink())
+        self.filler
+            .fill_into(pages, &self.sink())
+            .map_err(|e| match undecodable_message(&e) {
+                Some(message) => self.fail(&message),
+                None => e,
+            })
+    }
+
+    /// Marks the file failed with `message` (the first failure wins) and
+    /// records it in [`crate::read_failures`]; the error to return.
+    fn fail(&self, message: &str) -> Error {
+        let first = self.failed.get_or_init(|| message.to_string());
+        crate::read_failures::record(self.owner(), &self.name, first);
+        Error::Corrupted(first.clone())
+    }
+
+    /// `Err` once a page of the file failed to decode.
+    fn check(&self) -> Result<()> {
+        match self.failed.get() {
+            Some(m) => Err(Error::Corrupted(m.clone())),
+            None => Ok(()),
+        }
+    }
+
+    /// This file's key in [`crate::read_failures`].
+    fn owner(&self) -> usize {
+        self as *const File as usize
     }
 
     /// Starts reading `pages` (sorted, distinct) in the background where the
@@ -416,7 +492,7 @@ pub fn prefetch(ranges: &[&[u8]]) -> Result<()> {
             let missing = file.missing(&spans);
             (file, missing)
         })
-        .filter(|(_, missing)| !missing.is_empty())
+        .filter(|(file, missing)| !missing.is_empty() || file.failed.get().is_some())
         .collect();
     let result = match work.as_slice() {
         [] => Ok(()),
@@ -469,6 +545,62 @@ pub fn is_paged(bytes: &[u8]) -> bool {
         .is_some_and(|file| addr.wrapping_sub(file.base) < file.map_len.max(1))
 }
 
+/// Whether `bytes` starts in a demand-filled file of the global [`Pager`]
+/// that is not wholly resident: whether a [`prefetch`] of it could fetch
+/// anything now. A reader asks before doing extra work to find what to
+/// prefetch; once every page of a file is in, its reads are memory reads.
+pub fn may_fetch(bytes: &[u8]) -> bool {
+    let Some(pager) = Pager::started() else {
+        return false;
+    };
+    let files = match pager.files.read() {
+        Ok(files) => files,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let addr = bytes.as_ptr() as usize;
+    files
+        .range(..=addr)
+        .next_back()
+        .and_then(|(_, weak)| weak.upgrade())
+        .is_some_and(|file| {
+            addr.wrapping_sub(file.base) < file.map_len.max(1) && !file.all_resident()
+        })
+}
+
+/// Whether the pages holding the first and last bytes of `bytes` are
+/// resident: always, unless `bytes` lies in a demand-filled file of the
+/// global [`Pager`] where one of them is not.
+pub fn is_resident(bytes: &[u8]) -> bool {
+    let Some(pager) = Pager::started() else {
+        return true;
+    };
+    let files = match pager.files.read() {
+        Ok(files) => files,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let addr = bytes.as_ptr() as usize;
+    let Some(file) = files
+        .range(..=addr)
+        .next_back()
+        .and_then(|(_, weak)| weak.upgrade())
+    else {
+        return true;
+    };
+    let offset = addr.wrapping_sub(file.base);
+    if offset >= file.len {
+        return true;
+    }
+    let last = offset
+        .saturating_add(bytes.len().saturating_sub(1))
+        .min(file.len.saturating_sub(1));
+    let live = |at: usize| {
+        at.checked_div(file.page)
+            .and_then(|p| file.live.get(p))
+            .is_some_and(|l| l.load(Ordering::Acquire))
+    };
+    live(offset) && live(last)
+}
+
 impl Drop for PagedBytes {
     fn drop(&mut self) {
         if self.file.map_len == 0 {
@@ -502,6 +634,9 @@ impl Drop for File {
             .filter(|c| c.load(Ordering::Relaxed))
             .count();
         let bytes = (live as u64).saturating_mul(self.page as u64);
+        if self.failed.get().is_some() {
+            crate::read_failures::forget(self.owner());
+        }
         let _ = self
             .pager
             .resident_bytes
@@ -705,6 +840,7 @@ impl Pager {
             evicted_at: (0..pages).map(|_| AtomicU32::new(0)).collect(),
             inflight: (0..pages).map(|_| AtomicBool::new(false)).collect(),
             live_count: AtomicUsize::new(0),
+            failed: OnceLock::new(),
         });
         if map_len > 0 {
             self.files
@@ -835,6 +971,17 @@ impl Pager {
             let filled = file.filler.fill_into(&[index as u64], &sink);
             match filled {
                 Ok(()) => break,
+                Err(e) if undecodable_message(&e).is_some() => {
+                    // Read but not decodable: retrying reads the same
+                    // bytes. Zeros stand in for the page so the thread
+                    // runs on, and the failure reaches the call through
+                    // the file's record.
+                    let message = undecodable_message(&e).unwrap_or_default();
+                    file.fail(&message);
+                    let zeros = vec![0u8; file.page];
+                    self.install(&file, index, &zeros);
+                    break;
+                }
                 other => {
                     let e = other
                         .err()

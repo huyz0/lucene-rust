@@ -249,10 +249,6 @@ public final class NativeBridge {
         );
         static final MethodHandle STORE_UNBIND = bind("ffi_store_unbind", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         static final MethodHandle STORE_IS_FIPS = bind("ffi_store_is_fips", FunctionDescriptor.of(JAVA_INT));
-        static final MethodHandle STORE_SET_LAZY_DECRYPT = bind(
-            "ffi_store_set_lazy_decrypt",
-            FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
-        );
         static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle STORE_BIND_PAGE_CACHE = bind(
             "ffi_store_bind_page_cache",
@@ -1652,18 +1648,9 @@ public final class NativeBridge {
     }
 
     /**
-     * Turns demand decryption of encrypted shards on or off for directories the engine opens from now
-     * on, keeping at most {@code budgetBytes} of decrypted pages resident (0 keeps the current budget).
+     * Whether the engine reads encrypted shards through the page cache, decrypting each chunk once as
+     * it is read in ({@code userfaultfd} is available); otherwise it decrypts each file whole.
      */
-    public static int storeSetLazyDecrypt(boolean enabled, long budgetBytes) {
-        try {
-            return (int) H.STORE_SET_LAZY_DECRYPT.invokeExact(enabled ? 1 : 0, budgetBytes);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
-    /** Whether encrypted shards the engine opens now are demand-decrypted (on, and supported here). */
     public static boolean storeLazyDecryptActive() {
         try {
             return (int) H.STORE_LAZY_DECRYPT_ACTIVE.invokeExact() == 1;
