@@ -2671,10 +2671,15 @@ public final class NativeBridge {
         }
     }
 
-    /** Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by merges. */
-    public static int writerSetRetention(long handle, boolean enabled, long minRetainedSeqNo) {
+    /**
+     * Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by
+     * merges; with {@code seqNoSentinels}, merges also write {@code UNASSIGNED_SEQ_NO} and {@code
+     * UNASSIGNED_PRIMARY_TERM} for every document below it.
+     */
+    public static int writerSetRetention(long handle, boolean enabled, boolean seqNoSentinels, long minRetainedSeqNo) {
         try {
-            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, (byte) (enabled ? 1 : 0), minRetainedSeqNo);
+            byte flags = (byte) ((enabled ? 1 : 0) | (seqNoSentinels ? 2 : 0));
+            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, flags, minRetainedSeqNo);
         } catch (Throwable t) {
             throw rethrow(t);
         }
