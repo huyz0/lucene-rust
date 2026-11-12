@@ -39,7 +39,6 @@ package org.lucenerust.opensearch.engine;
 import org.opensearch.index.engine.*;
 
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexCommit;
@@ -2720,7 +2719,7 @@ public class RustEngine extends Engine {
         final IndexSearcher searcher = new IndexSearcher(directoryReader);
         searcher.setQueryCache(null);
         final Query query = new BooleanQuery.Builder().add(
-            LongPoint.newRangeQuery(SeqNoFieldMapper.NAME, getPersistedLocalCheckpoint() + 1, Long.MAX_VALUE),
+            SeqNoQueries.range(directoryReader, getPersistedLocalCheckpoint() + 1, Long.MAX_VALUE),
             BooleanClause.Occur.MUST
         )
             // exclude non-root nested documents

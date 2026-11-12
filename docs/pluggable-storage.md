@@ -155,12 +155,16 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
 - `Pager::stats` counts faults, refaults, fault time, evictions and pages
   that could not be read.
 - A page that cannot be read (an I/O error) is retried for about two
-  seconds. It then reads as zeros for one second (`UNREADABLE_HOLD`), and
-  the failure is recorded under the file's path
+  seconds. A thread in a checked call (an FFI call that noted its shard,
+  `read_failures::set_checked`) then reads it as zeros for one second
+  (`UNREADABLE_HOLD`), and the failure is recorded under the file's path
   (`lucene-store/src/read_failures.rs`), so the calls that ran while it was
   served fail; after that the zeros are dropped and the next touch reads
-  the disk again. Announced reads (`will_need`, `prefetch`) get the error
-  directly. The process never aborts for a page.
+  the disk again. Any other thread (a merge, a warmer), which nothing
+  would fail, keeps retrying until the disk serves the page. A merge also
+  fails if a failure under its directory overlapped it. Announced reads
+  (`will_need`, `prefetch`) get the error directly. The process never
+  aborts for a page.
 
 In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
 default), `page_cache`, or `page_cache_vectors` (vector files only, the rest

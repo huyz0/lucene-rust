@@ -20,8 +20,20 @@
 //!
 //! Readers that announce their reads ([`crate::directory::Input::will_need`],
 //! [`crate::prefetch`]) get the error directly.
+//!
+//! Zeros reach only threads running such a checked call ([`set_checked`]).
+//! On any other thread (a merge, a warmer) nothing would fail the work that
+//! read them, so the pager keeps retrying the read instead. A merge also
+//! fails when a failure under its directory overlapped it, since it may
+//! run inside a checked call and write what it read into a new segment.
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -64,28 +76,32 @@ fn advance() -> u64 {
 }
 
 /// Drops cleared records past [`CLEARED_KEPT`] and, past [`MAX_RECORDS`],
-/// the oldest records.
+/// the oldest cleared ones. A failure not cleared is never dropped.
 fn prune(records: &mut Vec<Record>) {
     records.retain(|r| r.cleared.is_none_or(|(_, at)| at.elapsed() < CLEARED_KEPT));
     while records.len() >= MAX_RECORDS {
-        // Cleared ones first, then the oldest.
-        let at = records
-            .iter()
-            .position(|r| r.cleared.is_some())
-            .unwrap_or(0);
+        let Some(at) = records.iter().position(|r| r.cleared.is_some()) else {
+            break;
+        };
         records.remove(at);
     }
 }
 
 /// Records that `path` (a file's full path) failed with `message`, until
 /// [`clear`] or [`forget`] is called with the same `owner`. A path recorded
-/// for `owner` and not cleared keeps its first message.
+/// for `owner` and not cleared keeps its first message; one cleared is
+/// made current again.
 pub(crate) fn record(owner: usize, path: &str, message: &str) {
     let mut records = lock_ignoring_poison(&RECORDS);
-    if records
-        .iter()
-        .any(|r| r.owner == owner && r.path == path && r.cleared.is_none())
+    if let Some(r) = records
+        .iter_mut()
+        .find(|r| r.owner == owner && r.path == path)
     {
+        if r.cleared.is_some() {
+            r.cleared = None;
+            r.message = message.to_string();
+            advance();
+        }
         return;
     }
     prune(&mut records);
@@ -120,6 +136,74 @@ pub(crate) fn clear(owner: usize) {
 /// that read the file keeps seeing them, as after [`clear`].
 pub(crate) fn forget(owner: usize) {
     clear(owner);
+}
+
+#[cfg(target_os = "linux")]
+/// Each thread's flag for [`set_checked`], by thread id.
+#[cfg(target_os = "linux")]
+static CHECKED: Mutex<Option<HashMap<u32, Arc<AtomicBool>>>> = Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+/// This thread's entry in [`CHECKED`], removed when the thread ends.
+struct CheckedSlot {
+    tid: u32,
+    on: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "linux")]
+impl CheckedSlot {
+    fn register() -> CheckedSlot {
+        // SAFETY: gettid has no preconditions.
+        let tid = u32::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap_or(0);
+        let on = Arc::new(AtomicBool::new(false));
+        lock_ignoring_poison(&CHECKED)
+            .get_or_insert_with(HashMap::new)
+            .insert(tid, Arc::clone(&on));
+        CheckedSlot { tid, on }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for CheckedSlot {
+    fn drop(&mut self) {
+        if let Some(map) = lock_ignoring_poison(&CHECKED).as_mut() {
+            if map
+                .get(&self.tid)
+                .is_some_and(|on| Arc::ptr_eq(on, &self.on))
+            {
+                map.remove(&self.tid);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    static SLOT: CheckedSlot = CheckedSlot::register();
+}
+
+/// Marks whether this thread runs a checked call; nothing to mark here,
+/// where no pager hands out zeros.
+#[cfg(not(target_os = "linux"))]
+pub fn set_checked(_on: bool) {}
+
+#[cfg(target_os = "linux")]
+/// Marks whether this thread is running a call that asks
+/// [`failure_under`] when it ends and fails on a failure: such a thread may
+/// be handed zeros for a page that cannot be read; any other thread waits
+/// for the read to succeed.
+pub fn set_checked(on: bool) {
+    let _ = SLOT.try_with(|s| s.on.store(on, Ordering::Release));
+}
+
+#[cfg(target_os = "linux")]
+/// Whether the thread with id `tid` is running a checked call
+/// ([`set_checked`]).
+pub(crate) fn is_checked(tid: u32) -> bool {
+    lock_ignoring_poison(&CHECKED)
+        .as_ref()
+        .and_then(|map| map.get(&tid))
+        .is_some_and(|on| on.load(Ordering::Acquire))
 }
 
 /// The message of a failure of a file under the directory `root` (a path
@@ -172,6 +256,26 @@ mod tests {
             Some("chunk 3 failed")
         );
         assert_eq!(failure_under(&s0, epoch()), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_threads_in_a_checked_call_are_checked() {
+        // SAFETY: gettid has no preconditions.
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
+        set_checked(true);
+        assert!(is_checked(tid));
+        set_checked(false);
+        assert!(!is_checked(tid));
+        let other = std::thread::spawn(|| {
+            set_checked(true);
+            // SAFETY: as above.
+            unsafe { libc::syscall(libc::SYS_gettid) as u32 }
+        })
+        .join()
+        .unwrap();
+        // The thread ended: its entry went with it.
+        assert!(!is_checked(other));
     }
 
     #[test]

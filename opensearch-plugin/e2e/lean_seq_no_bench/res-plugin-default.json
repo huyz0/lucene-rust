@@ -1,0 +1,104 @@
+{
+ "label": "plugin-default",
+ "settings": {
+  "number_of_shards": 1,
+  "number_of_replicas": 0,
+  "refresh_interval": "5s"
+ },
+ "docs": 6454808,
+ "index_s": 72.4,
+ "docs_per_s": 89210,
+ "index_cpu_us_per_doc": 37.12,
+ "store_before_merge_mib": 719.9,
+ "merge_s": 12.1,
+ "merge_cpu_s": 17.1,
+ "store_after_merge_mib": 719.9,
+ "files_mib": {
+  "doc": 118.51,
+  "dvd": 64.05,
+  "dvm": 0.0,
+  "dvs": 0.05,
+  "fdm": 0.0,
+  "fdt": 380.14,
+  "fdx": 0.08,
+  "fnm": 0.0,
+  "kdd": 46.33,
+  "kdi": 0.18,
+  "kdm": 0.0,
+  "lock": 0.0,
+  "nvd": 6.16,
+  "nvm": 0.0,
+  "pos": 49.59,
+  "psm": 0.0,
+  "segments_9": 0.0,
+  "si": 0.0,
+  "tim": 51.44,
+  "tip": 2.28,
+  "tmd": 0.0
+ },
+ "index_dir_mib": 718.8,
+ "segments": 1,
+ "queries": {
+  "term": {
+   "took_ms_median": 2.0,
+   "took_ms_p90": 4,
+   "digest": "48a683566d2f",
+   "total": 10000
+  },
+  "host_24h": {
+   "took_ms_median": 2.0,
+   "took_ms_p90": 4,
+   "digest": "b9d29b430f05",
+   "total": 10000
+  },
+  "phrase": {
+   "took_ms_median": 3.0,
+   "took_ms_p90": 5,
+   "digest": "c32501b63fca",
+   "total": 10000
+  },
+  "newest100": {
+   "took_ms_median": 7.0,
+   "took_ms_p90": 11,
+   "digest": "d11204bd8ca1",
+   "total": 10000
+  },
+  "timechart_7d": {
+   "took_ms_median": 4.0,
+   "took_ms_p90": 6,
+   "digest": "9bd1f9c1c17b",
+   "total": 10000
+  },
+  "top_hosts": {
+   "took_ms_median": 8.5,
+   "took_ms_p90": 12,
+   "digest": "c8774e46f4c7",
+   "total": 10000
+  },
+  "seq_no_range": {
+   "took_ms_median": 1.0,
+   "took_ms_p90": 1,
+   "digest": "d7f9e61e955d",
+   "total": 100000
+  },
+  "seq_no_term": {
+   "took_ms_median": 1.0,
+   "took_ms_p90": 1,
+   "digest": "5ec38b898f98",
+   "total": 1
+  },
+  "seq_no_terms": {
+   "took_ms_median": 1.0,
+   "took_ms_p90": 2,
+   "digest": "b82fc4b98441",
+   "total": 4
+  },
+  "fetch_seq_no": {
+   "took_ms_median": 15.5,
+   "took_ms_p90": 17,
+   "digest": "f765d2194aa6",
+   "total": 10000,
+   "seq_no_present": 100
+  }
+ }
+}
