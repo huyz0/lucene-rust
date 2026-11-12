@@ -50,7 +50,7 @@ import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.search.lookup.SearchLookup;
 
 /**
- * {@code rust_wildcard}: OpenSearch's {@code wildcard} field, kept as one {@code RustSubstring}
+ * {@code compact_wildcard}: OpenSearch's {@code wildcard} field, kept as one {@code Substring90}
  * BINARY doc value per document instead of a trigram postings field beside a {@code SORTED_SET} copy
  * of the value. Under the Rust engine the value goes into LZ4 blocks of 32 documents indexed by the
  * trigrams they hold ({@code lucene-codecs/src/substring.rs}): about half the disk of a {@code
@@ -69,13 +69,13 @@ import org.opensearch.search.lookup.SearchLookup;
  * {@code range} are refused, as there.
  */
 public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
-    public static final String CONTENT_TYPE = "rust_wildcard";
+    public static final String CONTENT_TYPE = "compact_wildcard";
 
     /**
-     * The field attribute that routes the field to the {@code RustSubstring} doc-values format;
+     * The field attribute that routes the field to the {@code Substring90} doc-values format;
      * {@code SUBSTRING_ATTRIBUTE} in {@code engine_writer.rs}. Its value is the block shift.
      */
-    public static final String SUBSTRING_ATTRIBUTE = "lucene_rust.substring";
+    public static final String SUBSTRING_ATTRIBUTE = "accelerated.substring";
     /** {@code DEFAULT_DEFAULT_BLOCK_SHIFT} in {@code substring.rs}: 32 documents per block. */
     public static final int DEFAULT_BLOCK_SHIFT = 5;
 
@@ -85,7 +85,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
         return (RustWildcardFieldMapper) in;
     }
 
-    /** The doc-values field type of every {@code rust_wildcard} value. */
+    /** The doc-values field type of every {@code compact_wildcard} value. */
     static final FieldType VALUE_TYPE = new FieldType();
 
     static {
@@ -96,7 +96,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
         VALUE_TYPE.freeze();
     }
 
-    /** The doc value a {@code rust_wildcard} field indexes for {@code value}. */
+    /** The doc value a {@code compact_wildcard} field indexes for {@code value}. */
     public static Field valueField(String name, String value) {
         return new Field(name, new BytesRef(value), VALUE_TYPE);
     }

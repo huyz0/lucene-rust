@@ -331,7 +331,7 @@ pub enum Error {
     /// share one `Error` type, the way they share one on-disk format family.
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
-    /// The IVF index of a `LuceneRustIvfVectorsFormat` group.
+    /// The IVF index of a `IvfVectorsFormat` group.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
     #[error(transparent)]
@@ -1017,8 +1017,8 @@ impl SegmentFormat {
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
             // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`;
-            // `.ivm`/`.ivp`/`.ivv`: `LuceneRustIvfVectorsFormat`'s IVF index;
-            // `.vqm`/`.vqd`: `LuceneRustHnswQuantizedVectorsFormat`'s codes.
+            // `.ivm`/`.ivp`/`.ivv`: `IvfVectorsFormat`'s IVF index;
+            // `.vqm`/`.vqd`: `HnswQuantizedVectorsFormat`'s codes.
             SegmentFormat::KnnVectors => &[
                 "vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb", "ivm", "ivp", "ivv",
                 "vqm", "vqd",
@@ -4519,7 +4519,7 @@ pub struct VectorGroup<'a> {
     /// group -- the one reader `Lucene104ScalarQuantizedVectorsWriter
     /// .getCentroid` recognises, so the only centroids a merge reuses.
     pub flat_quantized: Option<&'a scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
-    /// The IVF files of a `LuceneRustIvfVectorsFormat` group, whose
+    /// The IVF files of a `IvfVectorsFormat` group, whose
     /// clusters a merge into that format reuses.
     pub ivf: Option<&'a crate::ivf_vectors::IvfInputs>,
 }

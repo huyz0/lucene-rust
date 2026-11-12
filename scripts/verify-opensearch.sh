@@ -13,7 +13,7 @@
 #
 # With --engine the plugin node serves every index -- system indices and
 # every index the YAML suites create included -- with the Rust engine
-# (lucene_rust.engine.default: true), and the e2e stage is
+# (indices.engine.accelerated.default: true), and the e2e stage is
 # opensearch-plugin/e2e/verify_engine.py: the Rust engine against OpenSearch's
 # own, operation for operation, through restarts, SIGKILL, a writer panic and
 # a tripped breaker.
@@ -63,7 +63,7 @@ docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 # past the flood stage, and a node refusing to create indices tests nothing.
 NODE_ENV=()
 if [[ $ENGINE == 1 ]]; then
-    NODE_ENV=(-e lucene_rust.engine.default=true)
+    NODE_ENV=(-e indices.engine.accelerated.default=true)
 fi
 start_node() { # name port image [docker-run args...]
     docker rm -f "$1" >/dev/null 2>&1 || true
@@ -139,7 +139,7 @@ if [[ $YAML == 1 && $status == 0 ]]; then
         echo "verify-opensearch: the YAML suites fail differently with the plugin" >&2
         status=1
     fi
-    if ! grep -q '"native_errors":0' <<<"$stats" || grep -q '"native_queries":0' <<<"$stats"; then
+    if ! grep -q '"accelerated_errors":0' <<<"$stats" || grep -q '"accelerated_queries":0' <<<"$stats"; then
         echo "verify-opensearch: native errors during the YAML suites, or nothing ran native" >&2
         status=1
     fi

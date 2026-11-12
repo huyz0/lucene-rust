@@ -1,4 +1,4 @@
-//! Float vectors in `LuceneRustIvfVectorsFormat`: flushed and merged
+//! Float vectors in `IvfVectorsFormat`: flushed and merged
 //! segments carry an IVF index beside their raw vectors, and KNN searches
 //! probe it, with deletions, filters and a forced merge that reuses the
 //! largest segment's clusters, checked against an exhaustive scan.
@@ -197,9 +197,10 @@ fn flushed_segments_are_searched_through_their_ivf_index() {
             .iter()
             .find(|f| f.name == "v")
             .unwrap();
-        assert!(field.attributes.iter().any(|(k, v)| {
-            k == "PerFieldKnnVectorsFormat.format" && v == "LuceneRustIvfVectorsFormat"
-        }));
+        assert!(field
+            .attributes
+            .iter()
+            .any(|(k, v)| { k == "PerFieldKnnVectorsFormat.format" && v == "IvfVectorsFormat" }));
         let index = seg.ivf_for(field.number).unwrap().expect("an IVF index");
         assert!(index.field(field.number).unwrap().clusters() > 1);
     }

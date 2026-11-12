@@ -30,8 +30,8 @@ DOCS = 3000
 # _source derived from doc values (where ignore_above, copy_to and text fields have no place).
 VARIANTS = (
     ("opensearch engine", {}),
-    ("rust engine", {"index.lucene_rust.engine": True}),
-    ("derived source", {"index.lucene_rust.engine": True, "index.derived_source.enabled": True}),
+    ("rust engine", {"index.engine.accelerated": True}),
+    ("derived source", {"index.engine.accelerated": True, "index.derived_source.enabled": True}),
 )
 
 
@@ -273,8 +273,8 @@ def run_variant(req, check, stats, label, settings):
             except RuntimeError as e:
                 resp = {"error": str(e)[:300]}
             after = stats()
-            ran[f] = after["native_queries"] - before["native_queries"]
-            errors = after["native_errors"] - before["native_errors"]
+            ran[f] = after["accelerated_queries"] - before["accelerated_queries"]
+            errors = after["accelerated_errors"] - before["accelerated_errors"]
             check(errors == 0, f"hex_id [{name}] {f}: {errors} native errors")
             got[f] = resp
         if "error" in got["k"] or "error" in got["h"]:

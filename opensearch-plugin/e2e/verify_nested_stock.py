@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Nested indexes on a plugin node against a stock OpenSearch node.
 
-  * BP reorder: a nested index with index.lucene_rust.bp_reorder.* on is force-merged on the
+  * BP reorder: a nested index with index.merge.reorder.* on is force-merged on the
     plugin node; its documents are renumbered (the root documents' `_doc` order differs from
     stock's insertion order), and every nested query finds and scores the same hits as stock.
-  * Realtime: a nested index with index.lucene_rust.realtime_search and no refresh answers
+  * Realtime: a nested index with index.search.realtime.enabled and no refresh answers
     nested queries with the documents indexed before each search -- the same hits as a stock
     index refreshed after every bulk -- natively (the plugin's live searches count them).
 
@@ -101,10 +101,10 @@ def order(req, index):
 def bp(plugin, stock):
     index = "nbp"
     items = docs(5, 3000, "d")
-    for req, extra in ((plugin, {"index.lucene_rust.bp_reorder.enabled": True,
-                                 "index.lucene_rust.bp_reorder.min_doc_freq": 2,
-                                 "index.lucene_rust.bp_reorder.min_partition_size": 4,
-                                 "index.lucene_rust.bp_reorder.min_merge_docs": 1}), (stock, {})):
+    for req, extra in ((plugin, {"index.merge.reorder.enabled": True,
+                                 "index.merge.reorder.min_doc_freq": 2,
+                                 "index.merge.reorder.min_partition_size": 4,
+                                 "index.merge.reorder.min_merge_docs": 1}), (stock, {})):
         req("DELETE", f"/{index}")
         req("PUT", f"/{index}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0,
                                               "refresh_interval": -1, **extra}, "mappings": MAPPING})
@@ -123,8 +123,8 @@ def bp(plugin, stock):
 
 def realtime(plugin, stock):
     index = "nrt"
-    for req, extra in ((plugin, {"index.lucene_rust.realtime_search": True,
-                                 "index.lucene_rust.realtime_max_staleness": "0ms"}), (stock, {})):
+    for req, extra in ((plugin, {"index.search.realtime.enabled": True,
+                                 "index.search.realtime.max_staleness": "0ms"}), (stock, {})):
         req("DELETE", f"/{index}")
         req("PUT", f"/{index}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0,
                                               "refresh_interval": -1, **extra}, "mappings": MAPPING})

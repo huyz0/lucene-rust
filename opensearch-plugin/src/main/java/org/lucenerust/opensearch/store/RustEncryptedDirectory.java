@@ -18,7 +18,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.lucenerust.opensearch.NativeBridge;
 
 /**
- * The {@code rust_encrypted} store's directory: every file is encrypted at rest in the LRSE format
+ * The {@code encrypted} store's directory: every file is encrypted at rest in the LRSE format
  * ({@link Lrse}), with data keys from a {@link KeySource} (a KMS, for BYOK).
  *
  * <p>The native engine reads and writes the same shard directory itself, so creating this directory

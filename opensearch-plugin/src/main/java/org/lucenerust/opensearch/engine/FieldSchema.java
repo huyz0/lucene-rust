@@ -169,10 +169,10 @@ final class FieldSchema {
      */
     void checkSupported() {
         if (storeTermVectors) {
-            throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index term vectors");
+            throw new IllegalArgumentException("field [" + name + "]: the accelerated engine does not index term vectors");
         }
         if (indexOptions == IndexOptions.DOCS_AND_CUSTOM_FREQS) {
-            throw new IllegalArgumentException("field [" + name + "]: the Rust engine does not index DOCS_AND_CUSTOM_FREQS");
+            throw new IllegalArgumentException("field [" + name + "]: the accelerated engine does not index DOCS_AND_CUSTOM_FREQS");
         }
     }
 

@@ -791,7 +791,7 @@ fn decode_field(blob: &[u8]) -> Result<(FieldInfo, Option<KnnVectorsFormat>), Ff
 /// chose for a vector field ([`parse_vectors_format`]), kept in the
 /// segments' `FieldInfos` so a writer reopened on the index merges the field
 /// in the same format before any document registers it again.
-pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "lucene_rust.knn_format";
+pub(crate) const VECTORS_FORMAT_ATTRIBUTE: &str = "accelerated.vectors_format";
 
 /// A [`VECTORS_FORMAT_ATTRIBUTE`] value: `hnsw:<max_conn>:<beam_width>`,
 /// `hnsw_hamming:<max_conn>:<beam_width>`, `hnsw_half:<max_conn>:<beam_width>`,
@@ -835,7 +835,7 @@ pub(crate) fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
 /// [`lucene_search::derived_source::DERIVED_VECTOR_FIELDS`] or
 /// [`lucene_search::derived_source::NESTED_DERIVED_VECTOR_FIELDS`], so a reader (the plugin's or
 /// stock k-NN's) puts the vector back.
-pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "lucene_rust.derived_source";
+pub(crate) const DERIVED_SOURCE_ATTRIBUTE: &str = "accelerated.derived_source";
 
 /// The `.si` list that names `info` when it carries [`DERIVED_SOURCE_ATTRIBUTE`].
 pub(crate) fn derived_source_list(info: &FieldInfo) -> Option<&'static str> {
@@ -869,13 +869,13 @@ fn derived_source_attributes(writer: &mut IndexWriter<'_>) {
     }
 }
 
-/// The field attribute of a `rust_wildcard` field: its BINARY doc values are
-/// written in the `RustSubstring` format, in blocks of `2^value` documents
+/// The field attribute of a `compact_wildcard` field: its BINARY doc values are
+/// written in the `Substring90` format, in blocks of `2^value` documents
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_substring`]).
 /// Kept in the segments' `FieldInfos`, so a writer reopened on the index
 /// routes the field to the format before it merges a segment, and a merge
 /// never rewrites the field as plain BINARY.
-pub(crate) const SUBSTRING_ATTRIBUTE: &str = "lucene_rust.substring";
+pub(crate) const SUBSTRING_ATTRIBUTE: &str = "accelerated.substring";
 
 /// The doc-values format [`SUBSTRING_ATTRIBUTE`] names on `info`, if any.
 fn substring_format(
@@ -889,8 +889,8 @@ fn substring_format(
     Some(lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_substring(shift))
 }
 
-/// Routes every `rust_wildcard` field of `writer`'s existing segments to the
-/// `RustSubstring` format their [`SUBSTRING_ATTRIBUTE`] names.
+/// Routes every `compact_wildcard` field of `writer`'s existing segments to the
+/// `Substring90` format their [`SUBSTRING_ATTRIBUTE`] names.
 fn restore_substring_formats(writer: &mut IndexWriter<'_>, fields: &[FieldInfo]) {
     for f in fields {
         if let Some(format) = substring_format(f) {
@@ -929,7 +929,7 @@ fn restore_vectors_formats(writer: &mut IndexWriter<'_>, fields: &[FieldInfo]) {
 /// k-NN's `KNN9120HnswBinaryVectorsFormat(max_conn, beam_width)` (byte
 /// fields only; recorded as `KNN990HnswBinaryVectorsFormat`) or `5` k-NN's
 /// `KNN1040HnswHalfFloatVectorsFormat(max_conn, beam_width)` (float fields
-/// only) or `6` `LuceneRustIvfVectorsFormat(target_cluster_size,
+/// only) or `6` `IvfVectorsFormat(target_cluster_size,
 /// rerank_encoding, quantizer)`; kinds `1`, `2`, `4` and `5` are followed by `i32 max_conn,
 /// i32 beam_width`, kinds `2` and `3` by `u8 scalar encoding`
 /// (`ScalarEncoding.getWireNumber`), kind `6` by `i32 target_cluster_size, u8
@@ -1205,7 +1205,7 @@ pub const OPEN_SPARSE: u8 = 2;
 /// (`crate::live`).
 pub const OPEN_LIVE_SEARCH: u8 = 4;
 /// [`ffi_engine_writer_open`]'s flag for
-/// `index.lucene_rust.stored_fields.merge_lz4_high_compression`: merges write
+/// `index.codec.stored_fields.recompress_on_merge`: merges write
 /// `BEST_SPEED` stored fields with the high-compression LZ4 match finder,
 /// which stock Lucene reads
 /// ([`IndexWriter::set_merge_lz4_high_compression`]).
@@ -1220,20 +1220,20 @@ pub(crate) const KNN_CODEC: &str = "KNN1040Codec";
 /// The `.si` attribute naming the codec whose stored fields a k-NN segment holds
 /// (`KNN10010DerivedSourceStoredFieldsFormat.KNN_DELEGATE_CODEC_NAME`).
 pub(crate) const KNN_DELEGATE_CODEC_ATTRIBUTE: &str = "knn_delegate_stored_fields_codec_key";
-/// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.zstd_terms`: new
-/// segments write every field's terms in the `RustZstd104` postings format,
+/// [`ffi_engine_writer_open`]'s flag for `index.codec.terms_compression: zstd`: new
+/// segments write every field's terms in the `ZstdTerms104` postings format,
 /// whose term blocks are zstd-compressed
 /// ([`lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd`]).
 pub const OPEN_ZSTD_TERMS: u8 = 16;
 /// The zstd level of [`OPEN_ZSTD_TERMS`]' term blocks. Blocks decode at the
 /// same speed whatever the level; higher ones only write slower.
 const ZSTD_TERMS_LEVEL: i32 = 3;
-/// [`ffi_engine_writer_open`]'s flag for `index.lucene_rust.adaptive_doc_values`:
-/// new segments write their doc values in the `RustAdaptive` format
+/// [`ffi_engine_writer_open`]'s flag for `index.codec.adaptive_doc_values`:
+/// new segments write their doc values in the `Adaptive90` format
 /// ([`lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive`]).
 pub const OPEN_ADAPTIVE_DOC_VALUES: u8 = 32;
 /// [`ffi_engine_writer_open`]'s flag for an index with a partition field
-/// (`index.lucene_rust.partition_field`): every segment holds one partition
+/// (`index.segment_partition.field`): every segment holds one partition
 /// and records it, and merges never mix partitions
 /// ([`lucene_index::index_writer::SegmentPartitioning::opensearch`]).
 pub const OPEN_PARTITIONED: u8 = 64;
@@ -1249,7 +1249,7 @@ const PARTITIONED_SLOTS: usize = 1024;
 /// allows the [`OP_PANIC`] operation; [`OPEN_SPARSE`] writes the segments of
 /// an `index.sparse` index ([`lucene_sparse::SparseCodec`]);
 /// [`OPEN_LIVE_SEARCH`] keeps what a search of the buffers reads;
-/// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `RustAdaptive`
+/// [`OPEN_ADAPTIVE_DOC_VALUES`] writes doc values in the `Adaptive90`
 /// format; [`OPEN_ZSTD_TERMS`] writes terms dictionaries with zstd blocks;
 /// [`OPEN_PARTITIONED`] keeps partitions in segments of their own;
 /// [`OPEN_MERGE_LZ4_HC`] has merges compress stored fields harder.
@@ -1304,8 +1304,8 @@ pub const STORED_FIELDS_BEST_COMPRESSION: u8 = 1;
 pub const STORED_FIELDS_ZSTD: u8 = 2;
 /// OpenSearch custom-codecs' `ZSTDNODICT104` (`index.codec: zstd_no_dict`).
 pub const STORED_FIELDS_ZSTD_NO_DICT: u8 = 3;
-/// The Rust engine's paged zstd stored fields, `LuceneRustZstdPaged104`
-/// (`index.lucene_rust.stored_fields.paged_zstd`): 16 KiB chunks packed into
+/// The Rust engine's paged zstd stored fields, `PagedZstd104`
+/// (`index.codec.stored_fields.page_aligned`): 16 KiB chunks packed into
 /// 16 KiB pages, with a dictionary trained at large merges.
 pub const STORED_FIELDS_ZSTD_PAGED: u8 = 4;
 
@@ -1362,7 +1362,7 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
         // OpenSearch writes with -- maps them too. Segment files are written
         // once and only deleted (never truncated) once unreferenced, which is
         // the condition mapping needs.
-        // A `rust_encrypted` shard's path is bound to an encrypting directory
+        // A `encrypted` shard's path is bound to an encrypting directory
         // over the mapping (`store.rs`).
         let dir: Box<dyn Directory> = crate::store::shard_directory(path).map_err(|e| {
             set_last_error(format!("opening the shard directory [{path}]: {e}"));
@@ -2613,7 +2613,7 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
 }
 
 /// IVF fields' vectors clustered per partition of the index sort's first
-/// field at flush and merge (`index.lucene_rust.knn.ivf_partition_clusters`):
+/// field at flush and merge (`index.knn.ivf.partition_min_vectors`):
 /// each partition of at least `min_vectors` vectors on its own, the smaller
 /// ones pooled, so a search filtered to one partition probes only its
 /// clusters. `0` (the default) clusters each field as a whole; no effect
@@ -2643,7 +2643,7 @@ pub extern "C" fn ffi_engine_writer_set_ivf_partition_clusters(
 }
 
 /// `BPReorderingMergePolicy` around the shard's merge policy
-/// (`index.lucene_rust.bp_reorder.*`), or off when `enabled == 0`: merges of
+/// (`index.merge.reorder.*`), or off when `enabled == 0`: merges of
 /// at least `max(min_merge_docs, min_merge_ratio * the biggest segment's
 /// maxDoc)` live documents, and every forced merge, renumber their documents
 /// with `BPIndexReorderer` so documents sharing terms sit together. The
@@ -3166,12 +3166,7 @@ mod tests {
                 "ZSTDNODICT104",
                 "ZSTD_NO_DICT",
             ),
-            (
-                STORED_FIELDS_ZSTD_PAGED,
-                3,
-                "LuceneRustZstdPaged104",
-                "ZSTD_PAGED",
-            ),
+            (STORED_FIELDS_ZSTD_PAGED, 3, "PagedZstd104", "ZSTD_PAGED"),
         ] {
             let tmp = empty_index("engine-writer-codec");
             let path = tmp.path().to_str().unwrap();
@@ -3295,7 +3290,7 @@ mod tests {
         }
     }
 
-    /// [`OPEN_ADAPTIVE_DOC_VALUES`]: numeric doc values land in `RustAdaptive`
+    /// [`OPEN_ADAPTIVE_DOC_VALUES`]: numeric doc values land in `Adaptive90`
     /// files, read back value for value, survive a merge, and pass
     /// `CheckIndex`.
     #[test]
@@ -3350,7 +3345,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         assert!(
-            names.iter().any(|n| n.contains("_RustAdaptive_0.dvd")),
+            names.iter().any(|n| n.contains("_Adaptive90_0.dvd")),
             "{names:?}"
         );
         assert!(
@@ -3369,7 +3364,7 @@ mod tests {
         check(&tmp);
     }
 
-    /// [`OPEN_ZSTD_TERMS`]: every postings field lands in `RustZstd104`, a
+    /// [`OPEN_ZSTD_TERMS`]: every postings field lands in `ZstdTerms104`, a
     /// term lookup finds each document, and a forced merge keeps the format.
     #[test]
     fn a_zstd_terms_writer_writes_rust_zstd_postings() {
@@ -3414,7 +3409,7 @@ mod tests {
         assert_eq!(ids_found(&tmp), n as usize);
         let names = files(&tmp);
         assert!(
-            names.iter().any(|n| n.ends_with("_RustZstd104_0.tim")),
+            names.iter().any(|n| n.ends_with("_ZstdTerms104_0.tim")),
             "{names:?}"
         );
         assert!(
@@ -3834,7 +3829,7 @@ mod tests {
             .collect()
     }
 
-    /// `index.lucene_rust.bp_reorder.*`: a forced merge renumbers the
+    /// `index.merge.reorder.*`: a forced merge renumbers the
     /// documents so the ones sharing terms sit together, and records it in
     /// the merged segment's diagnostics; turned off, a forced merge keeps
     /// the documents' order again.
@@ -7939,8 +7934,8 @@ mod tests {
         ffi_engine_writer_close(h);
     }
 
-    /// **A `rust_wildcard` field keeps its format.** A field registered with
-    /// [`SUBSTRING_ATTRIBUTE`] flushes in the `RustSubstring` format, and a
+    /// **A `compact_wildcard` field keeps its format.** A field registered with
+    /// [`SUBSTRING_ATTRIBUTE`] flushes in the `Substring90` format, and a
     /// writer reopened on the index -- which no document has registered the
     /// field with yet -- force-merges it in that format too, so the merged
     /// segment keeps its gram index; a substring search finds the same
@@ -8000,7 +7995,7 @@ mod tests {
         let substring_files = |names: &[String]| {
             names
                 .iter()
-                .filter(|n| n.contains("RustSubstring") && n.ends_with(".dvd"))
+                .filter(|n| n.contains("Substring90") && n.ends_with(".dvd"))
                 .count()
         };
         let hits = || -> usize {
@@ -8037,8 +8032,8 @@ mod tests {
         assert!(
             after
                 .iter()
-                .any(|n| n.starts_with(&format!("{merged}_RustSubstring")) && n.ends_with(".dvd")),
-            "the merged segment {merged} lost the RustSubstring format: {after:?}"
+                .any(|n| n.starts_with(&format!("{merged}_Substring90")) && n.ends_with(".dvd")),
+            "the merged segment {merged} lost the Substring90 format: {after:?}"
         );
         assert_eq!(hits(), 18);
     }
