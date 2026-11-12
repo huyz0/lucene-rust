@@ -124,6 +124,19 @@ pub trait VectorScorer {
     /// stalling one at a time. A hint only; the default does nothing.
     fn prefetch(&self, _nodes: &[i32]) {}
 
+    /// How many ordinals an exhaustive scan should read ahead at a time
+    /// ([`Self::read_ahead`]), or 0 when this scorer has nothing to read
+    /// ahead (the default).
+    fn read_ahead_span(&self) -> usize {
+        0
+    }
+
+    /// Starts reading the vectors of ordinals `from..to` in, ahead of an
+    /// exhaustive scan through them in order. A file advised random access
+    /// reads one page per fault; this keeps a sequential scan to large
+    /// reads. A hint only; the default does nothing.
+    fn read_ahead(&self, _from: i32, _to: i32) {}
+
     /// Port of `RandomVectorScorer.bulkScore`: fills `scores` and returns the
     /// maximum, or `-inf` for an empty batch. The default is Java's default --
     /// a plain loop; a scorer with a genuinely vectorised batch kernel may

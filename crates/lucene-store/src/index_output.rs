@@ -593,26 +593,20 @@ impl IndexOutput for FsIndexOutput {
     }
 }
 
-/// Port of `Directory.sync(Collection<String>)`: fsyncs every named file's
-/// contents (Lucene's actual durability contract — a new segment's files
-/// must be fsynced before a commit file references them), then fsyncs the
-/// containing directory itself so the new directory entries survive a crash
-/// too (the same belt-and-suspenders `FSDirectory.sync` does on platforms
-/// that support directory fsync).
+/// Port of `FSDirectory.sync(Collection<String>)`: fsyncs every named
+/// file's contents (Lucene's durability contract: a new segment's files
+/// must be fsynced before a commit file references them). Like Java's, it
+/// leaves the directory itself alone: the names become durable at
+/// [`sync_meta_data`], which a commit runs once, after the rename that
+/// publishes `segments_N`, and which persists every entry created before
+/// it. Fsyncing the directory here as well cost each commit two to three
+/// extra device flushes.
 pub(crate) fn sync(root: &Path, names: &[String]) -> Result<()> {
     for name in names {
         // Write access (never truncating): Windows refuses `FlushFileBuffers`
         // on a read-only handle, as Java's `FileChannel.open(path, WRITE)` implies.
         let file = OpenOptions::new().write(true).open(root.join(name))?;
         file.sync_all()?;
-    }
-    // Best-effort directory fsync so the new file names themselves survive a
-    // crash, not just their contents. Not all platforms support opening a
-    // directory this way; ignore failure the same way Java's FSDirectory
-    // treats this as an optional hardening step, not a correctness gate the
-    // file-content fsync above already provides.
-    if let Ok(dir) = File::open(root) {
-        let _ = dir.sync_all();
     }
     Ok(())
 }
