@@ -278,3 +278,28 @@ fn a_phrase_prefix_s_whole_terms_alone_do_not_highlight() {
     assert!(!h.is_noop());
     assert!(run(defaults(), &phrase_prefix(&[&["lazy"], &["z"]], 0), TEXT).is_empty());
 }
+
+#[test]
+fn a_phrase_in_a_visit_only_wrapper_highlights_as_its_terms() {
+    // stock's phrase helper skips a function_score: its phrase is two terms
+    let phrase = Clause::Phrase(PhraseQuery::new(
+        "body",
+        [b"lazy".to_vec(), b"dog".to_vec()],
+    ));
+    let wrapped = Clause::Extended(Box::new(
+        lucene_search::extended_query::ExtendedQuery::VisitOnly(Box::new(phrase)),
+    ));
+    let snippets = run(defaults(), &wrapped, TEXT);
+    assert!(
+        snippets.contains(
+            &"The quick brown fox jumps over the <em>lazy</em> <em>dog</em>.".to_string()
+        ),
+        "{snippets:?}"
+    );
+    assert!(
+        snippets
+            .iter()
+            .any(|s| s.contains("the <em>lazy</em> dogs")),
+        "{snippets:?}"
+    );
+}

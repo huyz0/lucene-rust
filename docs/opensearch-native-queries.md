@@ -274,15 +274,23 @@ trailing separators stripped), its no-match summary and its
 `max_analyzed_offset` errors. `e2e/highlight_matrix.py` compares the plugin
 and stock nodes over ten indices (offsets, term vectors, both, the
 `english`, `whitespace`, `stop`, synonym and n-gram analyzers, stored
-fields), 46 queries and 20 option sets. A `match_phrase_prefix` is
+fields), 61 queries (nested, script, geo, `intervals` and other queries read through their visit among them) and 21 option sets. A `match_phrase_prefix` is
 highlighted as stock's highlighter rewrites it: a span near of its terms
 with a prefix span for the last position (only the search itself still
 runs on Java).
 
+A query the highlighter's phrase helper does not support (a script, geo,
+`intervals`, `combined_fields`, `distance_feature`, `more_like_this`, a
+`function_score`) is read, as stock reads it, only through its `visit`:
+the Java side records what that visit does (the terms it consumes behind
+the field it asked to accept, its leaves, its sub-visitors and occurs, the
+queries it hands over whole) and sends the record (`NODE_VISITED`), which
+the native visitor replays. A `nested` query is read as its child query,
+as stock's phrase helper rewrites it.
+
 A field falls back to OpenSearch's highlighter (counted in the stats'
-`fallbacks`) when its query holds a class the encoder does not send
-(`highlight_<Class>`: `nested`, joins, scripts), a `function_score` around a phrase or span
-(`highlight_function_score_phrase`), a needed analyzer cannot be described
+`fallbacks`) when its query's visit matches terms by an automaton the
+encoder does not send (`highlight_<Class>`), a needed analyzer cannot be described
 (the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
 (`index.lucene_rust.highlight.enabled: false`).
 
@@ -306,6 +314,11 @@ the span it waits for between texts, so a span read to the end of one
 value delays the next value's (or next hit's) first cut: the plugin hands
 that state from one call to the next. A `FuzzyQuery` is sent as itself
 (`NODE_FUZZY`), as each term it expands to is weighted by its similarity.
+A query the extractor does not know whose rewrite keeps it (a script, geo,
+`intervals`, `distance_feature`, `terms_set`, `combined_fields`,
+`script_score`) is sent as its recorded visit, whose terms the extractor
+reads when it has none yet; one whose rewrite reads the index
+(`more_like_this`) falls back (`highlight_<Class>`).
 
 `e2e/highlight_matrix.py` runs every option set above as `type: plain`
 and seven of plain's own (fragmenters, sizes, score order, `html`), all

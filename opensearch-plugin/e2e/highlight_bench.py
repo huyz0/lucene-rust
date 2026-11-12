@@ -33,6 +33,9 @@ CASES = {
     "prefix": ({"prefix": {"body": "sea"}}, {"fields": {"body": {}}}),
     "phrase_prefix": ({"match_phrase_prefix": {"body": "quick br"}}, {"fields": {"body": {}}}),
     "all_fragments": ({"match": {"body": "fox"}}, {"fields": {"body": {"number_of_fragments": 0}}}),
+    # read through their visit
+    "script_filter": ({"bool": {"must": [{"match": {"body": "fox"}}], "filter": [{"script": {"script": "doc['num'].value > 300"}}]}}, {"fields": {"body": {}}}),
+    "nested": ({"bool": {"must": [{"match": {"body": "lazy"}}], "should": [{"nested": {"path": "comments", "query": {"match": {"comments.text": "fox"}}}}]}}, {"fields": {"body": {}}}),
 }
 # The plain highlighter re-analyzes every value whatever the index holds: one index is enough.
 PLAIN_CASES = {

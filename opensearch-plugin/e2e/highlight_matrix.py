@@ -67,6 +67,9 @@ def doc(rnd, i):
         "num": rnd.randint(0, 1000),
         "date": f"2026-{rnd.randint(1, 12):02d}-{rnd.randint(1, 28):02d}",
     }
+    extra = random.Random(i)  # its own stream, so the fields above stay as they were
+    d["comments"] = [{"text": sentence(extra)} for _ in range(extra.randint(0, 3))]
+    d["loc"] = {"lat": extra.uniform(-60, 60), "lon": extra.uniform(-170, 170)}
     if i % 11 == 0:
         d["body"] = ""  # empty value
     if i % 13 == 0:
@@ -106,6 +109,8 @@ def mapping(body):
             "kw": {"type": "keyword"},
             "num": {"type": "integer"},
             "date": {"type": "date"},
+            "comments": {"type": "nested", "properties": {"text": {"type": "text"}}},
+            "loc": {"type": "geo_point"},
         }
     }
 
@@ -222,6 +227,21 @@ QUERIES = {
     "phrase_prefix_and_term": {"bool": {"must": [{"match_phrase_prefix": {"body": "lazy d"}}], "should": [{"match": {"body": "gold"}}]}},
     "phrase_prefix_multi_match": {"multi_match": {"query": "lazy do", "fields": ["body", "title"], "type": "phrase_prefix"}},
     "title_en": {"match": {"title.en": "jumping foxes"}},
+    "nested": {"nested": {"path": "comments", "query": {"match": {"comments.text": "fox dog"}}}},
+    "nested_and_body": {"bool": {"must": [{"match": {"body": "lazy"}}], "should": [{"nested": {"path": "comments", "query": {"match_phrase": {"comments.text": "quick brown"}}}}]}},
+    "script_filter": {"bool": {"must": [{"match": {"body": "fox"}}], "filter": [{"script": {"script": "doc['num'].value > 300"}}]}},
+    "script_score_phrase": {"script_score": {"query": {"match_phrase": {"body": "lazy dog"}}, "script": {"source": "_score * 2"}}},
+    "intervals": {"intervals": {"body": {"match": {"query": "quick fox", "max_gaps": 3}}}},
+    "combined_fields": {"combined_fields": {"query": "fox dog", "fields": ["body", "title"]}},
+    "match_bool_prefix": {"match_bool_prefix": {"body": "quick br"}},
+    "geo_filter": {"bool": {"must": [{"match": {"body": "lazy"}}], "filter": [{"geo_distance": {"distance": "3000km", "loc": {"lat": 10, "lon": 20}}}]}},
+    "more_like_this": {"more_like_this": {"fields": ["body"], "like": "quick brown fox jumps over the lazy dog", "min_term_freq": 1, "min_doc_freq": 1}},
+    "exists_filter": {"bool": {"must": [{"match": {"body": "gold"}}], "filter": [{"exists": {"field": "title"}}]}},
+    "ids_filter": {"bool": {"must": [{"match": {"body": "fox"}}], "filter": [{"ids": {"values": [str(i) for i in range(0, 3000, 3)]}}]}},
+    "terms_set": {"terms_set": {"body": {"terms": ["fox", "dog", "gold"], "minimum_should_match_script": {"source": "1"}}}},
+    "distance_feature": {"bool": {"must": [{"match": {"body": "fox"}}], "should": [{"distance_feature": {"field": "date", "pivot": "30d", "origin": "2026-06-01"}}]}},
+    "boosting": {"boosting": {"positive": {"match": {"body": "fox"}}, "negative": {"match": {"body": "dog"}}, "negative_boost": 0.5}},
+    "query_string_proximity": {"query_string": {"query": "\"quick fox\"~3 OR lazy", "default_field": "body"}},
 }
 
 OPTIONS = {
@@ -245,6 +265,7 @@ OPTIONS = {
     "max_offset": {"fields": {"body": {"max_analyzer_offset": 50}}},
     "unified_named": {"fields": {"body": {"type": "unified"}}},
     "title_en": {"fields": {"title.en": {}, "title": {}}},
+    "nested_field": {"fields": {"comments.text": {}, "body": {}}},
 }
 
 # The plain highlighter: each option set above as `type: plain`, and its own fragmenters.
@@ -291,6 +312,16 @@ def option_sets(index):
     return out
 
 
+# HL_QUERIES=a,b runs only those queries; HL_TRACE=1 prints each query's fallbacks.
+ONLY = [q for q in os.environ.get("HL_QUERIES", "").split(",") if q]
+TRACE = os.environ.get("HL_TRACE") == "1"
+
+
+def fallbacks():
+    stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
+    return {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k}
+
+
 def search(base, index, query, hl, size):
     body = {"query": query, "highlight": hl, "size": size, "sort": ["_score", {"num": "asc"}, "_doc"]}
     r = S.post(f"{base}/{index}/_search", json=body)
@@ -304,6 +335,9 @@ def check(size):
     rows = bad = 0
     for index in INDICES:
         for qn, q in QUERIES.items():
+            if ONLY and qn not in ONLY:
+                continue
+            before = fallbacks() if TRACE else None
             for on, o in option_sets(index).items():
                 rows += 1
                 a = search(PLUGIN, index, q, o, size)
@@ -319,6 +353,11 @@ def check(size):
                             break
                     else:
                         print(f"DIFF {index} {qn} {on}: {len(a)} vs {len(b)} hits")
+            if TRACE:
+                after = fallbacks()
+                delta = {k: v - before.get(k, 0) for k, v in after.items() if v != before.get(k, 0)}
+                if delta:
+                    print(f"FALLBACK {index} {qn} {delta}")
     stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
     print(f"{rows - bad}/{rows} rows identical")
     print("native_highlights", stats.get("native_highlights"), "native_errors", stats.get("native_errors"))

@@ -199,6 +199,9 @@ public final class QueryEncoder {
     /** {@code NODE_FUZZY} in {@code jvm_queries.rs}: a fuzzy query, for the {@code plain} highlighter. */
     private static final byte NODE_FUZZY = 53;
 
+    /** {@code NODE_VISIT_ONLY} in {@code jvm_queries.rs}: a function_score as the unified highlighter reads it. */
+    private static final byte NODE_VISIT_ONLY = 54;
+
     /** The exact classes {@link #encodeForHighlight} writes; besides these, any point range or set. */
     private static final java.util.Set<Class<?>> HIGHLIGHT_CLASSES = java.util.Set.of(
         TermQuery.class,
@@ -341,9 +344,211 @@ public final class QueryEncoder {
         return "";
     }
 
+    /** {@code NODE_VISITED} in {@code jvm_queries.rs}: what a query's visit does, for the unified highlighter. */
+    private static final byte NODE_VISITED = 55;
+    private static final byte EVENT_TERMS = 0;
+    private static final byte EVENT_LEAF = 1;
+    private static final byte EVENT_SUB = 2;
+    private static final byte EVENT_NODE = 3;
+
+    /** The classes Lucene's {@code WeightedSpanTermExtractor} (the phrase helper's) handles by type. */
+    private static boolean extractorKnows(Query q) {
+        return q instanceof BoostQuery
+            || q instanceof BooleanQuery
+            || q instanceof PhraseQuery
+            || q instanceof IndexOrDocValuesQuery
+            || q instanceof TermQuery
+            || q instanceof SynonymQuery
+            || q instanceof org.apache.lucene.queries.spans.SpanQuery
+            || q instanceof ConstantScoreQuery
+            || q instanceof org.apache.lucene.queries.CommonTermsQuery
+            || q instanceof DisjunctionMaxQuery
+            || q instanceof org.apache.lucene.search.MultiPhraseQuery
+            || q instanceof MatchAllDocsQuery
+            || q instanceof org.apache.lucene.queries.function.FunctionScoreQuery
+            || q instanceof MultiTermQuery
+            || q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery;
+    }
+
+    private static final org.apache.lucene.search.IndexSearcher EMPTY_SEARCHER = emptySearcher();
+
+    private static org.apache.lucene.search.IndexSearcher emptySearcher() {
+        try {
+            return new org.apache.lucene.search.IndexSearcher(new org.apache.lucene.index.MultiReader());
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Whether {@code q}'s rewrite returns the query itself: its class keeps {@code Query.rewrite},
+     * or a rewrite over no documents returns it (one that reads the reader's terms does not).
+     */
+    private static boolean keepsItselfOnRewrite(Query q) {
+        try {
+            if (q.getClass().getMethod("rewrite", org.apache.lucene.search.IndexSearcher.class).getDeclaringClass() == Query.class) {
+                return true;
+            }
+            return q.rewrite(EMPTY_SEARCHER) == q;
+        } catch (NoSuchMethodException | java.io.IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * What a query's {@code visit} does, recorded: the terms it consumes (behind the field it
+     * asked to accept last), its leaves, its sub-visitors with their occurs, and the queries it
+     * hands over whole (a multi-term query's automaton, a query this encoder writes).
+     */
+    private static final class Recorder extends QueryVisitor {
+        final java.util.List<Object[]> events = new java.util.ArrayList<>();
+        final java.util.Set<Query> handed;
+        String field;
+
+        Recorder(java.util.Set<Query> handed) {
+            this.handed = handed;
+        }
+
+        @Override
+        public boolean acceptField(String f) {
+            field = f;
+            return true;
+        }
+
+        private boolean handOver(Query query) {
+            if (query == null || (HIGHLIGHT_CLASSES.contains(query.getClass()) == false && query instanceof PointRangeQuery == false && query instanceof PointInSetQuery == false)) {
+                return false;
+            }
+            if (handed.add(query)) {
+                events.add(new Object[] { EVENT_NODE, query });
+            }
+            return true;
+        }
+
+        @Override
+        public void consumeTerms(Query query, Term... terms) {
+            if (handOver(query) == false) {
+                events.add(new Object[] { EVENT_TERMS, field, terms.clone() });
+            }
+            field = null;
+        }
+
+        @Override
+        public void consumeTermsMatching(Query query, String f, Supplier<ByteRunAutomaton> automaton) {
+            if (handOver(query) == false) {
+                events.add(new Object[] { EVENT_NODE, null });
+            }
+            field = null;
+        }
+
+        @Override
+        public void visitLeaf(Query query) {
+            if (handOver(query) == false) {
+                events.add(new Object[] { EVENT_LEAF, field });
+            }
+            field = null;
+        }
+
+        @Override
+        public QueryVisitor getSubVisitor(BooleanClause.Occur occur, Query parent) {
+            Recorder sub = new Recorder(handed);
+            events.add(new Object[] { EVENT_SUB, occur, sub });
+            return sub;
+        }
+    }
+
+    private static String visited(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        Recorder root = new Recorder(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+        try {
+            q.visit(root);
+        } catch (RuntimeException e) {
+            return "highlight_" + name(q);
+        }
+        out.write(NODE_VISITED);
+        String reason = writeRecord(root, q, out, fieldOk, depth + 1, nodes);
+        return reason == null ? "" : reason;
+    }
+
+    private static String writeRecord(Recorder r, Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (depth >= MAX_DEPTH) {
+            return "query_too_deep";
+        }
+        writeInt(out, r.events.size());
+        for (Object[] e : r.events) {
+            byte kind = (Byte) e[0];
+            out.write(kind);
+            switch (kind) {
+                case EVENT_TERMS -> {
+                    writeField(out, (String) e[1]);
+                    Term[] terms = (Term[]) e[2];
+                    nodes[0] += Math.max(1, terms.length);
+                    if (nodes[0] > MAX_NODES) {
+                        return "query_too_large";
+                    }
+                    writeInt(out, terms.length);
+                    for (Term t : terms) {
+                        writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
+                        writeBytes(out, t.bytes());
+                    }
+                }
+                case EVENT_LEAF -> writeField(out, (String) e[1]);
+                case EVENT_SUB -> {
+                    out.write(((BooleanClause.Occur) e[1]).ordinal());
+                    String reason = writeRecord((Recorder) e[2], q, out, fieldOk, depth + 1, nodes);
+                    if (reason != null) {
+                        return reason;
+                    }
+                }
+                default -> {
+                    if (e[1] == null) {
+                        // an automaton of a query this encoder cannot write
+                        return "highlight_" + name(q);
+                    }
+                    String reason = node((Query) e[1], out, fieldOk, depth + 1, nodes);
+                    if (reason != null) {
+                        return reason;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void writeField(ByteArrayOutputStream out, String field) {
+        if (field == null) {
+            out.write(0);
+        } else {
+            out.write(1);
+            writeBytes(out, field.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
     /** In highlight mode, {@code q} written as the highlighter sees it, or the reason it is not; null to encode it as usual. */
     private static String highlightNode(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
+        if (q instanceof org.opensearch.index.search.OpenSearchToParentBlockJoinQuery nested) {
+            // The unified highlighter's phrase helper reads it as its child query (stock's
+            // rewriteCustomQuery), its visit visits the child as MUST, which the highlighters'
+            // visitors pass through; the plain highlighter's extractor reads its child too.
+            String reason = node(nested.getChildQuery(), out, fieldOk, depth + 1, nodes);
+            return reason == null ? "" : reason;
+        }
+        if (q instanceof org.apache.lucene.queries.function.FunctionScoreQuery fs) {
+            // Both highlighters' extractors read its wrapped query, and its visit visits only that
+            // query, as MUST, which their visitors pass through.
+            String reason = node(fs.getWrappedQuery(), out, fieldOk, depth + 1, nodes);
+            return reason == null ? "" : reason;
+        }
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
+            if (PLAIN.get() == false && extractorKnows(q) == false) {
+                // The unified highlighter reads a query its phrase helper does not support only
+                // through its visit: what that visit does is sent instead.
+                return visited(q, out, fieldOk, depth, nodes);
+            }
+            if (PLAIN.get() && extractorKnows(q) == false && keepsItselfOnRewrite(q)) {
+                // The plain highlighter's extractor rewrites a query it does not know and, when
+                // the rewrite keeps it, reads the terms its visit consumes when it has none yet.
+                return visited(q, out, fieldOk, depth, nodes);
+            }
             return "highlight_" + name(q);
         }
         if (PLAIN.get() && q instanceof FuzzyQuery fq) {
@@ -360,8 +565,8 @@ public final class QueryEncoder {
             return reason == null ? "" : reason;
         }
         if (q instanceof org.opensearch.common.lucene.search.function.FunctionScoreQuery fs) {
-            // The highlighter's query visitor reads through it to its query, and its phrase
-            // helper does not know it (so a phrase in it highlights as its single terms).
+            // The unified highlighter's query visitor reads through it to its query, and its
+            // phrase helper does not know it (so a phrase in it highlights as its single terms).
             Query sub = fs.getSubQuery();
             if (PLAIN.get()) {
                 // CustomWeightedSpanTermExtractor reads its query with Lucene's extractor, which
@@ -370,7 +575,8 @@ public final class QueryEncoder {
                     return "highlight_function_score_nested";
                 }
             } else if (hasPositional(sub)) {
-                return "highlight_function_score_phrase";
+                // the phrase helper skips it: its phrases highlight as their terms
+                out.write(NODE_VISIT_ONLY);
             }
             String reason = node(sub, out, fieldOk, depth + 1, nodes);
             return reason == null ? "" : reason;

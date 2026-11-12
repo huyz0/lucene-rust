@@ -230,7 +230,9 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         if (LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
             return new Prepared(null, 0, "highlight_live_view");
         }
-        long handle = readers.peek(fieldContext.hitContext.topLevelReader());
+        // Opened here when the query phase did not (a query it ran on Lucene): the hits were
+        // searched on this reader, so later searches of it read through the same handle.
+        long handle = readers.acquire(fieldContext.hitContext.topLevelReader()).handle();
         if (handle == 0) {
             return new Prepared(null, 0, "highlight_reader");
         }
