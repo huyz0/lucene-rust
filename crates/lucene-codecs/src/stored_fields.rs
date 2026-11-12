@@ -659,33 +659,61 @@ impl<'d> StoredFieldsReader<'d> {
         if !lucene_store::is_prefetchable(self.fdt) {
             return Ok(());
         }
-        let docs_region = self.docs_region()?;
-        let mut ranges = Vec::with_capacity(docs.len());
+        let ranges: Vec<&[u8]> = self
+            .chunk_ranges(docs)?
+            .into_iter()
+            .filter_map(|r| self.fdt.get(r))
+            .collect();
+        Ok(lucene_store::prefetch(&ranges)?)
+    }
+
+    /// The `.fdt` byte range of the chunk holding each of `docs` (documents
+    /// outside the segment skipped), in the order given; a document in the
+    /// same chunk as the one before it adds no second range.
+    ///
+    /// # Errors
+    /// A corrupt `.fdx` index.
+    pub fn chunk_ranges(&self, docs: &[i32]) -> Result<Vec<std::ops::Range<usize>>> {
+        let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(docs.len());
         for &doc in docs {
-            if doc < 0 || doc >= self.max_doc {
-                continue;
-            }
-            let block = direct_monotonic::floor_index(
-                docs_region,
-                &self.docs_meta,
-                0,
-                self.num_chunks,
-                i64::from(doc),
-            )?;
-            let start = self.block_start_pointer(block)?;
-            let end = match block.checked_add(1) {
-                Some(next) if next < self.num_chunks => self.block_start_pointer(next)?,
-                _ => self.max_pointer,
-            };
-            let start = usize::try_from(start).unwrap_or(usize::MAX);
-            let end = usize::try_from(end)
-                .unwrap_or(0)
-                .max(start.saturating_add(1));
-            if let Some(range) = self.fdt.get(start..end.min(self.fdt.len())) {
-                ranges.push(range);
+            if let Some(range) = self.chunk_range(doc)? {
+                if ranges.last() != Some(&range) {
+                    ranges.push(range);
+                }
             }
         }
-        Ok(lucene_store::prefetch(&ranges)?)
+        Ok(ranges)
+    }
+
+    /// The `.fdt` byte range of the chunk holding `doc`; `None` for a
+    /// document outside the segment.
+    ///
+    /// # Errors
+    /// A corrupt `.fdx` index.
+    pub fn chunk_range(&self, doc: i32) -> Result<Option<std::ops::Range<usize>>> {
+        if doc < 0 || doc >= self.max_doc {
+            return Ok(None);
+        }
+        let block = direct_monotonic::floor_index(
+            self.docs_region()?,
+            &self.docs_meta,
+            0,
+            self.num_chunks,
+            i64::from(doc),
+        )?;
+        let start = self.block_start_pointer(block)?;
+        let end = match block.checked_add(1) {
+            Some(next) if next < self.num_chunks => self.block_start_pointer(next)?,
+            _ => self.max_pointer,
+        };
+        let start = usize::try_from(start)
+            .unwrap_or(usize::MAX)
+            .min(self.fdt.len());
+        let end = usize::try_from(end)
+            .unwrap_or(0)
+            .max(start.saturating_add(1))
+            .min(self.fdt.len());
+        Ok((start < end).then_some(start..end))
     }
 
     /// Reads the given document's stored fields.
@@ -4510,6 +4538,49 @@ mod tests {
                 "doc {i}"
             );
         }
+    }
+
+    /// Each document's chunk range is the chunk its bytes decode from: the
+    /// chunks tile the `.fdt` between its header and footer, a run of
+    /// documents in one chunk names it once, and documents outside the
+    /// segment name none.
+    #[test]
+    fn chunk_ranges_name_each_documents_chunk_once() {
+        const N: usize = BEST_SPEED_MAX_DOCS_PER_CHUNK * 2 + 37;
+        let docs: Vec<Document> = (0..N)
+            .map(|i| Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(format!("doc-{i}")),
+                }],
+            })
+            .collect();
+        let (fdt, fdx, fdm) = write_best_speed(&docs, &id_write(), "seg");
+        let reader = open(&fdt, &fdx, &fdm, &id_write(), "seg").unwrap();
+        let all: Vec<i32> = (0..N as i32).collect();
+        let ranges = reader.chunk_ranges(&all).unwrap();
+        assert_eq!(ranges.len(), 3);
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
+        assert!(ranges[2].end < fdt.len());
+        let cap = BEST_SPEED_MAX_DOCS_PER_CHUNK as i32;
+        assert_eq!(reader.chunk_range(0).unwrap(), Some(ranges[0].clone()));
+        assert_eq!(reader.chunk_range(cap).unwrap(), Some(ranges[1].clone()));
+        assert_eq!(
+            reader.chunk_range(N as i32 - 1).unwrap(),
+            Some(ranges[2].clone())
+        );
+        assert_eq!(reader.chunk_range(-1).unwrap(), None);
+        assert_eq!(reader.chunk_range(N as i32).unwrap(), None);
+        assert_eq!(
+            reader
+                .chunk_ranges(&[-5, 1, 2, cap + 1, N as i32 + 3])
+                .unwrap(),
+            vec![ranges[0].clone(), ranges[1].clone()]
+        );
+        // Bytes in memory have nothing to prefetch.
+        reader.prefetch(&all).unwrap();
     }
 
     #[test]
