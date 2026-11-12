@@ -345,6 +345,11 @@ public final class RustEngineSupport {
         breaker = b;
     }
 
+    /** The breaker the plugin registered, or null before OpenSearch hands it over. */
+    public static CircuitBreaker breaker() {
+        return breaker;
+    }
+
     /** Throws when the Rust writer cannot produce what this index is configured for. */
     static void checkSupported(EngineConfig config) {
         String reason = unsupported(config.getIndexSettings(), config.getIndexSort() != null);
