@@ -279,6 +279,22 @@ impl Eq for CompileCache {}
 /// used out first). Each is one automaton, typically a few kilobytes.
 const COMPILED_CACHE_ENTRIES: usize = 64;
 
+/// Bytes the compiled-pattern cache holds at most ([`CompiledDfa::ram_bytes`]):
+/// a determinized pattern can reach megabytes, and 64 of them would be
+/// memory no request accounts for. An automaton over a quarter of this is
+/// used and not kept.
+///
+/// [`CompiledDfa::ram_bytes`]: crate::automaton::CompiledDfa::ram_bytes
+const COMPILED_CACHE_BYTES: usize = if cfg!(test) { 256 << 10 } else { 16 << 20 };
+
+/// What an entry of the compiled-pattern cache holds.
+fn entry_bytes(entry: &CompiledEntry) -> usize {
+    entry
+        .0
+        .len()
+        .saturating_add(entry.1.as_ref().map_or(0, |d| d.ram_bytes()))
+}
+
 type CompiledEntry = (
     String,
     Option<std::sync::Arc<crate::automaton::CompiledDfa>>,
@@ -471,11 +487,18 @@ impl RegexpPattern {
                 if let Ok(mut cache) = compiled_cache().lock() {
                     // Another thread may have compiled the same pattern since
                     // the lookup above; keep one entry per pattern.
-                    if !cache.iter().any(|(s, _)| s == source) {
-                        if cache.len() >= COMPILED_CACHE_ENTRIES {
-                            cache.remove(0);
+                    let entry = (source.clone(), built.clone());
+                    let bytes = entry_bytes(&entry);
+                    if !cache.iter().any(|(s, _)| s == source) && bytes <= COMPILED_CACHE_BYTES / 4
+                    {
+                        let mut held: usize = cache.iter().map(entry_bytes).sum();
+                        while !cache.is_empty()
+                            && (cache.len() >= COMPILED_CACHE_ENTRIES
+                                || held.saturating_add(bytes) > COMPILED_CACHE_BYTES)
+                        {
+                            held = held.saturating_sub(entry_bytes(&cache.remove(0)));
                         }
-                        cache.push((source.clone(), built.clone()));
+                        cache.push(entry);
                     }
                 }
                 built
@@ -1778,6 +1801,31 @@ mod tests {
     /// **A stream of distinct patterns cannot grow the process-wide compiled
     /// cache past its bound** -- the regexp counterpart of the wildcard
     /// cache's test. Three times the bound, checked after each.
+    /// **Large automata cannot fill the compiled cache past its bytes**: each
+    /// pattern below determinizes to thousands of states.
+    #[test]
+    fn the_compiled_cache_stays_within_its_bytes() {
+        let mut largest = 0;
+        for i in 0..24 {
+            let p = RegexpPattern::parse(&format!("big{i}(a|b)*a(a|b){{10}}")).unwrap();
+            largest = largest.max(p.compiled().map_or(0, |d| d.ram_bytes()));
+            let held: usize = compiled_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(entry_bytes)
+                .sum();
+            assert!(
+                held <= COMPILED_CACHE_BYTES,
+                "pattern {i}: {held} bytes cached"
+            );
+        }
+        assert!(
+            largest > COMPILED_CACHE_BYTES / 64,
+            "{largest} bytes: not a large automaton"
+        );
+    }
+
     #[test]
     fn the_process_wide_compiled_cache_stays_bounded_under_distinct_patterns() {
         for i in 0..3 * COMPILED_CACHE_ENTRIES {

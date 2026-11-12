@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 148;
+    public static final int EXPECTED_ABI_VERSION = 153;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -52,6 +52,8 @@ public final class NativeBridge {
     public static final int MEMORY_LIMIT = 12;
     /** The request was cancelled while the native call ran ({@link #memoryScopeCancel}). */
     public static final int CANCELLED = 13;
+    /** An aggregation made more buckets than the request allows; the last error is the count. */
+    public static final int TOO_MANY_BUCKETS = 14;
 
     /** Query blob tags ({@code decode_query} in {@code jvm_reader.rs}). */
     public static final byte QUERY_TERM = 0;
