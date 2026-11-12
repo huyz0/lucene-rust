@@ -301,6 +301,30 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
     let (_, snippets) = run(h, &Req::new("offs", multi, 1), 0, D0);
     assert!(snippets[0].0.contains("<em>lazy</em> <em>dog</em>"));
     assert!(!snippets[0].0.contains("<em>brown</em>"));
+    let prefix = tree(|q| {
+        q.push(crate::jvm_queries::NODE_MULTI_PHRASE_PREFIX);
+        put_bytes(q, b"offs");
+        put_i32(q, 0);
+        put_i32(q, 50);
+        put_i32(q, 2);
+        put_i32(q, 0);
+        put_i32(q, 1);
+        put_bytes(q, b"lazy");
+        put_i32(q, 1);
+        put_i32(q, 1);
+        put_bytes(q, b"do");
+    });
+    let (_, snippets) = run(h, &Req::new("offs", prefix, 1), 0, D0);
+    assert!(snippets[0].0.contains("<em>lazy</em> <em>dog</em>"));
+    // a phrase prefix of no positions
+    let empty = tree(|q| {
+        q.push(crate::jvm_queries::NODE_MULTI_PHRASE_PREFIX);
+        put_bytes(q, b"offs");
+        put_i32(q, 0);
+        put_i32(q, 50);
+        put_i32(q, 0);
+    });
+    assert!(highlight(h, &Req::new("offs", empty, 1).bytes(), 0, 0, &utf16(D0)).is_err());
     for bad in [
         // no positions
         tree(|q| {
