@@ -379,6 +379,9 @@ while IFS= read -r rel; do
     deterministic=$((deterministic+1))
     if ! cmp -s "$a" "$c"; then
       echo "  MISMATCH (deterministic file differs from committed): $rel"
+      if grep -qI . "$c"; then  # a text file: show what changed
+        diff -u "$c" "$a" | head -40 | sed 's/^/    /' || true
+      fi
       mismatched=$((mismatched+1)); status=1
     fi
   else
