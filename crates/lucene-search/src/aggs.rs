@@ -137,26 +137,7 @@ impl Default for MetricState {
 impl MetricState {
     /// `CompensatedSum.add(value)`.
     fn add(&mut self, value: f64) {
-        // "If the value is Inf or NaN, just add it to the running tally."
-        if !value.is_finite() {
-            // Java's `value = v + value`, in Java's operand order, and the
-            // result canonicalised to Java's `Double.NaN`. The bits of a NaN
-            // this addition makes are not Java's to promise nor Rust's: x86
-            // gives `inf + -inf` the negative default NaN (`0xfff8...`),
-            // aarch64 the positive one, and with two NaN operands keeps
-            // whichever the optimiser put first -- so a release build
-            // differed from a debug one. OpenSearch only ever sees the value
-            // through `doubleToLongBits` (`StreamOutput.writeDouble`), which
-            // is Java's `Double.NaN`; so is this.
-            let sum = value + self.sum;
-            self.sum = if sum.is_nan() { JAVA_NAN } else { sum };
-        }
-        if self.sum.is_finite() {
-            let corrected = value + self.delta;
-            let updated = self.sum + corrected;
-            self.delta = corrected - (updated - self.sum);
-            self.sum = updated;
-        }
+        compensated_add(&mut self.sum, &mut self.delta, value);
     }
 
     /// A document with the one value `v`, keeping the parts in `N`.
@@ -177,21 +158,6 @@ impl MetricState {
         }
         if N & NEED_MAX != 0 {
             self.max_of_maxes = java_max(self.max_of_maxes, v);
-        }
-    }
-
-    /// A document's stored values, ascending, read as `kind`, keeping the
-    /// parts `needs` names (more is never wrong: an unrecognised mix keeps
-    /// every part), as the flat pass's fold does.
-    pub(crate) fn collect_needs(&mut self, needs: u8, kind: ValueKind, values: &[i64]) {
-        match needs {
-            NEED_MIN => self.many::<NEED_MIN>(kind, values),
-            NEED_MAX => self.many::<NEED_MAX>(kind, values),
-            NEED_COUNT => self.many::<NEED_COUNT>(kind, values),
-            n if n & !(NEED_COUNT | NEED_SUM) == 0 => {
-                self.many::<{ NEED_COUNT | NEED_SUM }>(kind, values)
-            }
-            _ => self.many::<NEED_ALL>(kind, values),
         }
     }
 
@@ -222,6 +188,198 @@ impl MetricState {
         }
         if N & NEED_MAX != 0 {
             self.max_of_maxes = java_max(self.max_of_maxes, to_double(kind, last));
+        }
+    }
+}
+
+/// `CompensatedSum.add(value)` on its `value()` and `delta()`.
+#[inline]
+fn compensated_add(sum_ref: &mut f64, delta_ref: &mut f64, value: f64) {
+    let (mut sum, mut delta) = (*sum_ref, *delta_ref);
+    // "If the value is Inf or NaN, just add it to the running tally."
+    if !value.is_finite() {
+        // Java's `value = v + value`, in Java's operand order, and the
+        // result canonicalised to Java's `Double.NaN`. The bits of a NaN
+        // this addition makes are not Java's to promise nor Rust's: x86
+        // gives `inf + -inf` the negative default NaN (`0xfff8...`),
+        // aarch64 the positive one, and with two NaN operands keeps
+        // whichever the optimiser put first -- so a release build
+        // differed from a debug one. OpenSearch only ever sees the value
+        // through `doubleToLongBits` (`StreamOutput.writeDouble`), which
+        // is Java's `Double.NaN`; so is this.
+        let tally = value + sum;
+        sum = if tally.is_nan() { JAVA_NAN } else { tally };
+    }
+    if sum.is_finite() {
+        let corrected = value + delta;
+        let updated = sum + corrected;
+        delta = corrected - (updated - sum);
+        sum = updated;
+    }
+    *sum_ref = sum;
+    *delta_ref = delta;
+}
+
+/// One owning bucket's metric in the form a bucketed state keeps it: only
+/// the parts its node reads (`NEED_*`), read back as a [`MetricState`]
+/// whose other parts are their defaults.
+pub(crate) trait MetricSlot: Default + Clone {
+    /// The parts kept.
+    const NEEDS: u8;
+    /// A document with the one value `v`.
+    fn one(&mut self, v: f64);
+    /// A document's stored values, ascending, read as `kind`.
+    fn many(&mut self, kind: ValueKind, values: &[i64]);
+    /// A bound read from the points, for a `min` (`is_min`) or a `max`.
+    fn bound(&mut self, is_min: bool, v: f64);
+    /// The state as the result reads it.
+    fn state(&self) -> MetricState;
+}
+
+impl MetricSlot for MetricState {
+    const NEEDS: u8 = NEED_ALL;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        MetricState::one::<NEED_ALL>(self, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        MetricState::many::<NEED_ALL>(self, kind, values);
+    }
+    fn bound(&mut self, is_min: bool, v: f64) {
+        if is_min {
+            self.min_of_mins = java_min(self.min_of_mins, v);
+        } else {
+            self.max_of_maxes = java_max(self.max_of_maxes, v);
+        }
+    }
+    fn state(&self) -> MetricState {
+        *self
+    }
+}
+
+/// `value_count`, `sum` and `avg`: the count and the compensated sum.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct CountSum {
+    count: u64,
+    sum: f64,
+    delta: f64,
+}
+
+impl MetricSlot for CountSum {
+    const NEEDS: u8 = NEED_COUNT | NEED_SUM;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.count += 1;
+        compensated_add(&mut self.sum, &mut self.delta, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        self.count += values.len() as u64;
+        for &v in values {
+            compensated_add(&mut self.sum, &mut self.delta, to_double(kind, v));
+        }
+    }
+    fn bound(&mut self, _: bool, _: f64) {}
+    fn state(&self) -> MetricState {
+        MetricState {
+            count: self.count,
+            sum: self.sum,
+            delta: self.delta,
+            ..MetricState::default()
+        }
+    }
+}
+
+/// `value_count` alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Count(u64);
+
+impl MetricSlot for Count {
+    const NEEDS: u8 = NEED_COUNT;
+    #[inline]
+    fn one(&mut self, _: f64) {
+        self.0 += 1;
+    }
+    #[inline]
+    fn many(&mut self, _: ValueKind, values: &[i64]) {
+        self.0 += values.len() as u64;
+    }
+    fn bound(&mut self, _: bool, _: f64) {}
+    fn state(&self) -> MetricState {
+        MetricState {
+            count: self.0,
+            ..MetricState::default()
+        }
+    }
+}
+
+/// `min`: the smallest of each document's smallest value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MinOf(f64);
+
+impl Default for MinOf {
+    fn default() -> Self {
+        Self(f64::INFINITY)
+    }
+}
+
+impl MetricSlot for MinOf {
+    const NEEDS: u8 = NEED_MIN;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.0 = java_min(self.0, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        if let Some(&first) = values.first() {
+            self.0 = java_min(self.0, to_double(kind, first));
+        }
+    }
+    fn bound(&mut self, is_min: bool, v: f64) {
+        if is_min {
+            self.0 = java_min(self.0, v);
+        }
+    }
+    fn state(&self) -> MetricState {
+        MetricState {
+            min_of_mins: self.0,
+            ..MetricState::default()
+        }
+    }
+}
+
+/// `max`: the largest of each document's largest value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MaxOf(f64);
+
+impl Default for MaxOf {
+    fn default() -> Self {
+        Self(f64::NEG_INFINITY)
+    }
+}
+
+impl MetricSlot for MaxOf {
+    const NEEDS: u8 = NEED_MAX;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.0 = java_max(self.0, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        if let Some(&last) = values.last() {
+            self.0 = java_max(self.0, to_double(kind, last));
+        }
+    }
+    fn bound(&mut self, is_min: bool, v: f64) {
+        if !is_min {
+            self.0 = java_max(self.0, v);
+        }
+    }
+    fn state(&self) -> MetricState {
+        MetricState {
+            max_of_maxes: self.0,
+            ..MetricState::default()
         }
     }
 }

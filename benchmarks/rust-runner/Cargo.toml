@@ -56,6 +56,10 @@ name = "merge-bench"
 path = "src/merge_bench.rs"
 
 [[bin]]
+name = "agg-memory"
+path = "src/agg_memory.rs"
+
+[[bin]]
 name = "sweep"
 path = "src/sweep.rs"
 

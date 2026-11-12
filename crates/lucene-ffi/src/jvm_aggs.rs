@@ -9,7 +9,10 @@
 //! length; trailing bytes are an error.
 //!
 //! ```text
-//! blob     := nodes global slices
+//! blob     := nodes global slices [bucket_limit:i32]
+//!             (the buckets the request may still make, `search.max_buckets`
+//!              less those made; past them the call stops with
+//!              `TOO_MANY_BUCKETS`, the count made in the last error)
 //! nodes    := count:u8 node*                  (at most MAX_NODES in all)
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
@@ -178,6 +181,9 @@ pub(crate) struct DecodedTree {
     pub(crate) nodes: Vec<AggNode>,
     pub(crate) global: Option<(BooleanQuery, Vec<AggNode>)>,
     pub(crate) slices: Vec<Vec<usize>>,
+    /// The buckets the request may still make (`search.max_buckets` less
+    /// those made); `usize::MAX` when the blob gives none.
+    pub(crate) bucket_limit: usize,
 }
 
 fn bad(msg: String) -> FfiStatus {
@@ -782,6 +788,11 @@ pub(crate) fn decode_tree(blob: &[u8]) -> Result<DecodedTree, FfiStatus> {
         f => return Err(bad(format!("aggregation tree: global flag {f}"))),
     };
     let slices = jvm_reader::decode_slices(&mut c, &bad)?;
+    let bucket_limit = if c.pos() == blob.len() {
+        usize::MAX
+    } else {
+        usize::try_from(c.i32()?).unwrap_or(0)
+    };
     if c.pos() != blob.len() {
         return Err(bad(format!(
             "aggregation tree: {} trailing bytes",
@@ -795,6 +806,7 @@ pub(crate) fn decode_tree(blob: &[u8]) -> Result<DecodedTree, FfiStatus> {
         nodes: main,
         global,
         slices,
+        bucket_limit,
     })
 }
 
@@ -1123,7 +1135,7 @@ pub(crate) fn aggregate_tree_blobs(
             .map_err(crate::clauses::map_search_error)?;
         ords.insert(f.to_string(), g);
     }
-    let globals = Globals::new(&ords);
+    let globals = Globals::new(&ords).with_bucket_limit(tree.bucket_limit);
     // A pass scores its query behind `min_score`, or for a `top_hits`
     // (behind none: `-inf`), with the norms of the fields it scores.
     let main_scores = tree.nodes.iter().any(AggNode::needs_scores);
