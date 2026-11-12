@@ -344,8 +344,13 @@ pub struct BufferedVectors<'a> {
 /// its segments one by one. The hits merge as every segment's do: the
 /// scores are the flat format's either way.
 ///
+/// `exploration_slack` is the graph walks' opt-in adaptive beam stop over
+/// the best `k` ([`KnnFloatVectorQuery::exploration_slack`]); the buffers'
+/// own indexes do not take it.
+///
 /// # Errors
-/// As [`knn_top_hits`], and a `buffers` segment outside `segments`.
+/// As [`knn_top_hits`], a `buffers` segment outside `segments`, and a
+/// slack that is not a finite number `>= 0`.
 #[allow(clippy::too_many_arguments)]
 pub fn knn_top_hits_buffered(
     segments: &[OpenSegment<'_>],
@@ -356,6 +361,7 @@ pub fn knn_top_hits_buffered(
     filter: Option<&Clause>,
     ivf_nprobes: usize,
     buffers: &[BufferedVectors<'_>],
+    exploration_slack: Option<f32>,
 ) -> Result<Vec<ScoreDoc>> {
     top_hits(
         segments,
@@ -367,7 +373,10 @@ pub fn knn_top_hits_buffered(
         None,
         ivf_nprobes,
         buffers,
-        Depth::AS_ASKED,
+        Depth {
+            exploration_slack,
+            ..Depth::AS_ASKED
+        },
     )
 }
 
@@ -437,12 +446,16 @@ pub(crate) struct Depth {
     /// Every segment scanned exhaustively, its index unused: the exact
     /// top hits.
     pub(crate) exact: bool,
+    /// [`KnnFloatVectorQuery::exploration_slack`] over the best `k`, for a
+    /// graph walk of a non-nested search.
+    pub(crate) exploration_slack: Option<f32>,
 }
 
 impl Depth {
     pub(crate) const AS_ASKED: Depth = Depth {
         effort: 1.0,
         exact: false,
+        exploration_slack: None,
     };
 }
 
@@ -536,14 +549,20 @@ pub(crate) fn top_hits(
     let mut hits = match (target, nested.is_some()) {
         _ if knn.is_empty() => Vec::new(),
         (KnnTarget::Float(t), false) => {
-            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
+            let mut q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
                 .with_ivf_nprobes(ivf_nprobes)
                 .with_search_effort(effort);
+            if let Some(slack) = depth.exploration_slack {
+                q = q.with_exploration_slack(k, slack)?;
+            }
             vector_query::search_knn_float_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Byte(t), false) => {
-            let q =
+            let mut q =
                 KnnByteVectorQuery::new(field, t.clone(), candidates)?.with_search_effort(effort);
+            if let Some(slack) = depth.exploration_slack {
+                q = q.with_exploration_slack(k, slack)?;
+            }
             vector_query::search_knn_byte_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Float(t), true) => {

@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! cargo run --release -p lucene-search --example knn_tenants -- <prefix> <out-prefix> [options]
-//!   --n N          documents (default 8000000)
+//!   --n N          documents (default 8000000 / scale)
+//!   --scale D      tenant sizes divided by D (default 1)
 //!   --segments S   segments (default 4)
 //!   --format F     ivf-f16 | hnsw (default ivf-f16)
 //!   --ef L         candidates (default 100; use 10, the hit count, for IVF)
@@ -112,7 +113,12 @@ fn main() {
             .position(|a| a == name)
             .map(|i| args[i + 1].clone())
     };
-    let n: usize = opt("--n").map_or(8_000_000, |s| s.parse().unwrap());
+    let scale: usize = opt("--scale").map_or(1, |s| s.parse::<usize>().unwrap().max(1));
+    let classes: Vec<(usize, usize, bool)> = CLASSES
+        .iter()
+        .map(|&(size, count, region)| ((size / scale).max(1), count, region))
+        .collect();
+    let n: usize = opt("--n").map_or(8_000_000 / scale, |s| s.parse().unwrap());
     let segments: usize = opt("--segments").map_or(4, |s| s.parse().unwrap());
     let fmt = opt("--format").unwrap_or_else(|| "ivf-f16".into());
     let ef: usize = opt("--ef").map_or(100, |s| s.parse().unwrap());
@@ -133,7 +139,7 @@ fn main() {
     let tenant_path = format!("{out}.{n}.tenants.u32");
     let anchors_from = nq_all - 64;
     let mut tenants_meta: Vec<(usize, bool, usize)> = Vec::new(); // (size, region, anchor query)
-    for &(size, count, region) in &CLASSES {
+    for &(size, count, region) in &classes {
         for _ in 0..count {
             let anchor = if region {
                 anchors_from + tenants_meta.iter().filter(|t| t.1).count()
@@ -381,7 +387,7 @@ fn main() {
             .collect::<Vec<_>>()
     };
     let mut first = 0;
-    for &(size, count, region) in &CLASSES {
+    for &(size, count, region) in &classes {
         let t = first as u32;
         let kind = if region { "region" } else { "random" };
         measured.push((format!("{kind}{size}-any"), Some(t), (0..nq).collect()));
