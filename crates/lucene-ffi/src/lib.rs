@@ -19,9 +19,63 @@
 /// kept what the JVM's indexing threads freed. It also frees a buffer that
 /// another thread allocated without taking that thread's arena lock, which
 /// glibc does, and those locks stalled write threads under bulk load.
+///
+/// Every allocation and free is reported to [`lucene_util::memory`], which
+/// bounds what the library holds per request and process-wide.
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: Accounting<mimalloc::MiMalloc> = Accounting(mimalloc::MiMalloc);
+
+/// A global allocator reporting to [`lucene_util::memory`].
+#[cfg(feature = "mimalloc")]
+struct Accounting<A>(A);
+
+// SAFETY: every method forwards to the inner allocator with the caller's
+// arguments unchanged, so its guarantees are this allocator's; the reports
+// neither allocate nor touch the memory.
+#[cfg(feature = "mimalloc")]
+unsafe impl<A: std::alloc::GlobalAlloc> std::alloc::GlobalAlloc for Accounting<A> {
+    #[inline]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: the caller's contract, passed through.
+        let p = unsafe { self.0.alloc(layout) };
+        if !p.is_null() {
+            lucene_util::memory::on_alloc(layout.size());
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: the caller's contract, passed through.
+        let p = unsafe { self.0.alloc_zeroed(layout) };
+        if !p.is_null() {
+            lucene_util::memory::on_alloc(layout.size());
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: the caller's contract, passed through.
+        unsafe { self.0.dealloc(ptr, layout) };
+        lucene_util::memory::on_free(layout.size());
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller's contract, passed through.
+        let p = unsafe { self.0.realloc(ptr, layout, new_size) };
+        if !p.is_null() {
+            if new_size >= layout.size() {
+                lucene_util::memory::on_alloc(new_size - layout.size());
+            } else {
+                lucene_util::memory::on_free(layout.size() - new_size);
+            }
+        }
+        p
+    }
+}
 
 mod analysis_modules;
 mod clauses;
@@ -47,6 +101,7 @@ mod jvm_queries;
 mod jvm_reader;
 mod jvm_similarity;
 mod live;
+mod memory;
 mod ml;
 mod ml_torch;
 mod raw;
