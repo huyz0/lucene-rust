@@ -592,7 +592,7 @@ public class RustSearchPlugin extends Plugin implements
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
-        if (indexSettings.getValue(RustEngineSupport.ENGINE_ENABLED) == false) {
+        if (RustEngineSupport.openSearchEngine(indexSettings.getSettings())) {
             return Optional.empty();
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
