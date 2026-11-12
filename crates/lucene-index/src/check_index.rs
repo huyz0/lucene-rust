@@ -3708,7 +3708,7 @@ fn check_doc_values(
                     expected_docs_with_value = Some(entry.num_docs_with_field as i64);
                     let mut reader = doc_values::BinaryReader::new(dvd, entry);
                     for doc in 0..si.doc_count {
-                        match reader.value(doc) {
+                        match reader.value_ref(doc) {
                             Ok(Some(v)) => {
                                 docs_with_value = docs_with_value.saturating_add(1);
                                 let len = v.len() as i32;

@@ -16,6 +16,13 @@
 //!   --dir D       where the indexes are written (default a temporary directory)
 //!   --reuse       keep each format's index under D and search it again on
 //!                 later runs with the same data and build options
+//!   --targets L   recall targets: each format searched recall-targeted
+//!                 (`knn_recall`), after --tune-queries tuning queries, then
+//!                 again at the tuned effort without sampling (the monitor's
+//!                 cost is the difference)
+//!   --sample-rate R  the targeted searches' sample rate (default 0.01)
+//!   --budget B    the targeted searches' check budget (default 0.05)
+//!   --tune-queries N queries run before measuring a target (default 3000)
 //! ```
 //!
 //! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
@@ -32,6 +39,9 @@ use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::{DocumentVector, ExplicitDocument, IndexWriter};
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::knn_recall::{
+    knn_top_hits_at_effort, knn_top_hits_exact, knn_top_hits_tuned, RecallTarget, RecallTuner,
+};
 use lucene_search::knn_search::{knn_top_hits_with, KnnTarget};
 use lucene_store::FsDirectory;
 use lucene_util::quantization::ScalarEncoding;
@@ -128,6 +138,12 @@ fn main() {
         .map_or(1000, |s| s.parse().unwrap())
         .min(nq_all.saturating_sub(200));
     let reuse = args.iter().any(|a| a == "--reuse");
+    let targets: Vec<f32> = opt("--targets").map_or_else(Vec::new, |s| {
+        s.split(',').map(|s| s.parse().unwrap()).collect()
+    });
+    let sample_rate: f32 = opt("--sample-rate").map_or(0.01, |s| s.parse().unwrap());
+    let budget: f32 = opt("--budget").map_or(0.05, |s| s.parse().unwrap());
+    let tune_queries: usize = opt("--tune-queries").map_or(3000, |s| s.parse().unwrap());
     let root = opt("--dir").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     eprintln!("{prefix}: {n} x {dim}, {nq} queries, {segments} segments, merge {merge}");
     println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us");
@@ -229,6 +245,115 @@ fn main() {
         } else {
             efs.iter().map(|&ef| (0, ef)).collect()
         };
+        let pool = |q: usize| KnnTarget::Float(queries[q * dim..(q + 1) * dim].to_vec());
+        let recall_of = |q: usize, hits: &[lucene_search::ScoreDoc]| {
+            let truth = &gt[q * gt_k..q * gt_k + K];
+            hits.iter()
+                .filter(|h| truth.contains(&ids[h.doc_id as usize]))
+                .count()
+        };
+        if !targets.is_empty() {
+            // The exact search the recall checks compare with.
+            let mut found = 0usize;
+            let t = Instant::now();
+            for q in 0..200.min(nq) {
+                let hits = knn_top_hits_exact(&segs, "v", &pool(q), K, None, None).unwrap();
+                found += recall_of(q, &hits);
+            }
+            println!(
+                "{name},exact,{},{build:.1},{size:.1},{:.4},{:.0},",
+                reader.segment_readers().len(),
+                found as f64 / (200.min(nq) * K) as f64,
+                t.elapsed().as_secs_f64() * 1e6 / 200.min(nq) as f64
+            );
+        }
+        // Recall-targeted rows: tuned (sampling) and fixed at the tuned effort.
+        for &target in &targets {
+            let candidates = if name.starts_with("ivf") { K } else { efs[0] };
+            let tuner = RecallTuner::new(
+                RecallTarget::new(target, sample_rate)
+                    .unwrap()
+                    .with_budget(budget)
+                    .unwrap(),
+            );
+            let tuned = |q: usize| {
+                knn_top_hits_tuned(
+                    &segs,
+                    "v",
+                    &pool(q),
+                    K,
+                    candidates,
+                    None,
+                    None,
+                    0,
+                    &[],
+                    &tuner,
+                )
+                .unwrap()
+            };
+            // Tuning queries come from past the measured ones, cycling.
+            let spare = nq_all - nq;
+            let t0 = Instant::now();
+            for i in 0..tune_queries {
+                tuned(nq + i % spare);
+            }
+            let tune_s = t0.elapsed().as_secs_f64();
+            let before = tuner.stats();
+            let mut runs: Vec<(String, Vec<f64>, usize)> = Vec::new();
+            // `fixed-tuneset`: the tuned effort over the tuning queries.
+            for mode in ["tuned", "fixed", "fixed-tuneset"] {
+                let effort = tuner.stats().effort;
+                let mut times = Vec::with_capacity(nq);
+                let mut found = 0usize;
+                for i in 0..nq {
+                    let q = if mode == "fixed-tuneset" {
+                        nq + i % spare
+                    } else {
+                        i
+                    };
+                    let t = Instant::now();
+                    let hits = if mode == "tuned" {
+                        tuned(q)
+                    } else {
+                        knn_top_hits_at_effort(
+                            &segs,
+                            "v",
+                            &pool(q),
+                            K,
+                            candidates,
+                            None,
+                            None,
+                            0,
+                            &[],
+                            None,
+                            effort,
+                        )
+                        .unwrap()
+                    };
+                    times.push(t.elapsed().as_secs_f64() * 1e6);
+                    found += recall_of(q, &hits);
+                }
+                runs.push((mode.to_string(), times, found));
+            }
+            let after = tuner.stats();
+            for (mode, mut times, found) in runs {
+                times.sort_by(f64::total_cmp);
+                let mean = times.iter().sum::<f64>() / nq as f64;
+                let p50 = times[nq / 2];
+                let p99 = times[(nq * 99 / 100).min(nq - 1)];
+                println!(
+                    "{name},target={target}/{mode}/effort={:.3}->{:.3}/est={:.4}/lb={:.4}/samples={}/check_share={:.3}/tune_s={tune_s:.1},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0},p50={p50:.0}",
+                    before.effort,
+                    after.effort,
+                    after.recall.unwrap_or(f64::NAN),
+                    after.recall_lower_bound.unwrap_or(f64::NAN),
+                    after.samples,
+                    after.check_nanos as f64 / after.search_nanos.max(1) as f64,
+                    reader.segment_readers().len(),
+                    found as f64 / (nq * K) as f64
+                );
+            }
+        }
         for &(nprobe, candidates) in &settings {
             let search = |q: usize| {
                 knn_top_hits_with(

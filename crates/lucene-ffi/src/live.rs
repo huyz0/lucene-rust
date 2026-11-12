@@ -352,16 +352,16 @@ impl Warmer {
         h
     }
 
-    /// Forgets a shared view of a commit before `generation`, which the
-    /// searches read no more.
-    fn unshare_before(&self, generation: i64) {
+    /// Forgets a shared view of a segment list older than version
+    /// `version`, which the searches read no more.
+    fn unshare_before(&self, version: i64) {
         let mut shared = self
             .shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let old = if shared
             .as_ref()
-            .is_some_and(|h| h.commit.is_some_and(|c| c < generation))
+            .is_some_and(|h| h.commit.is_some_and(|c| c < version))
         {
             shared.take()
         } else {
@@ -373,7 +373,7 @@ impl Warmer {
             .asked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if asked.is_some_and(|c| c.is_some_and(|c| c < generation)) {
+        if asked.is_some_and(|c| c.is_some_and(|c| c < version)) {
             *asked = None;
         }
     }
@@ -1260,8 +1260,9 @@ pub extern "C" fn ffi_engine_writer_live_refresh_shared(writer: u64) -> i32 {
     })
 }
 
-/// Opens a view of every buffered document a reader of the commit at
-/// `commit_generation` lacks (`-1`: the documents in no published segment),
+/// Opens a view of every buffered document a reader of the segment list at
+/// version `reader_version` (a commit's or an NRT snapshot's) lacks (`-1`:
+/// the documents in no published segment),
 /// its handle into `*out_view` and its blob (see the module doc) as an owned
 /// buffer.
 ///
@@ -1270,7 +1271,7 @@ pub extern "C" fn ffi_engine_writer_live_refresh_shared(writer: u64) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
     writer: u64,
-    commit_generation: i64,
+    reader_version: i64,
     out_view: *mut u64,
     out_ptr: *mut *mut u8,
     out_len: *mut usize,
@@ -1282,7 +1283,7 @@ pub unsafe extern "C" fn ffi_engine_writer_live_view_open(
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
         let w = engine_writer::lookup(writer)?;
-        let commit = (commit_generation >= 0).then_some(commit_generation);
+        let commit = (reader_version >= 0).then_some(reader_version);
         let warmer = w.live_warmer();
         if warmer.max_staleness().is_some() {
             // The warmer opens the views searches share, and forgets the
@@ -2371,14 +2372,15 @@ fn buffer_mask(max_doc: i32, deleted: &[i32], written: i32) -> Option<FixedBitSe
     Some(bits)
 }
 
-/// Stops keeping the published buffers the commit at `generation` holds,
-/// once no open view reads them.
+/// Stops keeping the published buffers the segment list at version
+/// `reader_version` (a commit's or an NRT snapshot's) holds, once no open
+/// view reads them.
 #[no_mangle]
-pub extern "C" fn ffi_engine_writer_release_live(writer: u64, generation: i64) -> i32 {
+pub extern "C" fn ffi_engine_writer_release_live(writer: u64, reader_version: i64) -> i32 {
     guard(|| {
         let w = engine_writer::lookup(writer)?;
-        w.live_warmer().unshare_before(generation);
-        w.writer().release_live(generation).map_err(live_error)
+        w.live_warmer().unshare_before(reader_version);
+        w.writer().release_live(reader_version).map_err(live_error)
     })
 }
 

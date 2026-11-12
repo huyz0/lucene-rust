@@ -68,6 +68,17 @@ public final class SearchStats {
         }
     }
 
+    private final LongAdder sourcesWithoutVectors = new LongAdder();
+
+    /** A derived {@code _source} read without its vectors, for a fetch whose filter drops them. */
+    public void sourceWithoutVectors() {
+        sourcesWithoutVectors.increment();
+    }
+
+    public long sourcesWithoutVectorsCount() {
+        return sourcesWithoutVectors.sum();
+    }
+
     private final LongAdder nativeDocValues = new LongAdder();
 
     /** A document's doc values read natively ({@link NativeDocValues}). */

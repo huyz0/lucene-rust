@@ -502,6 +502,30 @@ impl RegexpPattern {
         keys
     }
 
+    /// The longest byte run every matching term contains, empty when
+    /// nothing is forced: a substring a scan can look for before running
+    /// the automaton.
+    pub fn required_literal(&self) -> Vec<u8> {
+        let mut runs = Vec::new();
+        literal_runs_in_node(&self.root, &mut runs);
+        runs.into_iter().max_by_key(Vec::len).unwrap_or_default()
+    }
+
+    /// This pattern under `RegExp.ASCII_CASE_INSENSITIVE`, which Lucene 10.5
+    /// treats as `CASE_INSENSITIVE`: a character, alone, in a string or
+    /// alone in a class, matches its whole case-equivalence class
+    /// (`toCaseInsensitiveChar`, `CaseFolding.expand`); ranges stay as
+    /// written.
+    pub fn ascii_case_insensitive(&self) -> Self {
+        Self {
+            root: ascii_case_fold(&self.root),
+            compiled: CompileCache {
+                source: format!("\u{0}ascii-ci\u{0}{}", self.compiled.source),
+                cell: std::sync::OnceLock::new(),
+            },
+        }
+    }
+
     /// The longest byte run every matching term is guaranteed to start with,
     /// e.g. `cat.*` -> `cat`, `(cat|dog)` -> `` (no single common leading
     /// byte run across an alternation, so this conservatively returns empty
@@ -715,6 +739,122 @@ fn literal_bytes(node: &Node) -> Option<Vec<u8>> {
     }
 }
 
+/// Code points whose case equivalents a code point's own upper and lower
+/// case mappings miss (`CaseFolding.expand`'s closure): the Kelvin and
+/// Angstrom signs, the Ohm sign, long s, capital sharp s and the Greek
+/// letters with a second lower-case form.
+const EXTRA_FOLDS: &[&[char]] = &[
+    &['k', 'K', '\u{212A}'],
+    &['s', 'S', '\u{17F}'],
+    &['\u{E5}', '\u{C5}', '\u{212B}'],
+    &['\u{3C9}', '\u{3A9}', '\u{2126}'],
+    &['\u{DF}', '\u{1E9E}'],
+    &['\u{3B8}', '\u{398}', '\u{3D1}', '\u{3F4}'],
+    &['\u{3B2}', '\u{392}', '\u{3D0}'],
+    &['\u{3B5}', '\u{395}', '\u{3F5}'],
+    &['\u{3BA}', '\u{39A}', '\u{3F0}'],
+    &['\u{3C0}', '\u{3A0}', '\u{3D6}'],
+    &['\u{3C1}', '\u{3A1}', '\u{3F1}'],
+    &['\u{3C3}', '\u{3A3}', '\u{3C2}'],
+    &['\u{3C6}', '\u{3A6}', '\u{3D5}'],
+    &['\u{3B9}', '\u{399}', '\u{345}', '\u{1FBE}'],
+    &['\u{3BC}', '\u{39C}', '\u{B5}'],
+];
+
+/// `c` and every code point of its case-equivalence class: what
+/// `RegExp.toCaseInsensitiveChar` matches (`CaseFolding.expand`) under
+/// `ASCII_CASE_INSENSITIVE` or `CASE_INSENSITIVE`.
+fn case_equivalents(c: char) -> Vec<char> {
+    let mut out = vec![c];
+    let single = |v: Vec<char>| -> Option<char> {
+        match v.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
+    };
+    let mut k = 0usize;
+    while let Some(&x) = out.get(k) {
+        k = k.saturating_add(1);
+        for y in [
+            single(x.to_lowercase().collect()),
+            single(x.to_uppercase().collect()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !out.contains(&y) {
+                out.push(y);
+            }
+        }
+        if let Some(group) = EXTRA_FOLDS.iter().find(|g| g.contains(&x)) {
+            for &y in *group {
+                if !out.contains(&y) {
+                    out.push(y);
+                }
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// `c` as `toCaseInsensitiveChar` builds it: a class of its case
+/// equivalents, or `c` itself when it has none.
+fn ascii_case_char(c: char) -> Node {
+    let all = case_equivalents(c);
+    if all.len() == 1 {
+        return Node::Char(c);
+    }
+    Node::Class {
+        ranges: all.iter().map(|&x| (x as u32, x as u32)).collect(),
+        negated: false,
+    }
+}
+
+/// A class under case insensitivity: each single code point gains its case
+/// equivalents (`parseCharClass`); a range stays as written, as only
+/// `CASE_INSENSITIVE_RANGE` widens it.
+fn case_fold_class(ranges: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for &(lo, hi) in ranges {
+        out.push((lo, hi));
+        if lo == hi {
+            if let Some(c) = char::from_u32(lo) {
+                out.extend(
+                    case_equivalents(c)
+                        .into_iter()
+                        .filter(|&x| x != c)
+                        .map(|x| (x as u32, x as u32)),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// [`RegexpPattern::ascii_case_insensitive`]'s tree.
+fn ascii_case_fold(node: &Node) -> Node {
+    match node {
+        Node::Char(c) => ascii_case_char(*c),
+        Node::Str(s) => Node::Concat(s.chars().map(ascii_case_char).collect()),
+        Node::Class { ranges, negated } => Node::Class {
+            ranges: case_fold_class(ranges),
+            negated: *negated,
+        },
+        Node::Concat(items) => Node::Concat(items.iter().map(ascii_case_fold).collect()),
+        Node::Alt(items) => Node::Alt(items.iter().map(ascii_case_fold).collect()),
+        Node::Intersect(a, b) => {
+            Node::Intersect(Box::new(ascii_case_fold(a)), Box::new(ascii_case_fold(b)))
+        }
+        Node::Repeat { inner, min, max } => Node::Repeat {
+            inner: Box::new(ascii_case_fold(inner)),
+            min: *min,
+            max: *max,
+        },
+        other => other.clone(),
+    }
+}
+
 /// [`RegexpPattern::required_grams`] over a concatenation: literal runs are
 /// extended through consecutive fixed-string items and cut by anything else;
 /// `anchored` says the sequence spans the whole term, so a run touching
@@ -769,6 +909,50 @@ fn required_in_sequence(items: &[&Node], anchored: bool, keys: &mut Vec<u32>) {
         run.push(BOUNDARY);
     }
     flush(&mut run, keys);
+}
+
+/// The byte runs every match of the sequence `items` holds, as
+/// [`required_in_sequence`] finds them, appended to `runs`.
+fn literal_runs(items: &[&Node], runs: &mut Vec<Vec<u8>>) {
+    let mut run: Vec<u8> = Vec::new();
+    for item in items {
+        if let Some(bytes) = literal_bytes(item) {
+            run.extend_from_slice(&bytes);
+            continue;
+        }
+        if let Node::Repeat { inner, min, .. } = item {
+            if *min >= 1 {
+                if let Some(bytes) = literal_bytes(inner) {
+                    // At least one copy is forced: it ends the run.
+                    run.extend_from_slice(&bytes);
+                }
+            }
+        }
+        runs.push(std::mem::take(&mut run));
+        match item {
+            Node::Repeat { inner, min, .. } if *min >= 1 && literal_bytes(inner).is_none() => {
+                literal_runs_in_node(inner, runs);
+            }
+            Node::Concat(inner) => {
+                let inner: Vec<&Node> = inner.iter().collect();
+                literal_runs(&inner, runs);
+            }
+            Node::Intersect(a, b) => {
+                literal_runs_in_node(a, runs);
+                literal_runs_in_node(b, runs);
+            }
+            _ => {}
+        }
+    }
+    runs.push(run);
+}
+
+fn literal_runs_in_node(node: &Node, runs: &mut Vec<Vec<u8>>) {
+    let items: Vec<&Node> = match node {
+        Node::Concat(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    literal_runs(&items, runs);
 }
 
 /// A sub-pattern's own forced runs, taken as unanchored -- conservative
