@@ -76,6 +76,17 @@ public final class RestStatsAction extends BaseRestHandler {
             long[] parents = NativeBridge.parentCacheStats();
             b.field("nested_parent_sets", parents[0]);
             b.field("nested_parent_set_bytes", parents[1]);
+            long[] agg = new long[NativeBridge.AGG_CACHE_STATS];
+            if (NativeBridge.aggCacheStats(agg) == NativeBridge.OK) {
+                b.startObject("aggregation_segment_cache");
+                b.field("hits", agg[0]);
+                b.field("misses", agg[1]);
+                b.field("evictions", agg[2]);
+                b.field("entries", agg[3]);
+                b.field("bytes", agg[4]);
+                b.field("budget_bytes", agg[5]);
+                b.endObject();
+            }
             // searchWith's own time per path (SearchStats.nativeTime/luceneTime).
             b.startObject("query_phase_nanos");
             b.field("native", stats.nativeNanos());
@@ -132,6 +143,20 @@ public final class RestStatsAction extends BaseRestHandler {
                 b.field("global_ordinals_in_bytes", memory[10]);
                 b.endObject();
             }
+            // The page cache (page_cache and rust_encrypted shards): its memory is native, outside
+            // the heap OpenSearch measures; resident bytes are also charged to the lucene_rust_writer
+            // breaker (PageCacheAccounting).
+            long[] pages = NativeBridge.storePageCacheStats();
+            b.startObject("page_cache");
+            b.field("budget_in_bytes", pages[0]);
+            b.field("resident_in_bytes", pages[1]);
+            b.field("whole_files_in_bytes", pages[2]);
+            b.field("faults", pages[3]);
+            b.field("refaults", pages[4]);
+            b.field("evictions", pages[5]);
+            b.field("read_errors", pages[6]);
+            b.field("fault_time_in_nanos", pages[7]);
+            b.endObject();
             // Recall-targeted k-NN tuners (index.lucene_rust.knn.target_recall), by index/shard/field.
             String recall = NativeBridge.knnRecallStats();
             if (recall != null) {

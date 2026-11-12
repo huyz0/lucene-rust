@@ -184,6 +184,18 @@ public final class NativeBridge {
             "ffi_jvm_reader_aggregate_tree_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
+        static final MethodHandle AGGREGATE_TREE_CACHED = bind(
+            "ffi_jvm_reader_aggregate_tree_cached_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle AGG_CACHE_SET_BUDGET = bind(
+            "ffi_agg_segment_cache_set_budget",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle AGG_CACHE_STATS = bind(
+            "ffi_agg_segment_cache_stats",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
+        );
         static final MethodHandle SEARCH_HYBRID = bind(
             "ffi_jvm_reader_search_hybrid_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -256,10 +268,6 @@ public final class NativeBridge {
         );
         static final MethodHandle STORE_UNBIND = bind("ffi_store_unbind", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         static final MethodHandle STORE_IS_FIPS = bind("ffi_store_is_fips", FunctionDescriptor.of(JAVA_INT));
-        static final MethodHandle STORE_SET_LAZY_DECRYPT = bind(
-            "ffi_store_set_lazy_decrypt",
-            FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
-        );
         static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle STORE_BIND_PAGE_CACHE = bind(
             "ffi_store_bind_page_cache",
@@ -274,7 +282,12 @@ public final class NativeBridge {
             "ffi_store_set_page_cache_budget",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
         );
+        static final MethodHandle STORE_SET_READ_ADVICE = bind(
+            "ffi_store_set_read_advice",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
+        );
         static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
+        static final MethodHandle STORE_PAGE_CACHE_STATS = bind("ffi_store_page_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle HIGHLIGHT_UNIFIED = bind(
             "ffi_jvm_highlight_unified_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -1419,6 +1432,15 @@ public final class NativeBridge {
      * {@code jvm_aggs.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
      */
     public static int aggregateTree(long handle, byte[] query, byte[] tree, byte[][] out) {
+        return aggregateTree(handle, query, tree, false, out);
+    }
+
+    /**
+     * {@link #aggregateTree(long, byte[], byte[], byte[][])}; with {@code cached}, each committed
+     * segment's collected part is read from and kept in the node's aggregation segment cache
+     * ({@link #aggCacheSetBudget}): the same results.
+     */
+    public static int aggregateTree(long handle, byte[] query, byte[] tree, boolean cached, byte[][] out) {
         if (query == null) {
             return nullArgument("query");
         }
@@ -1430,7 +1452,8 @@ public final class NativeBridge {
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment result = ownedSlot(s);
-            int rc = (int) H.AGGREGATE_TREE.invokeExact(
+            MethodHandle call = cached ? H.AGGREGATE_TREE_CACHED : H.AGGREGATE_TREE;
+            int rc = (int) call.invokeExact(
                 handle,
                 s.bytes(query),
                 (long) query.length,
@@ -1707,18 +1730,9 @@ public final class NativeBridge {
     }
 
     /**
-     * Turns demand decryption of encrypted shards on or off for directories the engine opens from now
-     * on, keeping at most {@code budgetBytes} of decrypted pages resident (0 keeps the current budget).
+     * Whether the engine reads encrypted shards through the page cache, decrypting each chunk once as
+     * it is read in ({@code userfaultfd} is available); otherwise it decrypts each file whole.
      */
-    public static int storeSetLazyDecrypt(boolean enabled, long budgetBytes) {
-        try {
-            return (int) H.STORE_SET_LAZY_DECRYPT.invokeExact(enabled ? 1 : 0, budgetBytes);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
-    /** Whether encrypted shards the engine opens now are demand-decrypted (on, and supported here). */
     public static boolean storeLazyDecryptActive() {
         try {
             return (int) H.STORE_LAZY_DECRYPT_ACTIVE.invokeExact() == 1;
@@ -1771,6 +1785,77 @@ public final class NativeBridge {
     public static int storeSetPageCacheBudget(long budgetBytes) {
         try {
             return (int) H.STORE_SET_PAGE_CACHE_BUDGET.invokeExact(budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Sets the bytes the aggregation segment cache keeps parts in across the node; 0 turns it off
+     * and drops every part.
+     */
+    public static int aggCacheSetBudget(long budgetBytes) {
+        try {
+            return (int) H.AGG_CACHE_SET_BUDGET.invokeExact(budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Sets how mapped shard files are read, by extension: {@code spec} is comma-separated
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
+     * {@code willneed}), {@code *} for every other extension, empty for the defaults.
+     */
+    public static int storeSetReadAdvice(String spec, boolean warmRandom) {
+        byte[] utf8 = (spec == null ? "" : spec).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_SET_READ_ADVICE.invokeExact(s.bytes(utf8), (long) utf8.length, warmRandom ? 1 : 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The counters {@link #aggCacheStats} reads. */
+    public static final int AGG_CACHE_STATS = 6;
+
+    /**
+     * The aggregation segment cache's counters into {@code out} ({@link #AGG_CACHE_STATS} slots):
+     * hits, misses, evictions, entries, bytes, budget.
+     */
+    public static int aggCacheStats(long[] out) {
+        if (out == null || out.length < AGG_CACHE_STATS) {
+            return fail(INVALID_ARGUMENT, "out holds fewer than " + AGG_CACHE_STATS + " slots");
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment buf = a.allocate(JAVA_LONG, AGG_CACHE_STATS);
+            int rc = (int) H.AGG_CACHE_STATS.invokeExact(buf, (long) AGG_CACHE_STATS);
+            if (rc == OK) {
+                MemorySegment.copy(buf, JAVA_LONG, 0, out, 0, AGG_CACHE_STATS);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** How many values {@link #storePageCacheStats} returns. */
+    public static final int PAGE_CACHE_STATS = 8;
+
+    /**
+     * The page cache's numbers: {@code [budget, resident bytes, bytes of files read whole at open,
+     * faults, pages read again after eviction, evictions, pages that could not be read, nanoseconds
+     * serving faults]}; every value -1 if the call fails.
+     */
+    public static long[] storePageCacheStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(PAGE_CACHE_STATS * Long.BYTES);
+            int rc = (int) H.STORE_PAGE_CACHE_STATS.invokeExact(out);
+            long[] values = new long[PAGE_CACHE_STATS];
+            for (int i = 0; i < PAGE_CACHE_STATS; i++) {
+                values[i] = rc == OK ? out.get(JAVA_LONG, (long) i * Long.BYTES) : -1;
+            }
+            return values;
         } catch (Throwable t) {
             throw rethrow(t);
         }
