@@ -255,6 +255,9 @@ pub(crate) fn build<'a>(
         ExtendedQuery::MultiPhrasePrefix(_) => Err(crate::Error::IllegalState(
             "MultiPhrasePrefixQuery is only highlighted".into(),
         )),
+        ExtendedQuery::VisitOnly(_) | ExtendedQuery::Visited(_) => Err(crate::Error::IllegalState(
+            "a visit-only query is only highlighted".into(),
+        )),
         ExtendedQuery::PhraseWildcard(_) => Err(crate::Error::IllegalState(
             "PhraseWildcardQuery must be rewritten against the searcher \
              (rescorer::rewrite_rescore_clauses) before it is searched"
