@@ -1189,6 +1189,7 @@ impl MetricCol {
 
     /// `owner`'s state, the default when it collected nothing.
     fn get(&self, owner: usize) -> MetricState {
+        // FBS: `v` is a slot slice, not a bitset; `get` is bounds-checked.
         with_metric_col!(self, v => v.get(owner).map(aggs::MetricSlot::state).unwrap_or_default())
     }
 
