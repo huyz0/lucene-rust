@@ -227,11 +227,15 @@ fn the_bounded_scanner_moves_like_its_sentence_iterator() {
 }
 
 fn phrase_prefix(arrays: &[&[&str]], slop: u32) -> Clause {
+    phrase_prefix_at(arrays, &(0..arrays.len() as i32).collect::<Vec<_>>(), slop)
+}
+
+fn phrase_prefix_at(arrays: &[&[&str]], positions: &[i32], slop: u32) -> Clause {
     let terms: Vec<Vec<Vec<u8>>> = arrays
         .iter()
         .map(|a| a.iter().map(|t| t.as_bytes().to_vec()).collect())
         .collect();
-    let positions = (0..terms.len() as i32).collect();
+    let positions = positions.to_vec();
     lucene_search::extended_query::MultiPhrasePrefixQuery::new("body", terms, positions, slop)
         .unwrap()
         .into()
@@ -277,4 +281,54 @@ fn a_phrase_prefix_s_whole_terms_alone_do_not_highlight() {
     .unwrap();
     assert!(!h.is_noop());
     assert!(run(defaults(), &phrase_prefix(&[&["lazy"], &["z"]], 0), TEXT).is_empty());
+}
+
+#[test]
+fn a_phrase_prefix_s_position_gap_widens_its_slop() {
+    // a stop word's hole between "over" and "la*": the gap is slop, and the
+    // phrase still matches in order
+    let gapped = run(
+        defaults(),
+        &phrase_prefix_at(&[&["over"], &["la"]], &[0, 2], 0),
+        TEXT,
+    );
+    assert_eq!(
+        gapped,
+        ["The quick brown fox jumps <em>over</em> the <em>lazy</em> dog."]
+    );
+    // without the gap the two must touch, and "the" is between them
+    assert!(run(defaults(), &phrase_prefix(&[&["over"], &["la"]], 0), TEXT).is_empty());
+}
+
+#[test]
+fn several_prefixes_at_the_last_position_are_one_span_or() {
+    let both = run(
+        defaults(),
+        &phrase_prefix(&[&["quick"], &["fo", "br"]], 0),
+        TEXT,
+    );
+    assert!(
+        both.iter()
+            .any(|s| s.contains("<em>quick</em> <em>brown</em>")),
+        "{both:?}"
+    );
+    assert!(
+        both.iter()
+            .any(|s| s.contains("<em>quick</em> <em>foxes</em>")),
+        "{both:?}"
+    );
+}
+
+#[test]
+fn a_span_past_the_clause_count_is_refused() {
+    // stock's searcher refuses the rewritten span (TooManyClauses)
+    let words: Vec<String> = (0..1100).map(|i| format!("pre{i:04}")).collect();
+    let text = format!("start {}", words.join(" "));
+    let q = phrase_prefix(&[&["start"], &["pre"]], 0);
+    let mut h = CustomUnifiedHighlighter::new(defaults(), &q, analyzer()).unwrap();
+    let content: Vec<u16> = text.encode_utf16().collect();
+    assert!(h.highlight(None, &content).is_err());
+    let few = format!("start {}", words[..10].join(" "));
+    let content: Vec<u16> = few.encode_utf16().collect();
+    assert!(h.highlight(None, &content).is_ok());
 }
