@@ -199,8 +199,9 @@ client pinned to the fourth), index of the same 6.45M lines in 4 segments,
 
 Stock OpenSearch rewrites a sorted range or `match_all` into its
 `ApproximatePointRangeQuery`, which the plugin used to hand back to Java. The
-new index setting `index.lucene_rust.search.native_approximate` (default
-`false`, dynamic) keeps those queries native.
+index setting `index.lucene_rust.search.native_approximate` (dynamic; `false`
+when this was measured, the "plugin (default)" column, and `true` since)
+keeps those queries native.
 
 | shape | size | stock OpenSearch | plugin (default) | plugin, `native_approximate` | hits identical |
 |---|---:|---:|---:|---:|---|
@@ -229,8 +230,9 @@ Hits and totals are identical to stock on every shape here.
 
 - The Lucene-layer change is on by default: it returns the ordinary search's
   hits by construction and is tested against it.
-- Keep `native_approximate` opt-in for now. OpenSearch's approximation collects
-  documents in BKD order and can pick a different document among equal sort
-  values at a leaf boundary; the native path returns the exact Lucene order.
-  They agreed on every query above, and switching the default is a candidate
-  once tie behavior is accepted as a documented deviation.
+- `native_approximate` is on by default (since the settings-defaults review,
+  [settings-defaults.md](settings-defaults.md)). OpenSearch's approximation
+  collects documents in BKD order and can pick a different document among
+  equal sort values at a leaf boundary; the native path returns the exact
+  Lucene order, the hits OpenSearch gives with `track_total_hits: true`. They
+  agreed on every query above. `false` keeps OpenSearch's answer.
