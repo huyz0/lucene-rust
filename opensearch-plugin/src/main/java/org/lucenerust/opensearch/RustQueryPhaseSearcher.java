@@ -109,6 +109,19 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     );
 
     /**
+     * Per-index opt-in, dynamic: aggregations keep each committed segment's collected part in the
+     * node's aggregation segment cache ({@code lucene_rust.search.aggregation_segment_cache.size}),
+     * so a dashboard repeated after a refresh collects only the segments the refresh added. Off by
+     * default; results are the same either way.
+     */
+    public static final Setting<Boolean> AGG_SEGMENT_CACHE = Setting.boolSetting(
+        "index.lucene_rust.search.aggregation_segment_cache",
+        false,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Whether a match-all or range OpenSearch resolved to its approximation (a sort on the
      * range's field, {@code track_total_hits} not exact) runs native: the exact top hits, by
      * the native bounded newest-N search. OpenSearch's approximation collects whole BKD leaves
@@ -937,7 +950,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
     }
 
     /** The plugin's index settings as last read, and the settings version they were read at. */
-    private record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate) {}
+    private record Flags(long version, boolean enabled, boolean allShapes, boolean nativeApproximate, boolean aggCache) {}
 
     private static final java.util.concurrent.ConcurrentHashMap<String, Flags> FLAGS = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -956,7 +969,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 version,
                 settings.getValue(ENABLED),
                 "all".equals(settings.getValue(NATIVE_SHAPES)),
-                settings.getValue(NATIVE_APPROXIMATE)
+                settings.getValue(NATIVE_APPROXIMATE),
+                settings.getValue(AGG_SEGMENT_CACHE)
             );
             FLAGS.put(uuid, f);
         }
@@ -1101,7 +1115,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return "intra_segment";
             }
             byte[][] result = new byte[1][];
-            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), result);
+            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices), flags(ctx).aggCache(), result);
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
