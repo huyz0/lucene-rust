@@ -9095,6 +9095,91 @@ mod tests {
             assert!((got - want).abs() < 1e-6, "{got} vs {want}");
         }
 
+        // Recall-targeted: the same hits (a graph this small finds the exact
+        // ones at any depth), each search checked on a thread of its own.
+        let key = format!("knn-recall-test-{}/0/v", std::process::id());
+        let tuned = Blob(request.clone())
+            .i64(1.0f64.to_bits() as i64)
+            .i64(1.0f64.to_bits() as i64)
+            .i64(1e9f64.to_bits() as i64)
+            .bytes(key.as_bytes())
+            .0;
+        for _ in 0..3 {
+            let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
+            // SAFETY: live request and buffers of 5.
+            let rc = unsafe {
+                crate::jvm_knn::ffi_jvm_reader_knn(
+                    r,
+                    tuned.as_ptr(),
+                    tuned.len(),
+                    docs.as_mut_ptr(),
+                    scores.as_mut_ptr(),
+                    5,
+                    &mut n,
+                )
+            };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            assert_eq!(n, 5);
+            for (got, want) in scores.iter().zip(&exact) {
+                assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+            }
+        }
+        let stats = || {
+            let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            assert_eq!(
+                unsafe { crate::jvm_knn::ffi_knn_recall_stats(&mut ptr, &mut len) },
+                0
+            );
+            // SAFETY: the buffer the call gave, read then freed once.
+            let json = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            String::from_utf8(json).unwrap()
+        };
+        // The checks run behind the searches: wait for the first.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let entry = loop {
+            let all = stats();
+            let entry = all
+                .split(&format!("\"{key}\":"))
+                .nth(1)
+                .map(|e| e.split('}').next().unwrap_or("").to_string())
+                .expect("the tuner's entry");
+            if !entry.contains("\"samples\":0,") || std::time::Instant::now() > deadline {
+                break entry;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(entry.contains("\"target_recall\":1,"), "{entry}");
+        assert!(entry.contains("\"queries\":3,"), "{entry}");
+        assert!(!entry.contains("\"samples\":0,"), "{entry}");
+        // A target outside (0, 1] is refused.
+        let bad = Blob(request.clone())
+            .i64(1.5f64.to_bits() as i64)
+            .i64(1.0f64.to_bits() as i64)
+            .i64(0.05f64.to_bits() as i64)
+            .bytes(key.as_bytes())
+            .0;
+        let (mut docs, mut scores, mut n) = ([0i32; 5], [0f32; 5], 0usize);
+        // SAFETY: live request and buffers of 5.
+        let rc = unsafe {
+            crate::jvm_knn::ffi_jvm_reader_knn(
+                r,
+                bad.as_ptr(),
+                bad.len(),
+                docs.as_mut_ptr(),
+                scores.as_mut_ptr(),
+                5,
+                &mut n,
+            )
+        };
+        assert_eq!(rc, FfiStatus::InvalidArgument.code());
+        // SAFETY: null is checked.
+        assert_eq!(
+            unsafe { crate::jvm_knn::ffi_knn_recall_stats(std::ptr::null_mut(), &mut n) },
+            FfiStatus::NullPointer.code()
+        );
+
         let mut tree = Blob::default()
             .u8(crate::jvm_reader::QUERY_TREE)
             .u8(crate::jvm_queries::NODE_KNN)
