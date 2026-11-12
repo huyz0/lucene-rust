@@ -15,7 +15,8 @@ CJK text, emoji (surrogate pairs), newlines, multi-valued fields and long
 values, so passages break on every kind of boundary the break iterators
 know. A row prints `ok` or the first differing hit; the plugin's stats show
 how many fields ran natively and every fallback reason."""
-import json, os, random, sys
+import concurrent.futures
+import json, os, random, sys, threading
 import requests
 
 PLUGIN = os.environ.get("PLUGIN", "http://localhost:9200")
@@ -327,42 +328,60 @@ def fallbacks():
     return {k: v for k, v in stats.get("fallbacks", {}).items() if "highlight" in k}
 
 
+# HL_WORKERS rows run at once (each search is its own request, so stock's per-search
+# highlighter state is the same either way); a trace runs one at a time.
+WORKERS = 1 if TRACE else int(os.environ.get("HL_WORKERS", "6"))
+LOCAL = threading.local()
+
+
+def session():
+    if not hasattr(LOCAL, "s"):
+        LOCAL.s = requests.Session()
+    return LOCAL.s
+
+
 def search(base, index, query, hl, size):
     body = {"query": query, "highlight": hl, "size": size, "sort": ["_score", {"num": "asc"}, "_doc"]}
-    r = S.post(f"{base}/{index}/_search", json=body)
+    r = session().post(f"{base}/{index}/_search", json=body)
     if not r.ok:
         return {"error": r.json().get("error", {}).get("root_cause", [{}])[0].get("type"), "status": r.status_code}
     hits = r.json()["hits"]["hits"]
     return [(h["_id"], h.get("highlight")) for h in hits]
 
 
+def compare(index, qn, q, on, o, size):
+    """The row's difference report, or None when the plugin's highlights are stock's."""
+    a = search(PLUGIN, index, q, o, size)
+    b = search(STOCK, index, q, o, size)
+    if a == b:
+        return None
+    if isinstance(a, dict) or isinstance(b, dict):
+        return f"DIFF {index} {qn} {on}: plugin {str(a)[:200]} stock {str(b)[:200]}"
+    for (ia, ha), (ib, hb) in zip(a, b):
+        if ia != ib or ha != hb:
+            return f"DIFF {index} {qn} {on} id {ia}/{ib}:\n  plugin {json.dumps(ha, ensure_ascii=False)[:600]}\n  stock  {json.dumps(hb, ensure_ascii=False)[:600]}"
+    return f"DIFF {index} {qn} {on}: {len(a)} vs {len(b)} hits"
+
+
 def check(size):
     rows = bad = 0
-    for index in INDICES:
-        for qn, q in QUERIES.items():
-            if ONLY and qn not in ONLY:
-                continue
-            before = fallbacks() if TRACE else None
-            for on, o in option_sets(index).items():
-                rows += 1
-                a = search(PLUGIN, index, q, o, size)
-                b = search(STOCK, index, q, o, size)
-                if a != b:
-                    bad += 1
-                    if isinstance(a, dict) or isinstance(b, dict):
-                        print(f"DIFF {index} {qn} {on}: plugin {str(a)[:200]} stock {str(b)[:200]}")
-                        continue
-                    for (ia, ha), (ib, hb) in zip(a, b):
-                        if ia != ib or ha != hb:
-                            print(f"DIFF {index} {qn} {on} id {ia}/{ib}:\n  plugin {json.dumps(ha, ensure_ascii=False)[:600]}\n  stock  {json.dumps(hb, ensure_ascii=False)[:600]}")
-                            break
-                    else:
-                        print(f"DIFF {index} {qn} {on}: {len(a)} vs {len(b)} hits")
-            if TRACE:
-                after = fallbacks()
-                delta = {k: v - before.get(k, 0) for k, v in after.items() if v != before.get(k, 0)}
-                if delta:
-                    print(f"FALLBACK {index} {qn} {delta}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        for index in INDICES:
+            for qn, q in QUERIES.items():
+                if ONLY and qn not in ONLY:
+                    continue
+                before = fallbacks() if TRACE else None
+                sets = option_sets(index)
+                for report in pool.map(lambda item: compare(index, qn, q, item[0], item[1], size), sets.items()):
+                    rows += 1
+                    if report is not None:
+                        bad += 1
+                        print(report)
+                if TRACE:
+                    after = fallbacks()
+                    delta = {k: v - before.get(k, 0) for k, v in after.items() if v != before.get(k, 0)}
+                    if delta:
+                        print(f"FALLBACK {index} {qn} {delta}")
     stats = S.get(f"{PLUGIN}/_plugins/lucene_rust/stats").json()
     print(f"{rows - bad}/{rows} rows identical")
     print("native_highlights", stats.get("native_highlights"), "native_errors", stats.get("native_errors"))
