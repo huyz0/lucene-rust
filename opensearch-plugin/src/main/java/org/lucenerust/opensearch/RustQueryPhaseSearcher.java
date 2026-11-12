@@ -126,12 +126,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * the native bounded newest-N search. OpenSearch's approximation collects whole BKD leaves
      * in value order and keeps the top hits of those, so where the last hit's value is tied
      * across a leaf boundary it may keep other documents of that value than the exact answer
-     * does (the same values, other ties). Off by default: such an index keeps OpenSearch's
-     * answer.
+     * does (the same values, other ties): the answer OpenSearch gives without the approximation.
+     * On by default, since it is 4-5x faster on a sorted match-all or range; {@code false} keeps
+     * OpenSearch's approximate answer.
      */
     public static final Setting<Boolean> NATIVE_APPROXIMATE = Setting.boolSetting(
         "index.search.approximation.exact",
-        false,
+        true,
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
     );
@@ -301,8 +302,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         // OpenSearch's approximate match_all/range (ApproximateScoreQuery resolved to its
         // ApproximateQuery) collects documents in BKD order and so breaks ties differently from
-        // Lucene's exact answer, which is what the native engine gives: stay on OpenSearch's,
-        // unless the index asks for the exact answer (NATIVE_APPROXIMATE).
+        // Lucene's exact answer, which is what the native engine gives: native by default
+        // (NATIVE_APPROXIMATE), on OpenSearch's when the index turns that off.
         // Not over buffered documents: the approximation walks the reader's points alone, where
         // they have none, so only the native engine finds them.
         if (reason == null && approximated(query) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {

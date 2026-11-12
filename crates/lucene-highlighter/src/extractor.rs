@@ -317,6 +317,7 @@ pub struct WeightedSpanTermExtractor {
     expand_multi_term_query: bool,
     max_doc_chars_to_analyze: i32,
     use_payloads: bool,
+    opensearch: bool,
 }
 
 impl Default for WeightedSpanTermExtractor {
@@ -330,8 +331,15 @@ impl Default for WeightedSpanTermExtractor {
 struct Leaf<'a> {
     stream: Option<DynStream<'a>>,
     replay: Option<DynStream<'a>>,
+    /// The tokens read, once a query needs the document.
+    tokens: Option<FieldTokens>,
+    /// The one-document index, built from `tokens` once a span query needs
+    /// positions.
     index: Option<Arc<lucene_search::memory::MemoryIndexReader>>,
+    /// The document's distinct terms, sorted, once a query expands over
+    /// them (`terms_ready`).
     terms: Vec<Vec<u8>>,
+    terms_ready: bool,
 }
 
 impl WeightedSpanTermExtractor {
@@ -343,7 +351,16 @@ impl WeightedSpanTermExtractor {
             expand_multi_term_query: false,
             max_doc_chars_to_analyze: 0,
             use_payloads: false,
+            opensearch: false,
         }
+    }
+
+    /// OpenSearch's `CustomQueryScorer.CustomWeightedSpanTermExtractor`: a
+    /// query it knows nothing about gives its terms when nothing else has,
+    /// `has_child`/`has_parent` give none, and an `IndexOrDocValuesQuery` is
+    /// read as its index query.
+    pub fn set_opensearch(&mut self, opensearch: bool) {
+        self.opensearch = opensearch;
     }
 
     /// `setExpandMultiTermQuery(expand)`.
@@ -380,8 +397,10 @@ impl WeightedSpanTermExtractor {
             leaf: Leaf {
                 stream: Some(token_stream),
                 replay: None,
+                tokens: None,
                 index: None,
                 terms: Vec::new(),
+                terms_ready: false,
             },
             out: HashMap::new(),
         };
@@ -445,9 +464,11 @@ impl Run<'_, '_> {
         self.out.insert(key, new);
     }
 
-    /// `getLeafContext()`: the stream indexed, on first need.
+    /// `getLeafContext()`: the stream read (and replayable), on first need.
+    /// The index itself ([`Self::ensure_index`]) and the terms
+    /// ([`Self::ensure_terms`]) are built only for the queries that read them.
     fn ensure_leaf(&mut self) -> Result<()> {
-        if self.leaf.index.is_some() {
+        if self.leaf.tokens.is_some() {
             return Ok(());
         }
         let stream = self
@@ -487,15 +508,41 @@ impl Run<'_, '_> {
             end_attributes: None,
         };
         cache.close()?;
-        let mut terms: Vec<Vec<u8>> = field_tokens.tokens.iter().map(|t| t.term.clone()).collect();
-        terms.sort_unstable();
-        terms.dedup();
-        let mut indexer = MemoryIndex::with_options(true, self.cfg.use_payloads);
-        indexer.add_field_tokens(SHADOW_FIELD, &field_tokens, 0, 1)?;
-        self.leaf.index = Some(indexer.create_reader()?);
-        self.leaf.terms = terms;
+        self.leaf.tokens = Some(field_tokens);
         self.leaf.replay = Some(cache);
         Ok(())
+    }
+
+    /// The document's distinct terms, sorted, in `self.leaf.terms`.
+    fn ensure_terms(&mut self) -> Result<()> {
+        self.ensure_leaf()?;
+        if !self.leaf.terms_ready {
+            let tokens = self.leaf.tokens.as_ref().map_or(&[][..], |t| &t.tokens[..]);
+            let mut terms: Vec<Vec<u8>> = tokens.iter().map(|t| t.term.clone()).collect();
+            terms.sort_unstable();
+            terms.dedup();
+            self.leaf.terms = terms;
+            self.leaf.terms_ready = true;
+        }
+        Ok(())
+    }
+
+    /// The document indexed (`MemoryIndex`), for span positions.
+    fn ensure_index(&mut self) -> Result<Arc<lucene_search::memory::MemoryIndexReader>> {
+        self.ensure_leaf()?;
+        if let Some(index) = &self.leaf.index {
+            return Ok(Arc::clone(index));
+        }
+        let tokens = self
+            .leaf
+            .tokens
+            .as_ref()
+            .ok_or_else(|| Error::IllegalArgument("the document is not read".to_string()))?;
+        let mut indexer = MemoryIndex::with_options(true, self.cfg.use_payloads);
+        indexer.add_field_tokens(SHADOW_FIELD, tokens, 0, 1)?;
+        let index = indexer.create_reader()?;
+        self.leaf.index = Some(Arc::clone(&index));
+        Ok(index)
     }
 
     /// `extract(query, boost, terms)`.
@@ -503,8 +550,17 @@ impl Run<'_, '_> {
         match query {
             Clause::Boost(b) => self.extract(&b.inner, boost * b.boost),
             Clause::Boolean(b) => {
-                for c in b.must.iter().chain(&b.filter).chain(&b.should) {
-                    self.extract(c, boost)?;
+                // OpenSearch's bool queries hold their musts, shoulds and filters in that order
+                // (the plugin sends no other order), which the kept weights and an unknown
+                // query's terms depend on
+                if self.cfg.opensearch {
+                    for c in b.must.iter().chain(&b.should).chain(&b.filter) {
+                        self.extract(c, boost)?;
+                    }
+                } else {
+                    for c in b.must.iter().chain(&b.filter).chain(&b.should) {
+                        self.extract(c, boost)?;
+                    }
                 }
                 Ok(())
             }
@@ -519,10 +575,22 @@ impl Run<'_, '_> {
                 Ok(())
             }
             Clause::MultiPhrase(m) => self.extract_multi_phrase(m, boost),
+            Clause::TermInSet(q) => self.extract_multi_term(query, &q.field, boost),
             Clause::MatchAllDocs(_) => Ok(()),
             Clause::Extended(e) => match e.as_ref() {
                 ExtendedQuery::Synonym(_) => self.extract_weighted_terms(query, boost),
                 ExtendedQuery::Span(node) => self.extract_weighted_span_terms(node, boost),
+                // the query's own `rewrite` over the document, then read again
+                ExtendedQuery::MultiPhrasePrefix(q) => {
+                    self.ensure_terms()?;
+                    let rewritten = q.rewrite_over(&self.leaf.terms);
+                    self.extract(&rewritten, boost)
+                }
+                ExtendedQuery::MultiTerm(m) => self.extract_multi_term(query, m.field(), boost),
+                ExtendedQuery::LateJoin(_) if self.cfg.opensearch => Ok(()),
+                ExtendedQuery::IndexOrDocValues(q) if self.cfg.opensearch => {
+                    self.extract(&q.index_query, boost)
+                }
                 _ => self.extract_other(query, boost),
             },
             _ => self.extract_other(query, boost),
@@ -546,12 +614,18 @@ impl Run<'_, '_> {
         }
         self.ensure_leaf()?;
         let Some(field) = field else {
-            // `extractUnknownQuery`: nothing
+            // `extractUnknownQuery`: nothing, or OpenSearch's: the query's
+            // terms when there are none yet
+            if self.cfg.opensearch && self.out.is_empty() {
+                return self.extract_weighted_terms(query, 1.0);
+            }
             return Ok(());
         };
         // `SCORING_BOOLEAN_REWRITE`: a boosted `TermQuery` per matching term
-        let expanded = expand_clause(query, &self.leaf.terms)?;
-        for (term, term_boost) in expanded.unwrap_or_default() {
+        self.ensure_terms()?;
+        let expanded = expand_clause(query, &self.leaf.terms)?.unwrap_or_default();
+        too_many_clauses(expanded.len())?;
+        for (term, term_boost) in expanded {
             let text = text_of(&term);
             if self.field_ok(field) {
                 self.put(
@@ -559,6 +633,49 @@ impl Run<'_, '_> {
                     WeightedSpanTerm::new(boost * term_boost, text),
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// A multi-term query given as its automaton (or terms), rewritten with
+    /// `SCORING_BOOLEAN_REWRITE` over the document's terms: each term it
+    /// accepts, weighted `boost`.
+    fn extract_multi_term(&mut self, query: &Clause, field: &str, boost: f32) -> Result<()> {
+        if !self.cfg.expand_multi_term_query || !self.field_ok(field) {
+            return Ok(());
+        }
+        self.ensure_terms()?;
+        struct Accepted<'t> {
+            terms: &'t [Vec<u8>],
+            out: Vec<Vec<u8>>,
+        }
+        impl QueryVisitor for Accepted<'_> {
+            fn consume_terms(&mut self, _query: &Clause, terms: &[Term]) {
+                for t in terms {
+                    if self.terms.binary_search(&t.bytes).is_ok() {
+                        self.out.push(t.bytes.clone());
+                    }
+                }
+            }
+            fn consume_terms_matching(
+                &mut self,
+                _query: &Clause,
+                _field: &str,
+                matcher: &dyn lucene_search::query_visitor::TermMatcher,
+            ) {
+                self.out
+                    .extend(self.terms.iter().filter(|t| matcher.matches(t)).cloned());
+            }
+        }
+        let mut accepted = Accepted {
+            terms: &self.leaf.terms,
+            out: Vec::new(),
+        };
+        query_visitor::visit(query, &mut accepted);
+        too_many_clauses(accepted.out.len())?;
+        for term in accepted.out {
+            let text = text_of(&term);
+            self.put(text.clone(), WeightedSpanTerm::new(boost, text));
         }
         Ok(())
     }
@@ -652,6 +769,7 @@ impl Run<'_, '_> {
         }
         self.ensure_leaf()?;
         let node = if must_rewrite(span_query, self.cfg.expand_multi_term_query) {
+            self.ensure_terms()?;
             match expand_node(span_query, &self.leaf.terms)? {
                 Some(n) => n,
                 None => return Ok(()),
@@ -671,12 +789,8 @@ impl Run<'_, '_> {
         let Some(shadowed) = shadow_node(&node)? else {
             return Ok(());
         };
-        let leaf = self
-            .leaf
-            .index
-            .as_ref()
-            .ok_or_else(|| Error::IllegalArgument("the document is not indexed".to_string()))?;
-        let span_positions = span_positions(leaf, &Clause::from(shadowed))?;
+        let leaf = self.ensure_index()?;
+        let span_positions = span_positions(&leaf, &Clause::from(shadowed))?;
         if span_positions.is_empty() {
             return Ok(());
         }
@@ -975,6 +1089,7 @@ pub struct QueryScorer {
     skip_init_extractor: bool,
     max_chars_to_analyze: i32,
     use_payloads: bool,
+    opensearch: bool,
 }
 
 impl QueryScorer {
@@ -993,7 +1108,18 @@ impl QueryScorer {
             skip_init_extractor: false,
             max_chars_to_analyze: 0,
             use_payloads: false,
+            opensearch: false,
         }
+    }
+
+    /// OpenSearch's `CustomQueryScorer` over `query`: the terms of `field`
+    /// alone, or of every field when `None`, read by OpenSearch's extractor
+    /// ([`WeightedSpanTermExtractor::set_opensearch`]).
+    pub fn opensearch(query: &Clause, field: Option<&str>) -> Self {
+        let mut s = Self::new(query);
+        s.field = field.map(str::to_string);
+        s.opensearch = true;
+        s
     }
 
     /// `new QueryScorer(query)`.
@@ -1097,6 +1223,7 @@ impl Scorer for QueryScorer {
         qse.set_max_doc_chars_to_analyze(self.max_chars_to_analyze);
         qse.set_expand_multi_term_query(self.expand_multi_term_query);
         qse.set_use_payloads(self.use_payloads);
+        qse.set_opensearch(self.opensearch);
         let extraction = match &self.reader {
             None => qse.get_weighted_span_terms(&query, 1.0, stream, self.field.as_deref())?,
             Some(r) => qse.get_weighted_span_terms_with_scores(
@@ -1229,4 +1356,16 @@ impl Scorer for QueryTermScorer {
     fn fragment_score(&self) -> f32 {
         self.total_score
     }
+}
+
+/// `ScoringRewrite`'s `checkMaxClauseCount`: a multi-term query's scoring
+/// rewrite over the document refuses more terms than the clause count.
+fn too_many_clauses(terms: usize) -> Result<()> {
+    use lucene_search::extended_query::MAX_CLAUSE_COUNT;
+    if terms > MAX_CLAUSE_COUNT {
+        return Err(Error::TooManyClauses(format!(
+            "maxClauseCount is set to {MAX_CLAUSE_COUNT}"
+        )));
+    }
+    Ok(())
 }

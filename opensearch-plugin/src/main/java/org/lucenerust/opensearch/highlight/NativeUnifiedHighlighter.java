@@ -219,13 +219,20 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         return new HighlightField(fieldContext.fieldName, Text.convertFromStringArray(fragments));
     }
 
+    /** {@code UnifiedHighlighter.convertFieldValue}, for {@link NativePlainHighlighter}. */
+    static String convert(MappedFieldType type, Object value) {
+        return convertFieldValue(type, value);
+    }
+
     /** {@code UnifiedHighlighter.buildHighlighter}'s inputs as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) {
         // A realtime view adds the writer's buffers as leaves the native reader does not hold.
         if (LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
             return new Prepared(null, 0, "highlight_live_view");
         }
-        long handle = readers.peek(fieldContext.hitContext.topLevelReader());
+        // Opened here when the query phase did not (a query it ran on Lucene): the hits were
+        // searched on this reader, so later searches of it read through the same handle.
+        long handle = readers.acquire(fieldContext.hitContext.topLevelReader()).handle();
         if (handle == 0) {
             return new Prepared(null, 0, "highlight_reader");
         }

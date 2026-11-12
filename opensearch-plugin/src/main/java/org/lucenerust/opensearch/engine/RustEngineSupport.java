@@ -118,12 +118,14 @@ public final class RustEngineSupport {
      * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
      * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
      * 8-33% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
-     * segment already written this way is copied by later merges rather than compressed again. Off
-     * by default, like stock.
+     * segment already written this way is copied by later merges rather than compressed again. On
+     * by default: on 2M log events merged stored fields are 28% smaller (the index 16%) and fetches
+     * about 30% faster, for about 1.4 CPU-s more per million documents indexed; on text the
+     * stored fields are 9% smaller.
      */
     public static final Setting<Boolean> MERGE_LZ4_HIGH_COMPRESSION = Setting.boolSetting(
         "index.codec.stored_fields.recompress_on_merge",
-        false,
+        true,
         Setting.Property.IndexScope
     );
 

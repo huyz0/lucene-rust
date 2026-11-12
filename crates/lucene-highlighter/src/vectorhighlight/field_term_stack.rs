@@ -81,14 +81,14 @@ impl FieldTermStack {
         field: &str,
         field_query: &FieldQuery,
     ) -> Result<Self> {
-        let mut this = Self {
+        let empty = Self {
             field: field.to_string(),
             arena: Vec::new(),
             list: VecDeque::new(),
         };
-        let Some(term_set) = field_query.term_set(field) else {
-            return Ok(this);
-        };
+        if field_query.term_set(field).is_none() {
+            return Ok(empty);
+        }
         let segment = reader
             .segment_readers()
             .iter()
@@ -96,7 +96,7 @@ impl FieldTermStack {
             .ok_or_else(|| Error::IllegalArgument(format!("doc {doc} is in no segment")))?;
         let local = doc - segment.doc_base;
         let Some(number) = segment.field_infos().field_by_name(field).map(|f| f.number) else {
-            return Ok(this);
+            return Ok(empty);
         };
         // `termVectors().get(docId, fieldName)`: the one field, not the
         // document's every field
@@ -105,28 +105,54 @@ impl FieldTermStack {
             .term_vectors_reader()
             .map_err(|e| Error::Io(e.to_string()))?
         else {
-            return Ok(this);
+            return Ok(empty);
         };
-        let Some(vector) = tvs
+        let vector = tvs
             .read_chunk(local)
             .map_err(io)?
             .field(local, number)
-            .map_err(io)?
-        else {
+            .map_err(io)?;
+        let num_docs = f64::from(reader.max_doc());
+        Self::from_term_vector(field, vector.as_ref(), field_query, num_docs, &mut |term| {
+            reader
+                .doc_freq(field, term)
+                .map_err(|e| Error::Io(e.to_string()))
+        })
+    }
+
+    /// `FieldTermStack` over a term vector already read (`None` for a
+    /// document without one): `num_docs` and `doc_freq` are the reader's
+    /// `numDocs()` and `docFreq(term)` for the terms' weights.
+    ///
+    /// # Errors
+    /// What `doc_freq` returns.
+    pub fn from_term_vector(
+        field: &str,
+        vector: Option<&lucene_codecs::term_vectors::TermVectorField>,
+        field_query: &FieldQuery,
+        num_docs: f64,
+        doc_freq: &mut dyn FnMut(&[u8]) -> Result<i64>,
+    ) -> Result<Self> {
+        let mut this = Self {
+            field: field.to_string(),
+            arena: Vec::new(),
+            list: VecDeque::new(),
+        };
+        let Some(term_set) = field_query.term_set(field) else {
+            return Ok(this);
+        };
+        let Some(vector) = vector else {
             return Ok(this);
         };
         if !vector.has_positions {
             return Ok(this);
         }
-        let num_docs = f64::from(reader.max_doc());
         for t in &vector.terms {
             let text = String::from_utf8_lossy(&t.term).into_owned();
             if !term_set.contains(&text) {
                 continue;
             }
-            let doc_freq = reader
-                .doc_freq(field, &t.term)
-                .map_err(|e| Error::Io(e.to_string()))?;
+            let doc_freq = doc_freq(&t.term)?;
             // `(float) (Math.log(numDocs / (double) (docFreq + 1)) + 1.0)`
             let weight = ((num_docs / (doc_freq + 1) as f64).ln() + 1.0) as f32;
             let positions = t.positions.as_deref().unwrap_or(&[]);

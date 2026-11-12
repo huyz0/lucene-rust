@@ -81,6 +81,11 @@ def set_shapes(index, mode):
     req("PUT", f"/{index}/_settings", {"index.search.accelerated_shapes": mode})
 
 
+def set_exact_approximation(index, on):
+    """`index.search.approximation.exact`; `None` restores the default (on)."""
+    req("PUT", f"/{index}/_settings", {"index.search.approximation.exact": on})
+
+
 WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho "
          "sigma tau upsilon phi chi psi omega").split()
 
@@ -859,6 +864,42 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
     """The whole matrix (or `rows`) against the Lucene reference, under one routing mode."""
     label = f"{label}/{shapes}"
     set_shapes(index, shapes)
+    # OpenSearch's approximation is the reference here: rows that expect "approximate" stay on it.
+    # check_exact_approximation covers the default, which answers them natively and exactly.
+    set_exact_approximation(index, False)
+    try:
+        return run_matrix_rows(index, shards, label, shapes, index_sorted, rows)
+    finally:
+        set_exact_approximation(index, None)
+
+
+def check_exact_approximation(index, shards, label):
+    """With `index.search.approximation.exact` at its default, the rows OpenSearch would approximate run
+    natively: their hits are the exact ones (OpenSearch's with `track_total_hits: true`, which
+    turns the approximation off), their totals OpenSearch's own."""
+    # A post_filter's approximation is not the query's: those rows stay on OpenSearch either way.
+    rows = [(n, b) for n, b, e in matrix() if e == "approximate" and "post_filter" not in b]
+    check(rows, f"{label} {index}: no approximate rows")
+    set_native(index, False)
+    approx, exact = {}, {}
+    for name, body in rows:
+        approx[name] = shape(complete(search(index, body)), search_url(index, body)[1])
+        exact[name] = shape(complete(search(index, {**body, "track_total_hits": True})), search_url(index, body)[1])
+    set_native(index, True)
+    for name, body in rows:
+        before = stats()
+        got = shape(search(index, body), search_url(index, body)[1])
+        after = stats()
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
+        check(ran_native == shards, f"{label} {index} [{name}]: exact approximation ran native on {ran_native} of {shards} shards; fallbacks {fallback_delta(before, after)}")
+        check(got["total"] == approx[name]["total"], f"{label} {index} [{name}]: total {got['total']} vs OpenSearch's {approx[name]['total']}")
+        # Only the hits: the exact request's total and early termination are its own.
+        loose = {"total": None, "terminated_early": None}
+        diff = same({**got, **loose}, {**exact[name], **loose})
+        check(diff is None, f"{label} {index} [{name}]: exact approximation differs from the exact answer: {diff}")
+
+
+def run_matrix_rows(index, shards, label, shapes, index_sorted, rows):
     queries = rows if rows is not None else matrix()
     set_native(index, False)
     reference = {}
@@ -1541,6 +1582,8 @@ def main():
     for shapes in ("fast", "all"):
         native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
     native += run_matrix("clean", 1, "no deletions")
+    for index, shards in (("single", 1), ("multi", 3), ("clean", 1)):
+        check_exact_approximation(index, shards, "exact approximation")
     # An index sorted by qty then n: a search whose sort begins it ends each
     # segment at its first non-competitive document (TopFieldCollector).
     try:

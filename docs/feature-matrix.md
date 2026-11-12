@@ -59,7 +59,7 @@ OpenSearch's answer on the same shard:
 | `constant_score`, `dis_max`, `match_all` | ✅ | |
 | `match_phrase` | ✅ | exact and sloppy; a phrase with a gap (a removed stopword) falls back |
 | `prefix`, `wildcard`, `regexp`, `fuzzy` | ✅ | `regexp` with non-default flags (e.g. `case_insensitive`) and `wildcard` with a `\` escape fall back |
-| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) falls back, unless `index.search.approximation.exact` asks for the exact native answer |
+| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) runs natively with the exact top hits (`index.search.approximation.exact`, on by default); `false` keeps OpenSearch's approximate answer |
 | `exists` | ✅ | on a vector field it falls back |
 | any other query | ? | runs native when OpenSearch rewrites it into the Lucene queries the rows above produce (term, boolean, constant-score, boost, disjunction-max, match-all/none, phrase, prefix/wildcard/regexp/fuzzy/terms, 8-byte point range, exists) -- e.g. `simple_query_string`, `match_bool_prefix` -- and falls back otherwise, counted as `query_<Class>`/`clause_<Class>` (`nested`, `geo_*`, `knn`, `script_score`, `function_score`, `span_*`, `intervals`, ...). Not verified per query type: measure with the stats below |
 
