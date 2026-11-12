@@ -108,6 +108,28 @@ public final class RestStatsAction extends BaseRestHandler {
             b.field("native", analyzed[0]);
             b.field("java", analyzed[1]);
             b.endObject();
+            // Memory the library holds outside the heap, its bound, and the requests it stopped.
+            long[] memory = NativeMemory.stats();
+            if (memory != null) {
+                long[] requests = stats.requestMemory();
+                b.startObject("off_heap_memory");
+                b.field("used_in_bytes", memory[0]);
+                b.field("peak_in_bytes", memory[1]);
+                b.field("limit_in_bytes", memory[2]);
+                b.field("request_breaker_trips", memory[3]);
+                b.field("limit_trips", memory[4]);
+                b.field("cancelled_mid_call", memory[5]);
+                b.field("request_peak_in_bytes", requests[0]);
+                b.field("request_peaks_sum_in_bytes", requests[1]);
+                b.field("requests", requests[2]);
+                b.startObject("query_cache");
+                b.field("memory_size_in_bytes", memory[6]);
+                b.field("limit_in_bytes", memory[7]);
+                b.field("evictions", memory[8]);
+                b.endObject();
+                b.field("sort_columns_in_bytes", memory[9]);
+                b.endObject();
+            }
             // Recall-targeted k-NN tuners (index.lucene_rust.knn.target_recall), by index/shard/field.
             String recall = NativeBridge.knnRecallStats();
             if (recall != null) {

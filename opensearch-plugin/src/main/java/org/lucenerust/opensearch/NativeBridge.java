@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 143;
+    public static final int EXPECTED_ABI_VERSION = 147;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -48,6 +48,10 @@ public final class NativeBridge {
     public static final int BUFFER_TOO_SMALL = 8;
     public static final int PANIC = 9;
     public static final int INVALID_ARGUMENT = 10;
+    /** The request outgrew the memory it was granted, or the node is over its off-heap bound. */
+    public static final int MEMORY_LIMIT = 12;
+    /** The request was cancelled while the native call ran ({@link #memoryScopeCancel}). */
+    public static final int CANCELLED = 13;
 
     /** Query blob tags ({@code decode_query} in {@code jvm_reader.rs}). */
     public static final byte QUERY_TERM = 0;
@@ -386,6 +390,19 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
         );
         static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle MEMORY_SET_UPCALL = bind("ffi_memory_set_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle MEMORY_SCOPE_BEGIN = bind(
+            "ffi_memory_scope_begin",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle MEMORY_SCOPE_END = bind("ffi_memory_scope_end", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+        static final MethodHandle MEMORY_SCOPE_CANCEL = bind("ffi_memory_scope_cancel", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle MEMORY_SET_PROCESS_LIMIT = bind(
+            "ffi_memory_set_process_limit",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle MEMORY_STATS = bind("ffi_memory_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+        static final MethodHandle QUERY_CACHE_SET_BUDGET = bind("ffi_query_cache_set_budget", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle WRITER_MERGE_STATE = bind(
             "ffi_engine_writer_merge_state",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS)
@@ -2865,6 +2882,99 @@ public final class NativeBridge {
     public static int writerSetMergedSegmentWarmer(long handle, boolean on) {
         try {
             return (int) H.WRITER_SET_MERGED_SEGMENT_WARMER.invokeExact(handle, (byte) (on ? 1 : 0));
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    // ---- Memory accounting (memory.rs) ----------------------------------------------------
+
+    /** Registers the upcall a request's scope asks for more memory through ({@code MemoryUpcall}). */
+    public static int memorySetUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.MEMORY_SET_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a memory scope on this thread for the request {@code token}: what the next native calls
+     * on it allocate is charged to it, at most {@code hardLimit} bytes (0: only the grants bound it).
+     */
+    public static int memoryScopeBegin(long token, long hardLimit, byte[] label) {
+        try (Scratch s = Scratch.open()) {
+            return (int) H.MEMORY_SCOPE_BEGIN.invokeExact(token, hardLimit, s.bytes(label), (long) label.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Closes this thread's innermost memory scope: {@code out} gets the bytes granted, the most held
+     * and what was still held, as far as it reaches.
+     */
+    public static int memoryScopeEnd(long[] out) {
+        try (Scratch s = Scratch.open()) {
+            int n = out == null ? 0 : out.length;
+            MemorySegment values = s.alloc(Math.max(1, n) * (long) Long.BYTES);
+            int rc = (int) H.MEMORY_SCOPE_END.invokeExact(values, (long) n);
+            if (rc == OK) {
+                for (int i = 0; i < n; i++) {
+                    out[i] = values.getAtIndex(JAVA_LONG, i);
+                }
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Stops the request {@code token} at its next checkpoint, from any thread. */
+    public static int memoryScopeCancel(long token) {
+        try {
+            return (int) H.MEMORY_SCOPE_CANCEL.invokeExact(token);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The bytes every segment's native query cache may hold together. */
+    public static int queryCacheSetBudget(long bytes) {
+        try {
+            return (int) H.QUERY_CACHE_SET_BUDGET.invokeExact(bytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The node's bound on what the library holds, in bytes; 0 removes it. */
+    public static int memorySetProcessLimit(long bytes) {
+        try {
+            return (int) H.MEMORY_SET_PROCESS_LIMIT.invokeExact(bytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The accounting's counters into {@code out}: bytes held, the most held, the bound, requests
+     * stopped by their grant, requests stopped by the bound, requests cancelled; then the native
+     * query caches' bytes, budget and evictions, and decoded sort columns' bytes.
+     */
+    public static int memoryStats(long[] out) {
+        if (out == null) {
+            return nullArgument("out");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment values = s.alloc(Math.max(1, out.length) * (long) Long.BYTES);
+            int rc = (int) H.MEMORY_STATS.invokeExact(values, (long) out.length);
+            if (rc == OK) {
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = values.getAtIndex(JAVA_LONG, i);
+                }
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

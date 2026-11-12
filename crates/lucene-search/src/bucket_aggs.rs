@@ -4178,6 +4178,9 @@ pub fn aggregate_tree(
             let mut live_window: Vec<i32> = Vec::with_capacity(WINDOW as usize);
             let visit_window =
                 |states: &mut [State], leaves: &mut [Leaf<'_>], docs: &[i32]| -> Result<()> {
+                    // Buckets grow with the documents collected: the
+                    // request's memory bound (or a cancel) stops it here.
+                    lucene_util::memory::checkpoint()?;
                     for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
                         if l.done {
                         } else if no_windows() {
