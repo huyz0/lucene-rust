@@ -36,8 +36,11 @@ mismatch stops the node with one line naming the file and the platform. That is
 the only way the plugin can stop a node.
 
 Installing changes nothing about existing indices' data. Native search starts
-serving eligible searches on every index at once; the Rust engine serves only
-indices that ask for it.
+serving eligible searches on every index at once, and the Rust engine serves
+every index that does not set `index.lucene_rust.engine: false` from the
+shard's next start on that node, existing indices included; it reads and
+writes stock Lucene segments. To keep OpenSearch's engine for indices that do
+not ask, start the node with `lucene_rust.engine.default: false`.
 
 ## Configure
 
@@ -51,7 +54,7 @@ indices that ask for it.
 | `lucene_rust.search.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/lucene_rust/stats` |
 | `lucene_rust.fetch.reader_wrapper` | node | `true`, `false` with the security plugin | install the reader wrapper native stored-field reads need. The security plugin needs the index's one reader wrapper slot for field- and document-level security, so with it installed the default is off |
 | `index.lucene_rust.engine` | index, final | the node default | `true`: the index's shards are written by the Rust engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
-| `lucene_rust.engine.default` | node | `false` | the default of the setting above. An index that only inherits it falls back to OpenSearch's engine where the Rust one would refuse it |
+| `lucene_rust.engine.default` | node | `true` | the default of the setting above, for every index without its own setting: new ones, ones created before the plugin, and system indices. An index that only inherits it stores no setting (a node without the plugin opens it unchanged) and falls back to OpenSearch's engine where the Rust one would refuse it. `false` is the opt-out: OpenSearch's engine for every index that does not ask |
 | `lucene_rust.engine.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for Rust-engine indices. Used for rolling back and for mixed clusters |
 | `breaker.lucene_rust_writer.limit` | node | 3 × `indices.memory.index_buffer_size` + `lucene_rust.store.page_cache.size` | circuit breaker for the Rust writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
 | `-Dlucene_rust.library.path=FILE` | JVM system property | the zip's `native/<os>-<arch>/` | load `liblucene_ffi.so` from elsewhere; for testing a custom build |
@@ -218,15 +221,21 @@ set of answers checked after every step; timings below).
 1. **Install the plugin, one node at a time.** For each node: disable shard
    allocation (`cluster.routing.allocation.enable: primaries`), flush, stop the
    node, install the plugin and the JVM option, start it, wait for it to join,
-   re-enable allocation and wait for green. Existing indices stay on
-   OpenSearch's engine. Their eligible searches run natively from the moment a
-   shard is on an upgraded node.
+   re-enable allocation and wait for green. Each shard of an existing index
+   moves onto the Rust engine as it starts on an upgraded node: it inherits
+   `lucene_rust.engine.default` (on), stores no setting, and keeps its stock
+   segments, which the Rust engine reads and merges as they are. While the
+   restart runs, an index has copies on both engines, which replicate to each
+   other. Eligible searches run natively from the moment a shard is on an
+   upgraded node. To keep existing indices on OpenSearch's engine, start the
+   upgraded nodes with `lucene_rust.engine.default: false`.
 2. **Check.** Watch `native_errors` (0) and the fallback mix
    (`fallback-report.py`). To take native search back off one index, set
    `index.lucene_rust.search.enabled: false` on it.
-3. **Adopt the Rust engine, per index, by reindex** (optional). The engine is
-   chosen at creation (`index.lucene_rust.engine` is final), so an existing
-   index moves by reindexing into a new one:
+3. **Pin an index to the Rust engine** (optional). With the default on, there
+   is nothing to do. With `lucene_rust.engine.default: false`, an index asks
+   for the engine at creation (`index.lucene_rust.engine` is final), so an
+   existing one moves by reindexing into a new one:
    ```
    PUT new-index   { "settings": { "index.lucene_rust.engine": true, ... }, "mappings": ... }
    POST _reindex   { "source": { "index": "old-index" }, "dest": { "index": "new-index" } }
@@ -234,8 +243,8 @@ set of answers checked after every step; timings below).
                                   { "add":    { "index": "new-index", "alias": "app" } } ] }
    ```
    Writes that arrive during the reindex must go to both, or be replayed, as
-   for any reindex migration. `lucene_rust.engine.default: true` makes every
-   *new* index use the Rust engine where it can.
+   for any reindex migration. An index created this way carries the setting,
+   so removing the plugin later needs the reindex in step 3 of rolling back.
 
 ## Rolling back
 

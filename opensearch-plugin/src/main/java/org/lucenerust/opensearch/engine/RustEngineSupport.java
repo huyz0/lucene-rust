@@ -35,13 +35,16 @@ import java.util.function.LongSupplier;
  */
 public final class RustEngineSupport {
     /**
-     * What an index that does not set {@code index.lucene_rust.engine} gets, on this node -- so a
-     * node can serve every index, system indices included, with the Rust engine, as the REST
-     * suites' run of {@code scripts/verify-opensearch.sh --engine} does.
+     * What an index that does not set {@code index.lucene_rust.engine} gets, on this node: every
+     * such index, system indices and indices created before the plugin included, is served by the
+     * Rust engine where it can be, and by OpenSearch's where it needs something the Rust writer
+     * refuses. On by default: the segments are stock Lucene's either way and such an index stores
+     * no setting, so a node without the plugin opens it unchanged. {@code false} keeps OpenSearch's
+     * engine for every index that does not ask.
      */
     public static final Setting<Boolean> ENGINE_DEFAULT = Setting.boolSetting(
         "lucene_rust.engine.default",
-        false,
+        true,
         Setting.Property.NodeScope
     );
 

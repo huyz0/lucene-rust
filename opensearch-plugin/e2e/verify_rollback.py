@@ -10,8 +10,10 @@ as they did at the start (native or not, the answers are Lucene's).
 Forward -- adopting the Rust engine:
   F1. The cluster runs OpenSearch without the plugin; index `legacy` is
       written by OpenSearch's engine.
-  F2. Rolling restart onto the plugin image. `legacy` stays on OpenSearch's
-      engine (it never asked for the Rust one); searches on it go native.
+  F2. Rolling restart onto the plugin image. `legacy` moves onto the Rust
+      engine shard by shard (it inherits `lucene_rust.engine.default`, on by
+      default), copies on both engines while the restart runs, and carries no
+      plugin setting; searches on it go native.
   F3. Adoption: reindex `legacy` into `adopted`, created with
       `index.lucene_rust.engine: true`, and move the alias `app` over.
 
@@ -23,7 +25,8 @@ Backward -- rolling back off it:
       a node without the plugin refuses an index that carries the final
       `index.lucene_rust.engine`, so a rolling removal needs it gone.
   B3. Rolling restart onto OpenSearch without the plugin; every document and
-      every answer stays.
+      every answer stays, `legacy` (Rust-written since F2) included, with no
+      reindex.
 
 Timings for each step go to the JSON file named by --out.
 Standard library only.
@@ -317,8 +320,10 @@ def main():
     model.verify("legacy", "F2")
     same_answers(ref, "legacy", "F2")
     e = engines()
-    check(all(x is not None and x["rust"] == 0 for x in e.values()),
-          f"F2: legacy stays on OpenSearch's engine: {e}")
+    check(all(x is not None and x["rust"] > 0 for x in e.values()),
+          f"F2: legacy moved onto the Rust engine on every node: {e}")
+    s = req("GET", "/legacy/_settings?flat_settings=true")["legacy"]["settings"]
+    check(not any("lucene_rust" in k for k in s), f"F2: legacy carries no plugin setting: {s}")
     before = sum(req("GET", "/_plugins/lucene_rust/stats")["native_queries"] for _ in [0])
     req("POST", "/legacy/_search", {"query": {"match": {"body": "alpha"}}})
     check(req("GET", "/_plugins/lucene_rust/stats")["native_queries"] >= before, "F2: the plugin serves searches")

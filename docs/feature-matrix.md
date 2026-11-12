@@ -19,7 +19,7 @@ stock OpenSearch would, and the fallback is counted by reason.
 | Half | What it replaces | Turned on by | When it does not apply |
 |---|---|---|---|
 | **Native search** | the shard's query phase (query, sort, aggregations, `post_filter`, `min_score`, `terminate_after`, scroll), and the stored-field reads of fetch and get | installed = on; `index.lucene_rust.search.enabled` (default `true`) per index | per request, for the shapes in the fallback column below |
-| **Rust engine** | the shard's indexing engine: writes, refresh, flush, merges, soft deletes, replication | `index.lucene_rust.engine: true` per index, or `lucene_rust.engine.default: true` per node | index configurations and field types it refuses (below) |
+| **Rust engine** | the shard's indexing engine: writes, refresh, flush, merges, soft deletes, replication | every index that does not set `index.lucene_rust.engine: false`, by the node default `lucene_rust.engine.default` (on; `false` opts a node out) | index configurations and field types it refuses (below) |
 
 Native search works on any index on a local file system, whichever engine
 wrote its segments. The Rust engine writes ordinary Lucene 10.5 segments,

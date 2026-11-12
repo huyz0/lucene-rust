@@ -954,7 +954,17 @@ def unsupported():
     check(status in (200, 201), "the shard carries on after a refused document")
     must("DELETE", "/tv_rust")
     nodes = must("GET", "/_nodes/settings?flat_settings=true")["nodes"].values()
-    if any(n["settings"].get("lucene_rust.engine.default") == "true" for n in nodes):
+    if all(n["settings"].get("lucene_rust.engine.default", "true") == "true" for n in nodes):
+        # The default: an index that says nothing is served by the Rust engine, and stores no
+        # setting, so a node without the plugin opens it as it is.
+        before = must("GET", "/_plugins/lucene_rust/stats")["engines"]["rust"]
+        must("PUT", "/inherited", {"settings": {"number_of_shards": 1, "number_of_replicas": 0}})
+        wait_green("inherited")
+        stored = must("GET", "/inherited/_settings?flat_settings=true")["inherited"]["settings"]
+        check("index.lucene_rust.engine" not in stored, f"an inherited-default index stores no engine setting: {stored}")
+        after = must("GET", "/_plugins/lucene_rust/stats")["engines"]["rust"]
+        check(after > before, f"an inherited-default index is on the Rust engine: {before} -> {after}")
+        must("DELETE", "/inherited")
         # Only asked-for is strict: an index that merely inherits the node default and needs what
         # the Rust writer cannot produce is served by OpenSearch's engine.
         must("PUT", "/fallback_codec", {"settings": {"index.sparse": True, "index.codec": "zstd",
