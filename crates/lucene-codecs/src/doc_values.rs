@@ -1547,6 +1547,30 @@ impl<'a> NumericReader<'a> {
         self.fast.as_ref().and_then(|f| f.get(doc))
     }
 
+    /// [`Self::value`] for a dense varying-bits-per-value field when `doc`
+    /// falls in the block the last read decoded: one packed read, inline.
+    /// `None` means "ask [`Self::value`]" (never "no value"), as for
+    /// [`Self::dense_value`].
+    #[inline]
+    pub fn block_value(&self, doc: i32) -> Option<i64> {
+        let b = self.block.as_ref()?;
+        let shift = self.entry.block_shift?;
+        if !self.entry.is_dense() || self.entry.adaptive.is_some() {
+            return None;
+        }
+        let ordinal = i64::from(doc);
+        if ordinal < 0 || ordinal >= self.entry.num_values || ordinal >> shift != b.index {
+            return None;
+        }
+        if b.bits_per_value == 0 {
+            return Some(b.delta);
+        }
+        let values = self.data.get(b.values_start..b.values_end)?;
+        let raw =
+            direct_reader::get_fast(values, b.bits_per_value, ordinal & low_bits_mask(shift))?;
+        Some(self.entry.gcd.wrapping_mul(raw).wrapping_add(b.delta))
+    }
+
     /// This document's value, or `None` when it legitimately has none.
     /// Identical to `numeric_value(data, entry, doc)`, just without the
     /// per-call rederivation.

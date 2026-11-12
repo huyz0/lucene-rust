@@ -156,6 +156,44 @@ fn shapes(max_doc: i32) -> Vec<Shape> {
             true,
         );
     }
+    // Filters whose best matches lie far from the key's best, which the
+    // bounded search hands back to a whole pass (after the shapes above, so
+    // their indices stay put).
+    let tsec = |from: i64, to: i64| BooleanQuery {
+        filter: vec![Clause::PointsRange(PointsRangeQuery::new("tsec", from, to))],
+        ..Default::default()
+    };
+    for n in [10usize, 100, 1000] {
+        let mut add = |name, query, sort| {
+            out.push(Shape {
+                name,
+                query,
+                sort,
+                n,
+                page2: false,
+            })
+        };
+        add(
+            "src=openssh ts asc",
+            term("openssh"),
+            key("ts", false, None),
+        );
+        add(
+            "tsec(old half) ts desc",
+            tsec(T0, T0 + SPAN / 2),
+            key("ts", true, None),
+        );
+        add(
+            "tsec(middle third) ts desc",
+            tsec(T0 + SPAN / 3, T0 + 2 * SPAN / 3),
+            key("ts", true, None),
+        );
+        add(
+            "tsec(middle third) ts asc",
+            tsec(T0 + SPAN / 3, T0 + 2 * SPAN / 3),
+            key("ts", false, None),
+        );
+    }
     out
 }
 
