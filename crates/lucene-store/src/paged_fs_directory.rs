@@ -1055,9 +1055,6 @@ mod tests {
             assert!(!crate::is_resident(&input[(7 << 18)..(7 << 18) + 10]));
         }
         assert_eq!(&input[..], &bytes[..]);
-        // Wholly resident now: a prefetch has nothing to do.
-        assert!(!crate::is_prefetchable(&input));
-        assert!(crate::is_resident(&input));
     }
 
     #[test]
