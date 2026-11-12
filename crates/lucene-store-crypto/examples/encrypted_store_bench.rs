@@ -73,10 +73,35 @@ fn pager_faults() -> u64 {
     lucene_store::paged_input::Pager::global().map_or(0, |p| p.stats().faults)
 }
 
+/// Reads and sectors completed on the block device named by `DEV_STAT`
+/// (a `/sys/block/<dev>/stat` path), if set.
+fn device_reads() -> Option<(u64, u64)> {
+    let path = std::env::var("DEV_STAT").ok()?;
+    let stat = std::fs::read_to_string(path).ok()?;
+    let mut f = stat
+        .split_whitespace()
+        .map(|v| v.parse::<u64>().unwrap_or(0));
+    let reads = f.next()?;
+    let sectors = f.nth(1)?;
+    Some((reads, sectors))
+}
+
 fn report(phase: &str, ms: f64) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<(u64, u64)>> = Mutex::new(None);
     let (anon, file) = rss();
+    let io = device_reads().map_or(String::new(), |(r, s)| {
+        let mut last = LAST.lock().unwrap();
+        let (r0, s0) = last.unwrap_or((r, s));
+        *last = Some((r, s));
+        format!(
+            "  dev {} reads {:.1} MiB",
+            r - r0,
+            (s - s0) as f64 * 512.0 / 1048576.0
+        )
+    });
     println!(
-        "{phase:<10} {ms:>9.1} ms  anon {anon:>7.1} MB  file {file:>7.1} MB  pager {:>7.1} MB  faults {}",
+        "{phase:<10} {ms:>9.1} ms  anon {anon:>7.1} MB  file {file:>7.1} MB  pager {:>7.1} MB  faults {}{io}",
         pager_mb(),
         pager_faults()
     );

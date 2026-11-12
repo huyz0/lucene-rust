@@ -281,7 +281,11 @@ impl PagedFsDirectory {
         self.inner.ensure_can_read(name)?;
         let path = self.root.join(name);
         let mut file = local::LocalFile::open(&path, self.config.direct_io)?;
-        let codec = decoder.codec(name, file.len(), self)?;
+        // The file's head, read once: the decoder reads its header from it
+        // (through `read_at`), and it holds the first page, or the whole
+        // file when small, so neither is read again.
+        let head = file.read_head(HEAD_READ)?;
+        let codec = local::with_stash(name, &head, || decoder.codec(name, file.len(), self))?;
         let layout = codec.layout();
         let too_large = || Error::Corrupted(format!("{name}: too large to open"));
         let unit = usize::try_from(layout.plain_unit).map_err(|_| too_large())?;
@@ -305,17 +309,29 @@ impl PagedFsDirectory {
             return Ok(Some(input));
         }
         if whole {
-            let bytes = file.read_whole_decoded(len)?;
+            let bytes = match file.decode_head(&head, len)? {
+                Some(bytes) => bytes,
+                None => file.read_whole_decoded(len)?,
+            };
             return Ok(Some(shared::share_whole(key, bytes)));
         }
+        let first = file.decode_first_page(&head)?;
         let filler: Arc<dyn PageFiller> = Arc::new(file);
         let readahead = self.config.readahead.checked_div(page).unwrap_or(0).max(1);
         // The full path names the file's failures (`read_failures`).
         let label = path.to_string_lossy();
         let paged = pager.open_with_readahead(len, page, filler, &label, readahead)?;
+        if let Some(first) = first {
+            paged.install_first(&first);
+        }
         Ok(Some(shared::share_paged(key, paged)))
     }
 }
+
+/// Bytes read from the start of a decoded file when it opens: its header,
+/// its first page of 64 KiB chunks, and the whole of a small file.
+#[cfg(target_os = "linux")]
+const HEAD_READ: usize = 128 << 10;
 
 /// Bytes of the files read whole into memory at open by a
 /// [`PagedFsDirectory`] (pinned files, and files of at most one page) and
@@ -420,6 +436,10 @@ impl Directory for PagedFsDirectory {
 
     fn read_at(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
+        #[cfg(target_os = "linux")]
+        if let Some(bytes) = local::stashed(name, offset, len) {
+            return Ok(bytes);
+        }
         self.inner.ensure_can_read(name)?;
         let mut file = std::fs::File::open(self.root.join(name))?;
         file.seek(SeekFrom::Start(offset))?;
@@ -651,6 +671,50 @@ mod local {
     }
 
     thread_local! {
+        /// The head of the file being opened decoded on this thread (its
+        /// name and first bytes), served to the decoder's header reads.
+        static STASH: std::cell::RefCell<Option<(String, Arc<Vec<u8>>, u64)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Runs `f` with `head` (the first bytes of `name`) served to
+    /// [`stashed`] reads on this thread.
+    pub(super) fn with_stash<R>(name: &str, head: &Head, f: impl FnOnce() -> R) -> R {
+        let previous = STASH.with(|s| {
+            s.borrow_mut()
+                .replace((name.to_string(), Arc::clone(&head.bytes), head.file_len))
+        });
+        let r = f();
+        STASH.with(|s| *s.borrow_mut() = previous);
+        r
+    }
+
+    /// The `len` bytes at `offset` of `name` (fewer at its end) when this
+    /// thread is opening it and read them already.
+    pub(super) fn stashed(name: &str, offset: u64, len: usize) -> Option<Vec<u8>> {
+        STASH.with(|s| {
+            let s = s.borrow();
+            let (stashed, bytes, file_len) = s.as_ref()?;
+            if stashed != name {
+                return None;
+            }
+            let start = usize::try_from(offset).ok()?;
+            let end = offset.saturating_add(len as u64).min(*file_len);
+            let end = usize::try_from(end).ok()?;
+            if end > bytes.len() || start > end {
+                return None;
+            }
+            Some(bytes[start..end].to_vec())
+        })
+    }
+
+    /// The first bytes of a file, read at open.
+    pub(super) struct Head {
+        bytes: Arc<Vec<u8>>,
+        file_len: u64,
+    }
+
+    thread_local! {
         /// Decoded bytes of the run being read, before they are installed.
         static PLAIN: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
@@ -732,6 +796,74 @@ mod local {
 
         pub(super) fn len(&self) -> u64 {
             self.len
+        }
+
+        /// The first `max` bytes of the file (all of a shorter one), in one
+        /// read.
+        pub(super) fn read_head(&self, max: usize) -> Result<Head> {
+            let want = usize::try_from(self.len).unwrap_or(usize::MAX).min(max);
+            let mut bytes = Vec::with_capacity(want);
+            self.read_into(0, want, &mut |b| bytes.extend_from_slice(b))?;
+            Ok(Head {
+                bytes: Arc::new(bytes),
+                file_len: self.len,
+            })
+        }
+
+        /// The stored units of pages `first..first + count` within `head`,
+        /// if it holds them all.
+        fn head_run<'h>(&self, head: &'h Head, first: u64, count: usize) -> Option<&'h [u8]> {
+            let decode = self.decode.as_ref()?;
+            let stored_page = decode.units.saturating_mul(decode.layout.stored_unit);
+            let start = decode
+                .layout
+                .origin
+                .saturating_add(first.saturating_mul(stored_page));
+            let end = start
+                .saturating_add(stored_page.saturating_mul(count as u64))
+                .min(self.len);
+            let (start, end) = (usize::try_from(start).ok()?, usize::try_from(end).ok()?);
+            (start < end && end <= head.bytes.len()).then(|| &head.bytes[start..end])
+        }
+
+        /// Every decoded byte of the file (`len` of them) from `head`, when
+        /// it holds the whole file.
+        pub(super) fn decode_head(&self, head: &Head, len: usize) -> Result<Option<Vec<u8>>> {
+            let page = self.page.max(1);
+            let pages = len.div_ceil(page);
+            if head.bytes.len() as u64 != self.len {
+                return Ok(None);
+            }
+            let Some(stored) = self.head_run(head, 0, pages) else {
+                return Ok(None);
+            };
+            let mut out = vec![0u8; len];
+            self.decode_run(stored, 0, pages, &mut |p, bytes| {
+                let at = (p as usize).saturating_mul(page);
+                if let Some(dst) = out.get_mut(at..at.saturating_add(bytes.len())) {
+                    dst.copy_from_slice(bytes);
+                }
+            })
+            .map_err(|e| match e {
+                Error::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidData => {
+                    Error::Corrupted(io.to_string())
+                }
+                other => other,
+            })?;
+            Ok(Some(out))
+        }
+
+        /// The decoded first page from `head`, when it holds it and it
+        /// decodes; `None` leaves it to be read when first touched.
+        pub(super) fn decode_first_page(&self, head: &Head) -> Result<Option<Vec<u8>>> {
+            let Some(stored) = self.head_run(head, 0, 1) else {
+                return Ok(None);
+            };
+            let mut page = None;
+            // A page that does not decode is left to the pager, which
+            // fails the file's reads on it.
+            let _ = self.decode_run(stored, 0, 1, &mut |_, bytes| page = Some(bytes.to_vec()));
+            Ok(page)
         }
 
         /// The open file's metadata.
@@ -951,21 +1083,7 @@ mod local {
                 "page {first}: read past the end of the file"
             )));
             self.read_into(offset, stored_len, &mut |stored| {
-                outcome = PLAIN.with(|cell| {
-                    let mut plain = cell.borrow_mut();
-                    if plain.len() < plain_want {
-                        plain.resize(plain_want, 0);
-                    }
-                    let out = &mut plain[..plain_want];
-                    decode
-                        .codec
-                        .decode(first.saturating_mul(decode.units), stored, out)
-                        .map_err(|e| undecodable(&e))?;
-                    for (i, bytes) in out.chunks(page).enumerate().rev() {
-                        sink(first.saturating_add(i as u64), bytes);
-                    }
-                    Ok(())
-                });
+                outcome = self.decode_run(stored, first, count, &mut |p, bytes| sink(p, bytes));
             })
             .map_err(|e| match e {
                 // Stored bytes missing (truncated): as undecodable as bad ones.
@@ -973,6 +1091,46 @@ mod local {
                 other => other,
             })?;
             outcome
+        }
+    }
+
+    impl LocalFile {
+        /// Decodes `stored`, the stored units of the `count` pages from page
+        /// `first`, handing each page to `sink` last to first. A run that
+        /// does not decode is [`undecodable`].
+        fn decode_run(
+            &self,
+            stored: &[u8],
+            first: u64,
+            count: usize,
+            sink: &mut dyn FnMut(u64, &[u8]),
+        ) -> Result<()> {
+            let Some(decode) = &self.decode else {
+                return Err(Error::Corrupted("not a decoded file".into()));
+            };
+            let page = self.page;
+            let plain_start = first.saturating_mul(page as u64);
+            let plain_want = usize::try_from(
+                (count as u64)
+                    .saturating_mul(page as u64)
+                    .min(decode.layout.plain_len.saturating_sub(plain_start)),
+            )
+            .map_err(|_| Error::Corrupted("decoded run too large".into()))?;
+            PLAIN.with(|cell| {
+                let mut plain = cell.borrow_mut();
+                if plain.len() < plain_want {
+                    plain.resize(plain_want, 0);
+                }
+                let out = &mut plain[..plain_want];
+                decode
+                    .codec
+                    .decode(first.saturating_mul(decode.units), stored, out)
+                    .map_err(|e| undecodable(&e))?;
+                for (i, bytes) in out.chunks(page).enumerate().rev() {
+                    sink(first.saturating_add(i as u64), bytes);
+                }
+                Ok(())
+            })
         }
     }
 
@@ -1503,6 +1661,30 @@ mod tests {
                 ..PagedFsConfig::default()
             },
         )
+    }
+
+    /// The bytes read at open for the decoder's header hold the first
+    /// page: it is installed then, not read again. A first page that does
+    /// not decode is left to the pager, whose reads of it fail.
+    #[test]
+    fn a_decoded_open_installs_the_first_page_it_read() {
+        if crate::paged_input::Pager::global().is_none() {
+            return;
+        }
+        let tmp = TempDir::new("paged-fs-decoded-head");
+        let dir = decoded_dir(&tmp, UNIT, false);
+        let plain = pattern(40 * UNIT);
+        write(&dir, "_h.fdt", &encode(&plain));
+        let input = dir.open_decoded("_h.fdt", &SumDecoder).unwrap().unwrap();
+        assert!(crate::is_resident(&input[..1]));
+        assert!(!crate::is_resident(&input[20 * UNIT..20 * UNIT + 1]));
+        assert!(input[..] == plain[..]);
+        let mut raw = encode(&plain);
+        raw[HEADER + 100] ^= 1;
+        write(&dir, "_b.fdt", &raw);
+        let bad = dir.open_decoded("_b.fdt", &SumDecoder).unwrap().unwrap();
+        assert!(!crate::is_resident(&bad[..1]));
+        assert!(bad.will_need(0, 1).is_err());
     }
 
     /// Decoded files read back through the pager at every tail length and
