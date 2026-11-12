@@ -3369,6 +3369,7 @@ mod tests {
             min_retained_seq_no: 3,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         w.force_merge_deletes().unwrap();
         assert_eq!(counts(&mut w), (13, 3));
@@ -3380,6 +3381,7 @@ mod tests {
             min_retained_seq_no: i64::MAX,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         w.force_merge_deletes().unwrap();
         assert_eq!(counts(&mut w), (10, 0));
@@ -3455,6 +3457,7 @@ mod tests {
             min_retained_seq_no: 3,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         let names: Vec<String> = w
             .commit()
@@ -3541,6 +3544,7 @@ mod tests {
             min_retained_seq_no: 0,
             prune_postings_field: prune.then(|| "_id".to_string()),
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         };
 
         // Without pruning the retained old version still answers `d0`.
@@ -3609,6 +3613,7 @@ mod tests {
             min_retained_seq_no: min,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         };
 
         w.set_soft_deletes_retention(Some(retention(0)));
@@ -3668,6 +3673,7 @@ mod tests {
             min_retained_seq_no: 2,
             prune_postings_field: None,
             prune_recovery_source_field: Some("_recovery_source".to_string()),
+            seq_no_sentinel: Vec::new(),
         }));
         w.force_merge(1).unwrap();
         let infos = w.commit().unwrap().clone();
@@ -3756,6 +3762,74 @@ mod tests {
         assert_eq!(flagged, ["d0", "d2"], "doc values");
     }
 
+    /// `seq_no_sentinel` (Elasticsearch's `index.disable_sequence_numbers`): a
+    /// retention merge writes the sentinel for every `_seq_no` below the
+    /// retained minimum and keeps the others, so the column stays dense and
+    /// history above the minimum still replays.
+    #[test]
+    fn retention_merges_write_the_sentinel_for_unretained_sequence_numbers() {
+        let tmp = TempDir::new("explicit-seq-no-sentinel");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        for i in 0..4 {
+            w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+        }
+        w.commit().unwrap();
+        w.soft_update_explicit_documents(id_term(3), vec![doc_at(&f, 3, 100)], &[soft_delete(3)])
+            .unwrap();
+        w.commit().unwrap();
+        w.set_soft_deletes_retention(Some(SoftDeletesRetention {
+            seq_no_field: "_seq_no".to_string(),
+            min_retained_seq_no: 2,
+            prune_postings_field: None,
+            prune_recovery_source_field: None,
+            seq_no_sentinel: vec![
+                ("_seq_no".to_string(), -2),
+                ("_primary_term".to_string(), 0),
+            ],
+        }));
+        w.force_merge(1).unwrap();
+        let infos = w.commit().unwrap().clone();
+        check(&dir);
+
+        let sci = &infos.segments[0];
+        // d3's old version (seq_no 3) is soft-deleted but retained.
+        assert_eq!((infos.segments.len(), sci.soft_del_count), (1, 1));
+        let si_files: Vec<String> = dir
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|n| {
+                n.starts_with(&format!("{}.", sci.segment_name))
+                    || n.starts_with(&format!("{}_", sci.segment_name))
+            })
+            .collect();
+        let fields = crate::field_updates::read_current_field_infos(&dir, sci, &si_files).unwrap();
+        let seq_at = fields
+            .fields
+            .iter()
+            .position(|x| x.name == "_seq_no")
+            .unwrap();
+        let per_field = crate::field_updates::per_field_component(
+            &fields.fields[seq_at],
+            &crate::index_writer::per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
+        );
+        let (meta, data) = crate::field_updates::read_current_column(
+            &dir, sci, &si_files, &fields, seq_at, &per_field,
+        )
+        .unwrap()
+        .unwrap();
+        let entry = meta.numeric_entry(fields.fields[seq_at].number).unwrap();
+        let mut seq = lucene_codecs::doc_values::NumericReader::new(&data, entry);
+        // d0..d3, d3's old version kept soft-deleted, and its update.
+        let mut values: Vec<i64> = (0..5).map(|d| seq.value(d).unwrap().unwrap()).collect();
+        values.sort();
+        assert_eq!(values, [-2, -2, 2, 3, 100]);
+        // A sentinel field the segment does not have is skipped.
+        assert!(fields.fields.iter().all(|x| x.name != "_primary_term"));
+    }
+
     /// `IndexWriter.reserveDocs`: an add past the limit is refused before
     /// anything -- its own delete included -- is buffered, deleted documents
     /// count until a merge drops them, and the limit is clamped to
@@ -3793,6 +3867,7 @@ mod tests {
             min_retained_seq_no: i64::MAX,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         w.force_merge(1).unwrap();
         w.add_explicit_documents(vec![doc(&f, 3)]).unwrap();
@@ -3938,6 +4013,7 @@ mod tests {
             min_retained_seq_no: i64::MAX,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         // 2 of 20 is exactly 10%: not above it.
         for i in 0..2 {
@@ -4000,6 +4076,7 @@ mod tests {
             min_retained_seq_no: i64::MAX,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         for i in 0..3 {
             w.soft_update_explicit_documents(id_term(i), Vec::new(), &[soft_delete(i)])
@@ -4098,6 +4175,7 @@ mod tests {
             min_retained_seq_no: 0,
             prune_postings_field: None,
             prune_recovery_source_field: None,
+            seq_no_sentinel: Vec::new(),
         }));
         w.force_merge(1).unwrap();
         assert_eq!(counts(&mut w), (2, 0));
