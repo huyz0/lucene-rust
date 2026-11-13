@@ -205,6 +205,7 @@ struct LeafVectors<'r> {
     scalar_quantized:
         Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'r>>,
     hnsw_codes: Option<std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
+    disk_hnsw: Option<std::sync::Arc<lucene_disk_hnsw::DiskHnswReader>>,
 }
 
 impl<'r> LeafVectors<'r> {
@@ -219,17 +220,26 @@ impl<'r> LeafVectors<'r> {
     {
         VectorsInput {
             flat: self.flat.clone(),
-            hnsw: match (&self.ivf, &self.scalar_quantized, &self.hnsw_codes) {
-                (Some(ivf), _, _) => Some(GraphReader::Ivf(ivf.clone())),
-                (None, Some(codes), _) => Some(GraphReader::ScalarQuantized {
+            hnsw: match (
+                &self.ivf,
+                &self.scalar_quantized,
+                &self.hnsw_codes,
+                &self.disk_hnsw,
+            ) {
+                (Some(ivf), _, _, _) => Some(GraphReader::Ivf(ivf.clone())),
+                (None, Some(codes), _, _) => Some(GraphReader::ScalarQuantized {
                     graph: self.graph.clone(),
                     codes: codes.clone(),
                 }),
-                (None, None, Some(codes)) => Some(GraphReader::HnswQuantized {
+                (None, None, Some(codes), _) => Some(GraphReader::HnswQuantized {
                     graph: self.graph.clone(),
                     codes: codes.clone(),
                 }),
-                (None, None, None) => self.graph.clone().map(GraphReader::from),
+                (None, None, None, Some(disk)) => Some(GraphReader::HnswDisk {
+                    graph: self.graph.clone(),
+                    disk: disk.clone(),
+                }),
+                (None, None, None, None) => self.graph.clone().map(GraphReader::from),
             },
             field_infos: reader.field_infos(),
             live_docs,
@@ -256,12 +266,14 @@ fn open_leaf<'r>(reader: &'r SegmentReader, field: &str) -> Result<Option<LeafVe
     let ivf = reader.ivf_for(info.number)?;
     let scalar_quantized = reader.scalar_quantized_for(info.number)?;
     let hnsw_codes = reader.hnsw_codes_for(info.number)?;
+    let disk_hnsw = reader.disk_hnsw_for(info.number)?;
     Ok(Some(LeafVectors {
         flat,
         graph,
         ivf,
         scalar_quantized,
         hnsw_codes,
+        disk_hnsw,
     }))
 }
 
