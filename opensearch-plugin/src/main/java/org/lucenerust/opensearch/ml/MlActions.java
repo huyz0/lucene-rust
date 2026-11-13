@@ -51,6 +51,11 @@ public final class MlActions {
     public static final Type GET_MODEL = new Type(ML + "models/get");
     public static final Type DELETE_MODEL = new Type(ML + "models/delete");
     public static final Type SEARCH_MODELS = new Type(ML + "models/search");
+    public static final Type UPDATE_MODEL = new Type(ML + "models/update");
+    public static final Type REGISTER_MODEL_META = new Type(ML + "register_model_meta");
+    public static final Type UPLOAD_MODEL_CHUNK = new Type(ML + "upload_model_chunk");
+    public static final Type STATS = new Type(ML + "stats/nodes");
+    public static final Type PROFILE = new Type(ML + "profile/nodes");
     public static final Type REGISTER_MODEL_GROUP = new Type(ML + "register_model_group");
     public static final Type UPDATE_MODEL_GROUP = new Type(ML + "update_model_group");
     public static final Type GET_MODEL_GROUP = new Type(ML + "model_groups/get");
@@ -75,6 +80,11 @@ public final class MlActions {
             new ActionHandler<>(GET_MODEL, GetModel.class),
             new ActionHandler<>(DELETE_MODEL, DeleteModel.class),
             new ActionHandler<>(SEARCH_MODELS, SearchModels.class),
+            new ActionHandler<>(UPDATE_MODEL, UpdateModel.class),
+            new ActionHandler<>(REGISTER_MODEL_META, RegisterModelMeta.class),
+            new ActionHandler<>(UPLOAD_MODEL_CHUNK, UploadModelChunk.class),
+            new ActionHandler<>(STATS, Stats.class),
+            new ActionHandler<>(PROFILE, Profile.class),
             new ActionHandler<>(REGISTER_MODEL_GROUP, RegisterModelGroup.class),
             new ActionHandler<>(UPDATE_MODEL_GROUP, UpdateModelGroup.class),
             new ActionHandler<>(GET_MODEL_GROUP, GetModelGroup.class),
@@ -261,6 +271,66 @@ public final class MlActions {
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
             ml.registerModel(r.json(), Boolean.parseBoolean(r.param("deploy")), map(l));
+        }
+    }
+
+    public static final class UpdateModel extends Base {
+        @Inject
+        public UpdateModel(TransportService t, ActionFilters f) {
+            super(UPDATE_MODEL, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.updateModel(r.param("model_id"), r.json(), written(l));
+        }
+    }
+
+    public static final class RegisterModelMeta extends Base {
+        @Inject
+        public RegisterModelMeta(TransportService t, ActionFilters f) {
+            super(REGISTER_MODEL_META, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.registerModelMeta(r.json(), map(l));
+        }
+    }
+
+    public static final class UploadModelChunk extends Base {
+        @Inject
+        public UploadModelChunk(TransportService t, ActionFilters f) {
+            super(UPLOAD_MODEL_CHUNK, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.uploadModelChunk(r.param("model_id"), r.param("chunk_number"), r.body, map(l));
+        }
+    }
+
+    public static final class Stats extends Base {
+        @Inject
+        public Stats(TransportService t, ActionFilters f) {
+            super(STATS, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.stats(r.param("nodeId"), r.param("stat"), map(l));
+        }
+    }
+
+    public static final class Profile extends Base {
+        @Inject
+        public Profile(TransportService t, ActionFilters f) {
+            super(PROFILE, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.profile(r.param("scope"), r.param("view"), r.param("model_id"), r.param("task_id"), map(l));
         }
     }
 
