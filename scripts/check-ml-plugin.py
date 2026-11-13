@@ -30,7 +30,7 @@ finds or downloads its own the same way, unless --our-libtorch names one
 (scripts/fetch-libtorch.sh fetches it), given as PYTORCH_LIBRARY_PATH.
 
   scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--our-libtorch DIR]
-                             [--keep] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks]
+                             [--keep] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks,remote]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
@@ -50,6 +50,9 @@ RUN = str(int(time.time()))
 spec = importlib.util.spec_from_file_location("golden", os.path.join(ROOT, "scripts", "ml-golden.py"))
 golden = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(golden)
+spec = importlib.util.spec_from_file_location("remote_check", os.path.join(ROOT, "scripts", "ml-remote-check.py"))
+remote_check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(remote_check)
 
 SETTINGS = {"persistent": {
     "plugins.ml_commons.only_run_on_ml_node": False,
@@ -521,6 +524,7 @@ def main():
             "torchscript": lambda: torchscript(c, ours, stock, zips),
             "models": lambda: models(c, ours, stock, zips),
             "tasks": lambda: tasks(c, ours, stock),
+            "remote": lambda: remote_check.remote(c, ours, stock, RUN),
         }
         for name in (a.only.split(",") if a.only else sections):
             sections[name]()

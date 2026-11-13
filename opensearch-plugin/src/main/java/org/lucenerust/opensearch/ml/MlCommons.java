@@ -6,6 +6,7 @@ package org.lucenerust.opensearch.ml;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.OpenSearchStatusException;
+import org.opensearch.action.ActionType;
 import org.opensearch.action.DocWriteResponse;
 import org.opensearch.action.delete.DeleteRequest;
 import org.opensearch.action.delete.DeleteResponse;
@@ -83,6 +84,8 @@ public final class MlCommons {
     public static final String REGISTER_THREAD_POOL = "opensearch_ml_register";
     public static final String DEPLOY_THREAD_POOL = "opensearch_ml_deploy";
     public static final String PREDICT_THREAD_POOL = "opensearch_ml_predict";
+    /** Remote models' calls block on HTTP, so they run apart from local inference, as in stock. */
+    public static final String REMOTE_PREDICT_THREAD_POOL = "opensearch_ml_predict_remote";
     static final String THREAD_POOL_PREFIX = "thread_pool.ml_commons.";
     /** {@code ModelHelper.CHUNK_SIZE}. */
     static final int CHUNK_SIZE = 10_000_000;
@@ -104,16 +107,25 @@ public final class MlCommons {
     private final ThreadPool threadPool;
     private final MlIndices indices;
     private final LocalModels local;
+    private final RemoteModels remote;
     private final Path cacheDir;
     private final AtomicInteger roundRobin = new AtomicInteger();
     private final AtomicBoolean redeployed = new AtomicBoolean();
 
-    private MlCommons(Client client, ClusterService clusterService, ThreadPool threadPool, Path cacheDir, Path runtimeLibrary) {
+    private MlCommons(
+        Client client,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        org.opensearch.script.ScriptService scripts,
+        Path cacheDir,
+        Path runtimeLibrary
+    ) {
         this.client = client;
         this.clusterService = clusterService;
         this.threadPool = threadPool;
         this.indices = new MlIndices(client, clusterService);
-        this.local = new LocalModels(client, cacheDir, runtimeLibrary);
+        this.remote = new RemoteModels(client, clusterService, indices, scripts);
+        this.local = new LocalModels(client, remote, cacheDir, runtimeLibrary);
         this.cacheDir = cacheDir;
     }
 
@@ -123,8 +135,15 @@ public final class MlCommons {
     }
 
     /** Sets up the node's instance; {@code dataDir} holds {@code ml_cache} as on stock. */
-    public static MlCommons initialize(Client client, ClusterService clusterService, ThreadPool threadPool, Path dataDir, Path runtimeLibrary) {
-        MlCommons ml = new MlCommons(client, clusterService, threadPool, dataDir.resolve("ml_cache").resolve("models_cache"), runtimeLibrary);
+    public static MlCommons initialize(
+        Client client,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        org.opensearch.script.ScriptService scripts,
+        Path dataDir,
+        Path runtimeLibrary
+    ) {
+        MlCommons ml = new MlCommons(client, clusterService, threadPool, scripts, dataDir.resolve("ml_cache").resolve("models_cache"), runtimeLibrary);
         instance = ml;
         clusterService.addListener(ml.redeployListener());
         return ml;
@@ -159,7 +178,15 @@ public final class MlCommons {
             new FixedExecutorBuilder(settings, GENERAL_THREAD_POOL, Math.max(1, processors - 1), 100, THREAD_POOL_PREFIX + GENERAL_THREAD_POOL, false),
             new FixedExecutorBuilder(settings, REGISTER_THREAD_POOL, Math.max(4, processors - 1), 10, THREAD_POOL_PREFIX + REGISTER_THREAD_POOL, false),
             new FixedExecutorBuilder(settings, DEPLOY_THREAD_POOL, Math.max(4, processors - 1), 10, THREAD_POOL_PREFIX + DEPLOY_THREAD_POOL, false),
-            new FixedExecutorBuilder(settings, PREDICT_THREAD_POOL, processors * 2, 10000, THREAD_POOL_PREFIX + PREDICT_THREAD_POOL, false)
+            new FixedExecutorBuilder(settings, PREDICT_THREAD_POOL, processors * 2, 10000, THREAD_POOL_PREFIX + PREDICT_THREAD_POOL, false),
+            new FixedExecutorBuilder(
+                settings,
+                REMOTE_PREDICT_THREAD_POOL,
+                processors * 4,
+                10000,
+                THREAD_POOL_PREFIX + REMOTE_PREDICT_THREAD_POOL,
+                false
+            )
         );
     }
 
@@ -214,6 +241,10 @@ public final class MlCommons {
     // ---- Tasks -----------------------------------------------------------------------------
 
     private void createTask(String type, String function, String modelId, List<String> workers, ActionListener<String> listener) {
+        createTask(type, function, modelId, workers, true, listener);
+    }
+
+    private void createTask(String type, String function, String modelId, List<String> workers, boolean async, ActionListener<String> listener) {
         Map<String, Object> task = new LinkedHashMap<>();
         if (modelId != null) {
             task.put("model_id", modelId);
@@ -225,7 +256,7 @@ public final class MlCommons {
         long t = now();
         task.put("create_time", t);
         task.put("last_update_time", t);
-        task.put("is_async", true);
+        task.put("is_async", async);
         indexDoc(MlIndices.TASK, null, task, ActionListener.wrap(r -> listener.onResponse(r.getId()), listener::onFailure));
     }
 
@@ -409,7 +440,7 @@ public final class MlCommons {
             return;
         }
         if (body.get("connector") != null || body.get("connector_id") != null) {
-            listener.onFailure(new IllegalArgumentException("lucene-rust does not run remote models yet"));
+            registerRemote(body, deploy, listener);
             return;
         }
         if (setting(MlSettings.ML_COMMONS_LOCAL_MODEL_ENABLED) == false) {
@@ -446,11 +477,19 @@ public final class MlCommons {
     }
 
     private void register(String taskId, String function, Map<String, Object> body, boolean deploy) {
+        groupAndVersion(body, ActionListener.wrap(
+            gv -> writeModel(taskId, function, body, gv.getKey(), gv.getValue(), deploy),
+            e -> failTask(taskId, e)
+        ));
+    }
+
+    /** The model's group (the one named, else the one named as the model, made if new) and its next version there. */
+    private void groupAndVersion(Map<String, Object> body, ActionListener<Map.Entry<String, String>> listener) {
         String name = (String) body.get("name");
         Object groupId = body.get("model_group_id");
         ActionListener<String> withGroup = ActionListener.wrap(group -> {
-            nextVersion(group, ActionListener.wrap(version -> writeModel(taskId, function, body, group, version, deploy), e -> failTask(taskId, e)));
-        }, e -> failTask(taskId, e));
+            nextVersion(group, ActionListener.wrap(version -> listener.onResponse(Map.entry(group, version)), listener::onFailure));
+        }, listener::onFailure);
         if (groupId != null) {
             withGroup.onResponse(String.valueOf(groupId));
         } else {
@@ -462,6 +501,104 @@ public final class MlCommons {
                 }
             }, withGroup::onFailure));
         }
+    }
+
+    /**
+     * {@code POST _plugins/_ml/models/_register} for a remote model: its connector by id, or one
+     * given inline (kept in the model document, credentials encrypted). Answers once the model
+     * document is written, as stock does; with {@code deploy} the model is deployed after.
+     */
+    @SuppressWarnings("unchecked")
+    private void registerRemote(Map<String, Object> body, boolean deploy, ActionListener<Map<String, Object>> listener) {
+        if (remote.enabled() == false) {
+            listener.onFailure(new IllegalArgumentException(RemoteModels.DISABLED));
+            return;
+        }
+        Object connectorId = body.get("connector_id");
+        ActionListener<Map<String, Object>> withConnector = ActionListener.wrap(inline -> {
+            String worker = clusterService.localNode().getId();
+            createTask("REGISTER_MODEL", "REMOTE", null, List.of(worker), false, ActionListener.wrap(taskId -> {
+                ActionListener<Map<String, Object>> failed = ActionListener.wrap(listener::onResponse, e -> {
+                    failTask(taskId, e);
+                    listener.onFailure(e);
+                });
+                groupAndVersion(body, ActionListener.wrap(gv -> {
+                    Map<String, Object> model = new LinkedHashMap<>();
+                    model.put("name", body.get("name"));
+                    model.put("model_group_id", gv.getKey());
+                    model.put("algorithm", "REMOTE");
+                    model.put("model_version", gv.getValue());
+                    if (body.get("description") != null) {
+                        model.put("description", body.get("description"));
+                    }
+                    model.put("model_state", "REGISTERED");
+                    long t = now();
+                    model.put("created_time", t);
+                    model.put("last_updated_time", t);
+                    model.put("is_hidden", Boolean.TRUE.equals(body.get("is_hidden")));
+                    if (connectorId != null) {
+                        model.put("connector_id", String.valueOf(connectorId));
+                    } else {
+                        model.put("connector", inline);
+                    }
+                    indexDoc(MlIndices.MODEL, null, model, ActionListener.wrap(r -> {
+                        String modelId = r.getId();
+                        Map<String, Object> done = Map.of("model_id", modelId, "state", "COMPLETED", "last_update_time", now());
+                        // Not ActionListener.wrap: a failure after the response must not fail the completed task.
+                        updateDoc(MlIndices.TASK, taskId, done, new ActionListener<>() {
+                            @Override
+                            public void onResponse(UpdateResponse u) {
+                                Map<String, Object> response = new LinkedHashMap<>();
+                                response.put("task_id", taskId);
+                                response.put("status", "CREATED");
+                                response.put("model_id", modelId);
+                                listener.onResponse(response);
+                                if (deploy) {
+                                    deployModel(modelId, null, logged("deploy after register"));
+                                }
+                            }
+
+                            @Override
+                            public void onFailure(Exception e) {
+                                failed.onFailure(e);
+                            }
+                        });
+                    }, failed::onFailure));
+                }, failed::onFailure));
+            }, listener::onFailure));
+        }, listener::onFailure);
+        if (connectorId != null) {
+            String id = String.valueOf(connectorId);
+            remote.stored(id, ActionListener.wrap(r -> withConnector.onResponse(null), e -> listener.onFailure(
+                e instanceof OpenSearchStatusException s && s.status() == RestStatus.NOT_FOUND
+                    ? new OpenSearchStatusException("Failed to find connector:" + id, RestStatus.NOT_FOUND)
+                    : e
+            )));
+        } else if (body.get("connector") instanceof Map<?, ?> c) {
+            remote.encrypt(remote.connectorDoc((Map<String, Object>) c, false), withConnector);
+        } else {
+            listener.onFailure(new IllegalArgumentException("The connector is not an object"));
+        }
+    }
+
+    /** {@code POST _plugins/_ml/connectors/_create}. */
+    public void createConnector(Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
+        remote.create(body, listener);
+    }
+
+    /** {@code GET _plugins/_ml/connectors/<id>}. */
+    public void getConnector(String id, ActionListener<Map<String, Object>> listener) {
+        remote.get(id, listener);
+    }
+
+    /** {@code PUT _plugins/_ml/connectors/<id>}. */
+    public void updateConnector(String id, Map<String, Object> body, ActionListener<UpdateResponse> listener) {
+        remote.update(id, body, listener);
+    }
+
+    /** {@code DELETE _plugins/_ml/connectors/<id>}. */
+    public void deleteConnector(String id, ActionListener<DeleteResponse> listener) {
+        remote.delete(id, listener);
     }
 
     /** Takes the group's next version number, as {@code MLModelGroupManager} does. */
@@ -622,9 +759,11 @@ public final class MlCommons {
     }
 
     /** The nodes a local model may run on ({@code MLTaskDispatcher}). */
-    private List<DiscoveryNode> eligibleNodes() {
+    private List<DiscoveryNode> eligibleNodes(String function) {
         boolean onlyMl = setting(MlSettings.ML_COMMONS_ONLY_RUN_ON_ML_NODE);
-        List<String> roles = setting(MlSettings.ML_COMMONS_LOCAL_MODEL_ELIGIBLE_NODE_ROLES);
+        List<String> roles = setting(
+            "REMOTE".equals(function) ? MlSettings.ML_COMMONS_REMOTE_MODEL_ELIGIBLE_NODE_ROLES : MlSettings.ML_COMMONS_LOCAL_MODEL_ELIGIBLE_NODE_ROLES
+        );
         List<DiscoveryNode> nodes = new ArrayList<>();
         for (DiscoveryNode n : clusterService.state().nodes()) {
             boolean ml = n.getRoles().stream().anyMatch(r -> r.roleName().equals("ml"));
@@ -648,13 +787,14 @@ public final class MlCommons {
      * eligible node (or {@code nodeIds}) and records the outcome in the model and task documents.
      */
     public void deployModel(String modelId, List<String> nodeIds, ActionListener<Map<String, Object>> listener) {
-        if (setting(MlSettings.ML_COMMONS_LOCAL_MODEL_ENABLED) == false) {
-            listener.onFailure(new IllegalArgumentException(LOCAL_MODEL_DISABLED));
-            return;
-        }
         getModel(modelId, ActionListener.wrap(model -> {
+            String function = String.valueOf(model.get("algorithm"));
+            boolean isRemote = "REMOTE".equals(function);
+            if (isRemote ? remote.enabled() == false : setting(MlSettings.ML_COMMONS_LOCAL_MODEL_ENABLED) == false) {
+                throw new IllegalArgumentException(isRemote ? RemoteModels.DISABLED : LOCAL_MODEL_DISABLED);
+            }
             List<String> targets = new ArrayList<>();
-            List<DiscoveryNode> eligible = eligibleNodes();
+            List<DiscoveryNode> eligible = eligibleNodes(function);
             for (DiscoveryNode n : eligible) {
                 if (nodeIds == null || nodeIds.contains(n.getId())) {
                     targets.add(n.getId());
@@ -663,12 +803,11 @@ public final class MlCommons {
             if (targets.isEmpty()) {
                 throw new IllegalArgumentException("no eligible node found");
             }
-            String function = String.valueOf(model.get("algorithm"));
             createTask("DEPLOY_MODEL", function, modelId, targets, ActionListener.wrap(taskId -> {
                 Map<String, Object> response = new LinkedHashMap<>();
                 response.put("task_id", taskId);
                 response.put("task_type", "DEPLOY_MODEL");
-                response.put("status", "CREATED");
+                response.put("status", isRemote ? "COMPLETED" : "CREATED");
                 Map<String, Object> fields = new LinkedHashMap<>();
                 fields.put("model_state", "DEPLOYING");
                 fields.put("planning_worker_node_count", targets.size());
@@ -676,14 +815,19 @@ public final class MlCommons {
                 fields.put("deploy_to_all_nodes", nodeIds == null);
                 fields.put("last_updated_time", now());
                 updateDoc(MlIndices.MODEL, modelId, fields, ActionListener.wrap(u -> {
-                    listener.onResponse(response);
-                    runDeploy(modelId, taskId, targets);
+                    if (isRemote) {
+                        // A remote model deploys in moments; stock answers once it has.
+                        runDeploy(modelId, taskId, targets, ActionListener.wrap(v -> listener.onResponse(response), listener::onFailure));
+                    } else {
+                        listener.onResponse(response);
+                        runDeploy(modelId, taskId, targets, logged("deploy"));
+                    }
                 }, listener::onFailure));
             }, listener::onFailure));
         }, listener::onFailure));
     }
 
-    private void runDeploy(String modelId, String taskId, List<String> targets) {
+    private void runDeploy(String modelId, String taskId, List<String> targets, ActionListener<Void> done) {
         MlNodes.Request request = new MlNodes.Request(MlNodes.Op.DEPLOY, modelId, new byte[0], targets.toArray(String[]::new));
         client.execute(MlNodes.Action.INSTANCE, request, ActionListener.wrap(r -> {
             Map<String, Object> errors = new LinkedHashMap<>();
@@ -706,15 +850,21 @@ public final class MlCommons {
             fields.put("last_updated_time", t);
             fields.put("current_worker_node_count", ok);
             fields.put("auto_redeploy_retry_times", 0);
-            updateDoc(MlIndices.MODEL, modelId, fields, logged("model update"));
-            if (errors.isEmpty()) {
-                finishTask(taskId, "COMPLETED", Map.of());
-            } else {
-                finishTask(taskId, ok == 0 ? "FAILED" : "COMPLETED_WITH_ERROR", Map.of("error", json(errors)));
-            }
+            String error = errors.isEmpty() ? null : json(errors);
+            String failedState = ok == 0 ? "FAILED" : "COMPLETED_WITH_ERROR";
+            updateDoc(MlIndices.MODEL, modelId, fields, ActionListener.wrap(u -> {
+                if (error == null) {
+                    finishTask(taskId, "COMPLETED", Map.of());
+                    done.onResponse(null);
+                } else {
+                    finishTask(taskId, failedState, Map.of("error", error));
+                    done.onFailure(new MLException(error));
+                }
+            }, done::onFailure));
         }, e -> {
             updateDoc(MlIndices.MODEL, modelId, Map.of("model_state", "DEPLOY_FAILED", "last_updated_time", now()), logged("model update"));
             failTask(taskId, e);
+            done.onFailure(e);
         }));
     }
 
@@ -815,6 +965,11 @@ public final class MlCommons {
      * where the model is deployed, here if possible.
      */
     public void predict(String algorithm, String modelId, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
+        predict(algorithm, modelId, body, true, listener);
+    }
+
+    /** {@code mayDeploy}: an undeployed remote model is deployed first, as stock does. */
+    private void predict(String algorithm, String modelId, Map<String, Object> body, boolean mayDeploy, ActionListener<Map<String, Object>> listener) {
         try {
             String route = algorithm == null ? null : algorithm.toUpperCase(Locale.ROOT);
             String function = route != null ? route : local.function(modelId);
@@ -822,7 +977,7 @@ public final class MlCommons {
                 validateInput(function, body);
             }
             if (local.isDeployed(modelId)) {
-                threadPool.executor(PREDICT_THREAD_POOL).execute(() -> {
+                threadPool.executor("REMOTE".equals(local.function(modelId)) ? REMOTE_PREDICT_THREAD_POOL : PREDICT_THREAD_POOL).execute(() -> {
                     try {
                         listener.onResponse(predictLocal(route, modelId, body));
                     } catch (Exception e) {
@@ -836,6 +991,10 @@ public final class MlCommons {
                     validateInput(String.valueOf(model.get("algorithm")), body);
                 }
                 List<String> workers = workers(model);
+                if (workers.isEmpty() && mayDeploy && "REMOTE".equals(model.get("algorithm")) && remote.enabled()) {
+                    deployModel(modelId, null, ActionListener.wrap(d -> predict(algorithm, modelId, body, false, listener), listener::onFailure));
+                    return;
+                }
                 if (workers.isEmpty()) {
                     throw new IllegalArgumentException("Model not ready yet. Please deploy the model first.");
                 }
@@ -845,13 +1004,18 @@ public final class MlCommons {
                 call.put("body", body);
                 byte[] payload = json(call).getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 MlNodes.Request request = new MlNodes.Request(MlNodes.Op.PREDICT, modelId, payload, node);
-                client.execute(MlNodes.PredictAction.INSTANCE, request, ActionListener.wrap(r -> {
+                ActionType<MlNodes.Response> action = "REMOTE".equals(model.get("algorithm"))
+                    ? MlNodes.RemotePredictAction.INSTANCE
+                    : MlNodes.PredictAction.INSTANCE;
+                client.execute(action, request, ActionListener.wrap(r -> {
                     if (r.getNodes().isEmpty()) {
                         throw new IllegalStateException("prediction on node [" + node + "] failed: " + r.failures());
                     }
                     MlNodes.NodeResponse n = r.getNodes().get(0);
                     if (n.error != null) {
-                        throw n.badRequest ? new IllegalArgumentException(n.error) : new MLException(n.error);
+                        throw n.status == 400 ? new IllegalArgumentException(n.error)
+                            : n.status > 0 && RestStatus.fromCode(n.status) != null ? new OpenSearchStatusException(n.error, RestStatus.fromCode(n.status))
+                            : new MLException(n.error);
                     }
                     listener.onResponse(parse(n.payload));
                 }, listener::onFailure));
@@ -884,6 +1048,10 @@ public final class MlCommons {
 
     /** Parses {@code body} as the input of {@code function}, as stock's REST layer does before running anything. */
     private static void validateInput(String function, Map<String, Object> body) {
+        if ("REMOTE".equals(function)) {
+            // A remote model's own input is its parameters, whatever they hold.
+            return;
+        }
         if ("TEXT_SIMILARITY".equals(function)) {
             similarityInput(body);
         } else {
@@ -898,6 +1066,15 @@ public final class MlCommons {
      */
     private Map<String, Object> predictLocal(String route, String modelId, Map<String, Object> body) {
         String function = local.function(modelId);
+        if ("REMOTE".equals(function)) {
+            try {
+                return remote.predict(local.handle(modelId), route, body);
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new MLException(e.getMessage() == null ? e.toString() : e.getMessage(), e);
+            }
+        }
         boolean similarity = "TEXT_SIMILARITY".equals(function);
         if (route != null && "TEXT_SIMILARITY".equals(route) != similarity) {
             throw new MLException("Failed to inference " + function + " model: " + modelId);
@@ -1305,17 +1482,17 @@ public final class MlCommons {
             for (var hit : r.getHits().getHits()) {
                 Map<String, Object> m = hit.getSourceAsMap();
                 List<String> planned = (List<String>) m.getOrDefault("planning_worker_nodes", List.of());
-                if (planned.contains(self) || Boolean.TRUE.equals(m.get("deploy_to_all_nodes")) && eligibleHere()) {
+                if (planned.contains(self) || Boolean.TRUE.equals(m.get("deploy_to_all_nodes")) && eligibleHere(String.valueOf(m.get("algorithm")))) {
                     local.deploy(hit.getId(), logged("redeploy of " + hit.getId()));
                 }
             }
         }, e -> LOGGER.warn("lucene-rust ml: cannot list deployed models", e)));
     }
 
-    private boolean eligibleHere() {
+    private boolean eligibleHere(String function) {
         try {
             String self = clusterService.localNode().getId();
-            return eligibleNodes().stream().anyMatch(n -> n.getId().equals(self));
+            return eligibleNodes(function).stream().anyMatch(n -> n.getId().equals(self));
         } catch (IllegalArgumentException e) {
             return false;
         }

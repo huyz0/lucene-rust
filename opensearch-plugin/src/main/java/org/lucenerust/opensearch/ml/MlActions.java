@@ -59,6 +59,11 @@ public final class MlActions {
     public static final Type GET_TASK = new Type(ML + "tasks/get");
     public static final Type DELETE_TASK = new Type(ML + "tasks/delete");
     public static final Type SEARCH_TASKS = new Type(ML + "tasks/search");
+    public static final Type CREATE_CONNECTOR = new Type(ML + "create_connector");
+    public static final Type GET_CONNECTOR = new Type(ML + "connectors/get");
+    public static final Type UPDATE_CONNECTOR = new Type(ML + "update_connector");
+    public static final Type DELETE_CONNECTOR = new Type(ML + "connectors/delete");
+    public static final Type SEARCH_CONNECTORS = new Type(ML + "connectors/search");
 
     /** The action handlers to register, with the node-to-node actions. */
     public static List<ActionHandler<?, ?>> handlers() {
@@ -78,8 +83,14 @@ public final class MlActions {
             new ActionHandler<>(GET_TASK, GetTask.class),
             new ActionHandler<>(DELETE_TASK, DeleteTask.class),
             new ActionHandler<>(SEARCH_TASKS, SearchTasks.class),
+            new ActionHandler<>(CREATE_CONNECTOR, CreateConnector.class),
+            new ActionHandler<>(GET_CONNECTOR, GetConnector.class),
+            new ActionHandler<>(UPDATE_CONNECTOR, UpdateConnector.class),
+            new ActionHandler<>(DELETE_CONNECTOR, DeleteConnector.class),
+            new ActionHandler<>(SEARCH_CONNECTORS, SearchConnectors.class),
             new ActionHandler<>(MlNodes.Action.INSTANCE, MlNodes.TransportAction.class),
-            new ActionHandler<>(MlNodes.PredictAction.INSTANCE, MlNodes.PredictTransportAction.class)
+            new ActionHandler<>(MlNodes.PredictAction.INSTANCE, MlNodes.PredictTransportAction.class),
+            new ActionHandler<>(MlNodes.RemotePredictAction.INSTANCE, MlNodes.RemotePredictTransportAction.class)
         );
     }
 
@@ -226,16 +237,17 @@ public final class MlActions {
             }
             if (index.equals(MlIndices.MODEL)) {
                 // Chunks hold the model bytes; stock leaves them out of every model search.
-                source.fetchSource(source.fetchSource() == null ? null : source.fetchSource().includes(), exclude(source));
+                source.fetchSource(source.fetchSource() == null ? null : source.fetchSource().includes(), exclude(source, "model_content", "connector.credential"));
+            } else if (index.equals(MlIndices.CONNECTOR)) {
+                source.fetchSource(source.fetchSource() == null ? null : source.fetchSource().includes(), exclude(source, "credential"));
             }
             ml.search(index, source, ActionListener.wrap(r -> listener.onResponse(Response.of((ToXContent) r)), listener::onFailure));
         }
 
-        private static String[] exclude(SearchSourceBuilder source) {
+        private static String[] exclude(SearchSourceBuilder source, String... fields) {
             String[] given = source.fetchSource() == null ? new String[0] : source.fetchSource().excludes();
-            String[] all = Arrays.copyOf(given, given.length + 2);
-            all[given.length] = "model_content";
-            all[given.length + 1] = "connector.credential";
+            String[] all = Arrays.copyOf(given, given.length + fields.length);
+            System.arraycopy(fields, 0, all, given.length, fields.length);
             return all;
         }
     }
@@ -298,8 +310,21 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
-            ml.getModel(r.param("model_id"), map(l));
+            ml.getModel(r.param("model_id"), ActionListener.wrap(m -> l.onResponse(Response.of(withoutCredential(m))), l::onFailure));
         }
+    }
+
+    /** A model as GET shows it: an inline connector's credential is left out, as stock does. */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> withoutCredential(Map<String, Object> model) {
+        if (model.get("connector") instanceof Map<?, ?> c && c.containsKey("credential")) {
+            Map<String, Object> connector = new LinkedHashMap<>((Map<String, Object>) c);
+            connector.remove("credential");
+            Map<String, Object> out = new LinkedHashMap<>(model);
+            out.put("connector", connector);
+            return out;
+        }
+        return model;
     }
 
     public static final class DeleteModel extends Base {
@@ -413,6 +438,61 @@ public final class MlActions {
         @Inject
         public SearchTasks(TransportService t, ActionFilters f, NamedXContentRegistry x) {
             super(SEARCH_TASKS, MlIndices.TASK, t, f, x);
+        }
+    }
+
+    public static final class CreateConnector extends Base {
+        @Inject
+        public CreateConnector(TransportService t, ActionFilters f) {
+            super(CREATE_CONNECTOR, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.createConnector(r.json(), map(l));
+        }
+    }
+
+    public static final class GetConnector extends Base {
+        @Inject
+        public GetConnector(TransportService t, ActionFilters f) {
+            super(GET_CONNECTOR, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.getConnector(r.param("connector_id"), map(l));
+        }
+    }
+
+    public static final class UpdateConnector extends Base {
+        @Inject
+        public UpdateConnector(TransportService t, ActionFilters f) {
+            super(UPDATE_CONNECTOR, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.updateConnector(r.param("connector_id"), r.json(), written(l));
+        }
+    }
+
+    public static final class DeleteConnector extends Base {
+        @Inject
+        public DeleteConnector(TransportService t, ActionFilters f) {
+            super(DELETE_CONNECTOR, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.deleteConnector(r.param("connector_id"), written(l));
+        }
+    }
+
+    public static final class SearchConnectors extends Search {
+        @Inject
+        public SearchConnectors(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(SEARCH_CONNECTORS, MlIndices.CONNECTOR, t, f, x);
         }
     }
 }
