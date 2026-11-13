@@ -147,7 +147,7 @@ public final class JsScripts {
 
     /** What a search the native engine does not run raises when Java would run its script. */
     private static IllegalArgumentException javaRun() {
-        return new IllegalArgumentException("[js] scripts run only in the native engine, which does not run this search");
+        return new IllegalArgumentException("[js] scripts run only in the accelerated engine, which does not run this search");
     }
 
     private record ScoreLeaf(String source, Map<String, Object> params, boolean needsScore) implements Leaf, ScoreScript.LeafFactory {
