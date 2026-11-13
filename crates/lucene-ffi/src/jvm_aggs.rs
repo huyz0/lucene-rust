@@ -1,5 +1,5 @@
 //! The plugin's aggregation trees: a tree blob decoded into
-//! [`lucene_search::bucket_aggs::AggNode`]s, run over a reader handle, and
+//! [`lucene_aggs::bucket_aggs::AggNode`]s, run over a reader handle, and
 //! the shard results encoded for the plugin's `NativeAggregations.Tree` to
 //! turn into OpenSearch's `InternalAggregation`s.
 //!
@@ -114,14 +114,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lucene_search::aggs::{MinScore, Source, ValueKind};
-use lucene_search::bucket_aggs::{
+use lucene_aggs::bucket_aggs::{
     self, AcceptedOrds, AggNode, AggResult, CardinalityKind, CompositeAfter, CompositeKeyValue,
     CompositeSource, CompositeValues, DateRounding, DateUnit, Globals, MissingOrder, RoundingKind,
     SignificantKey, TermsOrder,
 };
+use lucene_aggs::metric_aggs::{Source, ValueKind};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
+use lucene_search::segment_match::MinScore;
 use lucene_search::BooleanQuery;
 
 use crate::error::{set_last_error, FfiStatus};
@@ -347,7 +348,7 @@ fn node_of(
                 }
             };
             let needs = c.u8()?;
-            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+            if needs == 0 || needs & !lucene_aggs::metric_aggs::NEED_ALL != 0 {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
             AggNode::Metric {
@@ -361,7 +362,7 @@ fn node_of(
         }
         AGG_SCRIPT_METRIC => {
             let needs = c.u8()?;
-            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+            if needs == 0 || needs & !lucene_aggs::metric_aggs::NEED_ALL != 0 {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
             let values = lucene_engine::painless_score::PainlessAggValues::decode(c)?;
@@ -445,7 +446,7 @@ fn node_of(
                 missing_term: None,
                 missing: None,
                 text: Some(std::sync::Arc::new(
-                    lucene_search::significant_text::TextSource {
+                    lucene_aggs::significant_text::TextSource {
                         source_fields,
                         field: name,
                         analyzer,
@@ -1069,7 +1070,7 @@ pub(crate) fn aggregate_tree_blobs(
 
 /// [`aggregate_tree_blobs`], with `cached` each committed segment's part
 /// read from and kept in the process's aggregation segment cache
-/// ([`lucene_search::bucket_aggs::segment_cache`]): the same results.
+/// ([`lucene_aggs::bucket_aggs::segment_cache`]): the same results.
 pub(crate) fn aggregate_tree_blobs_cached(
     handle: u64,
     query_blob: &[u8],
@@ -1344,7 +1345,7 @@ pub(crate) mod tests {
     }
 
     fn metric(b: &mut Vec<u8>, kind: u8, source: u8, field: &str) {
-        b.extend_from_slice(&[AGG_METRIC, kind, source, lucene_search::aggs::NEED_ALL]);
+        b.extend_from_slice(&[AGG_METRIC, kind, source, lucene_aggs::metric_aggs::NEED_ALL]);
         string(b, field);
     }
 
@@ -1495,7 +1496,7 @@ pub(crate) mod tests {
     #[test]
     fn the_segment_cache_answers_as_the_pass_without_it() {
         use crate::jvm_reader::tests::{open_live, range_blob, term_and_range_blob};
-        use lucene_search::bucket_aggs::segment_cache::AggSegmentCache;
+        use lucene_aggs::bucket_aggs::segment_cache::AggSegmentCache;
         let cache = AggSegmentCache::global();
         cache.set_budget(64 << 20);
         let trees = [
@@ -1916,7 +1917,7 @@ pub(crate) mod tests {
             );
         }
         // The result: a bucket that collected nothing, then a digest.
-        let mut d = lucene_search::tdigest::MergingDigest::new(100.0);
+        let mut d = lucene_aggs::tdigest::MergingDigest::new(100.0);
         for x in [3.0, 1.0, 2.0] {
             d.add(x).unwrap();
         }
@@ -2011,7 +2012,7 @@ pub(crate) mod tests {
 
     #[test]
     fn sorted_top_hits_decode_and_encode() {
-        use lucene_search::bucket_aggs::SortedHits;
+        use lucene_aggs::bucket_aggs::SortedHits;
         use lucene_search::top_field::{FieldDoc, SortField, SortType, TopFieldDocs};
         // A sort blob: `kw` ascending (missing last), then `n` (long) descending.
         let sort_blob = |after: bool, options: u8| {
@@ -2341,7 +2342,7 @@ pub(crate) mod tests {
         assert!(count >= 0);
         // The metrics blob path agrees on the same query and field.
         let flat = jvm_reader::aggregate_blobs(h, &fox, &{
-            let mut b = vec![1u8, 0, 0, lucene_search::aggs::NEED_ALL];
+            let mut b = vec![1u8, 0, 0, lucene_aggs::metric_aggs::NEED_ALL];
             string(&mut b, "n");
             b.push(0);
             b.extend_from_slice(&0i32.to_le_bytes());

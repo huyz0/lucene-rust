@@ -176,7 +176,7 @@ final class FieldSchema {
         }
     }
 
-    /** The field spec {@code engine_writer.rs}'s {@code decode_field} reads. */
+    /** The field spec {@code writer_blob.rs}'s {@code decode_field} reads. */
     byte[] encode() {
         Blob b = new Blob(64).string(name);
         b.u8(switch (indexOptions) {

@@ -698,7 +698,7 @@ fn unscored_lines(
     spec: &str,
     out: &mut Vec<String>,
 ) {
-    use lucene_search::aggs::{self, MetricSpec, Source, ValueKind, NEED_ALL};
+    use lucene_aggs::metric_aggs::{self as aggs, MetricSpec, Source, ValueKind, NEED_ALL};
     let head = format!("{kind}\t{spec}");
     let q = BooleanQuery {
         must: vec![query("or:red:blue")],

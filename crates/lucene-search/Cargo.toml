@@ -52,6 +52,7 @@ lucene-suggest = { path = "../lucene-suggest" }
 lucene-grouping = { path = "../lucene-grouping" }
 lucene-expressions = { path = "../lucene-expressions" }
 lucene-facet = { path = "../lucene-facet" }
+lucene-aggs = { path = "../lucene-aggs" }
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.

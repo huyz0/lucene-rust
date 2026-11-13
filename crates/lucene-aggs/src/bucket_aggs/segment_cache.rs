@@ -60,12 +60,13 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::{keyed_ord, slot, AggNode, Globals, State};
-use crate::aggs::{self, MetricState, ValueKind};
-use crate::directory_reader::SegmentReader;
-use crate::extended_query::ExtendedQuery;
-use crate::multi_segment::OpenSegment;
-use crate::query::{BooleanQuery, Clause};
-use crate::Result;
+use crate::metric_aggs::{self, MetricState, ValueKind};
+use lucene_search::directory_reader::SegmentReader;
+use lucene_search::extended_query::ExtendedQuery;
+use lucene_search::java_math;
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::{BooleanQuery, Clause};
+use lucene_search::Result;
 
 /// Exact sums of whole numbers stay below this.
 const EXACT: f64 = 9_007_199_254_740_992.0;
@@ -292,7 +293,7 @@ impl AggSegmentCache {
         &self,
         core: u128,
         field: &str,
-        points: &crate::points_query::PointsInput<'_>,
+        points: &lucene_search::points_query::PointsInput<'_>,
         max_doc: i32,
     ) -> Option<Arc<BlockBounds>> {
         let key = (core, field.to_string());
@@ -549,7 +550,7 @@ fn nodes_cacheable(nodes: &[AggNode]) -> bool {
                 ..
             } => {
                 script.is_none()
-                    && (*kind == ValueKind::Long || collected(*needs) & aggs::NEED_SUM == 0)
+                    && (*kind == ValueKind::Long || collected(*needs) & metric_aggs::NEED_SUM == 0)
             }
             AggNode::Terms {
                 missing, accepted, ..
@@ -605,7 +606,10 @@ fn clause_cacheable(c: &Clause) -> bool {
 
 /// A one-dimensional eight-byte points field's smallest and largest value
 /// in the segment, as the sortable longs a points range compares.
-fn points_bounds(points: &crate::points_query::PointsInput<'_>, field: &str) -> Option<(i64, i64)> {
+fn points_bounds(
+    points: &lucene_search::points_query::PointsInput<'_>,
+    field: &str,
+) -> Option<(i64, i64)> {
     let n = points.field_number(field)?;
     let f = points.reader.field(n)?;
     if f.num_dims != 1 || f.bytes_per_dim != 8 {
@@ -625,7 +629,7 @@ fn unpack(b: &[u8]) -> Option<i64> {
 /// Each block's smallest and largest value of `field`, from every point of
 /// the segment, deleted or not; a block without a value has an empty range.
 fn read_block_bounds(
-    points: &crate::points_query::PointsInput<'_>,
+    points: &lucene_search::points_query::PointsInput<'_>,
     field: &str,
     block_docs: i32,
     max_doc: i32,
@@ -670,24 +674,24 @@ fn read_block_bounds(
 /// range cuts its bounds is pushed onto `cut`.
 fn narrow(
     query: &BooleanQuery,
-    points: &crate::points_query::PointsInput<'_>,
+    points: &lucene_search::points_query::PointsInput<'_>,
     bounds: &dyn Fn(&str) -> Option<(i64, i64)>,
     cut: &mut Vec<String>,
 ) -> BooleanQuery {
     fn clause(
         c: &Clause,
-        points: &crate::points_query::PointsInput<'_>,
+        points: &lucene_search::points_query::PointsInput<'_>,
         bounds: &dyn Fn(&str) -> Option<(i64, i64)>,
         cut: &mut Vec<String>,
     ) -> Clause {
         match c {
             Clause::PointsRange(r) => {
                 if points.field_number(&r.field).is_none() {
-                    return Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new());
+                    return Clause::MatchNoDocs(lucene_search::query::MatchNoDocsQuery::new());
                 }
                 match bounds(&r.field) {
                     Some((lo, hi)) if r.max < lo || r.min > hi => {
-                        Clause::MatchNoDocs(crate::query::MatchNoDocsQuery::new())
+                        Clause::MatchNoDocs(lucene_search::query::MatchNoDocsQuery::new())
                     }
                     Some((lo, hi)) => {
                         if (r.min > lo || r.max < hi) && !cut.contains(&r.field) {
@@ -739,7 +743,7 @@ fn narrow(
                         _ => (*q.dv_query).clone(),
                     };
                     Clause::Extended(Box::new(ExtendedQuery::IndexOrDocValues(
-                        crate::extended_query::IndexOrDocValuesQuery {
+                        lucene_search::extended_query::IndexOrDocValuesQuery {
                             index_query: Box::new(index),
                             dv_query: Box::new(dv),
                         },
@@ -752,7 +756,7 @@ fn narrow(
     }
     fn boolean(
         b: &BooleanQuery,
-        points: &crate::points_query::PointsInput<'_>,
+        points: &lucene_search::points_query::PointsInput<'_>,
         bounds: &dyn Fn(&str) -> Option<(i64, i64)>,
         cut: &mut Vec<String>,
     ) -> BooleanQuery {
@@ -811,8 +815,8 @@ pub(super) fn collecting(nodes: &[AggNode]) -> Vec<AggNode> {
 fn augment(n: &mut AggNode) {
     match n {
         AggNode::Metric { needs, .. } => {
-            if collected(*needs) & aggs::NEED_SUM != 0 {
-                *needs = aggs::NEED_ALL;
+            if collected(*needs) & metric_aggs::NEED_SUM != 0 {
+                *needs = metric_aggs::NEED_ALL;
             }
         }
         AggNode::Terms { subs, .. }
@@ -833,19 +837,19 @@ pub(super) fn restore(asked: &[AggNode], results: &mut [super::AggResult]) {
         match (n, r) {
             (AggNode::Metric { needs, .. }, AggResult::Metric(states)) => {
                 let kept = collected(*needs);
-                if collected(aggs::NEED_ALL) == kept || kept & aggs::NEED_SUM == 0 {
+                if collected(metric_aggs::NEED_ALL) == kept || kept & metric_aggs::NEED_SUM == 0 {
                     continue;
                 }
                 let fresh = MetricState::default();
                 for s in states {
-                    if kept & aggs::NEED_MIN_MAX == 0 {
+                    if kept & metric_aggs::NEED_MIN_MAX == 0 {
                         s.min = fresh.min;
                         s.max = fresh.max;
                     }
-                    if kept & aggs::NEED_MIN == 0 {
+                    if kept & metric_aggs::NEED_MIN == 0 {
                         s.min_of_mins = fresh.min_of_mins;
                     }
-                    if kept & aggs::NEED_MAX == 0 {
+                    if kept & metric_aggs::NEED_MAX == 0 {
                         s.max_of_maxes = fresh.max_of_maxes;
                     }
                 }
@@ -869,9 +873,11 @@ pub(super) fn restore(asked: &[AggNode], results: &mut [super::AggResult]) {
 /// part.
 fn collected(needs: u8) -> u8 {
     match needs {
-        aggs::NEED_MIN | aggs::NEED_MAX | aggs::NEED_COUNT => needs,
-        n if n & !(aggs::NEED_COUNT | aggs::NEED_SUM) == 0 => aggs::NEED_COUNT | aggs::NEED_SUM,
-        _ => aggs::NEED_ALL,
+        metric_aggs::NEED_MIN | metric_aggs::NEED_MAX | metric_aggs::NEED_COUNT => needs,
+        n if n & !(metric_aggs::NEED_COUNT | metric_aggs::NEED_SUM) == 0 => {
+            metric_aggs::NEED_COUNT | metric_aggs::NEED_SUM
+        }
+        _ => metric_aggs::NEED_ALL,
     }
 }
 
@@ -943,8 +949,8 @@ impl SegmentPart {
     }
 }
 
-fn mismatch() -> crate::Error {
-    crate::Error::TermsAggType("aggregation state does not match its node".to_string())
+fn mismatch() -> lucene_search::Error {
+    lucene_search::Error::TermsAggType("aggregation state does not match its node".to_string())
 }
 
 fn parts_of(
@@ -978,7 +984,7 @@ fn part_of(node: &AggNode, state: State, i: usize, globals: &Globals<'_>) -> Res
             let map = globals.get(field)?.segment_map(i).unwrap_or(&[]);
             for k in &mut keys {
                 let ord = map.binary_search(&k.1).map_err(|_| {
-                    crate::Error::TermsAggType(format!(
+                    lucene_search::Error::TermsAggType(format!(
                         "{field}: global ordinal {} is not in segment {i}",
                         k.1
                     ))
@@ -1028,7 +1034,7 @@ fn add(
             let Some(dst) = dst.full() else {
                 return Err(mismatch());
             };
-            let sums = collected(*needs) & aggs::NEED_SUM != 0;
+            let sums = collected(*needs) & metric_aggs::NEED_SUM != 0;
             for (o, s) in src.iter().enumerate() {
                 let Some(&to) = owners.get(o) else {
                     return Err(mismatch());
@@ -1143,9 +1149,9 @@ fn add_metric(dst: &mut MetricState, src: &MetricState, sums: bool) -> bool {
         dst.sum += src.sum;
     }
     dst.count += src.count;
-    dst.min = aggs::java_min(dst.min, src.min);
-    dst.max = aggs::java_max(dst.max, src.max);
-    dst.min_of_mins = aggs::java_min(dst.min_of_mins, src.min_of_mins);
-    dst.max_of_maxes = aggs::java_max(dst.max_of_maxes, src.max_of_maxes);
+    dst.min = java_math::java_min(dst.min, src.min);
+    dst.max = java_math::java_max(dst.max, src.max);
+    dst.min_of_mins = java_math::java_min(dst.min_of_mins, src.min_of_mins);
+    dst.max_of_maxes = java_math::java_max(dst.max_of_maxes, src.max_of_maxes);
     true
 }

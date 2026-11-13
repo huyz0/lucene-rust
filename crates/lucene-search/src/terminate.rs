@@ -279,7 +279,7 @@ pub fn count_terminates(
     slices: &[Vec<usize>],
     iterate: &[bool],
     n: u64,
-    min_score: Option<&crate::aggs::MinScore<'_, '_>>,
+    min_score: Option<&crate::segment_match::MinScore<'_, '_>>,
 ) -> Result<bool> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);

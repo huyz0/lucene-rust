@@ -17,6 +17,7 @@ lucene-sandbox = { path = "../../crates/lucene-sandbox" }
 lucene-facet = { path = "../../crates/lucene-facet" }
 lucene-expressions = { path = "../../crates/lucene-expressions" }
 lucene-grouping = { path = "../../crates/lucene-grouping" }
+lucene-aggs = { path = "../../crates/lucene-aggs" }
 lucene-classification = { path = "../../crates/lucene-classification" }
 lucene-suggest = { path = "../../crates/lucene-suggest" }
 lucene-spatial-extras = { path = "../../crates/lucene-spatial-extras" }

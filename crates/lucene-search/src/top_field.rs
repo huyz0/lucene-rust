@@ -1509,11 +1509,11 @@ impl NestedColumn<'_> {
                 let (first, last) = (self.buf[0], self.buf[self.buf.len() - 1]);
                 match self.selector {
                     Selector::Min if floating => {
-                        double_acc = crate::aggs::java_min(double_acc, d(first))
+                        double_acc = crate::java_math::java_min(double_acc, d(first))
                     }
                     Selector::Min => long_acc = long_acc.min(first),
                     Selector::Max if floating => {
-                        double_acc = crate::aggs::java_max(double_acc, d(last))
+                        double_acc = crate::java_math::java_max(double_acc, d(last))
                     }
                     Selector::Max => long_acc = long_acc.max(last),
                     _ => {
@@ -1553,14 +1553,14 @@ impl NestedColumn<'_> {
 
 /// A [`NestedSort`]'s query over one segment, deletions ignored: its
 /// documents, ascending.
-pub(crate) fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
+pub fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(q, std::slice::from_ref(seg));
     let q = rewritten.as_ref().unwrap_or(q);
-    let clause = crate::aggs::lone_clause(q);
-    let ctx = crate::aggs::plain_context(seg);
+    let clause = crate::segment_match::lone_clause(q);
+    let ctx = crate::segment_match::plain_context(seg);
     let mut buf = Vec::new();
     Ok(
-        match crate::aggs::segment_matches(&ctx, q, &clause, None, &mut buf)? {
+        match crate::segment_match::segment_matches(&ctx, q, &clause, None, &mut buf)? {
             None => Vec::new(),
             Some(Some(d)) => d.to_vec(),
             Some(None) => (0..seg.max_doc.unwrap_or(0)).collect(),
@@ -5597,12 +5597,12 @@ mod tests {
                                     }
                                     (Selector::Min, true) => {
                                         enc(kids.iter().fold(f64::INFINITY, |a, v| {
-                                            crate::aggs::java_min(a, d(v[0]))
+                                            crate::java_math::java_min(a, d(v[0]))
                                         }))
                                     }
                                     (Selector::Max, true) => {
                                         enc(kids.iter().fold(f64::NEG_INFINITY, |a, v| {
-                                            crate::aggs::java_max(a, d(*v.last().unwrap()))
+                                            crate::java_math::java_max(a, d(*v.last().unwrap()))
                                         }))
                                     }
                                     (Selector::Sum, true) => {

@@ -18,7 +18,7 @@ package org.lucenerust.opensearch.engine;
  * rerank encoding's for {@code ivf} and the quantizer's for {@code hnsw_rq} and {@code hnsw_disk};
  * an IVF field's cluster size rides in {@code maxConn}, its quantizer in {@code beamWidth}).
  * The attribute stays in the segments' field infos, so a reopened writer merges the field in the
- * same format ({@code engine_writer.rs}'s {@code parse_vectors_format}).
+ * same format ({@code writer_blob.rs}'s {@code parse_vectors_format}).
  */
 public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encoding) {
     public static final String ATTRIBUTE = "accelerated.vectors_format";
@@ -127,7 +127,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
         }
     }
 
-    /** {@code engine_writer.rs}'s {@code decode_vector_schema} format part. */
+    /** {@code writer_blob.rs}'s {@code decode_vector_schema} format part. */
     void encode(Blob b) {
         b.u8(kind);
         if (kind == 1 || kind == 2 || kind == 4 || kind == 5) {
