@@ -118,7 +118,7 @@ def index(name, engine, field_type, docs, deleted):
     settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.derived_source.enabled": True}
     if engine:
-        settings["index.lucene_rust.engine"] = True
+        settings["index.engine.accelerated"] = True
     must("PUT", f"/{name}", {"settings": settings, "mappings": {"properties": {
         "message": {"type": field_type}, "n": {"type": "long"}}}})
     half = len(docs) // 2
@@ -162,7 +162,7 @@ def main():
                     post = must("GET", "/_plugins/lucene_rust/stats")
                     if name == "rust" and slop == 0:
                         new = {k: v for k, v in post.get("fallbacks", {}).items() if v != pre.get("fallbacks", {}).get(k, 0)}
-                        if post["native_queries"] - pre["native_queries"] != 1 or new:
+                        if post["accelerated_queries"] - pre["accelerated_queries"] != 1 or new:
                             failures.append(f"exact phrase {p!r} did not run in Rust: fallbacks {new}")
                     if set(got) != set(want):
                         failures.append(f"{name} {p!r}~{slop}: {len(got)} hits, text {len(want)}")
@@ -178,7 +178,7 @@ def main():
         after = must("GET", "/_plugins/lucene_rust/stats")
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
-        print(f"plugin: {after['native_queries'] - before['native_queries']} shard queries in Rust, fallbacks {fallbacks}")
+        print(f"plugin: {after['accelerated_queries'] - before['accelerated_queries']} shard queries in Rust, fallbacks {fallbacks}")
         if any(k.startswith("pattern_phrase_") and k not in ("pattern_phrase_slop", "pattern_phrase_prefix") for k in fallbacks):
             failures.append(f"phrases fell back to Java for another reason: {fallbacks}")
 
@@ -200,18 +200,18 @@ def main():
 
         # mappings the field takes: its round trip, match_only_text's parameters, index: false, copy_to
         mapping = must("GET", "/rust/_mapping")["rust"]["mappings"]
-        must("PUT", "/copy", {"settings": {"index.lucene_rust.engine": True, "index.derived_source.enabled": True},
+        must("PUT", "/copy", {"settings": {"index.engine.accelerated": True, "index.derived_source.enabled": True},
                               "mappings": mapping})
         must("PUT", "/copy/_mapping", mapping)
-        must("PUT", "/params", {"settings": {"index.lucene_rust.engine": True}, "mappings": {"properties": {"m": {
+        must("PUT", "/params", {"settings": {"index.engine.accelerated": True}, "mappings": {"properties": {"m": {
             "type": "pattern_text", "position_increment_gap": 10, "fielddata": True, "index_prefixes": None,
             "index_options": "docs", "norms": False, "fields": {"raw": {"type": "keyword"}}}}}})
-        must("PUT", "/unindexed", {"settings": {"index.lucene_rust.engine": True, "index.derived_source.enabled": True},
+        must("PUT", "/unindexed", {"settings": {"index.engine.accelerated": True, "index.derived_source.enabled": True},
                                    "mappings": {"properties": {"m": {"type": "pattern_text", "index": False}}}})
         must("PUT", "/unindexed/_doc/1?refresh=true", {"m": "kept 7 times"})
         if must("GET", "/unindexed/_doc/1")["_source"].get("m") != "kept 7 times":
             failures.append("index: false did not keep the message")
-        must("PUT", "/copied", {"settings": {"index.lucene_rust.engine": True}, "mappings": {"properties": {
+        must("PUT", "/copied", {"settings": {"index.engine.accelerated": True}, "mappings": {"properties": {
             "a": {"type": "keyword", "copy_to": "m"}, "m": {"type": "pattern_text"}}}})
 
         # errors

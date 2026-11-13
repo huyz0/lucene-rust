@@ -8,8 +8,10 @@ import org.apache.logging.log4j.Logger;
 import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.action.get.GetRequest;
 import org.opensearch.action.get.GetResponse;
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.transport.client.Client;
 
 import java.io.IOException;
@@ -30,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -55,9 +58,11 @@ public final class LocalModels {
     }
 
     private final Client client;
+    private final RemoteModels remote;
     private final Path cacheDir;
     private final Path runtimeLibrary;
     private final Map<String, Deployed> models = new ConcurrentHashMap<>();
+    private final Map<String, RateLimit> limits = new ConcurrentHashMap<>();
     /** The listeners of each deploy in flight here, by model id; guarded by itself. */
     private final Map<String, List<ActionListener<Void>>> deploying = new java.util.HashMap<>();
     private volatile boolean runtimeLoaded;
@@ -65,8 +70,9 @@ public final class LocalModels {
     /** Guards loading libtorch, apart from this object so its download holds up no ONNX deploy. */
     private final Object torchLock = new Object();
 
-    LocalModels(Client client, Path cacheDir, Path runtimeLibrary) {
+    LocalModels(Client client, RemoteModels remote, Path cacheDir, Path runtimeLibrary) {
         this.client = client;
+        this.remote = remote;
         this.cacheDir = cacheDir;
         this.runtimeLibrary = runtimeLibrary;
     }
@@ -163,6 +169,13 @@ public final class LocalModels {
             Map<String, Object> model = r.getSourceAsMap();
             String function = String.valueOf(model.get("algorithm"));
             String format = String.valueOf(model.get("model_format"));
+            if ("REMOTE".equals(function)) {
+                remote.open(model, ActionListener.wrap(handle -> {
+                    put(modelId, new Deployed(handle, function, model));
+                    all.onResponse(null);
+                }, all::onFailure));
+                return;
+            }
             if (FUNCTIONS.contains(function) == false) {
                 throw new IllegalArgumentException("lucene-rust does not deploy " + function + " models yet");
             }
@@ -369,9 +382,69 @@ public final class LocalModels {
     private void put(String modelId, Deployed deployed) {
         Deployed previous = models.put(modelId, deployed);
         if (previous != null) {
-            NativeBridge.mlModelClose(previous.handle());
+            close(previous);
         }
         LOGGER.info("lucene-rust: deployed model [{}]", modelId);
+    }
+
+    /** Takes the model document's new {@code is_enabled} and {@code rate_limiter} into the model deployed here, if any. */
+    void refresh(String modelId, Map<String, Object> doc) {
+        limits.remove(modelId);
+        models.computeIfPresent(modelId, (id, d) -> new Deployed(d.handle(), d.functionName(), doc, d.torch()));
+    }
+
+    /** Lets a prediction through, or refuses it as stock does when the model is disabled or over its rate limit. */
+    void admit(String modelId) {
+        Deployed d = models.get(modelId);
+        if (d == null) {
+            return;
+        }
+        Map<String, Object> doc = d.model();
+        if (Boolean.FALSE.equals(doc.get("is_enabled"))) {
+            throw new OpenSearchStatusException("Model is disabled.", RestStatus.FORBIDDEN);
+        }
+        if (doc.get("rate_limiter") instanceof Map<?, ?> r && r.get("limit") != null && r.get("unit") != null) {
+            String key = r.get("limit") + " " + r.get("unit");
+            RateLimit limit = limits.get(modelId);
+            if (limit == null || limit.key.equals(key) == false) {
+                try {
+                    limit = new RateLimit(key, Double.parseDouble(String.valueOf(r.get("limit"))), TimeUnit.valueOf(String.valueOf(r.get("unit"))).toNanos(1));
+                } catch (IllegalArgumentException e) {
+                    return;
+                }
+                limits.put(modelId, limit);
+            }
+            if (limit.take() == false) {
+                throw new OpenSearchStatusException("Request is throttled at model level.", RestStatus.TOO_MANY_REQUESTS);
+            }
+        }
+    }
+
+    /** A token bucket of {@code limit} predictions per {@code unitNanos}, full at the start. */
+    private static final class RateLimit {
+        private final String key;
+        private final double capacity;
+        private final double perNano;
+        private double tokens;
+        private long last = System.nanoTime();
+
+        RateLimit(String key, double limit, long unitNanos) {
+            this.key = key;
+            this.capacity = limit;
+            this.perNano = limit / unitNanos;
+            this.tokens = limit;
+        }
+
+        synchronized boolean take() {
+            long now = System.nanoTime();
+            tokens = Math.min(capacity, tokens + (now - last) * perNano);
+            last = now;
+            if (tokens < 1) {
+                return false;
+            }
+            tokens -= 1;
+            return true;
+        }
     }
 
     /** The function name ({@code algorithm}) of {@code modelId} as deployed here, or {@code null}. */
@@ -392,13 +465,25 @@ public final class LocalModels {
         if (d == null) {
             return false;
         }
-        NativeBridge.mlModelClose(d.handle());
+        close(d);
         try {
             IOUtils.rm(cacheDir.resolve("deploy").resolve(modelId));
         } catch (IOException e) {
             LOGGER.warn("lucene-rust: cannot remove the files of model [{}]", modelId, e);
         }
         return true;
+    }
+
+    private void close(Deployed d) {
+        NativeBridge.mlModelClose(d.handle());
+        if ("REMOTE".equals(d.functionName())) {
+            remote.closed(d.handle());
+        }
+    }
+
+    /** The native handle of {@code modelId}, deployed here. */
+    long handle(String modelId) {
+        return deployed(modelId).handle();
     }
 
     /** Undeploys every model, for node shutdown. */

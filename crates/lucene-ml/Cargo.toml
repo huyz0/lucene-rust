@@ -16,6 +16,17 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dy
 
 # idf.json (sparse tokenize models); tokenizers already links it.
 serde_json = "1"
+# Java's `Double.toString`, for numbers ml-commons prints through Gson.
+lucene-util = { path = "../lucene-util" }
+# Remote connectors: SigV4 (HMAC-SHA256) and the credentials' AWS Encryption
+# SDK messages (AES-GCM, HKDF-SHA512, ECDSA P-384). `aws-lc` is the regular
+# build, `fips` the FIPS 140-3 module, as lucene-store-crypto builds it.
+aws-lc-rs = { version = "1", default-features = false }
+
+[features]
+default = ["aws-lc"]
+aws-lc = ["aws-lc-rs/aws-lc-sys"]
+fips = ["aws-lc-rs/fips"]
 
 [lints]
 workspace = true

@@ -273,9 +273,16 @@ impl std::ops::DerefMut for Scratch {
     }
 }
 
+/// The largest buffer a thread keeps between reads: one big document's
+/// buffer is freed after it, not held by the thread for good.
+const SCRATCH_RETAINED: usize = 4 << 20;
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         let buf = std::mem::take(&mut self.0);
+        if buf.capacity() > SCRATCH_RETAINED {
+            return;
+        }
         // Keep the larger of this and whatever a nested use put back.
         SCRATCH.with(|cell| {
             let other = cell.take();
@@ -1042,6 +1049,28 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// **A big document's buffer is not kept by the thread**: past
+    /// `SCRATCH_RETAINED` the scratch is freed when the read ends, below it
+    /// kept for the next read.
+    #[test]
+    fn the_thread_keeps_small_scratch_buffers_only() {
+        drop(take_scratch(1 << 10));
+        assert!(SCRATCH.with(|c| {
+            let b = c.take();
+            let kept = b.capacity() >= 1 << 10;
+            c.set(b);
+            kept
+        }));
+        drop(take_scratch(SCRATCH_RETAINED + 1));
+        let held = SCRATCH.with(|c| {
+            let b = c.take();
+            let cap = b.capacity();
+            c.set(b);
+            cap
+        });
+        assert!(held <= SCRATCH_RETAINED, "kept {held} bytes");
+    }
 
     const ALL: [Compression; 9] = [
         Compression::Fast,

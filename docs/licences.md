@@ -47,8 +47,8 @@ a dependency the shipped library links is not under a licence listed here.
     `automaton/lev_tables.rs` transcribes Lucene's four
     `Lev*ParametricDescription` tables.
   - One this port does *not* carry, and the reason: Lucene's LZ4 rewrite
-    (BSD-2-Clause): LZ4 is decompressed by the `lz4_flex` crate, with a
-    literal-only encoder of this port's own.
+    (BSD-2-Clause): the LZ4 codec in `lucene-codecs` (`lz4.rs`) is this
+    port's own, written from the LZ4 block format.
   - The whole file is kept anyway, so the notices stay those of the upstream
     the port follows.
 - **[`NOTICE`](../NOTICE)** is this project's notice, then Lucene 10.5.0's
@@ -65,7 +65,7 @@ a dependency the shipped library links is not under a licence listed here.
   ported, file by file, like Lucene itself:
   - **Spatial4j 0.8** (`org.locationtech.spatial4j:spatial4j:0.8`,
     Apache-2.0; LocationTech, formerly an ASF-licensed Lucene spin-off) ->
-    `crates/lucene-util/src/spatial4j/`. Its optional JTS dependency (EPL/EDL)
+    `crates/lucene-spatial4j/src/spatial4j/`. Its optional JTS dependency (EPL/EDL)
     is **not** ported or used: Lucene does not ship JTS, and spatial-extras
     reaches polygons through Geo3D instead.
   - **S2 Geometry Library for Java** (`io.sgr:s2-geometry-library-java:1.0.0`,
@@ -366,7 +366,6 @@ a dependency the shipped library links is not under a licence listed here.
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | MIT |
 | either | 1.18.0 | MIT OR Apache-2.0 | MIT |
 | libc | 0.2.189 | MIT OR Apache-2.0 | MIT |
-| lz4_flex | 0.11.6 | MIT | MIT |
 | zstd-safe | 7.4.0 | MIT OR Apache-2.0 | MIT (`lucene-zstd`: OpenSearch's `zstd` stored fields) |
 | zstd-sys | 2.1.2+zstd.1.5.7 | MIT OR Apache-2.0 | MIT; the libzstd C sources it builds are BSD-3-Clause OR GPL-2.0-only, BSD taken, its text in [`LICENSE`](../LICENSE) |
 | cc, find-msvc-tools, jobserver, pkg-config, shlex | (build time) | MIT OR Apache-2.0 | MIT (build time only: `zstd-sys` compiles libzstd) |

@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use lucene_store::directory::Input;
@@ -23,12 +22,16 @@ use crate::key_provider::{GeneratedKey, KeyProvider};
 /// inner directory's commit and durability semantics. `write.lock` is the
 /// inner directory's lock and is not encrypted (it is empty).
 ///
-/// An [`Input`] is a contiguous byte slice, so by default a file is
-/// decrypted whole when it is opened and costs its size in memory while a
-/// reader holds it open (AES-GCM with AES-NI decrypts at several GB/s per
-/// core). With [`EncryptedDirectory::with_lazy_decrypt`] on Linux, a file is
-/// authenticated on open and then decrypted page by page on first touch
-/// into a mapping bounded by a process-wide budget ([`crate::lazy`]).
+/// Over a directory that reads pages itself ([`lucene_store::PagedFsDirectory`]
+/// on local disk, [`lucene_store::CachedBlobDirectory`] over a blob store),
+/// a file is opened through [`Directory::open_decoded`]: only its header is
+/// read at open, and each page of whole chunks is authenticated and
+/// decrypted once, as it is read into that directory's page cache. A chunk
+/// that fails authentication then fails the read of it with an error. Over
+/// any other directory an [`Input`] is a contiguous byte slice, so a file is
+/// authenticated and decrypted whole when it is opened and costs its size in
+/// memory while a reader holds it open (AES-GCM with AES-NI decrypts at
+/// several GB/s per core).
 ///
 /// Opened plaintext is shared through a [`PlaintextCache`]: while any input
 /// of a file is alive, opening it again costs a reference count. Directories
@@ -44,43 +47,11 @@ pub struct EncryptedDirectory<D: Directory> {
     header_lens: Mutex<HashMap<String, (u64, u32)>>,
     /// Whether [`is_commit_metadata`] files are stored in plaintext.
     plain_commit_metadata: bool,
-    /// Whether files are demand-decrypted rather than decrypted whole.
-    lazy: bool,
     cache: Arc<PlaintextCache>,
 }
 
 /// The index lock file's name (Lucene's `IndexWriter.WRITE_LOCK_NAME`).
 const WRITE_LOCK_NAME: &str = "write.lock";
-
-static LAZY_DEFAULT: AtomicBool = AtomicBool::new(false);
-
-/// Sets whether new [`EncryptedDirectory`]s demand-decrypt their files
-/// (default off), and returns whether demand decryption is available in
-/// this process: on Linux, with `userfaultfd` permitted. Where it is not,
-/// files are decrypted whole whatever this is set to.
-pub fn set_lazy_decrypt_default(enabled: bool) -> bool {
-    LAZY_DEFAULT.store(enabled, Ordering::Relaxed);
-    lazy_available()
-}
-
-/// Whether new [`EncryptedDirectory`]s ask for demand decryption
-/// ([`set_lazy_decrypt_default`]).
-pub fn lazy_decrypt_default() -> bool {
-    LAZY_DEFAULT.load(Ordering::Relaxed)
-}
-
-/// Whether demand decryption works in this process (starting its fault
-/// handler if it does).
-pub fn lazy_available() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        crate::lazy::Pager::global().is_some()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
-}
 
 /// Opened plaintext by file name, held weakly: an entry lives exactly as
 /// long as some input of the file does. Lucene writes a file once under a
@@ -160,17 +131,8 @@ impl<D: Directory> EncryptedDirectory<D> {
             chunk_size: DEFAULT_CHUNK_SIZE,
             header_lens: Mutex::new(HashMap::new()),
             plain_commit_metadata: false,
-            lazy: LAZY_DEFAULT.load(Ordering::Relaxed),
             cache: Arc::new(PlaintextCache::new()),
         }
-    }
-
-    /// Demand-decrypts files on open instead of decrypting them whole
-    /// (default: [`set_lazy_decrypt_default`]). A no-op where demand
-    /// decryption is unavailable ([`lazy_available`]).
-    pub fn with_lazy_decrypt(mut self, enabled: bool) -> Self {
-        self.lazy = enabled;
-        self
     }
 
     /// Shares opened plaintext with every directory given the same cache;
@@ -182,7 +144,7 @@ impl<D: Directory> EncryptedDirectory<D> {
 
     /// Stores commit metadata ([`is_commit_metadata`]) in plaintext and
     /// encrypts everything else. Off by default; the OpenSearch plugin's
-    /// `rust_encrypted` store turns it on, on both its Java and Rust sides,
+    /// `encrypted` store turns it on, on both its Java and Rust sides,
     /// because OpenSearch reads `segments_N` and `.si` files without the
     /// store's directory when it allocates a shard after a restart.
     pub fn with_plaintext_commit_metadata(mut self) -> Self {
@@ -257,33 +219,6 @@ impl<D: Directory> EncryptedDirectory<D> {
                 index: 0,
             }),
         ))
-    }
-
-    /// The plaintext of `file`, demand-decrypted when that is on and
-    /// available, else decrypted whole.
-    fn decrypt(
-        &self,
-        file: Input,
-        cipher: ChunkCipher,
-        header: &Header,
-        header_len: usize,
-        name: &str,
-    ) -> Result<Input> {
-        #[cfg(target_os = "linux")]
-        if let Some(pager) =
-            crate::lazy::Pager::global().filter(|p| self.lazy && p.supports(header.chunk_size))
-        {
-            let body = &file[header_len..];
-            cipher.verify_body(body, header.chunk_size, name)?;
-            let plain_len = plaintext_len(body.len() as u64, header.chunk_size)
-                .and_then(|n| usize::try_from(n).ok())
-                .ok_or_else(|| {
-                    Error::Corrupted(format!("encrypted file {name}: malformed length"))
-                })?;
-            return pager.open(file, header_len, plain_len, header.chunk_size, cipher, name);
-        }
-        let plain = cipher.open_body(&file[header_len..], header.chunk_size, name)?;
-        Ok(Input::Owned(plain))
     }
 
     /// The header of `name` from its bytes, and the cipher to open it.
@@ -366,22 +301,24 @@ impl<D: Directory> Directory for EncryptedDirectory<D> {
         if self.is_plain(name) {
             return self.inner.open(name);
         }
-        let decoder = crate::pages::EncryptedDecoder {
-            keys: self.keys.as_ref(),
-            header_lens: &self.header_lens,
-        };
-        if let Some(opened) = self.inner.open_decoded(name, &decoder) {
-            return opened;
-        }
         let sealed_len = self.inner.file_length(name)?;
         if let Some(shared) = self.cache.get(name, sealed_len) {
             return Input::slice_of(&shared, 0, shared.len());
         }
-        let file = self.inner.open(name)?;
-        let (cipher, header, header_len) = self.cipher_for(name, &file)?;
-        self.header_lens()
-            .insert(name.to_string(), (header_len as u64, header.chunk_size));
-        let plain = self.decrypt(file, cipher, &header, header_len, name)?;
+        let decoder = crate::pages::EncryptedDecoder {
+            keys: self.keys.as_ref(),
+            header_lens: &self.header_lens,
+        };
+        let plain = match self.inner.open_decoded(name, &decoder) {
+            Some(opened) => opened?,
+            None => {
+                let file = self.inner.open(name)?;
+                let (cipher, header, header_len) = self.cipher_for(name, &file)?;
+                self.header_lens()
+                    .insert(name.to_string(), (header_len as u64, header.chunk_size));
+                Input::Owned(cipher.open_body(&file[header_len..], header.chunk_size, name)?)
+            }
+        };
         let shared = Arc::new(plain);
         self.cache.put(name, sealed_len, &shared);
         Input::slice_of(&shared, 0, shared.len())

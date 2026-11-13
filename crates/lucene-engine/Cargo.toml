@@ -1,0 +1,63 @@
+[package]
+name = "lucene-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-pattern-text = { path = "../lucene-pattern-text" }
+lucene-search = { path = "../lucene-search" }
+lucene-aggs = { path = "../lucene-aggs" }
+lucene-index = { path = "../lucene-index" }
+lucene-sandbox = { path = "../lucene-sandbox" }
+lucene-facet = { path = "../lucene-facet" }
+lucene-tensor = { path = "../lucene-tensor" }
+lucene-sparse = { path = "../lucene-sparse" }
+# Painless scripts run natively (`painless_score`).
+lucene-painless = { path = "../lucene-painless" }
+lucene-analysis = { path = "../lucene-analysis" }
+# ICU's Thai dictionary word iterator, which `ThaiTokenizer` segments with,
+# and with `analysis-icu` the module's own factories.
+lucene-analysis-icu = { path = "../lucene-analysis-icu" }
+# The Lucene analysis modules a spec can name, each behind its feature
+# (`analysis_modules.rs`). Their dictionaries are data packs
+# (`lucene_analysis::data_pack`) read from a pack directory at run time,
+# unless `embedded-data` compiles them in.
+lucene-analysis-kuromoji = { path = "../lucene-analysis-kuromoji", optional = true, default-features = false }
+lucene-analysis-nori = { path = "../lucene-analysis-nori", optional = true, default-features = false }
+lucene-analysis-smartcn = { path = "../lucene-analysis-smartcn", optional = true, default-features = false }
+lucene-analysis-stempel = { path = "../lucene-analysis-stempel", optional = true, default-features = false }
+lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik", optional = true, default-features = false }
+lucene-analysis-phonetic = { path = "../lucene-analysis-phonetic", optional = true }
+
+[features]
+# `analysis::test_support`, for tests that drive the entry points.
+test-support = []
+default = [
+    "analysis-icu",
+    "analysis-kuromoji",
+    "analysis-nori",
+    "analysis-smartcn",
+    "analysis-stempel",
+    "analysis-morfologik",
+    "analysis-phonetic",
+]
+analysis-icu = []
+analysis-kuromoji = ["dep:lucene-analysis-kuromoji"]
+analysis-nori = ["dep:lucene-analysis-nori"]
+analysis-smartcn = ["dep:lucene-analysis-smartcn"]
+analysis-stempel = ["dep:lucene-analysis-stempel"]
+analysis-morfologik = ["dep:lucene-analysis-morfologik"]
+analysis-phonetic = ["dep:lucene-analysis-phonetic"]
+embedded-data = [
+    "lucene-analysis-kuromoji?/embedded-data",
+    "lucene-analysis-nori?/embedded-data",
+    "lucene-analysis-smartcn?/embedded-data",
+    "lucene-analysis-stempel?/embedded-data",
+    "lucene-analysis-morfologik?/embedded-data",
+]
+
+[dev-dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }

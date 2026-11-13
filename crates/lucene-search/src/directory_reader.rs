@@ -331,12 +331,14 @@ struct CodecFiles {
     meta: Arc<Input>,
     /// The HNSW graph's `.vem`, beside its `.vex` in [`Self::index`].
     graph_meta: Option<Arc<Input>>,
-    /// A `LuceneRustIvfVectorsFormat` instance's IVF index.
+    /// A `IvfVectorsFormat` instance's IVF index.
     ivf: Option<IvfFiles>,
     /// A `Lucene104(Hnsw)ScalarQuantizedVectorsFormat` instance's codes.
     scalar_quantized: Option<ScalarQuantizedFiles>,
-    /// A `LuceneRustHnswQuantizedVectorsFormat` instance's codes.
+    /// A `HnswQuantizedVectorsFormat` instance's codes.
     hnsw_codes: Option<HnswCodesFiles>,
+    /// A `DiskHnswVectorsFormat` instance's disk layout.
+    disk_hnsw: Option<DiskHnswFiles>,
     /// The vectors instance's flat reader, detached from its file: opened
     /// (header, footer, metadata) on first use, then shared by every read.
     flat_reader: OnceLock<lucene_codecs::vectors::FlatVectorsReader<'static>>,
@@ -376,6 +378,16 @@ struct HnswCodesFiles {
     meta: Arc<Input>,
     data: Arc<Input>,
     reader: OnceLock<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
+}
+
+/// A disk HNSW instance's `.dhm`, `.dhc` and `.dhn`, and the reader over
+/// them, opened on first search and shared by every search after it.
+#[derive(Debug)]
+struct DiskHnswFiles {
+    meta: Arc<Input>,
+    codes: Arc<Input>,
+    nodes: Arc<Input>,
+    reader: OnceLock<Arc<lucene_disk_hnsw::DiskHnswReader>>,
 }
 
 /// An IVF index's `.ivm`, `.ivp` and `.ivv`, and the reader over them,
@@ -982,11 +994,11 @@ impl SegmentReader {
         // gives doc values their own codec suffix (`Lucene90_<n>`), independent
         // of the postings suffix.
         let stored = match (
-            open_segment_file_aligned(dir, compound.as_ref(), &si.files, ".fdt", stored_alignment)?,
+            open_segment_file_advised(dir, compound.as_ref(), &si.files, ".fdt", stored_alignment)?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdx")?,
             open_segment_file(dir, compound.as_ref(), &si.files, ".fdm")?,
         ) {
-            (Some(fdt), Some(fdx), Some(fdm)) => {
+            (Some((fdt, fdt_advice)), Some(fdx), Some(fdm)) => {
                 let name = find_segment_file_name(&si.files, compound.as_ref(), ".fdt")
                     .expect("an opened .fdt has an entry");
                 Some(Arc::new(StoredFiles {
@@ -994,6 +1006,7 @@ impl SegmentReader {
                     fdx,
                     fdm,
                     suffix: codec_suffix_of(&name, &segment_name, ".fdt"),
+                    will_need_chunks: fdt_advice == lucene_store::read_advice::ReadAdvice::Random,
                     meta: OnceLock::new(),
                 }))
             }
@@ -1174,6 +1187,7 @@ impl SegmentReader {
                     ivf: None,
                     scalar_quantized: None,
                     hnsw_codes: None,
+                    disk_hnsw: None,
                     flat_reader: OnceLock::new(),
                     graph_reader: OnceLock::new(),
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
@@ -1256,6 +1270,21 @@ impl SegmentReader {
                         ))))
                     }
                 };
+                let disk_hnsw = match (open(".dhm")?, open(".dhc")?, open(".dhn")?) {
+                    (Some(meta), Some(codes), Some(nodes)) => Some(DiskHnswFiles {
+                        meta,
+                        codes,
+                        nodes,
+                        reader: OnceLock::new(),
+                    }),
+                    (None, None, None) => None,
+                    _ => {
+                        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                            "segment {segment_name}: a disk HNSW layout without all of its \
+                             .dhm, .dhc and .dhn files"
+                        ))))
+                    }
+                };
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
@@ -1264,6 +1293,7 @@ impl SegmentReader {
                     ivf,
                     scalar_quantized,
                     hnsw_codes,
+                    disk_hnsw,
                     flat_reader: OnceLock::new(),
                     graph_reader: OnceLock::new(),
                     suffix,
@@ -1653,7 +1683,7 @@ impl SegmentReader {
     }
 
     /// The IVF index of the instance field `field_number` was written with
-    /// (`LuceneRustIvfVectorsFormat`), opened once per segment; `None` when
+    /// (`IvfVectorsFormat`), opened once per segment; `None` when
     /// that instance has none or the index does not hold the field (a byte
     /// field).
     ///
@@ -1693,7 +1723,7 @@ impl SegmentReader {
     }
 
     /// The quantized HNSW codes of the instance field `field_number` was
-    /// written with (`LuceneRustHnswQuantizedVectorsFormat`), opened once per
+    /// written with (`HnswQuantizedVectorsFormat`), opened once per
     /// segment; `None` when that instance has none or holds no codes for the
     /// field (a byte field).
     ///
@@ -1723,6 +1753,47 @@ impl SegmentReader {
                         &f.suffix,
                     )?);
                     codes.reader.get_or_init(|| opened).clone()
+                }
+            };
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The disk HNSW layout of the instance field `field_number` was
+    /// written with (`DiskHnswVectorsFormat`), opened once per segment;
+    /// `None` when that instance has none or holds no layout for the field
+    /// (a byte field, or a segment too small for a graph).
+    ///
+    /// # Errors
+    /// Disk HNSW files that do not decode.
+    pub fn disk_hnsw_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<Arc<lucene_disk_hnsw::DiskHnswReader>>> {
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(disk) = &f.disk_hnsw else {
+                continue;
+            };
+            let reader = match disk.reader.get() {
+                Some(reader) => reader.clone(),
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = Arc::new(lucene_index::disk_hnsw_vectors::open(
+                        &disk.meta,
+                        disk.codes.clone(),
+                        disk.nodes.clone(),
+                        &self.segment_id,
+                        &f.suffix,
+                    )?);
+                    disk.reader.get_or_init(|| opened).clone()
                 }
             };
             if reader.field(field_number).is_some() {
@@ -1876,6 +1947,9 @@ impl SegmentReader {
         for codes in self.vectors.iter().filter_map(|c| c.hnsw_codes.as_ref()) {
             files.extend([&**codes.meta, &**codes.data]);
         }
+        for disk in self.vectors.iter().filter_map(|c| c.disk_hnsw.as_ref()) {
+            files.extend([&**disk.meta, &**disk.codes, &**disk.nodes]);
+        }
         for g in &self.dv_generations {
             files.push(&g.data);
         }
@@ -1976,7 +2050,8 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        f.reader(&self.segment_id)?.visit_document(doc, visitor)?;
+        f.reader_for(&self.segment_id, doc)?
+            .visit_document(doc, visitor)?;
         Ok(true)
     }
 
@@ -2003,7 +2078,7 @@ impl SegmentReader {
             return self.visit_stored_document(doc, visitor);
         };
         let mut vectors = SegmentVectors::new(self, doc);
-        f.reader(&self.segment_id)?.visit_document(
+        f.reader_for(&self.segment_id, doc)?.visit_document(
             doc,
             &mut crate::derived_source::InjectingVisitor {
                 inner: visitor,
@@ -2047,10 +2122,11 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(());
         };
-        if !lucene_store::is_prefetchable(&f.fdt) {
-            return Ok(());
+        if lucene_store::is_prefetchable(&f.fdt) {
+            f.reader(&self.segment_id)?.prefetch(docs)?;
+        } else if f.will_need_chunks {
+            f.will_need_chunks(&self.segment_id, docs)?;
         }
-        f.reader(&self.segment_id)?.prefetch(docs)?;
         Ok(())
     }
 
@@ -3136,11 +3212,22 @@ fn open_segment_file_aligned(
     ext: &str,
     alignment: Option<usize>,
 ) -> Result<Option<Arc<Input>>> {
+    Ok(open_segment_file_advised(dir, compound, files, ext, alignment)?.map(|(input, _)| input))
+}
+
+/// [`open_segment_file_aligned`], with the read advice the file was given.
+fn open_segment_file_advised(
+    dir: &dyn Directory,
+    compound: Option<&CompoundArchive>,
+    files: &[String],
+    ext: &str,
+    alignment: Option<usize>,
+) -> Result<Option<(Arc<Input>, lucene_store::read_advice::ReadAdvice)>> {
     let name = match find_segment_file_name(files, compound, ext) {
         Some(name) => name,
         None => return Ok(None),
     };
-    match compound {
+    let input = match compound {
         // A compound member is a window onto the archive (`openInput`'s
         // `slice`), and a loose file is handed back exactly as the directory
         // produced it: for `MmapDirectory` either one is the mapping itself,
@@ -3149,14 +3236,19 @@ fn open_segment_file_aligned(
             // `open_input` checks the entry's range against the archive.
             let member = compound_format::open_input(&archive.data, &archive.entries, &name)?;
             let entry = archive.entries.get(&name).expect("open_input found it");
-            let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
-            Ok(Some(Arc::new(slice)))
+            Input::slice_of(&archive.data, entry.offset as usize, member.len())?
         }
-        None => Ok(Some(Arc::new(match alignment {
+        None => match alignment {
             Some(alignment) => dir.open_aligned(&name, alignment)?,
             None => dir.open(&name)?,
-        }))),
-    }
+        },
+    };
+    // The file's read advice (`lucene_store::read_advice`: random for the
+    // files a vector search reads a vector at a time). Only the search
+    // reader advises: a merge opens its own mappings and reads them in
+    // order.
+    let advice = input.advise(lucene_store::read_advice::for_extension(ext));
+    Ok(Some((Arc::new(input), advice)))
 }
 
 /// A segment's stored-fields files and their codec suffix.
@@ -3165,13 +3257,91 @@ struct StoredFiles {
     fdx: Arc<Input>,
     fdm: Arc<Input>,
     suffix: String,
+    /// Whether a prefetch advises the kernel to read each wanted chunk
+    /// (`MADV_WILLNEED`): the `.fdt` was advised random, so a fault reads
+    /// one page and a chunk would otherwise arrive a page at a time.
+    will_need_chunks: bool,
     /// The files' parsed metadata, once read, bound to no bytes: each read
     /// rebinds it to `fdt`/`fdx` (the reader borrows its files, and these
     /// are owned beside it).
     meta: OnceLock<lucene_codecs::stored_fields::StoredFieldsReader<'static>>,
 }
 
+/// The largest `.fdt` chunk whose residency is checked before it is
+/// advised in ([`StoredFiles::will_need_chunk`]).
+const RESIDENT_CHECK_MAX: usize = 256 << 10;
+
+/// How many recently prefetched chunks a thread remembers.
+const RECENT_CHUNK_SLOTS: usize = 16;
+
+thread_local! {
+    /// The addresses of the `.fdt` chunks this thread prefetched last
+    /// ([`StoredFiles::will_need_chunks`]): the fetch phase prefetches its
+    /// documents and then reads them on the same thread, and a read of a
+    /// chunk listed here skips advising it again. An address reused by a
+    /// later mapping only skips a hint.
+    static RECENT_CHUNKS: std::cell::Cell<[usize; RECENT_CHUNK_SLOTS]> =
+        const { std::cell::Cell::new([usize::MAX; RECENT_CHUNK_SLOTS]) };
+}
+
 impl StoredFiles {
+    /// [`Self::reader`] for reading `doc`, its chunk first advised in
+    /// ([`Self::will_need_chunks`]) where the `.fdt` is advised random: a
+    /// read without a prefetch before it (a get by id, a script) then still
+    /// reads the chunk in one read rather than a page per fault. A chunk
+    /// this thread just prefetched is not looked at again.
+    fn reader_for(
+        &self,
+        segment_id: &[u8; ID_LENGTH],
+        doc: i32,
+    ) -> Result<lucene_codecs::stored_fields::StoredFieldsReader<'_>> {
+        let reader = self.reader(segment_id)?;
+        if self.will_need_chunks {
+            if let Some(range) = reader.chunk_range(doc)? {
+                let at = (self.fdt.as_ptr() as usize).wrapping_add(range.start);
+                if !RECENT_CHUNKS.with(|r| r.get().contains(&at)) {
+                    self.will_need_chunk(range)?;
+                }
+            }
+        }
+        // A large chunk is advised (or fetched) only up to its head: the
+        // reader advises the rest ahead of the bytes it decompresses.
+        if self.will_need_chunks || matches!(*self.fdt, Input::External(_)) {
+            return Ok(reader.with_read_ahead(&self.fdt));
+        }
+        Ok(reader)
+    }
+
+    /// Advises the kernel to read the `.fdt` chunks holding `docs` in
+    /// ([`Self::will_need_chunk`]), and remembers them for this thread's
+    /// reads that follow ([`Self::reader_for`]).
+    fn will_need_chunks(&self, segment_id: &[u8; ID_LENGTH], docs: &[i32]) -> Result<()> {
+        for range in self.reader(segment_id)?.chunk_ranges(docs)? {
+            let at = (self.fdt.as_ptr() as usize).wrapping_add(range.start);
+            self.will_need_chunk(range)?;
+            RECENT_CHUNKS.with(|r| {
+                let mut recent = r.get();
+                recent.rotate_right(1);
+                recent[0] = at;
+                r.set(recent);
+            });
+        }
+        Ok(())
+    }
+
+    /// `MADV_WILLNEED` over one `.fdt` chunk, so it arrives in one read: the
+    /// file is advised random, and a fault would read it a page at a time.
+    /// A chunk of at most [`RESIDENT_CHECK_MAX`] bytes already in memory is
+    /// left alone (one `mincore`); a larger one is always advised, its
+    /// decoding dwarfing the call.
+    fn will_need_chunk(&self, range: std::ops::Range<usize>) -> Result<()> {
+        let range = lucene_codecs::stored_fields::StoredFieldsReader::advised_range(range);
+        if range.len() <= RESIDENT_CHECK_MAX && self.fdt.is_resident(range.start, range.len()) {
+            return Ok(());
+        }
+        Ok(self.fdt.will_need(range.start, range.len())?)
+    }
+
     /// A reader over the files, the metadata parsed on first use and kept.
     fn reader(
         &self,
@@ -3233,13 +3403,13 @@ pub struct DirectoryReader {
     /// Keyword fields' global ordinals, built on first use and kept for the
     /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
     global_ords:
-        std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
+        std::sync::Mutex<std::collections::HashMap<String, Arc<crate::global_ords::GlobalOrds>>>,
     /// Global ordinals of the readers made from this one with segments
     /// appended ([`Self::with_readers_appended`]), which share its segments.
-    appended_ords: Arc<crate::terms_agg::GlobalOrdsCache>,
+    appended_ords: Arc<crate::global_ords::GlobalOrdsCache>,
     /// For a reader made with segments appended, its parent's
     /// `appended_ords`, which its global ordinals are built through.
-    ords_cache: Option<Arc<crate::terms_agg::GlobalOrdsCache>>,
+    ords_cache: Option<Arc<crate::global_ords::GlobalOrdsCache>>,
     /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
     norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
     /// Each field's norms across the segments, resolved once
@@ -3467,7 +3637,7 @@ impl DirectoryReader {
     pub fn global_ords_skipping_runs(
         &self,
         field: &str,
-    ) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
+    ) -> crate::Result<Arc<crate::global_ords::GlobalOrds>> {
         if !self.segments.iter().any(|s| s.keyword_run(field).is_some()) {
             return self.global_ords(field);
         }
@@ -3482,7 +3652,7 @@ impl DirectoryReader {
         }
         let built = match &self.ords_cache {
             Some(cache) => cache.ords_with(&self.segments, field, true)?,
-            None => Arc::new(crate::terms_agg::GlobalOrds::build_keeping(
+            None => Arc::new(crate::global_ords::GlobalOrds::build_keeping(
                 &self.segments,
                 field,
                 true,
@@ -3500,14 +3670,15 @@ impl DirectoryReader {
     }
 
     /// `field`'s global ordinals over this reader's segments, built on the
-    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
+    /// first call and kept (see [`crate::global_ords::GlobalOrds`]).
     ///
     /// # Errors
-    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
-    pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
-        let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
-            m.get(field).cloned()
-        };
+    /// What building them reports ([`crate::global_ords::GlobalOrds::build`]).
+    pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::global_ords::GlobalOrds>> {
+        let cached = |m: &std::collections::HashMap<
+            String,
+            Arc<crate::global_ords::GlobalOrds>,
+        >| { m.get(field).cloned() };
         // A poisoned lock only means another thread panicked while holding
         // it; the map it guards is always whole.
         if let Some(g) = cached(&self.global_ords.lock().unwrap_or_else(|e| e.into_inner())) {
@@ -3517,7 +3688,10 @@ impl DirectoryReader {
         // is kept -- the same map either way.
         let built = match &self.ords_cache {
             Some(cache) => cache.ords(&self.segments, field)?,
-            None => Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?),
+            None => Arc::new(crate::global_ords::GlobalOrds::build(
+                &self.segments,
+                field,
+            )?),
         };
         let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
         Ok(map.entry(field.to_string()).or_insert(built).clone())
@@ -5303,6 +5477,63 @@ mod tests {
         }
         assert!(seg.stored.as_deref().unwrap().meta.get().is_none());
         assert!(format!("{:?}", seg.stored.as_deref().unwrap()).contains("meta_read: false"));
+    }
+
+    /// A mapped `.fdt` advised random reads every document as one advised
+    /// otherwise does, through a prefetch and without one; advised auto it
+    /// is small next to memory and keeps the OS read-ahead.
+    #[test]
+    fn stored_fields_advised_random_read_as_unadvised() {
+        use lucene_store::read_advice;
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/stored_fields_index"
+        );
+        let dir = lucene_store::MmapDirectory::open(src);
+        read_advice::set("fdt:random").unwrap();
+        let advised = DirectoryReader::open(&dir);
+        read_advice::set("").unwrap();
+        let advised = advised.unwrap();
+        let plain = DirectoryReader::open(&FsDirectory::open(src)).unwrap();
+        for (a, p) in advised
+            .segment_readers()
+            .iter()
+            .zip(plain.segment_readers())
+        {
+            assert!(a.stored.as_deref().unwrap().will_need_chunks);
+            assert!(!p.stored.as_deref().unwrap().will_need_chunks);
+            let docs: Vec<i32> = (0..a.max_doc).collect();
+            a.prefetch_stored_documents(&docs).unwrap();
+            for doc in 0..a.max_doc {
+                assert_eq!(
+                    a.stored_document(doc).unwrap(),
+                    p.stored_document(doc).unwrap()
+                );
+            }
+            // A read with no prefetch before it on another thread.
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    for doc in (0..a.max_doc).rev() {
+                        assert_eq!(
+                            a.stored_document(doc).unwrap(),
+                            p.stored_document(doc).unwrap()
+                        );
+                    }
+                });
+            });
+        }
+        let auto = DirectoryReader::open(&dir).unwrap();
+        assert_eq!(
+            read_advice::for_extension("fdt"),
+            read_advice::ReadAdvice::Auto
+        );
+        assert!(
+            !auto.segment_readers()[0]
+                .stored
+                .as_deref()
+                .unwrap()
+                .will_need_chunks
+        );
     }
 
     use lucene_util::test_support::TempDir;

@@ -12,15 +12,16 @@ package org.lucenerust.opensearch.engine;
  * KNN990HnswBinaryVectorsFormat} and {@code hnsw_half:<m>:<beam>} for its {@code
  * KNN1040HnswHalfFloatVectorsFormat}, and {@code ivf:<target cluster size>:<rerank encoding>} (1-bit
  * codes) or {@code ivf:<target cluster size>:<rerank encoding>:<quantizer>} for this engine's {@code
- * LuceneRustIvfVectorsFormat}, and {@code hnsw_rq:<quantizer>:<m>:<beam>} for its {@code
- * LuceneRustHnswQuantizedVectorsFormat} ({@code encoding} is {@code ScalarEncoding}'s wire number, the
- * rerank encoding's for {@code ivf} and the quantizer's for {@code hnsw_rq}; an IVF field's cluster
- * size rides in {@code maxConn}, its quantizer in {@code beamWidth}).
+ * IvfVectorsFormat}, and {@code hnsw_rq:<quantizer>:<m>:<beam>} for its {@code
+ * HnswQuantizedVectorsFormat}, and {@code hnsw_disk:<quantizer>:<m>:<beam>} for its {@code
+ * DiskHnswVectorsFormat} ({@code encoding} is {@code ScalarEncoding}'s wire number, the
+ * rerank encoding's for {@code ivf} and the quantizer's for {@code hnsw_rq} and {@code hnsw_disk};
+ * an IVF field's cluster size rides in {@code maxConn}, its quantizer in {@code beamWidth}).
  * The attribute stays in the segments' field infos, so a reopened writer merges the field in the
- * same format ({@code engine_writer.rs}'s {@code parse_vectors_format}).
+ * same format ({@code writer_blob.rs}'s {@code parse_vectors_format}).
  */
 public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encoding) {
-    public static final String ATTRIBUTE = "lucene_rust.knn_format";
+    public static final String ATTRIBUTE = "accelerated.vectors_format";
 
     /** The codec's default, {@code Lucene99HnswVectorsFormat()}. */
     public static final VectorsFormatSpec DEFAULT = new VectorsFormatSpec(0, 0, 0, 0);
@@ -66,6 +67,11 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
         return new VectorsFormatSpec(7, m, beam, quantizer);
     }
 
+    /** A disk HNSW field: the graph, and a page-aligned copy of its nodes ranked on {@code quantizer}'s codes. */
+    public static VectorsFormatSpec hnswDisk(int quantizer, int m, int beam) {
+        return new VectorsFormatSpec(8, m, beam, quantizer);
+    }
+
     /** The attribute value. */
     public String attribute() {
         return switch (kind) {
@@ -76,6 +82,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
             case 5 -> "hnsw_half:" + maxConn + ":" + beamWidth;
             case 6 -> "ivf:" + maxConn + ":" + encoding + (beamWidth == 0 ? "" : ":" + beamWidth);
             case 7 -> "hnsw_rq:" + encoding + ":" + maxConn + ":" + beamWidth;
+            case 8 -> "hnsw_disk:" + encoding + ":" + maxConn + ":" + beamWidth;
             default -> "default";
         };
     }
@@ -101,6 +108,12 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
                         ? hnswRq(quantizer, Integer.parseInt(p[2]), Integer.parseInt(p[3]))
                         : DEFAULT;
                 }
+                case "hnsw_disk" -> {
+                    int quantizer = p.length == 4 ? Integer.parseInt(p[1]) : -1;
+                    yield quantizer >= 0 && quantizer < IVF_QUANTIZERS && quantizer != IVF_AUTO_QUANTIZER
+                        ? hnswDisk(quantizer, Integer.parseInt(p[2]), Integer.parseInt(p[3]))
+                        : DEFAULT;
+                }
                 case "ivf" -> {
                     int quantizer = p.length == 4 ? Integer.parseInt(p[3]) : 0;
                     yield (p.length == 3 || p.length == 4) && quantizer >= 0 && quantizer < IVF_QUANTIZERS
@@ -114,7 +127,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
         }
     }
 
-    /** {@code engine_writer.rs}'s {@code decode_vector_schema} format part. */
+    /** {@code writer_blob.rs}'s {@code decode_vector_schema} format part. */
     void encode(Blob b) {
         b.u8(kind);
         if (kind == 1 || kind == 2 || kind == 4 || kind == 5) {
@@ -126,7 +139,7 @@ public record VectorsFormatSpec(int kind, int maxConn, int beamWidth, int encodi
         if (kind == 6) {
             b.i32(maxConn).u8(encoding).u8(beamWidth);
         }
-        if (kind == 7) {
+        if (kind == 7 || kind == 8) {
             b.i32(maxConn).i32(beamWidth).u8(encoding);
         }
     }

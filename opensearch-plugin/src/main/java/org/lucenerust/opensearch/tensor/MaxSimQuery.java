@@ -25,7 +25,7 @@ import java.util.Objects;
  * {@code sub}'s documents scored by the {@code MaxSim} of {@code query}'s tokens against the {@code
  * multi_vector} field {@code field} ({@link MultiVectorEncoding#maxSim}): Lucene's {@link
  * FunctionScoreQuery}, so a document without a value, or with a negative {@code MaxSim}, scores 0.
- * Encoded natively as node 44 of the query tree ({@code crates/lucene-ffi/src/jvm_max_sim.rs}),
+ * Encoded natively as node 44 of the query tree ({@code crates/lucene-engine/src/max_sim_query.rs}),
  * which scores the same.
  */
 public final class MaxSimQuery extends Query {

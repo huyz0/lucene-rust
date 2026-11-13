@@ -5,14 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror.workspace = true
 # An indexing thread's scheduling priority (`yield_to_searches`).
 libc.workspace = true
 # Started before an indexing thread lowers its priority, which threads it
 # starts would inherit (`yield_to_searches`).
 rayon.workspace = true
 lucene-store = { path = "../lucene-store" }
-# The `rust_encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
+# What requests mean: the query blob decoders, analyzers from specs. The
+# analysis modules compiled in follow this crate's features.
+lucene-engine = { path = "../lucene-engine", default-features = false }
+# The `encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
 # module with feature `fips` (build with `--no-default-features`, see
 # scripts/build-fips.sh).
 lucene-store-crypto = { path = "../lucene-store-crypto", default-features = false }
@@ -30,34 +32,18 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-zstd = { path = "../lucene-zstd" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
-lucene-facet = { path = "../lucene-facet" }
+lucene-aggs = { path = "../lucene-aggs" }
+# The unified highlighter the fetch phase runs (`jvm_highlight.rs`).
+lucene-highlighter = { path = "../lucene-highlighter" }
 lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-misc = { path = "../lucene-misc" }
 lucene-sparse = { path = "../lucene-sparse" }
-lucene-tensor = { path = "../lucene-tensor" }
-lucene-pattern-text = { path = "../lucene-pattern-text" }
 # The ml-commons port's local model inference (`ml.rs`).
-lucene-ml = { path = "../lucene-ml" }
+lucene-ml = { path = "../lucene-ml", default-features = false }
 # libtorch and the TorchScript shim (`ml_torch.rs`), opened at run time.
 libloading = "0.8"
 lucene-util = { path = "../lucene-util" }
-# Painless scripts run natively (`jvm_painless_score.rs`).
-lucene-painless = { path = "../lucene-painless" }
 lucene-analysis = { path = "../lucene-analysis" }
-# ICU's Thai dictionary word iterator, which `ThaiTokenizer` (the `thai`
-# tokenizer and analyzer) segments with (lucene_analysis::lang::th), and
-# with `analysis-icu` the module's own factories.
-lucene-analysis-icu = { path = "../lucene-analysis-icu" }
-# The Lucene analysis modules the plugin can build natively, each behind its
-# feature (`analysis_modules.rs`). Their code is small; their dictionaries
-# are data packs (`lucene_analysis::data_pack`) read from a pack directory
-# at run time, unless `embedded-data` compiles them in.
-lucene-analysis-kuromoji = { path = "../lucene-analysis-kuromoji", optional = true, default-features = false }
-lucene-analysis-nori = { path = "../lucene-analysis-nori", optional = true, default-features = false }
-lucene-analysis-smartcn = { path = "../lucene-analysis-smartcn", optional = true, default-features = false }
-lucene-analysis-stempel = { path = "../lucene-analysis-stempel", optional = true, default-features = false }
-lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik", optional = true, default-features = false }
-lucene-analysis-phonetic = { path = "../lucene-analysis-phonetic", optional = true }
 
 [features]
 default = [
@@ -72,25 +58,19 @@ default = [
 ]
 # The encrypted store's crypto: AWS-LC (`crypto`, default) or AWS-LC's FIPS
 # 140-3 module (`fips`, with `--no-default-features`). Exactly one.
-crypto = ["lucene-store-crypto/aws-lc"]
-fips = ["lucene-store-crypto/fips"]
-analysis-icu = []
+crypto = ["lucene-store-crypto/aws-lc", "lucene-ml/aws-lc"]
+fips = ["lucene-store-crypto/fips", "lucene-ml/fips"]
+analysis-icu = ["lucene-engine/analysis-icu"]
 mimalloc = ["dep:mimalloc"]
-analysis-kuromoji = ["dep:lucene-analysis-kuromoji"]
-analysis-nori = ["dep:lucene-analysis-nori"]
-analysis-smartcn = ["dep:lucene-analysis-smartcn"]
-analysis-stempel = ["dep:lucene-analysis-stempel"]
-analysis-morfologik = ["dep:lucene-analysis-morfologik"]
-analysis-phonetic = ["dep:lucene-analysis-phonetic"]
+analysis-kuromoji = ["lucene-engine/analysis-kuromoji"]
+analysis-nori = ["lucene-engine/analysis-nori"]
+analysis-smartcn = ["lucene-engine/analysis-smartcn"]
+analysis-stempel = ["lucene-engine/analysis-stempel"]
+analysis-morfologik = ["lucene-engine/analysis-morfologik"]
+analysis-phonetic = ["lucene-engine/analysis-phonetic"]
 # Compiles the enabled modules' dictionaries in, so no pack directory is
 # needed (a library about 22 MB larger).
-embedded-data = [
-    "lucene-analysis-kuromoji?/embedded-data",
-    "lucene-analysis-nori?/embedded-data",
-    "lucene-analysis-smartcn?/embedded-data",
-    "lucene-analysis-stempel?/embedded-data",
-    "lucene-analysis-morfologik?/embedded-data",
-]
+embedded-data = ["lucene-engine/embedded-data"]
 
 [build-dependencies]
 # Compiles native/glibc_compat.c (build.rs); already in the tree through aws-lc-sys.
@@ -101,6 +81,12 @@ cc = "1"
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
+lucene-engine = { path = "../lucene-engine", default-features = false, features = ["test-support"] }
+# The tests that drive the entry points build the queries and scripts they run.
+lucene-painless = { path = "../lucene-painless" }
+lucene-pattern-text = { path = "../lucene-pattern-text" }
+lucene-tensor = { path = "../lucene-tensor" }
+lucene-facet = { path = "../lucene-facet" }
 # fixtures/ml/expected.json, read by the TorchScript tests (`ml_torch.rs`).
 serde_json = "1"
 

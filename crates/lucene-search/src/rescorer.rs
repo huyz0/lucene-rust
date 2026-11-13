@@ -21,6 +21,7 @@ use std::sync::Arc;
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
 use lucene_codecs::field_infos::{DocValuesType, VectorSimilarityFunction};
 use lucene_codecs::terms_dict::TermsDict;
+use lucene_util::numeric_utils::float_to_sortable_int;
 
 use crate::collector::{TotalHits, TotalHitsRelation};
 use crate::explain::Explanation;
@@ -1064,15 +1065,7 @@ impl RescoreTopNQuery {
 
 /// `Float.compare`: `-0.0 < 0.0`, NaN above everything.
 fn java_float_compare(a: f32, b: f32) -> Ordering {
-    let key = |f: f32| {
-        let bits = if f.is_nan() {
-            0x7fc0_0000
-        } else {
-            f.to_bits() as i32
-        };
-        bits ^ ((bits >> 31) & 0x7fff_ffff)
-    };
-    key(a).cmp(&key(b))
+    float_to_sortable_int(a).cmp(&float_to_sortable_int(b))
 }
 
 /// The inner query's scores, handed to a source that needs them

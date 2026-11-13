@@ -81,6 +81,8 @@ use lucene_codecs::field_infos::IndexOptions;
 use lucene_codecs::points::{IntersectVisitor, PointsReader, PointsScratch, Relation};
 use lucene_codecs::postings::{DocInput, LazyDocsCursor, PostingsFlags};
 use lucene_util::fixed_bit_set::FixedBitSet;
+pub(crate) use lucene_util::numeric_utils::float_to_sortable_int;
+use lucene_util::numeric_utils::{self, double_to_sortable_long, sortable_long_to_double};
 
 use crate::collector::{ScoreMode, ScoringCollector, TotalHits, TotalHitsRelation};
 use crate::directory_reader::SegmentReader;
@@ -93,6 +95,7 @@ use crate::Result;
 use std::sync::Arc;
 
 mod collapse;
+mod newest_n;
 mod opensearch;
 pub(crate) use collapse::GroupColumn;
 pub use collapse::{
@@ -527,22 +530,6 @@ fn java_round(x: f64) -> i64 {
     r as i64
 }
 
-/// `NumericUtils.sortableLongToDouble`.
-fn sortable_long_to_double(v: i64) -> f64 {
-    f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
-}
-
-/// `NumericUtils.doubleToSortableLong`, over `Double.doubleToLongBits` (one
-/// NaN).
-fn double_to_sortable_long(d: f64) -> i64 {
-    let v = if d.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        d.to_bits() as i64
-    };
-    v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)
-}
-
 /// OpenSearch's nested sort (`XFieldComparatorSource.Nested`): a root
 /// document's value is picked, by the key's [`Selector`], from the values of
 /// the child documents just before it -- those between the previous root and
@@ -768,16 +755,6 @@ pub enum SortError {
     UnknownComparatorSource(u32),
 }
 
-/// `NumericUtils.floatToSortableInt`, over `Float.floatToIntBits` (one NaN).
-pub(crate) fn float_to_sortable_int(f: f32) -> i32 {
-    let bits = if f.is_nan() {
-        0x7fc0_0000
-    } else {
-        f.to_bits() as i32
-    };
-    bits ^ ((bits >> 31) & 0x7fff_ffff)
-}
-
 /// A score as the relevance comparator's value (see the module doc).
 fn score_value(score: f32) -> i64 {
     -i64::from(float_to_sortable_int(score))
@@ -946,6 +923,30 @@ fn cmp(a: i64, b: i64) -> i32 {
 struct Entry {
     slot: usize,
     doc: i32,
+    /// The slot's value as [`HitQueue`]'s single-key order compares it (see
+    /// [`plain_key`]); unused under any other sort.
+    key: i64,
+}
+
+/// A sort of one plain numeric key (a long, int, double, float or score):
+/// its slot values and the mask that turns a value into a key where the
+/// worse hit is the larger -- the complement reverses the order.
+fn plain_key(comps: &[Comparator]) -> Option<(&[i64], i64)> {
+    match comps {
+        [c] if c.strs.is_none() && c.vals.is_none() && c.custom.is_none() => {
+            Some((&c.values[..], if c.mul < 0 { -1 } else { 0 }))
+        }
+        _ => None,
+    }
+}
+
+/// Whether `a` is the worse hit under [`plain_key`]: the larger key, then
+/// the larger document -- one wide comparison, which compiles without a
+/// branch.
+#[inline(always)]
+fn worse_key(a: Entry, b: Entry) -> bool {
+    let k = |e: Entry| (i128::from(e.key) << 32) | i128::from(e.doc as u32);
+    k(a) > k(b)
 }
 
 /// `FieldValueHitQueue.lessThan`: whether `a` sorts after `b` -- the queue's
@@ -970,7 +971,10 @@ impl HitQueue {
         self.heap.first().copied()
     }
 
-    fn add(&mut self, comps: &[Comparator], e: Entry) {
+    fn add(&mut self, comps: &[Comparator], mut e: Entry) {
+        if let Some((values, flip)) = plain_key(comps) {
+            e.key = values.get(e.slot).copied().unwrap_or(0) ^ flip;
+        }
         self.heap.push(e);
         let mut i = self.heap.len() - 1;
         while i > 0 {
@@ -986,6 +990,29 @@ impl HitQueue {
 
     /// `updateTop`: the top changed; restore the heap.
     fn update_top(&mut self, comps: &[Comparator]) {
+        if let Some(&top) = self.heap.first() {
+            self.replace_top(comps, top);
+        }
+    }
+
+    /// [`Self::update_top`] with `top` (the old top's slot, its new document)
+    /// in the top's place.
+    fn replace_top(&mut self, comps: &[Comparator], top: Entry) {
+        // One plain numeric key (the common sort by a long, int or score):
+        // the keys sit in the entries, so a level of the walk is one load
+        // and one branch-free comparison, not the general per-key dispatch.
+        // The new key goes straight into the walk, not through memory.
+        if let Some((values, flip)) = plain_key(comps) {
+            let key = values.get(top.slot).copied().unwrap_or(0) ^ flip;
+            return self.sift_down(Entry { key, ..top }, worse_key);
+        }
+        self.sift_down(top, |a, b| less_than(comps, a, b));
+    }
+
+    /// `downHeap` of `node`, the new top, moving the hole instead of
+    /// swapping.
+    #[inline(always)]
+    fn sift_down(&mut self, node: Entry, less: impl Fn(Entry, Entry) -> bool) {
         let n = self.heap.len();
         let mut i = 0;
         loop {
@@ -994,18 +1021,15 @@ impl HitQueue {
                 break;
             }
             let r = l + 1;
-            let child = if r < n && less_than(comps, self.heap[r], self.heap[l]) {
-                r
-            } else {
-                l
-            };
-            if less_than(comps, self.heap[child], self.heap[i]) {
-                self.heap.swap(child, i);
+            let child = l + usize::from(r < n && less(self.heap[r], self.heap[l]));
+            if less(self.heap[child], node) {
+                self.heap[i] = self.heap[child];
                 i = child;
             } else {
                 break;
             }
         }
+        self.heap[i] = node;
     }
 
     fn pop(&mut self, comps: &[Comparator]) -> Option<Entry> {
@@ -1039,6 +1063,8 @@ struct TopField {
     collected_hits: usize,
     /// `scoreMode.isExhaustive()`, fixed at construction.
     exhaustive: bool,
+    /// Hits that entered the queue (added, or replacing its bottom).
+    entered: u64,
 }
 
 impl TopField {
@@ -1134,6 +1160,7 @@ impl TopField {
             after: after.cloned(),
             collected_hits: 0,
             exhaustive: false,
+            entered: 0,
         };
         tf.exhaustive = tf.score_mode().is_exhaustive();
         match after {
@@ -1291,18 +1318,20 @@ impl FedTopField {
     }
 
     /// Collects `doc` of `leaf`'s segment, with its score (`NaN` when the
-    /// sort reads none).
+    /// sort reads none); `true` when it entered the queue.
     ///
     /// # Errors
     /// What reading the sort's columns reports.
-    pub fn collect(&mut self, leaf: &mut FedLeaf<'_>, doc: i32, score: f32) -> Result<()> {
+    pub fn collect(&mut self, leaf: &mut FedLeaf<'_>, doc: i32, score: f32) -> Result<bool> {
         let leaf = &mut leaf.0;
         if leaf.terminated {
-            return Ok(());
+            return Ok(false);
         }
         leaf.score = score;
         leaf.score_doc = doc;
-        leaf.collect(&mut self.0, doc, None)
+        let before = self.0.entered;
+        leaf.collect(&mut self.0, doc, None)?;
+        Ok(self.0.entered != before)
     }
 
     /// The end of `leaf`'s segment: its keyword keys read their terms, as
@@ -1314,6 +1343,11 @@ impl FedTopField {
         leaf.0.finish(&mut self.0)
     }
 
+    /// The documents the queue holds now, in no order.
+    pub fn held_docs(&self) -> impl Iterator<Item = i32> + '_ {
+        self.0.queue.heap.iter().map(|e| e.doc)
+    }
+
     /// The hits, best first, and the count (`topDocs()`).
     pub fn top_docs(self) -> TopFieldDocs {
         self.0.top_docs()
@@ -1322,8 +1356,7 @@ impl FedTopField {
 
 /// `NumericUtils.sortableIntToFloat`, from a relevance value's negation.
 fn sortable_int_to_float(v: i64) -> f32 {
-    let i = v as i32;
-    f32::from_bits((i ^ ((i >> 31) & 0x7fff_ffff)) as u32)
+    numeric_utils::sortable_int_to_float(v as i32)
 }
 
 /// A numeric doc-values column as `NumericDocValues`: a `NUMERIC` column
@@ -1477,11 +1510,11 @@ impl NestedColumn<'_> {
                 let (first, last) = (self.buf[0], self.buf[self.buf.len() - 1]);
                 match self.selector {
                     Selector::Min if floating => {
-                        double_acc = crate::aggs::java_min(double_acc, d(first))
+                        double_acc = crate::java_math::java_min(double_acc, d(first))
                     }
                     Selector::Min => long_acc = long_acc.min(first),
                     Selector::Max if floating => {
-                        double_acc = crate::aggs::java_max(double_acc, d(last))
+                        double_acc = crate::java_math::java_max(double_acc, d(last))
                     }
                     Selector::Max => long_acc = long_acc.max(last),
                     _ => {
@@ -1521,14 +1554,14 @@ impl NestedColumn<'_> {
 
 /// A [`NestedSort`]'s query over one segment, deletions ignored: its
 /// documents, ascending.
-pub(crate) fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
+pub fn nested_docs(seg: &OpenSegment<'_>, q: &BooleanQuery) -> Result<Vec<i32>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(q, std::slice::from_ref(seg));
     let q = rewritten.as_ref().unwrap_or(q);
-    let clause = crate::aggs::lone_clause(q);
-    let ctx = crate::aggs::plain_context(seg);
+    let clause = crate::segment_match::lone_clause(q);
+    let ctx = crate::segment_match::plain_context(seg);
     let mut buf = Vec::new();
     Ok(
-        match crate::aggs::segment_matches(&ctx, q, &clause, None, &mut buf)? {
+        match crate::segment_match::segment_matches(&ctx, q, &clause, None, &mut buf)? {
             None => Vec::new(),
             Some(Some(d)) => d.to_vec(),
             Some(None) => (0..seg.max_doc.unwrap_or(0)).collect(),
@@ -1563,7 +1596,7 @@ impl LeafNumeric<'_> {
             return Some(v);
         }
         if let Column::Single(r) = &self.column {
-            if let Some(v) = r.dense_value(doc) {
+            if let Some(v) = r.dense_value(doc).or_else(|| r.block_value(doc)) {
                 let v = if self.int { i64::from(v as i32) } else { v };
                 self.cached = (doc, v);
                 return Some(v);
@@ -3928,8 +3961,12 @@ impl<'a> Leaf<'a> {
             return Ok(());
         };
         self.copy(tf, bottom.slot, doc, scorer)?;
-        tf.queue.heap[0].doc = self.doc_base + doc;
-        tf.queue.update_top(&tf.comps);
+        tf.entered = tf.entered.wrapping_add(1);
+        let top = Entry {
+            doc: self.doc_base + doc,
+            ..bottom
+        };
+        tf.queue.replace_top(&tf.comps, top);
         let slot = tf.queue.top().map_or(0, |e| e.slot);
         self.set_bottom(tf, slot)?;
         update_min_competitive_score(tf);
@@ -3945,11 +3982,13 @@ impl<'a> Leaf<'a> {
     ) -> Result<()> {
         let slot = hits_collected - 1;
         self.copy(tf, slot, doc, scorer)?;
+        tf.entered = tf.entered.wrapping_add(1);
         tf.queue.add(
             &tf.comps,
             Entry {
                 slot,
                 doc: self.doc_base + doc,
+                key: 0,
             },
         );
         tf.queue_full = slot == tf.num_hits - 1;
@@ -4299,6 +4338,11 @@ pub(crate) fn search_sorted_leaves_with_statistics(
         similarity,
         scorer_only,
     };
+    if leaves.is_none() {
+        if let Some(top) = newest_n::search(&run)? {
+            return Ok(top);
+        }
+    }
     search_segments(&run, &all)
 }
 
@@ -4401,6 +4445,9 @@ pub fn search_sorted_min_score(
         similarity: None,
         scorer_only: false,
     };
+    if let Some(top) = newest_n::search(&run)? {
+        return Ok(top);
+    }
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
     let parts = crate::slices::run_slices_if(parallel, slices, |slice| {
@@ -4577,35 +4624,55 @@ fn leaf_bulk<'a>(
     exec::bulk_boolean(ctx, query, 1.0, mode)
 }
 
+/// `BooleanQuery.rewrite`: a boolean of one clause is that clause (so a
+/// lone term is a term to the query cache, not a composite).
+fn rewritten_clause(query: &BooleanQuery) -> Clause {
+    let clauses = query.must.len() + query.filter.len() + query.should.len() + query.must_not.len();
+    match (&query.must[..], &query.should[..]) {
+        ([only], _) if clauses == 1 && query.minimum_should_match == 0 => only.clone(),
+        (_, [only]) if clauses == 1 && query.minimum_should_match <= 1 => only.clone(),
+        _ => Clause::Boolean(Box::new(query.clone())),
+    }
+}
+
+/// The [`exec::LeafContext`] of segment `seg` under `run`.
+fn leaf_context<'r>(run: &Run<'r, '_>, seg: &OpenSegment<'r>, i: usize) -> exec::LeafContext<'r> {
+    exec::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: seg.live_docs,
+        points: seg.points,
+        norms: run.norms.get(i).copied().flatten(),
+        global: run.global,
+        max_doc: seg.max_doc,
+        cache: seg.cache,
+        reader: seg.reader,
+        similarity: run.similarity.or(seg.similarity),
+    }
+}
+
 /// One collector over the segments at `order`, in that order.
 fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
     let Run {
         segments,
         readers,
         query,
-        norms,
         sort,
         top_n,
         total_hits_threshold,
         after,
         track,
-        global,
         until,
         min_score,
-        similarity,
         scorer_only,
+        ..
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track || min_score.is_some();
     let mut max_score = f32::NEG_INFINITY;
-    // `BooleanQuery.rewrite`: a boolean of one clause is that clause (so a
-    // lone term is a term to the query cache, not a composite).
-    let clauses = query.must.len() + query.filter.len() + query.should.len() + query.must_not.len();
-    let clause = match (&query.must[..], &query.should[..]) {
-        ([only], _) if clauses == 1 && query.minimum_should_match == 0 => only.clone(),
-        (_, [only]) if clauses == 1 && query.minimum_should_match <= 1 => only.clone(),
-        _ => Clause::Boolean(Box::new(query.clone())),
-    };
+    let clause = rewritten_clause(query);
     let mode = match tf.score_mode() {
         ScoreMode::TopScores => Mode::TopScores,
         _ if want_scores => Mode::Complete,
@@ -4622,20 +4689,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             Some((u, end)) if u == i => end,
             _ => NO_MORE_DOCS,
         };
-        let ctx = exec::LeafContext {
-            fields: seg.fields,
-            doc_in: seg.doc_in,
-            pos_in: seg.pos_in,
-            pay_in: seg.pay_in,
-            live_docs: seg.live_docs,
-            points: seg.points,
-            norms: norms.get(i).copied().flatten(),
-            global,
-            max_doc: seg.max_doc,
-            cache: seg.cache,
-            reader: seg.reader,
-            similarity: similarity.or(seg.similarity),
-        };
+        let ctx = leaf_context(run, seg, i);
         if sort[0].ty == SortType::Score {
             // No competitive iterator: the bulk scorers, pruning by score.
             let Some(mut bulk) = leaf_bulk(&ctx, query, mode, scorer_only)? else {
@@ -4753,6 +4807,8 @@ fn score_competitive(
     // Runs are asked for until this many documents in a row start none: an
     // iterator without runs then stops paying for the question.
     const RUN_PATIENCE: u32 = 64;
+    // The shortest run that keeps the question coming.
+    const RUN_MIN: i32 = 16;
     let mut run_misses = 0u32;
     let mut doc = match leaf.competitive() {
         Some(it) if it.doc_id() > 0 => scorer.advance(it.doc_id())?,
@@ -4760,9 +4816,12 @@ fn score_competitive(
     };
     while doc != NO_MORE_DOCS {
         if by_membership {
+            // Only an iterator sparser than the scorer leads: a skip-index
+            // one (its cost unknown) or a dense set would walk documents the
+            // scorer never matches.
             if let Some(it) = leaf
                 .competitive()
-                .filter(|it| !matches!(it, Iter::All { .. }))
+                .filter(|it| !matches!(it, Iter::All { .. }) && it.cost() < lead_cost)
             {
                 let d = if it.doc_id() < doc {
                     it.advance(doc)?
@@ -4826,7 +4885,13 @@ fn score_competitive(
         if run_end <= doc.saturating_add(1) {
             run_misses = run_misses.saturating_add(1);
         } else {
-            run_misses = 0;
+            // Short runs (a filter matching a good share of documents, not
+            // all of them) do not pay for the question: they count as misses.
+            if run_end.saturating_sub(doc) >= RUN_MIN {
+                run_misses = 0;
+            } else {
+                run_misses = run_misses.saturating_add(1);
+            }
             let mut d = doc;
             while d < run_end {
                 d = leaf.reject_run(tf, d, run_end, live_docs);
@@ -5039,6 +5104,84 @@ mod tests {
 
     use super::*;
 
+    /// Whether a key's comparator reverses the value order (`reverseMul`).
+    fn tf_reverse(key: &SortField) -> bool {
+        TopField::new(std::slice::from_ref(key), 1, u64::MAX, None).comps[0].mul < 0
+    }
+
+    /// The single-key queue (keys in the entries, one wide comparison)
+    /// keeps the general comparator's hits, in its order, over extreme
+    /// values, ties and both directions.
+    #[test]
+    fn plain_key_queue_keeps_the_general_order() {
+        let mut x = 7u64;
+        let mut next = || {
+            x = x
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            x >> 33
+        };
+        let pool = [i64::MIN, i64::MIN + 1, -1, 0, 1, 5, i64::MAX - 1, i64::MAX];
+        for (ty, reverse) in [SortType::Long, SortType::Int, SortType::Score]
+            .into_iter()
+            .flat_map(|t| [(t, false), (t, true)])
+        {
+            for n in [1usize, 2, 3, 10, 33] {
+                let sort = [match ty {
+                    SortType::Score => SortField::score(),
+                    t => SortField::numeric("x", t, reverse),
+                }];
+                let reverse = tf_reverse(&sort[0]);
+                let mut tf = TopField::new(&sort, n, u64::MAX, None);
+                assert!(plain_key(&tf.comps).is_some());
+                let docs: Vec<(i64, i32)> = (0..500)
+                    .map(|d| {
+                        let r = next();
+                        let v = if r % 3 == 0 {
+                            pool[(r % 8) as usize]
+                        } else {
+                            (r % 40) as i64 - 20
+                        };
+                        (v, d)
+                    })
+                    .collect();
+                for &(v, doc) in &docs {
+                    let len = tf.queue.heap.len();
+                    if len < n {
+                        tf.comps[0].values[len] = v;
+                        tf.queue.add(
+                            &tf.comps,
+                            Entry {
+                                slot: len,
+                                doc,
+                                key: 0,
+                            },
+                        );
+                        continue;
+                    }
+                    let top = tf.queue.top().unwrap();
+                    let r = tf.comps[0].mul * cmp(tf.comps[0].values[top.slot], v);
+                    if r > 0 {
+                        tf.comps[0].values[top.slot] = v;
+                        tf.queue.replace_top(&tf.comps, Entry { doc, ..top });
+                    }
+                }
+                let mut got = Vec::new();
+                while let Some(e) = tf.queue.pop(&tf.comps) {
+                    got.push((tf.comps[0].values[e.slot], e.doc));
+                }
+                got.reverse();
+                let mut want = docs.clone();
+                want.sort_by(|a, b| {
+                    let o = a.0.cmp(&b.0);
+                    (if reverse { o.reverse() } else { o }).then(a.1.cmp(&b.1))
+                });
+                want.truncate(n);
+                assert_eq!(got, want, "{ty:?} reverse={reverse} n={n}");
+            }
+        }
+    }
+
     #[test]
     fn keys_and_values_print_as_java() {
         use crate::values_source as vs;
@@ -5245,9 +5388,12 @@ mod tests {
             (&keyword, vec![keyword_last("ks", true)]),
         ];
         for (reader, sort) in cases {
+            // The comparators' own skipping, not the bounded newest-N search's.
             let with = |disabled: bool| {
                 DISABLE_SKIPPER.with(|d| d.set(disabled));
+                newest_n::tests::DISABLED.with(|d| d.set(true));
                 let r = run_t(reader, &all(), &sort, 10, 100, None).unwrap();
+                newest_n::tests::DISABLED.with(|d| d.set(false));
                 DISABLE_SKIPPER.with(|d| d.set(false));
                 r
             };
@@ -5452,12 +5598,12 @@ mod tests {
                                     }
                                     (Selector::Min, true) => {
                                         enc(kids.iter().fold(f64::INFINITY, |a, v| {
-                                            crate::aggs::java_min(a, d(v[0]))
+                                            crate::java_math::java_min(a, d(v[0]))
                                         }))
                                     }
                                     (Selector::Max, true) => {
                                         enc(kids.iter().fold(f64::NEG_INFINITY, |a, v| {
-                                            crate::aggs::java_max(a, d(*v.last().unwrap()))
+                                            crate::java_math::java_max(a, d(*v.last().unwrap()))
                                         }))
                                     }
                                     (Selector::Sum, true) => {

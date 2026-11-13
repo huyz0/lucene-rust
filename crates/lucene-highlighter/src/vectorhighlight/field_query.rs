@@ -252,6 +252,23 @@ impl FieldQuery {
         }
     }
 
+    /// A `FieldQuery` from its parts, as Java's `FieldQuery` (or a subclass
+    /// such as OpenSearch's `CustomFieldQuery`) built them: the phrase trie
+    /// and the term set of each field (`None` keys the one of every field
+    /// when `field_match` is off).
+    pub fn from_parts(
+        field_match: bool,
+        root_maps: HashMap<Option<String>, QueryPhraseMap>,
+        term_set_map: HashMap<Option<String>, HashSet<String>>,
+    ) -> Self {
+        Self {
+            field_match,
+            root_maps,
+            term_set_map,
+            term_or_phrase_number: 0,
+        }
+    }
+
     /// `getTermSet(fieldName)`: the terms the field's term vector is read
     /// for; `None` when the query has none for it.
     pub fn term_set(&self, field: &str) -> Option<&HashSet<String>> {
@@ -455,6 +472,24 @@ impl QueryPhraseMap {
                 }
                 map.mark_terminal(*slop, boost, number);
             }
+        }
+    }
+
+    /// A trie node from its parts: whether a term or phrase ends here, with
+    /// its slop, boost and number, and the nodes under it by term.
+    pub fn from_parts(
+        terminal: bool,
+        slop: i32,
+        boost: f32,
+        term_or_phrase_number: i32,
+        sub_map: HashMap<String, QueryPhraseMap>,
+    ) -> Self {
+        Self {
+            terminal,
+            slop,
+            boost,
+            term_or_phrase_number,
+            sub_map,
         }
     }
 

@@ -34,9 +34,11 @@ pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldKnnVectorsFormat.suffix";
 /// `Lucene99HnswVectorsFormat`'s SPI name.
 pub const HNSW_NAME: &str = "Lucene99HnswVectorsFormat";
 /// [`KnnVectorsFormat::Ivf`]'s SPI name.
-pub const IVF_NAME: &str = "LuceneRustIvfVectorsFormat";
+pub const IVF_NAME: &str = "IvfVectorsFormat";
 /// [`KnnVectorsFormat::HnswQuantized`]'s SPI name.
-pub const HNSW_QUANTIZED_NAME: &str = "LuceneRustHnswQuantizedVectorsFormat";
+pub const HNSW_QUANTIZED_NAME: &str = "HnswQuantizedVectorsFormat";
+/// [`KnnVectorsFormat::HnswDisk`]'s SPI name.
+pub const HNSW_DISK_NAME: &str = "DiskHnswVectorsFormat";
 
 /// [`KnnVectorsFormat::Ivf`]'s rerank vector encodings, by wire number:
 /// `f32`, `f16`, `bf16` and 8-bit residuals (`lucene_ivf::VectorEncoding`).
@@ -105,6 +107,19 @@ pub enum KnnVectorsFormat {
     /// `erq2`-`erq8`, since Lucene's OSQ on HNSW is already the `lucene`
     /// engine's scalar-quantized format.
     HnswQuantized {
+        quantizer: u8,
+        max_conn: i32,
+        beam_width: i32,
+    },
+    /// This engine's disk HNSW ([`HNSW_DISK_NAME`], `lucene-disk-hnsw`):
+    /// [`Self::Hnsw`]'s files, plus a page-aligned copy of every node's
+    /// neighbours and vector in one record (`.dhn`) and the
+    /// [`IVF_QUANTIZERS`]`[quantizer]` code of every vector (`.dhm`/`.dhc`).
+    /// A search ranks candidates on the codes and reads one record per
+    /// expanded node, so it reads far fewer pages than stock HNSW when the
+    /// index does not fit in memory. Float fields only; a byte field gets
+    /// the graph alone. Any quantizer but `auto` is valid.
+    HnswDisk {
         quantizer: u8,
         max_conn: i32,
         beam_width: i32,
@@ -224,6 +239,31 @@ impl KnnVectorsFormat {
         }
     }
 
+    /// [`KnnVectorsFormat::HnswDisk`], checked: graph parameters
+    /// [`Self::hnsw`] accepts and a known quantizer.
+    pub fn hnsw_disk(quantizer: u8, max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
+        check_graph(max_conn, beam_width)?;
+        if usize::from(quantizer) >= IVF_QUANTIZERS.len() || quantizer == IVF_AUTO_QUANTIZER {
+            return Err(InvalidFormat(format!(
+                "unknown disk HNSW quantizer {quantizer}"
+            )));
+        }
+        Ok(KnnVectorsFormat::HnswDisk {
+            quantizer,
+            max_conn,
+            beam_width,
+        })
+    }
+
+    /// The quantizer of a [`KnnVectorsFormat::HnswDisk`] format, `None` for
+    /// any other.
+    pub fn hnsw_disk_quantizer(&self) -> Option<u8> {
+        match *self.files_format() {
+            KnnVectorsFormat::HnswDisk { quantizer, .. } => Some(quantizer),
+            _ => None,
+        }
+    }
+
     /// `new Lucene99HnswVectorsFormat(maxConn, beamWidth)`.
     pub fn hnsw(max_conn: i32, beam_width: i32) -> Result<Self, InvalidFormat> {
         check_graph(max_conn, beam_width)?;
@@ -298,6 +338,7 @@ impl KnnVectorsFormat {
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
             KnnVectorsFormat::Ivf { .. } => IVF_NAME,
             KnnVectorsFormat::HnswQuantized { .. } => HNSW_QUANTIZED_NAME,
+            KnnVectorsFormat::HnswDisk { .. } => HNSW_DISK_NAME,
         }
     }
 
@@ -326,6 +367,11 @@ impl KnnVectorsFormat {
                 max_conn,
                 beam_width,
                 ..
+            }
+            | KnnVectorsFormat::HnswDisk {
+                max_conn,
+                beam_width,
+                ..
             } => Some((max_conn, beam_width)),
             KnnVectorsFormat::ScalarQuantized { .. }
             | KnnVectorsFormat::Ivf { .. }
@@ -341,6 +387,7 @@ impl KnnVectorsFormat {
             | KnnVectorsFormat::HnswHalfFloat { .. }
             | KnnVectorsFormat::Ivf { .. }
             | KnnVectorsFormat::HnswQuantized { .. }
+            | KnnVectorsFormat::HnswDisk { .. }
             | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
@@ -413,6 +460,11 @@ pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
         },
         KnnVectorsFormat::HnswQuantized {
             quantizer: 4,
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::HnswDisk {
+            quantizer: 0,
             max_conn: hnsw::DEFAULT_MAX_CONN,
             beam_width: hnsw::DEFAULT_BEAM_WIDTH,
         },
@@ -557,5 +609,22 @@ mod tests {
             KnnVectorsFormat::hnsw_scalar_quantized(ScalarEncoding::UnsignedByte, 32, 64).unwrap();
         assert_eq!(sq.graph(), Some((32, 64)));
         assert_eq!(sq.quantization(), Some(ScalarEncoding::UnsignedByte));
+    }
+
+    #[test]
+    fn disk_hnsw_is_an_hnsw_graph_with_its_own_name() {
+        let disk = KnnVectorsFormat::hnsw_disk(0, 24, 200).unwrap();
+        assert_eq!(disk.name(), HNSW_DISK_NAME);
+        assert_eq!(disk.graph(), Some((24, 200)));
+        assert_eq!(disk.quantization(), None);
+        assert_eq!(disk.hnsw_disk_quantizer(), Some(0));
+        assert_eq!(KnnVectorsFormat::default().hnsw_disk_quantizer(), None);
+        assert!(KnnVectorsFormat::hnsw_disk(IVF_AUTO_QUANTIZER, 16, 100).is_err());
+        assert!(KnnVectorsFormat::hnsw_disk(99, 16, 100).is_err());
+        assert!(KnnVectorsFormat::hnsw_disk(0, 0, 100).is_err());
+        assert_eq!(
+            for_name(HNSW_DISK_NAME).map(|f| f.name()),
+            Some(HNSW_DISK_NAME)
+        );
     }
 }

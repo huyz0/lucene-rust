@@ -8,11 +8,14 @@
 # against that node *and* against a stock node built from the same image
 # without the plugin, and requires the two failure sets to be identical and
 # the plugin to report no native error: the suites' own pass/fail is
-# OpenSearch's business, a difference between the two nodes is ours.
+# OpenSearch's business, a difference between the two nodes is ours. Then
+# e2e/highlight_matrix.py requires every highlight on the two to be identical.
 #
-# With --engine the plugin node serves every index -- system indices and
-# every index the YAML suites create included -- with the Rust engine
-# (lucene_rust.engine.default: true), and the e2e stage is
+# Without --engine the plugin node runs with indices.engine.accelerated.default: false,
+# the opt-out: OpenSearch's engine for every index that does not ask, native
+# search on top. With --engine it keeps the default (true), so it serves every
+# index -- system indices and every index the YAML suites create included --
+# with the accelerated engine, and the e2e stage is
 # opensearch-plugin/e2e/verify_engine.py: the Rust engine against OpenSearch's
 # own, operation for operation, through restarts, SIGKILL, a writer panic and
 # a tripped breaker.
@@ -60,9 +63,9 @@ fi
 docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 # The disk-watermark block is off: a CI runner's or container's disk can sit
 # past the flood stage, and a node refusing to create indices tests nothing.
-NODE_ENV=()
+NODE_ENV=(-e indices.engine.accelerated.default=false)
 if [[ $ENGINE == 1 ]]; then
-    NODE_ENV=(-e lucene_rust.engine.default=true)
+    NODE_ENV=()
 fi
 start_node() { # name port image [docker-run args...]
     docker rm -f "$1" >/dev/null 2>&1 || true
@@ -138,11 +141,17 @@ if [[ $YAML == 1 && $status == 0 ]]; then
         echo "verify-opensearch: the YAML suites fail differently with the plugin" >&2
         status=1
     fi
-    if ! grep -q '"native_errors":0' <<<"$stats" || grep -q '"native_queries":0' <<<"$stats"; then
+    if ! grep -q '"accelerated_errors":0' <<<"$stats" || grep -q '"accelerated_queries":0' <<<"$stats"; then
         echo "verify-opensearch: native errors during the YAML suites, or nothing ran native" >&2
         status=1
     fi
     echo "yaml: $(wc -l <"$work/rust/failures.txt") failures on both nodes; outputs in $work"
+    # Every highlight of the highlight matrix, plugin against stock (the native `unified`).
+    if ! PLUGIN="http://localhost:${PORT}" STOCK="http://localhost:$((PORT + 2))" \
+        python3 opensearch-plugin/e2e/highlight_matrix.py all; then
+        echo "verify-opensearch: highlights differ from stock" >&2
+        status=1
+    fi
 fi
 if [[ $YAML == 1 ]]; then
     check_jvm "$NAME"

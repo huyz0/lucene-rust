@@ -32,6 +32,7 @@ import urllib.request
 import geo_matrix
 import extended_matrix
 import hex_id_matrix
+import compact_wildcard_matrix
 
 BASE = "http://localhost:9200"
 FAILURES = []
@@ -73,11 +74,16 @@ def stats():
 
 
 def set_native(index, on):
-    req("PUT", f"/{index}/_settings", {"index.lucene_rust.search.enabled": on})
+    req("PUT", f"/{index}/_settings", {"index.search.accelerated": on})
 
 
 def set_shapes(index, mode):
-    req("PUT", f"/{index}/_settings", {"index.lucene_rust.search.native_shapes": mode})
+    req("PUT", f"/{index}/_settings", {"index.search.accelerated_shapes": mode})
+
+
+def set_exact_approximation(index, on):
+    """`index.search.approximation.exact`; `None` restores the default (on)."""
+    req("PUT", f"/{index}/_settings", {"index.search.approximation.exact": on})
 
 
 WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho "
@@ -216,7 +222,7 @@ def load(index, docs, seed, deletes=True):
 
 
 # (name, request body, expected): "native" runs native in both routing modes
-# (no encodable shape is routed to Lucene as slower, so `native_shapes` fast
+# (no encodable shape is routed to Lucene as slower, so `accelerated_shapes` fast
 # and all agree); anything else is the fallback reason
 # expected in both modes ("query_*" matches any query class).
 def matrix():
@@ -858,6 +864,42 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
     """The whole matrix (or `rows`) against the Lucene reference, under one routing mode."""
     label = f"{label}/{shapes}"
     set_shapes(index, shapes)
+    # OpenSearch's approximation is the reference here: rows that expect "approximate" stay on it.
+    # check_exact_approximation covers the default, which answers them natively and exactly.
+    set_exact_approximation(index, False)
+    try:
+        return run_matrix_rows(index, shards, label, shapes, index_sorted, rows)
+    finally:
+        set_exact_approximation(index, None)
+
+
+def check_exact_approximation(index, shards, label):
+    """With `index.search.approximation.exact` at its default, the rows OpenSearch would approximate run
+    natively: their hits are the exact ones (OpenSearch's with `track_total_hits: true`, which
+    turns the approximation off), their totals OpenSearch's own."""
+    # A post_filter's approximation is not the query's: those rows stay on OpenSearch either way.
+    rows = [(n, b) for n, b, e in matrix() if e == "approximate" and "post_filter" not in b]
+    check(rows, f"{label} {index}: no approximate rows")
+    set_native(index, False)
+    approx, exact = {}, {}
+    for name, body in rows:
+        approx[name] = shape(complete(search(index, body)), search_url(index, body)[1])
+        exact[name] = shape(complete(search(index, {**body, "track_total_hits": True})), search_url(index, body)[1])
+    set_native(index, True)
+    for name, body in rows:
+        before = stats()
+        got = shape(search(index, body), search_url(index, body)[1])
+        after = stats()
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
+        check(ran_native == shards, f"{label} {index} [{name}]: exact approximation ran native on {ran_native} of {shards} shards; fallbacks {fallback_delta(before, after)}")
+        check(got["total"] == approx[name]["total"], f"{label} {index} [{name}]: total {got['total']} vs OpenSearch's {approx[name]['total']}")
+        # Only the hits: the exact request's total and early termination are its own.
+        loose = {"total": None, "terminated_early": None}
+        diff = same({**got, **loose}, {**exact[name], **loose})
+        check(diff is None, f"{label} {index} [{name}]: exact approximation differs from the exact answer: {diff}")
+
+
+def run_matrix_rows(index, shards, label, shapes, index_sorted, rows):
     queries = rows if rows is not None else matrix()
     set_native(index, False)
     reference = {}
@@ -878,7 +920,7 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
             expect = "native" if shapes == "all" else "slower_shape"
         if expect == "slow_agg":
             # An aggregation OpenSearch answers faster (an early-terminating sorted read, the
-            # filter rewrite): native only under native_shapes: all.
+            # filter rewrite): native only under accelerated_shapes: all.
             expect = "native" if shapes == "all" else "aggregations"
         if expect == "dfs_multi":
             # OpenSearch runs a one-shard dfs search as query_then_fetch
@@ -894,8 +936,8 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
         after = stats()
         diff = same(got, reference[name])
         check(diff is None, f"{label} {index} [{name}]: native-enabled response differs from Lucene: {diff}")
-        ran_native = after["native_queries"] - before["native_queries"]
-        errors = after["native_errors"] - before["native_errors"]
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
+        errors = after["accelerated_errors"] - before["accelerated_errors"]
         check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
         if expect == "either":
             # The two engines' responses agree (checked above); where it ran is not pinned.
@@ -1037,7 +1079,7 @@ def script_errors(index, shards):
         check(a == b, f"{label}: native error differs from stock: {json.dumps(a, sort_keys=True)[:1500]} vs {json.dumps(b, sort_keys=True)[:1500]}")
         delta = fallback_delta(before, after)
         check(not delta, f"{label}: no fallback (the script never re-runs in Java), got {delta}")
-        check(after["native_errors"] == before["native_errors"], f"{label}: not counted as a native error")
+        check(after["accelerated_errors"] == before["accelerated_errors"], f"{label}: not counted as a native error")
         failed = after["script_errors"] - before["script_errors"]
         check(failed >= 1, f"{label}: {failed} script errors counted on {shards} shards")
         print(f"  {label}: status {got[0]}, {failed} script errors, no fallback")
@@ -1070,7 +1112,7 @@ def run_scroll(index, shards, label):
         for i, (g, r) in enumerate(zip(got, reference)):
             diff = same(g, r)
             check(diff is None, f"{label} {index} [{name}]: page {i} differs from Lucene: {diff}")
-        ran_native = after["native_queries"] - before["native_queries"]
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
         check(ran_native == len(got) * shards,
               f"{label} {index} [{name}]: ran native {ran_native} times for {len(got)} pages on {shards} shards; fallbacks {fallback_delta(before, after)}")
 
@@ -1112,7 +1154,7 @@ def lifecycle(index, container):
     for rnd in (1, 2):
         req("POST", f"/{index}/_search?request_cache=false", {"query": {"match": {"body": "alpha beta"}}})
         s0 = stats()
-        check(s0["open_native_readers"] >= 1, f"lifecycle {rnd}: a native reader is open before the merge")
+        check(s0["open_accelerated_readers"] >= 1, f"lifecycle {rnd}: a native reader is open before the merge")
         segs_before = len(req("GET", f"/_cat/segments/{index}?format=json"))
         req("POST", f"/{index}/_forcemerge?max_num_segments=1")
         req("POST", f"/{index}/_refresh")
@@ -1122,16 +1164,16 @@ def lifecycle(index, container):
         leftover = None
         while time.time() < deadline:
             leftover = deleted_index_mappings(container)
-            if not leftover and stats()["open_native_readers"] <= s0["open_native_readers"]:
+            if not leftover and stats()["open_accelerated_readers"] <= s0["open_accelerated_readers"]:
                 break
             time.sleep(1)
         segs_after = len(req("GET", f"/_cat/segments/{index}?format=json"))
         print(f"lifecycle {rnd}: {segs_before} segments -> {segs_after}; open native readers "
-              f"{s0['open_native_readers']} -> {stats()['open_native_readers']}")
+              f"{s0['open_accelerated_readers']} -> {stats()['open_accelerated_readers']}")
         check(segs_after == 1, f"lifecycle {rnd}: force merge left {segs_after} segments")
         check(not leftover, f"lifecycle {rnd}: deleted index files still mapped after the merge: {leftover[:3]}")
-        check(stats()["open_native_readers"] <= s0["open_native_readers"],
-              f"lifecycle {rnd}: native readers leaked: {stats()['open_native_readers']}")
+        check(stats()["open_accelerated_readers"] <= s0["open_accelerated_readers"],
+              f"lifecycle {rnd}: native readers leaked: {stats()['open_accelerated_readers']}")
         if rnd == 1:
             # New segments on top of the merged one, for the second round.
             load_more(index, 2000)
@@ -1239,7 +1281,7 @@ def crash(container, indices):
     wait_up()
     # Read before the counts below: a _count is a match_all, which runs natively.
     s = stats()
-    check(s["native_queries"] == 0, f"crash: stats reset with the process ({s['native_queries']})")
+    check(s["accelerated_queries"] == 0, f"crash: stats reset with the process ({s['accelerated_queries']})")
     for i in indices:
         req("POST", f"/{i}/_refresh")
         got = req("GET", f"/{i}/_count")["count"]
@@ -1248,7 +1290,7 @@ def crash(container, indices):
 
 def bench(index, out, rounds):
     """REST latency, native vs Lucene, same node, same index, same queries --
-    every shape the engine answers natively (native_shapes=all), so the
+    every shape the engine answers natively (accelerated_shapes=all), so the
     routing policy's "slow" shapes are measured too."""
     set_shapes(index, "all")
     queries = [(n, b) for n, b, e in matrix() if e in ("native", "slow", "slow_agg") and "highlight" not in n]
@@ -1280,7 +1322,7 @@ def bench(index, out, rounds):
 
 
 def set_fetch(index, on):
-    req("PUT", f"/{index}/_settings", {"index.lucene_rust.fetch.enabled": on})
+    req("PUT", f"/{index}/_settings", {"index.fetch.accelerated": on})
 
 
 FETCH_ROWS = [
@@ -1305,7 +1347,7 @@ def fetched(resp):
 
 def fetch_counters():
     st = stats()
-    return st["native_fetches"], st["native_sequential_fetches"], st["fetch_nanos"]["lucene_count"], st["native_errors"]
+    return st["accelerated_fetches"], st["accelerated_sequential_fetches"], st["fetch_nanos"]["fallback_count"], st["accelerated_errors"]
 
 
 def run_fetch(index, label):
@@ -1348,13 +1390,13 @@ def run_fetch(index, label):
         req("POST", f"/{seq}/_refresh")
         # The query phase opens the native reader the fetch then reads through.
         req("POST", f"/{seq}/_search", {"size": 0, "query": {"match_all": {}}})
-        before = stats()["native_sequential_fetches"]
+        before = stats()["accelerated_sequential_fetches"]
         set_fetch(seq, False)
         want = fetched(req("POST", f"/{seq}/_search?request_cache=false", {"size": 30, "query": {"match_all": {}}, "sort": ["_doc"]}))
         set_fetch(seq, True)
         got = fetched(req("POST", f"/{seq}/_search?request_cache=false", {"size": 30, "query": {"match_all": {}}, "sort": ["_doc"]}))
         check(got == want and len(got) == 30, f"{label} {seq}: native sequential fetch differs from Lucene's")
-        check(stats()["native_sequential_fetches"] >= before + 30, f"{label} {seq}: the sequential reader served nothing natively")
+        check(stats()["accelerated_sequential_fetches"] >= before + 30, f"{label} {seq}: the sequential reader served nothing natively")
         req("DELETE", f"/{seq}")
     for doc_id in ids[:10]:
         # A realtime get may read through the engine's internal reader, which no search opened
@@ -1368,7 +1410,7 @@ def run_fetch(index, label):
 
 def bench_fetch(index, out, rounds):
     """REST latency of the fetch phase, native stored fields against Lucene's: the same searches
-    (their query phase native both times) with index.lucene_rust.fetch.enabled toggled, interleaved,
+    (their query phase native both times) with index.fetch.accelerated toggled, interleaved,
     median wall time; and the get API the same way."""
     rows = [(n, b) for n, b in FETCH_ROWS if b.get("_source", True) is not False or "stored_fields" in b]
     rows.append(("fetch 100 _source", {"size": 100, "query": {"match": {"body": "alpha"}}}))
@@ -1398,9 +1440,9 @@ def bench_fetch(index, out, rounds):
     # StoredFields.document per document, per path, from the plugin's own counters: the fetch's
     # shard-side cost without the REST round trip (warm-up requests included on both sides).
     per_doc = {}
-    for path in ("native", "lucene"):
-        docs = after[f"{path}_count"] - before[f"{path}_count"]
-        per_doc[path] = (after[path] - before[path]) / docs if docs else None
+    for path, key in (("native", "accelerated"), ("lucene", "fallback")):
+        docs = after[f"{key}_count"] - before[f"{key}_count"]
+        per_doc[path] = (after[key] - before[key]) / docs if docs else None
     try:
         with open(out) as f:
             data = json.load(f)
@@ -1540,6 +1582,8 @@ def main():
     for shapes in ("fast", "all"):
         native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
     native += run_matrix("clean", 1, "no deletions")
+    for index, shards in (("single", 1), ("multi", 3), ("clean", 1)):
+        check_exact_approximation(index, shards, "exact approximation")
     # An index sorted by qty then n: a search whose sort begins it ends each
     # segment at its first non-competitive document (TopFieldCollector).
     try:
@@ -1598,6 +1642,7 @@ def main():
         native += run_matrix("geo", 1, "geo merged", rows=geo_matrix.rows())
     # hex_id against keyword on the same values, under both engines and derived source.
     native += hex_id_matrix.run(req, check, stats)
+    native += compact_wildcard_matrix.run(req, check, stats)
     print(f"matrix: {len(matrix())} request shapes x 4 indices, {len(geo_matrix.rows())} geo shapes x 2 indices; {native} shard queries ran native")
     # The fetch phase and get API with native stored fields.
     run_fetch("single", "fetch")

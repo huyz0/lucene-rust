@@ -1,0 +1,20 @@
+# id	kind	ci	pattern	text-kind	text-pattern
+rare-timeout	contains	1	timeout	wildcard	*timeout*
+rare-SocketTimeout	contains	0	SocketTimeout	wildcard	*sockettimeout*
+rare-blk	contains	0	blk_-16089	wildcard	*16089*
+rare-ip	contains	0	10.250.19.102	term	10.250.19.102
+rare-postdrop	contains	0	postdrop	wildcard	*postdrop*
+ci-sockettimeoutexception	contains	1	sockettimeoutexception	wildcard	*sockettimeoutexception*
+common-error	contains	1	error	wildcard	*error*
+common-failed-password	contains	1	failed password	and	failed password
+common-parity	contains	0	parity error corrected	and	parity error corrected
+common-auth-failure	contains	0	authentication failure	and	authentication failure
+suffix-corrected	wildcard	0	*corrected	term	corrected
+prefix-dec10	wildcard	0	Dec 10 07:2*	none	-
+wild-user-r??t	wildcard	0	*user=r??t*	wildcard	r??t
+wild-sshd	wildcard	0	*sshd[2420?]*	wildcard	2420?
+ci-kernel-instruction	wildcard	1	*kernel info*instruction*	and	kernel info instruction
+re-terminating	regexp	0	.*blk_-?[0-9]+ terminating	and	terminating
+re-rhost	regexp	0	.*rhost=[0-9]+\.95\.[0-9.]+ .*	regexp	[0-9]+\.95\.[0-9.]+
+re-timeout	regexp	0	.*[Tt]imeout.*	regexp	.*timeout.*
+re-ci-password	regexp	1	.*failed PASSWORD.*	and	failed password

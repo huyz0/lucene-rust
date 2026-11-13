@@ -2037,6 +2037,15 @@ impl SpanNode {
             || matches!(self, SpanNode::MultiTerm(_))
     }
 
+    /// How many terms the query consumes when visited: what
+    /// `IndexSearcher.rewrite`'s clause-count check adds up.
+    pub fn term_count(&self) -> usize {
+        match self {
+            SpanNode::Term { .. } | SpanNode::MultiTerm(_) => 1,
+            _ => self.children().into_iter().map(SpanNode::term_count).sum(),
+        }
+    }
+
     fn children(&self) -> Vec<&SpanNode> {
         match self {
             SpanNode::Term { .. } | SpanNode::MultiTerm(_) => Vec::new(),

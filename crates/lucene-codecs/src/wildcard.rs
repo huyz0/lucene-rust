@@ -182,8 +182,16 @@ impl WildcardPattern {
             return hit.clone();
         }
         let dfa = self.to_dfa().map(std::sync::Arc::new);
+        let bytes = dfa.as_ref().map_or(0, |d| d.ram_bytes());
+        if bytes > MAX_CACHED_BYTES / 4 {
+            return dfa;
+        }
         let mut cache = DFA_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() >= MAX_CACHED_PATTERNS {
+        let held: usize = cache
+            .values()
+            .map(|d| d.as_ref().map_or(0, |d| d.ram_bytes()))
+            .sum();
+        if cache.len() >= MAX_CACHED_PATTERNS || held.saturating_add(bytes) > MAX_CACHED_BYTES {
             cache.clear();
         }
         cache.insert(self.tokens.clone(), dfa.clone());
@@ -297,6 +305,12 @@ static DFA_CACHE: std::sync::LazyLock<std::sync::Mutex<DfaCache>> =
 
 /// Patterns [`DFA_CACHE`] holds before it is cleared.
 const MAX_CACHED_PATTERNS: usize = 512;
+
+/// Automaton bytes ([`ByteDfa::ram_bytes`]) [`DFA_CACHE`] holds before it is
+/// cleared; an automaton over a quarter of this is used and not kept.
+///
+/// [`ByteDfa::ram_bytes`]: crate::automaton::ByteDfa::ram_bytes
+const MAX_CACHED_BYTES: usize = 16 << 20;
 
 #[cfg(test)]
 mod tests {

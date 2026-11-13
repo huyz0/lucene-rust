@@ -148,10 +148,10 @@ pub fn query_bit_set(leaf: &OpenSegment<'_>, query: &BooleanQuery) -> Result<Opt
     };
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, std::slice::from_ref(&one));
     let query = rewritten.as_ref().unwrap_or(query);
-    let clause = crate::aggs::lone_clause(query);
-    let ctx = crate::aggs::plain_context(&one);
+    let clause = crate::segment_match::lone_clause(query);
+    let ctx = crate::segment_match::plain_context(&one);
     let mut buf = Vec::new();
-    let docs = match crate::aggs::segment_matches(&ctx, query, &clause, None, &mut buf)? {
+    let docs = match crate::segment_match::segment_matches(&ctx, query, &clause, None, &mut buf)? {
         None => return Ok(None),
         Some(Some(docs)) => docs,
         Some(None) => {

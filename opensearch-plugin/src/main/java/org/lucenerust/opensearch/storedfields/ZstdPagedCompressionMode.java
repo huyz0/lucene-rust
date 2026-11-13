@@ -28,7 +28,7 @@ final class ZstdPagedCompressionMode extends CompressionMode {
 
     @Override
     public Compressor newCompressor() {
-        throw new UnsupportedOperationException("only the Rust engine writes paged zstd stored fields");
+        throw new UnsupportedOperationException("only the accelerated engine writes paged zstd stored fields");
     }
 
     @Override

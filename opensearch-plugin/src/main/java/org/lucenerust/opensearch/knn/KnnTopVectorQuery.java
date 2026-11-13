@@ -46,7 +46,7 @@ import java.util.Objects;
  * of those parents that passes the filter and has a vector, each scored.
  *
  * <p>{@code nprobes} ({@code method_parameters.nprobes}) is the clusters probed in each segment
- * whose field has an IVF index ({@code LuceneRustIvfVectorsFormat}), {@code 0} for the depth each
+ * whose field has an IVF index ({@code IvfVectorsFormat}), {@code 0} for the depth each
  * segment calibrated, nested searches included; other formats ignore it.
  *
  * <p>With a {@link Grouping} ({@code group_by}) it matches the best {@link Grouping#size} documents of
@@ -99,13 +99,27 @@ public final class KnnTopVectorQuery extends Query {
     private final boolean expand;
     private final int nprobes;
     private final Grouping grouping;
+    /** The graph walk's adaptive beam stop over the best {@code k}, or null for Lucene's stop. */
+    private final Float explorationSlack;
+    private final RecallTarget recall;
+
+    /**
+     * A recall-targeted search ({@code index.knn.target_recall}): the target, the
+     * sample rate and check budget, and the key naming the tuner (index, shard and field) whose
+     * tuned depth the search runs at.
+     */
+    public record RecallTarget(float recall, float sampleRate, float budget, String key) {
+        public RecallTarget {
+            Objects.requireNonNull(key);
+        }
+    }
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter) {
         this(field, target, k, candidates, filter, null, false);
     }
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter, BitSetProducer parents, boolean expand) {
-        this(field, target, k, candidates, filter, parents, expand, 0, null);
+        this(field, target, k, candidates, filter, parents, expand, 0, null, null, null);
     }
 
     private KnnTopVectorQuery(
@@ -117,6 +131,8 @@ public final class KnnTopVectorQuery extends Query {
         BitSetProducer parents,
         boolean expand,
         int nprobes,
+        Float explorationSlack,
+        RecallTarget recall,
         Grouping grouping
     ) {
         if (k <= 0) {
@@ -136,6 +152,11 @@ public final class KnnTopVectorQuery extends Query {
             throw new IllegalArgumentException("nprobes must not be negative");
         }
         this.nprobes = nprobes;
+        if (explorationSlack != null && (Float.isFinite(explorationSlack) == false || explorationSlack < 0)) {
+            throw new IllegalArgumentException("exploration_slack must be a finite number >= 0");
+        }
+        this.explorationSlack = explorationSlack;
+        this.recall = recall;
         if (grouping != null && parents != null) {
             throw new IllegalArgumentException("a grouped search cannot be nested");
         }
@@ -144,12 +165,17 @@ public final class KnnTopVectorQuery extends Query {
 
     /** This query probing {@code nprobes} IVF clusters per segment. */
     public KnnTopVectorQuery withNprobes(int nprobes) {
-        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, grouping);
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, grouping);
+    }
+
+    /** This query searching at the depth tuned for {@code recall} (null: as asked). */
+    public KnnTopVectorQuery withRecallTarget(RecallTarget recall) {
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, grouping);
     }
 
     /** This query grouped by {@code grouping}: {@code k} counts groups. */
     public KnnTopVectorQuery withGrouping(Grouping grouping) {
-        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, Objects.requireNonNull(grouping));
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, Objects.requireNonNull(grouping));
     }
 
     /** The grouping, or null for a search that is not grouped. */
@@ -159,6 +185,25 @@ public final class KnnTopVectorQuery extends Query {
 
     public int nprobes() {
         return nprobes;
+    }
+
+    /**
+     * This query with the graph walk's opt-in adaptive beam stop ({@code method_parameters.exploration_slack}):
+     * a walk stops once its best candidate is farther than {@code 1 + slack} times the {@code k}-th best
+     * found. A nested search and the {@code lucene} engine's Java fallback ignore it.
+     */
+    public KnnTopVectorQuery withExplorationSlack(float slack) {
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, slack, recall, grouping);
+    }
+
+    /** The adaptive beam stop's slack, or null. */
+    public Float explorationSlack() {
+        return explorationSlack;
+    }
+
+    /** The recall target, or null. */
+    public RecallTarget recallTarget() {
+        return recall;
     }
 
     public String field() {
@@ -196,7 +241,7 @@ public final class KnnTopVectorQuery extends Query {
         if (filter != null) {
             Query f = searcher.rewrite(filter);
             if (f != filter) {
-                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes, grouping);
+                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes, explorationSlack, recall, grouping);
             }
         }
         NativeSearch n = nativeSearch;
@@ -406,7 +451,7 @@ public final class KnnTopVectorQuery extends Query {
 
     @Override
     public String toString(String defaultField) {
-        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + (grouping == null ? "" : ", group_by=" + grouping.field() + "/" + grouping.size()) + ")";
+        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + (explorationSlack == null ? "" : ", exploration_slack=" + explorationSlack) + (recall == null ? "" : ", target_recall=" + recall.recall()) + (grouping == null ? "" : ", group_by=" + grouping.field() + "/" + grouping.size()) + ")";
     }
 
     @Override
@@ -421,11 +466,13 @@ public final class KnnTopVectorQuery extends Query {
             && Objects.equals(parents, q.parents)
             && expand == q.expand
             && nprobes == q.nprobes
+            && Objects.equals(explorationSlack, q.explorationSlack)
+            && Objects.equals(recall, q.recall)
             && Objects.equals(grouping, q.grouping);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes, grouping);
+        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, grouping);
     }
 }

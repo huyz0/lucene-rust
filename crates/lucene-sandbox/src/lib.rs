@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `lucene-sandbox` (Lucene 10.5.0's `sandbox` module), ported package by
 //! package. The inventory is `docs/inventory/lucene-sandbox.tsv`; the ledger
 //! is `docs/parity/sandbox.md`.
