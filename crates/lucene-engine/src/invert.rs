@@ -1,5 +1,5 @@
 //! The plugin's index-time analysis in Rust: one field of one document,
-//! analyzed with a registered analyzer ([`lucene_engine::analysis::register`])
+//! analyzed with a registered analyzer ([`crate::analysis::register`])
 //! and inverted exactly as the plugin's `DocumentEncoder` inverts a field in
 //! the JVM -- itself a copy of Lucene's `IndexingChain.PerField.invert`,
 //! `TermsHashPerField.add` and `PerField.finish` -- with Java's `int`
@@ -10,8 +10,8 @@ use lucene_analysis::TokenStream;
 use lucene_index::index_writer::{InvertedField, InvertedTerms};
 use lucene_util::small_float::int_to_byte4;
 
-use crate::error::{set_last_error, FfiStatus};
-use lucene_engine::analysis::Registered;
+use crate::analysis::Registered;
+use crate::status::{set_last_error, Status};
 
 /// `IndexWriter.MAX_TERM_LENGTH`.
 const MAX_TERM_LENGTH: usize = 32766;
@@ -59,9 +59,9 @@ impl Norm {
     }
 }
 
-fn illegal(message: String) -> FfiStatus {
+fn illegal(message: String) -> Status {
     set_last_error(message);
-    FfiStatus::InvalidArgument
+    Status::InvalidArgument
 }
 
 /// One term's state within the document (`FreqProxTermsWriterPerField`'s).
@@ -306,7 +306,7 @@ impl<'a> Inverted<'a> {
         start: i32,
         end: i32,
         payload: Option<&[u8]>,
-    ) -> Result<(), FfiStatus> {
+    ) -> Result<(), Status> {
         if term.len() > MAX_TERM_LENGTH {
             let prefix: Vec<String> = term[..30].iter().map(|&b| (b as i8).to_string()).collect();
             return Err(illegal(format!(
@@ -399,7 +399,7 @@ pub(crate) fn invert(
     options: Options,
     norm: Norm,
     instances: &[&str],
-) -> Result<InvertedField, FfiStatus> {
+) -> Result<InvertedField, Status> {
     let analyzer = registered.analyzer.analyzer();
     let failed = |e: lucene_analysis::AnalysisError| illegal(format!("{e}"));
     // About one distinct term per eight bytes of text; the guess only sizes
@@ -495,7 +495,7 @@ pub(crate) fn invert(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lucene_engine::analysis::{register, registered, test_support::spec};
+    use crate::analysis::{register, registered, test_support::spec};
 
     fn reg(stop: bool) -> std::sync::Arc<Registered> {
         let filters: &[(&str, &[(&str, &str)])] = if stop {
@@ -619,9 +619,9 @@ mod tests {
         let kw = registered(register(&blob).unwrap() as i32).unwrap();
         assert_eq!(
             invert(1, "k", &kw, Options::Docs, Norm::Omit, &[&long]).unwrap_err(),
-            FfiStatus::InvalidArgument
+            Status::InvalidArgument
         );
-        let msg = crate::error::last_error();
+        let msg = crate::status::last_error();
         assert!(msg.contains("immense term in field=\"k\""), "{msg}");
         assert!(msg.contains("'[97, 97, 97"), "{msg}");
         let _ = r;

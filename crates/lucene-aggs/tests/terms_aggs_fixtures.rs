@@ -12,9 +12,9 @@
 
 use std::collections::HashMap;
 
+use lucene_aggs::terms_agg::{terms, terms_sliced, TermsResult};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
-use lucene_search::terms_agg::{terms, terms_sliced, TermsResult};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
 

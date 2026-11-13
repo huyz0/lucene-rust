@@ -9,6 +9,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lucene_aggs::bucket_aggs::segment_cache::{AggSegmentCache, CacheRequest, SegmentIdentity};
+use lucene_aggs::bucket_aggs::{
+    aggregate_tree, aggregate_tree_cached, AggNode, AggResult, DateRounding, Globals, RoundingKind,
+    TermsOrder,
+};
+use lucene_aggs::metric_aggs::{self, Source, ValueKind};
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::stored_fields::{FieldValue, StoredField};
 use lucene_index::buffered_updates::Term;
@@ -16,12 +22,6 @@ use lucene_index::index_writer::{
     ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, InvertedTerm,
 };
 use lucene_index::segment_info::LuceneVersion;
-use lucene_search::aggs::{self, Source, ValueKind};
-use lucene_search::bucket_aggs::segment_cache::{AggSegmentCache, CacheRequest, SegmentIdentity};
-use lucene_search::bucket_aggs::{
-    aggregate_tree, aggregate_tree_cached, AggNode, AggResult, DateRounding, Globals, RoundingKind,
-    TermsOrder,
-};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use lucene_search::extended_query::{IndexOrDocValuesQuery, NumericDocValuesRangeQuery};
 use lucene_search::multi_segment::OpenSegment;
@@ -226,7 +226,10 @@ fn trees() -> Vec<Vec<AggNode>> {
                 "host",
                 3,
                 TermsOrder::CountDesc,
-                vec![metric("dur", aggs::NEED_COUNT | aggs::NEED_SUM)],
+                vec![metric(
+                    "dur",
+                    metric_aggs::NEED_COUNT | metric_aggs::NEED_SUM,
+                )],
             )],
         )],
         // Top hosts, each over time with stats; and a top-level count.
@@ -235,9 +238,12 @@ fn trees() -> Vec<Vec<AggNode>> {
                 "host",
                 2,
                 TermsOrder::CountDesc,
-                vec![date_histogram(2_000, vec![metric("dur", aggs::NEED_ALL)])],
+                vec![date_histogram(
+                    2_000,
+                    vec![metric("dur", metric_aggs::NEED_ALL)],
+                )],
             ),
-            metric("dur", aggs::NEED_COUNT),
+            metric("dur", metric_aggs::NEED_COUNT),
         ],
         // Duration ranges by body word, a histogram of durations by time
         // value, and the top hosts by key.
@@ -253,7 +259,7 @@ fn trees() -> Vec<Vec<AggNode>> {
                         filtered(vec![t("body", "w2")]),
                     ],
                     other: true,
-                    subs: vec![metric("dur", aggs::NEED_MIN | aggs::NEED_MAX)],
+                    subs: vec![metric("dur", metric_aggs::NEED_MIN | metric_aggs::NEED_MAX)],
                 }],
             },
             AggNode::Histogram {
@@ -346,7 +352,7 @@ fn check(reader: &DirectoryReader, keep: &[usize], cache: &AggSegmentCache, end:
     let mut ords = HashMap::new();
     ords.insert(
         "host".to_string(),
-        Arc::new(lucene_search::terms_agg::GlobalOrds::build(&readers, "host").unwrap()),
+        Arc::new(lucene_search::global_ords::GlobalOrds::build(&readers, "host").unwrap()),
     );
     let globals = Globals::new(&ords);
     let ids = identities(&segments, &readers);
@@ -417,7 +423,7 @@ fn cached_blocks_answer_as_collecting_does() {
 fn phases(
     name: &str,
     cache: &AggSegmentCache,
-) -> lucene_search::bucket_aggs::segment_cache::CacheStats {
+) -> lucene_aggs::bucket_aggs::segment_cache::CacheStats {
     let tmp = TempDir::new(name);
     let dir = FsDirectory::open(tmp.path());
     let mut w = writer(&dir);
@@ -520,9 +526,9 @@ fn a_sum_that_could_round_runs_without_the_cache() {
         .push(Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX)));
     let slices = vec![(0..segments.len()).collect::<Vec<_>>()];
     for needs in [
-        aggs::NEED_SUM,
-        aggs::NEED_COUNT | aggs::NEED_SUM,
-        aggs::NEED_ALL,
+        metric_aggs::NEED_SUM,
+        metric_aggs::NEED_COUNT | metric_aggs::NEED_SUM,
+        metric_aggs::NEED_ALL,
     ] {
         let nodes = vec![date_histogram(1_000, vec![metric("dur", needs)])];
         let plain =
@@ -580,7 +586,7 @@ fn a_sliding_date_range_reads_covered_segments_back() {
     let mut ords = HashMap::new();
     ords.insert(
         "host".to_string(),
-        Arc::new(lucene_search::terms_agg::GlobalOrds::build(&readers, "host").unwrap()),
+        Arc::new(lucene_search::global_ords::GlobalOrds::build(&readers, "host").unwrap()),
     );
     let globals = Globals::new(&ords);
     let ids = identities(&segments, &readers);
