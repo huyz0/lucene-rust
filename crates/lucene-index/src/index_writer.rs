@@ -185,6 +185,7 @@ mod segment_partitions;
 pub(crate) use segment_partitions::set_attribute;
 pub use segment_partitions::SegmentPartitioning;
 mod try_modify;
+mod upgrade;
 pub(crate) use explicit::explicit_error;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm, LeanParts};
 pub use inverted_terms::{InvertedTerms, InvertedTermsIter, Payloads, TermBuilder, TermRef};

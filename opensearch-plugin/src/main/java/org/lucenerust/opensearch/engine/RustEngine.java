@@ -1826,6 +1826,12 @@ public class RustEngine extends Engine {
                     refresh("force merge");
                 }
 
+                if (upgrade) {
+                    // OpenSearchMergePolicy's upgrade pass: each old segment rewritten alone before
+                    // the forced merge the request asks for.
+                    int upgraded = ((RustIndexWriter) documentIndexWriter).upgradeSegments(upgradeOnlyAncientSegments);
+                    logger.debug("rewrote {} segments for the upgrade", upgraded);
+                }
                 if (onlyExpungeDeletes) {
                     assert upgrade == false;
                     documentIndexWriter.forceMergeDeletes(true /* blocks and waits for merges*/);
@@ -1836,6 +1842,9 @@ public class RustEngine extends Engine {
                     documentIndexWriter.forceMerge(maxNumSegments, true /* blocks and waits for merges*/);
                     this.forceMergeUUID = forceMergeUUID;
                 }
+                // The writer commits what a forced merge or upgrade publishes, so the flush below finds
+                // nothing to commit: the committed segment list the segments API reports is read here.
+                refreshLastCommittedSegmentInfos();
                 if (flush) {
                     flush(false, true);
                 }
