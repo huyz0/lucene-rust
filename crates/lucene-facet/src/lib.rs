@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faceting over a SORTED_SET doc-values field — a port of real Lucene's
 //! `SortedSetDocValuesFacetCounts` and the `lucene-facet` layer above it:
 //! for every matching doc, increment a per-ordinal counter for each of that

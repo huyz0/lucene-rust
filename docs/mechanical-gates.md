@@ -58,6 +58,7 @@ the installed Java writer fixture also exercises real zero-token segments.
 | [`literal-space-run`](#literal-space-run) | `check-port-invariants.py` | a line in `crates/*/src` holding a string literal with a run of 8+ spaces between non-spaces, or a `\n` then 8+ spaces, with no `// SPACES-OK:` waiver | a run under eight spaces; a run only on a later line of a multi-line literal; `crates/*/tests` |
 | [`test-framework-dev-only`](#test-framework-dev-only) | `check-port-invariants.py` | a `lucene-test-framework` key (inline or `[*.lucene-test-framework]` table) in the root or a `crates/*/Cargo.toml` under any section but a `dev-dependencies` one | an edge written through `package = "lucene-test-framework"` under another key; a manifest outside `crates/`; feature unification in a whole-workspace build (see the section) |
 | [`bench-not-asserting`](#bench-not-asserting) | `check-port-invariants.py` | an `asserting` entry in any `features = [...]` list of `benchmarks/rust-runner/Cargo.toml` | a feature enabling `asserting` transitively; a `--workspace` benchmark build |
+| [`unsafe-scoped`](#unsafe-scoped) | `check-port-invariants.py` | a crate other than `lucene-util`, `lucene-store`, `lucene-ffi` whose `src/lib.rs` lacks `#![forbid(unsafe_code)]`; a crate listed in `UNSAFE_BURNDOWN` that no longer holds `unsafe` | `unsafe` in a crate that forbids it is a compile error already; blind to an `unsafe` hidden behind a macro, and to `#![forbid]` placed outside `lib.rs` |
 | [fixture source selection](#fixture-source-selection) | `test-test-framework-fixture-selection.py` | `--only` compiling unrelated broken sources, missing source dependencies, incomplete full checks, fixture drift or changed early argument handling | runtime dependencies loaded by reflection, actual Lucene behavior or fixture determinism; the full Java fixture check covers the real generators |
 | [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB on a drive with under 150 GB free (over 300 GB with more room only warns); under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
@@ -1025,6 +1026,22 @@ framework's scorer checks into the benchmarked hot path`). Blind to: a
 feature that turns `asserting` on transitively (none does); a benchmark
 built with `--workspace`, which unifies the feature in from
 `lucene-test-framework`.
+
+## unsafe-scoped
+
+`check-port-invariants.py --only=unsafe-scoped`. AGENTS.md invariant 4 keeps
+`unsafe` in `lucene-util` (SIMD), `lucene-store` (mmap) and `lucene-ffi` (C
+ABI); every other crate declares `#![forbid(unsafe_code)]` so a stray block
+fails to compile. Nothing checked the declaration: twelve crates had
+silently never carried it, and `lucene-expressions` held six `unsafe` blocks
+in `vector.rs` (raw register views of its batch evaluator). The rule reads
+each other crate's `src/lib.rs` for the attribute. `lucene-expressions` is
+listed in `UNSAFE_BURNDOWN` until its register file is safe; the rule fails
+once a listed crate has no `unsafe` left, so the list only shrinks. **Seen to
+fail** on both shapes: the attribute deleted from `lucene-misc`
+(`missing #![forbid(unsafe_code)]`), and `lucene-misc` planted in the
+burn-down list (`has no unsafe left`). Blind to: `unsafe` produced by a macro
+body; an `#![forbid]` that sits in a module rather than `lib.rs`.
 
 ## store-feature-off-lint
 

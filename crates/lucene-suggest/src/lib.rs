@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `org.apache.lucene.search.suggest` and `org.apache.lucene.search.spell`
 //! (`lucene-suggest`): the suggester API, the completion postings format and
 //! the spell checkers.
