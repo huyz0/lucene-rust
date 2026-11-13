@@ -237,6 +237,8 @@ pub(crate) trait MetricSlot: Default + Clone {
     fn bound(&mut self, is_min: bool, v: f64);
     /// The state as the result reads it.
     fn state(&self) -> MetricState;
+    /// The parts kept, taken from `s`.
+    fn set(&mut self, s: MetricState);
 }
 
 impl MetricSlot for MetricState {
@@ -258,6 +260,9 @@ impl MetricSlot for MetricState {
     }
     fn state(&self) -> MetricState {
         *self
+    }
+    fn set(&mut self, s: MetricState) {
+        *self = s;
     }
 }
 
@@ -292,6 +297,9 @@ impl MetricSlot for CountSum {
             ..MetricState::default()
         }
     }
+    fn set(&mut self, s: MetricState) {
+        (self.count, self.sum, self.delta) = (s.count, s.sum, s.delta);
+    }
 }
 
 /// `value_count` alone.
@@ -314,6 +322,9 @@ impl MetricSlot for Count {
             count: self.0,
             ..MetricState::default()
         }
+    }
+    fn set(&mut self, s: MetricState) {
+        self.0 = s.count;
     }
 }
 
@@ -350,6 +361,9 @@ impl MetricSlot for MinOf {
             ..MetricState::default()
         }
     }
+    fn set(&mut self, s: MetricState) {
+        self.0 = s.min_of_mins;
+    }
 }
 
 /// `max`: the largest of each document's largest value.
@@ -384,6 +398,9 @@ impl MetricSlot for MaxOf {
             max_of_maxes: self.0,
             ..MetricState::default()
         }
+    }
+    fn set(&mut self, s: MetricState) {
+        self.0 = s.max_of_maxes;
     }
 }
 
@@ -942,7 +959,9 @@ fn all_accepted(accept: &Accept<'_>, base: usize, len: usize) -> bool {
 // ARITH: `bound` is at most `2^63 * 1024` in `u128`; `EXACT_INTEGERS -
 // current` is taken only when `current <= EXACT_INTEGERS`.
 #[allow(clippy::arithmetic_side_effects)]
-fn fold_zone<const N: u8>(
+#[inline(always)]
+pub(crate) fn fold_zone_needs(
+    needs: u8,
     mut state: MetricState,
     stats: lucene_codecs::adaptive_zones::ZoneStats,
     count: usize,
@@ -956,10 +975,10 @@ fn fold_zone<const N: u8>(
         return None;
     }
     let (lo, hi) = (to_double(kind, stats.min), to_double(kind, stats.max));
-    if N & (NEED_MIN_MAX | NEED_MIN | NEED_MAX) != 0 && (lo.is_nan() || hi.is_nan()) {
+    if needs & (NEED_MIN_MAX | NEED_MIN | NEED_MAX) != 0 && (lo.is_nan() || hi.is_nan()) {
         return None;
     }
-    if N & NEED_SUM != 0 {
+    if needs & NEED_SUM != 0 {
         let sum = stats.sum.filter(|_| kind == ValueKind::Long)?;
         let exact = state.delta == 0.0 && state.sum.is_finite() && state.sum.fract() == 0.0;
         if !exact {
@@ -976,20 +995,31 @@ fn fold_zone<const N: u8>(
         }
         state.sum += sum as f64;
     }
-    if N & NEED_COUNT != 0 {
+    if needs & NEED_COUNT != 0 {
         state.count += count as u64;
     }
-    if N & NEED_MIN_MAX != 0 {
+    if needs & NEED_MIN_MAX != 0 {
         state.min = java_min(state.min, lo);
         state.max = java_max(state.max, hi);
     }
-    if N & NEED_MIN != 0 {
+    if needs & NEED_MIN != 0 {
         state.min_of_mins = java_min(state.min_of_mins, lo);
     }
-    if N & NEED_MAX != 0 {
+    if needs & NEED_MAX != 0 {
         state.max_of_maxes = java_max(state.max_of_maxes, hi);
     }
     Some(state)
+}
+
+/// [`fold_zone_needs`] keeping the parts in `N`.
+#[inline]
+fn fold_zone<const N: u8>(
+    state: MetricState,
+    stats: lucene_codecs::adaptive_zones::ZoneStats,
+    count: usize,
+    kind: ValueKind,
+) -> Option<MetricState> {
+    fold_zone_needs(N, state, stats, count, kind)
 }
 
 /// A single-valued column streamed into `state` a window at a time
