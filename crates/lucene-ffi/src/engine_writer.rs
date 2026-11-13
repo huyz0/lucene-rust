@@ -5907,7 +5907,7 @@ mod tests {
                 assert_eq!(aggs(lean), aggs(whole), "round {round}: {term} aggs");
                 // The aggregation segment cache keeps no buffer's part: the
                 // views' answers stay the buffers' as they are now.
-                lucene_search::bucket_aggs::segment_cache::AggSegmentCache::global()
+                lucene_aggs::bucket_aggs::segment_cache::AggSegmentCache::global()
                     .set_budget(64 << 20);
                 let cached = |r: u64| {
                     crate::jvm_aggs::aggregate_tree_blobs_cached(r, &q, &tree, true).unwrap()
