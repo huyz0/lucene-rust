@@ -18,14 +18,16 @@ use lucene_search::document::DocumentQuery;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::values_source::{DoubleValuesSource, ValuesContext};
+use lucene_spatial4j::spatial4j::{Shape, SpatialContext, SpatialContextFactory};
+use lucene_spatial4j::spatial_extras::prefix_tree::{
+    Calendar, DateRangePrefixTree, QuadPrefixTree,
+};
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 use lucene_spatial_extras::bbox::BBoxStrategy;
 use lucene_spatial_extras::{
     NumberRangePrefixTreeStrategy, RecursivePrefixTreeStrategy, SpatialStrategy,
 };
 use lucene_store::FsDirectory;
-use lucene_spatial4j::spatial4j::{Shape, SpatialContext, SpatialContextFactory};
-use lucene_spatial4j::spatial_extras::prefix_tree::{Calendar, DateRangePrefixTree, QuadPrefixTree};
-use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 
 use super::measure;
 

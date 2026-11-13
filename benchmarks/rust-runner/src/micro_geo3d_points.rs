@@ -15,9 +15,9 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::document::geo::geo3d::{geo3d_doc_values_field, geo3d_point};
 use lucene_search::document::{self as dq, DocumentQuery};
 use lucene_search::multi_segment::OpenSegment;
+use lucene_spatial3d::PlanetModel;
 use lucene_store::FsDirectory;
 use lucene_util::geo::Polygon;
-use lucene_spatial3d::PlanetModel;
 
 use super::measure;
 
