@@ -83,13 +83,13 @@ import java.util.Random;
 import java.util.stream.Stream;
 
 /**
- * The query and scoring half, for crates/lucene-search/tests/m7_query_fixtures.rs: every query
+ * The query and scoring half, for crates/lucene-search/tests/extended_query_fixtures.rs: every query
  * Lucene 10.5.0 adds on top of the term/phrase/boolean core -- synonyms, BM25F, n-gram phrases,
  * explicit phrase positions, the multi-term rewrite methods, blended terms, the Indri and fusion
  * queries, numeric doc-values and index-sort ranges, multi-dimensional and 4/16-byte points,
  * vector similarity thresholds and KNN as a query clause -- searched over one index.
  *
- * <p>{@code m7_queries_index}: three segments (NoMergePolicy, a commit after each batch), two with
+ * <p>{@code extended_queries_index}: three segments (NoMergePolicy, a commit after each batch), two with
  * deleted documents, index-sorted by {@code snum}. Fields: {@code body}/{@code title} text,
  * {@code gram} (letter bigrams, one token each), {@code tag} (keywords, also SORTED_SET doc
  * values), {@code num} (LongPoint + NUMERIC doc values, on most documents), {@code snum} (the
@@ -102,7 +102,7 @@ import java.util.stream.Stream;
  * doc ids. {@code estimator.tsv}: {@code BayesianScoreEstimator.estimate} over {@code body} for a
  * few settings, as float bits.
  */
-public class GenM7Queries {
+public class GenExtendedQueries {
   static final int TOP = 20;
 
   static Map<String, Similarity> sims() {
@@ -619,7 +619,7 @@ public class GenM7Queries {
 
   public static void main(String[] args) throws IOException {
     Path root = Path.of(args[0]);
-    Path out = root.resolve("m7_queries_index");
+    Path out = root.resolve("extended_queries_index");
     deleteRecursive(out);
     Files.createDirectories(out);
     Random r = new Random(20261001L);
@@ -736,12 +736,12 @@ public class GenM7Queries {
   };
 
   /**
-   * {@code m7_dv_index}: two segments (12000 and 5000 documents, a few deleted) with doc values
+   * {@code extended_dv_index}: two segments (12000 and 5000 documents, a few deleted) with doc values
    * indexed with a skip index -- {@code sk} (NUMERIC, clustered by document, missing on some) and
    * {@code msk} (SORTED_NUMERIC, one to three values) -- searched with {@link #DV}.
    */
   static void writeDvIndex(Path root) throws IOException {
-    Path out = root.resolve("m7_dv_index");
+    Path out = root.resolve("extended_dv_index");
     deleteRecursive(out);
     Files.createDirectories(out);
     Random r = new Random(20261003L);
@@ -816,12 +816,12 @@ public class GenM7Queries {
   };
 
   /**
-   * {@code m7_knn_index}: two segments of 8-d EUCLIDEAN vectors (1500 and 1000 documents, a few
+   * {@code extended_knn_index}: two segments of 8-d EUCLIDEAN vectors (1500 and 1000 documents, a few
    * deleted) with a skewed keyword {@code color}, searched with {@link #KNN} (the same prefix
    * syntax) into {@code searches.tsv}. The target is {@link #QVEC8}.
    */
   static void writeKnnIndex(Path root) throws IOException {
-    Path out = root.resolve("m7_knn_index");
+    Path out = root.resolve("extended_knn_index");
     deleteRecursive(out);
     Files.createDirectories(out);
     Random r = new Random(20261002L);
