@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `org.apache.lucene.classification` (`lucene-classification`): classifiers that learn from an
 //! index's documents -- naive Bayes ([`SimpleNaiveBayesClassifier`],
 //! [`CachingNaiveBayesClassifier`], [`Bm25NbClassifier`]), k nearest
