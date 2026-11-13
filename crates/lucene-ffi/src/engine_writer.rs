@@ -6578,6 +6578,157 @@ mod tests {
         assert_eq!(ffi_engine_writer_close(h), 0);
     }
 
+    /// A view's buffers read as the segments they were flushed as keep their document
+    /// numbers: document `d` of the buffer is document `d` of the published segment, however
+    /// the documents arrived (threads) and however many documents were added after the view.
+    #[test]
+    fn published_buffers_keep_their_document_numbers() {
+        use crate::live::{
+            check_published_numbering, ffi_engine_writer_live_view_open, ffi_live_view_close,
+        };
+        let rounds: usize = std::env::var("PUBLISHED_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
+        for round in 0..rounds {
+            let tmp = empty_index("engine-writer-published-numbers");
+            let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+            let f = setup(h);
+            let add_from = |threads: usize, per: usize, tag: &str| {
+                std::thread::scope(|s| {
+                    for t in 0..threads {
+                        let (f, tag) = (&f, tag);
+                        s.spawn(move || {
+                            for i in 0..per {
+                                let b = doc(
+                                    Blob::default().u8(OP_ADD).i32(1),
+                                    f,
+                                    &format!("{tag}-{t}-{i}"),
+                                    &["alpha"],
+                                    (t * per + i) as i64,
+                                    false,
+                                );
+                                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+                            }
+                        });
+                    }
+                });
+            };
+            add_from(1 + round % 4, 40, "a");
+            let gen = commit_settled(h);
+            let key = commit_version(h);
+            let _ = gen;
+            add_from(1 + round % 4, 60, "b");
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, key, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            add_from(1 + (round + 1) % 4, 15, "c");
+            commit_settled(h);
+            let checked = check_published_numbering(view, f.id)
+                .unwrap_or_else(|e| panic!("round {round}: {e}"));
+            assert!(checked > 0, "round {round}: nothing published to check");
+            assert_eq!(ffi_live_view_close(view), 0);
+            assert_eq!(ffi_engine_writer_close(h), 0);
+        }
+    }
+
+    /// A reader over a view whose buffers were flushed numbers each leaf as the JVM's leaf of
+    /// those documents is numbered, whatever was added to the buffers after the view opened:
+    /// the buffer's published segment holds those documents too, which the leaf must not count.
+    #[test]
+    fn a_flushed_view_is_numbered_as_the_jvm_numbers_it() {
+        use crate::live::{
+            check_view_reader_numbering, ffi_engine_writer_live_view_open, ffi_live_view_close,
+            ffi_live_view_reader,
+        };
+        let rounds: usize = std::env::var("VIEW_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let (mut failed, mut served, mut refused) = (0, 0, 0);
+        for round in 0..rounds {
+            let tmp = empty_index("engine-writer-view-numbers");
+            let h = open_with(&tmp, 64.0, OPEN_LIVE_SEARCH, i32::MAX);
+            let f = setup(h);
+            let add_from = |threads: usize, per: usize, tag: &str| {
+                std::thread::scope(|s| {
+                    for t in 0..threads {
+                        let (f, tag) = (&f, tag);
+                        s.spawn(move || {
+                            for i in 0..per {
+                                let b = doc(
+                                    Blob::default().u8(OP_ADD).i32(1),
+                                    f,
+                                    &format!("{tag}-{t}-{i}"),
+                                    &["alpha"],
+                                    (t * per + i) as i64,
+                                    false,
+                                );
+                                assert_eq!(apply(h, &b.0), 0, "{}", crate::error::last_error());
+                            }
+                        });
+                    }
+                });
+            };
+            add_from(1, 10, "a");
+            let gen = commit_settled(h);
+            let key = commit_version(h);
+            let reader = open_reader(&tmp, gen);
+            // Odd rounds fill one buffer, even rounds several.
+            let threads = if round % 2 == 1 { 1 } else { 2 + round % 3 };
+            add_from(threads, 30, "b");
+            let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
+            // SAFETY: live out-pointers.
+            let rc =
+                unsafe { ffi_engine_writer_live_view_open(h, key, &mut view, &mut ptr, &mut len) };
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            // SAFETY: the buffer the call gave, freed once.
+            unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+            add_from(threads, 7, "c");
+            commit_settled(h);
+            let mut made = 0u64;
+            let q = Blob::default().0;
+            // SAFETY: live out-pointers; no request: every term of the buffers.
+            let rc = unsafe {
+                ffi_live_view_reader(
+                    reader,
+                    view,
+                    q.as_ptr(),
+                    0,
+                    q.as_ptr(),
+                    0,
+                    q.as_ptr(),
+                    0,
+                    &mut made,
+                )
+            };
+            if rc == 0 {
+                served += 1;
+                if let Err(e) = check_view_reader_numbering(made, view) {
+                    failed += 1;
+                    eprintln!("round {round}: {e}");
+                }
+                assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(made), 0);
+            } else {
+                // Left to the JVM's reader of the buffers' segments, which numbers them as it does.
+                refused += 1;
+            }
+            assert_eq!(ffi_live_view_close(view), 0);
+            assert_eq!(crate::jvm_reader::ffi_close_jvm_reader(reader), 0);
+            assert_eq!(ffi_engine_writer_close(h), 0);
+        }
+        assert!(served > 0, "no reader was made over a flushed view");
+        assert!(refused > 0, "every flushed view was numbered alike: the test no longer covers a buffer grown since the view");
+        assert_eq!(
+            failed, 0,
+            "{failed} of {served} readers number their leaves differently"
+        );
+    }
+
     /// Views of a growing buffer: each view's reader holds the buffer as
     /// chunks, written once and read again by later views, which together
     /// hold the documents, positions, offsets and statistics of the view,
