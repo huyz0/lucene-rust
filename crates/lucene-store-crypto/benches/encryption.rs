@@ -218,23 +218,23 @@ fn bench_index(c: &mut Criterion) {
     group.finish();
 }
 
-/// Demand decryption: the first touch of every page of a 16 MiB file opened
-/// lazily, by one reader and by four at once (each reading its own quarter,
-/// as concurrent searches touch different regions). Opening (which
-/// authenticates every chunk) is setup, not timed.
+/// Decryption into the page cache: opening a 16 MiB file (its header
+/// only), and the first touch of every page, by one reader and by four at
+/// once (each reading its own quarter, as concurrent searches touch
+/// different regions), each page read with `O_DIRECT` and decrypted as it
+/// comes in.
 #[cfg(target_os = "linux")]
-fn bench_lazy(c: &mut Criterion) {
-    if lucene_store_crypto::lazy::Pager::global().is_none() {
-        eprintln!("userfaultfd unavailable; skipping lazy benches");
+fn bench_paged(c: &mut Criterion) {
+    if lucene_store::paged_input::Pager::global().is_none() {
+        eprintln!("userfaultfd unavailable; skipping paged benches");
         return;
     }
     let data = bytes(16 << 20);
-    let mut group = c.benchmark_group(format!("lazy/{}", lucene_store_crypto::backend_name()));
+    let mut group = c.benchmark_group(format!("paged/{}", lucene_store_crypto::backend_name()));
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.sample_size(20);
-    let tmp = TempDir::new("bench-crypto-lazy");
-    let enc =
-        EncryptedDirectory::new(MmapDirectory::open(tmp.path()), keys()).with_lazy_decrypt(true);
+    let tmp = TempDir::new("bench-crypto-paged");
+    let enc = EncryptedDirectory::new(lucene_store::PagedFsDirectory::open(tmp.path()), keys());
     write_file(&enc, "enc", &data);
     group.bench_function("open_16m", |b| {
         b.iter(|| black_box(enc.open("enc").unwrap().len()))
@@ -267,7 +267,7 @@ fn bench_lazy(c: &mut Criterion) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bench_lazy(_c: &mut Criterion) {}
+fn bench_paged(_c: &mut Criterion) {}
 
-criterion_group!(benches, bench_cipher, bench_file, bench_lazy, bench_index);
+criterion_group!(benches, bench_cipher, bench_file, bench_paged, bench_index);
 criterion_main!(benches);

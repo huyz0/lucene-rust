@@ -23,15 +23,19 @@
 //! so it is one cut through the operations: an update's delete and its new
 //! document are both in it or both not, and a buffer is either still
 //! buffered, being flushed, or published (counted by
-//! [`LiveView::published`]), never two of these. Commits are known by
-//! generation, each holding the publishes before it. Reading a view's
+//! [`LiveView::published`]), never two of these. A reader's segment list
+//! (a commit or an NRT snapshot) is known by its version, each holding the
+//! publishes before it. Reading a view's
 //! terms holds the slots' locks while it decodes them: indexing waits for
 //! what the requested terms' postings cost to decode.
 //!
 //! The extra columns, and the published buffers kept, are not charged to
 //! the RAM buffer, so a writer with live search flushes after the same
 //! documents as one without; [`ConcurrentIndexWriter::live_bytes`] reports
-//! them.
+//! them. The vector graphs are not extra: a buffer keeps them for its
+//! flush with or without live search, and charges them. The one exception
+//! is an index sort, under which live search keeps no graph and the flush
+//! builds it.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
@@ -46,7 +50,7 @@ use crate::buffered_updates::{DocValuesUpdate, Term};
 use crate::index_writer::packed_fields::PackedFields;
 use crate::index_writer::pending_postings::{LiveFieldStats, PendingPostings};
 use crate::index_writer::ExplicitFields;
-use crate::index_writer::{DeleteNode, Error, IndexingConfig, Result};
+use crate::index_writer::{DeleteNode, Error, IndexingConfig, KeptGraph, Result};
 
 /// What one search reads from the buffers: per field, the terms it looks
 /// up.
@@ -279,11 +283,20 @@ struct Deletes {
 impl LiveColumns {
     /// Adds document `doc`'s vectors to their fields' graphs, and starts
     /// an inserter on a field whose graph has none running.
+    ///
+    /// Without `live` search only the graphs are kept, for the flush to
+    /// write: no cluster lists (the flush does not read them), a graph under
+    /// an index sort too (the flush renumbers it), and the indexing thread
+    /// inserts each vector itself into a
+    /// [`lucene_codecs::buffer_vectors::FlushGraph`], as
+    /// `Lucene99HnswVectorsWriter`'s `FieldWriter.addValue` does, so the
+    /// flush finds no graph work left.
     pub(super) fn record_vectors(
         &mut self,
         doc: i32,
         vectors: &[crate::index_writer::DocumentVector],
         cfg: &IndexingConfig,
+        live: bool,
     ) {
         for v in vectors {
             let Some(number) = cfg.vector_field_number(&v.field_name) else {
@@ -298,13 +311,17 @@ impl LiveColumns {
             }
             let at = match self.graphs.iter().position(|g| g.field_number == number) {
                 Some(at) => at,
-                None => match cfg.buffer_graph_for(&v.field_name) {
+                None => match cfg.buffer_graph_for(&v.field_name, live) {
                     Some(graph) => {
                         self.graphs.push(crate::index_writer::BufferGraphField {
                             field_number: number,
-                            graph: Arc::new(graph),
+                            graph,
                         });
                         self.graphs.len().saturating_sub(1)
+                    }
+                    None if !live => {
+                        self.no_graph.push(number);
+                        continue;
                     }
                     None => {
                         match cfg.buffer_lists_for(&v.field_name) {
@@ -328,7 +345,19 @@ impl LiveColumns {
             let Some(field) = self.graphs.get(at) else {
                 continue;
             };
-            if field.graph.push(doc, buffer_vector(&v.value)).is_err() {
+            let graph = match &field.graph {
+                KeptGraph::Flush(graph) => {
+                    if graph.add(doc, buffer_vector(&v.value)).is_err() {
+                        // The flush builds the field's graph instead.
+                        graph.retire();
+                        self.graphs.remove(at);
+                        self.no_graph.push(number);
+                    }
+                    continue;
+                }
+                KeptGraph::Live(graph) => graph,
+            };
+            if graph.push(doc, buffer_vector(&v.value)).is_err() {
                 // Its ordinals no longer follow the documents: searches
                 // scan the field's vectors exactly and the flush builds
                 // its graph.
@@ -336,8 +365,8 @@ impl LiveColumns {
                 self.no_graph.push(number);
                 continue;
             }
-            if field.graph.schedule() {
-                let graph = Arc::clone(&field.graph);
+            if graph.schedule() {
+                let graph = Arc::clone(graph);
                 // An insertion that fails or panics leaves the ordinals after
                 // it out of the graph: searches score them exactly, and the
                 // flush builds the field's graph again.
@@ -353,6 +382,15 @@ impl LiveColumns {
                 });
             }
         }
+    }
+
+    /// The heap the vector fields' graphs hold beyond the vectors, which
+    /// the buffer's documents share.
+    pub(super) fn graph_ram_bytes(&self) -> usize {
+        self.graphs
+            .iter()
+            .map(|g| g.graph.ram_bytes())
+            .fold(0usize, usize::saturating_add)
     }
 
     /// Appends document `doc`'s vector to the cluster lists at `at`, and
@@ -536,6 +574,8 @@ impl LiveColumns {
         self.deletes.apply(nodes, limit, postings, cfg);
     }
 
+    /// What the columns hold beyond the RAM buffer's charge: not the
+    /// vector graphs, which the buffer charges.
     pub(super) fn ram_bytes(&self) -> usize {
         self.norms
             .values()
@@ -543,12 +583,6 @@ impl LiveColumns {
             .fold(self.deletes.hard.ram_bytes(), usize::saturating_add)
             .saturating_add(self.deletes.soft.ram_bytes())
             .saturating_add(self.stored.ram_bytes())
-            .saturating_add(
-                self.graphs
-                    .iter()
-                    .map(|g| g.graph.ram_bytes())
-                    .fold(0usize, usize::saturating_add),
-            )
             .saturating_add(
                 self.lists
                     .iter()
@@ -783,10 +817,11 @@ pub(super) struct LiveFlushes {
     unpinned: Vec<String>,
 }
 
-/// A commit this writer made.
+/// A segment list this writer made for readers: a commit, or an NRT
+/// snapshot, known by its version.
 #[derive(Debug, Clone, Copy)]
 struct Commit {
-    generation: i64,
+    version: i64,
     /// How many publishes it holds.
     held: u64,
     /// The log position up to which its segments had every delete.
@@ -827,15 +862,16 @@ impl LiveFlushes {
         std::mem::take(&mut self.unpinned)
     }
 
-    /// A commit at `generation` holds every publish so far, and every
-    /// delete up to log position `handed`. A commit that wrote nothing new
-    /// keeps the generation, and the position, of the one before.
-    pub(super) fn committed(&mut self, generation: i64, handed: usize) {
-        if self
-            .commits
-            .back()
-            .is_some_and(|c| c.generation == generation)
-        {
+    /// A reader of the segment list at `version` (a commit's, or an NRT
+    /// snapshot's) holds every publish so far, and every delete up to log
+    /// position `handed`. A list that changed nothing keeps the version of
+    /// the one before: its publishes and position move up to now, since a
+    /// publish that added no segment (all its documents deleted) or a
+    /// delete that matched nothing changes no segment either.
+    pub(super) fn committed(&mut self, version: i64, handed: usize) {
+        if let Some(c) = self.commits.back_mut().filter(|c| c.version == version) {
+            c.held = self.published;
+            c.handed = c.handed.max(handed);
             return;
         }
         if self.commits.len() == COMMITS_KEPT {
@@ -845,7 +881,7 @@ impl LiveFlushes {
             }
         }
         self.commits.push_back(Commit {
-            generation,
+            version,
             held: self.published,
             handed,
         });
@@ -956,15 +992,15 @@ impl LiveFlushes {
         })
     }
 
-    /// The commit at `generation`.
-    fn commit(&self, generation: i64) -> Result<Commit> {
+    /// The segment list at `version`.
+    fn commit(&self, version: i64) -> Result<Commit> {
         self.commits
             .iter()
-            .find(|c| c.generation == generation)
+            .find(|c| c.version == version)
             .copied()
             .ok_or_else(|| {
                 Error::LiveSearch(format!(
-                    "commit generation {generation} is not one this writer made"
+                    "segment list version {version} is not one this writer made"
                 ))
             })
     }
@@ -1287,13 +1323,13 @@ impl ConcurrentIndexWriter<'_> {
             .saturating_add(live.history_bytes)
     }
 
-    /// Stops reading the published buffers the commit at `generation` holds,
-    /// once no open view reads them: call it once no search reads from an
-    /// older commit. Their memory goes.
-    pub fn release_live(&self, generation: i64) -> Result<()> {
+    /// Stops reading the published buffers the segment list at `version` (a
+    /// commit's or an NRT snapshot's) holds, once no open view reads them:
+    /// call it once no search reads an older list. Their memory goes.
+    pub fn release_live(&self, version: i64) -> Result<()> {
         let unpinned = {
             let mut live = self.live_flushes();
-            let held = live.commit(generation)?.held;
+            let held = live.commit(version)?.held;
             live.release(held);
             live.take_unpinned()
         };
@@ -1332,8 +1368,8 @@ impl ConcurrentIndexWriter<'_> {
         Ok(cfg)
     }
 
-    /// Opens a view of every buffered document a reader of the commit at
-    /// `commit` lacks (with `None`, the documents in no published segment):
+    /// Opens a view of every buffered document a reader of the segment list
+    /// at version `commit` (a commit's or an NRT snapshot's) lacks (with `None`, the documents in no published segment):
     /// see the module doc. Close it with [`Self::close_live_view`].
     ///
     /// Fails for a writer without [`Self::enable_live_search`], for one that
@@ -1353,8 +1389,8 @@ impl ConcurrentIndexWriter<'_> {
         let from = commit.map_or(live.published, |c| c.held);
         if !live.keeps_from(from) {
             return Err(Error::LiveSearch(format!(
-                "the buffers published after commit {:?} were released",
-                commit.map(|c| c.generation)
+                "the buffers published after segment list version {:?} were released",
+                commit.map(|c| c.version)
             )));
         }
         let (slot_tails, flushing_tail) = {
@@ -1365,8 +1401,8 @@ impl ConcurrentIndexWriter<'_> {
         let commit_nodes = match &commit {
             Some(c) => Some(live.deletes_after(c, &flushing_tail).ok_or_else(|| {
                 Error::LiveSearch(format!(
-                    "the deletes since commit {} are no longer kept",
-                    c.generation
+                    "the deletes since segment list version {} are no longer kept",
+                    c.version
                 ))
             })?),
             None => None,
@@ -2150,10 +2186,13 @@ fn view_buffer(
             .columns
             .graphs
             .iter()
-            .map(|g| ViewGraph {
-                field_number: g.field_number,
-                graph: Arc::clone(&g.graph),
-                count: g.graph.len(),
+            .filter_map(|g| match &g.graph {
+                KeptGraph::Live(graph) => Some(ViewGraph {
+                    field_number: g.field_number,
+                    graph: Arc::clone(graph),
+                    count: graph.len(),
+                }),
+                KeptGraph::Flush(_) => None,
             })
             .collect(),
         vector_lists: source

@@ -606,7 +606,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         };
         let segment_docs = writer.segment_doc_total()?;
         let mut live = live::LiveFlushes::default();
-        live.committed(writer.segment_infos().generation, 0);
+        live.committed(writer.segment_infos().version, 0);
         let max_docs = writer.max_docs_limit();
         Ok(ConcurrentIndexWriter {
             dir: writer.dir(),
@@ -1117,6 +1117,25 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// Buffers `nodes` for the published segments.
     /// `live` was locked before the log they were taken from, so a view
     /// sees them either in the log or in the buffers being flushed.
+    /// The live segment list as an NRT reader opens it. With `handed` (live
+    /// search on, taken at the cut of a flush whose barrier is still up),
+    /// its version is also a reader live views can be opened against, as a
+    /// commit's is: it holds every publish so far and every delete before
+    /// log position `handed`.
+    fn nrt_snapshot_keyed(&self, handed: Option<usize>) -> Result<crate::nrt::NrtSnapshot> {
+        let mut core = lock(&self.core);
+        let snapshot = core.writer.nrt_snapshot_of_live_view()?;
+        if let Some(handed) = handed {
+            let unpinned = {
+                let mut live = self.live_flushes();
+                live.committed(snapshot.segment_infos.version, handed);
+                live.take_unpinned()
+            };
+            self.unpin_with(&mut core.writer, unpinned);
+        }
+        Ok(snapshot)
+    }
+
     fn hand_over(core: &mut Core<'_>, live: &mut live::LiveFlushes, nodes: &[Arc<DeleteNode>]) {
         for node in nodes {
             core.writer.buffer_global_delete(node);
@@ -1525,9 +1544,21 @@ impl<'d> ConcurrentIndexWriter<'d> {
                                 .map(DocumentVector::ram_bytes)
                                 .fold(0usize, usize::saturating_add),
                         );
-                        if live.is_some() {
-                            dwpt.live.record_vectors(doc_id, &doc_vectors, &live_cfg);
+                        // The graphs grow as the documents arrive, as
+                        // `Lucene99HnswVectorsWriter` builds them, and are
+                        // charged as its `ramBytesUsed` charges them: the
+                        // flush writes them rather than building them.
+                        let graphs_before = dwpt.live.graph_ram_bytes();
+                        dwpt.live
+                            .record_vectors(doc_id, &doc_vectors, &live_cfg, live.is_some());
+                        let graphs_now = dwpt.live.graph_ram_bytes();
+                        if graphs_now < graphs_before {
+                            // A graph given up: its charge goes back.
+                            dwpt.ram_bytes = dwpt
+                                .ram_bytes
+                                .saturating_sub(graphs_before.saturating_sub(graphs_now));
                         }
+                        added = added.saturating_add(graphs_now.saturating_sub(graphs_before));
                         let at = usize::try_from(doc_id).unwrap_or(0);
                         dwpt.vectors.resize_with(at, Vec::new);
                         dwpt.vectors.push(doc_vectors);
@@ -1991,8 +2022,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             stored: stored.as_ref(),
             limit: None,
             partition,
-            // A sort renumbers the vectors: their graphs are built again.
-            graphs: if sort_map.is_some() { &[] } else { &graphs },
+            // Under a sort the flush renumbers them (`old_to_new`).
+            graphs: &graphs,
         };
         // This segment's own deletes are resolved here, with no lock held --
         // `DocumentsWriterPerThread.flush`'s `applyDeletes` -- so the publish,
@@ -2290,10 +2321,10 @@ impl<'d> ConcurrentIndexWriter<'d> {
             } = &mut *core;
             writer.prepare_commit_excluding(merging)?;
             writer.finish_commit()?;
-            let generation = writer.segment_infos().generation;
+            let version = writer.segment_infos().version;
             let unpinned = {
                 let mut live = self.live_flushes();
-                live.committed(generation, handed);
+                live.committed(version, handed);
                 live.take_unpinned()
             };
             self.unpin_with(writer, unpinned);
@@ -2561,8 +2592,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
         live.discard(end);
         core.writer.rollback();
         // Back at its last commit, whose readers now hold every document.
-        let generation = core.writer.segment_infos().generation;
-        live.committed(generation, end);
+        let version = core.writer.segment_infos().version;
+        live.committed(version, end);
         let unpinned = live.take_unpinned();
         drop(live);
         self.unpin_with(&mut core.writer, unpinned);
@@ -2615,7 +2646,13 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         _write_all_deletes: bool,
     ) -> Result<crate::nrt::NrtSnapshot> {
         let full_flush = lock(&self.full_flush);
-        self.flush_all(false)?;
+        // With live search on, the snapshot is a reader's cut through the
+        // buffers as a commit is: no later flush publishes before it is
+        // taken, so it holds exactly the publishes and deletes before the
+        // cut, and views of it read the rest from the buffers.
+        let live = self.live();
+        let barrier = live.then(|| BarrierGuard(self));
+        let (_, handed) = self.flush_all(live)?;
         let mut core = lock(&self.core);
         // Java's `segmentInfos` holds what was just flushed, so merges see
         // it before any commit does.
@@ -2664,14 +2701,21 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         }
         drop(core);
         let Some((names, until)) = waiting else {
-            let snapshot = lock(&self.core).writer.nrt_snapshot_of_live_view();
+            let snapshot = self.nrt_snapshot_keyed(live.then_some(handed));
+            drop(barrier);
             drop(full_flush);
             self.schedule_merges(MergeTrigger::GetReader)?;
             return snapshot;
         };
         // The wait holds no full flush, as Java awaits the merges outside
-        // `fullFlushLock`: commits and other refreshes go on meanwhile.
-        drop(full_flush);
+        // `fullFlushLock`: commits and other refreshes go on meanwhile. With
+        // live search on, the cut stays held until the snapshot is taken.
+        let full_flush = if live {
+            Some(full_flush)
+        } else {
+            drop(full_flush);
+            None
+        };
         self.schedule_merges(MergeTrigger::GetReader)?;
         {
             let mut core = lock(&self.core);
@@ -2689,8 +2733,10 @@ impl<'d> crate::nrt::NrtSource for ConcurrentIndexWriter<'d> {
         }
         // No flush half-published under the snapshot: take it between full
         // flushes.
-        let _full_flush = lock(&self.full_flush);
-        lock(&self.core).writer.nrt_snapshot_of_live_view()
+        let _full_flush = full_flush.unwrap_or_else(|| lock(&self.full_flush));
+        let snapshot = self.nrt_snapshot_keyed(live.then_some(handed));
+        drop(barrier);
+        snapshot
     }
 
     fn nrt_is_current(&self, infos: &crate::segment_infos::SegmentInfos) -> Result<bool> {

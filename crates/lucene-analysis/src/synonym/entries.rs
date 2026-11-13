@@ -10,7 +10,7 @@ use super::{SynonymMap, SynonymMapBuilder};
 use crate::AnalysisError;
 
 /// The `format` naming this parser to the synonym filter factories.
-pub const ENTRIES_FORMAT: &str = "lucene_rust.synonym_entries";
+pub const ENTRIES_FORMAT: &str = "accelerated.synonym_entries";
 
 fn bad(line: usize, why: &str) -> AnalysisError {
     AnalysisError::IllegalArgument(format!("synonym entries line {line}: {why}"))

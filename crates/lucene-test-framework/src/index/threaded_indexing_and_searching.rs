@@ -540,6 +540,47 @@ impl<'d> Shared<'_, 'd> {
         self.acquire()
     }
 
+    /// Verify 1) the writer sets diagnostics, and 2) merged segments are
+    /// warmed (`warmed` says whether the reader pools its segments, so the
+    /// merged-segment warmer ran for them). Merged leaves are counted.
+    ///
+    /// Java reads the diagnostics off the reader's in-memory `SegmentInfo`;
+    /// the `.si` itself may already be deleted when this is a past
+    /// searcher's reader.
+    fn check_leaf_diagnostics(&self, reader: &DirectoryReader, warmed: bool) -> Result<(), String> {
+        for leaf in reader.segment_readers() {
+            let source = leaf
+                .diagnostics()
+                .iter()
+                .find(|(k, _)| k == "source")
+                .map(|(_, v)| v.as_str())
+                .ok_or_else(|| format!("{} has no source diagnostic", leaf.segment_name))?;
+            if source == "merge" && warmed {
+                self.merged_seen.fetch_add(1, Ordering::SeqCst);
+                if !lock(&self.warmed).contains(&leaf.segment_name) {
+                    return Err(format!(
+                        "sub reader {} wasn't warmed: diagnostics={:?}",
+                        leaf.segment_name,
+                        leaf.diagnostics()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// After the threads stop, merges what the writer holds into one segment
+    /// and checks that merged segment as a search thread does. The merges the
+    /// concurrent phase makes depend on how its flushes and commits
+    /// interleave, so a run may see none; this one is the same on every run.
+    fn merge_and_check(&self) -> Result<(), String> {
+        // Pool the writer's readers first, as the warmer needs them.
+        drop(DirectoryReader::open_from_writer(self.writer).map_err(text)?);
+        self.write(|w| w.force_merge(1))?;
+        let reader = DirectoryReader::open_from_writer(self.writer).map_err(text)?;
+        self.check_leaf_diagnostics(&reader, true)
+    }
+
     /// One search thread (`runSearchThreads`' `run`).
     fn search(&self, r: &mut JavaRandom, max_iterations: i32) -> Result<(), String> {
         let mut iterations = 0;
@@ -560,29 +601,7 @@ impl<'d> Shared<'_, 'd> {
                 continue;
             }
             self.searches.fetch_add(1, Ordering::SeqCst);
-            // Verify 1) the writer sets diagnostics, and 2) merged
-            // segments are warmed.
-            // Java reads the diagnostics off the reader's in-memory
-            // `SegmentInfo`; the `.si` itself may already be deleted when this
-            // is a past searcher's reader.
-            for leaf in reader.segment_readers() {
-                let source = leaf
-                    .diagnostics()
-                    .iter()
-                    .find(|(k, _)| k == "source")
-                    .map(|(_, v)| v.as_str())
-                    .ok_or_else(|| format!("{} has no source diagnostic", leaf.segment_name))?;
-                if source == "merge" && self.assert_merged_warmed.load(Ordering::SeqCst) {
-                    self.merged_seen.fetch_add(1, Ordering::SeqCst);
-                    if !lock(&self.warmed).contains(&leaf.segment_name) {
-                        return Err(format!(
-                            "sub reader {} wasn't warmed: diagnostics={:?}",
-                            leaf.segment_name,
-                            leaf.diagnostics()
-                        ));
-                    }
-                }
-            }
+            self.check_leaf_diagnostics(&reader, self.assert_merged_warmed.load(Ordering::SeqCst))?;
             if reader.num_docs() > 0 {
                 with_searcher(&reader, |s| smoke_test_searcher(s, &reader))?;
                 self.search_body_terms(r, &reader, max_iterations)?;
@@ -1058,6 +1077,7 @@ pub fn run_test(t: &mut LuceneTestCase, test_name: &str, mode: ReaderMode) -> Th
         *lock(&shared.current) = None;
         shared.lifetime.close();
     }
+    shared.merge_and_check().expect("merge_and_check");
     let packs = shared.packs.load(Ordering::SeqCst);
     let searches = shared.searches.load(Ordering::SeqCst);
     let term_queries = shared.term_queries.load(Ordering::SeqCst);

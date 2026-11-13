@@ -3,7 +3,7 @@
 [Index](../parity.md). What this port supports end to end and
 deliberately does not; if a row elsewhere disagrees with this summary, the
 row wins. In OpenSearch's terms:
-[`opensearch-native-queries.md`](../opensearch-native-queries.md),
+[`accelerated-queries.md`](../accelerated-queries.md),
 [`opensearch-engine.md`](../opensearch-engine.md).
 
 **Codec: Lucene 10.5.0's default, `Lucene104`, and only it.** R = read,

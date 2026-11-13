@@ -42,7 +42,7 @@ qs = [(n, b) for n, b, e in rows if e in ("native", "slow") and pat in n]
 
 def phase():
     s = v.stats()["query_phase_nanos"]
-    return s["native"], s["native_count"], s["lucene"], s["lucene_count"]
+    return s["accelerated"], s["accelerated_count"], s["fallback"], s["fallback_count"]
 
 
 for mode in (True, False):

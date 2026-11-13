@@ -13,10 +13,11 @@
 //! a `MultiCollectorManager` -- and every way must return Lucene's hits,
 //! score bits and total. `count(query)` must equal Lucene's total.
 
-mod m7support;
+mod extended_support;
 
 use std::collections::HashMap;
 
+use extended_support::{fixture, scored_hits, Grammar, Manifest};
 use lucene_search::collector::{ScoreDoc, TopDocsCollector, TotalHitsRelation};
 use lucene_search::collectors::{
     BoxCollector, CachingCollector, CollectorManager, MultiCollector, MultiCollectorManager,
@@ -27,7 +28,6 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::Result;
 use lucene_store::FsDirectory;
-use m7support::{fixture, scored_hits, Grammar, Manifest};
 
 struct TopManager;
 

@@ -104,9 +104,13 @@ pub fn run_slices<T: Send>(slices: &[Vec<usize>], f: impl Fn(&[usize]) -> T + Sy
         .collect();
     #[cfg(not(any(test, feature = "asserting")))]
     let seeds: Vec<Option<i64>> = vec![None; rest.len()];
+    // The request's memory scope goes with each slice to its pool thread.
+    let memory = lucene_util::memory::current();
+    let memory = memory.as_ref();
     rayon::in_place_scope(|scope| {
         for ((slot, slice), seed) in tail.iter_mut().zip(rest).zip(seeds) {
             scope.spawn(move |_| {
+                let _memory = memory.map(|m| lucene_util::memory::enter(std::sync::Arc::clone(m)));
                 #[cfg(any(test, feature = "asserting"))]
                 let _asserting = seed.map(crate::exec::asserting::AssertingGuard::new);
                 #[cfg(not(any(test, feature = "asserting")))]

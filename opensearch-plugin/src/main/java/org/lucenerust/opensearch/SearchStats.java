@@ -90,6 +90,17 @@ public final class SearchStats {
         return nativeDocValues.sum();
     }
 
+    private final LongAdder nativeHighlights = new LongAdder();
+
+    /** A field of a search highlighted natively ({@code NativeUnifiedHighlighter}), counted once per search. */
+    public void nativeHighlight() {
+        nativeHighlights.increment();
+    }
+
+    public long highlightCount() {
+        return nativeHighlights.sum();
+    }
+
     public long sequentialFetchCount() {
         return nativeSequentialFetches.sum();
     }
@@ -145,6 +156,22 @@ public final class SearchStats {
      */
     public void nativeTime(long nanos) {
         nativeNanos.add(nanos);
+    }
+
+    private final java.util.concurrent.atomic.LongAccumulator requestPeak = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+    private final LongAdder requestBytes = new LongAdder();
+    private final LongAdder requestScopes = new LongAdder();
+
+    /** The most a native query phase held ({@link NativeMemory.Scope#peak}). */
+    public void nativeMemory(long peak) {
+        requestPeak.accumulate(peak);
+        requestBytes.add(Math.max(0, peak));
+        requestScopes.increment();
+    }
+
+    /** {most one request held, sum of requests' peaks, requests measured}. */
+    public long[] requestMemory() {
+        return new long[] { requestPeak.get(), requestBytes.sum(), requestScopes.sum() };
     }
 
     public void luceneTime(long nanos) {

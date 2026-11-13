@@ -1,0 +1,1984 @@
+//! `GeoStandardPath` (`org.apache.lucene.spatial3d.geom.GeoStandardPath`): a
+//! path of great-circle segments with a width, as a balanced tree of
+//! components -- segments (four planes) and the end caps between them
+//! (circle planes cut off at the segments' ends).
+//!
+//! Java's components reference each other (`previous`) and form a tree of
+//! objects; here segments and end points live in two vectors on the path and
+//! the tree and `previous` hold indexes into them.
+
+#![allow(non_snake_case)]
+
+use std::sync::OnceLock;
+
+use super::errors::raise;
+use super::prelude::*;
+use super::shape::{impl_distance_shape, GeoPath};
+use super::xyz_bounds::XYZBounds;
+
+/// The distance styles' slots in a per-style cache.
+fn style_index(style: DistanceStyle) -> usize {
+    match style {
+        DistanceStyle::Arc => 0,
+        DistanceStyle::Linear => 1,
+        DistanceStyle::LinearSquared => 2,
+        DistanceStyle::Normal => 3,
+        DistanceStyle::NormalSquared => 4,
+    }
+}
+
+/// `DistancePair`.
+#[derive(Debug, Clone, Copy)]
+struct DistancePair {
+    path_center_distance: f64,
+    distance_along_path: f64,
+}
+
+/// The components a path is made of.
+#[derive(Debug, Clone)]
+struct Parts {
+    planet_model: Arc<PlanetModel>,
+    segments: Vec<PathSegment>,
+    endpoints: Vec<SegmentEndpoint>,
+    /// Each leaf's own bounding box (`[segments, endpoints]`, as
+    /// [`bbox_of`]), built on the first `intersects` call: only the pruned
+    /// plane walk reads them.
+    leaf_boxes: OnceLock<[Vec<[f64; 6]>; 2]>,
+}
+
+impl Parts {
+    fn leaf_boxes(&self) -> &[Vec<[f64; 6]>; 2] {
+        self.leaf_boxes.get_or_init(|| {
+            let pm = &self.planet_model;
+            let one = |f: &dyn Fn(&mut XYZBounds)| {
+                let mut b = XYZBounds::new();
+                f(&mut b);
+                bbox_of(&b)
+            };
+            [
+                self.segments
+                    .iter()
+                    .map(|s| one(&|b| s.get_bounds(pm, b)))
+                    .collect(),
+                self.endpoints
+                    .iter()
+                    .map(|e| one(&|b| e.get_bounds(pm, b)))
+                    .collect(),
+            ]
+        })
+    }
+}
+
+/// `[minX, maxX, minY, maxY, minZ, maxZ]` of `bounds`, NaN where unset.
+fn bbox_of(bounds: &XYZBounds) -> [f64; 6] {
+    let nan = f64::NAN;
+    [
+        bounds.minimum_x().unwrap_or(nan),
+        bounds.maximum_x().unwrap_or(nan),
+        bounds.minimum_y().unwrap_or(nan),
+        bounds.maximum_y().unwrap_or(nan),
+        bounds.minimum_z().unwrap_or(nan),
+        bounds.maximum_z().unwrap_or(nan),
+    ]
+}
+
+/// How far (in each coordinate) outside a leaf's bounding box the query
+/// plane must pass before the leaf is skipped. See [`PlaneProbe`].
+const PRUNE_MARGIN: f64 = 1e-4;
+/// The smallest sine of the angle between the query plane and a leaf's
+/// plane for which the leaf may be skipped. See [`PlaneProbe`].
+const PRUNE_MIN_SIN: f64 = 1e-5;
+
+/// The query plane of a `GeoStandardPath::intersects` call, set up to skip
+/// the leaves (segments and end caps) it provably cannot meet. Java tests
+/// every leaf; skipping one never changes the answer:
+///
+/// A leaf's test is `q.intersects(p, ...)` for each of its planes `q`
+/// (`upper`/`lower` connecting planes, or the cap's circle planes), bounded
+/// by the leaf's other planes. It is true only on a witness point that lies
+/// on both `p` and `q` (or, when the two are numerically identical, on a
+/// notable point): either a root of the line `p ∩ q` with the ellipsoid, or
+/// the near-tangent point of that line. A leaf is skipped only when
+///
+/// 1. every plane `q` of the leaf makes an angle with `p` whose sine is at
+///    least [`PRUNE_MIN_SIN`]. That excludes the numerically identical case
+///    (its cross product is below `1e-12`), and bounds the near-tangent
+///    point's distance from the surface: `|f| < 1e-24 / 4A` with `A ~
+///    sin^2 >= 1e-10`, so below about `3e-15`. Every witness then lies, to
+///    within `~1e-6` (the worst case: a bounding plane's `1e-12` tolerance
+///    where it meets the arc almost tangentially), on the surface arc of
+///    `q` that the leaf's `getBounds` records -- the same bounding box
+///    (with its `1e-9` fudge) Java's own `PathNode.isWithin` trusts; and
+/// 2. `p` misses that box grown by [`PRUNE_MARGIN`] (`1e-4`, a hundred
+///    times that worst case) on every side, so no point near it is on `p`.
+///
+/// A node's box is the union of its leaves' boxes, so a node `p` misses
+/// lets each leaf below it skip its own box test.
+/// `tests::pruned_intersects_matches_the_full_walk` checks that the two
+/// walks agree on random paths and solids, axis-parallel planes included.
+struct PlaneProbe<'a> {
+    plane: &'a Plane,
+    /// `PRUNE_MARGIN` scaled to `p`'s value: moving a point `m` along every
+    /// axis changes `p(x)` by at most `m (|A| + |B| + |C|)`.
+    tol: f64,
+    norm_squared: f64,
+}
+
+impl<'a> PlaneProbe<'a> {
+    fn new(plane: &'a Plane) -> Self {
+        let tol = PRUNE_MARGIN * (abs(plane.x) + abs(plane.y) + abs(plane.z));
+        let norm_squared = plane.x * plane.x + plane.y * plane.y + plane.z * plane.z;
+        PlaneProbe {
+            plane,
+            tol,
+            norm_squared,
+        }
+    }
+
+    /// Whether `p` stays more than [`PRUNE_MARGIN`] away from the box. NaN
+    /// anywhere (an unset bound, a NaN plane) answers false.
+    #[inline]
+    fn misses(&self, b: &[f64; 6]) -> bool {
+        let p = self.plane;
+        let span = |a: f64, lo: f64, hi: f64| {
+            if a >= 0.0 {
+                (a * lo, a * hi)
+            } else {
+                (a * hi, a * lo)
+            }
+        };
+        let (x0, x1) = span(p.x, b[0], b[1]);
+        let (y0, y1) = span(p.y, b[2], b[3]);
+        let (z0, z1) = span(p.z, b[4], b[5]);
+        let lo = x0 + y0 + z0 + p.D;
+        let hi = x1 + y1 + z1 + p.D;
+        lo > self.tol || hi < -self.tol
+    }
+
+    /// Whether `q` meets `p` at an angle whose sine is at least
+    /// [`PRUNE_MIN_SIN`].
+    #[inline]
+    fn steep(&self, q: &Plane) -> bool {
+        let p = self.plane;
+        let c1 = q.y * p.z - q.z * p.y;
+        let c2 = q.z * p.x - q.x * p.z;
+        let c3 = q.x * p.y - q.y * p.x;
+        let q2 = q.x * q.x + q.y * q.y + q.z * q.z;
+        c1 * c1 + c2 * c2 + c3 * c3 >= PRUNE_MIN_SIN * PRUNE_MIN_SIN * q2 * self.norm_squared
+    }
+}
+
+/// `PathComponent`: a node of the tree, an end point or a segment.
+#[derive(Debug, Clone)]
+enum Component {
+    Node(Box<PathNode>),
+    Endpoint(usize),
+    Segment(usize),
+}
+
+/// `PathNode`: two children and their combined bounds.
+#[derive(Debug, Clone)]
+struct PathNode {
+    child1: Component,
+    child2: Component,
+    bounds: XYZBounds,
+    /// `bounds` unboxed, as Java compares against them: `[minX, maxX, minY,
+    /// maxY, minZ, maxZ]`, NaN where unset (never "out"; a node's bounds
+    /// always hold every child's points).
+    bbox: [f64; 6],
+}
+
+impl PathNode {
+    /// Whether the point is outside the node's bounding box (Java's
+    /// `isWithin` before it asks the children).
+    #[inline]
+    fn outside_bbox(&self, x: f64, y: f64, z: f64) -> bool {
+        let b = &self.bbox;
+        x < b[0] || x > b[1] || y < b[2] || y > b[3] || z < b[4] || z > b[5]
+    }
+}
+
+/// `BaseSegmentEndpoint`'s subclasses.
+#[derive(Debug, Clone)]
+enum EndpointKind {
+    /// `CircleSegmentEndpoint`: a circle around a lone point.
+    Circle,
+    /// `CutoffSingleCircleSegmentEndpoint`: a half circle at a path's end.
+    CutoffSingle {
+        cutoff_plane: SidedPlane,
+        notable_points: [GeoPoint; 2],
+    },
+    /// `CutoffDualCircleSegmentEndpoint`: the join between two segments.
+    CutoffDual {
+        circle_plane2: SidedPlane,
+        notable_points1: Vec<GeoPoint>,
+        notable_points2: Vec<GeoPoint>,
+        boundary_plane1: SidedPlane,
+        boundary_plane2: SidedPlane,
+    },
+}
+
+/// A `SegmentEndpoint`.
+#[derive(Debug, Clone)]
+struct SegmentEndpoint {
+    /// The segment before this end point (`previous`).
+    previous: Option<usize>,
+    point: GeoPoint,
+    /// `circlePlane` (`circlePlane1` for the dual kind).
+    circle_plane: SidedPlane,
+    kind: EndpointKind,
+    /// A dual end point whose three-point circle plane could not be built:
+    /// Java stores `null` and fails (`NullPointerException`) only when the
+    /// path's tree first reads it, after every other component is built --
+    /// so a later component's exception wins. The plane fields then hold a
+    /// placeholder that is never read.
+    missing_plane: bool,
+}
+
+/// A `PathSegment`.
+#[derive(Debug, Clone)]
+struct PathSegment {
+    previous: Option<usize>,
+    start: GeoPoint,
+    end: GeoPoint,
+    start_distance_cache: [OnceLock<f64>; 5],
+    /// `fullPathDistance(style)` per style: a pure function of the
+    /// segment, read by every later endpoint's `startingDistance`.
+    full_distance_cache: [OnceLock<f64>; 5],
+    normalized_connecting_plane: Plane,
+    upper_connecting_plane: SidedPlane,
+    lower_connecting_plane: SidedPlane,
+    start_cutoff_plane: SidedPlane,
+    end_cutoff_plane: SidedPlane,
+    URHC: GeoPoint,
+    LRHC: GeoPoint,
+    ULHC: GeoPoint,
+    LLHC: GeoPoint,
+    upper_connecting_plane_points: [GeoPoint; 2],
+    lower_connecting_plane_points: [GeoPoint; 2],
+}
+
+/// `RuntimeException("Can't find world intersection for point ...")`.
+pub(crate) fn no_world_intersection(x: f64, y: f64, z: f64) -> Error {
+    use lucene_util::geo::java_double_string as d;
+    Error::Runtime(format!(
+        "Can't find world intersection for point x={} y={} z={}",
+        d(x),
+        d(y),
+        d(z)
+    ))
+}
+
+/// The one point the connecting plane and its perpendicular through
+/// `(x, y, z)` meet at within the segment, or the `RuntimeException` Java
+/// throws when there is none (raised; `None` returned). Shared with
+/// [`super::geo_degenerate_path`], whose segments do the same.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn perpendicular_point(
+    pm: &PlanetModel,
+    plane: &Plane,
+    start_cutoff: &SidedPlane,
+    end_cutoff: &SidedPlane,
+    normalized_perp_plane: &Plane,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> Option<GeoPoint> {
+    let points = plane.find_intersections_two(pm, normalized_perp_plane, &[]);
+    let within = |p: &GeoPoint| start_cutoff.is_within(p) && end_cutoff.is_within(p);
+    let found = match points {
+        [None, _] => None,
+        [Some(p), None] => Some(p),
+        [Some(p0), Some(p1)] => [p0, p1].into_iter().find(within),
+    };
+    if found.is_none() {
+        raise(no_world_intersection(x, y, z));
+    }
+    found
+}
+
+impl PathSegment {
+    fn new(
+        pm: &PlanetModel,
+        previous: Option<usize>,
+        start: GeoPoint,
+        end: GeoPoint,
+        normalized_connecting_plane: Plane,
+        plane_bounding_offset: f64,
+    ) -> Result<PathSegment> {
+        // Either start or end should be on the correct side
+        let upper_connecting_plane =
+            SidedPlane::from_normal(&start, &normalized_connecting_plane, -plane_bounding_offset)?;
+        let lower_connecting_plane =
+            SidedPlane::from_normal(&start, &normalized_connecting_plane, plane_bounding_offset)?;
+        // Cutoff planes use opposite endpoints as correct side examples
+        let start_cutoff_plane =
+            SidedPlane::from_vectors(&end, &normalized_connecting_plane, &start)?;
+        let end_cutoff_plane =
+            SidedPlane::from_vectors(&start, &normalized_connecting_plane, &end)?;
+        let corner = |p: &SidedPlane,
+                      q: &SidedPlane,
+                      side1: &SidedPlane,
+                      side2: &SidedPlane|
+         -> Result<GeoPoint> {
+            let points = p
+                .find_intersections(pm, q, &[side1, side2])
+                .unwrap_or_default();
+            if points.is_empty() {
+                return Err(illegal(
+                    "Some segment boundary points are off the ellipsoid; path too wide",
+                ));
+            }
+            if points.len() > 1 {
+                return Err(illegal("Ambiguous boundary points; path too short"));
+            }
+            Ok(points.into_iter().next().expect("one point"))
+        };
+        // Compute four points
+        let ULHC = corner(
+            &upper_connecting_plane,
+            &start_cutoff_plane,
+            &lower_connecting_plane,
+            &end_cutoff_plane,
+        );
+        let ULHC = ULHC?;
+        let URHC = corner(
+            &upper_connecting_plane,
+            &end_cutoff_plane,
+            &lower_connecting_plane,
+            &start_cutoff_plane,
+        );
+        let URHC = URHC?;
+        let LLHC = corner(
+            &lower_connecting_plane,
+            &start_cutoff_plane,
+            &upper_connecting_plane,
+            &end_cutoff_plane,
+        );
+        let LLHC = LLHC?;
+        let LRHC = corner(
+            &lower_connecting_plane,
+            &end_cutoff_plane,
+            &upper_connecting_plane,
+            &start_cutoff_plane,
+        );
+        let LRHC = LRHC?;
+        Ok(PathSegment {
+            previous,
+            start,
+            end,
+            start_distance_cache: Default::default(),
+            full_distance_cache: Default::default(),
+            normalized_connecting_plane,
+            upper_connecting_plane,
+            lower_connecting_plane,
+            start_cutoff_plane,
+            end_cutoff_plane,
+            upper_connecting_plane_points: [ULHC.clone(), URHC.clone()],
+            lower_connecting_plane_points: [LLHC.clone(), LRHC.clone()],
+            URHC,
+            LRHC,
+            ULHC,
+            LLHC,
+        })
+    }
+
+    fn full_path_distance(&self, style: DistanceStyle) -> f64 {
+        *self.full_distance_cache[style_index(style)].get_or_init(|| {
+            style.to_aggregation_form(style.compute_distance(
+                &self.start,
+                self.end.x,
+                self.end.y,
+                self.end.z,
+            ))
+        })
+    }
+
+    fn is_within(&self, x: f64, y: f64, z: f64) -> bool {
+        self.start_cutoff_plane.is_within_xyz(x, y, z)
+            && self.end_cutoff_plane.is_within_xyz(x, y, z)
+            && self.upper_connecting_plane.is_within_xyz(x, y, z)
+            && self.lower_connecting_plane.is_within_xyz(x, y, z)
+    }
+
+    fn is_within_section(&self, x: f64, y: f64, z: f64) -> bool {
+        self.start_cutoff_plane.is_within_xyz(x, y, z)
+            && self.end_cutoff_plane.is_within_xyz(x, y, z)
+    }
+
+    fn starting_distance(&self, parts: &Parts, style: DistanceStyle) -> f64 {
+        *self.start_distance_cache[style_index(style)].get_or_init(|| match self.previous {
+            None => 0.0,
+            Some(p) => {
+                let prev = &parts.segments[p];
+                style.aggregate_distances(&[
+                    prev.starting_distance(parts, style),
+                    prev.full_path_distance(style),
+                ])
+            }
+        })
+    }
+
+    fn distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within(x, y, z) {
+            return f64::INFINITY;
+        }
+        let starting_distance = self.starting_distance(parts, style);
+        let path_distance = self.path_distance(parts, style, x, y, z);
+        style.from_aggregation_form(style.aggregate_distances(&[starting_distance, path_distance]))
+    }
+
+    fn nearest_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Option<DistancePair> {
+        if !self.is_within_section(x, y, z) {
+            return None;
+        }
+        Some(DistancePair {
+            path_center_distance: self.path_center_distance(parts, style, x, y, z),
+            distance_along_path: style.aggregate_distances(&[
+                self.starting_distance(parts, style),
+                self.nearest_path_distance(parts, style, x, y, z),
+            ]),
+        })
+    }
+
+    /// The normalized plane through the origin and `(x, y, z)`
+    /// perpendicular to the connecting plane, or `None` when the point is
+    /// on the plane's normal.
+    fn perp_plane(&self, x: f64, y: f64, z: f64) -> Option<Plane> {
+        let n = &self.normalized_connecting_plane;
+        let perp_x = n.y * z - n.z * y;
+        let perp_y = n.z * x - n.x * z;
+        let perp_z = n.x * y - n.y * x;
+        let magnitude = sqrt(perp_x * perp_x + perp_y * perp_y + perp_z * perp_z);
+        if abs(magnitude) < MINIMUM_RESOLUTION {
+            return None;
+        }
+        let norm_factor = 1.0 / magnitude;
+        Some(Plane::new(
+            perp_x * norm_factor,
+            perp_y * norm_factor,
+            perp_z * norm_factor,
+            0.0,
+        ))
+    }
+
+    fn the_point(
+        &self,
+        pm: &PlanetModel,
+        perp: &Plane,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Option<GeoPoint> {
+        perpendicular_point(
+            pm,
+            &self.normalized_connecting_plane,
+            &self.start_cutoff_plane,
+            &self.end_cutoff_plane,
+            perp,
+            x,
+            y,
+            z,
+        )
+    }
+
+    fn path_center_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        // First, if this point is outside the endplanes of the segment,
+        // return POSITIVE_INFINITY.
+        if !self.is_within_section(x, y, z) {
+            return f64::INFINITY;
+        }
+        // (1) Compute normalizedPerpPlane.  If degenerate, then there is no
+        // such plane, which means that the point given is insufficient to
+        // distinguish between a family of such planes. This can happen only if
+        // the point is one of the "poles", imagining the normalized plane to
+        // be the "equator".  In that case, the distance returned should be
+        // zero. Want no allocations or expensive operations!  So we do this
+        // the hard way
+        let Some(perp) = self.perp_plane(x, y, z) else {
+            return style.compute_distance(&self.start, x, y, z);
+        };
+        let Some(the_point) = self.the_point(&parts.planet_model, &perp, x, y, z) else {
+            return f64::INFINITY;
+        };
+        style.to_aggregation_form(style.compute_distance(&the_point, x, y, z))
+    }
+
+    fn nearest_path_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        if !self.is_within_section(x, y, z) {
+            return f64::INFINITY;
+        }
+        let Some(perp) = self.perp_plane(x, y, z) else {
+            return style.to_aggregation_form(0.0);
+        };
+        let Some(the_point) = self.the_point(&parts.planet_model, &perp, x, y, z) else {
+            return f64::INFINITY;
+        };
+        style.to_aggregation_form(style.compute_distance(
+            &self.start,
+            the_point.x,
+            the_point.y,
+            the_point.z,
+        ))
+    }
+
+    fn path_delta_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        if !self.is_within(x, y, z) {
+            return f64::INFINITY;
+        }
+        let Some(perp) = self.perp_plane(x, y, z) else {
+            let the_distance = style.compute_distance(&self.start, x, y, z);
+            return style.aggregate_distances(&[the_distance, the_distance]);
+        };
+        let Some(the_point) = self.the_point(&parts.planet_model, &perp, x, y, z) else {
+            return f64::INFINITY;
+        };
+        let the_distance = style.to_aggregation_form(style.compute_distance(&the_point, x, y, z));
+        style.aggregate_distances(&[the_distance, the_distance])
+    }
+
+    fn path_distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within(x, y, z) {
+            return f64::INFINITY;
+        }
+        let Some(perp) = self.perp_plane(x, y, z) else {
+            return style.to_aggregation_form(style.compute_distance(&self.start, x, y, z));
+        };
+        let Some(the_point) = self.the_point(&parts.planet_model, &perp, x, y, z) else {
+            return f64::INFINITY;
+        };
+        style.aggregate_distances(&[
+            style.to_aggregation_form(style.compute_distance(&the_point, x, y, z)),
+            style.to_aggregation_form(style.compute_distance(
+                &self.start,
+                the_point.x,
+                the_point.y,
+                the_point.z,
+            )),
+        ])
+    }
+
+    fn outside_distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        let pm = &*parts.planet_model;
+        let upper_distance = style.compute_distance_to_plane(
+            pm,
+            &self.upper_connecting_plane,
+            x,
+            y,
+            z,
+            &[
+                &self.lower_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
+        );
+        let lower_distance = style.compute_distance_to_plane(
+            pm,
+            &self.lower_connecting_plane,
+            x,
+            y,
+            z,
+            &[
+                &self.upper_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
+        );
+        let start_distance = style.compute_distance_to_plane(
+            pm,
+            &self.start_cutoff_plane,
+            x,
+            y,
+            z,
+            &[
+                &self.end_cutoff_plane,
+                &self.lower_connecting_plane,
+                &self.upper_connecting_plane,
+            ],
+        );
+        let end_distance = style.compute_distance_to_plane(
+            pm,
+            &self.end_cutoff_plane,
+            x,
+            y,
+            z,
+            &[
+                &self.start_cutoff_plane,
+                &self.lower_connecting_plane,
+                &self.upper_connecting_plane,
+            ],
+        );
+        let ulhc_distance = style.compute_distance(&self.ULHC, x, y, z);
+        let urhc_distance = style.compute_distance(&self.URHC, x, y, z);
+        let llhc_distance = style.compute_distance(&self.LLHC, x, y, z);
+        let lrhc_distance = style.compute_distance(&self.LRHC, x, y, z);
+        style.to_aggregation_form(min(
+            min(
+                min(upper_distance, lower_distance),
+                min(start_distance, end_distance),
+            ),
+            min(
+                min(ulhc_distance, urhc_distance),
+                min(llhc_distance, lrhc_distance),
+            ),
+        ))
+    }
+
+    fn intersects(
+        &self,
+        pm: &PlanetModel,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        self.upper_connecting_plane.intersects(
+            pm,
+            p,
+            notable_points,
+            &self.upper_connecting_plane_points,
+            bounds,
+            &[
+                &self.lower_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
+        ) || self.lower_connecting_plane.intersects(
+            pm,
+            p,
+            notable_points,
+            &self.lower_connecting_plane_points,
+            bounds,
+            &[
+                &self.upper_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
+        )
+    }
+
+    /// Whether every plane [`Self::intersects`] tests is steep to `probe`.
+    fn steep_to(&self, probe: &PlaneProbe<'_>) -> bool {
+        probe.steep(&self.upper_connecting_plane) && probe.steep(&self.lower_connecting_plane)
+    }
+
+    fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
+        geo_shape.intersects(
+            &self.upper_connecting_plane,
+            &self.upper_connecting_plane_points,
+            &[
+                &self.lower_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
+        ) || geo_shape.intersects(
+            &self.lower_connecting_plane,
+            &self.lower_connecting_plane_points,
+            &[
+                &self.upper_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
+        )
+    }
+
+    fn get_bounds(&self, pm: &PlanetModel, bounds: &mut dyn Bounds) {
+        // We need to do all bounding planes as well as corner points
+        base_get_bounds(&SegmentMembership(self), pm, bounds);
+        let (u, l, s, e) = (
+            &self.upper_connecting_plane,
+            &self.lower_connecting_plane,
+            &self.start_cutoff_plane,
+            &self.end_cutoff_plane,
+        );
+        bounds
+            .add_point(&self.start)
+            .add_point(&self.end)
+            .add_point(&self.ULHC)
+            .add_point(&self.URHC)
+            .add_point(&self.LRHC)
+            .add_point(&self.LLHC)
+            .add_plane(pm, u, &[l, s, e])
+            .add_plane(pm, l, &[u, s, e])
+            .add_plane(pm, s, &[e, u, l])
+            .add_plane(pm, e, &[s, u, l])
+            .add_intersection(pm, u, s, &[l, e])
+            .add_intersection(pm, s, l, &[e, u])
+            .add_intersection(pm, l, e, &[u, s])
+            .add_intersection(pm, e, u, &[s, l]);
+    }
+}
+
+/// A segment as the `Membership` `GeoBaseBounds.getBounds` tests the poles
+/// against.
+struct SegmentMembership<'a>(&'a PathSegment);
+
+impl Membership for SegmentMembership<'_> {
+    fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
+        self.0.is_within(x, y, z)
+    }
+}
+
+/// An end point as the `Membership` `GeoBaseBounds.getBounds` tests.
+struct EndpointMembership<'a>(&'a SegmentEndpoint);
+
+impl Membership for EndpointMembership<'_> {
+    fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
+        self.0.is_within(x, y, z)
+    }
+}
+
+impl SegmentEndpoint {
+    /// `CircleSegmentEndpoint(planetModel, previous, point, normalPlane,
+    /// upperPoint, lowerPoint)`.
+    fn circle(
+        previous: Option<usize>,
+        point: GeoPoint,
+        normal_plane: &Plane,
+        upper_point: &GeoPoint,
+        lower_point: &GeoPoint,
+    ) -> Result<SegmentEndpoint> {
+        let circle_plane = SidedPlane::construct_normalized_perpendicular_sided_plane(
+            &point,
+            normal_plane,
+            upper_point,
+            lower_point,
+        )?
+        .ok_or_else(|| Error::NullPointer("could not construct the circle plane".into()))?;
+        Ok(SegmentEndpoint {
+            previous,
+            point,
+            circle_plane,
+            kind: EndpointKind::Circle,
+            missing_plane: false,
+        })
+    }
+
+    /// `CutoffSingleCircleSegmentEndpoint(planetModel, previous, point,
+    /// cutoffPlane, topEdgePoint, bottomEdgePoint)`.
+    fn cutoff_single(
+        previous: Option<usize>,
+        point: GeoPoint,
+        cutoff_plane: &SidedPlane,
+        top_edge_point: &GeoPoint,
+        bottom_edge_point: &GeoPoint,
+    ) -> Result<SegmentEndpoint> {
+        let circle_plane = SidedPlane::construct_sided_plane_from_two_points(
+            &point,
+            top_edge_point,
+            bottom_edge_point,
+        );
+        let circle_plane = circle_plane?;
+        Ok(SegmentEndpoint {
+            previous,
+            point,
+            circle_plane,
+            kind: EndpointKind::CutoffSingle {
+                cutoff_plane: SidedPlane::opposite(cutoff_plane),
+                notable_points: [top_edge_point.clone(), bottom_edge_point.clone()],
+            },
+            missing_plane: false,
+        })
+    }
+
+    /// `CutoffDualCircleSegmentEndpoint(...)`.
+    #[allow(clippy::too_many_arguments)]
+    fn cutoff_dual(
+        previous: Option<usize>,
+        point: GeoPoint,
+        prev_cutoff_plane: &SidedPlane,
+        next_cutoff_plane: &SidedPlane,
+        prev_URHC: &GeoPoint,
+        prev_LRHC: &GeoPoint,
+        current_ULHC: &GeoPoint,
+        current_LLHC: &GeoPoint,
+    ) -> Result<SegmentEndpoint> {
+        let missing = std::cell::Cell::new(false);
+        let three = |a: &GeoPoint, b: &GeoPoint, c: &GeoPoint| -> Result<SidedPlane> {
+            let plane = SidedPlane::construct_normalized_three_point_sided_plane(&point, a, b, c);
+            missing.set(missing.get() || plane.is_none());
+            Ok(plane.unwrap_or(*prev_cutoff_plane))
+        };
+        // Note: What we really need is a single plane that goes through all
+        // four points. Since that's not possible in the ellipsoid
+        // implementation (because three points determine a plane, not four),
+        // we need two planes. BUT we need to be careful to not cut off any
+        // points from the circle that would be within the path otherwise.
+        let (circle_plane1, notable_points1) = if !prev_cutoff_plane.is_within(current_ULHC) {
+            (
+                three(prev_URHC, prev_LRHC, current_ULHC)?,
+                vec![prev_URHC.clone(), prev_LRHC.clone(), current_ULHC.clone()],
+            )
+        } else if !prev_cutoff_plane.is_within(current_LLHC) {
+            (
+                three(prev_URHC, prev_LRHC, current_LLHC)?,
+                vec![prev_URHC.clone(), prev_LRHC.clone(), current_LLHC.clone()],
+            )
+        } else {
+            (
+                SidedPlane::construct_sided_plane_from_two_points(&point, prev_URHC, prev_LRHC)?,
+                vec![prev_URHC.clone(), prev_LRHC.clone()],
+            )
+        };
+        let (circle_plane2, notable_points2) = if !next_cutoff_plane.is_within(prev_URHC) {
+            (
+                three(current_ULHC, current_LLHC, prev_URHC)?,
+                vec![
+                    current_ULHC.clone(),
+                    current_LLHC.clone(),
+                    prev_URHC.clone(),
+                ],
+            )
+        } else if !next_cutoff_plane.is_within(prev_LRHC) {
+            (
+                three(current_ULHC, current_LLHC, prev_LRHC)?,
+                vec![
+                    current_ULHC.clone(),
+                    current_LLHC.clone(),
+                    prev_LRHC.clone(),
+                ],
+            )
+        } else {
+            (
+                SidedPlane::construct_sided_plane_from_two_points(
+                    &point,
+                    current_ULHC,
+                    current_LLHC,
+                )?,
+                vec![current_ULHC.clone(), current_LLHC.clone()],
+            )
+        };
+        Ok(SegmentEndpoint {
+            previous,
+            point,
+            circle_plane: circle_plane1,
+            kind: EndpointKind::CutoffDual {
+                circle_plane2,
+                notable_points1,
+                notable_points2,
+                boundary_plane1: SidedPlane::opposite(prev_cutoff_plane),
+                boundary_plane2: SidedPlane::opposite(next_cutoff_plane),
+            },
+            missing_plane: missing.get(),
+        })
+    }
+
+    fn is_within(&self, x: f64, y: f64, z: f64) -> bool {
+        match &self.kind {
+            EndpointKind::Circle => self.circle_plane.is_within_xyz(x, y, z),
+            EndpointKind::CutoffSingle { cutoff_plane, .. } => {
+                cutoff_plane.is_within_xyz(x, y, z) && self.circle_plane.is_within_xyz(x, y, z)
+            }
+            EndpointKind::CutoffDual {
+                circle_plane2,
+                boundary_plane1,
+                boundary_plane2,
+                ..
+            } => {
+                if !boundary_plane1.is_within_xyz(x, y, z)
+                    || !boundary_plane2.is_within_xyz(x, y, z)
+                {
+                    return false;
+                }
+                self.circle_plane.is_within_xyz(x, y, z) || circle_plane2.is_within_xyz(x, y, z)
+            }
+        }
+    }
+
+    fn is_within_section(&self, x: f64, y: f64, z: f64) -> bool {
+        match &self.kind {
+            EndpointKind::Circle => true,
+            EndpointKind::CutoffSingle { cutoff_plane, .. } => cutoff_plane.is_within_xyz(x, y, z),
+            EndpointKind::CutoffDual {
+                boundary_plane1,
+                boundary_plane2,
+                ..
+            } => boundary_plane1.is_within_xyz(x, y, z) && boundary_plane2.is_within_xyz(x, y, z),
+        }
+    }
+
+    fn starting_distance(&self, parts: &Parts, style: DistanceStyle) -> f64 {
+        match self.previous {
+            None => style.to_aggregation_form(0.0),
+            Some(p) => {
+                let prev = &parts.segments[p];
+                style.aggregate_distances(&[
+                    prev.starting_distance(parts, style),
+                    prev.full_path_distance(style),
+                ])
+            }
+        }
+    }
+
+    fn distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within(x, y, z) {
+            return f64::INFINITY;
+        }
+        let starting_distance = self.starting_distance(parts, style);
+        let path_distance = self.path_distance(style, x, y, z);
+        style.aggregate_distances(&[starting_distance, path_distance])
+    }
+
+    fn nearest_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Option<DistancePair> {
+        if !self.is_within_section(x, y, z) {
+            return None;
+        }
+        Some(DistancePair {
+            path_center_distance: self.path_center_distance(style, x, y, z),
+            distance_along_path: style.aggregate_distances(&[
+                self.starting_distance(parts, style),
+                self.nearest_path_distance(style, x, y, z),
+            ]),
+        })
+    }
+
+    // `fullPathDistance` (0 for an end point) is only read by
+    // `PathNode.pathDistance`, which nothing in `GeoStandardPath` calls; it
+    // is not ported.
+
+    fn path_delta_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within(x, y, z) {
+            return f64::INFINITY;
+        }
+        let the_distance = style.to_aggregation_form(style.compute_distance(&self.point, x, y, z));
+        style.aggregate_distances(&[the_distance, the_distance])
+    }
+
+    fn path_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within(x, y, z) {
+            return f64::INFINITY;
+        }
+        style.to_aggregation_form(style.compute_distance(&self.point, x, y, z))
+    }
+
+    fn nearest_path_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within_section(x, y, z) {
+            return f64::INFINITY;
+        }
+        style.to_aggregation_form(0.0)
+    }
+
+    fn path_center_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        if !self.is_within_section(x, y, z) {
+            return f64::INFINITY;
+        }
+        style.to_aggregation_form(style.compute_distance(&self.point, x, y, z))
+    }
+
+    fn outside_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        style.to_aggregation_form(style.compute_distance(&self.point, x, y, z))
+    }
+
+    fn intersects(
+        &self,
+        pm: &PlanetModel,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        match &self.kind {
+            EndpointKind::Circle => {
+                self.circle_plane
+                    .intersects(pm, p, notable_points, &[], bounds, &[])
+            }
+            EndpointKind::CutoffSingle {
+                cutoff_plane,
+                notable_points: own,
+            } => self
+                .circle_plane
+                .intersects(pm, p, notable_points, own, bounds, &[cutoff_plane]),
+            EndpointKind::CutoffDual {
+                circle_plane2,
+                notable_points1,
+                notable_points2,
+                boundary_plane1,
+                boundary_plane2,
+            } => {
+                self.circle_plane.intersects(
+                    pm,
+                    p,
+                    notable_points,
+                    notable_points1,
+                    bounds,
+                    &[boundary_plane1, boundary_plane2],
+                ) || circle_plane2.intersects(
+                    pm,
+                    p,
+                    notable_points,
+                    notable_points2,
+                    bounds,
+                    &[boundary_plane1, boundary_plane2],
+                )
+            }
+        }
+    }
+
+    /// Whether every plane [`Self::intersects`] tests is steep to `probe`.
+    fn steep_to(&self, probe: &PlaneProbe<'_>) -> bool {
+        probe.steep(&self.circle_plane)
+            && match &self.kind {
+                EndpointKind::CutoffDual { circle_plane2, .. } => probe.steep(circle_plane2),
+                _ => true,
+            }
+    }
+
+    fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
+        match &self.kind {
+            EndpointKind::Circle => geo_shape.intersects(&self.circle_plane, &[], &[]),
+            EndpointKind::CutoffSingle {
+                cutoff_plane,
+                notable_points,
+            } => geo_shape.intersects(&self.circle_plane, notable_points, &[cutoff_plane]),
+            EndpointKind::CutoffDual {
+                circle_plane2,
+                notable_points1,
+                notable_points2,
+                boundary_plane1,
+                boundary_plane2,
+            } => {
+                geo_shape.intersects(
+                    &self.circle_plane,
+                    notable_points1,
+                    &[boundary_plane1, boundary_plane2],
+                ) || geo_shape.intersects(
+                    circle_plane2,
+                    notable_points2,
+                    &[boundary_plane1, boundary_plane2],
+                )
+            }
+        }
+    }
+
+    fn get_bounds(&self, pm: &PlanetModel, bounds: &mut dyn Bounds) {
+        // BaseSegmentEndpoint
+        base_get_bounds(&EndpointMembership(self), pm, bounds);
+        bounds.add_point(&self.point);
+        let c1 = &self.circle_plane;
+        match &self.kind {
+            EndpointKind::Circle => {
+                bounds.add_plane(pm, c1, &[]);
+            }
+            EndpointKind::CutoffSingle { cutoff_plane, .. } => {
+                // CircleSegmentEndpoint, then its own
+                bounds.add_plane(pm, c1, &[]);
+                bounds.add_plane(pm, c1, &[cutoff_plane]);
+                bounds.add_plane(pm, cutoff_plane, &[c1]);
+                bounds.add_intersection(pm, c1, cutoff_plane, &[]);
+                bounds.add_intersection(pm, cutoff_plane, c1, &[]);
+            }
+            EndpointKind::CutoffDual {
+                circle_plane2: c2,
+                boundary_plane1: b1,
+                boundary_plane2: b2,
+                ..
+            } => {
+                bounds.add_plane(pm, c1, &[b1, b2]);
+                bounds.add_plane(pm, c2, &[b1, b2]);
+                bounds.add_plane(pm, b1, &[c1, b2]);
+                bounds.add_plane(pm, b1, &[c2, b2]);
+                bounds.add_plane(pm, b2, &[c1, b1]);
+                bounds.add_plane(pm, b2, &[c2, b1]);
+                bounds.add_intersection(pm, c1, b1, &[b2]);
+                bounds.add_intersection(pm, c1, b2, &[b1]);
+                bounds.add_intersection(pm, c2, b1, &[b2]);
+                bounds.add_intersection(pm, c2, b2, &[b1]);
+            }
+        }
+    }
+}
+
+impl Component {
+    fn get_bounds(&self, parts: &Parts, bounds: &mut dyn Bounds) {
+        match self {
+            Component::Node(n) => match bounds.as_xyz_bounds() {
+                Some(xyz) => n.bounds.add_bounds(xyz),
+                None => {
+                    n.child1.get_bounds(parts, bounds);
+                    n.child2.get_bounds(parts, bounds);
+                }
+            },
+            Component::Endpoint(i) => parts.endpoints[*i].get_bounds(&parts.planet_model, bounds),
+            Component::Segment(i) => parts.segments[*i].get_bounds(&parts.planet_model, bounds),
+        }
+    }
+
+    fn is_within(&self, parts: &Parts, x: f64, y: f64, z: f64) -> bool {
+        match self {
+            Component::Node(n) => {
+                if n.outside_bbox(x, y, z) {
+                    return false;
+                }
+                n.child1.is_within(parts, x, y, z) || n.child2.is_within(parts, x, y, z)
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].is_within(x, y, z),
+            Component::Segment(i) => parts.segments[*i].is_within(x, y, z),
+        }
+    }
+
+    fn distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        match self {
+            Component::Node(n) => {
+                // Java tests the whole subtree's `isWithin` here, and again
+                // at every level below. Only the bounding box is tested:
+                // every leaf's `distance` starts with its own `isWithin`
+                // (infinite outside), so a subtree with no leaf containing
+                // the point still comes out infinite, bit for bit.
+                if n.outside_bbox(x, y, z) {
+                    return f64::INFINITY;
+                }
+                let child1_distance = n.child1.distance(parts, style, x, y, z);
+                let child2_distance = n.child2.distance(parts, style, x, y, z);
+                min(child1_distance, child2_distance)
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].distance(parts, style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].distance(parts, style, x, y, z),
+        }
+    }
+
+    fn nearest_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Option<DistancePair> {
+        match self {
+            Component::Node(n) => {
+                let first = n.child1.nearest_distance(parts, style, x, y, z);
+                let second = n.child2.nearest_distance(parts, style, x, y, z);
+                let (Some(f), Some(s)) = (first, second) else {
+                    return first.or(second);
+                };
+                if f.path_center_distance < s.path_center_distance {
+                    Some(f)
+                } else if s.path_center_distance < f.path_center_distance {
+                    Some(s)
+                } else if f.distance_along_path < s.distance_along_path {
+                    Some(f)
+                } else {
+                    Some(s)
+                }
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].nearest_distance(parts, style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].nearest_distance(parts, style, x, y, z),
+        }
+    }
+
+    fn path_delta_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        match self {
+            Component::Node(n) => {
+                // As in `distance`: each leaf's `pathDeltaDistance` tests its
+                // own `isWithin`, so the bounding box suffices here.
+                if n.outside_bbox(x, y, z) {
+                    return f64::INFINITY;
+                }
+                min(
+                    n.child1.path_delta_distance(parts, style, x, y, z),
+                    n.child2.path_delta_distance(parts, style, x, y, z),
+                )
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].path_delta_distance(style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].path_delta_distance(parts, style, x, y, z),
+        }
+    }
+
+    fn path_center_distance(
+        &self,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        match self {
+            Component::Node(n) => min(
+                n.child1.path_center_distance(parts, style, x, y, z),
+                n.child2.path_center_distance(parts, style, x, y, z),
+            ),
+            Component::Endpoint(i) => parts.endpoints[*i].path_center_distance(style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].path_center_distance(parts, style, x, y, z),
+        }
+    }
+
+    fn outside_distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        match self {
+            Component::Node(n) => min(
+                n.child1.outside_distance(parts, style, x, y, z),
+                n.child2.outside_distance(parts, style, x, y, z),
+            ),
+            Component::Endpoint(i) => parts.endpoints[*i].outside_distance(style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].outside_distance(parts, style, x, y, z),
+        }
+    }
+
+    /// Java's walk: every leaf tested. The reference the pruned walk
+    /// ([`Self::intersects_pruned`]) is checked against.
+    #[cfg(test)]
+    fn intersects(
+        &self,
+        parts: &Parts,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        // `planeBounds` is always null (GeoStandardPath.intersects).
+        match self {
+            Component::Node(n) => {
+                n.child1.intersects(parts, p, notable_points, bounds)
+                    || n.child2.intersects(parts, p, notable_points, bounds)
+            }
+            Component::Endpoint(i) => {
+                parts.endpoints[*i].intersects(&parts.planet_model, p, notable_points, bounds)
+            }
+            Component::Segment(i) => {
+                parts.segments[*i].intersects(&parts.planet_model, p, notable_points, bounds)
+            }
+        }
+    }
+
+    /// `intersects` (`planeBounds` is always null there), skipping the
+    /// leaves `probe` proves `p` cannot meet (see [`PlaneProbe`]); `missed`
+    /// says an ancestor's box was already missed.
+    fn intersects_pruned(
+        &self,
+        parts: &Parts,
+        boxes: &[Vec<[f64; 6]>; 2],
+        probe: &PlaneProbe<'_>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+        missed: bool,
+    ) -> bool {
+        let p = probe.plane;
+        match self {
+            Component::Node(n) => {
+                let missed = missed || probe.misses(&n.bbox);
+                n.child1
+                    .intersects_pruned(parts, boxes, probe, notable_points, bounds, missed)
+                    || n.child2.intersects_pruned(
+                        parts,
+                        boxes,
+                        probe,
+                        notable_points,
+                        bounds,
+                        missed,
+                    )
+            }
+            Component::Endpoint(i) => {
+                let e = &parts.endpoints[*i];
+                if (missed || probe.misses(&boxes[1][*i])) && e.steep_to(probe) {
+                    return false;
+                }
+                e.intersects(&parts.planet_model, p, notable_points, bounds)
+            }
+            Component::Segment(i) => {
+                let s = &parts.segments[*i];
+                if (missed || probe.misses(&boxes[0][*i])) && s.steep_to(probe) {
+                    return false;
+                }
+                s.intersects(&parts.planet_model, p, notable_points, bounds)
+            }
+        }
+    }
+
+    fn intersects_shape(&self, parts: &Parts, geo_shape: &dyn GeoShape) -> bool {
+        match self {
+            Component::Node(n) => {
+                n.child1.intersects_shape(parts, geo_shape)
+                    || n.child2.intersects_shape(parts, geo_shape)
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].intersects_shape(geo_shape),
+            Component::Segment(i) => parts.segments[*i].intersects_shape(geo_shape),
+        }
+    }
+}
+
+/// `TreeBuilder`: pairs components bottom-up into a balanced tree.
+struct TreeBuilder {
+    component_stack: Vec<Component>,
+    depth_stack: Vec<i32>,
+}
+
+impl TreeBuilder {
+    fn add_component(&mut self, parts: &Parts, component: Component) {
+        self.component_stack.push(component);
+        self.depth_stack.push(0);
+        while self.depth_stack.len() >= 2 {
+            let n = self.depth_stack.len();
+            if self.depth_stack[n - 1] == self.depth_stack[n - 2] {
+                self.merge_top(parts);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn root(mut self, parts: &Parts) -> Option<Component> {
+        if self.component_stack.is_empty() {
+            return None;
+        }
+        while self.component_stack.len() > 1 {
+            self.merge_top(parts);
+        }
+        self.component_stack.pop()
+    }
+
+    fn merge_top(&mut self, parts: &Parts) {
+        self.depth_stack.pop();
+        let second = self.component_stack.pop().expect("two components");
+        let new_depth = self.depth_stack.pop().expect("two depths") + 1;
+        let first = self.component_stack.pop().expect("two components");
+        self.depth_stack.push(new_depth);
+        let mut bounds = XYZBounds::new();
+        first.get_bounds(parts, &mut bounds);
+        second.get_bounds(parts, &mut bounds);
+        let bbox = bbox_of(&bounds);
+        self.component_stack
+            .push(Component::Node(Box::new(PathNode {
+                child1: first,
+                child2: second,
+                bounds,
+                bbox,
+            })));
+    }
+}
+
+/// A path.
+#[derive(Debug, Clone)]
+pub struct GeoStandardPath {
+    planet_model: Arc<PlanetModel>,
+    cutoff_angle: f64,
+    points: Vec<GeoPoint>,
+    parts: Parts,
+    root_component: Option<Component>,
+    edge_points: Vec<GeoPoint>,
+}
+
+impl GeoStandardPath {
+    /// `GeoStandardPath(planetModel, maxCutoffAngle, pathPoints)`.
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        max_cutoff_angle: f64,
+        path_points: &[GeoPoint],
+    ) -> Result<GeoStandardPath> {
+        let pm = &**planet_model;
+        if max_cutoff_angle <= 0.0 || max_cutoff_angle > PI * 0.5 {
+            return Err(illegal("Cutoff angle out of bounds"));
+        }
+        let cutoff_angle = max_cutoff_angle;
+        let sin_angle = sin(max_cutoff_angle);
+        // done()
+        let points: Vec<GeoPoint> = path_points.to_vec();
+        if points.is_empty() {
+            return Err(illegal("Path must have at least one point"));
+        }
+        let mut parts = Parts {
+            planet_model: planet_model.clone(),
+            segments: Vec::with_capacity(points.len()),
+            endpoints: Vec::with_capacity(points.len()),
+            leaf_boxes: OnceLock::new(),
+        };
+        // Compute an offset to use for all segments.  This will be based on
+        // the minimum magnitude of the entire ellipsoid.
+        let cutoff_offset = sin_angle * pm.minimum_magnitude();
+        // First, build all segments.  We'll then go back and build
+        // corresponding segment endpoints.
+        let mut last_point: Option<&GeoPoint> = None;
+        let mut last_component: Option<usize> = None;
+        for end in &points {
+            if let Some(lp) = last_point {
+                let normalized_connecting_plane = Plane::from_vectors(lp, end)?;
+                let new_component = PathSegment::new(
+                    pm,
+                    last_component,
+                    lp.clone(),
+                    end.clone(),
+                    normalized_connecting_plane,
+                    cutoff_offset,
+                );
+                let new_component = new_component?;
+                parts.segments.push(new_component);
+                last_component = Some(parts.segments.len() - 1);
+            }
+            last_point = Some(end);
+        }
+        let edge_points;
+        if parts.segments.is_empty() {
+            // Simple circle
+            let point = &points[0];
+            let lat = point.latitude();
+            let lon = point.longitude();
+            // Compute two points on the circle, with the right angle from the
+            // center.  We'll use these to obtain the perpendicular plane to
+            // the circle.
+            let mut upper_lat = lat + cutoff_angle;
+            let mut upper_lon = lon;
+            if upper_lat > PI * 0.5 {
+                upper_lon += PI;
+                if upper_lon > PI {
+                    upper_lon -= 2.0 * PI;
+                }
+                upper_lat = PI - upper_lat;
+            }
+            let mut lower_lat = lat - cutoff_angle;
+            let mut lower_lon = lon;
+            if lower_lat < -PI * 0.5 {
+                lower_lon += PI;
+                if lower_lon > PI {
+                    lower_lon -= 2.0 * PI;
+                }
+                lower_lat = -PI - lower_lat;
+            }
+            let upper_point = GeoPoint::from_lat_lon(pm, upper_lat, upper_lon)?;
+            let lower_point = GeoPoint::from_lat_lon(pm, lower_lat, lower_lon)?;
+            // Construct normal plane
+            let normal_plane =
+                Plane::construct_normalized_z_plane_points(&[&upper_point, &lower_point, point])
+                    .ok_or_else(|| Error::NullPointer("all points are on the z axis".into()))?;
+            let only_endpoint = SegmentEndpoint::circle(
+                None,
+                point.clone(),
+                &normal_plane,
+                &upper_point,
+                &lower_point,
+            );
+            let only_endpoint = only_endpoint?;
+            let sample = only_endpoint
+                .circle_plane
+                .sample_intersection_point(pm, &normal_plane)
+                .ok_or_else(|| illegal("no edge point (null edge point in Java)"))?;
+            parts.endpoints.push(only_endpoint);
+            edge_points = vec![sample];
+        } else {
+            // Create segment endpoints.  Use an appropriate constructor for
+            // the start and end of the path.
+            let mut first_edge = None;
+            for i in 0..parts.segments.len() {
+                let current = &parts.segments[i];
+                if i == 0 {
+                    // Starting endpoint
+                    let start_endpoint = SegmentEndpoint::cutoff_single(
+                        None,
+                        current.start.clone(),
+                        &current.start_cutoff_plane,
+                        &current.ULHC,
+                        &current.LLHC,
+                    );
+                    let start_endpoint = start_endpoint?;
+                    first_edge = Some(current.ULHC.clone());
+                    parts.endpoints.push(start_endpoint);
+                    continue;
+                }
+                // General intersection case
+                let prev = &parts.segments[i - 1];
+                let e = SegmentEndpoint::cutoff_dual(
+                    Some(i - 1),
+                    current.start.clone(),
+                    &prev.end_cutoff_plane,
+                    &current.start_cutoff_plane,
+                    &prev.URHC,
+                    &prev.LRHC,
+                    &current.ULHC,
+                    &current.LLHC,
+                );
+                let e = e?;
+                parts.endpoints.push(e);
+            }
+            // Do final endpoint
+            let last = parts.segments.len() - 1;
+            let last_segment = &parts.segments[last];
+            let e = SegmentEndpoint::cutoff_single(
+                Some(last),
+                last_segment.end.clone(),
+                &last_segment.end_cutoff_plane,
+                &last_segment.URHC,
+                &last_segment.LRHC,
+            );
+            let e = e?;
+            parts.endpoints.push(e);
+            edge_points = first_edge.into_iter().collect();
+        }
+        // Java builds the tree next, and its bounds dereference a null
+        // circle plane.
+        if parts.endpoints.iter().any(|e| e.missing_plane) {
+            return Err(Error::NullPointer(
+                "could not construct a circle plane".into(),
+            ));
+        }
+        let mut tree_builder = TreeBuilder {
+            component_stack: Vec::with_capacity(parts.segments.len() + parts.endpoints.len()),
+            depth_stack: Vec::with_capacity(parts.segments.len() + parts.endpoints.len()),
+        };
+        tree_builder.add_component(&parts, Component::Endpoint(0));
+        for i in 0..parts.segments.len() {
+            tree_builder.add_component(&parts, Component::Segment(i));
+            tree_builder.add_component(&parts, Component::Endpoint(i + 1));
+        }
+        let root_component = tree_builder.root(&parts);
+        Ok(GeoStandardPath {
+            planet_model: planet_model.clone(),
+            cutoff_angle,
+            points,
+            parts,
+            root_component,
+            edge_points,
+        })
+    }
+
+    /// `GeoStandardPath(planetModel, InputStream)`.
+    pub fn read(planet_model: &Arc<PlanetModel>, input: &mut Input<'_>) -> Result<GeoStandardPath> {
+        let cutoff = read_double(input)?;
+        let points = super::standard_objects::read_point_array(input)?;
+        GeoStandardPath::new(planet_model, cutoff, &points)
+    }
+
+    fn distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        // Algorithm: (1) If the point is within any of the segments along the
+        // path, return that value. (2) If the point is within any of the
+        // segment end circles along the path, return that value.
+        match &self.root_component {
+            None => f64::INFINITY,
+            Some(r) => style.from_aggregation_form(r.distance(&self.parts, style, x, y, z)),
+        }
+    }
+
+    fn delta_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        match &self.root_component {
+            None => f64::INFINITY,
+            Some(r) => {
+                style.from_aggregation_form(r.path_delta_distance(&self.parts, style, x, y, z))
+            }
+        }
+    }
+
+    fn distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        _style: DistanceStyle,
+        _distance_value: f64,
+    ) -> Result<()> {
+        // TBD: Compute actual bounds based on distance
+        self.get_bounds(bounds);
+        Ok(())
+    }
+
+    fn outside_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        match &self.root_component {
+            None => f64::INFINITY,
+            Some(r) => style.from_aggregation_form(r.outside_distance(&self.parts, style, x, y, z)),
+        }
+    }
+}
+
+impl SerializableObject for GeoStandardPath {
+    fn write(&self, out: &mut Vec<u8>) -> Result<()> {
+        write_double(out, self.cutoff_angle);
+        super::standard_objects::write_point_array(out, &self.points);
+        Ok(())
+    }
+
+    fn class_code(&self) -> Option<u8> {
+        Some(3)
+    }
+}
+
+impl_planet_object!(GeoStandardPath);
+impl_membership_shape!(GeoStandardPath);
+impl_base_area!(GeoStandardPath);
+impl_distance_shape!(GeoStandardPath);
+
+impl Membership for GeoStandardPath {
+    fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
+        match &self.root_component {
+            None => false,
+            Some(r) => r.is_within(&self.parts, x, y, z),
+        }
+    }
+}
+
+impl Bounded for GeoStandardPath {
+    fn get_bounds(&self, bounds: &mut dyn Bounds) {
+        base_get_bounds(self, &self.planet_model, bounds);
+        if let Some(r) = &self.root_component {
+            r.get_bounds(&self.parts, bounds);
+        }
+    }
+}
+
+impl GeoShape for GeoStandardPath {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoStandardPath>(&self.planet_model, other)
+            .is_some_and(|p| self.cutoff_angle == p.cutoff_angle && self.points == p.points)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, super::jmath::double_hash(self.cutoff_angle));
+        hash_step(result, points_hash(&self.points))
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoStandardPath: {{planetmodel={}, width={}, points={{{}}}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.cutoff_angle),
+            points_string(&self.points)
+        )
+    }
+
+    fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
+        Cow::Borrowed(&self.edge_points)
+    }
+
+    fn intersects(
+        &self,
+        plane: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        match &self.root_component {
+            None => false,
+            Some(r) => r.intersects_pruned(
+                &self.parts,
+                self.parts.leaf_boxes(),
+                &PlaneProbe::new(plane),
+                notable_points,
+                bounds,
+                false,
+            ),
+        }
+    }
+}
+
+impl GeoAreaShape for GeoStandardPath {
+    fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
+        match &self.root_component {
+            None => false,
+            Some(r) => r.intersects_shape(&self.parts, geo_shape),
+        }
+    }
+}
+
+impl GeoPath for GeoStandardPath {
+    fn compute_nearest_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        let Some(r) = &self.root_component else {
+            return f64::INFINITY;
+        };
+        match r.nearest_distance(&self.parts, style, x, y, z) {
+            None => f64::INFINITY,
+            Some(pair) => style.from_aggregation_form(pair.distance_along_path),
+        }
+    }
+
+    fn compute_path_center_distance(&self, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        match &self.root_component {
+            None => f64::INFINITY,
+            Some(r) => {
+                style.from_aggregation_form(r.path_center_distance(&self.parts, style, x, y, z))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tree walk as Java (and this port, before the bounding-box
+    /// shortcut) writes it: every node tests its whole subtree's `isWithin`.
+    fn java_distance(
+        c: &Component,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        match c {
+            Component::Node(n) => {
+                if !c.is_within(parts, x, y, z) {
+                    return f64::INFINITY;
+                }
+                min(
+                    java_distance(&n.child1, parts, style, x, y, z),
+                    java_distance(&n.child2, parts, style, x, y, z),
+                )
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].distance(parts, style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].distance(parts, style, x, y, z),
+        }
+    }
+
+    fn java_delta(
+        c: &Component,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        match c {
+            Component::Node(n) => {
+                if !c.is_within(parts, x, y, z) {
+                    return f64::INFINITY;
+                }
+                min(
+                    java_delta(&n.child1, parts, style, x, y, z),
+                    java_delta(&n.child2, parts, style, x, y, z),
+                )
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].path_delta_distance(style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].path_delta_distance(parts, style, x, y, z),
+        }
+    }
+
+    /// The minimum over every segment and endpoint, no tree at all.
+    fn brute_distance(parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        let segments = parts
+            .segments
+            .iter()
+            .map(|s| s.distance(parts, style, x, y, z));
+        let endpoints = parts
+            .endpoints
+            .iter()
+            .map(|e| e.distance(parts, style, x, y, z));
+        segments.chain(endpoints).fold(f64::INFINITY, min)
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn f(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    #[test]
+    fn bbox_tree_walk_matches_java_walk_and_brute_force_bit_for_bit() {
+        let styles = [
+            DistanceStyle::Arc,
+            DistanceStyle::Linear,
+            DistanceStyle::LinearSquared,
+            DistanceStyle::Normal,
+            DistanceStyle::NormalSquared,
+        ];
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let (mut inside, mut total) = (0usize, 0usize);
+        for pm in [PlanetModel::wgs84(), PlanetModel::sphere()] {
+            for n in [1usize, 2, 3, 7, 33] {
+                let width = 0.001 + 0.05 * rng.f();
+                let pts: Vec<GeoPoint> = (0..n)
+                    .map(|i| {
+                        let t = i as f64 / n as f64;
+                        let lat = -0.5 + t + 0.1 * (t * 13.0).sin();
+                        let lon = -1.0 + 1.5 * t + 0.05 * rng.f();
+                        GeoPoint::from_lat_lon(&pm, lat, lon).unwrap()
+                    })
+                    .collect();
+                let path = GeoStandardPath::new(&pm, width, &pts).unwrap();
+                let root = path.root_component.as_ref().unwrap();
+                let parts = &path.parts;
+                for i in 0..2000 {
+                    // Half near the path's points, half anywhere near it.
+                    let base = &pts[i % n];
+                    let spread = if i % 2 == 0 { width * 2.0 } else { 0.6 };
+                    let p = GeoPoint::from_lat_lon(
+                        &pm,
+                        base.latitude() + spread * (rng.f() - 0.5),
+                        base.longitude() + spread * (rng.f() - 0.5),
+                    )
+                    .unwrap();
+                    let (x, y, z) = (p.x, p.y, p.z);
+                    total += 1;
+                    inside += usize::from(path.is_within_xyz(x, y, z));
+                    for style in styles {
+                        let got = root.distance(parts, style, x, y, z);
+                        let java = java_distance(root, parts, style, x, y, z);
+                        let brute = brute_distance(parts, style, x, y, z);
+                        assert_eq!(got.to_bits(), java.to_bits(), "{style:?} {p}");
+                        assert_eq!(got.to_bits(), brute.to_bits(), "{style:?} {p}");
+                        let got = root.path_delta_distance(parts, style, x, y, z);
+                        let java = java_delta(root, parts, style, x, y, z);
+                        assert_eq!(got.to_bits(), java.to_bits(), "{style:?} {p}");
+                    }
+                }
+            }
+        }
+        // The corpus exercises both sides of the path's boundary.
+        assert!(
+            inside > total / 10 && inside < total * 9 / 10,
+            "{inside}/{total}"
+        );
+    }
+
+    /// The bounding-box-pruned `intersects` against Java's full walk, on
+    /// random paths (equator and meridian ones too, whose planes are axis
+    /// parallel, as every solid face is) and random planes: solid faces
+    /// bounded by the other faces, and arbitrary planes with random bounds.
+    #[test]
+    fn pruned_intersects_matches_the_full_walk() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let (mut hits, mut calls, mut pruned_leaves) = (0usize, 0usize, 0usize);
+        for pm in [PlanetModel::wgs84(), PlanetModel::sphere()] {
+            for shape in 0..12 {
+                let n = [1usize, 2, 3, 5, 17, 40][shape % 6];
+                let width = match shape % 4 {
+                    0 => 1e-6,
+                    1 => 0.01 + 0.05 * rng.f(),
+                    2 => 0.3,
+                    _ => 1.5,
+                };
+                let pts: Vec<GeoPoint> = (0..n)
+                    .map(|i| {
+                        let t = i as f64 / n as f64;
+                        let (lat, lon) = match shape % 3 {
+                            // Along the equator / a meridian: axis-parallel
+                            // connecting planes.
+                            0 => (0.0, -1.0 + 2.0 * t),
+                            1 => (-1.2 + 2.4 * t, 0.5),
+                            _ => (
+                                -0.5 + t + 0.1 * (t * 13.0).sin(),
+                                -1.0 + 1.5 * t + 0.05 * rng.f(),
+                            ),
+                        };
+                        GeoPoint::from_lat_lon(&pm, lat, lon).unwrap()
+                    })
+                    .collect();
+                let Ok(path) = GeoStandardPath::new(&pm, width, &pts) else {
+                    continue;
+                };
+                let root = path.root_component.as_ref().unwrap();
+                let parts = &path.parts;
+                let boxes = parts.leaf_boxes();
+                let mut check = |p: &Plane, notable: &[GeoPoint], bounds: &[&dyn Membership]| {
+                    let full = root.intersects(parts, p, notable, bounds);
+                    let probe = PlaneProbe::new(p);
+                    let pruned =
+                        root.intersects_pruned(parts, boxes, &probe, notable, bounds, false);
+                    assert_eq!(full, pruned, "{p:?} on {}", path.java_to_string());
+                    calls += 1;
+                    hits += usize::from(full);
+                    pruned_leaves += (0..parts.segments.len())
+                        .filter(|&i| {
+                            probe.misses(&boxes[0][i]) && parts.segments[i].steep_to(&probe)
+                        })
+                        .count();
+                };
+                for i in 0..400 {
+                    let base = &pts[i % n];
+                    let spread = if i % 2 == 0 { width * 2.0 } else { 0.8 };
+                    let c = GeoPoint::from_lat_lon(
+                        &pm,
+                        (base.latitude() + spread * (rng.f() - 0.5)).clamp(-1.5, 1.5),
+                        base.longitude() + spread * (rng.f() - 0.5),
+                    )
+                    .unwrap();
+                    // A solid around `c`, extent log-uniform in [1e-7, 1].
+                    let s = 10f64.powf(-7.0 + 7.0 * rng.f());
+                    let lo = [c.x - s * rng.f(), c.y - s * rng.f(), c.z - s * rng.f()];
+                    let hi = [lo[0] + s, lo[1] + s, lo[2] + s];
+                    let face = |axis: usize, at: f64, inside: f64| {
+                        let mut v = [0.0; 3];
+                        v[axis] = 1.0;
+                        let mut ip = [0.0; 3];
+                        ip[axis] = inside;
+                        SidedPlane::from_xyz_normal(
+                            ip[0],
+                            ip[1],
+                            ip[2],
+                            &Vector::new(v[0], v[1], v[2]),
+                            -at,
+                        )
+                        .unwrap()
+                    };
+                    let faces: Vec<SidedPlane> = (0..3)
+                        .flat_map(|a| [face(a, lo[a], hi[a]), face(a, hi[a], lo[a])])
+                        .collect();
+                    for f in 0..6 {
+                        let others: Vec<&dyn Membership> = (0..6)
+                            .filter(|&g| g != f)
+                            .map(|g| &faces[g] as &dyn Membership)
+                            .collect();
+                        check(&faces[f], &[], &others);
+                        check(&faces[f], &path.edge_points, &[]);
+                    }
+                    // An arbitrary plane near `c`, bounded by two random
+                    // sided planes through the origin.
+                    let v = Vector::new(rng.f() - 0.5, rng.f() - 0.5, rng.f() - 0.5);
+                    if let Some(nv) = v.normalize() {
+                        let d = -(nv.x * c.x + nv.y * c.y + nv.z * c.z) + 0.01 * (rng.f() - 0.5);
+                        let p = Plane::with_d(&nv, d);
+                        let b1 = SidedPlane::from_vectors(&c, &pts[0], base);
+                        let b2 = SidedPlane::from_vectors(&pts[0], &c, &pts[n - 1]);
+                        check(&p, &[], &[]);
+                        if let (Ok(b1), Ok(b2)) = (b1, b2) {
+                            check(&p, &[], &[&b1, &b2]);
+                        }
+                    }
+                }
+            }
+        }
+        // Both answers occur, and the prune does fire.
+        assert!(hits > calls / 50 && hits < calls / 2, "{hits}/{calls}");
+        assert!(pruned_leaves > calls, "{pruned_leaves} over {calls} calls");
+    }
+
+    #[test]
+    fn full_path_distance_cache_returns_the_computed_value() {
+        let pm = PlanetModel::sphere();
+        let a = GeoPoint::from_lat_lon(&pm, 0.0, 0.0).unwrap();
+        let b = GeoPoint::from_lat_lon(&pm, 0.0, 0.25).unwrap();
+        let path = GeoStandardPath::new(&pm, 0.01, &[a.clone(), b.clone()]).unwrap();
+        let seg = &path.parts.segments[0];
+        for style in [DistanceStyle::Arc, DistanceStyle::LinearSquared] {
+            let want = style.to_aggregation_form(style.compute_distance(&a, b.x, b.y, b.z));
+            assert_eq!(seg.full_path_distance(style).to_bits(), want.to_bits());
+            // Cached: the same bits again.
+            assert_eq!(seg.full_path_distance(style).to_bits(), want.to_bits());
+        }
+    }
+}

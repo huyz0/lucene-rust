@@ -36,7 +36,9 @@ public final class MlNodes {
         DEPLOY,
         UNDEPLOY,
         PREDICT,
-        PROFILE
+        PROFILE,
+        UPDATE,
+        STATS
     }
 
     /** Deploy, undeploy and profile, on the deploy pool. */
@@ -55,6 +57,16 @@ public final class MlNodes {
         public static final PredictAction INSTANCE = new PredictAction();
 
         private PredictAction() {
+            super(NAME, Response::new);
+        }
+    }
+
+    /** Predictions of a remote model forwarded to a node that holds it, on the remote predict pool. */
+    public static final class RemotePredictAction extends ActionType<Response> {
+        public static final String NAME = "cluster:admin/opensearch/mlinternal/lucene_rust/predict_remote";
+        public static final RemotePredictAction INSTANCE = new RemotePredictAction();
+
+        private RemotePredictAction() {
             super(NAME, Response::new);
         }
     }
@@ -111,21 +123,24 @@ public final class MlNodes {
         public final byte[] payload;
         /** Why the node failed, or {@code null}. */
         public final String error;
-        /** Whether the failure is the caller's (a 400) rather than the node's (a 500). */
-        public final boolean badRequest;
+        /**
+         * The failure's HTTP status: 400 for the caller's mistake, another code a remote model's
+         * service answered with, 0 for the node's own failure (a 500).
+         */
+        public final int status;
 
-        NodeResponse(DiscoveryNode node, byte[] payload, String error, boolean badRequest) {
+        NodeResponse(DiscoveryNode node, byte[] payload, String error, int status) {
             super(node);
             this.payload = payload;
             this.error = error;
-            this.badRequest = badRequest;
+            this.status = status;
         }
 
         NodeResponse(StreamInput in) throws IOException {
             super(in);
             payload = in.readBoolean() ? in.readByteArray() : null;
             error = in.readOptionalString();
-            badRequest = in.readBoolean();
+            status = in.readVInt();
         }
 
         @Override
@@ -136,7 +151,7 @@ public final class MlNodes {
                 out.writeByteArray(payload);
             }
             out.writeOptionalString(error);
-            out.writeBoolean(badRequest);
+            out.writeVInt(status);
         }
     }
 
@@ -171,6 +186,13 @@ public final class MlNodes {
         @Inject
         public PredictTransportAction(ThreadPool threadPool, ClusterService clusterService, TransportService transportService, ActionFilters filters) {
             super(PredictAction.NAME, MlCommons.PREDICT_THREAD_POOL, threadPool, clusterService, transportService, filters);
+        }
+    }
+
+    public static final class RemotePredictTransportAction extends Base {
+        @Inject
+        public RemotePredictTransportAction(ThreadPool threadPool, ClusterService clusterService, TransportService transportService, ActionFilters filters) {
+            super(RemotePredictAction.NAME, MlCommons.REMOTE_PREDICT_THREAD_POOL, threadPool, clusterService, transportService, filters);
         }
     }
 
@@ -216,11 +238,13 @@ public final class MlNodes {
             DiscoveryNode local = clusterService.localNode();
             try {
                 byte[] payload = MlCommons.get().onNode(request.request.op, request.request.modelId, request.request.payload);
-                return new NodeResponse(local, payload, null, false);
+                return new NodeResponse(local, payload, null, 0);
             } catch (IllegalArgumentException e) {
-                return new NodeResponse(local, null, e.getMessage(), true);
+                return new NodeResponse(local, null, e.getMessage(), 400);
+            } catch (org.opensearch.OpenSearchStatusException e) {
+                return new NodeResponse(local, null, e.getMessage(), e.status() == null ? 0 : e.status().getStatus());
             } catch (Exception e) {
-                return new NodeResponse(local, null, e.getMessage() == null ? e.toString() : e.getMessage(), false);
+                return new NodeResponse(local, null, e.getMessage() == null ? e.toString() : e.getMessage(), 0);
             }
         }
     }

@@ -3,7 +3,7 @@
 //! public surface goes through exactly these two helpers (see the
 //! `ffi-safety` skill: `unsafe` is scoped, not sprinkled).
 
-use crate::error::{set_last_error, FfiStatus};
+use crate::error::FfiStatus;
 use std::ffi::c_char;
 
 /// Reads `len` bytes at `ptr` as a UTF-8 `&str` borrowing from the caller's
@@ -51,66 +51,11 @@ pub unsafe fn bytes_from_raw<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8],
     Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-/// Allocates an empty `Vec<T>` with room for `len` elements, reporting an
-/// allocation failure as [`FfiStatus::InvalidArgument`] instead of aborting.
-///
-/// **Why this exists rather than `Vec::with_capacity`**: every count reaching
-/// this crate is caller-supplied over a C ABI, where a Java wrapper bug (a
-/// negative `int` widened to `usize`, an uninitialised length) turns into an
-/// absurd allocation request. `Vec::with_capacity` responds to a failed
-/// allocation by calling `handle_alloc_error`, which **aborts the process** --
-/// and an abort is *not* an unwind, so [`crate::error::guard`]'s
-/// `catch_unwind` cannot contain it. A single bad length on the Java side
-/// would take the whole OpenSearch node down rather than returning a status
-/// code. `try_reserve_exact` returns the failure instead, keeping this
-/// boundary's "every failure is a status code" contract intact.
-pub fn try_with_capacity<T>(len: usize) -> Result<Vec<T>, FfiStatus> {
-    let mut out = Vec::new();
-    out.try_reserve_exact(len).map_err(|_| {
-        set_last_error(format!(
-            "cannot allocate {len} x {} bytes for a caller-supplied length",
-            std::mem::size_of::<T>()
-        ));
-        FfiStatus::InvalidArgument
-    })?;
-    Ok(out)
-}
-
-/// Copies `src` into a freshly allocated `Vec<T>` via [`try_with_capacity`],
-/// so an allocation failure is a status code rather than a process abort --
-/// the `to_vec()` every `*_slice_from_raw` helper in this crate would
-/// otherwise call.
-pub fn try_to_vec<T: Copy>(src: &[T]) -> Result<Vec<T>, FfiStatus> {
-    let mut out = try_with_capacity(src.len())?;
-    out.extend_from_slice(src);
-    Ok(out)
-}
+pub use lucene_engine::alloc::{try_to_vec, try_with_capacity};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn try_with_capacity_allocates_a_reasonable_length() {
-        let v = try_with_capacity::<u64>(8).unwrap();
-        assert!(v.is_empty());
-        assert!(v.capacity() >= 8);
-    }
-
-    #[test]
-    fn try_with_capacity_rejects_an_absurd_length_instead_of_aborting() {
-        // The exact shape a Java caller's negative `int` takes once widened to
-        // `usize`: far larger than any allocator can serve. `Vec::with_capacity`
-        // would abort the process here; this must be a status code.
-        let got = try_with_capacity::<u64>(usize::MAX / 4);
-        assert_eq!(got.err(), Some(FfiStatus::InvalidArgument));
-    }
-
-    #[test]
-    fn try_to_vec_copies_the_slice() {
-        assert_eq!(try_to_vec(&[1i32, 2, 3]).unwrap(), vec![1, 2, 3]);
-        assert!(try_to_vec::<i32>(&[]).unwrap().is_empty());
-    }
 
     #[test]
     fn str_from_raw_reads_valid_utf8() {

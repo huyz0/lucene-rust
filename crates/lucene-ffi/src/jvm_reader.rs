@@ -22,16 +22,13 @@
 
 use std::os::raw::c_char;
 
-use lucene_search::aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
+use lucene_aggs::metric_aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
+use lucene_aggs::terms_agg::TermsSpec;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::extended_query::{
-    MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
-};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
-use lucene_search::terms_agg::TermsSpec;
 use lucene_search::top_field::{
     CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector, SortField,
     SortType,
@@ -44,341 +41,15 @@ use lucene_search::{
 use lucene_store::Directory;
 use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
-use crate::clauses::{check_clause_count, map_search_error, read_boolean_query};
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
+use lucene_engine::clauses::map_search_error;
+use lucene_engine::query_blob::{
+    boolean_of, decode_query, decode_request, invalid, query_uses_points, similarity_checked,
+    Cursor, JvmQuery,
+};
 use std::sync::Arc;
-
-/// The version of the contract between this library and the Java classes in
-/// `opensearch-plugin/`: the entry points in this module, `engine_writer.rs`
-/// and `ffm_bridge.rs`, their argument order, and the query blob layout. The plugin refuses to
-/// start against a library reporting any other number -- a jar carrying a
-/// stale `.so` must not get as far as reading an index.
-///
-/// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 134;
-
-/// Blob tag for a single `TermQuery`.
-pub const QUERY_TERM: u8 = 0;
-/// Blob tag for a `BooleanQuery` in the occur-tagged clause format.
-pub const QUERY_BOOLEAN: u8 = 1;
-/// Blob tag for a query tree: one recursive node, see [`decode_node`].
-pub const QUERY_TREE: u8 = 2;
-/// Blob tag for OpenSearch's `min_score` in front of a query: the minimum
-/// (`f32`), then the query's own blob ([`decode_request`]).
-pub const QUERY_MIN_SCORE: u8 = 3;
-
-/// Query-tree node kinds ([`QUERY_TREE`]).
-const NODE_TERM: u8 = 0;
-const NODE_BOOLEAN: u8 = 1;
-const NODE_CONSTANT_SCORE: u8 = 2;
-const NODE_BOOST: u8 = 3;
-const NODE_DISMAX: u8 = 4;
-const NODE_MATCH_ALL: u8 = 5;
-const NODE_MATCH_NONE: u8 = 6;
-const NODE_PHRASE: u8 = 7;
-const NODE_TERM_SET: u8 = 8;
-const NODE_PREFIX: u8 = 9;
-const NODE_WILDCARD: u8 = 10;
-pub(crate) const NODE_POINT_RANGE: u8 = 11;
-const NODE_REGEXP: u8 = 12;
-const NODE_EXISTS: u8 = 13;
-const NODE_TERM_STATS: u8 = 14;
-const NODE_POINTS_BOX: u8 = 15;
-const NODE_GEO_DISTANCE: u8 = 16;
-const NODE_GEO_POINT: u8 = 17;
-const NODE_GEO_SHAPE: u8 = 18;
-const NODE_GEO_SHAPE_BOX: u8 = 19;
-/// `TermRangeQuery` under its constant-score rewrite; follows
-/// [`crate::jvm_nodes::NODE_LAST`].
-pub(crate) const NODE_TERM_RANGE: u8 = 25;
-const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
-/// `PointInSetQuery` (`terms` on a numeric or `ip` field, `IntPoint.newSetQuery`
-/// and the like): the field, its dimensions and width, then the packed points.
-pub(crate) const NODE_POINT_SET: u8 = 26;
-const _: () = assert!(crate::jvm_queries::NODE_FIRST == NODE_POINT_SET + 1);
-/// [`NODE_TERM_RANGE`]'s flags: which bounds follow, and which are inclusive.
-const RANGE_HAS_LOWER: u8 = 1;
-const RANGE_HAS_UPPER: u8 = 2;
-const RANGE_INCLUDE_LOWER: u8 = 4;
-const RANGE_INCLUDE_UPPER: u8 = 8;
-
-/// Geometry tags inside the geo nodes ([`decode_geometry`]).
-const GEOMETRY_POINT: u8 = 0;
-const GEOMETRY_LINE: u8 = 1;
-const GEOMETRY_POLYGON: u8 = 2;
-const GEOMETRY_RECTANGLE: u8 = 3;
-const GEOMETRY_CIRCLE: u8 = 4;
-
-/// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
-#[no_mangle]
-pub extern "C" fn ffi_jvm_abi_version() -> u32 {
-    JVM_ABI_VERSION
-}
-
-/// A request's query blob: the query, and the `min_score` in front of it
-/// ([`QUERY_MIN_SCORE`]) when there is one -- rewritten, as
-/// `IndexSearcher.search` rewrites before it builds a weight ([`rewritten`]);
-/// and, before or after that `min_score`, the searcher's per-field
-/// similarities ([`crate::jvm_similarity`]) when a field scores with another
-/// than the default BM25. A request with them is always a boolean: the lone-term
-/// search scores BM25.
-pub(crate) fn decode_request(
-    blob: &[u8],
-) -> Result<(JvmQuery, Option<f32>, Option<PerFieldSimilarity>), FfiStatus> {
-    use crate::jvm_similarity::QUERY_SIMILARITY;
-    // The prefixes, in either order, each at most once.
-    let (mut min, mut similarity) = (None, None);
-    let mut c = Cursor { buf: blob, pos: 0 };
-    loop {
-        let at = c.pos;
-        match blob.get(at) {
-            Some(&QUERY_MIN_SCORE) if min.is_none() => {
-                c.pos += 1;
-                min = Some(f32::from_bits(u32::from_le_bytes(c.i32()?.to_le_bytes())));
-            }
-            Some(&QUERY_SIMILARITY) if similarity.is_none() => {
-                c.pos += 1;
-                similarity = Some(crate::jvm_similarity::decode(&mut c)?);
-            }
-            Some(&QUERY_MIN_SCORE | &QUERY_SIMILARITY) => {
-                set_last_error("query blob: min_score or similarity table twice");
-                return Err(FfiStatus::InvalidArgument);
-            }
-            _ => break,
-        }
-    }
-    let rest = blob.get(c.pos..).ok_or(FfiStatus::InvalidArgument)?;
-    let query = rewritten(decode_query(rest)?);
-    Ok(match similarity {
-        Some(s) => (JvmQuery::Boolean(boolean_of(&query)), min, Some(s)),
-        None => (query, min, None),
-    })
-}
-
-/// `IndexSearcher.rewrite`, before the free `search_*_multi_segment`
-/// functions score a request: they take the query as written, and its shape
-/// picks the scorer tree. An un-rewritten `#a ?(b c)` keeps its nested
-/// disjunction as the lone scoring clause, which runs as a top-level WAND and
-/// prunes to a different lower-bound total than Lucene's flattened
-/// `#a ?b ?c` (177 vs 10,343 on `mixed_boolean_scoring_index`).
-///
-/// OpenSearch's `QueryPhase` hands the plugin a query that
-/// `DefaultSearchContext.preProcess(true)` has already rewritten, and
-/// `BooleanQuery.rewrite` is a fixpoint, so on that path this changes
-/// nothing; it makes every other caller of the bridge score what Lucene
-/// would score.
-///
-/// A query that rewrites to something other than a boolean (`?t` to `t`, a
-/// pure negative one to `MatchNoDocsQuery`) becomes that boolean's one
-/// `MUST` clause, as a non-boolean tree root always has: the boolean path
-/// scores it exactly as the clause alone, and keeps what the term path
-/// would not (a term's own `docFreq`, `NODE_TERM_STATS`).
-pub(crate) fn rewritten(query: JvmQuery) -> JvmQuery {
-    match query {
-        JvmQuery::Term(t) => JvmQuery::Term(t),
-        JvmQuery::Boolean(b) => match Clause::Boolean(Box::new(b)).rewrite() {
-            Clause::Boolean(b) => JvmQuery::Boolean(*b),
-            other => JvmQuery::Boolean(BooleanQuery {
-                must: vec![other],
-                ..Default::default()
-            }),
-        },
-    }
-}
-
-/// `r`, a search's result over `sim`'s similarities, or the error a
-/// scripted similarity's scorer kept (a `SimScorer` cannot fail): the
-/// search's error, whatever else it returned.
-pub(crate) fn similarity_checked<T>(
-    sim: Option<&PerFieldSimilarity>,
-    r: Result<T, FfiStatus>,
-) -> Result<T, FfiStatus> {
-    use lucene_search::similarities::Similarity;
-    match sim.and_then(|s| s.take_failure()) {
-        Some(e) => Err(crate::clauses::map_search_error(e)),
-        None => r,
-    }
-}
-
-/// One decoded query blob.
-#[derive(Debug)]
-pub(crate) enum JvmQuery {
-    Term(TermQuery),
-    Boolean(BooleanQuery),
-}
-
-/// A bounds-checked little-endian reader over a caller's blob. Every read
-/// that would run past the end is [`FfiStatus::InvalidArgument`] -- the blob
-/// is caller-supplied, so a short one is a bad argument, not a panic.
-pub(crate) struct Cursor<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    pub(crate) fn new(buf: &'a [u8]) -> Self {
-        Cursor { buf, pos: 0 }
-    }
-
-    /// The offset of the next read.
-    pub(crate) fn pos(&self) -> usize {
-        self.pos
-    }
-
-    fn take(&mut self, n: usize) -> Result<&'a [u8], FfiStatus> {
-        let end = self.pos.checked_add(n).filter(|&e| e <= self.buf.len());
-        let Some(end) = end else {
-            set_last_error(format!(
-                "query blob truncated: need {n} bytes at offset {}, have {}",
-                self.pos,
-                self.buf.len()
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        };
-        let out = &self.buf[self.pos..end];
-        self.pos = end;
-        Ok(out)
-    }
-
-    /// The bytes read since offset `start`.
-    pub(crate) fn since(&self, start: usize) -> &'a [u8] {
-        self.buf.get(start..self.pos).unwrap_or_default()
-    }
-
-    pub(crate) fn u8(&mut self) -> Result<u8, FfiStatus> {
-        Ok(self.take(1)?[0])
-    }
-
-    pub(crate) fn i32(&mut self) -> Result<i32, FfiStatus> {
-        let b = self.take(4)?;
-        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    pub(crate) fn i64(&mut self) -> Result<i64, FfiStatus> {
-        let b = self.take(8)?;
-        Ok(i64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
-    }
-
-    pub(crate) fn f64(&mut self) -> Result<f64, FfiStatus> {
-        Ok(f64::from_bits(self.i64()? as u64))
-    }
-
-    /// The bytes not read yet.
-    pub(crate) fn remaining(&self) -> usize {
-        self.buf.len().saturating_sub(self.pos)
-    }
-
-    pub(crate) fn len(&mut self) -> Result<usize, FfiStatus> {
-        let v = self.i32()?;
-        usize::try_from(v).map_err(|_| {
-            set_last_error(format!("query blob: negative length {v}"));
-            FfiStatus::InvalidArgument
-        })
-    }
-
-    pub(crate) fn bytes(&mut self) -> Result<&'a [u8], FfiStatus> {
-        let n = self.len()?;
-        self.take(n)
-    }
-}
-
-/// Decodes a query blob. Little-endian throughout; every length is an `i32`
-/// and must be non-negative.
-///
-/// | tag | layout after the tag byte |
-/// |---|---|
-/// | [`QUERY_TERM`] | `field_len`, field (UTF-8), `term_len`, term bytes |
-/// | [`QUERY_BOOLEAN`] | `minimum_should_match`, `clause_count`, then per clause: `occur: u8`, `kind: u8`, `parent: i32`, `param: i32`, `field_len`, field, `term_len`, term |
-///
-/// A boolean clause's fields mean exactly what the parallel arrays of
-/// [`read_boolean_query`] mean -- this decoder builds those arrays and hands
-/// them over, so the nesting, depth and clause-count rules (and their error
-/// messages) are that function's, not a second copy of them. A `BOOLEAN`
-/// clause carries empty field and term bytes.
-///
-/// Trailing bytes are an error: a blob that decodes with bytes left over was
-/// built by a writer that disagrees with this layout.
-pub(crate) fn decode_query(blob: &[u8]) -> Result<JvmQuery, FfiStatus> {
-    let mut c = Cursor { buf: blob, pos: 0 };
-    let query = match c.u8()? {
-        QUERY_TERM => {
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let term = c.bytes()?;
-            JvmQuery::Term(TermQuery::new(field, term.to_vec()))
-        }
-        QUERY_BOOLEAN => {
-            let msm = c.i32()?;
-            let count = c.len()?;
-            check_clause_count(count)?;
-            let mut occurs = try_with_capacity::<u8>(count)?;
-            let mut kinds = try_with_capacity::<u8>(count)?;
-            let mut parents = try_with_capacity::<i32>(count)?;
-            let mut params = try_with_capacity::<i32>(count)?;
-            let mut fields = try_with_capacity::<*const c_char>(count)?;
-            let mut field_lens = try_with_capacity::<usize>(count)?;
-            let mut terms = try_with_capacity::<*const u8>(count)?;
-            let mut term_lens = try_with_capacity::<usize>(count)?;
-            for _ in 0..count {
-                occurs.push(c.u8()?);
-                kinds.push(c.u8()?);
-                parents.push(c.i32()?);
-                params.push(c.i32()?);
-                let field = c.bytes()?;
-                fields.push(field.as_ptr().cast::<c_char>());
-                field_lens.push(field.len());
-                let term = c.bytes()?;
-                terms.push(term.as_ptr());
-                term_lens.push(term.len());
-            }
-            // SAFETY: all eight arrays hold exactly `count` elements, and every
-            // (pointer, length) pair points into `blob`, which outlives this
-            // call.
-            let query = unsafe {
-                read_boolean_query(
-                    occurs.as_ptr(),
-                    kinds.as_ptr(),
-                    fields.as_ptr(),
-                    field_lens.as_ptr(),
-                    terms.as_ptr(),
-                    term_lens.as_ptr(),
-                    parents.as_ptr(),
-                    params.as_ptr(),
-                    count,
-                    msm,
-                )?
-            };
-            JvmQuery::Boolean(query)
-        }
-        QUERY_TREE => {
-            let mut nodes = 0usize;
-            match decode_node(&mut c, 0, &mut nodes)? {
-                Clause::Boolean(b) => JvmQuery::Boolean(*b),
-                other => JvmQuery::Boolean(BooleanQuery {
-                    must: vec![other],
-                    ..Default::default()
-                }),
-            }
-        }
-        other => {
-            set_last_error(format!(
-                "query blob: unknown query tag {other} (expected 0=TERM, 1=BOOLEAN, 2=TREE)"
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        }
-    };
-    if c.pos != blob.len() {
-        set_last_error(format!(
-            "query blob: {} trailing bytes after the query",
-            blob.len() - c.pos
-        ));
-        return Err(FfiStatus::InvalidArgument);
-    }
-    Ok(query)
-}
 
 /// Opens a reader over the segments listed in `infos` (a whole `segments_N`
 /// file's bytes, as `SegmentInfos.write(IndexOutput)` writes them, at
@@ -471,7 +142,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
         // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
         // mapping lives as long as the segment reader, which is why closing the
         // handle matters.
-        // A `rust_encrypted` shard's path is bound to an encrypting directory
+        // A `encrypted` shard's path is bound to an encrypting directory
         // over the mapping (`store.rs`), which decrypts each file on open.
         let dir = crate::store::shard_directory(path).map_err(|e| {
             set_last_error(format!("opening the shard directory [{path}]: {e}"));
@@ -513,11 +184,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             }));
             live_docs.push(live);
         }
+        let cacheable = live_docs.len();
         let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(JvmReaderHandle {
             reader,
             live_docs,
             deleted,
             commit_live: std::sync::Mutex::new(None),
+            cacheable,
+            agg_identities: std::sync::OnceLock::new(),
+            path: std::sync::Arc::from(path),
         }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
@@ -528,13 +203,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
-    read_recovering(jvm_readers())
+    let reader = read_recovering(jvm_readers())
         .get(handle)
         .cloned()
         .ok_or_else(|| {
             set_last_error(missing);
             FfiStatus::InvalidHandle
-        })
+        })?;
+    crate::error::note_shard(&reader.path);
+    Ok(reader)
 }
 
 /// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
@@ -670,8 +347,8 @@ const SORT_HALF_FLOAT: u8 = 9;
 /// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
 const SORT_UNSIGNED_LONG: u8 = 10;
 /// A Painless `_script` key of type `number`
-/// ([`crate::jvm_painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
-/// only, then the script ([`crate::jvm_painless_score`]'s layout, context
+/// ([`lucene_engine::painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
+/// only, then the script ([`lucene_engine::painless_score`]'s layout, context
 /// `3` or `4`).
 pub(crate) const SORT_SCRIPT: u8 = 11;
 /// At most this many origins in a geo-distance key: each costs a distance
@@ -796,7 +473,7 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             if flags & !SORT_REVERSE != 0 {
                 return Err(bad(format!("sort blob: _script key flags {flags:#x}")));
             }
-            let source = crate::jvm_painless_score::PainlessSort::decode(&mut c)?;
+            let source = lucene_engine::painless_score::PainlessSort::decode(&mut c)?;
             keys.push(SortField::with_source(
                 "_script",
                 Arc::new(source),
@@ -952,7 +629,7 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
     }
     let mut index_sorted = Vec::new();
     if options & SORT_INDEX_SORTED != 0 {
-        let n = c.len()?;
+        let n = c.length()?;
         for _ in 0..n {
             index_sorted.push(match c.u8()? {
                 0 => None,
@@ -1055,7 +732,7 @@ fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool), F
     let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
     let _missing = c.i64()?;
     let comparator = c.u8()?;
-    let count = c.len()?;
+    let count = c.length()?;
     if count == 0 || count > MAX_GEO_ORIGINS {
         return Err(invalid(format!(
             "sort blob: {count} geo-distance origins, want 1..={MAX_GEO_ORIGINS}"
@@ -1411,7 +1088,7 @@ pub(crate) fn search_collapsed_blobs(
     };
     let needs_scores = track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
+        lucene_engine::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -1582,7 +1259,7 @@ pub(crate) fn rescore_hits(
         },
         JvmQuery::Boolean(b) => b,
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
+    let fields: Vec<String> = lucene_engine::clauses::clause_field_names(&q)
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -1673,7 +1350,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_rescore(
 const METRIC_LONG: u8 = 0;
 const METRIC_DOUBLE: u8 = 1;
 const METRIC_FLOAT: u8 = 2;
-/// Sources in a metrics blob ([`lucene_search::aggs::Source`]).
+/// Sources in a metrics blob ([`lucene_aggs::metric_aggs::Source`]).
 const METRIC_DOC_VALUES: u8 = 0;
 const METRIC_POINTS_MIN: u8 = 1;
 const METRIC_POINTS_MAX: u8 = 2;
@@ -1688,7 +1365,7 @@ pub const METRIC_VALUES: usize = 6;
 /// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
 /// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]), `source: u8`
 /// ([`METRIC_DOC_VALUES`], [`METRIC_POINTS_MIN`], [`METRIC_POINTS_MAX`]),
-/// `needs: u8` (the parts read back, [`lucene_search::aggs::NEED_ALL`]'s bits,
+/// `needs: u8` (the parts read back, [`lucene_aggs::metric_aggs::NEED_ALL`]'s bits,
 /// at least one) and the field (`len: i32`, UTF-8); then `count: u8` `terms`
 /// aggregations, each its field (`len: i32`, UTF-8) and `shard_size: i32` (at
 /// least 1) -- at least one aggregation in all; then the concurrent-search
@@ -1773,7 +1450,7 @@ pub(crate) type DecodedAggs = (Vec<MetricSpec>, Vec<TermsSpec>, Vec<Vec<usize>>)
 /// its value count into `out_counts` and [`METRIC_VALUES`] doubles into
 /// `out_values` -- the compensated sum and its delta, the minimum and maximum
 /// over every value, and the minimum of each document's first value and the
-/// maximum of each document's last (see [`lucene_search::aggs`]); and the
+/// maximum of each document's last (see [`lucene_aggs::metric_aggs`]); and the
 /// `terms` results, encoded ([`encode_terms_results`]; slice by slice, each
 /// slice's aggregations in blob order), into `out_terms`, their length into
 /// `out_terms_len` either way (a too-small `out_terms` is
@@ -1840,7 +1517,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
 /// `buckets: i32`, and per bucket, by term ascending, `doc_count: i64` and the
 /// term (`len: i32`, bytes).
 pub(crate) fn encode_terms_results(
-    results: &[lucene_search::terms_agg::TermsResult],
+    results: &[lucene_aggs::terms_agg::TermsResult],
 ) -> Result<Vec<u8>, FfiStatus> {
     let too_big = || {
         set_last_error("terms result: a term or bucket count past i32".to_string());
@@ -1991,7 +1668,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         .map_err(map_search_error)?;
     // min_score scores the query: its fields' norms.
     let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
+        lucene_engine::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -2004,8 +1681,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let sliced = lucene_search::aggs::aggregate_sliced_counting(
+    let min = min_score.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
+    let sliced = lucene_aggs::metric_aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -2049,7 +1726,7 @@ fn decode_count_spec(blob: &[u8]) -> Result<CountSpec, FfiStatus> {
     if n < 1 {
         return Err(bad(format!("count blob: n {n}")));
     }
-    let count = c.len()?;
+    let count = c.length()?;
     let mut iterate = Vec::new();
     for _ in 0..count {
         iterate.push(match c.u8()? {
@@ -2132,7 +1809,7 @@ pub(crate) fn count_terminates_blobs(
         slices
     };
     let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
+        lucene_engine::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -2145,7 +1822,7 @@ pub(crate) fn count_terminates_blobs(
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+    let min = min_score.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
     let counted = lucene_search::terminate::count_terminates(
         &segments,
         &q,
@@ -2278,7 +1955,7 @@ pub(crate) fn search_sorted(
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
     let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
+        lucene_engine::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -2386,48 +2063,6 @@ pub(crate) fn search_sorted(
     ))
 }
 
-/// Whether `query` has a points clause anywhere, so the search opens the
-/// segments' points (a cost a query without one should not pay).
-pub(crate) fn query_uses_points(query: &JvmQuery) -> bool {
-    match query {
-        JvmQuery::Term(_) => false,
-        JvmQuery::Boolean(b) => boolean_uses_points(b),
-    }
-}
-
-/// [`query_uses_points`] of a decoded boolean.
-pub(crate) fn boolean_uses_points(b: &BooleanQuery) -> bool {
-    fn clause(c: &Clause) -> bool {
-        match c {
-            Clause::PointsRange(_) => true,
-            Clause::Boolean(b) => boolean_uses_points(b),
-            Clause::ConstantScore(c) => clause(&c.inner),
-            Clause::Boost(b) => clause(&b.inner),
-            Clause::DisjunctionMax(d) => d.disjuncts.iter().any(clause),
-            // A points box or set reads the opened points (`exec::ranges`); a
-            // geo node reads them through the segment's reader, unopened. A
-            // join's or a function score's clauses may hold a range.
-            Clause::Extended(e) => {
-                matches!(
-                    e.as_ref(),
-                    lucene_search::extended_query::ExtendedQuery::PointRange(_)
-                        | lucene_search::extended_query::ExtendedQuery::PointInSet(_)
-                ) || e.children().into_iter().any(clause)
-                    || crate::jvm_function_score::queries(e)
-                        .into_iter()
-                        .any(clause)
-            }
-            _ => false,
-        }
-    }
-    b.must
-        .iter()
-        .chain(&b.filter)
-        .chain(&b.should)
-        .chain(&b.must_not)
-        .any(clause)
-}
-
 /// The search behind [`ffi_jvm_reader_search`], on an already-validated
 /// handle: the reader's segments with the JVM's live docs swapped in.
 pub(crate) fn search(
@@ -2478,7 +2113,7 @@ pub(crate) fn search(
                     .map_err(map_search_error)?
             }
             JvmQuery::Boolean(q) => {
-                let fields: Vec<String> = crate::clauses::clause_field_names(q)
+                let fields: Vec<String> = lucene_engine::clauses::clause_field_names(q)
                     .into_iter()
                     .map(str::to_string)
                     .collect();
@@ -2575,7 +2210,7 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
             .collect(),
         ..Default::default()
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&union)
+    let fields: Vec<String> = lucene_engine::clauses::clause_field_names(&union)
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -2823,7 +2458,7 @@ pub(crate) fn search_min_score(
         })
         .collect();
     let q = boolean_of(query);
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
+    let fields: Vec<String> = lucene_engine::clauses::clause_field_names(&q)
         .into_iter()
         .map(str::to_string)
         .collect();
@@ -2856,18 +2491,6 @@ pub(crate) fn search_min_score(
         i64::try_from(total.value).unwrap_or(i64::MAX),
         total.relation == TotalHitsRelation::GreaterThanOrEqualTo,
     ))
-}
-
-/// A decoded query as the boolean the search functions take (a lone term as
-/// its one `MUST` clause).
-pub(crate) fn boolean_of(query: &JvmQuery) -> BooleanQuery {
-    match query {
-        JvmQuery::Term(t) => BooleanQuery {
-            must: vec![Clause::Term(t.clone())],
-            ..Default::default()
-        },
-        JvmQuery::Boolean(b) => b.clone(),
-    }
 }
 
 /// The total-hits count behind a `size: 0` [`ffi_jvm_reader_search`] -- one
@@ -3035,474 +2658,6 @@ fn count_segment(
     })
 }
 
-/// One node of a [`QUERY_TREE`] blob, little-endian like the rest:
-///
-/// | kind | layout after the kind byte | Lucene query |
-/// |---|---|---|
-/// | `0` term | `field_len`, field (UTF-8), `term_len`, term | `TermQuery` |
-/// | `1` boolean | `minimum_should_match: i32`, `count: i32`, then per clause `occur: u8` (0 `MUST`, 1 `FILTER`, 2 `SHOULD`, 3 `MUST_NOT`) and a node | `BooleanQuery` |
-/// | `2` constant score | `score: f32` bits, node | `ConstantScoreQuery` (its score, normally 1) |
-/// | `3` boost | `boost: f32` bits, node | `BoostQuery` |
-/// | `4` dismax | `tie_breaker: f32` bits, `count: i32`, nodes | `DisjunctionMaxQuery` |
-/// | `5` match all | nothing | `MatchAllDocsQuery` |
-/// | `6` match none | nothing | `MatchNoDocsQuery` |
-/// | `7` phrase | `field`, `slop: i32`, `count: i32`, then per term its position (`i32`) and bytes | `PhraseQuery` |
-/// | `8` term set | `field`, `count: i32`, the terms | `TermInSetQuery` |
-/// | `9` prefix | `field`, the prefix | `PrefixQuery` |
-/// | `10` wildcard | `field`, the pattern (no `\` escapes) | `WildcardQuery` |
-/// | `11` points range | `field`, `min: i64`, `max: i64` (sortable longs, inclusive) | a one-dimension 8-byte `PointRangeQuery` |
-/// | `12` regexp | `field`, the pattern (UTF-8) | `RegexpQuery` with `RegExp.ALL` and no match flags |
-/// | `13` exists | `field` | `FieldExistsQuery` |
-/// | `14` term with its own statistics | `field`, `term`, `doc_freq: i64` (at least 1) | `TermQuery(term, TermStates)`: a `BlendedTermQuery`'s terms (fuzzy, `cross_fields`) |
-/// | `15` points box | `field`, `num_dims: i32`, `lower`, `upper` (packed bytes, `num_dims` dimensions of equal width) | a `PointRangeQuery` of any width: `LatLonPoint.newBoxQuery`'s two dimensions |
-/// | `16` geo distance | `field`, `lat: f64`, `lon: f64`, `radius_meters: f64` | `LatLonPointDistanceQuery` |
-/// | `17` geo points | `field`, `relation: u8`, geometries ([`decode_geometries`]) | `LatLonPointQuery` (`newPolygonQuery`, `newGeometryQuery`) |
-/// | `18` geo shapes | `field`, `relation: u8`, geometries | `LatLonShapeQuery` (`LatLonShape.newGeometryQuery`) |
-/// | `19` geo shapes in a box | `field`, `relation: u8`, `min_lat`, `max_lat`, `min_lon`, `max_lon` (`f64`) | `LatLonShapeBoundingBoxQuery` (`LatLonShape.newBoxQuery`) |
-/// | `20`-`24` | [`crate::jvm_nodes`] | block join, spans, intervals, combined fields, OpenSearch's function score |
-///
-/// A relation is `ShapeField.QueryRelation`'s ordinal: `0` `INTERSECTS`, `1`
-/// `WITHIN`, `2` `DISJOINT`, `3` `CONTAINS`. The geo nodes (16-19) run as
-/// [`DocumentClause`](lucene_search::extended_query::DocumentClause)s keyed
-/// by their own bytes, so the query cache tells two of them apart exactly as
-/// Java's `Query.equals` does (by every value each is built from). Their
-/// geometries are validated as Java's constructors validate them; one Java
-/// would refuse is an error here, not a query.
-///
-/// Depth is capped at `MAX_CLAUSE_DEPTH` and the whole tree at the clause
-/// count limit, so the recursion is bounded by the blob, not trusted to it.
-/// A score, boost or tie-breaker must be finite and non-negative (and a tie
-/// breaker at most 1), as Lucene's constructors require.
-pub(crate) fn decode_node(
-    c: &mut Cursor<'_>,
-    depth: usize,
-    nodes: &mut usize,
-) -> Result<Clause, FfiStatus> {
-    use crate::clauses::MAX_CLAUSE_DEPTH;
-    use lucene_search::query::{
-        BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, FieldExistsQuery, MatchAllDocsQuery,
-        MatchNoDocsQuery, PhraseQuery, PointsRangeQuery, PrefixQuery, RegexpQuery, TermInSetQuery,
-        WildcardQuery,
-    };
-    if depth >= MAX_CLAUSE_DEPTH {
-        set_last_error(format!(
-            "query tree: nesting depth exceeds the maximum of {MAX_CLAUSE_DEPTH}"
-        ));
-        return Err(FfiStatus::InvalidArgument);
-    }
-    *nodes = nodes.saturating_add(1);
-    check_clause_count(*nodes)?;
-    let float = |c: &mut Cursor<'_>, what: &str, max: f32| -> Result<f32, FfiStatus> {
-        let v = f32::from_bits(c.i32()? as u32);
-        if !v.is_finite() || !(0.0..=max).contains(&v) {
-            set_last_error(format!("query tree: {what} {v} is out of range"));
-            return Err(FfiStatus::InvalidArgument);
-        }
-        Ok(v)
-    };
-    let start = c.pos;
-    let kind = c.u8()?;
-    Ok(match kind {
-        NODE_TERM => {
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let term = c.bytes()?;
-            Clause::Term(TermQuery::new(field, term.to_vec()))
-        }
-        NODE_BOOLEAN => {
-            let msm = c.len()?;
-            let count = c.len()?;
-            check_clause_count(count)?;
-            let mut b = BooleanQuery::new().with_minimum_should_match(msm);
-            for _ in 0..count {
-                let occur = c.u8()?;
-                let child = decode_node(c, depth + 1, nodes)?;
-                match occur {
-                    0 => b.must.push(child),
-                    1 => b.filter.push(child),
-                    2 => b.should.push(child),
-                    3 => b.must_not.push(child),
-                    other => {
-                        set_last_error(format!(
-                            "query tree: unknown Occur tag {other} (expected 0..=3)"
-                        ));
-                        return Err(FfiStatus::InvalidArgument);
-                    }
-                }
-            }
-            Clause::Boolean(Box::new(b))
-        }
-        NODE_CONSTANT_SCORE => {
-            let score = float(c, "constant score", f32::MAX)?;
-            ConstantScoreQuery::new(decode_node(c, depth + 1, nodes)?, score).into()
-        }
-        NODE_BOOST => {
-            let boost = float(c, "boost", f32::MAX)?;
-            BoostQuery::new(decode_node(c, depth + 1, nodes)?, boost).into()
-        }
-        NODE_DISMAX => {
-            let tie = float(c, "tie breaker", 1.0)?;
-            let count = c.len()?;
-            check_clause_count(count)?;
-            let mut disjuncts = Vec::new();
-            for _ in 0..count {
-                disjuncts.push(decode_node(c, depth + 1, nodes)?);
-            }
-            DisjunctionMaxQuery::new(disjuncts, tie).into()
-        }
-        // The segment's own `maxDoc` is supplied per segment at search time
-        // (`OpenSegment::max_doc`); the query carries none.
-        NODE_MATCH_ALL => Clause::MatchAllDocs(MatchAllDocsQuery::new(i32::MAX)),
-        NODE_MATCH_NONE => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
-        NODE_PHRASE => {
-            // `field`, `slop`, then each term with its position. Only
-            // consecutive positions from 0: the encoder falls a phrase with
-            // gaps (a removed stopword) back to Lucene.
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let slop = c.len()?;
-            let count = c.len()?;
-            *nodes = nodes.saturating_add(count);
-            check_clause_count(*nodes)?;
-            if count == 0 {
-                set_last_error("query tree: a phrase with no terms".to_string());
-                return Err(FfiStatus::InvalidArgument);
-            }
-            // Grown as read, not sized from `count`: the blob bounds it.
-            let mut terms = Vec::new();
-            for i in 0..count {
-                let position = c.i32()?;
-                if usize::try_from(position).ok() != Some(i) {
-                    set_last_error(format!(
-                        "query tree: phrase term {i} is at position {position}, not {i}"
-                    ));
-                    return Err(FfiStatus::InvalidArgument);
-                }
-                terms.push(c.bytes()?.to_vec());
-            }
-            let slop = u32::try_from(slop).map_err(|_| FfiStatus::InvalidArgument)?;
-            Clause::Phrase(PhraseQuery::new(field, terms).with_slop(slop))
-        }
-        NODE_TERM_SET => {
-            // `TermInSetQuery`: `field`, then the terms, each counted against
-            // the node limit as `IndexSearcher`'s clause visitor counts them.
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let count = c.len()?;
-            *nodes = nodes.saturating_add(count);
-            check_clause_count(*nodes)?;
-            let mut terms = Vec::new();
-            for _ in 0..count {
-                terms.push(c.bytes()?.to_vec());
-            }
-            Clause::TermInSet(TermInSetQuery::new(field, terms))
-        }
-        NODE_PREFIX => {
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            Clause::Prefix(PrefixQuery::new(field, c.bytes()?.to_vec()))
-        }
-        NODE_WILDCARD => {
-            // Lucene's syntax without its `\` escape, which the encoder never
-            // sends (such a pattern falls back).
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            Clause::Wildcard(WildcardQuery::new(field, c.bytes()?.to_vec()))
-        }
-        NODE_REGEXP => {
-            // `RegexpQuery(term)`'s grammar, `RegExp.ALL` and no match flags:
-            // the encoder sends no other. Parsed here, so a pattern the native
-            // grammar rejects fails the decode rather than the search.
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let pattern = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            lucene_codecs::regexp::RegexpPattern::new(pattern.as_bytes()).map_err(|e| {
-                set_last_error(format!("query tree: regexp {pattern:?}: {e}"));
-                FfiStatus::InvalidArgument
-            })?;
-            Clause::Regexp(RegexpQuery::new(field, pattern))
-        }
-        NODE_TERM_STATS => {
-            // The term scores from the `docFreq` its `TermStates` carry
-            // (blended across a fuzzy expansion or `cross_fields`' fields).
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let term = c.bytes()?.to_vec();
-            let doc_freq = c.i64()?;
-            if doc_freq < 1 {
-                set_last_error(format!(
-                    "query tree: a term's docFreq {doc_freq} is below 1"
-                ));
-                return Err(FfiStatus::InvalidArgument);
-            }
-            Clause::Term(TermQuery::new(field, term).with_doc_freq(doc_freq))
-        }
-        NODE_EXISTS => {
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            Clause::Exists(FieldExistsQuery::new(field))
-        }
-        NODE_TERM_RANGE => {
-            // `field`, the flags byte, then the bounds it says are present (a
-            // `null` bound in Java is an open end). `query_string`'s `[a TO
-            // b]` and a `keyword` `range`, under `CONSTANT_SCORE_BLENDED_REWRITE`.
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let flags = c.u8()?;
-            if flags
-                & !(RANGE_HAS_LOWER | RANGE_HAS_UPPER | RANGE_INCLUDE_LOWER | RANGE_INCLUDE_UPPER)
-                != 0
-            {
-                return Err(invalid(format!("query tree: term range flags {flags:#x}")));
-            }
-            let lower = if flags & RANGE_HAS_LOWER != 0 {
-                Some(c.bytes()?.to_vec())
-            } else {
-                None
-            };
-            let upper = if flags & RANGE_HAS_UPPER != 0 {
-                Some(c.bytes()?.to_vec())
-            } else {
-                None
-            };
-            let range = TermRangeQuery::new(
-                field,
-                lower,
-                upper,
-                flags & RANGE_INCLUDE_LOWER != 0,
-                flags & RANGE_INCLUDE_UPPER != 0,
-            );
-            MultiTermQuery::new(
-                MultiTermSource::TermRange(range),
-                RewriteMethod::ConstantScoreBlended,
-            )
-            .into()
-        }
-        NODE_POINT_RANGE => {
-            // A one-dimensional 8-byte `PointRangeQuery` (`long`, `date`,
-            // `double`): its inclusive bounds as the sortable longs
-            // `NumericUtils.sortableBytesToLong` reads from the packed bytes.
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let (min, max) = (c.i64()?, c.i64()?);
-            Clause::PointsRange(PointsRangeQuery::new(field, min, max))
-        }
-        NODE_POINTS_BOX => {
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let num_dims = c.len()?;
-            if !(1..=MAX_POINT_DIMS).contains(&num_dims) {
-                set_last_error(format!(
-                    "query tree: a points box of {num_dims} dimensions (want 1..={MAX_POINT_DIMS})"
-                ));
-                return Err(FfiStatus::InvalidArgument);
-            }
-            let lower = c.bytes()?.to_vec();
-            let upper = c.bytes()?.to_vec();
-            lucene_search::extended_query::PointRangeQuery::new(field, num_dims, lower, upper)
-                .map_err(|e| invalid(format!("query tree: {e}")))?
-                .into()
-        }
-        NODE_POINT_SET => {
-            // One node, as `PointInSetQuery.visit` is one leaf to Lucene's
-            // clause visitor; the points are checked and sorted by the
-            // constructor.
-            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-            let num_dims = c.len()?;
-            let bytes_per_dim = c.len()?;
-            let count = c.len()?;
-            let mut points = Vec::new();
-            for _ in 0..count {
-                points.push(c.bytes()?.to_vec());
-            }
-            lucene_search::extended_query::PointInSetQuery::new(
-                field,
-                num_dims,
-                bytes_per_dim,
-                points,
-            )
-            .map_err(|e| invalid(format!("query tree: {e}")))?
-            .into()
-        }
-        NODE_GEO_DISTANCE | NODE_GEO_POINT | NODE_GEO_SHAPE | NODE_GEO_SHAPE_BOX => {
-            return decode_geo(c, kind, start);
-        }
-        crate::jvm_nodes::NODE_TO_PARENT..=crate::jvm_nodes::NODE_LAST => {
-            return crate::jvm_nodes::decode(c, kind, start, depth, nodes);
-        }
-        crate::jvm_queries::NODE_FIRST..=crate::jvm_queries::NODE_LAST => {
-            return crate::jvm_queries::decode(c, kind, start, depth, nodes);
-        }
-        other => {
-            set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..={})",
-                crate::jvm_queries::NODE_LAST
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        }
-    })
-}
-
-/// Lucene's `PointValues.MAX_DIMENSIONS`.
-const MAX_POINT_DIMS: usize = 16;
-
-/// [`FfiStatus::InvalidArgument`] with `message` as the last error.
-fn invalid(message: String) -> FfiStatus {
-    set_last_error(message);
-    FfiStatus::InvalidArgument
-}
-
-/// A geo node (kinds 16-19, the kind byte already read; `start` is its
-/// offset), as a [`DocumentClause`](lucene_search::extended_query::DocumentClause)
-/// keyed by the node's bytes.
-fn decode_geo(c: &mut Cursor<'_>, kind: u8, start: usize) -> Result<Clause, FfiStatus> {
-    use lucene_search::document::geo::{
-        LatLonPointDistanceQuery, LatLonPointQuery, LatLonShapeBoundingBoxQuery, LatLonShapeQuery,
-        QueryRelation,
-    };
-    use lucene_search::document::DocumentQuery;
-    use lucene_util::geo::Rectangle;
-    let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
-    let built = |e: lucene_search::Error| invalid(format!("query tree: geo query: {e}"));
-    let relation = |c: &mut Cursor<'_>| -> Result<QueryRelation, FfiStatus> {
-        Ok(match c.u8()? {
-            0 => QueryRelation::Intersects,
-            1 => QueryRelation::Within,
-            2 => QueryRelation::Disjoint,
-            3 => QueryRelation::Contains,
-            other => {
-                return Err(invalid(format!(
-                    "query tree: unknown shape relation {other} (expected 0..=3)"
-                )))
-            }
-        })
-    };
-    let query: std::sync::Arc<dyn DocumentQuery> = match kind {
-        NODE_GEO_DISTANCE => {
-            let (lat, lon, radius) = (c.f64()?, c.f64()?, c.f64()?);
-            std::sync::Arc::new(
-                LatLonPointDistanceQuery::new(field, lat, lon, radius).map_err(built)?,
-            )
-        }
-        NODE_GEO_POINT => {
-            let rel = relation(c)?;
-            let geometries = decode_geometries(c)?;
-            std::sync::Arc::new(LatLonPointQuery::new(field, rel, &geometries).map_err(built)?)
-        }
-        NODE_GEO_SHAPE => {
-            let rel = relation(c)?;
-            let geometries = decode_geometries(c)?;
-            std::sync::Arc::new(LatLonShapeQuery::new(field, rel, &geometries).map_err(built)?)
-        }
-        _ => {
-            let rel = relation(c)?;
-            let (min_lat, max_lat, min_lon, max_lon) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
-            let rect = Rectangle::new(min_lat, max_lat, min_lon, max_lon)
-                .map_err(|e| invalid(format!("query tree: geo query: {e}")))?;
-            std::sync::Arc::new(LatLonShapeBoundingBoxQuery::new(field, rel, rect).map_err(built)?)
-        }
-    };
-    let key = hex(&c.buf[start..c.pos]);
-    Ok(lucene_search::extended_query::DocumentClause::new(key, query).into())
-}
-
-/// `bytes` as lowercase hex: a geo node's query-cache key.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::new();
-    // The bytes are the blob's own, already in memory.
-    out.reserve(bytes.len().saturating_mul(2));
-    for &b in bytes {
-        out.push(char::from(DIGITS[usize::from(b >> 4)]));
-        out.push(char::from(DIGITS[usize::from(b & 15)]));
-    }
-    out
-}
-
-/// A geo node's geometries: `count: i32` (at least 1), then each a tag and
-/// its coordinates (`f64`s):
-///
-/// | tag | layout | Lucene |
-/// |---|---|---|
-/// | `0` point | `lat`, `lon` | `Point` |
-/// | `1` line | `n: i32`, `n` lats, `n` lons | `Line` |
-/// | `2` polygon | `n: i32`, `n` lats, `n` lons, `holes: i32`, each hole a polygon without holes | `Polygon` |
-/// | `3` rectangle | `min_lat`, `max_lat`, `min_lon`, `max_lon` | `Rectangle` |
-/// | `4` circle | `lat`, `lon`, `radius_meters` | `Circle` |
-///
-/// Each is built through its constructor, which checks what Java's does.
-/// Counts are bounded by the blob (every vertex is 16 bytes of it).
-fn decode_geometries(
-    c: &mut Cursor<'_>,
-) -> Result<Vec<lucene_util::geo::LatLonGeometry>, FfiStatus> {
-    let count = c.len()?;
-    if count == 0 {
-        return Err(invalid("query tree: a geo query with no geometries".into()));
-    }
-    let mut out = Vec::new();
-    for _ in 0..count {
-        out.push(decode_geometry(c)?);
-    }
-    Ok(out)
-}
-
-/// One geometry of [`decode_geometries`].
-fn decode_geometry(c: &mut Cursor<'_>) -> Result<lucene_util::geo::LatLonGeometry, FfiStatus> {
-    use lucene_util::geo::{Circle, LatLonGeometry, Line, Point, Rectangle};
-    let geo = |e: lucene_util::geo::GeoError| invalid(format!("query tree: geometry: {e}"));
-    Ok(match c.u8()? {
-        GEOMETRY_POINT => {
-            let (lat, lon) = (c.f64()?, c.f64()?);
-            LatLonGeometry::Point(Point::new(lat, lon).map_err(geo)?)
-        }
-        GEOMETRY_LINE => {
-            let (lats, lons) = decode_vertices(c)?;
-            LatLonGeometry::Line(Line::new(&lats, &lons).map_err(geo)?)
-        }
-        GEOMETRY_POLYGON => LatLonGeometry::Polygon(decode_polygon(c, true)?),
-        GEOMETRY_RECTANGLE => {
-            let (a, b, d, e) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
-            LatLonGeometry::Rectangle(Rectangle::new(a, b, d, e).map_err(geo)?)
-        }
-        GEOMETRY_CIRCLE => {
-            let (lat, lon, radius) = (c.f64()?, c.f64()?, c.f64()?);
-            LatLonGeometry::Circle(Circle::new(lat, lon, radius).map_err(geo)?)
-        }
-        other => {
-            return Err(invalid(format!(
-                "query tree: unknown geometry tag {other} (expected 0..=4)"
-            )))
-        }
-    })
-}
-
-/// A polygon of [`decode_geometry`]; a hole (`holes == false`) may have
-/// none of its own, as Java's `Polygon` requires.
-fn decode_polygon(c: &mut Cursor<'_>, holes: bool) -> Result<lucene_util::geo::Polygon, FfiStatus> {
-    let (lats, lons) = decode_vertices(c)?;
-    let n = c.len()?;
-    if n > 0 && !holes {
-        return Err(invalid("query tree: a polygon hole with holes".into()));
-    }
-    let mut inner = Vec::new();
-    for _ in 0..n {
-        inner.push(decode_polygon(c, false)?);
-    }
-    lucene_util::geo::Polygon::new(&lats, &lons, inner)
-        .map_err(|e| invalid(format!("query tree: geometry: {e}")))
-}
-
-/// `n`, then `n` latitudes and `n` longitudes; `n` is checked against the
-/// bytes left before anything is allocated.
-fn decode_vertices(c: &mut Cursor<'_>) -> Result<(Vec<f64>, Vec<f64>), FfiStatus> {
-    let n = c.len()?;
-    let need = n.checked_mul(16).ok_or(FfiStatus::InvalidArgument)?;
-    if need > c.buf.len().saturating_sub(c.pos) {
-        return Err(invalid(format!(
-            "query tree: {n} vertices, but only {} bytes are left",
-            c.buf.len().saturating_sub(c.pos)
-        )));
-    }
-    let mut lats = try_with_capacity::<f64>(n)?;
-    for _ in 0..n {
-        lats.push(c.f64()?);
-    }
-    let mut lons = try_with_capacity::<f64>(n)?;
-    for _ in 0..n {
-        lons.push(c.f64()?);
-    }
-    Ok((lats, lons))
-}
-
 /// Closes a JVM reader handle. Segments a later handle reused stay open
 /// until that handle closes too.
 #[no_mangle]
@@ -3521,7 +2676,7 @@ pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
             .map(|r| r.segment_id())
             .collect();
         drop(readers);
-        crate::jvm_nodes::retain_parent_sets(&live);
+        lucene_engine::nodes::retain_parent_sets(&live);
         Ok(())
     })
 }
@@ -3529,6 +2684,14 @@ pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use lucene_engine::query_blob::{
+        GEOMETRY_CIRCLE, GEOMETRY_LINE, GEOMETRY_POINT, GEOMETRY_POLYGON, GEOMETRY_RECTANGLE,
+        NODE_BOOLEAN, NODE_BOOST, NODE_CONSTANT_SCORE, NODE_DISMAX, NODE_EXISTS, NODE_GEO_DISTANCE,
+        NODE_GEO_POINT, NODE_GEO_SHAPE, NODE_GEO_SHAPE_BOX, NODE_MATCH_ALL, NODE_MATCH_NONE,
+        NODE_PHRASE, NODE_POINTS_BOX, NODE_POINT_RANGE, NODE_POINT_SET, NODE_PREFIX, NODE_REGEXP,
+        NODE_TERM, NODE_TERM_RANGE, NODE_TERM_SET, NODE_TERM_STATS, NODE_WILDCARD, QUERY_BOOLEAN,
+        QUERY_MIN_SCORE, QUERY_TERM, QUERY_TREE,
+    };
 
     /// A real two-segment Java-written index whose `manifest.properties`
     /// records Lucene's own top hits and scores (`GenMultiSegmentScoring`).
@@ -3575,7 +2738,7 @@ pub(crate) mod tests {
 
     /// Opens the fixture with `live[i]` as segment `i`'s live-docs words
     /// (missing or empty: no deletions).
-    fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
+    pub(crate) fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
         let infos = infos();
         let counts: Vec<usize> = (0..max_docs.len())
             .map(|i| live.get(i).map_or(0, |w| w.len()))
@@ -3614,7 +2777,7 @@ pub(crate) mod tests {
     }
 
     /// Opens `fixtures/data/<rel>` as [`open_bwc`] opens a version.
-    fn open_fixture(rel: &str) -> u64 {
+    pub(crate) fn open_fixture(rel: &str) -> u64 {
         let path = format!("{}/../../fixtures/data/{rel}", env!("CARGO_MANIFEST_DIR"));
         let dir = lucene_store::FsDirectory::open(&path);
         let files: Vec<String> = std::fs::read_dir(&path)
@@ -3672,16 +2835,16 @@ pub(crate) mod tests {
                 0,
                 &[
                     (
-                        crate::clauses::OCCUR_SHOULD,
-                        crate::clauses::CLAUSE_KIND_TERM,
+                        lucene_engine::clauses::OCCUR_SHOULD,
+                        lucene_engine::clauses::CLAUSE_KIND_TERM,
                         -1,
                         0,
                         "body",
                         "alpha",
                     ),
                     (
-                        crate::clauses::OCCUR_SHOULD,
-                        crate::clauses::CLAUSE_KIND_TERM,
+                        lucene_engine::clauses::OCCUR_SHOULD,
+                        lucene_engine::clauses::CLAUSE_KIND_TERM,
                         -1,
                         0,
                         "title",
@@ -5094,7 +4257,7 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(slices, vec![vec![1, 0]]);
-        let enc = encode_terms_results(&[lucene_search::terms_agg::TermsResult {
+        let enc = encode_terms_results(&[lucene_aggs::terms_agg::TermsResult {
             buckets: vec![(b"ab".to_vec(), 2)],
             other_doc_count: 5,
         }])
@@ -5481,11 +4644,6 @@ pub(crate) mod tests {
             Err(FfiStatus::InvalidArgument.code())
         );
         ffi_close_jvm_reader(h);
-    }
-
-    #[test]
-    fn abi_version_is_the_constant() {
-        assert_eq!(ffi_jvm_abi_version(), JVM_ABI_VERSION);
     }
 
     /// Hits and scores are Lucene's own, bit for bit, from the fixture's
@@ -6430,7 +5588,7 @@ pub(crate) mod tests {
             lucene_search::query::Clause::ConstantScore(_)
         ));
         // A constant score's inner query never scores: no norms for it.
-        assert!(crate::clauses::clause_field_names(&q).is_empty());
+        assert!(lucene_engine::clauses::clause_field_names(&q).is_empty());
     }
 
     #[test]
@@ -6592,6 +5750,31 @@ pub(crate) mod tests {
     /// A prefix query's blob.
     pub(crate) fn prefix_blob(field: &str, prefix: &str) -> Vec<u8> {
         tree(N::Pre(field, prefix))
+    }
+
+    /// `+field:term #range(numeric, min, max)`'s blob.
+    pub(crate) fn term_and_range_blob(
+        field: &str,
+        term: &str,
+        numeric: &str,
+        min: i64,
+        max: i64,
+    ) -> Vec<u8> {
+        tree(N::B(
+            0,
+            vec![
+                (lucene_engine::clauses::OCCUR_MUST, N::T(field, term)),
+                (
+                    lucene_engine::clauses::OCCUR_FILTER,
+                    N::R(numeric, min, max),
+                ),
+            ],
+        ))
+    }
+
+    /// `#range(numeric, min, max)`'s blob.
+    pub(crate) fn range_blob(numeric: &str, min: i64, max: i64) -> Vec<u8> {
+        tree(N::R(numeric, min, max))
     }
 
     fn tree(n: N<'_>) -> Vec<u8> {

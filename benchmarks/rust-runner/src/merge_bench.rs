@@ -559,6 +559,7 @@ fn postings_scenario(docs_per_segment: usize, num_segments: usize, vocab: &[Stri
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         })
         .collect();
 

@@ -80,7 +80,7 @@ fn score_points_leaf(
     let ctx = LeafContext {
         points: Some(&input),
         max_doc: Some(r.max_doc),
-        ..crate::aggs::plain_context(leaf)
+        ..crate::segment_match::plain_context(leaf)
     };
     let mode = Mode::of(&*collector);
     if let Some(scorer) = build(&ctx, mode)? {

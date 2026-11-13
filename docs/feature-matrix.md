@@ -18,17 +18,17 @@ stock OpenSearch would, and the fallback is counted by reason.
 
 | Half | What it replaces | Turned on by | When it does not apply |
 |---|---|---|---|
-| **Native search** | the shard's query phase (query, sort, aggregations, `post_filter`, `min_score`, `terminate_after`, scroll), and the stored-field reads of fetch and get | installed = on; `index.lucene_rust.search.enabled` (default `true`) per index | per request, for the shapes in the fallback column below |
-| **Rust engine** | the shard's indexing engine: writes, refresh, flush, merges, soft deletes, replication | `index.lucene_rust.engine: true` per index, or `lucene_rust.engine.default: true` per node | index configurations and field types it refuses (below) |
+| **Native search** | the shard's query phase (query, sort, aggregations, `post_filter`, `min_score`, `terminate_after`, scroll), and the stored-field reads of fetch and get | installed = on; `index.search.accelerated` (default `true`) per index | per request, for the shapes in the fallback column below |
+| **accelerated engine** | the shard's indexing engine: writes, refresh, flush, merges, soft deletes, replication | every index that does not set `index.engine.accelerated: false`, by the node default `indices.engine.accelerated.default` (on; `false` opts a node out) | index configurations and field types it refuses (below) |
 
 Native search works on any index on a local file system, whichever engine
-wrote its segments. The Rust engine writes ordinary Lucene 10.5 segments,
+wrote its segments. The accelerated engine writes ordinary Lucene 10.5 segments,
 which OpenSearch's own engine can take over at any time
 ([`operations.md`](operations.md#rolling-back)).
 
 ## How much of *your* workload runs native
 
-Every search the plugin sees is counted: `native_queries`, or a fallback under
+Every search the plugin sees is counted: `accelerated_queries`, or a fallback under
 its reason.
 
 ```
@@ -59,7 +59,7 @@ OpenSearch's answer on the same shard:
 | `constant_score`, `dis_max`, `match_all` | ✅ | |
 | `match_phrase` | ✅ | exact and sloppy; a phrase with a gap (a removed stopword) falls back |
 | `prefix`, `wildcard`, `regexp`, `fuzzy` | ✅ | `regexp` with non-default flags (e.g. `case_insensitive`) and `wildcard` with a `\` escape fall back |
-| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) falls back |
+| `range` on every numeric type, `date` and `ip` | ✅ | OpenSearch's approximate range (an early-terminating range that `track_total_hits` allows) runs natively with the exact top hits (`index.search.approximation.exact`, on by default); `false` keeps OpenSearch's approximate answer |
 | `exists` | ✅ | on a vector field it falls back |
 | any other query | ? | runs native when OpenSearch rewrites it into the Lucene queries the rows above produce (term, boolean, constant-score, boost, disjunction-max, match-all/none, phrase, prefix/wildcard/regexp/fuzzy/terms, 8-byte point range, exists) -- e.g. `simple_query_string`, `match_bool_prefix` -- and falls back otherwise, counted as `query_<Class>`/`clause_<Class>` (`nested`, `geo_*`, `knn`, `script_score`, `function_score`, `span_*`, `intervals`, ...). Not verified per query type: measure with the stats below |
 
@@ -84,7 +84,7 @@ it; a plugin's similarity or a refused script falls back (`field_similarity`), a
 | `terminate_after` | ✅ | an unscored sort, a constant-score or filter-only query's hits, or with aggregations, falls back |
 | `timeout`, `allow_partial_search_results` | ✅ | checked before and after the native call; see limits |
 | `collapse`, `rescore`, `profile`, `suggest`, `highlight` | ↩ | `collapse`, `rescore`, `profile`; highlighting and suggesters run in OpenSearch's fetch phase as usual |
-| fetch: `_source`, `stored_fields`, `_id`, get / mget | ✅ | the stored-field reads (`index.lucene_rust.fetch.enabled`) |
+| fetch: `_source`, `stored_fields`, `_id`, get / mget | ✅ | the stored-field reads (`index.fetch.accelerated`) |
 | fetch: `docvalue_fields`, `fields`, `script_fields`, `inner_hits` | ↩ | OpenSearch's fetch sub-phases, unchanged |
 
 ### Aggregations
@@ -101,22 +101,22 @@ it; a plugin's similarity or a refused script falls back (`field_similarity`), a
 | `range`, `date_range` | ✅ | `missing` as for the metrics |
 | `filter`, `filters`, `global` | ✅ | |
 | any nesting of the above | ✅ | |
-| `composite` (top level) over `terms`, `histogram` and `date_histogram` sources, with `after`, `missing_bucket`, `missing_order` and sub-aggregations | ✅ | nested under another aggregation; a `script`; an `ip`, `geotile_grid` or other source type, or `terms` on a field type the numeric `terms` refuse; a `date_histogram` time zone with daylight saving; documents with `_doc_count`; an index sort led by the first source's field; a range query on the first source's field over its points; and, unless `native_shapes: all`, the shapes OpenSearch answers faster: a lone `date_histogram` source its filter rewrite counts from the points, and a first source read sorted under a match-all or `exists` query with more than `size` values (any points field, a keyword with more terms) |
+| `composite` (top level) over `terms`, `histogram` and `date_histogram` sources, with `after`, `missing_bucket`, `missing_order` and sub-aggregations | ✅ | nested under another aggregation; a `script`; an `ip`, `geotile_grid` or other source type, or `terms` on a field type the numeric `terms` refuse; a `date_histogram` time zone with daylight saving; documents with `_doc_count`; an index sort led by the first source's field; a range query on the first source's field over its points; and, unless `accelerated_shapes: all`, the shapes OpenSearch answers faster: a lone `date_histogram` source its filter rewrite counts from the points, and a first source read sorted under a match-all or `exists` query with more than `size` values (any points field, a keyword with more terms) |
 | pipeline aggregations (`avg_bucket`, `derivative`, `bucket_script`, `bucket_sort`, ...) | ✅ | they run at the coordinating node's reduce, over whichever shard results their parents produced |
 | `nested`, `reverse_nested` | ✅ | a `top_hits` below them (a child document's score is its parent's); an unmapped path |
 | everything else (`significant_text`, `sampler`, ...) | ↩ | `aggregations` |
 
-## Indexing: the Rust engine
+## Indexing: the accelerated engine
 
 | Feature | Supported | Notes |
 |---|---|---|
 | index, update, delete, bulk, refresh, flush, force merge | ✅ | |
 | realtime get, versioning, `if_seq_no`/`if_primary_term`, external versions | ✅ | |
 | soft deletes, history retention, peer recovery | ✅ | |
-| document replication | ✅ | primaries and replicas both on the Rust engine |
+| document replication | ✅ | primaries and replicas both on the accelerated engine |
 | segment replication | ✅ | Rust primary; replicas run OpenSearch's `NRTReplicationEngine` |
-| mixed clusters (some nodes with `lucene_rust.engine.node_enabled: false`) | ✅ | shards relocate and recover between the engines both ways |
-| field types | ✅ for what the Rust writer accepts | tested as the field types OpenSearch's own REST YAML suites index, which pass with every index on the Rust engine (`scripts/verify-opensearch.sh --engine --yaml`); a type those suites do not cover is not separately verified. Refused per document (400): term vectors, vector fields, `completion`, payloads, custom term frequencies, any other per-field postings or doc-values format |
+| mixed clusters (some nodes with `indices.engine.accelerated.node_enabled: false`) | ✅ | shards relocate and recover between the engines both ways |
+| field types | ✅ for what the accelerated writer accepts | tested as the field types OpenSearch's own REST YAML suites index, which pass with every index on the accelerated engine (`scripts/verify-opensearch.sh --engine --yaml`); a type those suites do not cover is not separately verified. Refused per document (400): term vectors, vector fields, `completion`, payloads, custom term frequencies, any other per-field postings or doc-values format |
 | index settings | | refused at creation: a codec other than `default`/`lucene_default`, index sorting on indices created before 3.2.0 or with realtime search, context-aware segments, remote-backed storage |
 | `index.merge.policy.*`, `index.merge_on_flush` | ✗ | the writer's own merge policy; merges run inside commits, not reported in `_stats` merges |
 | compound segments | ✗ | writes non-compound segments only (reads compound ones) |
@@ -131,7 +131,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
 
 | Reason | The request |
 |---|---|
-| `disabled` | is on an index with `index.lucene_rust.search.enabled: false` |
+| `disabled` | is on an index with `index.search.accelerated: false` |
 | `query_<Class>`, `clause_<Class>` | contains a Lucene query the native side does not run (the class names it) |
 | `approximate` | uses OpenSearch's approximate `range` |
 | `points_width` | is a points range beyond Lucene's limits (more than 16 dimensions or 16 bytes per dimension) |
@@ -162,7 +162,7 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
   (OpenSearch 3.x cannot open them either), non-default postings formats
   (`completion`: `postings_format`), and segments the k-NN plugin wrote with
   `index.knn: true`, which name the plugin's codec (`KNN9120Codec` from 2.19)
-  and fall back as `native_open_failed`. The Rust engine writes `index.codec`
+  and fall back as `native_open_failed`. The accelerated engine writes `index.codec`
   `default`, `lucene_default`, `best_compression`, and the bundled
   custom-codecs plugin's `zstd` and `zstd_no_dict` (with
   `index.codec.compression_level`) in that plugin's own format and codec names
@@ -176,4 +176,4 @@ Each is a counter under `fallbacks` in `GET /_plugins/lucene_rust/stats`.
   OpenSearch allows one per node.
 
 Limits of what does run natively -- cancellation, the per-segment query cache,
-timeouts -- are in [`opensearch-native-queries.md`](opensearch-native-queries.md#known-limits).
+timeouts -- are in [`accelerated-queries.md`](accelerated-queries.md#known-limits).

@@ -115,7 +115,22 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
 - Reads use `O_DIRECT` where the file system takes it, so a page is held
   once, in the budget, not again in the kernel's page cache. A read goes
   into a reused per-thread buffer and from there straight into the mapping
-  (`UFFDIO_COPY`); each fault wakes one handler thread (`EPOLLEXCLUSIVE`).
+  (`UFFDIO_COPY`). A fault is served on the faulting thread: the
+  `userfaultfd` raises `SIGBUS` there (`UFFD_FEATURE_SIGBUS`), the pager's
+  handler reads the page and returns, and the access runs again. That
+  saves the two thread hand-offs a handler thread costs per fault (4 KiB
+  faults: 1 thread 14.8k to 24k/s against `pread` 27-29k, 16 threads 65k
+  to 100k/s). A `SIGBUS` anywhere else goes to the handler installed
+  before (the JVM's), and an open puts the pager's handler back in front
+  if a library replaced it. Where the kernel lacks the feature (before
+  4.14), or with `PAGE_CACHE_FAULT_HANDLING=threads`, faults wake one of the
+  pager's handler threads instead (`EPOLLEXCLUSIVE`, four per CPU, 16 to
+  64). Either way a kernel access to a missing page (`write(2)` from a
+  mapping) fails with `EFAULT`, as under a user-mode-only `userfaultfd`,
+  and the index output copies those bytes through a buffer.
+- Every open of one file shares its pages: a merge reading a segment the
+  search reader has open reads the pages the reader holds, and no page is
+  held twice. Files read whole at open are shared the same way.
 - Pages are 64 KiB. A file larger than half the budget gets 4 KiB pages
   (vector data) or 16 KiB pages (the rest), since it cannot stay resident
   and a large page would bring in bytes nobody reads
@@ -132,7 +147,8 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   after the faulting page is read on an I/O thread while the faulting page
   is read alone, so the reader runs on as the rest arrives. A batch of
   scattered pages (a prefetch) is read on the calling thread and 16 I/O
-  threads at once. HNSW asks for each expanded node's neighbours' vectors in
+  threads at once; a prefetch over many files (a query over many segments)
+  puts every file's reads on the I/O threads together. HNSW asks for each expanded node's neighbours' vectors in
   one batch, disk HNSW for each beam's records, IVF for its probed clusters
   and its rerank candidates. A file whose pages are all resident costs a
   prefetch one counter read.
@@ -140,16 +156,37 @@ let dir = PagedFsDirectory::with_config("/data/idx", PagedFsConfig::vectors_only
   start on probation. A page faulted in again within about a budget's worth
   of evictions (the kernel's refault distance), or announced again by a
   prefetch, is protected, and protected pages take at most three quarters of
-  the budget, so a scan cannot push out the working set.
+  the budget, so a scan cannot push out the working set. A pass past the
+  budget goes a little below it (1/256), and its victims are released in
+  one `process_madvise` call where the kernel takes `MADV_DONTNEED` there
+  (Linux 6.13+; 6.16+ flushes the TLB once per batch), else one `madvise`
+  each.
 - In-flight reads and pinned files are outside the budget: leave headroom
   under a hard memory limit (the bench needed about 15% at 256 MiB).
-- `Pager::stats` counts faults, refaults, fault time and evictions.
+  `lucene_store::whole_file_bytes` reports the pinned files' bytes.
+- `Pager::stats` counts faults, refaults, fault time, evictions and pages
+  that could not be read.
+- A page that cannot be read (an I/O error) is retried for about two
+  seconds. A thread in a checked call (an FFI call that noted its shard,
+  `read_failures::set_checked`) then reads it as zeros for one second
+  (`UNREADABLE_HOLD`), and the failure is recorded under the file's path
+  (`lucene-store/src/read_failures.rs`), so the calls that ran while it was
+  served fail; after that the zeros are dropped and the next touch reads
+  the disk again. Any other thread (a merge, a warmer), which nothing
+  would fail, keeps retrying until the disk serves the page. A merge also
+  fails if a failure under its directory overlapped it. Announced reads
+  (`will_need`, `prefetch`) get the error directly. The process never
+  aborts for a page.
 
-In OpenSearch, `index.lucene_rust.store_mode` picks it per index: `mmap` (the
+In OpenSearch, `index.store.read_mode` picks it per index: `mmap` (the
 default), `page_cache`, or `page_cache_vectors` (vector files only, the rest
-mapped). `lucene_rust.store.page_cache.size` (default 1 GB) is the node's
+mapped). `indices.store.page_cache.size` (default 1 GB) is the node's
 budget. A node where `userfaultfd` is blocked keeps every index mapped and
-says so at startup.
+says so at startup. `GET /_plugins/lucene_rust/stats` reports the page
+cache under `page_cache` (budget, resident and whole-file bytes, faults,
+refaults, evictions, read errors, fault time), and the resident bytes are
+charged to the `indexing_buffers` breaker, whose default limit includes
+the budget, so they show in `_nodes/stats/breaker`.
 
 ### Against `mmap`
 
@@ -210,6 +247,111 @@ What it shows:
   vectors spread over every cluster and sorting by tenant does not make
   them contiguous.
 
+### Read advice for mapped files
+
+A mapped file's page fault reads ahead of the faulting page by default (Linux
+reads up to 128 KiB around it). For files read a few hundred bytes at a time
+at scattered offsets, that wastes reads and memory once the files no longer
+fit in memory, and on a volume capped in IOPS and bandwidth (EBS gp3: 3000
+IOPS, 125 MB/s) the waste is what caps throughput. Lucene 9.11 to 10.2
+advised the vector files, stored fields and term vectors `RANDOM`; 10.3 went
+back to the OS default and made per-file advice opt-in
+(`MMapDirectory.ADVISE_BY_CONTEXT`, `-Dorg.apache.lucene.store.defaultReadAdvice`).
+
+The search reader advises each mapped file by extension
+(`lucene_store::read_advice`). By default the files a vector search reads a
+vector at a time are advised random: flat vectors (`vec`), the HNSW graph
+(`vex`), IVF rerank vectors (`ivv`) and quantized codes (`veq`, `vqd`).
+Stored fields (`fdt`) are advised `auto`: random when the file is larger
+than an eighth of available memory, the OS default otherwise (see below).
+Every other file keeps the OS default. Merges open their own mappings and
+are never advised. A file advised random that is at most an eighth of
+available memory (`MemAvailable`, capped by the memory cgroup's limit) is
+also read in once at open, so a cold start still warms it in large reads;
+exhaustive (filtered) scans read their vectors ahead in 1 MiB windows.
+
+In OpenSearch, two node settings change it:
+
+- `indices.store.mmap.read_advice`: a list of `ext:advice` entries
+  (`normal`, `random`, `sequential`, `willneed`, `auto`; `*` for every
+  extension not listed, as Lucene's `defaultReadAdvice`). A list replaces the whole table,
+  so `["vec:random", "vex:random", "fdt:random"]` leaves `veq` at `normal`.
+  `willneed` reads the whole file in at open, as OpenSearch's
+  `index.store.preload` does.
+- `indices.store.mmap.warm_random` (default `true`): the read-in at
+  open of small random-advised files.
+
+On local NVMe with free memory the advice changes little (hot latency was
+within noise in every case below). It matters when vector files do not fit
+in memory, most of all on IOPS-capped volumes. HNSW 500k x 128 (266 MB), 600
+queries in a 160 MB memory cgroup, one thread; gp3 emulated with a blkio
+throttle of 3000 read IOPS and 125 MB/s on this VM's disk (an emulation, not
+EBS):
+
+| | ms/query | device reads/query | MiB read/query | gp3 qps ceiling |
+|---|---|---|---|---|
+| `mmap`, OS default | 176 | 518 | 19 | ~6 |
+| `mmap`, random | 66 | 247 | 1.0 | ~12 |
+| page cache (pager) | 71 | 239 | 1.25 | ~12 |
+
+Filtered to 2% (an exhaustive scan per segment) in the same setup: 3.5 s,
+1.25 s and 1.32 s per query. The pager reads as `mmap` with random advice
+does; it does not beat it.
+
+### Stored fields
+
+A fetch reads one chunk of the `.fdt` per document: about 60 KB for the
+default codec (`best_speed`, 1 KB documents), more for `best_compression`,
+the whole document for one larger than a chunk. Read through the OS
+default, a fault reads 128 KiB around the faulting page, about twice what a
+small-document chunk needs. Advised random alone, a fault reads one page:
+a chunk arrives a few pages at a time and a 1 MB document 256 times, which
+is 10x slower on gp3. So when the `.fdt` is advised random (the `auto`
+default once the file is larger than an eighth of available memory, or an
+explicit `fdt:random`), the stored-fields reader advises each chunk it is
+about to read `MADV_WILLNEED`: the fetch phase's prefetch does it for all its
+documents at once, and a read without a prefetch (a get by id) does it for
+its own chunk. A chunk already in memory is skipped (one `mincore`; chunks
+over 256 KiB are always advised). A file that fits keeps the OS default, so
+an index in memory pays nothing; a mapped file is the only one advised, the
+page cache and blob stores prefetch by range as before, and merges are never
+advised.
+
+`stored_fetch` example (`crates/lucene-search/examples/stored_fetch.rs`), 4
+threads, documents drawn uniformly over the index, caches dropped before
+each cold run. gp3 is emulated with a blkio throttle of 3000 read IOPS and
+125 MB/s on this VM's disk (an emulation, not EBS). Fetches per second:
+
+| index (`.fdt` size), fetch | memory | OS default | random | sequential | **auto (new default)** |
+|---|---|---|---|---|---|
+| 2M x 1 KB `best_speed` (1.3 GB), 10 docs | cached | 42-45k | 34-40k | 44k | 41-42k |
+| | 4 GB, cold, gp3 | 27-29k | 100 | 27k | 24k |
+| | 256 MB, gp3 | 110 | 97 | 130 | **268** |
+| 2M x 1 KB `best_compression` (0.7 GB), 10 docs | cached | 3.8-3.9k | 3.9k | 3.8k | 3.9k |
+| | 4 GB, cold, gp3 | 3.1-3.2k | 54 | 3.2k | 3.1k |
+| | 256 MB, gp3 | 70 | 43 | 86 | **106** |
+| 1500 x 1 MB (1 GB), 1 doc | cached | 4.8-5.6k | 5.1k | 5.6k | 5.2k |
+| | 4 GB, cold, gp3 | 3.7-4.2k | 22 | 4.0k | 3.8k |
+| | 256 MB, gp3 | 200 | 21 | 224 | **241** |
+
+`random` is random advice without the chunk read-in. Starved, `auto` reads
+the same bytes per second as the OS default but only the chunks asked for:
+small documents 2.4x, `best_compression` 1.5x, 1 MB documents 1.2x the
+fetches. The one case it costs is a file advised random that stays cached
+(the 4 GB row for small documents, a file a third of memory): about 1 µs per
+document for the `mincore`, 10% of this bench's bare fetch, a few percent of
+an OpenSearch fetch phase. A force merge of four segments (1.3 GB) alone
+takes the same time either way (22.0 s, 22.1 s, 512 MB, gp3); under a 4-thread
+fetch load it took 70 s instead of 62 s while the fetches ran 2.4x faster
+(235 against 96 per second), the two sharing the volume's budget.
+
+Quantized HNSW (`Lucene104` 7-bit codes, `.veq` 72 MB, graph 21 MB, raw
+vectors 256 MB for rescoring; `knn_formats --mmap`, 500 queries) in a 64 MB
+cgroup: `veq` advised normal vs random (the default) took 22 vs 17 ms per
+query on the local disk and 221 vs 124 ms under the gp3 throttle, reading
+3.6 vs 0.85 GiB. With 1 GB of memory both read the same and run within
+noise.
+
 ## Example: BYOK on an object store
 
 ```rust
@@ -262,30 +404,30 @@ AWS-LC's current CMVP certificate for the resolved `aws-lc-fips-sys`. A
 key provider over a KMS must itself use FIPS endpoints for an end-to-end
 FIPS deployment.
 
-## In OpenSearch: the `rust_encrypted` store type
+## In OpenSearch: the `encrypted` store type
 
-The plugin adds the store type `rust_encrypted`. Both Lucene (the JVM) and
+The plugin adds the store type `encrypted`. Both Lucene (the JVM) and
 the Rust engine read and write a shard's files in the format above, with the
 same keys.
 
 ```yaml
-index.store.type: rust_encrypted
-index.store.rust_encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
-index.store.rust_encrypted.key_provider: my-kms           # its name
-index.store.rust_encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
-index.store.rust_encrypted.kms.encryption_context: tenant=a
+index.store.type: encrypted
+index.store.encrypted.key_provider_type: aws-kms     # a CryptoKeyProviderPlugin type
+index.store.encrypted.key_provider: my-kms           # its name
+index.store.encrypted.kms.key_arn: arn:aws:kms:...   # what that provider reads
+index.store.encrypted.kms.encryption_context: tenant=a
 # optional
-index.store.rust_encrypted.chunk_size: 64kb
-index.store.rust_encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
-index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
+index.store.encrypted.chunk_size: 64kb
+index.store.encrypted.data_key_ttl: 1h     # one KMS GenerateDataKey per period, not per file
+index.store.encrypted.key_cache_ttl: 5m    # how long a revoked key keeps working
 ```
 
 - **Keys:** keys come from OpenSearch's `MasterKeyProvider`, through any
   installed `CryptoKeyProviderPlugin` (`crypto-kms` for AWS KMS). The
   key-encryption key never leaves the KMS.
-  - The provider type `lucene_rust_local` instead wraps data keys with a
-    key in the node keystore (`lucene_rust.store.local_key`, base64 of 32
-    bytes; id `lucene_rust.store.local_key_id`). It is meant for tests and
+  - The provider type `local_keystore` instead wraps data keys with a
+    key in the node keystore (`indices.store.encrypted.local_key`, base64 of 32
+    bytes; id `indices.store.encrypted.local_key_id`). It is meant for tests and
     for clusters without a KMS.
 - **How the engine gets keys:** when the plugin creates the directory, it
   binds the shard path in the native library to the same key source
@@ -308,7 +450,7 @@ index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps w
 - **No silent plaintext:**
   - The Rust engine refuses an index whose `index.store.type` it cannot
     write through (another plugin's encryption, say). Use
-    `rust_encrypted` for encryption at rest.
+    `encrypted` for encryption at rest.
   - The native read path declines any store directory that changes bytes on
     disk.
 - **FIPS:** the plugin built with `gradle -Pfips bundlePlugin` produces
@@ -322,41 +464,58 @@ index.store.rust_encrypted.key_cache_ttl: 5m    # how long a revoked key keeps w
   At startup the node checks that both are in FIPS mode, and refuses to
   start otherwise. The default zip uses the JDK's own providers.
 
-## Demand decryption
+## Decryption through the page cache
 
 An input is a whole contiguous file, which is what lets codecs read a
-memory-mapped file at memory speed. By default an encrypted file is
-therefore decrypted whole when it opens and costs its size in RAM while a
-reader holds it.
+memory-mapped file at memory speed. Over a directory that reads pages
+itself, an encrypted file is opened through `Directory::open_decoded`
+instead: only its header is read at open (a reader then checks the footer,
+as Lucene does), and each page of whole chunks is authenticated and
+decrypted once, as it is read into that directory's page cache. Readers see
+plain memory; nothing is decrypted per read.
 
-With demand decryption on (`EncryptedDirectory::with_lazy_decrypt`, the
-store wrapper setting `encryption.lazy_decrypt`, or the plugin's node
-setting `lucene_rust.store.encrypted.lazy_decrypt`), an encrypted file is
-instead authenticated in full when it opens, then mapped and decrypted
-chunk by chunk on first touch (`lucene-store-crypto/src/lazy.rs`). Decrypted
-chunks stay resident up to a process-wide budget (default 512 MiB; the
-plugin's `lucene_rust.store.encrypted.decrypt_cache_size`); past it the
-oldest are dropped, and the next touch decrypts that chunk again from the
-ciphertext in the page cache. Plaintext is never written to disk.
+- Local disk: `PagedFsDirectory` (the demand pager, `lucene-store/src/paged_input.rs`)
+  reads the ciphertext with `O_DIRECT`, so it never sits in the kernel's
+  page cache, and holds the plaintext in its process-wide budget (the
+  plugin's `indices.store.page_cache.size`, shared with
+  `store_mode: page_cache` shards). Pages are whole chunks: 64 KiB with the
+  default chunk size, sized up against the budget like plain files.
+- Blob store: `CachedBlobDirectory` caches pages of whole chunks as
+  ciphertext (in memory or on the NVMe tier) and decrypts into the reader's
+  mapping.
+- Any other directory, or Linux without `userfaultfd`: each file is
+  authenticated and decrypted whole when it opens and costs its size in RAM
+  while a reader holds it.
+
+The plugin's `encrypted` shards always read through the pager where it
+runs. The node settings `indices.store.encrypted.lazy_decrypt` and
+`indices.store.encrypted.decrypt_cache_size` (the earlier demand mode,
+which authenticated whole files at open and decrypted from a mapping of the
+ciphertext) are deprecated and ignored.
 
 Opened plaintext is shared through a `PlaintextCache`: while any input of a
 file is alive, opening it again, from the same directory or from another
 one given the same cache, costs a reference count. In the plugin the
 writer's and the readers' directories of one shard share one cache.
 
-On a 1M-document encrypted index (143 MB; 4 cores; the
-`lucene-store-crypto` example `encrypted_memory`), with a reader open and
-term queries run:
+On a 2M-document index in 8+ segments (290 MB; 4 cores, local disk;
+`lucene-store-crypto` example `encrypted_store_bench`, kernel caches dropped
+before each run, mean of two runs), with a reader open and 116 term queries
+per pass:
 
-| | whole-file | demand |
-|---|---|---|
-| anonymous memory | 138 MB | 25 MB |
-| reader open | ~50 ms | ~75 ms |
-| first 16 term queries | 4.4 ms | 8 to 9 ms |
-| warm, best of 30 passes | 2.8 to 3.1 ms | 2.8 to 3.1 ms |
+| | plain, mmap | plain, pager | encrypted, whole-file | encrypted, earlier demand mode | encrypted, pager |
+|---|---|---|---|---|---|
+| reader open | 62 ms | 99 ms | 168 ms | 186 ms | 121 ms |
+| anonymous memory after the queries | 3 MB | 52 MB | 280 MB | 48 MB | 58 MB |
+| kernel page cache mapped | 45 MB | 7 MB | 7 MB | 284 MB (ciphertext) | 7 MB |
+| first (cold) pass | 27 to 46 ms | 40 to 44 ms | 19 to 21 ms | 35 to 44 ms | 50 to 55 ms |
+| warm pass, median of 20 | 15 ms | 14 to 18 ms | 16 ms | 16 to 17 ms | 17 to 18 ms |
+| force merge to one segment | 5.4 s | 6.1 s | 5.6 s | 5.4 s | 6.4 s |
 
-The budget should cover the hot working set: at 8 MiB against a 25 MB
-working set the same queries take ~35 ms.
+Whole-file decryption pays at open for what the first queries then find in
+memory, and holds the whole index on the heap. With a 32 MiB budget the
+paged reader holds 34 MB and its warm passes take 62 to 67 ms (53 to 57 ms
+plain, through the pager).
 
 What it needs and how it fails:
 
@@ -364,23 +523,30 @@ What it needs and how it fails:
   seccomp profiles (and Kubernetes `RuntimeDefault`) block it; a container
   needs a profile that allows `userfaultfd`. Where it is unavailable, or a
   file's chunk size is not a whole number of pages, files are decrypted
-  whole and the plugin logs a warning at startup.
+  whole.
 - A process without `CAP_SYS_PTRACE` (and with
   `vm.unprivileged_userfaultfd = 0`) gets user-mode-only faults: the kernel
   cannot fault a page in, so a system call reading straight from a page
   that is not resident fails with `EFAULT`. `FsIndexOutput` copies such
   bytes through a buffer and writes them again; other code handing input
   bytes to the kernel must do the same.
-- A chunk that fails authentication after the file opened means the
-  ciphertext changed under an open reader. A memory access cannot return an
-  error, so the process aborts rather than hand out unauthenticated bytes.
-- One handler thread serves every fault, so cold reads are serialized
-  behind it.
+- A chunk that fails authentication (the ciphertext changed or rotted under
+  an open reader) is not retried and does not end the process. Reads that
+  announce themselves (`Input::will_need`, `prefetch`) get a corruption
+  error, and so does every later one on that file. A plain memory access
+  cannot return an error, so the page reads as zeros, and the failure is
+  recorded under the file's path (`lucene-store/src/read_failures.rs`) until
+  the file is closed. The plugin's FFI layer fails any call that read the
+  shard while a failure is recorded under it (`Io`, "failed
+  authentication"); a merge reading the bad chunk fails its checksum check.
+  OpenSearch then fails the shard and recovers it from a replica.
+- An I/O error reading a page fails the calls that read it, as for an
+  unencrypted paged shard, and the page is read again on its next touch.
 
 ## Limits to know
 
-- Without demand decryption, an encrypted or remote file is read whole into
-  memory when opened (see above).
+- Without the pager (no `userfaultfd`), an encrypted or remote file is read
+  whole into memory when opened (see above).
 - `BlobDirectory`'s default lock only excludes writers in one process. A store
   shared by several writer processes needs its own `LockFactory`.
 - File names are not encrypted, and file sizes are visible (plus a small
@@ -391,4 +557,4 @@ What it needs and how it fails:
   encrypted replica: peer recovery copies its files again.
 - In OpenSearch, Lucene's side reads an encrypted file a chunk at a time,
   decrypting the chunk under the read position. The Rust side decrypts
-  whole files when it opens them, or on demand as above.
+  each chunk once into the page cache, as above.

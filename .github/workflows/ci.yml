@@ -415,10 +415,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - name: lucene-search tests in release
-        run: cargo nextest run --release -p lucene-search
-      - name: lucene-search doctests in release
-        run: cargo test --release -p lucene-search --doc
+      - name: lucene-search and lucene-aggs tests in release
+        run: cargo nextest run --release -p lucene-search -p lucene-aggs
+      - name: lucene-search and lucene-aggs doctests in release
+        run: cargo test --release -p lucene-search -p lucene-aggs --doc
 
   # ---------------------------------------------------------------------------
   # The FIPS build of the encryption layer: lucene-store-crypto with AWS-LC's

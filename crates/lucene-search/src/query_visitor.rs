@@ -216,6 +216,43 @@ impl QueryVisitor for TermCollector {
     }
 }
 
+/// A doc-values or point query's `visit`: a leaf when its field is accepted.
+fn leaf_on(visitor: &mut dyn QueryVisitor, field: &str, clause: &Clause) {
+    if visitor.accept_field(field) {
+        visitor.visit_leaf(clause);
+    }
+}
+
+/// A recorded `visit` of `clause`, done again on `visitor`.
+fn replay(
+    record: &crate::extended_query::VisitRecord,
+    clause: &Clause,
+    visitor: &mut dyn QueryVisitor,
+) {
+    use crate::extended_query::VisitEvent;
+    let accepts = |v: &dyn QueryVisitor, guard: &Option<String>| {
+        guard.as_deref().is_none_or(|f| v.accept_field(f))
+    };
+    for event in &record.events {
+        match event {
+            VisitEvent::Terms { guard, terms } => {
+                if accepts(visitor, guard) {
+                    visitor.consume_terms(clause, terms);
+                }
+            }
+            VisitEvent::Leaf { guard } => {
+                if accepts(visitor, guard) {
+                    visitor.visit_leaf(clause);
+                }
+            }
+            VisitEvent::Sub(occur, sub) => {
+                with_sub(visitor, *occur, clause, &mut |v| replay(sub, clause, v));
+            }
+            VisitEvent::Node(node) => visit(node, visitor),
+        }
+    }
+}
+
 /// Runs `f` with the visitor `getSubVisitor(occur, parent)` gives.
 fn with_sub(
     visitor: &mut dyn QueryVisitor,
@@ -482,6 +519,55 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             crate::extended_query::ExtendedQuery::MultiTerm(m) => {
                 visit_source(&m.source, clause, visitor);
             }
+            // `IndexOrDocValuesQuery.visit`: both of its queries, as `MUST`
+            crate::extended_query::ExtendedQuery::IndexOrDocValues(q) => {
+                with_sub(visitor, Occur::Must, clause, &mut |v| {
+                    visit(&q.index_query, v);
+                    visit(&q.dv_query, v);
+                });
+            }
+            // the doc-values and point queries' `visit`: a leaf on an accepted field
+            crate::extended_query::ExtendedQuery::NumericDocValuesRange(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            crate::extended_query::ExtendedQuery::IndexSortRange(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            crate::extended_query::ExtendedQuery::PointRange(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            crate::extended_query::ExtendedQuery::PointInSet(q) => {
+                leaf_on(visitor, &q.field, clause);
+            }
+            // OpenSearch's `FunctionScoreQuery.visit`: its query, as `MUST`
+            crate::extended_query::ExtendedQuery::VisitOnly(inner) => {
+                with_sub(visitor, Occur::Must, clause, &mut |v| visit(inner, v));
+            }
+            crate::extended_query::ExtendedQuery::Visited(record) => {
+                replay(record, clause, visitor);
+            }
+            // `MultiPhrasePrefixQuery.visit`: every position but the prefix one
+            crate::extended_query::ExtendedQuery::MultiPhrasePrefix(q) => {
+                if !visitor.accept_field(&q.field) {
+                    return;
+                }
+                let whole = &q.term_arrays[..q.term_arrays.len().saturating_sub(1)];
+                with_sub(visitor, Occur::Must, clause, &mut |v| {
+                    for position in whole {
+                        let terms: Vec<Term> = position
+                            .iter()
+                            .map(|t| Term::new(q.field.clone(), t.clone()))
+                            .collect();
+                        if terms.len() == 1 {
+                            v.consume_terms(clause, &terms);
+                        } else {
+                            with_sub(v, Occur::Should, clause, &mut |sv| {
+                                sv.consume_terms(clause, &terms)
+                            });
+                        }
+                    }
+                });
+            }
             crate::extended_query::ExtendedQuery::Document(d) => {
                 if d.query.field().is_none_or(|f| visitor.accept_field(f)) {
                     visitor.visit_leaf(clause);
@@ -645,6 +731,68 @@ mod tests {
     use crate::query::{BooleanQuery, TermQuery};
 
     #[test]
+    fn a_visit_record_replays_behind_its_guards_and_sub_visitors() {
+        use crate::extended_query::{ExtendedQuery, VisitEvent, VisitRecord};
+        struct Seen(Vec<String>, bool);
+        impl QueryVisitor for Seen {
+            fn accept_field(&self, field: &str) -> bool {
+                field == "f"
+            }
+            fn consume_terms(&mut self, _q: &Clause, terms: &[Term]) {
+                self.0.extend(
+                    terms
+                        .iter()
+                        .map(|t| String::from_utf8_lossy(&t.bytes).into()),
+                );
+            }
+            fn visit_leaf(&mut self, _q: &Clause) {
+                self.0.push("leaf".into());
+            }
+            fn sub_visitor(&mut self, occur: Occur, _parent: &Clause) -> SubVisitor {
+                if self.1 && occur == Occur::MustNot {
+                    SubVisitor::Empty
+                } else {
+                    SubVisitor::Same
+                }
+            }
+        }
+        let terms = |guard: Option<&str>, t: &str| VisitEvent::Terms {
+            guard: guard.map(str::to_owned),
+            terms: vec![Term::new("f", t)],
+        };
+        let record = VisitRecord {
+            events: vec![
+                terms(Some("f"), "a"),
+                terms(Some("g"), "b"),
+                terms(None, "c"),
+                VisitEvent::Leaf {
+                    guard: Some("g".into()),
+                },
+                VisitEvent::Leaf { guard: None },
+                VisitEvent::Sub(
+                    Occur::MustNot,
+                    VisitRecord {
+                        events: vec![terms(None, "d")],
+                    },
+                ),
+                VisitEvent::Node(Clause::Term(TermQuery::new("f", "e"))),
+            ],
+        };
+        let q = Clause::Extended(Box::new(ExtendedQuery::Visited(record)));
+        let seen = |skip_not| {
+            let mut v = Seen(Vec::new(), skip_not);
+            visit(&q, &mut v);
+            v.0
+        };
+        assert_eq!(seen(false), ["a", "c", "leaf", "d", "e"]);
+        assert_eq!(seen(true), ["a", "c", "leaf", "e"]);
+        let Clause::Extended(e) = &q else {
+            unreachable!()
+        };
+        assert_eq!(e.children().len(), 1);
+    }
+
+    #[test]
     fn span_wrappers_visit_what_they_wrap() {
         use crate::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
         use crate::query::PrefixQuery;
@@ -748,6 +896,165 @@ mod tests {
             false,
         )));
         assert_eq!(seen(score), ["b"]);
+    }
+
+    #[test]
+    fn index_or_doc_values_visits_both_and_ranges_only_on_accepted_fields() {
+        use crate::extended_query::{
+            ExtendedQuery, IndexOrDocValuesQuery, NumericDocValuesRangeQuery,
+        };
+        use crate::query::PointsRangeQuery;
+        struct Leaves {
+            field: &'static str,
+            leaves: Vec<String>,
+        }
+        impl QueryVisitor for Leaves {
+            fn accept_field(&self, field: &str) -> bool {
+                field == self.field
+            }
+            fn visit_leaf(&mut self, query: &Clause) {
+                self.leaves.push(match query {
+                    Clause::PointsRange(_) => "points".into(),
+                    Clause::Extended(e) => e.name().into(),
+                    _ => "other".into(),
+                });
+            }
+        }
+        let q: Clause = IndexOrDocValuesQuery::new(
+            PointsRangeQuery::new("num", 1, 5),
+            NumericDocValuesRangeQuery::new("num", 1, 5),
+        )
+        .into();
+        let mut other = Leaves {
+            field: "body",
+            leaves: Vec::new(),
+        };
+        visit(&q, &mut other);
+        assert!(other.leaves.is_empty());
+        let mut num = Leaves {
+            field: "num",
+            leaves: Vec::new(),
+        };
+        visit(&q, &mut num);
+        assert_eq!(num.leaves.len(), 2);
+        assert_eq!(num.leaves[0], "points");
+        let dv = Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(
+            NumericDocValuesRangeQuery::new("num", 1, 5),
+        )));
+        let mut other = Leaves {
+            field: "body",
+            leaves: Vec::new(),
+        };
+        visit(&dv, &mut other);
+        assert!(other.leaves.is_empty());
+    }
+
+    #[test]
+    fn a_phrase_prefix_visits_its_whole_terms_and_no_leaf() {
+        use crate::extended_query::MultiPhrasePrefixQuery;
+        let q: Clause = MultiPhrasePrefixQuery::new(
+            "f",
+            vec![
+                vec![b"a".to_vec()],
+                vec![b"b".to_vec(), b"c".to_vec()],
+                vec![b"pre".to_vec()],
+            ],
+            vec![0, 1, 2],
+            0,
+        )
+        .unwrap()
+        .into();
+        let terms: Vec<_> = extract_terms(&q).into_iter().map(|t| t.bytes).collect();
+        assert_eq!(terms, [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+        struct Seen {
+            field: &'static str,
+            leaf: bool,
+            terms: usize,
+        }
+        impl QueryVisitor for Seen {
+            fn accept_field(&self, field: &str) -> bool {
+                field == self.field
+            }
+            fn visit_leaf(&mut self, _query: &Clause) {
+                self.leaf = true;
+            }
+            fn consume_terms(&mut self, _query: &Clause, terms: &[Term]) {
+                self.terms += terms.len();
+            }
+        }
+        let mut on = Seen {
+            field: "f",
+            leaf: false,
+            terms: 0,
+        };
+        visit(&q, &mut on);
+        assert!(!on.leaf);
+        assert_eq!(on.terms, 3);
+        let mut off = Seen {
+            field: "g",
+            leaf: false,
+            terms: 0,
+        };
+        visit(&q, &mut off);
+        assert_eq!((off.leaf, off.terms), (false, 0));
+        assert!(MultiPhrasePrefixQuery::new("f", Vec::new(), Vec::new(), 0).is_err());
+        assert!(MultiPhrasePrefixQuery::new("f", vec![Vec::new()], vec![0], 0).is_err());
+    }
+
+    #[test]
+    fn a_phrase_prefix_rewrites_over_the_terms_it_completes() {
+        use crate::extended_query::MultiPhrasePrefixQuery;
+        use crate::query::MultiPhraseQuery;
+        let terms: Vec<Vec<u8>> = ["brown", "quack", "quick", "quiet", "zoo"]
+            .iter()
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
+        let q = |arrays: Vec<Vec<&str>>, max: i32| {
+            let n = arrays.len() as i32;
+            MultiPhrasePrefixQuery::new(
+                "f",
+                arrays
+                    .into_iter()
+                    .map(|a| a.into_iter().map(|t| t.as_bytes().to_vec()).collect())
+                    .collect(),
+                (0..n).collect(),
+                1,
+            )
+            .unwrap()
+            .with_max_expansions(max)
+        };
+        let expected = MultiPhraseQuery::with_positions(
+            "f",
+            [
+                (vec![b"brown".to_vec()], 0),
+                (vec![b"quick".to_vec(), b"quiet".to_vec()], 1),
+            ],
+        )
+        .unwrap()
+        .with_slop(1);
+        assert_eq!(
+            q(vec![vec!["brown"], vec!["qui"]], 50).rewrite_over(&terms),
+            Clause::MultiPhrase(expected)
+        );
+        // one expansion per prefix until there are more than the maximum
+        let Clause::MultiPhrase(m) = q(vec![vec!["q", "z"]], 1).rewrite_over(&terms) else {
+            panic!("a multi-phrase")
+        };
+        assert_eq!(m.term_arrays, [vec![b"quack".to_vec(), b"zoo".to_vec()]]);
+        let Clause::MultiPhrase(m) = q(vec![vec!["q", "z", "b"]], 1).rewrite_over(&terms) else {
+            panic!("a multi-phrase")
+        };
+        assert_eq!(m.term_arrays.len(), 1);
+        assert_eq!(m.term_arrays[0].len(), 2);
+        assert!(matches!(
+            q(vec![vec!["x"]], 50).rewrite_over(&terms),
+            Clause::MatchNoDocs(_)
+        ));
+        let Clause::Boolean(b) = q(vec![vec!["brown"], vec!["x"]], 50).rewrite_over(&terms) else {
+            panic!("a boolean")
+        };
+        assert!(matches!(b.must[0], Clause::MultiPhrase(_)));
+        assert!(matches!(b.must[1], Clause::MatchNoDocs(_)));
     }
 
     #[test]

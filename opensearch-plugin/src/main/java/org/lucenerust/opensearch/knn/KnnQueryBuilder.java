@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
@@ -82,6 +83,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     private Float minScore;
     private Integer efSearch;
     private Integer nprobes;
+    /** {@code method_parameters.exploration_slack}: this plugin's opt-in adaptive beam stop. */
+    private Float explorationSlack;
     private QueryBuilder filter;
     /** {@code rescore}: null unset, false off, true on (with {@link #oversample} when given). */
     private Boolean rescore;
@@ -115,6 +118,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         oversample = in.readOptionalFloat();
         expandNested = in.readOptionalBoolean();
         ignoreUnmapped = in.readBoolean();
+        explorationSlack = in.readOptionalFloat();
         groupBy = in.readOptionalString();
         groupSize = in.readOptionalInt();
     }
@@ -142,6 +146,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         out.writeOptionalFloat(oversample);
         out.writeOptionalBoolean(expandNested);
         out.writeBoolean(ignoreUnmapped);
+        out.writeOptionalFloat(explorationSlack);
         out.writeOptionalString(groupBy);
         out.writeOptionalInt(groupSize);
     }
@@ -316,6 +321,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                 Object np = methodParameters.get("nprobes");
                 b.efSearch = ef == null ? null : ((Number) ef).intValue();
                 b.nprobes = np == null ? null : ((Number) np).intValue();
+                b.explorationSlack = KnnQueryParsers.explorationSlack(methodParameters);
             }
             if (rescoreContext != null) {
                 b.rescore = rescoreContext.isRescoreEnabled();
@@ -488,6 +494,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             Object np = methodParameters.get("nprobes");
             efSearch = ef == null ? null : ((Number) ef).intValue();
             nprobes = np == null ? null : ((Number) np).intValue();
+            explorationSlack = KnnQueryParsers.explorationSlack(methodParameters);
             methodParameters = null;
         }
         if (Boolean.TRUE.equals(rescore) && oversample != null) {
@@ -551,13 +558,16 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (filter != null) {
             builder.field(FILTER_FIELD.getPreferredName(), filter);
         }
-        if (efSearch != null || nprobes != null) {
+        if (efSearch != null || nprobes != null || explorationSlack != null) {
             builder.startObject(METHOD_PARAMETERS_FIELD.getPreferredName());
             if (efSearch != null) {
                 builder.field("ef_search", efSearch);
             }
             if (nprobes != null) {
                 builder.field("nprobes", nprobes);
+            }
+            if (explorationSlack != null) {
+                builder.field(KnnQueryParsers.EXPLORATION_SLACK, explorationSlack);
             }
             builder.endObject();
         }
@@ -608,6 +618,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         c.minScore = minScore;
         c.efSearch = efSearch;
         c.nprobes = nprobes;
+        c.explorationSlack = explorationSlack;
         c.filter = filter;
         c.rescore = rescore;
         c.oversample = oversample;
@@ -691,16 +702,20 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         Query filterQuery = filterQuery(context);
         if (k != null) {
             KnnTopVectorQuery.Grouping grouping = grouping(context, parents);
+            KnnTopVectorQuery.RecallTarget recall = recallTarget(context);
             KnnTopVectorQuery top;
             if (config.ivf()) {
                 // IVF sizes its own rerank from k; ef_search widens it only when asked for.
                 int candidates = efSearch == null ? k : Math.max(k, efSearch);
                 top = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withNprobes(
                     nprobes == null ? 0 : nprobes
-                );
+                ).withRecallTarget(recall);
             } else {
                 int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
-                top = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand);
+                top = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
+                if (explorationSlack != null) {
+                    top = top.withExplorationSlack(explorationSlack);
+                }
             }
             return grouping == null ? top : top.withGrouping(grouping);
         }
@@ -791,6 +806,29 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     }
 
     /**
+     * The index's {@code index.knn.target_recall} for this shard's field, or null when it
+     * is off or the query asks for its own depth ({@code ef_search} or {@code nprobes}), which is
+     * then searched as asked.
+     */
+    private KnnTopVectorQuery.RecallTarget recallTarget(QueryShardContext context) {
+        if (efSearch != null || nprobes != null) {
+            return null;
+        }
+        Settings settings = context.getIndexSettings().getSettings();
+        float recall = RustEngineSupport.KNN_TARGET_RECALL.get(settings);
+        if (recall <= 0f) {
+            return null;
+        }
+        String key = context.index().getUUID() + "/" + context.getShardId() + "/" + fieldName;
+        return new KnnTopVectorQuery.RecallTarget(
+            recall,
+            RustEngineSupport.KNN_RECALL_SAMPLE_RATE.get(settings),
+            RustEngineSupport.KNN_RECALL_CHECK_BUDGET.get(settings),
+            key
+        );
+    }
+
+    /**
      * {@code IndexHyperParametersUtil.getHNSWEFSearchValue}: the index's {@code
      * knn.algo_param.ef_search}, whose default is 512 for indexes created before 2.12.
      */
@@ -811,6 +849,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             && Objects.equals(minScore, o.minScore)
             && Objects.equals(efSearch, o.efSearch)
             && Objects.equals(nprobes, o.nprobes)
+            && Objects.equals(explorationSlack, o.explorationSlack)
             && Objects.equals(filter, o.filter)
             && Objects.equals(rescore, o.rescore)
             && Objects.equals(oversample, o.oversample)
@@ -822,7 +861,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
 
     @Override
     protected int doHashCode() {
-        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, filter, rescore, oversample, expandNested, ignoreUnmapped, groupBy, groupSize);
+        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, explorationSlack, filter, rescore, oversample, expandNested, ignoreUnmapped, groupBy, groupSize);
     }
 
     @Override

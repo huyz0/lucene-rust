@@ -35,7 +35,9 @@ final class FieldRegistry {
                 e = fields.get(docSchema.name);
                 if (e == null) {
                     docSchema.checkSupported();
-                    e = new Entry(docSchema, registrar.register(docSchema));
+                    // The document's schema is reused for the next document; the registry keeps a copy.
+                    FieldSchema schema = docSchema.copy();
+                    e = new Entry(schema, registrar.register(schema));
                     fields.put(docSchema.name, e);
                     return e;
                 }

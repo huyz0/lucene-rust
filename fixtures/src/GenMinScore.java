@@ -39,7 +39,7 @@ import java.util.stream.Stream;
 
 /**
  * OpenSearch's {@code min_score}, recorded from Lucene for
- * crates/lucene-search/tests/min_score_fixtures.rs.
+ * crates/lucene-aggs/tests/min_score_fixtures.rs.
  *
  * <p>OpenSearch puts a {@code MinimumScoreCollector} outside every other collector of the query
  * phase (QueryPhase: "apply the minimum score after multi collector so we filter aggs as well"): a

@@ -419,7 +419,7 @@ documents in a different order than Lucene's would (contents equal).
 outside `SUPPORTED_POSTINGS_FORMATS` (`Lucene90`, `Lucene99`, `Lucene912`,
 `Lucene101`, `Lucene103`, `Lucene104`) -- a `completion` field's
 `Completion104`, say -- instead of for anything but `Lucene104`.
-`feature-matrix.md` and `opensearch-native-queries.md` say so.
+`feature-matrix.md` and `accelerated-queries.md` say so.
 
 **Verified:** `lucene-ffi`'s
 `jvm_reader.rs::every_bwc_version_is_served_natively_like_the_current_codec`
@@ -479,7 +479,7 @@ through `NativeReaders` and answer its term, boolean, sorted, aggregated,
       nodes (723), and after `_forcemerge?max_num_segments=1` on both nodes
       rewrote every segment as `10.5.0` (707; after the merge the nested sorts
       may fall back as `sort_nested`, by design, once no deletions remain).
-      3,879 checks, 0 failures, `native_errors` 0. One request the stock node
+      3,879 checks, 0 failures, `accelerated_errors` 0. One request the stock node
       itself cannot answer after the merge (`nested avg desc`, an
       `unsupported_operation_exception` from OpenSearch) is reported, not
       compared. Seen to fail: without `Lucene912` in

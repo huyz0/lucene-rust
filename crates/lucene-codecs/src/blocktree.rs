@@ -98,7 +98,7 @@
 //! ## Zstd blocks
 //!
 //! A dictionary written with `postings_writer::WriteOptions::zstd_term_blocks`
-//! (the `RustZstd104` postings format) carries [`ZSTD_TERMS_CODEC_NAME`] and
+//! (the `ZstdTerms104` postings format) carries [`ZSTD_TERMS_CODEC_NAME`] and
 //! its siblings in place of the three stock header names, so stock Lucene
 //! refuses it. Its blocks may use code `3`: a whole block after its token as
 //! one bare zstd frame (`crate::blocktree_writer::BlockZstd` has the layout),
@@ -130,9 +130,9 @@ pub(crate) const TERMS_META_CODEC_NAME: &str = "BlockTreeTermsMeta";
 /// (`blocktree_writer::BlockZstd`) and whose `.tmd` field records each end
 /// with the field's zstd dictionary (`vInt` length, then the bytes; 0 for
 /// none). Stock Lucene rejects these names, so it never misreads a zstd block.
-pub(crate) const ZSTD_TERMS_CODEC_NAME: &str = "RustZstdBlockTreeTermsDict";
-pub(crate) const ZSTD_TERMS_INDEX_CODEC_NAME: &str = "RustZstdBlockTreeTermsIndex";
-pub(crate) const ZSTD_TERMS_META_CODEC_NAME: &str = "RustZstdBlockTreeTermsMeta";
+pub(crate) const ZSTD_TERMS_CODEC_NAME: &str = "ZstdBlockTreeTermsDict";
+pub(crate) const ZSTD_TERMS_INDEX_CODEC_NAME: &str = "ZstdBlockTreeTermsIndex";
+pub(crate) const ZSTD_TERMS_META_CODEC_NAME: &str = "ZstdBlockTreeTermsMeta";
 const VERSION_START: i32 = 0;
 pub(crate) const VERSION_CURRENT: i32 = 0;
 

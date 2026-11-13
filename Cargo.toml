@@ -34,12 +34,16 @@ members = [
     "crates/lucene-disk-hnsw",
     "crates/lucene-expressions",
     "crates/lucene-grouping",
+    "crates/lucene-aggs",
+    "crates/lucene-spatial3d",
+    "crates/lucene-spatial4j",
     "crates/lucene-classification",
     "crates/lucene-suggest",
     "crates/lucene-spatial-extras",
     "crates/lucene-queryparser",
     "crates/lucene-monitor",
     "crates/lucene-highlighter",
+    "crates/lucene-engine",
     "crates/lucene-ffi",
     "crates/lucene-tools",
     "crates/lucene-test-framework",
@@ -79,12 +83,16 @@ default-members = [
     "crates/lucene-disk-hnsw",
     "crates/lucene-expressions",
     "crates/lucene-grouping",
+    "crates/lucene-aggs",
+    "crates/lucene-spatial3d",
+    "crates/lucene-spatial4j",
     "crates/lucene-classification",
     "crates/lucene-suggest",
     "crates/lucene-spatial-extras",
     "crates/lucene-queryparser",
     "crates/lucene-monitor",
     "crates/lucene-highlighter",
+    "crates/lucene-engine",
     "crates/lucene-ffi",
     "crates/lucene-tools",
 ]
@@ -112,7 +120,9 @@ crc32fast = "1"
 # same lock Java's `FileChannel.tryLock` takes, so the two engines exclude each
 # other. Already in the tree through memmap2 (docs/licences.md).
 libc = "0.2"
-lz4_flex = "0.11"
+# Substring search over a block of values (`lucene-codecs`' `substring`).
+# Already in the tree through `regex` (docs/licences.md).
+memchr = "2"
 miniz_oxide = "0.9"
 # Zstandard, through the C library zstd-jni wraps on the JVM: the `zstd` and
 # `zstd_no_dict` stored fields of OpenSearch's custom-codecs plugin

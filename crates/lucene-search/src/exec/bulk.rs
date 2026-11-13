@@ -1965,9 +1965,38 @@ pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
         asserting.score(bulk, mode, live_docs, collector, 0, NO_MORE_DOCS)?;
         return Ok(());
     }
-    bulk.score(mode, live_docs, collector, 0, NO_MORE_DOCS)?;
+    if !lucene_util::memory::in_scope() {
+        bulk.score(mode, live_docs, collector, 0, NO_MORE_DOCS)?;
+        return Ok(());
+    }
+    // A request's segment in growing windows, as OpenSearch's
+    // `CancellableBulkScorer` scores one: between them, a cancel or the
+    // request's memory bound stops it, and a passed deadline (a search
+    // `timeout`) ends its collection with what it collected.
+    let mut interval = CANCELLABLE_INITIAL_INTERVAL;
+    let mut min = 0;
+    while min != NO_MORE_DOCS {
+        lucene_util::memory::checkpoint()?;
+        if lucene_util::memory::past_deadline() {
+            return Ok(());
+        }
+        min = bulk.score(
+            mode,
+            live_docs,
+            collector,
+            min,
+            min.saturating_add(interval),
+        )?;
+        interval = interval.saturating_mul(2).min(CANCELLABLE_MAX_INTERVAL);
+    }
     Ok(())
 }
+
+/// `CancellableBulkScorer.INITIAL_INTERVAL`: the first window's documents.
+const CANCELLABLE_INITIAL_INTERVAL: i32 = 4096;
+/// `CancellableBulkScorer.MAX_INTERVAL`: each window twice the last, up to
+/// this.
+const CANCELLABLE_MAX_INTERVAL: i32 = 1 << 20;
 
 /// A possibly unsized collector as a `dyn` one.
 #[cfg(any(test, feature = "asserting"))]

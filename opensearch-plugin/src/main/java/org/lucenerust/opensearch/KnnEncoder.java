@@ -19,7 +19,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * The KNN nodes of the query tree ({@code jvm_queries.rs}) and the whole-reader KNN request
+ * The KNN nodes of the query tree ({@code queries.rs}) and the whole-reader KNN request
  * ({@code jvm_knn.rs}):
  *
  * <ul>
@@ -135,6 +135,12 @@ final class KnnEncoder {
             request.write(q.expand() ? 1 : 0);
         }
         writeInt(request, q.nprobes());
+        if (q.explorationSlack() == null) {
+            request.write(0);
+        } else {
+            request.write(1);
+            writeInt(request, Float.floatToIntBits(q.explorationSlack()));
+        }
         KnnTopVectorQuery.Grouping grouping = q.grouping();
         if (grouping == null) {
             request.write(0);
@@ -143,6 +149,13 @@ final class KnnEncoder {
             writeString(request, grouping.field());
             request.write(grouping.keyword() ? NativeCollapse.KEYWORD : NativeCollapse.NUMERIC);
             writeInt(request, grouping.size());
+        }
+        KnnTopVectorQuery.RecallTarget recall = q.recallTarget();
+        if (recall != null) {
+            writeLong(request, Double.doubleToLongBits(recall.recall()));
+            writeLong(request, Double.doubleToLongBits(recall.sampleRate()));
+            writeLong(request, Double.doubleToLongBits(recall.budget()));
+            writeString(request, recall.key());
         }
         byte[] blob = request.toByteArray();
         // An expanded search returns every scored child of the k parents: a few per parent, usually;
@@ -220,6 +233,11 @@ final class KnnEncoder {
         byte[] b = s.getBytes(StandardCharsets.UTF_8);
         writeInt(out, b.length);
         out.writeBytes(b);
+    }
+
+    private static void writeLong(ByteArrayOutputStream out, long v) {
+        writeInt(out, (int) v);
+        writeInt(out, (int) (v >>> 32));
     }
 
     private static void writeInt(ByteArrayOutputStream out, int v) {

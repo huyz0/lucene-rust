@@ -101,6 +101,7 @@ import org.lucenerust.opensearch.ml.HfAnalysis;
 import org.opensearch.index.analysis.PreBuiltAnalyzerProviderFactory;
 import org.opensearch.index.analysis.PreConfiguredTokenizer;
 import org.opensearch.plugins.IngestPlugin;
+import org.lucenerust.opensearch.sparse.SparseCodecService;
 import org.lucenerust.opensearch.sparse.SparseSettings;
 import org.lucenerust.opensearch.sparse.SparseVectorFieldMapper;
 import org.opensearch.plugins.Plugin;
@@ -132,7 +133,7 @@ import java.util.function.Supplier;
 /**
  * lucene-rust for OpenSearch: serves the query phase of supported searches from the Rust engine
  * ({@link RustQueryPhaseSearcher}) and everything else from Lucene, and -- for an index created with
- * {@code index.lucene_rust.engine: true} -- indexes through the Rust writer ({@link
+ * {@code index.engine.accelerated: true} -- indexes through the Rust writer ({@link
  * RustEngineFactory}).
  *
  * <p>The native library is loaded, and its ABI checked, in the constructor: a plugin whose library
@@ -156,7 +157,7 @@ public class RustSearchPlugin extends Plugin implements
      * with OpenSearch's own engine -- a mixed cluster, one index.
      */
     public static final Setting<Boolean> NODE_ENGINE_ENABLED = Setting.boolSetting(
-        "lucene_rust.engine.node_enabled",
+        "indices.engine.accelerated.node_enabled",
         true,
         Setting.Property.NodeScope
     );
@@ -168,51 +169,99 @@ public class RustSearchPlugin extends Plugin implements
      * plugin is installed beside this one.
      */
     public static final Setting<Boolean> NODE_FETCH_WRAPPER = Setting.boolSetting(
-        "lucene_rust.fetch.reader_wrapper",
+        "indices.fetch.accelerated_reader",
         true,
         Setting.Property.NodeScope
     );
 
     /**
-     * Whether the Rust engine decrypts {@code rust_encrypted} shard files page by page on first touch,
-     * keeping at most {@link #NODE_DECRYPT_CACHE} of them resident, instead of decrypting each file
-     * whole into memory when it opens. Needs Linux with {@code userfaultfd} permitted (container
-     * runtimes' default seccomp profiles block it); elsewhere files are decrypted whole.
+     * Deprecated and ignored. The Rust engine now always reads {@code encrypted} shard files
+     * through the page cache where {@code userfaultfd} is permitted, decrypting each chunk once as it
+     * is read in, within {@link #NODE_PAGE_CACHE_SIZE}; elsewhere files are decrypted whole.
      */
     public static final Setting<Boolean> NODE_LAZY_DECRYPT = Setting.boolSetting(
-        "lucene_rust.store.encrypted.lazy_decrypt",
+        "indices.store.encrypted.lazy_decrypt",
         false,
-        Setting.Property.NodeScope
+        Setting.Property.NodeScope,
+        Setting.Property.Deprecated
     );
 
-    /** Decrypted bytes kept resident across all demand-decrypted shard files on this node. */
+    /** Deprecated and ignored: decrypted pages count against {@link #NODE_PAGE_CACHE_SIZE}. */
     public static final Setting<ByteSizeValue> NODE_DECRYPT_CACHE = Setting.byteSizeSetting(
-        "lucene_rust.store.encrypted.decrypt_cache_size",
+        "indices.store.encrypted.decrypt_cache_size",
         new ByteSizeValue(512, ByteSizeUnit.MB),
         new ByteSizeValue(1, ByteSizeUnit.MB),
         new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
-        Setting.Property.NodeScope
+        Setting.Property.NodeScope,
+        Setting.Property.Deprecated
     );
 
     /**
-     * Bytes the page cache keeps resident across every shard whose {@code index.lucene_rust.store_mode}
-     * is {@code page_cache}; pages past it are released and read again from disk on their next touch.
+     * Bytes the page cache keeps resident across every shard whose {@code index.store.read_mode}
+     * is {@code page_cache}, and every {@code encrypted} shard (as decrypted pages); pages past it
+     * are released and read again from disk on their next touch.
      */
     public static final Setting<ByteSizeValue> NODE_PAGE_CACHE_SIZE = Setting.byteSizeSetting(
-        "lucene_rust.store.page_cache.size",
+        "indices.store.page_cache.size",
         new ByteSizeValue(1, ByteSizeUnit.GB),
         new ByteSizeValue(1, ByteSizeUnit.MB),
         new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
         Setting.Property.NodeScope
     );
 
+    /**
+     * Bytes the aggregation segment cache keeps collected parts in, across every index on this node
+     * that opts in with {@code index.search.aggregation_segment_cache.enabled}; least recently
+     * used parts past it are dropped. 0 turns the cache off.
+     */
+    public static final Setting<ByteSizeValue> NODE_AGG_SEGMENT_CACHE_SIZE = Setting.byteSizeSetting(
+        "indices.aggregation_segment_cache.size",
+        new ByteSizeValue(256, ByteSizeUnit.MB),
+        new ByteSizeValue(0, ByteSizeUnit.BYTES),
+        new ByteSizeValue(Long.MAX_VALUE, ByteSizeUnit.BYTES),
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * How the Rust engine advises the kernel to read each mapped shard file, by extension, as
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
+     * {@code willneed} or {@code auto}; {@code *} for every extension not listed, Lucene's
+     * {@code org.apache.lucene.store.defaultReadAdvice}). Empty (the default) advises random reads
+     * for the files a vector search reads a vector at a time ({@code vec}, {@code vex},
+     * {@code ivv}, {@code veq}, {@code vqd}), {@code auto} for stored fields ({@code fdt}: random,
+     * each fetched chunk read in whole, once the file is larger than an eighth of memory; the OS
+     * read-ahead otherwise) and leaves every other file to the OS read-ahead. A list replaces the
+     * whole table. Random advice helps once those files no longer fit in memory, most on
+     * IOPS-capped volumes such as EBS gp3; on local NVMe with free memory it changes little.
+     */
+    public static final Setting<List<String>> NODE_READ_ADVICE = Setting.listSetting(
+        "indices.store.mmap.read_advice",
+        List.of(),
+        java.util.function.Function.identity(),
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * Whether a file advised random that is small next to available memory (at most an eighth of
+     * it) is read in once when a shard opens, so a cold start still warms it in large reads.
+     */
+    public static final Setting<Boolean> NODE_WARM_RANDOM = Setting.boolSetting(
+        "indices.store.mmap.warm_random",
+        true,
+        Setting.Property.NodeScope
+    );
+
     private static final Logger logger = LogManager.getLogger(RustSearchPlugin.class);
+    /** Per thread, the memory scopes of the fetch phases running on it, innermost first. */
+    private static final ThreadLocal<java.util.ArrayDeque<NativeMemory.Scope>> FETCH_MEMORY = ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
     private final SetOnce<org.opensearch.cluster.service.ClusterService> clusterService = new SetOnce<>();
     private final SetOnce<IndexNameExpressionResolver> resolver = new SetOnce<>();
 
     private final NativeReaders readers = new NativeReaders();
     private final SearchStats stats = new SearchStats();
+    /** The node's settings, for the highlighters that read node settings. */
+    private final Settings nodeSettings;
     private final String libraryPath;
     private final boolean nodeEngineEnabled;
     private final boolean fetchWrapper;
@@ -231,6 +280,7 @@ public class RustSearchPlugin extends Plugin implements
     private volatile SemanticModelResolver modelResolver;
 
     public RustSearchPlugin(Settings settings, Path configPath) {
+        this.nodeSettings = settings;
         this.libraryPath = NativeLibrary.load(pluginDir());
         this.stockKnn = stockKnnInstalled();
         this.stockMl = MlCommons.stockInstalled(pluginDir());
@@ -252,6 +302,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         addDataPackDirs(configPath);
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
+        org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
         this.fetchWrapper = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : security == false;
         if (security && fetchWrapper == false) {
@@ -267,6 +318,26 @@ public class RustSearchPlugin extends Plugin implements
         }
         configureLazyDecrypt(settings);
         configurePageCache(settings);
+        NativeMemory.install(settings, NativeBridge.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(settings).getBytes() : 0);
+        configureAggSegmentCache(settings);
+        configureReadAdvice(settings);
+    }
+
+    private static void configureAggSegmentCache(Settings settings) {
+        int rc = NativeBridge.aggCacheSetBudget(NODE_AGG_SEGMENT_CACHE_SIZE.get(settings).getBytes());
+        if (rc != 0) {
+            throw new IllegalStateException("lucene-rust: cannot configure the aggregation segment cache (status " + rc + ")");
+        }
+    }
+
+    private static void configureReadAdvice(Settings settings) {
+        String spec = String.join(",", NODE_READ_ADVICE.get(settings));
+        int rc = NativeBridge.storeSetReadAdvice(spec, NODE_WARM_RANDOM.get(settings));
+        if (rc != 0) {
+            throw new IllegalArgumentException(
+                "lucene-rust: invalid [" + NODE_READ_ADVICE.getKey() + "] " + spec + ": " + NativeBridge.lastError()
+            );
+        }
     }
 
     private static void configurePageCache(Settings settings) {
@@ -275,33 +346,20 @@ public class RustSearchPlugin extends Plugin implements
             throw new IllegalStateException("lucene-rust: cannot configure the page cache (status " + rc + ")");
         }
         if (NativeBridge.storePageCacheAvailable() == false) {
-            logger.info("lucene-rust: userfaultfd is unavailable here; indices with store_mode [page_cache] stay mapped");
+            logger.info("lucene-rust: userfaultfd is unavailable here; indices with index.store.read_mode [page_cache] stay mapped");
         }
     }
 
     private static void configureLazyDecrypt(Settings settings) {
-        boolean wanted = NODE_LAZY_DECRYPT.get(settings);
-        int rc = NativeBridge.storeSetLazyDecrypt(wanted, NODE_DECRYPT_CACHE.get(settings).getBytes());
-        if (rc != 0) {
-            throw new IllegalStateException("lucene-rust: cannot configure demand decryption (status " + rc + ")");
-        }
-        if (wanted) {
-            if (NativeBridge.storeLazyDecryptActive()) {
-                logger.info(
-                    "lucene-rust: encrypted shard files are demand-decrypted, {} resident at most",
-                    NODE_DECRYPT_CACHE.get(settings)
-                );
-            } else {
-                logger.warn(
-                    "lucene-rust: [{}] is set but userfaultfd is unavailable here; encrypted shard files are decrypted whole",
-                    NODE_LAZY_DECRYPT.getKey()
-                );
-            }
+        if (NativeBridge.storeLazyDecryptActive() == false) {
+            logger.info(
+                "lucene-rust: userfaultfd is unavailable here; encrypted shard files are decrypted whole when opened"
+            );
         }
     }
 
     /**
-     * The {@code rust_encrypted} store type: encryption at rest with keys from a KMS, which Lucene
+     * The {@code encrypted} store type: encryption at rest with keys from a KMS, which Lucene
      * and the Rust engine both read and write ({@link RustEncryptedDirectoryFactory}).
      */
     @Override
@@ -311,17 +369,19 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * The breaker the Rust writers' buffers are accounted to -- native memory the JVM's own breakers
-     * cannot see. {@code breaker.lucene_rust_writer.limit} sets it. The default is three times
+     * cannot see. {@code breaker.indexing_buffers.limit} sets it. The default is three times
      * {@code indices.memory.index_buffer_size} (30% of the heap by default): a writer stalls
      * indexing once its buffered and flushing bytes pass twice its RAM buffer, as Lucene's does, so
      * under steady load the buffer sits near that bound, and the breaker must sit above it. It trips
-     * on its own limit. The parent breaker adds it in only with
-     * {@code indices.breaker.total.use_real_memory: false}; with the default real-memory parent,
-     * native bytes are outside the heap it measures.
+     * on its own limit. The page cache's resident bytes are charged to it too ({@link
+     * org.lucenerust.opensearch.store.PageCacheAccounting}), never refusing anything, and the
+     * default limit adds {@code indices.store.page_cache.size} for them. The parent breaker adds
+     * it in only with {@code indices.breaker.total.use_real_memory: false}; with the default
+     * real-memory parent, native bytes are outside the heap it measures.
      */
     @Override
     public BreakerSettings getCircuitBreaker(Settings settings) {
-        long defaultLimit = 3 * indexBufferBytes(settings);
+        long defaultLimit = 3 * indexBufferBytes(settings) + NODE_PAGE_CACHE_SIZE.get(settings).getBytes();
         return BreakerSettings.updateFromSettings(
             new BreakerSettings(
                 RustEngineSupport.BREAKER_NAME,
@@ -394,9 +454,22 @@ public class RustSearchPlugin extends Plugin implements
                 }
             });
         }
+        // A search's unified, plain and fvh highlighting run accelerated while index.highlight.accelerated is on.
+        if (org.lucenerust.opensearch.highlight.HighlightRouting.available()) {
+            FetchFlag highlight = new FetchFlag(HIGHLIGHT_ENABLED.get(indexModule.getSettings()));
+            indexModule.addSettingsUpdateConsumer(HIGHLIGHT_ENABLED, highlight::set);
+            indexModule.addSearchOperationListener(new SearchOperationListener() {
+                @Override
+                public void onPreFetchPhase(SearchContext context) {
+                    if (highlight.enabled()) {
+                        org.lucenerust.opensearch.highlight.HighlightRouting.route(context);
+                    }
+                }
+            });
+        }
         // Every searcher OpenSearch hands out for the index -- the fetch
         // phase's, the get API's -- reads stored fields natively while
-        // index.lucene_rust.fetch.enabled is on, and with Lucene otherwise
+        // index.fetch.accelerated is on, and with Lucene otherwise
         // (either way timed, SearchStats.fetchTime).
         if (fetchWrapper) {
             FetchFlag flag = new FetchFlag(FETCH_ENABLED.get(indexModule.getSettings()));
@@ -412,6 +485,9 @@ public class RustSearchPlugin extends Plugin implements
                     @Override
                     public void onPreFetchPhase(SearchContext context) {
                         NativeStoredFieldsReader.fetchStarted(stockKnn == false && DerivedSource.vectorsDropped(context));
+                        // What the fetch phase's native reads hold is the request's: charged to its
+                        // request breaker, under the node's off-heap bound, and stopped by a cancel.
+                        FETCH_MEMORY.get().push(NativeMemory.open(context, "accelerated_fetch"));
                         if (flag.enabled() == false) {
                             return;
                         }
@@ -434,12 +510,21 @@ public class RustSearchPlugin extends Plugin implements
 
                     @Override
                     public void onFetchPhase(SearchContext context, long tookInNanos) {
-                        NativeStoredFieldsReader.fetchEnded();
+                        fetchEnded();
                     }
 
                     @Override
                     public void onFailedFetchPhase(SearchContext context) {
+                        fetchEnded();
+                    }
+
+                    private void fetchEnded() {
                         NativeStoredFieldsReader.fetchEnded();
+                        NativeMemory.Scope memory = FETCH_MEMORY.get().poll();
+                        if (memory != null) {
+                            memory.close();
+                            stats.nativeMemory(memory.peak());
+                        }
                     }
                 });
             } catch (SetOnce.AlreadySetException e) {
@@ -467,9 +552,22 @@ public class RustSearchPlugin extends Plugin implements
         }
     }
 
+    /**
+     * Whether a search's {@code unified} highlighting (the default highlighter), {@code plain} and
+     * {@code fvh} highlighting run natively ({@code NativeUnifiedHighlighter}, {@code
+     * NativePlainHighlighter}, {@code NativeFvhHighlighter});
+     * off, OpenSearch's highlighters run them.
+     */
+    public static final Setting<Boolean> HIGHLIGHT_ENABLED = Setting.boolSetting(
+        "index.highlight.accelerated",
+        true,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
     /** Whether the index's stored fields are read natively. */
     public static final Setting<Boolean> FETCH_ENABLED = Setting.boolSetting(
-        "index.lucene_rust.fetch.enabled",
+        "index.fetch.accelerated",
         true,
         Setting.Property.IndexScope,
         Setting.Property.Dynamic
@@ -477,20 +575,29 @@ public class RustSearchPlugin extends Plugin implements
 
     /**
      * {@code KNNPlugin.getCustomCodecServiceFactory}: OpenSearch's engine writes a k-NN index's
-     * vector fields in the formats their mappings resolve to, as the Rust writer does.
+     * vector fields in the formats their mappings resolve to, as the Rust writer does. neural-search's:
+     * it writes an {@code index.sparse} index's segments with their clustered postings, as the Rust
+     * writer does, so a {@code neural_sparse} search scores them as stock's does whichever engine
+     * wrote them.
      */
     @Override
     public Optional<CodecServiceFactory> getCustomCodecServiceFactory(IndexSettings indexSettings) {
-        if (stockKnn || KnnSettings.KNN_INDEX.get(indexSettings.getSettings()) == false) {
-            return Optional.empty();
+        if (stockKnn == false && KnnSettings.KNN_INDEX.get(indexSettings.getSettings())) {
+            return Optional.of(KnnCodecService::new);
         }
-        return Optional.of(KnnCodecService::new);
+        if (SparseSettings.SPARSE_INDEX.get(indexSettings.getSettings())) {
+            return Optional.of(SparseCodecService::new);
+        }
+        return Optional.empty();
     }
 
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
-        if (indexSettings.getValue(RustEngineSupport.ENGINE_ENABLED) == false) {
-            return Optional.empty();
+        Optional<EngineFactory> openSearch = RustEngineSupport.servesFollower(indexSettings.getSettings())
+            ? Optional.of(RustEngineFactory.standardFollower())
+            : Optional.empty();
+        if (RustEngineSupport.openSearchEngine(indexSettings.getSettings())) {
+            return openSearch;
         }
         // An index that asks for the Rust engine gets it, or a creation error saying why not; one
         // that only inherits the node default falls back to OpenSearch's engine where the Rust
@@ -501,14 +608,14 @@ public class RustSearchPlugin extends Plugin implements
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
             if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
-                return Optional.empty();
+                return openSearch;
             }
             MappingMetadata mapping = indexSettings.getIndexMetadata().mapping();
             if (mapping != null && RustEngineSupport.unsupportedField(mapping.sourceAsMap()) != null) {
-                return Optional.empty();
+                return openSearch;
             }
         }
-        return Optional.of(new RustEngineFactory(nodeEngineEnabled));
+        return Optional.of(new RustEngineFactory(nodeEngineEnabled, RustEngineSupport.servesFollower(indexSettings.getSettings())));
     }
 
     /**
@@ -575,6 +682,19 @@ public class RustSearchPlugin extends Plugin implements
         return analyzers;
     }
 
+    /** OpenSearch's {@code unified}, {@code plain} and {@code fvh} highlighters run natively, which {@link #HIGHLIGHT_ENABLED} routes to. */
+    @Override
+    public Map<String, org.opensearch.search.fetch.subphase.highlight.Highlighter> getHighlighters() {
+        return Map.of(
+            org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativeUnifiedHighlighter(readers, stats),
+            org.lucenerust.opensearch.highlight.NativePlainHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativePlainHighlighter(stats),
+            org.lucenerust.opensearch.highlight.NativeFvhHighlighter.NAME,
+            new org.lucenerust.opensearch.highlight.NativeFvhHighlighter(nodeSettings, readers, stats)
+        );
+    }
+
     @Override
     public Optional<QueryPhaseSearcher> getQueryPhaseSearcher() {
         return Optional.of(new RustQueryPhaseSearcher(readers, stats));
@@ -586,8 +706,12 @@ public class RustSearchPlugin extends Plugin implements
         settings.addAll(List.of(
             RustQueryPhaseSearcher.ENABLED,
             FETCH_ENABLED,
+            HIGHLIGHT_ENABLED,
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
+            RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
+            RustQueryPhaseSearcher.AGG_SEGMENT_CACHE,
+            NODE_AGG_SEGMENT_CACHE_SIZE,
             RustEngineSupport.ENGINE_ENABLED,
             RustEngineSupport.ENGINE_DEFAULT,
             RustEngineSupport.FAULT_INJECTION,
@@ -600,12 +724,18 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.STORE_MODE,
             RustEngineSupport.PARTITION_FIELD,
             RustEngineSupport.IVF_PARTITION_CLUSTERS,
+            RustEngineSupport.KNN_TARGET_RECALL,
+            RustEngineSupport.KNN_RECALL_SAMPLE_RATE,
+            RustEngineSupport.KNN_RECALL_CHECK_BUDGET,
             NODE_ENGINE_ENABLED,
             LocalKeySource.KEY,
             LocalKeySource.KEY_ID,
             NODE_LAZY_DECRYPT,
             NODE_DECRYPT_CACHE,
             NODE_PAGE_CACHE_SIZE,
+            NativeMemory.OFF_HEAP_LIMIT,
+            NODE_READ_ADVICE,
+            NODE_WARM_RANDOM,
             org.lucenerust.opensearch.logs.LogsPreset.ENABLED,
             SparseSettings.SPARSE_INDEX
         ));
@@ -614,6 +744,7 @@ public class RustSearchPlugin extends Plugin implements
             settings.addAll(KnnSettings.settings());
         }
         settings.addAll(org.lucenerust.opensearch.engine.BpReorderSettings.settings());
+        settings.addAll(org.lucenerust.opensearch.engine.SeqNoSettings.settings());
         if (stockMl == false) {
             settings.addAll(MlSettings.all());
         }
@@ -632,6 +763,10 @@ public class RustSearchPlugin extends Plugin implements
         mappers.put(org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.CONTENT_TYPE, org.lucenerust.opensearch.patterntext.PatternTextFieldMapper.PARSER);
         mappers.put(SemanticFieldMapper.CONTENT_TYPE, new SemanticFieldMapper.TypeParser());
         mappers.put(HexIdFieldMapper.CONTENT_TYPE, HexIdFieldMapper.PARSER);
+        mappers.put(
+            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.CONTENT_TYPE,
+            org.lucenerust.opensearch.substring.RustWildcardFieldMapper.PARSER
+        );
         if (stockKnn == false) {
             mappers.put(KnnVectorFieldMapper.CONTENT_TYPE, new KnnVectorFieldMapper.TypeParser());
         }
@@ -815,7 +950,16 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
+        clusterService.getClusterSettings()
+            .addSettingsUpdateConsumer(
+                NativeMemory.OFF_HEAP_LIMIT,
+                v -> NativeMemory.applyLimit(
+                    v,
+                    NativeBridge.storePageCacheAvailable() ? NODE_PAGE_CACHE_SIZE.get(environment.settings()).getBytes() : 0
+                )
+            );
         HybridSearch.initialize(threadPool);
+        org.lucenerust.opensearch.store.PageCacheAccounting.start(threadPool);
         NeuralQueryBuilder.initialize(mlClient());
         NeuralSparseQueryBuilder.initialize(mlClient());
         this.xContentRegistry = xContentRegistry;
@@ -829,7 +973,7 @@ public class RustSearchPlugin extends Plugin implements
         }
         if (stockMl == false) {
             Path runtime = Path.of(libraryPath).resolveSibling(System.mapLibraryName("onnxruntime"));
-            MlCommons.initialize(client, clusterService, threadPool, environment.dataFiles()[0], runtime);
+            MlCommons.initialize(client, clusterService, threadPool, scriptService, environment.dataFiles()[0], runtime);
         }
         return org.lucenerust.opensearch.neural.NeuralStats.initialize(clusterService, indexNameExpressionResolver, environment.settings());
     }
