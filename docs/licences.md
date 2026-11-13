@@ -65,7 +65,7 @@ a dependency the shipped library links is not under a licence listed here.
   ported, file by file, like Lucene itself:
   - **Spatial4j 0.8** (`org.locationtech.spatial4j:spatial4j:0.8`,
     Apache-2.0; LocationTech, formerly an ASF-licensed Lucene spin-off) ->
-    `crates/lucene-util/src/spatial4j/`. Its optional JTS dependency (EPL/EDL)
+    `crates/lucene-spatial4j/src/spatial4j/`. Its optional JTS dependency (EPL/EDL)
     is **not** ported or used: Lucene does not ship JTS, and spatial-extras
     reaches polygons through Geo3D instead.
   - **S2 Geometry Library for Java** (`io.sgr:s2-geometry-library-java:1.0.0`,

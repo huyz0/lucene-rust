@@ -22,11 +22,11 @@ use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 use lucene_index::document::{doc_value_high, doc_value_low, double_to_sortable_long};
-use lucene_util::geo::{GeoEncodingUtils, GeoUtils, Rectangle, XYEncodingUtils, XYRectangle};
-use lucene_util::sloppy_math;
-use lucene_util::spatial3d::{
+use lucene_spatial3d::{
     DistanceStyle, GeoDistanceShape, GeoOutsideDistance, PlanetModel, XYZBounds,
 };
+use lucene_util::geo::{GeoEncodingUtils, GeoUtils, Rectangle, XYEncodingUtils, XYRectangle};
+use lucene_util::sloppy_math;
 
 use lucene_codecs::field_infos::FieldInfo;
 
@@ -65,7 +65,7 @@ trait Distance: Send + Sync {
     fn check(&self, r: &SegmentReader, field: &str) -> Result<()>;
     /// [`Self::sort_key`] where the comparator is driven from outside
     /// [`search_distance`]: a geo3d shape method's exception (raised, see
-    /// `lucene_util::spatial3d::errors`) becomes the key's error.
+    /// `lucene_spatial3d::errors`) becomes the key's error.
     fn sort_key_checked(&self, values: &[i64]) -> Result<f64> {
         Ok(self.sort_key(values))
     }
@@ -388,7 +388,7 @@ impl Distance for Geo3DDistance {
     }
 
     fn sort_key_checked(&self, values: &[i64]) -> Result<f64> {
-        lucene_util::spatial3d::errors::catch(|| self.sort_key(values)).map_err(s3d)
+        lucene_spatial3d::errors::catch(|| self.sort_key(values)).map_err(s3d)
     }
 }
 
@@ -442,11 +442,11 @@ impl Distance for Geo3DOutsideDistance {
     }
 
     fn sort_key_checked(&self, values: &[i64]) -> Result<f64> {
-        lucene_util::spatial3d::errors::catch(|| self.sort_key(values)).map_err(s3d)
+        lucene_spatial3d::errors::catch(|| self.sort_key(values)).map_err(s3d)
     }
 }
 
-fn s3d(e: lucene_util::spatial3d::Error) -> Error {
+fn s3d(e: lucene_spatial3d::Error) -> Error {
     illegal(e.to_string())
 }
 
@@ -884,7 +884,7 @@ impl Geo3DPointOutsideSortField {
 /// Runs `f` under `spatial3d::errors::catch`: an exception a shape method
 /// raised while it ran is the search's error, as Java's would propagate.
 fn caught<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    lucene_util::spatial3d::errors::catch(f).map_err(s3d)?
+    lucene_spatial3d::errors::catch(f).map_err(s3d)?
 }
 
 fn check_missing(missing: f64) -> Result<()> {
@@ -1328,12 +1328,9 @@ mod tests {
 
         let enc = pm.doc_value_encoder();
         let value = |lat: f64, lon: f64| {
-            let p = lucene_util::spatial3d::GeoPoint::from_lat_lon(
-                &pm,
-                lat.to_radians(),
-                lon.to_radians(),
-            )
-            .unwrap();
+            let p =
+                lucene_spatial3d::GeoPoint::from_lat_lon(&pm, lat.to_radians(), lon.to_radians())
+                    .unwrap();
             enc.encode_point(&p).unwrap()
         };
         // Past the bottom's bounds (here the circle's own) a value is
@@ -1353,7 +1350,7 @@ mod tests {
         let od = o.distance();
         assert_eq!(od.sort_key_checked(&[value(0.5, 0.5)]).unwrap(), 0.0);
         assert!(od.sort_key_checked(&[value(5.0, 5.0)]).unwrap() > 0.0);
-        let e = s3d(lucene_util::spatial3d::Error::Runtime("boom".into()));
+        let e = s3d(lucene_spatial3d::Error::Runtime("boom".into()));
         assert!(e.to_string().contains("boom"), "{e}");
     }
 

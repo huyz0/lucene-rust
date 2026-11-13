@@ -112,7 +112,7 @@ last within the milestone.
 - **T9.4** — `spatial3d`. *Done (2026-10-02).* All 103 classes of
   `lucene-spatial3d` (`docs/inventory/lucene-spatial3d.tsv`,
   `check-port-inventory.py --module spatial3d`, in the gate). The `geom`
-  package (94 classes) is in `crates/lucene-util/src/spatial3d/` beside
+  package (94 classes) is in `crates/lucene-spatial3d/src/` beside
   `geo` (pure math); `Geo3DPoint`/`Geo3DDocValuesField` in
   `lucene-index/src/document/geo3d.rs`; `Geo3DUtil`,
   `PointInGeo3DShapeQuery` and its visitor in
@@ -147,13 +147,13 @@ last within the milestone.
   polygon backend) is not ported: Lucene does not ship it, and
   spatial-extras makes polygons through Geo3D. Ported: the Spatial4j
   and S2 subsets and Lucene's Geo3D bridge
-  (`lucene-util/src/spatial_extras/spatial4j.rs`), `GenSpatial4j` ->
+  (`lucene-spatial4j/src/spatial_extras/spatial4j.rs`), `GenSpatial4j` ->
   `spatial4j_fixtures.rs` (12 577 records); the
   `check-port-inventory.py --module spatial-extras` gate
   (`docs/inventory/lucene-spatial-extras.tsv`); the prefix trees (quad,
   packed quad, geohash, S2 at arities 1-3, number-range and date-range, with
   the `GregorianCalendar` subset the date tree needs) and the `query`
-  package (`lucene-util/src/spatial_extras/{prefix_tree,query.rs}`),
+  package (`lucene-spatial4j/src/spatial_extras/{prefix_tree,query.rs}`),
   `GenSpatialPrefixTree` -> `spatial_prefix_tree_fixtures.rs` (4 534
   records: byte-identical cell tokens for every tree, date parse/format
   round trips, `SpatialArgsParser`); every strategy
@@ -354,14 +354,14 @@ without JTS.
 
 Tests, all generated with HotSpot's trig intrinsics off (as `GenGeo3d`):
 - `fixtures/src/GenSpatial4j.java` -> `spatial4j/spatial4j.tsv` ->
-  `crates/lucene-util/tests/spatial4j_fixtures.rs`: eight contexts (geodetic
+  `crates/lucene-spatial4j/tests/spatial4j_fixtures.rs`: eight contexts (geodetic
   haversine/law of cosines/Vincenty, wrapping, planar bounded/unbounded,
   Geo3D sphere/WGS84), 160 random shapes each, relations, distances,
   `pointOnBearing`, binary codec both ways, WKT (results and errors),
   `DistanceUtils`, geohashes, S2 cells: 12 577 records bit for bit (a NaN's
   sign aside).
 - `fixtures/src/GenSpatialPrefixTree.java` -> `spatial_prefix_tree/trees.tsv`
-  -> `crates/lucene-util/tests/spatial_prefix_tree_fixtures.rs`: 14 trees
+  -> `crates/lucene-spatial4j/tests/spatial_prefix_tree_fixtures.rs`: 14 trees
   (geohash, quad, packed quad pruned or not, S2 arity 1-3, planar and Geo3D),
   cells of 70 shapes per tree, terms read back, both date trees,
   `SpatialArgsParser`/`SpatialOperation`: 4 534 records.
@@ -395,13 +395,13 @@ and `PointInGeo3DShapeQuery` asks `GeoArea.getRelationship` per BKD cell, so
 everything is held to Java's bits.
 
 Tests (two seeded corpora, record for record): `fixtures/src/GenGeo3d.java` ->
-`geo3d/shapes.tsv` -> `crates/lucene-util/tests/geo3d_fixtures.rs` (five planet
+`geo3d/shapes.tsv` -> `crates/lucene-spatial3d/tests/geo3d_fixtures.rs` (five planet
 models; every factory branch and shape kind incl. degenerate, polar,
 antimeridian and untileable polygons with holes; per shape the
 `writePlanetObject` bytes or exception and the round trip, bounds, edge points,
 membership, distances per style, relationships vs other shapes and x/y/z
 solids) and `fixtures/src/GenGeo3dMath.java` -> `geo3d/math.tsv` ->
-`crates/lucene-util/tests/geo3d_math_fixtures.rs` (`Vector`, `GeoPoint`,
+`crates/lucene-spatial3d/tests/geo3d_math_fixtures.rs` (`Vector`, `GeoPoint`,
 `Plane`, `SidedPlane`, `PlanetModel` + `DocValueEncoder`, `XYZBounds`,
 `LatLonBounds`, `DistanceStyle`). All equal bit for bit and message for
 message except a `NullPointerException`'s text (compared by class).
