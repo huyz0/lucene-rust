@@ -105,7 +105,7 @@ def rows():
 
 
 def native_count(req):
-    return req("GET", "/_plugins/lucene_rust/stats")["native_queries"]
+    return req("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"]
 
 
 def compare(index, plugin, stock):

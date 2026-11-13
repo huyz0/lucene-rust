@@ -28,4 +28,5 @@ cd "$stage/tmp"
     -Dlucene_rust.library.path="$stage/cp/liblucene_ffi.so" \
     "$@" -cp "$stage/cp:$stage/cp/*" \
     org.junit.runner.JUnitCore org.lucenerust.opensearch.engine.RustEngineTests \
+    org.lucenerust.opensearch.engine.SeqNoLayoutTests \
     org.lucenerust.opensearch.engine.RustIndexerFactoryTests

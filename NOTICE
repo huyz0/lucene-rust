@@ -8,7 +8,7 @@ says so in its header). The notices of both follow.
 
 It also contains Rust ports of parts of two Java libraries Lucene's
 spatial-extras module depends on, both under the Apache License, Version 2.0
-(crates/lucene-util/src/spatial4j and crates/lucene-util/src/s2):
+(crates/lucene-spatial4j/src/spatial4j and crates/lucene-util/src/s2):
 
  - Spatial4j 0.8 (https://github.com/locationtech/spatial4j),
    Copyright (c) the Spatial4j contributors (David Smiley et al.),

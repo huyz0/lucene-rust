@@ -121,20 +121,150 @@ struct Entry {
     last_used: u64,
 }
 
-#[derive(Default)]
 struct Inner {
     policy: UsageTrackingPolicy,
     entries: HashMap<Arc<str>, Entry>,
-    clock: u64,
     bytes: usize,
+    /// Whether this cache is in its node's list (once it first held a set).
+    registered: bool,
+    node: &'static Node,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Inner {
+            policy: UsageTrackingPolicy::default(),
+            entries: HashMap::new(),
+            bytes: 0,
+            registered: false,
+            node: &NODE,
+        }
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.node.bytes.fetch_sub(self.bytes, Relaxed);
+    }
+}
+
+impl Inner {
+    /// Drops the least recently used entry, returning its bytes (0 when
+    /// there is none).
+    fn evict_oldest(&mut self) -> usize {
+        let Some(oldest) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.last_used)
+            .map(|(k, _)| k.clone())
+        else {
+            return 0;
+        };
+        let Some(e) = self.entries.remove(&oldest) else {
+            return 0;
+        };
+        let freed = e.set.ram_bytes();
+        self.bytes -= freed;
+        self.node.bytes.fetch_sub(freed, Relaxed);
+        self.node.evictions.fetch_add(1, Relaxed);
+        freed
+    }
+
+    fn oldest(&self) -> Option<u64> {
+        self.entries.values().map(|e| e.last_used).min()
+    }
 }
 
 /// One segment's query cache. Shared by every search of the segment, hence
 /// the lock; held only to look up or insert, never while a set is built.
+/// Its sets also count against the node's budget ([`set_node_budget`]),
+/// which evicts the least recently used sets of any segment.
 #[derive(Default)]
 pub struct SegmentQueryCache {
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
     columns: Mutex<Columns>,
+}
+
+use std::sync::atomic::Ordering::Relaxed;
+
+/// Cached bytes across every segment of the process, by default (the host
+/// sets its own: the plugin passes OpenSearch's `indices.queries.cache.size`).
+pub const DEFAULT_NODE_BYTES: usize = 256 << 20;
+/// The caches sharing one budget: every segment's, the process's one.
+pub(crate) struct Node {
+    /// Cached set bytes held across its segments.
+    bytes: std::sync::atomic::AtomicUsize,
+    /// The bound on `bytes`.
+    budget: std::sync::atomic::AtomicUsize,
+    /// Sets evicted, for stats.
+    evictions: std::sync::atomic::AtomicU64,
+    /// Every segment cache that has held a set.
+    caches: Mutex<Vec<std::sync::Weak<Mutex<Inner>>>>,
+}
+
+impl Node {
+    pub(crate) const fn new(budget: usize) -> Self {
+        Node {
+            bytes: std::sync::atomic::AtomicUsize::new(0),
+            budget: std::sync::atomic::AtomicUsize::new(budget),
+            evictions: std::sync::atomic::AtomicU64::new(0),
+            caches: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+static NODE: Node = Node::new(DEFAULT_NODE_BYTES);
+/// One clock for every segment, so the least recently used set is found
+/// across segments.
+static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Sets the bytes the query caches of every segment may hold together; past
+/// them the least recently used sets go, whichever segment holds them.
+pub fn set_node_budget(bytes: usize) {
+    NODE.budget.store(bytes, Relaxed);
+    evict_node(&NODE);
+}
+
+/// `(bytes held, budget, sets evicted)` of the query caches, process-wide.
+pub fn node_stats() -> (usize, usize, u64) {
+    (
+        NODE.bytes.load(Relaxed),
+        NODE.budget.load(Relaxed),
+        NODE.evictions.load(Relaxed),
+    )
+}
+
+/// Evicts across `node`'s segments, least recently used first, until it is
+/// within its budget.
+fn evict_node(node: &Node) {
+    let budget = node.budget.load(Relaxed);
+    if node.bytes.load(Relaxed) <= budget {
+        return;
+    }
+    let live: Vec<Arc<Mutex<Inner>>> = {
+        let mut all = lock(&node.caches);
+        all.retain(|w| w.strong_count() > 0);
+        all.iter().filter_map(std::sync::Weak::upgrade).collect()
+    };
+    // Each cache's oldest entry, oldest first; a cache gives up entries
+    // until its oldest is newer than the next cache's.
+    let mut order: Vec<(u64, &Arc<Mutex<Inner>>)> = live
+        .iter()
+        .filter_map(|c| lock(c).oldest().map(|o| (o, c)))
+        .collect();
+    order.sort_by_key(|(o, _)| *o);
+    for (i, (_, c)) in order.iter().enumerate() {
+        let next = order.get(i + 1).map_or(u64::MAX, |(o, _)| *o);
+        let mut inner = lock(c);
+        while node.bytes.load(Relaxed) > budget && inner.oldest().is_some_and(|o| o <= next) {
+            if inner.evict_oldest() == 0 && inner.entries.is_empty() {
+                break;
+            }
+        }
+        if node.bytes.load(Relaxed) <= budget {
+            return;
+        }
+    }
 }
 
 /// A sort column decoded once for the segment: every document's value, for
@@ -186,6 +316,16 @@ pub(crate) const MAX_COLUMN_BYTES: usize = 32 << 20;
 /// Decoded sort columns across every segment of the process: the host (a
 /// JVM) cannot see this memory, so it is bounded here.
 pub(crate) const MAX_TOTAL_COLUMN_BYTES: usize = 512 << 20;
+/// [`MAX_TOTAL_COLUMN_BYTES`], or an eighth of the node's off-heap bound
+/// when that is less ([`lucene_util::memory::process_limit`]): a small node
+/// streams its sort values from the doc values instead of holding them.
+fn total_column_budget() -> usize {
+    match usize::try_from(lucene_util::memory::process_limit()) {
+        Ok(limit) if limit > 0 => MAX_TOTAL_COLUMN_BYTES.min(limit / 8),
+        _ => MAX_TOTAL_COLUMN_BYTES,
+    }
+}
+
 /// Bytes of decoded sort columns held now, process-wide.
 static TOTAL_COLUMN_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -347,8 +487,7 @@ impl SegmentQueryCache {
         };
         let cache = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.clock += 1;
-            let now = inner.clock;
+            let now = CLOCK.fetch_add(1, Relaxed);
             inner.policy.on_use(&policy_key);
             if !cacheable {
                 return Ok(None);
@@ -414,10 +553,7 @@ impl SegmentQueryCache {
         let reserved = TOTAL_COLUMN_BYTES.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
-            |t| {
-                t.checked_add(bytes)
-                    .filter(|&n| n <= MAX_TOTAL_COLUMN_BYTES)
-            },
+            |t| t.checked_add(bytes).filter(|&n| n <= total_column_budget()),
         );
         if reserved.is_err() {
             return Ok(None);
@@ -428,33 +564,51 @@ impl SegmentQueryCache {
     }
 
     fn insert(&self, key: Arc<str>, set: Arc<CachedSet>) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.clock += 1;
-        let now = inner.clock;
-        inner.bytes += set.ram_bytes();
-        if let Some(old) = inner.entries.insert(
-            key,
-            Entry {
-                set,
-                last_used: now,
-            },
-        ) {
-            inner.bytes -= old.set.ram_bytes();
+        let bytes = set.ram_bytes();
+        // A set the node's budget cannot hold beside a few others is not
+        // kept at all (`LRUQueryCache`'s maxRamBytesUsed / 1000 rule, on the
+        // node's budget).
+        let node = lock(&self.inner).node;
+        if bytes.saturating_mul(16) > node.budget.load(Relaxed) {
+            return;
         }
-        // `LRUQueryCache.evictIfNecessary`: least recently used first.
-        while inner.entries.len() > MAX_ENTRIES || inner.bytes > MAX_BYTES {
-            let Some(oldest) = inner
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_used)
-                .map(|(k, _)| k.clone())
-            else {
-                break;
-            };
-            if let Some(e) = inner.entries.remove(&oldest) {
-                inner.bytes -= e.set.ram_bytes();
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let now = CLOCK.fetch_add(1, Relaxed);
+            inner.bytes += bytes;
+            node.bytes.fetch_add(bytes, Relaxed);
+            if let Some(old) = inner.entries.insert(
+                key,
+                Entry {
+                    set,
+                    last_used: now,
+                },
+            ) {
+                let freed = old.set.ram_bytes();
+                inner.bytes -= freed;
+                node.bytes.fetch_sub(freed, Relaxed);
+            }
+            // `LRUQueryCache.evictIfNecessary`: least recently used first.
+            while inner.entries.len() > MAX_ENTRIES || inner.bytes > MAX_BYTES {
+                if inner.evict_oldest() == 0 && inner.entries.is_empty() {
+                    break;
+                }
+            }
+            if !inner.registered {
+                inner.registered = true;
+                lock(&node.caches).push(Arc::downgrade(&self.inner));
             }
         }
+        evict_node(node);
+    }
+
+    /// A cache whose sets count against `node` rather than the process's
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn in_node(node: &'static Node) -> Self {
+        let cache = SegmentQueryCache::default();
+        lock(&cache.inner).node = node;
+        cache
     }
 
     /// Cached queries and their bytes, for tests.
@@ -751,6 +905,43 @@ mod tests {
 
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
+
+    /// **The node's budget holds across segments**: sets past it go least
+    /// recently used first, from whichever segment holds them, and a set
+    /// too large for the budget is not kept.
+    #[test]
+    fn the_node_budget_evicts_the_oldest_set_of_any_segment() {
+        // 32 sets of 1 KiB fit (each a 32nd of the budget).
+        let node: &'static Node = Box::leak(Box::new(Node::new(32 * 1024)));
+        let (a, b) = (
+            SegmentQueryCache::in_node(node),
+            SegmentQueryCache::in_node(node),
+        );
+        let set = |n: usize| Arc::new(CachedSet::Docs(vec![0; n]));
+        for i in 0..32 {
+            let c = if i % 2 == 0 { &a } else { &b };
+            c.insert(format!("s{i}").into(), set(256));
+        }
+        assert_eq!(node.bytes.load(Relaxed), 32 * 1024);
+        assert_eq!(node.evictions.load(Relaxed), 0);
+        // One more evicts the oldest, which is a's first, though b inserted.
+        b.insert("new".into(), set(256));
+        assert_eq!(node.bytes.load(Relaxed), 32 * 1024);
+        assert!(
+            !lock(&a.inner).entries.contains_key("s0"),
+            "the oldest set went"
+        );
+        assert!(lock(&a.inner).entries.contains_key("s2"));
+        assert!(lock(&b.inner).entries.contains_key("new"));
+        assert_eq!(node.evictions.load(Relaxed), 1);
+        // Past a sixteenth of the budget: not kept at all.
+        b.insert("huge".into(), set(1024));
+        assert!(!lock(&b.inner).entries.contains_key("huge"));
+        // A segment's cache going away gives its bytes back.
+        let held = lock(&a.inner).bytes;
+        drop(a);
+        assert_eq!(node.bytes.load(Relaxed), 32 * 1024 - held);
+    }
 
     fn bits_scorer(bits: FixedBitSet) -> CachedScorer {
         let cardinality = bits.cardinality() as i64;

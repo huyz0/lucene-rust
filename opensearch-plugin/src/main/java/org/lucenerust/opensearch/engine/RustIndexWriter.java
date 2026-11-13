@@ -70,8 +70,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * reader on the writer's live segment list ({@link #acquireNrt}), as {@code IndexWriter.getReader}
  * does; nothing is synced. Only {@link #commit} (an OpenSearch flush) writes a {@code segments_N}
  * with the live commit data, so every commit is a complete recovery point and the translog covers
- * the rest. With live search on, a refresh is a commit ({@link #acquireLatest}): live views are
- * keyed by commit generation. The writer's merges run on its merge threads ({@code
+ * the rest. Live views of the buffers are keyed by the version of the segment list a reader opened,
+ * an NRT snapshot's as a commit's. The writer's merges run on its merge threads ({@code
  * index.merge.scheduler.*}); a merged segment is in the next reader and the next commit.
  *
  * <p><b>Commit points are OpenSearch's to drop.</b> After every commit the deletion policy the
@@ -110,19 +110,21 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private volatile Iterable<Map.Entry<String, String>> liveCommitData;
     private IndexDeletionPolicy deletionPolicy;
     private LongSupplier minRetainedSeqNo;
+    /** {@link SeqNoSettings#DISABLE_SEQUENCE_NUMBERS}; under {@link #lock}. */
+    private boolean seqNoSentinels;
     private CircuitBreaker breaker;
     /** Bytes of the Rust writer's buffer currently accounted to {@link #breaker}; under {@link #accounting}. */
     private long accounted;
     private boolean faultInjection;
-    /** Whether searches read the buffered documents ({@code index.lucene_rust.realtime_search}). */
+    /** Whether searches read the buffered documents ({@code index.search.realtime.enabled}). */
     private boolean liveSearch;
-    /** How old a view of the buffers a search may read ({@code index.lucene_rust.realtime_max_staleness}). */
+    /** How old a view of the buffers a search may read ({@code index.search.realtime.max_staleness}). */
     private volatile long liveStalenessNanos;
     /** The reader over the view searches share under {@link #liveStalenessNanos}, kept until a refresh. */
     private final SharedLiveReader sharedLive = new SharedLiveReader();
-    /** The field whose value is a document's partition ({@code index.lucene_rust.partition_field}), or null. */
+    /** The field whose value is a document's partition ({@code index.segment_partition.field}), or null. */
     private String partitionField;
-    /** The newest commit generation whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
+    /** The newest segment list version whose readers' buffers {@link #releaseLive} let go; under {@link #liveLock}. */
     private long liveReleased = -1;
     private final Object liveLock = new Object();
     /** The leaf's field infos and the registry size they were built at; under {@link #liveLock}. */
@@ -246,7 +248,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             out
         );
         if (status != NativeBridge.OK) {
-            throw new IOException("cannot open the Rust writer at [" + indexPath + "]: " + NativeBridge.lastError());
+            throw new IOException("cannot open the accelerated writer at [" + indexPath + "]: " + NativeBridge.lastError());
         }
         RustIndexWriter w = new RustIndexWriter(
             directory,
@@ -309,7 +311,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (status == NativeBridge.INVALID_ARGUMENT || status == NativeBridge.DECODE) {
             throw new IllegalArgumentException(message);
         }
-        IOException e = new IOException(what + " failed in the Rust writer (status " + status + "): " + message);
+        IOException e = new IOException(what + " failed in the accelerated writer (status " + status + "): " + message);
         if (tragic == null) {
             tragic = e;
         }
@@ -357,7 +359,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         long estimate = reservation(op.length());
         if (breaker != null) {
             if (REFUSABLE.get()) {
-                breaker.addEstimateBytesAndMaybeBreak(estimate, "lucene_rust_writer");
+                breaker.addEstimateBytesAndMaybeBreak(estimate, "indexing_buffers");
             } else {
                 breaker.addWithoutBreaking(estimate);
             }
@@ -842,7 +844,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.lucene_rust.bp_reorder.*}
+     * {@code BPReorderingMergePolicy} around the merge policy, as {@code index.merge.reorder.*}
      * describes it; sent again only when a value changed.
      */
     void setBpReorder(BpReorderSettings.Values values) throws IOException {
@@ -875,12 +877,12 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * {@code index.lucene_rust.knn.ivf_partition_clusters}: IVF fields clustered per partition of the
+     * {@code index.knn.ivf.partition_min_vectors}: IVF fields clustered per partition of the
      * index sort's first field, {@code 0} off.
      */
     void setIvfPartitionClusters(int minVectors) throws IOException {
         synchronized (lock) {
-            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting ivf_partition_clusters");
+            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting index.knn.ivf.partition_min_vectors");
         }
     }
 
@@ -897,7 +899,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     private void applyRetention() throws IOException {
         if (minRetainedSeqNo != null) {
-            check(NativeBridge.writerSetRetention(handle, true, minRetainedSeqNo.getAsLong()), "setting retention");
+            check(NativeBridge.writerSetRetention(handle, true, seqNoSentinels, minRetainedSeqNo.getAsLong()), "setting retention");
+        }
+    }
+
+    /**
+     * {@link SeqNoSettings}: {@code _seq_no} without points, and merges writing sentinels for the
+     * sequence numbers retention no longer needs. Set before the first document.
+     */
+    void setSeqNoLayout(boolean docValuesOnly, boolean sentinels) throws IOException {
+        synchronized (lock) {
+            encoder.setSeqNoDocValuesOnly(docValuesOnly);
+            seqNoSentinels = sentinels;
+            applyRetention();
         }
     }
 
@@ -949,25 +963,6 @@ final class RustIndexWriter implements DocumentIndexWriter {
             long[] arr = doomed.stream().mapToLong(Long::longValue).toArray();
             check(NativeBridge.writerDeleteCommits(handle, arr), "deleting commits");
             doomed.forEach(commits::remove);
-        }
-    }
-
-    /**
-     * Makes every buffered change visible through a commit: commits it if there is any, then pins
-     * the newest commit's files for a reader. Returns {@code {generation, hold}}; release the hold
-     * with {@link #releaseHold} once the reader is closed. Live search keys the buffers it reads by
-     * that commit's generation, so a writer with live search refreshes this way.
-     */
-    long[] acquireLatest() throws IOException {
-        synchronized (lock) {
-            ensureOpen();
-            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
-                commitLocked();
-            }
-            long gen = latestGeneration;
-            long[] hold = new long[1];
-            check(NativeBridge.writerHoldCommit(handle, gen, hold), "holding commit " + gen);
-            return new long[] { gen, hold[0] };
         }
     }
 
@@ -1038,12 +1033,12 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * A view of the documents buffered after commit {@code generation}: its handle and blob ({@link
-     * NativeBridge#liveViewOpen}), or null when the buffers cannot be read for that commit (they were
+     * A view of the documents a reader of the segment list at {@code version} lacks: its handle and blob ({@link
+     * NativeBridge#liveViewOpen}), or null when the buffers cannot be read for that list (they were
      * let go, a delete by query reached them, the writer is closed); the reader is then searched
      * alone.
      */
-    LiveViewHandle openLiveView(long generation) {
+    LiveViewHandle openLiveView(long version) {
         if (liveSearch == false || indexing.readLock().tryLock() == false) {
             return null;
         }
@@ -1053,9 +1048,9 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             long[] view = new long[1];
             byte[][] blob = new byte[1][];
-            if (NativeBridge.liveViewOpen(handle, generation, view, blob) != NativeBridge.OK) {
+            if (NativeBridge.liveViewOpen(handle, version, view, blob) != NativeBridge.OK) {
                 if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("lucene-rust: no view of the buffers for commit {}: {}", generation, NativeBridge.lastError());
+                    LOGGER.debug("lucene-rust: no view of the buffers for segment list version {}: {}", version, NativeBridge.lastError());
                 }
                 return null;
             }
@@ -1089,18 +1084,18 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
-     * Lets go of the buffered documents a reader of commit {@code generation} already has, once no
-     * view reads them: every new search reads that commit or a newer one.
+     * Lets go of the buffered documents a reader of the segment list at {@code version} already has,
+     * once no view reads them: every new search reads that list or a newer one.
      */
-    void releaseLive(long generation) {
+    void releaseLive(long version) {
         synchronized (liveLock) {
-            if (liveSearch == false || generation <= liveReleased) {
+            if (liveSearch == false || version <= liveReleased) {
                 return;
             }
             indexing.readLock().lock();
             try {
-                if (nativeClosed == false && NativeBridge.writerReleaseLive(handle, generation) == NativeBridge.OK) {
-                    liveReleased = generation;
+                if (nativeClosed == false && NativeBridge.writerReleaseLive(handle, version) == NativeBridge.OK) {
+                    liveReleased = version;
                 }
             } finally {
                 indexing.readLock().unlock();
@@ -1189,6 +1184,31 @@ final class RustIndexWriter implements DocumentIndexWriter {
     @Override
     public void forceMerge(int maxNumSegments, boolean doWait) throws IOException {
         runForceMerge(maxNumSegments, false);
+    }
+
+    /**
+     * The segment upgrade {@code OpenSearchMergePolicy} runs while {@code setUpgradeInProgress} is
+     * on: every committed segment an older Lucene than OpenSearch's wrote (an older major only, when
+     * {@code onlyAncientSegments}) is rewritten on its own. Returns how many were.
+     */
+    int upgradeSegments(boolean onlyAncientSegments) throws IOException {
+        synchronized (lock) {
+            ensureOpen();
+            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
+                commitLocked();
+            }
+            applyRetention();
+            org.apache.lucene.util.Version current = org.opensearch.Version.CURRENT.luceneVersion;
+            long[] out = new long[2];
+            indexing.writeLock().lock();
+            try {
+                check(NativeBridge.writerUpgrade(handle, current.major, current.minor, onlyAncientSegments, out), "segment upgrade");
+            } finally {
+                indexing.writeLock().unlock();
+            }
+            onNewCommits();
+            return (int) out[1];
+        }
     }
 
     private void runForceMerge(int maxNumSegments, boolean onlyDeletes) throws IOException {
@@ -1346,7 +1366,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     @Override
     public IndexWriter getAccumulatingIndexWriter() {
-        throw new UnsupportedOperationException("the Rust engine has no Lucene IndexWriter");
+        throw new UnsupportedOperationException("the accelerated engine has no Lucene IndexWriter");
     }
 
     @Override

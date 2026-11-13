@@ -84,6 +84,21 @@ pub enum ExtendedQuery {
     /// [`ExtendedQuery::PhraseWildcardWeight`] before it is searched.
     PhraseWildcard(crate::sandbox::search::PhraseWildcardQuery),
     PhraseWildcardWeight(crate::sandbox::search::ResolvedPhraseWildcard),
+    /// A substring, wildcard or regexp search over a `Substring90`
+    /// doc-values field ([`SubstringQuery`]).
+    Substring(SubstringQuery),
+    /// OpenSearch's `match_phrase_prefix` query
+    /// ([`MultiPhrasePrefixQuery`]); only highlighted, not searched.
+    MultiPhrasePrefix(MultiPhrasePrefixQuery),
+    /// A query Lucene's highlighters read only through its `visit`, which
+    /// visits the wrapped query as `MUST`: OpenSearch's `FunctionScoreQuery`
+    /// (`function_score`), a class the span extractor does not support.
+    /// Only highlighted, not searched.
+    VisitOnly(Box<Clause>),
+    /// A query Lucene's `unified` highlighter reads only through its
+    /// `visit`, as what that visit does ([`VisitRecord`]); only highlighted,
+    /// not searched.
+    Visited(VisitRecord),
     /// A query only tests build ([`crate::test_support::TestQuery`]).
     #[cfg(any(test, feature = "asserting"))]
     Test(crate::test_support::TestQuery),
@@ -117,6 +132,8 @@ into_clause! {
     PointInSetQuery => PointInSet,
     IndexOrDocValuesQuery => IndexOrDocValues,
     DocumentClause => Document,
+    SubstringQuery => Substring,
+    MultiPhrasePrefixQuery => MultiPhrasePrefix,
 }
 
 impl From<crate::function::FunctionQuery> for Clause {
@@ -181,6 +198,10 @@ impl ExtendedQuery {
             ExtendedQuery::BayesianScore(_) => "BayesianScoreQuery",
             ExtendedQuery::DocAndScore(_) => "DocAndScoreQuery",
             ExtendedQuery::NumericDocValuesRange(_) => "SortedNumericDocValuesRangeQuery",
+            ExtendedQuery::Substring(_) => "SubstringQuery",
+            ExtendedQuery::MultiPhrasePrefix(_) => "MultiPhrasePrefixQuery",
+            ExtendedQuery::VisitOnly(_) => "FunctionScoreQuery",
+            ExtendedQuery::Visited(_) => "VisitedQuery",
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
             ExtendedQuery::PointRange(_) => "PointRangeQuery",
             ExtendedQuery::PointInSet(_) => "PointInSetQuery",
@@ -231,6 +252,12 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinals(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
+            ExtendedQuery::VisitOnly(q) => vec![q.as_ref()],
+            ExtendedQuery::Visited(r) => {
+                let mut out = Vec::new();
+                r.nodes(&mut out);
+                out
+            }
             ExtendedQuery::Covering(q) => q.queries.iter().collect(),
             ExtendedQuery::Document(q) => q
                 .filter
@@ -252,6 +279,41 @@ impl ExtendedQuery {
 /// `SynonymQuery`: terms of one field scored as if they were one term -- the
 /// document's frequency is the sum of each present term's `boost * freq`,
 /// `docFreq` the largest of theirs, `totalTermFreq` the sum.
+/// What a query's `visit` did, recorded event by event: replayed, it
+/// visits a visitor as that query would.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VisitRecord {
+    pub events: Vec<VisitEvent>,
+}
+
+/// One step of a [`VisitRecord`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum VisitEvent {
+    /// `consumeTerms`, behind `acceptField(guard)` when the query asked.
+    Terms {
+        guard: Option<String>,
+        terms: Vec<crate::query_visitor::Term>,
+    },
+    /// `visitLeaf`, behind `acceptField(guard)` when the query asked.
+    Leaf { guard: Option<String> },
+    /// `getSubVisitor(occur)`, and what was done with it.
+    Sub(crate::query_visitor::Occur, VisitRecord),
+    /// A query handed over whole, visited as itself.
+    Node(Clause),
+}
+
+impl VisitRecord {
+    fn nodes<'a>(&'a self, out: &mut Vec<&'a Clause>) {
+        for e in &self.events {
+            match e {
+                VisitEvent::Sub(_, r) => r.nodes(out),
+                VisitEvent::Node(c) => out.push(c),
+                VisitEvent::Terms { .. } | VisitEvent::Leaf { .. } => {}
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SynonymQuery {
     pub field: String,
@@ -836,6 +898,183 @@ impl NumericDocValuesRangeQuery {
             lower,
             upper,
         }
+    }
+}
+
+/// How a [`SubstringQuery`]'s pattern reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubstringKind {
+    /// `WildcardQuery` syntax over the whole value.
+    Wildcard,
+    /// Lucene `RegExp` syntax over the whole value.
+    Regexp,
+    /// The pattern anywhere in the value.
+    Contains,
+    /// The whole value.
+    Exact,
+}
+
+/// OpenSearch's `MultiPhrasePrefixQuery`, what `match_phrase_prefix`
+/// builds: a multi-phrase whose last position's terms are prefixes. Every
+/// position but the last holds whole terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiPhrasePrefixQuery {
+    pub field: String,
+    /// `termArrays`: each position's terms, the last one's prefixes.
+    pub term_arrays: Vec<Vec<Vec<u8>>>,
+    /// `positions`, one per entry of `term_arrays`, increasing.
+    pub positions: Vec<i32>,
+    pub slop: u32,
+    /// `maxExpansions`: how many terms the prefixes expand to, at most.
+    pub max_expansions: i32,
+}
+
+impl MultiPhrasePrefixQuery {
+    /// A query over `term_arrays` at `positions`; the two must be as long
+    /// and neither empty, and no position may hold no term.
+    pub fn new(
+        field: impl Into<String>,
+        term_arrays: Vec<Vec<Vec<u8>>>,
+        positions: Vec<i32>,
+        slop: u32,
+    ) -> Result<Self> {
+        if term_arrays.is_empty()
+            || term_arrays.len() != positions.len()
+            || term_arrays.iter().any(Vec::is_empty)
+        {
+            return Err(Error::InvalidQuery(
+                "a phrase prefix needs one or more positions of one or more terms".into(),
+            ));
+        }
+        Ok(MultiPhrasePrefixQuery {
+            field: field.into(),
+            term_arrays,
+            positions,
+            slop,
+            max_expansions: Self::DEFAULT_MAX_EXPANSIONS,
+        })
+    }
+
+    /// `maxExpansions`' default, `Integer.MAX_VALUE`.
+    pub const DEFAULT_MAX_EXPANSIONS: i32 = i32::MAX;
+
+    /// `setMaxExpansions(max)`.
+    pub fn with_max_expansions(mut self, max: i32) -> Self {
+        self.max_expansions = max;
+        self
+    }
+
+    /// `rewrite(searcher)` over a reader of one leaf whose terms are `terms`
+    /// (sorted, each once): the whole positions and the prefixes' terms as a
+    /// multi-phrase, each prefix's terms in order until there are
+    /// `max_expansions` of them. With no term for the prefixes, a query that
+    /// matches nothing -- around the whole positions' multi-phrase when
+    /// there are any, as Java keeps it for the highlighters.
+    pub fn rewrite_over(&self, terms: &[Vec<u8>]) -> Clause {
+        use crate::query::{BooleanQuery, MatchNoDocsQuery, MultiPhraseQuery};
+        let Some((suffixes, whole)) = self.term_arrays.split_last() else {
+            return Clause::MatchNoDocs(MatchNoDocsQuery::new());
+        };
+        let mut expanded: Vec<Vec<u8>> = Vec::new();
+        let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        let max = usize::try_from(self.max_expansions).unwrap_or(0);
+        'suffixes: for prefix in suffixes {
+            let start = terms.partition_point(|t| t.as_slice() < prefix.as_slice());
+            for t in &terms[start..] {
+                if !t.starts_with(prefix) {
+                    break;
+                }
+                if seen.insert(t.as_slice()) {
+                    expanded.push(t.clone());
+                }
+                if expanded.len() >= max {
+                    break;
+                }
+            }
+            if expanded.len() > max {
+                break 'suffixes;
+            }
+        }
+        let mut arrays: Vec<(Vec<Vec<u8>>, i32)> = whole
+            .iter()
+            .cloned()
+            .zip(self.positions.iter().copied())
+            .collect();
+        if expanded.is_empty() {
+            if whole.is_empty() {
+                return Clause::MatchNoDocs(MatchNoDocsQuery::new());
+            }
+            let phrase = MultiPhraseQuery::with_positions(self.field.clone(), arrays)
+                .map(|p| p.with_slop(self.slop));
+            return match phrase {
+                Ok(p) => Clause::Boolean(Box::new(BooleanQuery::new().with_must([
+                    Clause::MultiPhrase(p),
+                    Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+                ]))),
+                Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+            };
+        }
+        let last = self.positions.last().copied().unwrap_or(0);
+        arrays.push((expanded, last));
+        match MultiPhraseQuery::with_positions(self.field.clone(), arrays) {
+            Ok(p) => Clause::MultiPhrase(p.with_slop(self.slop)),
+            Err(_) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+        }
+    }
+}
+
+/// A search over a BINARY doc-values field of the `Substring90` format
+/// ([`lucene_codecs::substring`]) -- OpenSearch's `wildcard` field
+/// queries: the field's trigram index narrows the blocks, the values settle
+/// each document. On a segment where the field's doc values are plain
+/// BINARY, every value is tested. Constant-scored.
+#[derive(Debug, Clone)]
+pub struct SubstringQuery {
+    pub field: String,
+    pub kind: SubstringKind,
+    pub pattern: String,
+    pub case_insensitive: bool,
+    matcher: Arc<lucene_codecs::substring::SubstringMatcher>,
+}
+
+impl PartialEq for SubstringQuery {
+    fn eq(&self, o: &Self) -> bool {
+        self.field == o.field
+            && self.kind == o.kind
+            && self.pattern == o.pattern
+            && self.case_insensitive == o.case_insensitive
+    }
+}
+
+impl SubstringQuery {
+    /// A query of `kind` for `pattern`; a malformed regexp is an error.
+    pub fn new(
+        field: impl Into<String>,
+        kind: SubstringKind,
+        pattern: impl Into<String>,
+        case_insensitive: bool,
+    ) -> Result<Self> {
+        use lucene_codecs::substring::SubstringMatcher;
+        let pattern = pattern.into();
+        let matcher = match kind {
+            SubstringKind::Wildcard => SubstringMatcher::wildcard(&pattern, case_insensitive),
+            SubstringKind::Contains => SubstringMatcher::contains(&pattern, case_insensitive),
+            SubstringKind::Exact => SubstringMatcher::exact(&pattern, case_insensitive),
+            SubstringKind::Regexp => SubstringMatcher::regexp(&pattern, case_insensitive)
+                .map_err(|e| Error::InvalidQuery(format!("regexp [{pattern}]: {e}")))?,
+        };
+        Ok(SubstringQuery {
+            field: field.into(),
+            kind,
+            pattern,
+            case_insensitive,
+            matcher: Arc::new(matcher),
+        })
+    }
+
+    /// The compiled pattern.
+    pub fn matcher(&self) -> &Arc<lucene_codecs::substring::SubstringMatcher> {
+        &self.matcher
     }
 }
 

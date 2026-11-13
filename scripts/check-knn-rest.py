@@ -171,7 +171,7 @@ def compare_sources(failures):
             mappings["_source"] = source
         body = {**doc, **more}
         for port in (OURS[1], STOCK[1]):
-            settings = {"knn": True, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
+            settings = {"knn": True, "number_of_replicas": 0, **({"engine.accelerated": True} if port == OURS[1] else {})}
             ck.req(port, "PUT", f"/{index}", {"settings": {"index": settings}, "mappings": mappings})
             setting = ck.req(port, "GET", f"/{index}/_settings/index.knn.derived_source.enabled")
             got[port] = {"setting": setting[index]["settings"]["index"]["knn"]["derived_source"]["enabled"]}
@@ -194,7 +194,7 @@ def compare_sources(failures):
     size = {}
     for index, derived in (("masked", True), ("whole", False)):
         ck.req(OURS[1], "PUT", f"/{index}", {"settings": {"index": {"knn": True, "number_of_replicas": 0,
-                                                                    "lucene_rust.engine": True,
+                                                                    "engine.accelerated": True,
                                                                     "knn.derived_source.enabled": derived}},
                                              "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": 64},
                                                                          "nest": nested}}})
@@ -226,7 +226,7 @@ def compare_fields(failures):
         plain = ("plain", "space", "byte", "float", "stored", "half")
         mappings = {"properties": {k: v for k, v in MAPPINGS.items() if knn or k in plain}}
         for port in (OURS[1], STOCK[1]):
-            settings = {"knn": knn, "number_of_replicas": 0, **({"lucene_rust.engine": True} if port == OURS[1] else {})}
+            settings = {"knn": knn, "number_of_replicas": 0, **({"engine.accelerated": True} if port == OURS[1] else {})}
             ck.req(port, "PUT", f"/{index}", {"settings": {"index": settings}, "mappings": mappings})
             body = {k: v for k, v in values().items() if k in mappings["properties"]}
             ck.req(port, "PUT", f"/{index}/_doc/1?refresh=true", body)

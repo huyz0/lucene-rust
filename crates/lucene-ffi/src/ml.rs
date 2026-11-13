@@ -53,28 +53,30 @@ use crate::raw::{bytes_from_raw, str_from_raw};
 use crate::registry::{lock_recovering, read_recovering};
 
 /// A deployed model behind a handle.
-enum Model {
+pub(crate) enum Model {
     TextEmbedding(TextEmbeddingModel),
     SparseTokenize(SparseTokenizer),
     HfAnalyzer(HfAnalyzer),
     SparseEncoding(SparseEncodingModel),
     TextSimilarity(TextSimilarityModel),
     TorchTextEmbedding(TorchTextEmbeddingModel),
+    /// A remote model's connector, credentials decrypted.
+    Remote(lucene_ml::remote::connector::Connector),
 }
 
-fn models() -> &'static RwLock<SlotMap<Arc<Model>>> {
+pub(crate) fn models() -> &'static RwLock<SlotMap<Arc<Model>>> {
     static REGISTRY: OnceLock<RwLock<SlotMap<Arc<Model>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::MlModel)))
 }
 
-fn model(handle: u64) -> Result<Arc<Model>, FfiStatus> {
+pub(crate) fn model(handle: u64) -> Result<Arc<Model>, FfiStatus> {
     read_recovering(models())
         .get(handle)
         .cloned()
         .ok_or(FfiStatus::InvalidHandle)
 }
 
-fn wrong_kind(what: &str) -> FfiStatus {
+pub(crate) fn wrong_kind(what: &str) -> FfiStatus {
     set_last_error(format!("the model is not a {what} model"));
     FfiStatus::InvalidArgument
 }

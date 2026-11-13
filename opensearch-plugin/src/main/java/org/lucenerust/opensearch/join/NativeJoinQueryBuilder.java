@@ -24,14 +24,14 @@ import java.util.Objects;
 
 /**
  * A {@code has_child} or {@code has_parent} query, as the parent-join module builds it, whose
- * Lucene query on an index searched natively ({@code index.lucene_rust.search.enabled}) is a {@link
+ * Lucene query on an index searched natively ({@code index.search.accelerated}) is a {@link
  * DeferredJoinQuery}: the join is then
  * run by the native search, not while OpenSearch prepares the search context. Everything else --
  * its JSON, its rewrite, its inner hits, its query for any other index -- is the wrapped query's.
  * {@link JoinRequestFilter} puts it around the joins of a search request.
  */
 public final class NativeJoinQueryBuilder extends AbstractQueryBuilder<NativeJoinQueryBuilder> {
-    public static final String NAME = "lucene_rust_join";
+    public static final String NAME = "accelerated_join";
 
     private final QueryBuilder join;
 
@@ -54,7 +54,7 @@ public final class NativeJoinQueryBuilder extends AbstractQueryBuilder<NativeJoi
         out.writeNamedWriteable(join);
     }
 
-    /** {@code {"lucene_rust_join": {"has_child": {...}}}}, though it prints as the join itself. */
+    /** {@code {"accelerated_join": {"has_child": {...}}}}, though it prints as the join itself. */
     public static NativeJoinQueryBuilder fromXContent(XContentParser parser) throws IOException {
         return new NativeJoinQueryBuilder(parseInnerQueryBuilder(parser));
     }

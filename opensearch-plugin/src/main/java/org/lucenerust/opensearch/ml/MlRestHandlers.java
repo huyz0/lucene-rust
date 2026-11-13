@@ -69,6 +69,40 @@ public final class MlRestHandlers {
                 Set.of(),
                 List.of(new Route(POST, BASE + "/models/_search"), new Route(GET, BASE + "/models/_search"))
             ),
+            new Handler("ml_update_model_action", MlActions.UPDATE_MODEL, Set.of(), List.of(new Route(PUT, BASE + "/models/{model_id}"))),
+            new Handler("ml_register_model_meta_action", MlActions.REGISTER_MODEL_META, Set.of(), List.of(new Route(POST, BASE + "/models/meta"))),
+            new Handler(
+                "ml_upload_model_chunk_action",
+                MlActions.UPLOAD_MODEL_CHUNK,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/models/{model_id}/upload_chunk/{chunk_number}"))
+            ),
+            new Handler(
+                "ml_stats_action",
+                MlActions.STATS,
+                Set.of(),
+                List.of(
+                    new Route(GET, BASE + "/{nodeId}/stats/"),
+                    new Route(GET, BASE + "/{nodeId}/stats/{stat}"),
+                    new Route(GET, BASE + "/stats/{stat}"),
+                    new Route(GET, BASE + "/stats")
+                )
+            ),
+            new Handler("ml_profile_action", MlActions.PROFILE, Set.of("view"), Map.of("scope", "all"), List.of(new Route(GET, BASE + "/profile"))),
+            new Handler(
+                "ml_profile_models_action",
+                MlActions.PROFILE,
+                Set.of("view"),
+                Map.of("scope", "models"),
+                List.of(new Route(GET, BASE + "/profile/models"), new Route(GET, BASE + "/profile/models/{model_id}"))
+            ),
+            new Handler(
+                "ml_profile_tasks_action",
+                MlActions.PROFILE,
+                Set.of("view"),
+                Map.of("scope", "tasks"),
+                List.of(new Route(GET, BASE + "/profile/tasks"), new Route(GET, BASE + "/profile/tasks/{task_id}"))
+            ),
             new Handler(
                 "ml_register_model_group_action",
                 MlActions.REGISTER_MODEL_GROUP,
@@ -106,23 +140,59 @@ public final class MlRestHandlers {
                 MlActions.SEARCH_TASKS,
                 Set.of(),
                 List.of(new Route(POST, BASE + "/tasks/_search"), new Route(GET, BASE + "/tasks/_search"))
+            ),
+            new Handler(
+                "ml_create_connector_action",
+                MlActions.CREATE_CONNECTOR,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/connectors/_create"))
+            ),
+            new Handler(
+                "ml_get_connector_action",
+                MlActions.GET_CONNECTOR,
+                Set.of(),
+                List.of(new Route(GET, BASE + "/connectors/{connector_id}"))
+            ),
+            new Handler(
+                "ml_update_connector_action",
+                MlActions.UPDATE_CONNECTOR,
+                Set.of(),
+                List.of(new Route(PUT, BASE + "/connectors/{connector_id}"))
+            ),
+            new Handler(
+                "ml_delete_connector_action",
+                MlActions.DELETE_CONNECTOR,
+                Set.of(),
+                List.of(new Route(DELETE, BASE + "/connectors/{connector_id}"))
+            ),
+            new Handler(
+                "ml_search_connector_action",
+                MlActions.SEARCH_CONNECTORS,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/connectors/_search"), new Route(GET, BASE + "/connectors/_search"))
             )
         );
     }
 
     /** Hands the call's path parameters, the {@code query} parameters it reads, and its body to {@code action}. */
     static final class Handler extends BaseRestHandler {
-        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id");
+        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat");
 
         private final String name;
         private final MlActions.Type action;
         private final Set<String> query;
+        private final Map<String, String> fixed;
         private final List<Route> routes;
 
         Handler(String name, MlActions.Type action, Set<String> query, List<Route> routes) {
+            this(name, action, query, Map.of(), routes);
+        }
+
+        Handler(String name, MlActions.Type action, Set<String> query, Map<String, String> fixed, List<Route> routes) {
             this.name = name;
             this.action = action;
             this.query = query;
+            this.fixed = fixed;
             this.routes = routes;
         }
 
@@ -151,6 +221,7 @@ public final class MlRestHandlers {
                     params.put(p, v);
                 }
             }
+            params.putAll(fixed);
             byte[] body = request.hasContentOrSourceParam() ? BytesReference.toBytes(request.contentOrSourceParam().v2()) : new byte[0];
             MlActions.Request r = new MlActions.Request(params, body);
             return channel -> client.execute(action, r, new ActionListener<>() {

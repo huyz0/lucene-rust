@@ -155,7 +155,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_doc_freq(
 }
 
 /// The nested queries' parent bit-set cache
-/// ([`crate::jvm_nodes::parent_cache_stats`]): its entries into `out[0]` and
+/// ([`lucene_engine::nodes::parent_cache_stats`]): its entries into `out[0]` and
 /// the bytes of its sets into `out[1]`, for the plugin's stats.
 ///
 /// # Safety
@@ -166,7 +166,7 @@ pub unsafe extern "C" fn ffi_jvm_parent_cache_stats(out: *mut i64) -> i32 {
         if out.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let (entries, bytes) = crate::jvm_nodes::parent_cache_stats();
+        let (entries, bytes) = lucene_engine::nodes::parent_cache_stats();
         let to = |v: usize| i64::try_from(v).unwrap_or(i64::MAX);
         // SAFETY: caller contract (two slots).
         unsafe {
@@ -394,6 +394,37 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_alloc(
     })
 }
 
+/// [`ffi_jvm_reader_aggregate_tree_alloc`], each committed segment's
+/// collected part read from and kept in the process's aggregation segment
+/// cache ([`crate::jvm_aggs::ffi_agg_segment_cache_set_budget`]): the same
+/// results, and with the cache off the same pass.
+///
+/// # Safety
+/// As [`ffi_jvm_reader_aggregate_tree_alloc`].
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_cached_alloc(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    tree: *const u8,
+    tree_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let tree_blob = unsafe { bytes_from_raw(tree, tree_len)? };
+        let encoded = crate::jvm_aggs::aggregate_tree_blobs_cached(handle, blob, tree_blob, true)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`jvm_reader::search_hybrid_blobs`]: a hybrid query's shard phase, its
 /// slices' answers encoded in an owned buffer.
 ///
@@ -532,14 +563,61 @@ pub unsafe extern "C" fn ffi_jvm_reader_derived_source_alloc(
     guard(|| {
         // SAFETY: caller contract.
         unsafe { clear_out(out_ptr, out_len)? };
-        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc)?;
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, true)?;
         // SAFETY: caller contract.
         unsafe { give(encoded, out_ptr, out_len) };
         Ok(())
     })
 }
 
-/// [`crate::jvm_analysis::register`]: an analyzer for indexing, its id into
+/// [`crate::jvm_fetch::source_blob`] without the vectors: a derived-source document's `_source`
+/// as stored, each vector masked, as an owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_source_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, false)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_fetch::stored_value`]: the value a document blob left out as `DEFERRED`, as an
+/// owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_value_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    ordinal: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::stored_value(handle, segment, doc, ordinal)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`lucene_engine::analysis::register`]: an analyzer for indexing, its id into
 /// `*out_id`.
 ///
 /// # Safety
@@ -556,14 +634,14 @@ pub unsafe extern "C" fn ffi_jvm_analysis_register(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(blob, blob_len)? };
-        let id = crate::jvm_analysis::register(blob)?;
+        let id = lucene_engine::analysis::register(blob)?;
         // SAFETY: caller contract.
         unsafe { *out_id = i32::try_from(id).map_err(|_| FfiStatus::InvalidArgument)? };
         Ok(())
     })
 }
 
-/// [`crate::jvm_painless_score::check`]: whether the native runtime runs a
+/// [`lucene_engine::painless_score::check`]: whether the native runtime runs a
 /// score script exactly as Painless would, decided before anything runs.
 /// Writes nothing (a null buffer) when it does, else the reason as UTF-8.
 ///
@@ -582,7 +660,7 @@ pub unsafe extern "C" fn ffi_jvm_painless_check(
         unsafe { clear_out(out_ptr, out_len)? };
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(blob, blob_len)? };
-        let refused = match crate::jvm_painless_score::check(blob)? {
+        let refused = match lucene_engine::painless_score::check(blob)? {
             None => Vec::new(),
             Some(r) if r.is_empty() => b"refused".to_vec(),
             Some(r) => r.into_bytes(),
@@ -593,7 +671,7 @@ pub unsafe extern "C" fn ffi_jvm_painless_check(
     })
 }
 
-/// [`crate::jvm_analysis::analyze`]: `spec`'s analyzer over `text` (UTF-8)
+/// [`lucene_engine::analysis::analyze`]: `spec`'s analyzer over `text` (UTF-8)
 /// as field `field`, its tokens into an owned buffer.
 ///
 /// # Safety
@@ -622,7 +700,7 @@ pub unsafe extern "C" fn ffi_jvm_analyze_alloc(
         let text = unsafe { bytes_from_raw(text, text_len)? };
         let utf8 = |b| std::str::from_utf8(b).map_err(|_| FfiStatus::InvalidUtf8);
         let (field, text) = (utf8(field)?, utf8(text)?);
-        let encoded = crate::jvm_analysis::analyze(spec, field, text)?;
+        let encoded = lucene_engine::analysis::analyze(spec, field, text)?;
         // SAFETY: caller contract.
         unsafe { give(encoded, out_ptr, out_len) };
         Ok(())

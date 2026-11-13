@@ -6,10 +6,10 @@
 use std::fmt;
 use std::sync::Arc;
 
+use lucene_spatial4j::spatial4j::{Point, Shape, SpatialContext, SpatialRelation};
+use lucene_spatial4j::spatial_extras::prefix_tree::Cell;
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 use lucene_util::fixed_bit_set::FixedBitSet;
-use lucene_util::spatial4j::{Point, Shape, SpatialContext, SpatialRelation};
-use lucene_util::spatial_extras::prefix_tree::Cell;
-use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
 
 use super::bool_query::docs_of;
 use super::prefix::query::{visit, Traverser, VisitingQuery, Visitor};
@@ -113,7 +113,7 @@ impl SpatialStrategy for CompositeSpatialStrategy {
         _multiplier: f64,
     ) -> Result<Arc<dyn DoubleValuesSource>> {
         Err(Error::Spatial(
-            lucene_util::spatial4j::Error::UnsupportedOperation(None),
+            lucene_spatial4j::spatial4j::Error::UnsupportedOperation(None),
         ))
     }
 

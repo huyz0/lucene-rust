@@ -9,12 +9,12 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
-use lucene_util::spatial3d::geo_area_factory::make_geo_area;
-use lucene_util::spatial3d::geo_bbox_factory::make_geo_bbox;
-use lucene_util::spatial3d::geo_circle_factory::make_geo_circle;
-use lucene_util::spatial3d::geo_path_factory::make_geo_path;
-use lucene_util::spatial3d::geo_polygon_factory::make_geo_polygon;
-use lucene_util::spatial3d::{
+use lucene_spatial3d::geo_area_factory::make_geo_area;
+use lucene_spatial3d::geo_bbox_factory::make_geo_bbox;
+use lucene_spatial3d::geo_circle_factory::make_geo_circle;
+use lucene_spatial3d::geo_path_factory::make_geo_path;
+use lucene_spatial3d::geo_polygon_factory::make_geo_polygon;
+use lucene_spatial3d::{
     DistanceStyle, GeoAreaObject, GeoDistanceShape, GeoPoint, GeoShape, PlanetModel,
 };
 use lucene_util::strict_math;

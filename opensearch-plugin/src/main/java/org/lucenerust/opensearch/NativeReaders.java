@@ -57,7 +57,9 @@ public final class NativeReaders {
      * 10.1-10.2, {@code Lucene103} for 10.3), and the completion formats OpenSearch's {@code
      * completion} fields are written in ({@code Completion104} since 3.x, the older ones by the
      * Lucene versions above): their postings are the default format's, which a query on
-     * the field reads, and the suggester itself stays OpenSearch's, on Lucene's reader. A field
+     * the field reads, and the suggester itself stays OpenSearch's, on Lucene's reader. {@code
+     * ZstdTerms104} ({@code index.codec.terms_compression: zstd}) is the engine's own zstd term-block
+     * format over {@code Lucene104} postings, which the native reader decodes too. A field
      * written in any other format makes the whole reader fall back, rather than failing (and
      * falling back) on every query that opens it.
      */
@@ -68,6 +70,7 @@ public final class NativeReaders {
         "Lucene101",
         "Lucene103",
         "Lucene104",
+        "ZstdTerms104",
         "Completion90",
         "Completion99",
         "Completion912",

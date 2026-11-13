@@ -42,9 +42,9 @@ type Result<T> = std::result::Result<T, lucene_ivf::Error>;
 pub const EXTENSIONS: [&str; 2] = ["vqm", "vqd"];
 
 /// `.vqm`'s codec name.
-pub const META_CODEC: &str = "LuceneRustHnswQuantizedMeta";
+pub const META_CODEC: &str = "HnswQuantizedMeta";
 /// `.vqd`'s codec name.
-pub const DATA_CODEC: &str = "LuceneRustHnswQuantizedData";
+pub const DATA_CODEC: &str = "HnswQuantizedData";
 /// The format version.
 pub const VERSION_CURRENT: i32 = 0;
 
@@ -432,6 +432,14 @@ impl CodeScorer<'_> {
 }
 
 impl lucene_codecs::hnsw::VectorScorer for CodeScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        lucene_codecs::hnsw::read_ahead_span(self.code_len)
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        lucene_codecs::hnsw::read_ahead_rows(self.codes, self.count, self.code_len, from, to);
+    }
+
     fn score(&mut self, node: i32) -> std::result::Result<f32, lucene_codecs::vectors::Error> {
         Ok(self.scorer.score(self.code(node)?))
     }
@@ -464,7 +472,7 @@ mod tests {
     use super::{centroid, write, CodesField, HnswCodesReader, CODES_ALIGNMENT};
 
     const ID: [u8; 16] = [7; 16];
-    const SUFFIX: &str = "LuceneRustHnswQuantizedVectorsFormat_0";
+    const SUFFIX: &str = "HnswQuantizedVectorsFormat_0";
 
     fn vectors(n: usize, dim: usize, seed: u64) -> Vec<f32> {
         let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;

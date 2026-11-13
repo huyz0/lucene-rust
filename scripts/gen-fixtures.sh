@@ -223,7 +223,7 @@ ICU_CP=$(lucene_classpath lucene-analysis-icu):$(thirdparty_classpath "${ICU_DEP
 OPENNLP_CP=$(lucene_classpath lucene-analysis-opennlp):$(thirdparty_classpath "${OPENNLP_DEPS[@]}")
 # The lucene-expressions and the ANTLR/ASM jars it runs on (EXPRESSIONS_DEPS).
 EXPRESSIONS_CP=$(lucene_classpath lucene-expressions):$(thirdparty_classpath "${EXPRESSIONS_DEPS[@]}")
-M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP:$EXPRESSIONS_CP"
+LANGUAGE_MODULES_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP:$EXPRESSIONS_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -241,7 +241,7 @@ trap 'rm -rf "$CLASSES" ${TMP_A:-} ${TMP_B:-}' EXIT
 # VerifyCompressingCodecs) compile and run in verify-write-path.sh, whose
 # classpath has that jar; no generator needs them.
 mapfile -t SOURCES < <(grep -L '^import org\.apache\.lucene\.tests\.' "$FIXTURES"/src/*.java)
-javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]}"
+javac -nowarn -cp "$CP:$LANGUAGE_MODULES_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]}"
 
 # JVM flags one generator needs on top of LUCENE_FIXTURE_JVM_OPTS. The geo3d
 # generators run with HotSpot's Math.sin/cos/tan intrinsics disabled: on x86-64
@@ -249,7 +249,7 @@ javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]}"
 # arguments, so spatial3d's output would depend on the CPU the fixture was made
 # on (arm64 and the interpreter-free paths disagree with x86-64). Disabled,
 # Math.sin *is* StrictMath.sin everywhere -- which is what the Rust port
-# computes. See crates/lucene-util/src/spatial3d/mod.rs ("Trigonometry").
+# computes. See crates/lucene-spatial3d/src/lib.rs ("Trigonometry").
 generator_jvm_opts() {
   case "$1" in
     GenGeo3d*|GenSpatial*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan" ;;
@@ -361,11 +361,13 @@ GENERATED_NOISE='(^|/)write\.lock$'
 # Deterministic on one machine, but not across machines: segment sizes include
 # the .si diagnostics (Runtime.version(), os.version, java.vendor, which no
 # system property pins); monitor's debug(), presearch and tree rows list tied terms in the JDK's
-# hash order; a walked demo index numbers documents in file-system order. Two
+# hash order; a walked demo index numbers documents in file-system order, and so
+# does Luke's `create` (the order documents reach the writer fixes the field
+# numbers, hence Luke's field order in create-overview/create-stored). Two
 # runs here agree, so they would be held to the committed bytes, which another
 # JDK build or kernel cannot reproduce. Their Rust tests read them beside the
 # index they were generated with (sizes, ids) or compare order-insensitively.
-MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/(debug|presearch|tree)\.tsv|tools/demo/out/walk-(create-again(-search)?|knn)\.out|tools/luke/out/commits\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
+MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/(debug|presearch|tree)\.tsv|tools/demo/out/walk-(create-again(-search)?|knn)\.out|tools/luke/out/(commits|create-overview|create-stored)\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
 
 while IFS= read -r rel; do
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
@@ -379,6 +381,9 @@ while IFS= read -r rel; do
     deterministic=$((deterministic+1))
     if ! cmp -s "$a" "$c"; then
       echo "  MISMATCH (deterministic file differs from committed): $rel"
+      if grep -qI . "$c"; then  # a text file: show what changed
+        diff -u "$c" "$a" | head -40 | sed 's/^/    /' || true
+      fi
       mismatched=$((mismatched+1)); status=1
     fi
   else
@@ -403,7 +408,7 @@ JDK25_OWNED='^analysis_date_locales/(dates_jdk25\.txt|numbers_jdk25\.tsv)$'
 # OpenSearch's custom-codecs plugin through scripts/check-zstd-stored-fields.sh
 # --fixture; and by OpenSearch's own Painless engine through
 # opensearch-plugin/tools/painless-corpus/ScoreCorpus.java (an index and the
-# scores OpenSearch gives it, verified by jvm_painless_score.rs).
+# scores OpenSearch gives it, verified by painless_score.rs).
 OPENSEARCH_OWNED='^(seismic|opensearch_zstd|painless-score)/'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue

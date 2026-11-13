@@ -1,7 +1,8 @@
+#![forbid(unsafe_code)]
 //! Lucene's `lucene-spatial-extras` (`org.apache.lucene.spatial`): the
 //! [`SpatialStrategy`]s that index Spatial4j shapes into ordinary fields and
 //! query them back -- over the shapes, prefix trees and `SpatialArgs` of
-//! [`lucene_util::spatial4j`] and [`lucene_util::spatial_extras`].
+//! [`lucene_spatial4j::spatial4j`] and [`lucene_spatial4j::spatial_extras`].
 //!
 //! - [`prefix`]: `PrefixTreeStrategy` and its three kinds --
 //!   [`RecursivePrefixTreeStrategy`] (any shape; intersects, within and
@@ -49,8 +50,8 @@ pub mod vector;
 use std::sync::Arc;
 
 use lucene_index::document::IndexableField;
-use lucene_util::spatial4j::{Point, Shape, SpatialContext};
-use lucene_util::spatial_extras::query::SpatialArgs;
+use lucene_spatial4j::spatial4j::{Point, Shape, SpatialContext};
+use lucene_spatial4j::spatial_extras::query::SpatialArgs;
 
 use lucene_search::document::DocumentQuery;
 use lucene_search::values_source::DoubleValuesSource;
@@ -160,14 +161,15 @@ pub fn make_recip_distance_value_source(
 /// The Java class of a shape, for the messages that name it
 /// (`shape.getClass()`).
 pub(crate) fn shape_class(shape: &dyn Shape) -> String {
-    use lucene_util::spatial4j::{CircleImpl, ShapeCollection};
-    use lucene_util::spatial_extras::prefix_tree::{SpanUnitsNRShape, UnitNRShape};
+    use lucene_spatial4j::spatial4j::{CircleImpl, ShapeCollection};
+    use lucene_spatial4j::spatial_extras::prefix_tree::{SpanUnitsNRShape, UnitNRShape};
     let any = shape.as_any();
     let name = if shape.as_point().is_some()
-        && lucene_util::spatial_extras::spatial4j::geo3d_class_name(shape).is_none()
+        && lucene_spatial4j::spatial_extras::spatial4j::geo3d_class_name(shape).is_none()
     {
         "org.locationtech.spatial4j.shape.impl.PointImpl"
-    } else if let Some(name) = lucene_util::spatial_extras::spatial4j::geo3d_class_name(shape) {
+    } else if let Some(name) = lucene_spatial4j::spatial_extras::spatial4j::geo3d_class_name(shape)
+    {
         name
     } else if shape.as_rectangle().is_some() {
         "org.locationtech.spatial4j.shape.impl.RectangleImpl"
@@ -184,7 +186,7 @@ pub(crate) fn shape_class(shape: &dyn Shape) -> String {
     } else if any.is::<SpanUnitsNRShape>() {
         "org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree$SpanUnitsNRShape"
     } else {
-        lucene_util::spatial4j::binary_codec::java_class_name(shape)
+        lucene_spatial4j::spatial4j::binary_codec::java_class_name(shape)
     };
     format!("class {name}")
 }
@@ -193,7 +195,7 @@ pub(crate) fn shape_class(shape: &dyn Shape) -> String {
 pub(crate) fn class_cast(shape: &dyn Shape, target: &str) -> Error {
     let class = shape_class(shape);
     let class = class.strip_prefix("class ").unwrap_or(&class);
-    Error::Spatial(lucene_util::spatial4j::Error::ClassCast(format!(
+    Error::Spatial(lucene_spatial4j::spatial4j::Error::ClassCast(format!(
         "class {class} cannot be cast to class {target}"
     )))
 }

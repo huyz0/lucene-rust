@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Faceting over a SORTED_SET doc-values field — a port of real Lucene's
 //! `SortedSetDocValuesFacetCounts` and the `lucene-facet` layer above it:
 //! for every matching doc, increment a per-ordinal counter for each of that
@@ -497,9 +498,7 @@ pub fn double_to_sortable_long(value: f64) -> i64 {
 /// `DoubleDocValuesField`'s stored `Double.doubleToRawLongBits` value it
 /// yields the sortable form a range built by [`NumericRange::new_double`]
 /// compares against — real `DoubleRangeFacetCounts.mapDocValue`.
-pub fn sortable_double_bits(bits: i64) -> i64 {
-    bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
-}
+pub use lucene_util::numeric_utils::sortable_double_bits;
 
 /// `Math.nextUp(double)` for the finite/infinite cases this port needs (Rust
 /// stabilized `f64::next_up` later than this project's pinned toolchain, so

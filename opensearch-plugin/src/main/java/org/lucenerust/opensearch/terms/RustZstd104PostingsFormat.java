@@ -19,12 +19,12 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.IOUtils;
 
 /**
- * The {@code RustZstd104} postings format the Rust engine writes under {@code
- * index.lucene_rust.zstd_terms} ({@code Lucene104PostingsFormat::rust_zstd} in {@code
+ * The {@code ZstdTerms104} postings format the Rust engine writes under {@code
+ * index.codec.terms_compression: zstd} ({@code Lucene104PostingsFormat::rust_zstd} in {@code
  * per_field_postings.rs}): {@code Lucene104PostingsFormat}'s postings under a block-tree terms
  * dictionary whose blocks may be zstd-compressed, a large field's against a dictionary trained on
  * its own blocks. Its files carry their own header names, so stock Lucene refuses them rather than
- * misreading a zstd block; {@link RustZstdBlockTreeTermsReader} reads them.
+ * misreading a zstd block; {@link ZstdBlockTreeTermsReader} reads them.
  *
  * <p>Java writes it as plain {@code Lucene104} files (zstd blocks are optional), which this format
  * reads with Lucene's own reader. A Java merge writes its own codec's formats, so it rewrites the
@@ -32,7 +32,7 @@ import org.apache.lucene.util.IOUtils;
  */
 public final class RustZstd104PostingsFormat extends PostingsFormat {
     /** {@code RUST_ZSTD_FORMAT_NAME} in {@code per_field_postings.rs}. */
-    public static final String NAME = "RustZstd104";
+    public static final String NAME = "ZstdTerms104";
 
     private final Lucene104PostingsFormat lucene104 = new Lucene104PostingsFormat();
 
@@ -52,7 +52,7 @@ public final class RustZstd104PostingsFormat extends PostingsFormat {
         }
         PostingsReaderBase postings = new Lucene104PostingsReader(state);
         try {
-            return new RustZstdBlockTreeTermsReader(postings, state);
+            return new ZstdBlockTreeTermsReader(postings, state);
         } catch (Throwable t) {
             IOUtils.closeWhileSuppressingExceptions(t, postings);
             throw t;
@@ -64,13 +64,13 @@ public final class RustZstd104PostingsFormat extends PostingsFormat {
         String name = IndexFileNames.segmentFileName(
             state.segmentInfo.name,
             state.segmentSuffix,
-            RustZstdBlockTreeTermsReader.TERMS_EXTENSION
+            ZstdBlockTreeTermsReader.TERMS_EXTENSION
         );
         try (IndexInput in = state.directory.openInput(name, IOContext.READONCE)) {
             if (CodecUtil.readBEInt(in) != CodecUtil.CODEC_MAGIC) {
                 return false;
             }
-            return RustZstdBlockTreeTermsReader.TERMS_CODEC_NAME.equals(in.readString());
+            return ZstdBlockTreeTermsReader.TERMS_CODEC_NAME.equals(in.readString());
         }
     }
 }
