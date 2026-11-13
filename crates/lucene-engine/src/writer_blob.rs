@@ -506,7 +506,8 @@ pub const VECTORS_FORMAT_ATTRIBUTE: &str = "accelerated.vectors_format";
 /// `sq:<scalar encoding wire number>` or
 /// `ivf:<target_cluster_size>:<rerank encoding>` (1-bit codes),
 /// `ivf:<target_cluster_size>:<rerank encoding>:<quantizer>` or
-/// `hnsw_rq:<quantizer>:<max_conn>:<beam_width>` (`IVF_QUANTIZERS` wire
+/// `hnsw_rq:<quantizer>:<max_conn>:<beam_width>` or
+/// `hnsw_disk:<quantizer>:<max_conn>:<beam_width>` (`IVF_QUANTIZERS` wire
 /// number); `None` for anything else.
 pub fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
     let parts: Vec<&str> = value.split(':').collect();
@@ -526,6 +527,9 @@ pub fn parse_vectors_format(value: &str) -> Option<KnnVectorsFormat> {
         )),
         ["hnsw_rq", q, m, beam] => {
             KnnVectorsFormat::hnsw_quantized(q.parse().ok()?, int(m)?, int(beam)?).ok()
+        }
+        ["hnsw_disk", q, m, beam] => {
+            KnnVectorsFormat::hnsw_disk(q.parse().ok()?, int(m)?, int(beam)?).ok()
         }
         ["ivf", size, e] => KnnVectorsFormat::ivf(size.parse().ok()?, e.parse().ok()?).ok(),
         ["ivf", size, e, q] => {
@@ -707,6 +711,11 @@ fn decode_vector_schema(
             let (m, beam) = graph(c)?;
             let quantizer = c.u8("HNSW quantizer")?;
             Some(KnnVectorsFormat::hnsw_quantized(quantizer, m, beam).map_err(invalid)?)
+        }
+        8 => {
+            let (m, beam) = graph(c)?;
+            let quantizer = c.u8("disk HNSW quantizer")?;
+            Some(KnnVectorsFormat::hnsw_disk(quantizer, m, beam).map_err(invalid)?)
         }
         _ => return Err(decode_error("vectors format")),
     };
@@ -995,7 +1004,7 @@ mod tests {
                 // quantizer bbq.
                 6 => b.i32(m).u8(1).u8(0),
                 // The quantizer erq2.
-                7 => b.i32(m).i32(100).u8(4),
+                7 | 8 => b.i32(m).i32(100).u8(4),
                 _ => b,
             };
             b.u8(0).i32(0).0
@@ -1017,6 +1026,14 @@ mod tests {
             );
         }
         assert!(decode_field(&schema(0, 7, 0)).is_err());
+        // Disk HNSW likewise.
+        for encoding in [0, 1] {
+            assert_eq!(
+                decode_field(&schema(encoding, 8, 16)).unwrap().1,
+                Some(KnnVectorsFormat::hnsw_disk(4, 16, 100).unwrap())
+            );
+        }
+        assert!(decode_field(&schema(0, 8, 0)).is_err());
         assert!(decode_field(&schema(0, 6, -1)).is_err());
         assert!(decode_field(&schema(1, 2, 16)).is_err());
         assert!(decode_field(&schema(1, 3, 16)).is_err());
@@ -1073,6 +1090,10 @@ mod tests {
             Some(KnnVectorsFormat::hnsw_quantized(11, 16, 100).unwrap())
         );
         assert_eq!(
+            parse_vectors_format("hnsw_disk:0:16:100"),
+            Some(KnnVectorsFormat::hnsw_disk(0, 16, 100).unwrap())
+        );
+        assert_eq!(
             parse_vectors_format("sq:1"),
             Some(KnnVectorsFormat::scalar_quantized(
                 ScalarEncoding::PackedNibble
@@ -1093,6 +1114,9 @@ mod tests {
             "hnsw_rq:12:16:100",
             "hnsw_rq:4:0:100",
             "hnsw_rq:4:16",
+            "hnsw_disk:12:16:100",
+            "hnsw_disk:0:0:100",
+            "hnsw_disk:0:16",
         ] {
             assert_eq!(parse_vectors_format(bad), None, "{bad}");
         }

@@ -91,7 +91,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [vector-ivf.md](parity/vector-ivf.md) | `lucene-vector-quant`, `lucene-ivf`: the IVF vector index and its pluggable quantizers (this port's own format) | 14 |
 | [tensor.md](parity/tensor.md) | `lucene-tensor`: opt-in multi-vector (late-interaction) fields in binary doc values and `MaxSim` rescoring (this port's own encodings beside Lucene's) | 6 |
 | [pattern-text.md](parity/pattern-text.md) | `lucene-pattern-text`: opt-in log-message fields stored as a template plus variables, with verified phrases, and the plugin's `pattern_text` field | 5 |
-| [vector-disk-hnsw.md](parity/vector-disk-hnsw.md) | `lucene-disk-hnsw`: an opt-in HNSW layout with one read per hop (this port's own format, the stock graph) | 5 |
+| [vector-disk-hnsw.md](parity/vector-disk-hnsw.md) | `lucene-disk-hnsw`: an opt-in HNSW layout with one read per hop (this port's own format, the stock graph) | 8 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6); sandbox fuzzy-like-this (M13) | 14 |
 | [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 17 |

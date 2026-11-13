@@ -178,6 +178,15 @@ pub enum GraphReader<'d> {
         graph: Option<HnswVectorsReader<'d>>,
         codes: std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>,
     },
+    /// `DiskHnswVectorsFormat`: the HNSW graph, plus the disk layout of the
+    /// field. A float search without parents walks the disk layout
+    /// ([`disk_hnsw_leaf_results`]); a diversifying search, a leaf with a
+    /// deadline or a patience collector, and a filter too selective to walk
+    /// take the graph on the raw vectors.
+    HnswDisk {
+        graph: Option<HnswVectorsReader<'d>>,
+        disk: std::sync::Arc<lucene_disk_hnsw::DiskHnswReader>,
+    },
 }
 
 impl<'d> From<HnswVectorsReader<'d>> for GraphReader<'d> {
@@ -353,7 +362,8 @@ fn leaf_graph<'a, 'd>(
             LeafGraph::Lucene99(lucene99_graph(reader, field_number)?)
         }
         Some(GraphReader::ScalarQuantized { graph, .. })
-        | Some(GraphReader::HnswQuantized { graph, .. }) => LeafGraph::Lucene99(match graph {
+        | Some(GraphReader::HnswQuantized { graph, .. })
+        | Some(GraphReader::HnswDisk { graph, .. }) => LeafGraph::Lucene99(match graph {
             Some(reader) => lucene99_graph(reader, field_number)?,
             None => None,
         }),
@@ -1618,6 +1628,11 @@ fn search_leaf(
                     }
                 }
             }
+            if let (Some(GraphReader::HnswDisk { disk, .. }), None) = (&input.hnsw, diversify) {
+                if let Some(found) = disk_hnsw_leaf_results(disk, input, resolved, t, plan)? {
+                    return Ok(found);
+                }
+            }
             let values = input.flat.float_vector_values(resolved.field_number)?;
             let ord_to_doc = |ord: i32| Ok(values.ord_to_doc(ord)?);
             let ord_to_docs = |out: &mut Vec<i32>| Ok(values.ord_to_docs(out)?);
@@ -2095,6 +2110,122 @@ fn ivf_leaf_results(
             ords: Vec::new(),
         },
         partial,
+    )))
+}
+
+/// Nodes a disk HNSW search fetches together per round trip (DiskANN's `W`).
+const DISK_HNSW_BEAM_WIDTH: usize = 8;
+
+/// The most a restricted walk's candidate list grows over `collector_k`.
+const DISK_HNSW_MAX_LIST_GROWTH: usize = 8;
+
+/// A float search of a field's disk HNSW layout: the `collector_k` best
+/// live documents the filter passes, scored exactly from the node records
+/// the walk expanded. `None` leaves the leaf to the graph on the raw
+/// vectors: a deadline, patience or exploration slack to honor, a filter
+/// cheaper to scan exactly, or a walk that found too few documents.
+fn disk_hnsw_leaf_results(
+    disk: &lucene_disk_hnsw::DiskHnswReader,
+    input: &VectorsInput<'_>,
+    resolved: &ResolvedField,
+    target: &[f32],
+    plan: &LeafPlan,
+) -> Result<Option<(LeafHits, bool)>> {
+    let Some(field) = disk.field(resolved.field_number) else {
+        return Ok(None);
+    };
+    let extras = &plan.extras;
+    if extras.patience.is_some() || extras.deadline.is_some() || extras.exploration_slack.is_some()
+    {
+        return Ok(None);
+    }
+    let size = field.count();
+    let collector_k = plan.collector_k.min(size).max(1);
+    // The documents the filter passes that are live; a filter passing no
+    // more than `perLeafTopK` is scored exactly, as Lucene does, and so is
+    // one the cost model prices below a walk.
+    let mut wanted_passing = size;
+    let wanted = match input.filter {
+        None => plan.per_leaf_top_k.min(size),
+        Some(filter) => {
+            let cost = live_passing(Some(filter), input.live_docs, input.max_doc);
+            wanted_passing = cost.min(size);
+            if cost <= plan.per_leaf_top_k
+                || matches!(
+                    filtered_walk_plan(cost, size, collector_k),
+                    FilteredWalk::Scan
+                )
+            {
+                return Ok(None);
+            }
+            plan.per_leaf_top_k.min(cost)
+        }
+    };
+    let accept = |doc: i32| {
+        input.live_docs.is_none_or(|l| l.get_doc(doc))
+            && input.filter.is_none_or(|f| f.get_doc(doc))
+    };
+    let restricted = input.live_docs.is_some() || input.filter.is_some();
+    // Rejected documents are walked but fill no slot of the candidate list,
+    // so a list sized for `collector_k` finds fewer accepted ones as the
+    // share of accepted documents falls.
+    let passing = match input.filter {
+        Some(_) => wanted_passing,
+        None => input.live_docs.map_or(size, |l| l.cardinality().min(size)),
+    };
+    let share = passing.max(1) as f64 / size.max(1) as f64;
+    let list_len = ((collector_k as f64 / share).ceil() as usize).clamp(
+        collector_k,
+        collector_k.saturating_mul(DISK_HNSW_MAX_LIST_GROWTH),
+    );
+    // `ef_search` widens the walk's candidate list, as it widens Lucene's
+    // beam; the leaf returns the `perLeafTopK` best of it.
+    let params = lucene_disk_hnsw::SearchParams {
+        k: plan.per_leaf_top_k.min(size).max(1),
+        list_len,
+        beam_width: DISK_HNSW_BEAM_WIDTH,
+    };
+    let out = disk.search(
+        resolved.field_number,
+        target,
+        &params,
+        restricted.then_some(&accept as &dyn Fn(i32) -> bool),
+    )?;
+    if out.hits.len() < wanted {
+        return Ok(None);
+    }
+    let mut hits: Vec<ScoreDoc> = out
+        .hits
+        .into_iter()
+        .map(|h| ScoreDoc {
+            doc_id: h.doc,
+            score: h.score,
+        })
+        .collect();
+    // The layout stores a cosine field's vectors normalized, so its scores
+    // differ from the raw vectors' in the last bits: the hits are scored
+    // again on the raw vectors, as every other leaf scores them.
+    if resolved.entry.similarity == VectorSimilarityFunction::Cosine {
+        let values = input.flat.float_vector_values(resolved.field_number)?;
+        let mut ords = values.doc_to_ord()?;
+        let mut scratch = vec![0f32; target.len()];
+        hits.sort_unstable_by_key(|h| h.doc_id);
+        for h in &mut hits {
+            if let Some(ord) = ords.ordinal(h.doc_id)? {
+                h.score = resolved
+                    .entry
+                    .similarity
+                    .score(target, values.vector_ref(ord, &mut scratch)?);
+            }
+        }
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.doc_id.cmp(&b.doc_id)));
+    }
+    Ok(Some((
+        LeafHits {
+            hits,
+            ords: Vec::new(),
+        },
+        false,
     )))
 }
 

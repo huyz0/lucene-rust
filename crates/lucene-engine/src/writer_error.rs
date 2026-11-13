@@ -95,6 +95,7 @@ pub fn writer_error(e: index_writer::Error) -> Status {
         | index_writer::Error::Norms(_)
         | index_writer::Error::Vectors(_)
         | index_writer::Error::Ivf(_)
+        | index_writer::Error::DiskHnsw(_)
         | index_writer::Error::Points(_)
         | index_writer::Error::DocValuesRead(_)
         | index_writer::Error::NormsRead(_)

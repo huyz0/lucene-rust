@@ -16,6 +16,7 @@ pub mod compound_reader;
 pub mod concurrent_writer;
 pub mod deletes;
 pub mod deletion_policy;
+pub mod disk_hnsw_vectors;
 pub mod document;
 pub mod field_updates;
 pub mod file_deleter;
