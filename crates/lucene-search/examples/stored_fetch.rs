@@ -22,7 +22,8 @@
 //! run the fetch load against a reader opened before it, and prints the
 //! merge time and the fetch latency during it.
 //!
-//! `NO_PREFETCH=1` skips the prefetch, as a get by id does.
+//! `NO_PREFETCH=1` skips the prefetch, as a get by id does. `ID_ONLY=1` reads
+//! only `_id` of each document, as a `_source: false` fetch does.
 //!
 //! The read advice comes from `READ_ADVICE` (a `lucene_store::read_advice`
 //! spec; unset keeps the defaults). Drop the page cache before a cold run
@@ -159,6 +160,7 @@ fn set_advice() {
 /// One fetch of `n` random documents, in doc-id order, after the prefetch.
 fn fetch_one(leaves: &[SegmentReader], max_doc: i32, n: usize, state: &mut u64) -> usize {
     let prefetch = std::env::var_os("NO_PREFETCH").is_none();
+    let id_only = std::env::var_os("ID_ONLY").is_some();
     let mut docs: Vec<i32> = (0..n)
         .map(|_| (next(state) % max_doc as u64) as i32)
         .collect();
@@ -177,10 +179,20 @@ fn fetch_one(leaves: &[SegmentReader], max_doc: i32, n: usize, state: &mut u64) 
     }
     let mut bytes = 0;
     for (seg, docs) in leaves.iter().zip(&per_seg) {
+        let id = seg
+            .field_infos()
+            .field_by_name("_id")
+            .map_or(0, |f| f.number);
         if prefetch {
             seg.prefetch_stored_documents(docs).unwrap();
         }
         for &d in docs {
+            if id_only {
+                let mut v = lucene_codecs::stored_fields::DocumentVisitor::for_fields(&[id]);
+                assert!(seg.visit_stored_document(d, &mut v).unwrap());
+                bytes += std::hint::black_box(v.document().fields.len());
+                continue;
+            }
             let doc = seg.stored_document(d).unwrap().unwrap();
             bytes += std::hint::black_box(doc.fields.len());
         }

@@ -327,7 +327,23 @@ pub struct StoredFieldsReader<'d> {
     start_pointers_meta: Arc<direct_monotonic::Meta>,
     /// A [`Mode::ZstdPaged`] segment's dictionary, if it has one.
     zstd_dictionary: Option<Arc<lucene_zstd::DecoderDictionary>>,
+    /// The `.fdt` input to advise ahead of a large document's reads
+    /// ([`Self::with_read_ahead`]).
+    read_ahead: Option<&'d lucene_store::directory::Input>,
 }
+
+/// How much of a chunk [`StoredFieldsReader::prefetch`] (and a caller
+/// advising chunks itself, [`StoredFieldsReader::advised_range`]) asks for up
+/// front. Only a `sliced` chunk -- one document of at least twice the chunk
+/// size -- is longer: its first bytes hold the fields before a large value,
+/// and a reader that wants the value reads ahead of itself
+/// ([`StoredFieldsReader::with_read_ahead`]).
+pub const CHUNK_HEAD_BYTES: usize = 1 << 20;
+
+/// The first read-ahead window of a large document, doubling per window up
+/// to [`READ_AHEAD_MAX`].
+const READ_AHEAD_MIN: usize = 1 << 20;
+const READ_AHEAD_MAX: usize = 32 << 20;
 
 /// Parses `.fdt`+`.fdm`+`.fdx` (already read into memory) and returns a
 /// reader over `fdt`/`fdx`'s bytes. Both `Mode.BEST_SPEED` (LZ4, the
@@ -552,6 +568,7 @@ pub fn open<'d>(
         start_pointers_end_pointer,
         start_pointers_meta: Arc::new(start_pointers_meta),
         zstd_dictionary,
+        read_ahead: None,
     })
 }
 
@@ -602,7 +619,19 @@ impl<'d> StoredFieldsReader<'d> {
             start_pointers_end_pointer: self.start_pointers_end_pointer,
             start_pointers_meta: Arc::clone(&self.start_pointers_meta),
             zstd_dictionary: self.zstd_dictionary.clone(),
+            read_ahead: None,
         }
+    }
+
+    /// This reader, advising `fdt` (the input its `.fdt` bytes are) ahead of
+    /// the reads of a large document's wanted bytes: windows of 1 MiB
+    /// doubling to 32 MiB, each asked for before it is decompressed. Meant
+    /// for an `.fdt` that is advised random or filled on demand, where a
+    /// chunk is advised or fetched only up to [`CHUNK_HEAD_BYTES`] up front.
+    #[must_use]
+    pub fn with_read_ahead(mut self, fdt: &'d lucene_store::directory::Input) -> Self {
+        self.read_ahead = Some(fdt);
+        self
     }
 
     pub fn max_doc(&self) -> i32 {
@@ -662,9 +691,16 @@ impl<'d> StoredFieldsReader<'d> {
         let ranges: Vec<&[u8]> = self
             .chunk_ranges(docs)?
             .into_iter()
-            .filter_map(|r| self.fdt.get(r))
+            .filter_map(|r| self.fdt.get(Self::advised_range(r)))
             .collect();
         Ok(lucene_store::prefetch(&ranges)?)
+    }
+
+    /// The part of a chunk's `.fdt` range to advise or fetch before reading
+    /// it: all of it, or its first [`CHUNK_HEAD_BYTES`] for a larger (sliced)
+    /// chunk, whose reader reads ahead of itself as far as it reads at all.
+    pub fn advised_range(range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+        range.start..range.end.min(range.start.saturating_add(CHUNK_HEAD_BYTES))
     }
 
     /// The `.fdt` byte range of the chunk holding each of `docs` (documents
@@ -738,13 +774,51 @@ impl<'d> StoredFieldsReader<'d> {
     /// cursor bump ([`skip_field`]), and [`VisitStatus::Stop`] ends the
     /// document early.
     ///
-    /// The chunk containing `doc_id` is still decompressed (only over this
-    /// document's own byte range -- see [`Self::serialized_document`]); what
-    /// the visitor saves is the per-field decode and its allocations, not the
-    /// I/O.
+    /// A document in a `sliced` chunk (one at least twice the chunk size) is
+    /// decompressed as it is read, a compression unit at a time, as Java's
+    /// sliced `DataInput` does: [`VisitStatus::Stop`], or `No` on the last
+    /// field, leaves the rest undecompressed, and a skipped value passes
+    /// over every unit it covers whole by its recorded compressed length
+    /// rather than inflating it. A smaller document is decompressed over its
+    /// own byte range first (see [`Self::serialized_document`]).
     pub fn visit_document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
-        let doc = self.serialized_document(doc_id)?;
-        visit_document(doc.num_stored_fields, &doc.bytes, visitor)
+        let (header, input) = self.read_chunk_header(doc_id)?;
+        let index = header.index_of(doc_id);
+        // ARITH: as in `serialized_document`: `offsets` has `chunk_docs + 1`
+        // non-decreasing entries and `index < chunk_docs`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let (start, end) = (
+            header.offsets[index] as usize,
+            header.offsets[index + 1] as usize,
+        );
+        let num_stored_fields = header.num_stored_fields[index];
+        if !header.sliced || start == end {
+            let mut input = input;
+            let bytes = if start == end {
+                Vec::new()
+            } else {
+                self.decompress_range(&header, &mut input, start, end)?
+            };
+            return visit_document(num_stored_fields, &bytes, visitor);
+        }
+        let chunk_start = input.position();
+        let mut doc = SlicedDocument {
+            reader: self,
+            input,
+            total_length: header.total_length() as usize,
+            next_unit: 0,
+            end,
+            buf: Vec::new(),
+            buf_at: start,
+            pos: 0,
+            // The chunk's head was advised with the chunk (`advised_range`).
+            advised_to: chunk_start.saturating_add(CHUNK_HEAD_BYTES),
+            window: READ_AHEAD_MIN,
+        };
+        // ARITH: `start <= end`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let len = end - start;
+        visit_fields(&mut doc, len, num_stored_fields, visitor)
     }
 
     /// Reads the chunk containing `doc_id`: its header (doc base, doc count,
@@ -1254,6 +1328,20 @@ pub trait StoredFieldVisitor {
     /// out can size its buffer once. Rust-only: Java's visitor has no such
     /// hook (it grows its `byte[]`s instead).
     fn document_size(&mut self, _serialized_len: usize, _num_stored_fields: i64) {}
+
+    /// A `STRING`/`BYTE_ARR` value at least this long that the visitor said
+    /// [`VisitStatus::Yes`] to is not decoded: [`Self::deferred_field`] is
+    /// told its length instead, and the visitor reads it later if it turns
+    /// out to be wanted. Rust-only; the default defers nothing.
+    fn defer_values_from(&self) -> usize {
+        usize::MAX
+    }
+
+    /// A value [`Self::defer_values_from`] left undecoded: its field, whether
+    /// it is a string, and its length in bytes.
+    fn deferred_field(&mut self, _field_number: i32, _string: bool, _length: usize) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Port of `DocumentStoredFieldVisitor`: collects the fields it is asked for
@@ -1362,10 +1450,26 @@ pub fn visit_document(
     bytes: &[u8],
     visitor: &mut dyn StoredFieldVisitor,
 ) -> Result<()> {
-    visitor.document_size(bytes.len(), num_stored_fields);
-    let mut input = SliceInput::new(bytes);
+    visit_fields(
+        &mut SliceInput::new(bytes),
+        bytes.len(),
+        num_stored_fields,
+        visitor,
+    )
+}
+
+/// [`visit_document`]'s loop over either a document already in memory or a
+/// [`SlicedDocument`] decompressed as it is read.
+fn visit_fields<I: DocInput>(
+    input: &mut I,
+    len: usize,
+    num_stored_fields: i64,
+    visitor: &mut dyn StoredFieldVisitor,
+) -> Result<()> {
+    visitor.document_size(len, num_stored_fields);
+    let defer_from = visitor.defer_values_from();
     for field_idx in 0..num_stored_fields {
-        let info_and_bits = input.read_vlong()?;
+        let info_and_bits = input.with_window(|i| i.read_vlong().map_err(Into::into))?;
         // Java is `(int) (infoAndBits >>> TYPE_BITS)`. The unsigned shift is
         // written out here rather than left as a signed `>>`: the two agree
         // for every input (they differ only in the top three bits, which the
@@ -1373,23 +1477,225 @@ pub fn visit_document(
         // that is true, and the reader should not have to re-derive it.
         let field_number = ((info_and_bits as u64) >> TYPE_BITS) as i32;
         let bits = info_and_bits & TYPE_MASK;
+        // ARITH: `field_idx` runs `0..num_stored_fields`, so
+        // `num_stored_fields >= 1` here and the decrement cannot underflow.
+        #[allow(clippy::arithmetic_side_effects)]
+        let is_last = field_idx == num_stored_fields - 1;
         match visitor.needs_field(field_number)? {
-            VisitStatus::Yes => visit_field(&mut input, field_number, bits, visitor)?,
-            VisitStatus::No => {
-                // ARITH: `field_idx` runs `0..num_stored_fields`, so
-                // `num_stored_fields >= 1` here and the decrement cannot
-                // underflow.
-                #[allow(clippy::arithmetic_side_effects)]
-                let is_last = field_idx == num_stored_fields - 1;
-                if is_last {
-                    return Ok(());
-                }
-                skip_field(&mut input, bits)?;
-            }
+            VisitStatus::Yes => visit_field(input, field_number, bits, defer_from, visitor)?,
+            // Java's "don't skipField on the last field value; treat like STOP".
+            VisitStatus::No if is_last => return Ok(()),
+            VisitStatus::No => skip_field(input, bits)?,
             VisitStatus::Stop => return Ok(()),
         }
     }
     Ok(())
+}
+
+/// The bytes of one serialized document, as [`visit_fields`] reads them.
+trait DocInput {
+    /// Runs `f` over the next few bytes (at least [`FIELD_WINDOW`], or all
+    /// that are left), advancing past what it read: a field header, a
+    /// length or a numeric value.
+    fn with_window<T>(&mut self, f: impl FnOnce(&mut SliceInput<'_>) -> Result<T>) -> Result<T>;
+    /// The next `len` bytes, consumed.
+    fn value(&mut self, len: usize) -> Result<&[u8]>;
+    /// Passes over the next `len` bytes.
+    fn skip_bytes(&mut self, len: usize) -> Result<()>;
+    /// How many bytes are left.
+    fn left(&self) -> usize;
+}
+
+/// The most bytes a field header, a length or a numeric value takes: a
+/// 10-byte vlong, or a `TLong`'s header byte and its 10-byte vlong.
+const FIELD_WINDOW: usize = 16;
+
+impl DocInput for SliceInput<'_> {
+    fn with_window<T>(&mut self, f: impl FnOnce(&mut SliceInput<'_>) -> Result<T>) -> Result<T> {
+        f(self)
+    }
+
+    fn value(&mut self, len: usize) -> Result<&[u8]> {
+        let start = self.position();
+        DataInput::skip(self, len)?;
+        Ok(self.slice(start, self.position())?)
+    }
+
+    fn skip_bytes(&mut self, len: usize) -> Result<()> {
+        Ok(DataInput::skip(self, len)?)
+    }
+
+    fn left(&self) -> usize {
+        self.len().saturating_sub(self.position())
+    }
+}
+
+/// One document of a `sliced` chunk, decompressed a compression unit at a
+/// time as it is read -- Java's sliced `SerializedDocument` input, with one
+/// difference: a skip passes over the units it covers whole by their
+/// compressed length instead of inflating them.
+///
+/// Offsets are into the chunk's decompressed payload. `buf` holds the bytes
+/// `buf_at..buf_at + buf.len()`, the read position is `buf_at + pos`, and
+/// `input` sits on the first compression unit not yet read, which starts
+/// at `next_unit`.
+struct SlicedDocument<'r, 'd> {
+    reader: &'r StoredFieldsReader<'d>,
+    input: SliceInput<'d>,
+    total_length: usize,
+    next_unit: usize,
+    /// Where this document's bytes end.
+    end: usize,
+    buf: Vec<u8>,
+    buf_at: usize,
+    pos: usize,
+    /// How far into the `.fdt` the reads have been advised
+    /// ([`StoredFieldsReader::with_read_ahead`]), and the next window's size.
+    advised_to: usize,
+    window: usize,
+}
+
+impl SlicedDocument<'_, '_> {
+    /// Advises the next window of the `.fdt` once the reads reach the end
+    /// of the last one, when the reader reads ahead.
+    // ARITH: `saturating_add` and `min` keep every sum in `usize`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn read_ahead(&mut self) {
+        let Some(fdt) = self.reader.read_ahead else {
+            return;
+        };
+        let at = self.input.position();
+        if at < self.advised_to {
+            return;
+        }
+        let from = at.max(self.advised_to);
+        // Advice only: a failure costs the reads their speed, not their
+        // bytes, and the read itself reports any fetch that fails.
+        let _ = fdt.will_need(from, self.window);
+        self.advised_to = from.saturating_add(self.window);
+        self.window = (self.window * 2).min(READ_AHEAD_MAX);
+    }
+
+    // ARITH: `buf_at + buf.len() <= end` and `pos <= buf.len()` hold after
+    // every method (each appends at most up to `end` and moves `pos` within
+    // the buffer), so these sums and differences stay in `0..=end`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn at(&self) -> usize {
+        self.buf_at + self.pos
+    }
+
+    #[allow(clippy::arithmetic_side_effects)]
+    fn buffered(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
+    /// Makes at least `n` bytes past the read position available (the
+    /// caller checks that the document has them), dropping the bytes
+    /// already read and appending the following units' share of the
+    /// document.
+    // ARITH: the loop guard keeps `buf_end < end <= total_length`; the unit
+    // that contains `buf_end` starts at or before it (`next_unit` only moves
+    // past whole units that end at or before `buf_end`), so `unit_end >
+    // buf_end` and `hi - lo` is positive; `unit_len <= total_length -
+    // next_unit` as in `decompress_range`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn fill(&mut self, n: usize) -> Result<()> {
+        if self.buffered() >= n {
+            return Ok(());
+        }
+        self.buf.drain(..self.pos);
+        self.buf_at += self.pos;
+        self.pos = 0;
+        self.buf.reserve(n.saturating_sub(self.buf.len()));
+        let chunk_size = self.reader.chunk_size as usize; // validated positive in `open`
+        while self.buf.len() < n {
+            let buf_end = self.buf_at + self.buf.len();
+            if buf_end >= self.end || self.next_unit >= self.total_length {
+                return Err(lucene_store::Error::Eof { offset: buf_end }.into());
+            }
+            let unit_len = chunk_size.min(self.total_length - self.next_unit);
+            let unit_end = self.next_unit + unit_len;
+            let (lo, hi) = if unit_end <= buf_end {
+                (0, 0)
+            } else {
+                (buf_end.max(self.next_unit), unit_end.min(self.end))
+            };
+            if hi > lo {
+                self.read_ahead();
+            }
+            let before = self.buf.len();
+            self.reader.decompress_unit(
+                &mut self.input,
+                unit_len,
+                lo.saturating_sub(self.next_unit),
+                hi - lo,
+                &mut self.buf,
+            )?;
+            if self.buf.len() - before != hi - lo {
+                return Err(lucene_store::Error::Corrupted(format!(
+                    "expected {} decompressed bytes, got {}",
+                    hi - lo,
+                    self.buf.len() - before
+                ))
+                .into());
+            }
+            self.next_unit = unit_end;
+        }
+        Ok(())
+    }
+}
+
+impl DocInput for SlicedDocument<'_, '_> {
+    fn with_window<T>(&mut self, f: impl FnOnce(&mut SliceInput<'_>) -> Result<T>) -> Result<T> {
+        let n = FIELD_WINDOW.min(self.left());
+        self.fill(n)?;
+        let mut window = SliceInput::new(&self.buf[self.pos..]);
+        let out = f(&mut window)?;
+        // ARITH: `window` reads within `buf[pos..]`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.pos += window.position();
+        }
+        Ok(out)
+    }
+
+    fn value(&mut self, len: usize) -> Result<&[u8]> {
+        if len > self.left() {
+            return Err(lucene_store::Error::Eof { offset: self.at() }.into());
+        }
+        self.fill(len)?;
+        let start = self.pos;
+        // ARITH: `fill` made `len` bytes available past `pos`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            self.pos += len;
+        }
+        Ok(&self.buf[start..self.pos])
+    }
+
+    fn skip_bytes(&mut self, len: usize) -> Result<()> {
+        if len > self.left() {
+            return Err(lucene_store::Error::Eof { offset: self.at() }.into());
+        }
+        // ARITH: `len <= remaining = end - at`, so `at + len <= end`; past
+        // the buffer, it is restarted empty at the new position, and the next
+        // `fill` passes over the units before it.
+        #[allow(clippy::arithmetic_side_effects)]
+        if len <= self.buffered() {
+            self.pos += len;
+        } else {
+            self.buf_at = self.at() + len;
+            self.buf.clear();
+            self.pos = 0;
+        }
+        Ok(())
+    }
+
+    // ARITH: `at() <= end`, see `at`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn left(&self) -> usize {
+        self.end - self.at()
+    }
 }
 
 /// Parses one document's serialized stored-field bytes (a
@@ -1614,6 +1920,7 @@ impl WrittenChunk {
             start_pointers_end_pointer: 0,
             start_pointers_meta: Arc::new(direct_monotonic::Meta::empty()),
             zstd_dictionary: None,
+            read_ahead: None,
         };
         let (header, mut input) = reader.chunk_header_at(0, doc_id)?;
         let index = header.index_of(doc_id);
@@ -3004,40 +3311,58 @@ fn encode_literal_lz4(bytes: &[u8]) -> Vec<u8> {
 /// and the bytes are then borrowed straight out of the input rather than
 /// copied into a `Vec` first -- Java passes a `StoredFieldDataInput` view for
 /// the same reason.
-fn visit_field<'a>(
-    input: &mut SliceInput<'a>,
+fn visit_field<I: DocInput>(
+    input: &mut I,
     field_number: i32,
     bits: i64,
+    defer_from: usize,
     visitor: &mut dyn StoredFieldVisitor,
 ) -> Result<()> {
     match bits {
-        TYPE_BYTE_ARR => {
-            // The length is a vint out of the
-            // decompressed payload, so an unbounded one is a `2^64` slice.
-            let length = input.read_length("stored binary field")?;
-            let start = input.position();
-            input.skip(length)?;
-            let bytes: &'a [u8] = input.slice(start, input.position())?;
-            visitor.binary_field(field_number, bytes)
-        }
-        TYPE_STRING => {
-            // Borrowed out of the decompressed chunk: the visitor takes
+        TYPE_BYTE_ARR | TYPE_STRING => {
+            // The length is a vint out of the decompressed payload, so an
+            // unbounded one is a `2^64` slice.
+            let length = read_value_length(input)?;
+            let string = bits == TYPE_STRING;
+            if length >= defer_from {
+                input.skip_bytes(length)?;
+                return visitor.deferred_field(field_number, string, length);
+            }
+            // Borrowed out of the decompressed bytes: the visitor takes
             // `&str`, so validating in place spares a `String` per field.
-            // Same length check and UTF-8 error as `read_string`.
-            let length = input.read_length("string")?;
-            let start = input.position();
-            input.skip(length)?;
-            let bytes: &'a [u8] = input.slice(start, input.position())?;
-            let value = std::str::from_utf8(bytes)
-                .map_err(|_| lucene_store::Error::Corrupted("invalid UTF-8 string".into()))?;
-            visitor.string_field(field_number, value)
+            // Same UTF-8 error as `read_string`.
+            let bytes = input.value(length)?;
+            if string {
+                let value = std::str::from_utf8(bytes)
+                    .map_err(|_| lucene_store::Error::Corrupted("invalid UTF-8 string".into()))?;
+                visitor.string_field(field_number, value)
+            } else {
+                visitor.binary_field(field_number, bytes)
+            }
         }
-        TYPE_NUMERIC_INT => visitor.int_field(field_number, read_zint(input)?),
-        TYPE_NUMERIC_FLOAT => visitor.float_field(field_number, read_zfloat(input)?),
-        TYPE_NUMERIC_LONG => visitor.long_field(field_number, read_tlong(input)?),
-        TYPE_NUMERIC_DOUBLE => visitor.double_field(field_number, read_zdouble(input)?),
+        TYPE_NUMERIC_INT => visitor.int_field(field_number, input.with_window(read_zint)?),
+        TYPE_NUMERIC_FLOAT => visitor.float_field(field_number, input.with_window(read_zfloat)?),
+        TYPE_NUMERIC_LONG => visitor.long_field(field_number, input.with_window(read_tlong)?),
+        TYPE_NUMERIC_DOUBLE => visitor.double_field(field_number, input.with_window(read_zdouble)?),
         other => Err(Error::UnknownTypeTag(other)),
     }
+}
+
+/// A `STRING`/`BYTE_ARR` value's length vint, checked against the bytes the
+/// document has left.
+fn read_value_length<I: DocInput>(input: &mut I) -> Result<usize> {
+    let len = input.with_window(|i| i.read_vint().map_err(Into::into))?;
+    let len = usize::try_from(len).map_err(|_| {
+        lucene_store::Error::Corrupted(format!("negative stored field length: {len}"))
+    })?;
+    if len > input.left() {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "stored field length {len} exceeds {} remaining bytes",
+            input.left()
+        ))
+        .into());
+    }
+    Ok(len)
 }
 
 /// Port of `Lucene90CompressingStoredFieldsReader.skipField`: advances the
@@ -3048,23 +3373,23 @@ fn visit_field<'a>(
 /// `readZFloat`/`readTLong`/`readZDouble` here. What is saved is the
 /// `String`/`Vec` a `STRING`/`BYTE_ARR` value would have allocated, which is
 /// the whole of the cost for the wide documents this exists for.
-fn skip_field(input: &mut SliceInput, bits: i64) -> Result<()> {
+fn skip_field<I: DocInput>(input: &mut I, bits: i64) -> Result<()> {
     match bits {
         TYPE_BYTE_ARR | TYPE_STRING => {
-            let length = input.read_length("stored field")?;
-            input.skip(length)?;
+            let length = read_value_length(input)?;
+            input.skip_bytes(length)?;
         }
         TYPE_NUMERIC_INT => {
-            read_zint(input)?;
+            input.with_window(read_zint)?;
         }
         TYPE_NUMERIC_FLOAT => {
-            read_zfloat(input)?;
+            input.with_window(read_zfloat)?;
         }
         TYPE_NUMERIC_LONG => {
-            read_tlong(input)?;
+            input.with_window(read_tlong)?;
         }
         TYPE_NUMERIC_DOUBLE => {
-            read_zdouble(input)?;
+            input.with_window(read_zdouble)?;
         }
         other => return Err(Error::UnknownTypeTag(other)),
     }
@@ -4091,7 +4416,7 @@ mod tests {
     fn visit_one(payload: &[u8], bits: i64) -> Result<FieldValue> {
         let mut input = SliceInput::new(payload);
         let mut visitor = DocumentVisitor::all();
-        visit_field(&mut input, 0, bits, &mut visitor)?;
+        visit_field(&mut input, 0, bits, usize::MAX, &mut visitor)?;
         let mut doc = visitor.into_document();
         Ok(doc.fields.remove(0).value)
     }
@@ -4170,7 +4495,7 @@ mod tests {
         for (payload, bits) in cases {
             let mut read = SliceInput::new(&payload);
             let mut visitor = DocumentVisitor::all();
-            visit_field(&mut read, 0, bits, &mut visitor).unwrap();
+            visit_field(&mut read, 0, bits, usize::MAX, &mut visitor).unwrap();
             let mut skipped = SliceInput::new(&payload);
             skip_field(&mut skipped, bits).unwrap();
             assert_eq!(
@@ -6131,5 +6456,234 @@ mod tests {
             rejected * 100 >= total * 40,
             ".fdt bit flips rejected: {rejected}/{total}"
         );
+    }
+
+    /// Records every callback, so a lazily read document can be compared
+    /// with the same visitor run over the fully decompressed bytes.
+    struct Recorder {
+        /// Per field position: `true` takes it, `false` says `NO`.
+        take: Vec<bool>,
+        stop_at: Option<usize>,
+        defer_from: usize,
+        seen: usize,
+        log: Vec<String>,
+    }
+
+    impl StoredFieldVisitor for Recorder {
+        fn needs_field(&mut self, n: i32) -> Result<VisitStatus> {
+            let i = self.seen;
+            self.seen += 1;
+            self.log.push(format!("ask {n}"));
+            if self.stop_at == Some(i) {
+                return Ok(VisitStatus::Stop);
+            }
+            Ok(if self.take.get(i).copied().unwrap_or(true) {
+                VisitStatus::Yes
+            } else {
+                VisitStatus::No
+            })
+        }
+        fn string_field(&mut self, n: i32, v: &str) -> Result<()> {
+            self.log
+                .push(format!("str {n} {} {:?}", v.len(), &v[..v.len().min(8)]));
+            Ok(())
+        }
+        fn binary_field(&mut self, n: i32, v: &[u8]) -> Result<()> {
+            let sum = v
+                .iter()
+                .fold(0u64, |a, &b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
+            self.log.push(format!("bin {n} {} {sum}", v.len()));
+            Ok(())
+        }
+        fn int_field(&mut self, n: i32, v: i32) -> Result<()> {
+            self.log.push(format!("int {n} {v}"));
+            Ok(())
+        }
+        fn long_field(&mut self, n: i32, v: i64) -> Result<()> {
+            self.log.push(format!("long {n} {v}"));
+            Ok(())
+        }
+        fn float_field(&mut self, n: i32, v: f32) -> Result<()> {
+            self.log.push(format!("float {n} {v}"));
+            Ok(())
+        }
+        fn double_field(&mut self, n: i32, v: f64) -> Result<()> {
+            self.log.push(format!("double {n} {v}"));
+            Ok(())
+        }
+        fn defer_values_from(&self) -> usize {
+            self.defer_from
+        }
+        fn deferred_field(&mut self, n: i32, string: bool, len: usize) -> Result<()> {
+            self.log.push(format!("deferred {n} {string} {len}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sliced_documents_read_lazily_match_the_whole_document() {
+        // Values that straddle compression units in every way: numbers
+        // between big values, a value starting right at a unit boundary,
+        // strings with multi-byte characters, and documents in sliced
+        // chunks next to small ones.
+        let big = |n: usize, seed: u64| -> Vec<u8> {
+            let mut x = seed | 1;
+            (0..n)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    b"abcdefgh {}\"\n0123"[(x % 16) as usize]
+                })
+                .collect()
+        };
+        let mut docs = Vec::new();
+        for d in 0..6u64 {
+            let mut fields = vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(format!("id-{d}")),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Binary(big(150_000 + d as usize * 37_001, d)),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Long(-(d as i64) * 1_000_000_007),
+                },
+                StoredField {
+                    field_number: 3,
+                    value: FieldValue::String("é".repeat(40_000 + d as usize)),
+                },
+                StoredField {
+                    field_number: 4,
+                    value: FieldValue::Double(1.5 + d as f64),
+                },
+                StoredField {
+                    field_number: 5,
+                    value: FieldValue::Float(0.25),
+                },
+                StoredField {
+                    field_number: 6,
+                    value: FieldValue::Int(d as i32 - 3),
+                },
+                StoredField {
+                    field_number: 7,
+                    value: FieldValue::Binary(big(300_001, d + 9)),
+                },
+            ];
+            if d % 2 == 1 {
+                fields.reverse();
+            }
+            docs.push(Document { fields });
+            docs.push(Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(format!("small-{d}")),
+                }],
+            });
+        }
+        let seg = [9u8; ID_LENGTH];
+        for mode in [
+            Mode::BestSpeed,
+            Mode::BestCompression,
+            Mode::ZstdPaged(3),
+            Mode::Zstd(ZstdMode::zstd(3)),
+        ] {
+            let mut w = StoredFieldsWriter::new(mode, &seg, "");
+            for doc in &docs {
+                w.add_document(doc);
+            }
+            let (fdt, fdx, fdm) = w.finish();
+            let reader = open(&fdt, &fdx, &fdm, &seg, "").unwrap();
+            let num_fields = 8;
+            let mut plans: Vec<(Vec<bool>, Option<usize>, usize)> = vec![
+                (vec![true; num_fields], None, usize::MAX),
+                (vec![false; num_fields], None, usize::MAX),
+                (vec![true; num_fields], Some(1), usize::MAX),
+                (vec![true; num_fields], None, 100_000),
+                (vec![true; num_fields], None, 0),
+            ];
+            for mask in 0..64u32 {
+                let take: Vec<bool> = (0..num_fields)
+                    .map(|i| (mask >> (i % 6)) & 1 == 1)
+                    .collect();
+                plans.push((
+                    take,
+                    Some((mask % 9) as usize),
+                    60_000 * (mask as usize % 3),
+                ));
+            }
+            for doc_id in 0..docs.len() as i32 {
+                let whole = reader.serialized_document(doc_id).unwrap();
+                for (take, stop_at, defer_from) in &plans {
+                    let new = || Recorder {
+                        take: take.clone(),
+                        stop_at: *stop_at,
+                        defer_from: *defer_from,
+                        seen: 0,
+                        log: Vec::new(),
+                    };
+                    let mut lazy = new();
+                    reader.visit_document(doc_id, &mut lazy).unwrap();
+                    let mut eager = new();
+                    visit_document(whole.num_stored_fields, &whole.bytes, &mut eager).unwrap();
+                    assert_eq!(
+                        lazy.log, eager.log,
+                        "{mode:?} doc {doc_id} {take:?} {stop_at:?}"
+                    );
+                }
+                let mut all = DocumentVisitor::all();
+                reader.visit_document(doc_id, &mut all).unwrap();
+                assert_eq!(
+                    all.into_document(),
+                    docs[doc_id as usize],
+                    "{mode:?} doc {doc_id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_lazily_read_document_that_claims_more_bytes_than_it_has_is_an_error() {
+        // A big value whose length vint is corrupted upward: the lazy reader
+        // must report it, not read past the document.
+        let seg = [4u8; ID_LENGTH];
+        let doc = Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::Binary(vec![7u8; 200_000]),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::Int(1),
+                },
+            ],
+        };
+        let mut w = StoredFieldsWriter::new(Mode::ZstdPaged(3), &seg, "");
+        w.add_document(&doc);
+        let (fdt, fdx, fdm) = w.finish();
+        let reader = open(&fdt, &fdx, &fdm, &seg, "").unwrap();
+        // The serialized bytes, re-parsed with a visitor that says NO to the
+        // big value and YES to the int, work...
+        let mut ok = Recorder {
+            take: vec![false, true],
+            stop_at: None,
+            defer_from: usize::MAX,
+            seen: 0,
+            log: Vec::new(),
+        };
+        reader.visit_document(0, &mut ok).unwrap();
+        assert_eq!(ok.log, vec!["ask 0", "ask 1", "int 1 1"]);
+        // ...and a document whose value length is past its end is refused
+        // by the length check before any skip.
+        let mut bytes = Vec::new();
+        bytes.push(1u8); // field 0, TYPE_BYTE_ARR
+        bytes.extend_from_slice(&[0xFF, 0xFF, 0x0F]); // length 262143
+        bytes.extend_from_slice(&[0u8; 10]);
+        let mut v = DocumentVisitor::all();
+        assert!(visit_document(1, &bytes, &mut v).is_err());
     }
 }

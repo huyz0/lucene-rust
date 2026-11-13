@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 170;
+    public static final int EXPECTED_ABI_VERSION = 171;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -247,6 +247,10 @@ public final class NativeBridge {
         static final MethodHandle STORED_SOURCE = bind(
             "ffi_jvm_reader_stored_source_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle STORED_VALUE = bind(
+            "ffi_jvm_reader_stored_value_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
         static final MethodHandle PREFETCH_DOCUMENTS = bind(
             "ffi_jvm_reader_prefetch_documents",
@@ -1666,6 +1670,30 @@ public final class NativeBridge {
      */
     public static int storedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
         return lendOwned(H.STORED_SOURCE, handle, segment, doc, use);
+    }
+
+    /**
+     * The value of the field at position {@code ordinal} of segment {@code segment}'s document {@code
+     * doc}, as raw bytes (UTF-8 for a string), lent to {@code use}: the value a {@code DEFERRED} field
+     * of {@link #document} leaves out.
+     */
+    public static int storedValue(long handle, int segment, int doc, int ordinal, Borrowed use) throws IOException {
+        if (use == null) {
+            return nullArgument("use");
+        }
+        MemorySegment bytes;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.STORED_VALUE.invokeExact(handle, segment, doc, ordinal, ptrOf(result), lenOf(result));
+            if (rc != OK) {
+                return rc;
+            }
+            bytes = owned(result);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+        lend(bytes, use);
+        return OK;
     }
 
     /**

@@ -1681,14 +1681,17 @@ public final class NativeSelfTest {
             for (int i = 0; i < 3000; i++) {
                 Document doc = new Document();
                 doc.add(new StringField("id", Integer.toString(i), Field.Store.YES));
-                doc.add(new org.apache.lucene.document.StoredField("_source", randomBytes(r, r.nextInt(400))));
+                // Now and then a value past the native document's deferral size (1 MiB), which
+                // the replay reads on its own when the visitor wants it.
+                boolean big = i % 499 == 7;
+                doc.add(new org.apache.lucene.document.StoredField("_source", randomBytes(r, big ? (1 << 20) + r.nextInt(1 << 21) : r.nextInt(400))));
                 if (r.nextBoolean()) {
                     doc.add(new org.apache.lucene.document.StoredField("i", r.nextInt()));
                 }
                 doc.add(new org.apache.lucene.document.StoredField("l", r.nextLong()));
                 doc.add(new org.apache.lucene.document.StoredField("f", r.nextFloat() - 0.5f));
                 doc.add(new org.apache.lucene.document.StoredField("d", r.nextGaussian()));
-                doc.add(new org.apache.lucene.document.StoredField("s", "t" + r.nextInt(100) + "\u00e9"));
+                doc.add(new org.apache.lucene.document.StoredField("s", big ? "\u00e9t".repeat(400_000 + r.nextInt(1000)) : "t" + r.nextInt(100) + "\u00e9"));
                 w.addDocument(doc);
                 if (i % 1000 == 999) {
                     w.commit();
@@ -1721,10 +1724,19 @@ public final class NativeSelfTest {
                     org.apache.lucene.index.StoredFields gotFields = got.storedFields();
                     org.apache.lucene.codecs.StoredFieldsReader sequential =
                         ((org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader) got).getSequentialStoredFieldsReader();
+                    java.util.TreeSet<Integer> docs = new java.util.TreeSet<>();
                     for (int doc = 0; doc < want.maxDoc(); doc += 1 + r.nextInt(7)) {
-                        for (int mode = 0; mode < 3; mode++) {
+                        docs.add(doc);
+                    }
+                    for (int doc = 0; doc < want.maxDoc(); doc++) {
+                        if ((leaf * 1000 + doc) % 499 == 7) {
+                            docs.add(doc); // every document with deferred values
+                        }
+                    }
+                    for (int doc : docs) {
+                        for (int mode = 0; mode < 4; mode++) {
                             int stopAfter = mode == 2 ? 1 + r.nextInt(5) : Integer.MAX_VALUE;
-                            String[] no = mode == 1 ? skip : new String[0];
+                            String[] no = mode == 1 ? skip : mode == 3 ? new String[] { "_source" } : new String[0];
                             Recorder a = new Recorder(no, stopAfter);
                             Recorder b = new Recorder(no, stopAfter);
                             Recorder c = new Recorder(no, stopAfter);
