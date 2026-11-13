@@ -590,16 +590,18 @@ def recall_target_check(failures):
     return checked
 
 
-def rust_hnsw_mapping(**params):
+def rust_hnsw_mapping(method="hnsw", **params):
     return {"type": "knn_vector", "dimension": DIM,
-            "method": {"name": "hnsw", "engine": "extended", "space_type": "l2", "parameters": params}}
+            "method": {"name": method, "engine": "extended", "space_type": "l2", "parameters": params}}
 
 
 def rust_hnsw_check(failures):
-    """The `extended` engine's quantized HNSW fields on the plugin node (see the module doc)."""
+    """The `extended` engine's quantized and disk HNSW fields on the plugin node (see the module doc)."""
     checked = 0
-    for index, params in (("rq_rabitq", {"quantizer": "rabitq"}), ("rq_erq2", {}),
-                          ("rq_erq4", {"quantizer": "erq4", "m": 8, "ef_construction": 64})):
+    for index, method, params in (("rq_rabitq", "hnsw", {"quantizer": "rabitq"}), ("rq_erq2", "hnsw", {}),
+                                  ("rq_erq4", "hnsw", {"quantizer": "erq4", "m": 8, "ef_construction": 64}),
+                                  ("disk_bbq", "disk_hnsw", {}),
+                                  ("disk_erq4", "disk_hnsw", {"quantizer": "erq4", "m": 8, "ef_construction": 64})):
         rng = random.Random(f"{SEED}-{index}")
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
                 for i in range(DOCS)]
@@ -607,14 +609,14 @@ def rust_hnsw_check(failures):
                     "number_of_replicas": 0, "refresh_interval": -1,
                     "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
         mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
-                                  "emb": rust_hnsw_mapping(**params)}}
+                                  "emb": rust_hnsw_mapping(method, **params)}}
         r = req(STOCK[1], "PUT", f"/{index}", {"settings": {"index.knn": True}, "mappings": mapping}, ok_errors=True)
         if r.get("status", 200) != 400:
             failures.append(f"{index}: stock accepted the extended mapping: {json.dumps(r)[:200]}")
             req(STOCK[1], "DELETE", f"/{index}", ok_errors=True)
         req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
         persisted = req(OURS[1], "GET", f"/{index}/_mapping")[index]["mappings"]["properties"]["emb"]
-        if persisted.get("method", {}).get("engine") != "extended" or persisted["method"].get("name") != "hnsw":
+        if persisted.get("method", {}).get("engine") != "extended" or persisted["method"].get("name") != method:
             failures.append(f"{index}: persisted as {persisted}")
         if persisted["method"].get("parameters", {}).get("quantizer") != params.get("quantizer"):
             failures.append(f"{index}: quantizer persisted as {persisted}")

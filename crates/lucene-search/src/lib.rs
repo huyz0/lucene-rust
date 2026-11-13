@@ -448,6 +448,9 @@ pub enum Error {
     /// The IVF index of a `IvfVectorsFormat` field.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
+    /// The disk files of a `DiskHnswVectorsFormat` instance.
+    #[error(transparent)]
+    DiskHnsw(#[from] lucene_disk_hnsw::Error),
     /// A KNN query this segment cannot answer as asked -- Java's
     /// `IllegalArgumentException` from `AbstractKnnVectorQuery`'s constructor
     /// and its two subclasses' `approximateSearch`, carrying Java's own
