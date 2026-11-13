@@ -28,7 +28,7 @@ import java.util.function.Supplier;
 
 /**
  * Searches of an index whose searches read the writer's buffered documents ({@code
- * index.lucene_rust.realtime_search}) go to its primaries when its replicas copy segments (segment
+ * index.search.realtime.enabled}) go to its primaries when its replicas copy segments (segment
  * replication, remote store): such a replica has no writer, so it would see only what the primary
  * last refreshed. A request naming its own {@code preference} keeps it. As OpenSearch routes a
  * realtime get to the primary under segment replication.
@@ -95,6 +95,7 @@ final class RealtimePrimaryFilter implements ActionFilter {
     static boolean segmentCopies(IndexMetadata index) {
         Settings settings = index.getSettings();
         return RustEngineSupport.REALTIME_SEARCH.get(settings)
+            && RustEngineSupport.openSearchEngine(settings) == false
             && index.getNumberOfReplicas() > 0
             && (IndexMetadata.INDEX_REPLICATION_TYPE_SETTING.get(settings) == ReplicationType.SEGMENT
                 || settings.getAsBoolean(IndexMetadata.SETTING_REMOTE_STORE_ENABLED, false));

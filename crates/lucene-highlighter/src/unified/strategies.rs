@@ -20,7 +20,7 @@ use lucene_search::memory::{MemoryIndex, MemoryIndexReader};
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{Clause, MatchAllDocsQuery, MatchNoDocsQuery};
 use lucene_search::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermMatcher};
-use lucene_search::reader::{LeafReader, PostingsFlags, Terms};
+use lucene_search::reader::{LeafReader, Terms};
 use lucene_search::spans::SpanNode;
 
 /// `Automata.MAX_STRING_UNION_TERM_LENGTH`: longer terms are left out of
@@ -313,7 +313,32 @@ impl QueryVisitor for AutomataCollector<'_> {
         }
     }
     fn consume_terms_matching(&mut self, query: &Clause, _field: &str, matcher: &dyn TermMatcher) {
-        (self.on_automaton)(&lucene_search::explain::describe_clause(query), matcher);
+        (self.on_automaton)(&query_label(query), matcher);
+    }
+}
+
+/// `query.toString()` as a passage-scoring label: one label per distinct
+/// query, so a multi-term query's label is its field and a hash of its
+/// pattern (short, as Java's `field:pattern` is), not its kind alone.
+pub(super) fn query_label(query: &Clause) -> String {
+    use std::hash::Hasher;
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::fmt::Write for HashWriter {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.write(s.as_bytes());
+            Ok(())
+        }
+    }
+    match query {
+        Clause::Extended(q) => match q.as_ref() {
+            ExtendedQuery::MultiTerm(m) => {
+                let mut h = HashWriter(std::collections::hash_map::DefaultHasher::new());
+                let _ = std::fmt::Write::write_fmt(&mut h, format_args!("{:?}", m.source));
+                format!("{}:{}#{:016x}", m.source.field(), q.name(), h.0.finish())
+            }
+            _ => lucene_search::explain::describe_clause(query),
+        },
+        _ => lucene_search::explain::describe_clause(query),
     }
 }
 
@@ -504,6 +529,11 @@ struct Automata {
 }
 
 impl Strategy {
+    /// `getField()`.
+    pub fn field(&self) -> &str {
+        &self.components.field
+    }
+
     /// `getOffsetStrategy(offsetSource, components)`.
     pub fn new(
         source: OffsetSource,
@@ -943,14 +973,8 @@ impl Strategy {
                 }
                 continue;
             }
-            let mut pe = te.postings(PostingsFlags::Offsets)?;
-            if pe.advance(doc)? == doc {
-                let freq = pe.freq();
-                let mut offsets = Vec::new();
-                for _ in 0..freq {
-                    pe.next_position()?;
-                    offsets.push((pe.start_offset(), pe.end_offset()));
-                }
+            if let Some(offsets) = te.doc_offsets(doc)? {
+                let freq = i32::try_from(offsets.len()).unwrap_or(i32::MAX);
                 results.push(Box::new(OfPostings::new(term.clone(), freq, offsets)));
             }
         }
@@ -977,14 +1001,8 @@ impl Strategy {
                 let mut te = terms_index.iterator()?;
                 let mut read =
                     |te: &mut Box<dyn lucene_search::reader::TermsEnum + '_>| -> Result<()> {
-                        let mut pe = te.postings(PostingsFlags::Offsets)?;
-                        if pe.advance(doc)? == doc {
-                            let freq = pe.freq();
-                            let mut offsets = Vec::new();
-                            for _ in 0..freq {
-                                pe.next_position()?;
-                                offsets.push((pe.start_offset(), pe.end_offset()));
-                            }
+                        if let Some(offsets) = te.doc_offsets(doc)? {
+                            let freq = i32::try_from(offsets.len()).unwrap_or(i32::MAX);
                             postings.push((freq, offsets));
                         }
                         Ok(())

@@ -17,6 +17,7 @@
 // which silently breaks every intra-doc link the module writes to its own
 // items. See `docs/rustdoc-gate.md`.
 pub mod adaptive_values;
+pub mod adaptive_zones;
 pub mod automaton;
 pub mod backward_codecs;
 pub mod bitvectors;
@@ -79,6 +80,7 @@ pub mod segment_state;
 pub mod simpletext;
 pub mod stored_fields;
 pub mod stored_fields_writer;
+pub mod substring;
 pub mod suggest;
 pub mod term_ngram;
 pub mod term_vectors;

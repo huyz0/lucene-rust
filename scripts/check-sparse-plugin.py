@@ -6,12 +6,15 @@ plugin (built by scripts/verify-opensearch.sh's steps; neural-search removed,
 the two cannot share a node) and a stock one, which bundles neural-search.
 Both get the same `index.sparse` indexes, written in two flushed segments,
 with the documents scripts/gen-seismic-fixture.py generates, and answer the
-same queries. The Rust engine writes the plugin node's segments.
+same queries. The plugin node holds each index twice: written by the Rust
+engine, and (`<index>-os`) by OpenSearch's own engine through the plugin's
+codec, which must cluster the segments just as the Rust writer does.
 
   exact      clusters never pruned (`n_postings` past every posting list,
              whole summaries, a huge heap factor): every document sharing a
              walked token is scored, so both nodes must return the same hits
              with the same scores, filtered or not.
+  merged     as exact, force-merged into one segment: the merge clusters it.
   fallback   `approximate_threshold` past the segment size: every segment runs
              the sum of linear FeatureField queries; same hits and scores.
   features   neural_sparse on a `rank_features` field; same hits and scores.
@@ -75,10 +78,10 @@ def wait(port):
     sys.exit(f"node on {port} did not start")
 
 
-def create(port, index, params, docs, rust):
+def create(port, index, params, docs, rust, merge=False):
     settings = {"index.sparse": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
-    if rust:
-        settings["index.lucene_rust.engine"] = True
+    if rust is not None:
+        settings["index.engine.accelerated"] = rust
     mapping = {"properties": {"tag": {"type": "keyword"}, "feat": {"type": "rank_features"},
                "emb": {"type": "sparse_vector", "method": {"name": "seismic", "parameters": params}}}}
     req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
@@ -91,9 +94,11 @@ def create(port, index, params, docs, rust):
         r = req(port, "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
         assert not r["errors"], json.dumps(r)[:2000]
         req(port, "POST", f"/{index}/_flush")
+    if merge:
+        req(port, "POST", f"/{index}/_forcemerge?max_num_segments=1")
     req(port, "POST", f"/{index}/_refresh")
     segs = req(port, "GET", f"/{index}/_segments")["indices"][index]["shards"]["0"][0]["segments"]
-    return sorted(v["num_docs"] for v in segs.values())
+    return sorted(v["num_docs"] for v in segs.values() if v.get("search", True))
 
 
 def search(port, index, field, tokens, mp):
@@ -127,42 +132,49 @@ def main():
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd",
                  "emb": fixture.vector(rng, rng.randint(10, 60))} for i in range(fixture.DOCS)]
         queries = [fixture.vector(rng, rng.randint(5, 40)) for _ in range(12)]
-        for index, params in (("exact", EXACT), ("fallback", FALLBACK), ("approx", fixture.PARAMS)):
-            ours = create(OURS[1], index, params, docs, True)
-            stock = create(STOCK[1], index, params, docs, False)
-            print(f"{index}: segments {ours} (plugin) {stock} (stock)")
-            if ours != stock:
+        for index, params, merge in (("exact", EXACT, False), ("merged", EXACT, True),
+                                     ("fallback", FALLBACK, False), ("approx", fixture.PARAMS, False)):
+            ours = create(OURS[1], index, params, docs, True, merge)
+            os_engine = create(OURS[1], f"{index}-os", params, docs, False, merge)
+            stock = create(STOCK[1], index, params, docs, None, merge)
+            print(f"{index}: segments {ours} (plugin) {os_engine} (plugin, OpenSearch engine) {stock} (stock)")
+            if ours != stock or os_engine != stock:
                 failures.append(f"{index}: segment sizes differ")
 
         before = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
         exact_params = [{"top_n": 1000, "k": 10, "heap_factor": 1e30},
                         {"top_n": 1000, "k": 50, "heap_factor": 1e30, "filter": {"term": {"tag": "even"}}},
                         {"top_n": 1000, "k": 3, "heap_factor": 1e30, "filter": {"term": {"tag": "odd"}}}]
-        cases = [("exact", "emb", mp) for mp in exact_params]
+        cases = [(index, "emb", mp) for index in ("exact", "merged") for mp in exact_params]
         cases += [("fallback", "emb", None), ("fallback", "emb", {"filter": {"term": {"tag": "odd"}}}),
                   ("exact", "feat", None)]
         checked = 0
         for index, field, mp in cases:
-            for qi, tokens in enumerate(queries):
-                got = search(OURS[1], index, field, tokens, mp)
-                want = search(STOCK[1], index, field, tokens, mp)
-                if got != want:
-                    first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
-                    failures.append(f"{index} {field} {mp} query {qi}: {len(got)} vs {len(want)} hits, "
-                                    f"first difference at {first}: {got[first:first + 2]} vs {want[first:first + 2]}")
-                checked += 1
+            for ours_index in (index, f"{index}-os"):
+                for qi, tokens in enumerate(queries):
+                    got = search(OURS[1], ours_index, field, tokens, mp)
+                    want = search(STOCK[1], index, field, tokens, mp)
+                    if got != want:
+                        first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+                        failures.append(f"{ours_index} {field} {mp} query {qi}: {len(got)} vs {len(want)} hits, "
+                                        f"first difference at {first}: {got[first:first + 2]} vs {want[first:first + 2]}")
+                    checked += 1
         print(f"same hits and scores on {checked - len([f for f in failures if 'query' in f])} of {checked} queries")
 
-        recalls = []
-        for mp in ({"top_n": 10, "k": 10, "heap_factor": 1.0}, {"top_n": 20, "k": 50, "heap_factor": 0.8}):
-            for tokens in queries:
-                got = {i for i, _ in search(OURS[1], "approx", "emb", tokens, mp)[:10]}
-                want = {i for i, _ in search(STOCK[1], "approx", "emb", tokens, mp)[:10]}
-                recalls.append(len(got & want) / max(len(want), 1))
-        recall = sum(recalls) / len(recalls)
-        print(f"approx: plugin's top 10 overlap stock's by {recall:.3f} on average")
-        if recall < MIN_RECALL:
-            failures.append(f"approx: overlap {recall:.3f} < {MIN_RECALL}")
+        for ours_index in ("approx", "approx-os"):
+            recalls = []
+            for mp in ({"top_n": 10, "k": 10, "heap_factor": 1.0}, {"top_n": 20, "k": 50, "heap_factor": 0.8}):
+                for tokens in queries:
+                    got = {i for i, _ in search(OURS[1], ours_index, "emb", tokens, mp)[:10]}
+                    want = {i for i, _ in search(STOCK[1], "approx", "emb", tokens, mp)[:10]}
+                    recalls.append(len(got & want) / max(len(want), 1))
+            recall = sum(recalls) / len(recalls)
+            print(f"{ours_index}: plugin's top 10 overlap stock's by {recall:.3f} on average")
+            if recall < MIN_RECALL:
+                failures.append(f"{ours_index}: overlap {recall:.3f} < {MIN_RECALL}")
+        # The OpenSearch-engine copies go before the stats, which count the sparse_vector fields.
+        for index in ("exact", "merged", "fallback", "approx"):
+            req(OURS[1], "DELETE", f"/{index}-os")
 
         # neural-search's stats: the queries counted, the sparse_vector fields found (the memory
         # stats are 0 here: no JVM sparse caches).
@@ -176,7 +188,7 @@ def main():
             failures.append(f"neural stats: ours {answers[0]}, stock {answers[1]}")
         print(f"neural stats: {answers[0]}")
         after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")

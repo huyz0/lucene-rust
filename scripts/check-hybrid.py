@@ -53,7 +53,7 @@ def docs():
 def setup(port, rust, index="h"):
     settings = {"index": {"knn": True, "number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1}}
     if rust:
-        settings["index"]["lucene_rust.engine"] = True
+        settings["index"]["engine.accelerated"] = True
     ck.req(port, "PUT", f"/{index}", {"settings": settings, "mappings": {"properties": {
         "t": {"type": "text"}, "tag": {"type": "keyword"}, "n": {"type": "integer"},
         "v": {"type": "knn_vector", "dimension": DIM, "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}}}}})
@@ -264,7 +264,12 @@ def pipeline_error(port, body):
 
 
 def stats_answer(port, path):
-    """A stats call's status and body, its node ids, timestamps and memory left out."""
+    """A stats call's status and body, its node ids, timestamps and memory left out.
+
+    `trailing_interval_value` counts the events inside a sliding time window, so
+    it differs by whichever node's window a request fell in; the all-time
+    `value` beside it is still compared.
+    """
     import urllib.request, urllib.error
     try:
         with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=60) as r:
@@ -278,7 +283,7 @@ def stats_answer(port, path):
     def clean(v):
         if isinstance(v, dict):
             return {k: clean(x) for k, x in v.items()
-                    if k not in ("nodes", "minutes_since_last_event") and not k.startswith("memory")}
+                    if k not in ("nodes", "minutes_since_last_event", "trailing_interval_value") and not k.startswith("memory")}
         return v
     return status, clean(body)
 
@@ -294,11 +299,27 @@ STATS_CALLS = [
 ]
 
 
+def stats_diff(o, s):
+    """The paths where two stats answers differ, each with both values."""
+    out = []
+    def walk(a, b, at):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for k in sorted(set(a) | set(b)):
+                walk(a.get(k, "<missing>"), b.get(k, "<missing>"), f"{at}.{k}" if at else k)
+        elif isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)) and len(a) == len(b):
+            for i, (x, y) in enumerate(zip(a, b)):
+                walk(x, y, f"{at}[{i}]")
+        elif a != b:
+            out.append(f"{at}: ours {json.dumps(a)[:200]}, stock {json.dumps(b)[:200]}")
+    walk(o, s, "")
+    return "; ".join(out[:20])
+
+
 def compare_stats(failures):
     for path in STATS_CALLS:
         o, s = stats_answer(OURS[1], path), stats_answer(STOCK[1], path)
         if o != s:
-            failures.append(f"stats {path}:\n  ours  {json.dumps(o)[:1500]}\n  stock {json.dumps(s)[:1500]}")
+            failures.append(f"stats {path}: {stats_diff(o, s)}")
 
 
 def main():
@@ -352,7 +373,7 @@ def main():
             if o != s:
                 failures.append(f"pipeline {json.dumps(body)}: ours {o}, stock {s}")
         after = ck.req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")

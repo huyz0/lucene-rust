@@ -52,6 +52,27 @@ pub struct LeafContext<'a> {
 }
 
 impl<'a> LeafContext<'a> {
+    /// This context with the reader-wide statistics `global`.
+    #[must_use]
+    pub fn with_global(self, global: Option<&'a GlobalStats>) -> Self {
+        LeafContext { global, ..self }
+    }
+
+    /// This context scoring with the segment's `norms` and the reader-wide
+    /// statistics `global`.
+    #[must_use]
+    pub fn with_scoring(
+        self,
+        norms: Option<&'a HashMap<String, FieldNorms<'a>>>,
+        global: &'a GlobalStats,
+    ) -> Self {
+        LeafContext {
+            norms,
+            global: Some(global),
+            ..self
+        }
+    }
+
     /// A segment as span queries read it: no live docs (`SpanWeight`
     /// positions on the document asked for) and no scoring.
     pub fn for_spans(seg: &crate::multi_segment::OpenSegment<'a>) -> Self {

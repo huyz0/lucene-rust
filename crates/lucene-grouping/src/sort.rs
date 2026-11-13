@@ -27,6 +27,9 @@ use lucene_search::reader::doc_values::{self as dv, SortedOrds};
 use lucene_search::reader::{NumericDocValues, SortedNumericDocValues, SortedSetDocValues};
 use lucene_search::top_field::{Selector, SortField, SortType};
 use lucene_search::{Error, Result};
+use lucene_util::numeric_utils::{
+    self, double_to_sortable_long, float_to_sortable_int, sortable_long_to_double,
+};
 
 /// `Sort`: the keys, in priority order. `Sort.RELEVANCE` is
 /// [`Sort::relevance`], which [`TopGroupsCollector`](super::TopGroupsCollector)
@@ -114,31 +117,8 @@ fn double_compare(a: f64, b: f64) -> Ordering {
     double_to_sortable_long(a).cmp(&double_to_sortable_long(b))
 }
 
-fn float_to_sortable_int(f: f32) -> i32 {
-    let bits = if f.is_nan() {
-        0x7fc0_0000
-    } else {
-        f.to_bits() as i32
-    };
-    bits ^ ((bits >> 31) & 0x7fff_ffff)
-}
-
-fn double_to_sortable_long(d: f64) -> i64 {
-    let bits = if d.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        d.to_bits() as i64
-    };
-    bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
-}
-
 fn sortable_int_to_float(v: i64) -> f32 {
-    let i = v as i32;
-    f32::from_bits((i ^ ((i >> 31) & 0x7fff_ffff)) as u32)
-}
-
-fn sortable_long_to_double(v: i64) -> f64 {
-    f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
+    numeric_utils::sortable_int_to_float(v as i32)
 }
 
 /// `FieldComparator.compareValues(first, second)` for `field`'s comparator

@@ -30,9 +30,9 @@ use lucene_search::document::geo::{
     lat_lon_doc_values_field, lat_lon_point, lat_lon_shape, xy_point_field, xy_shape, QueryRelation,
 };
 use lucene_search::document::{search_all, DocumentQuery, MatchAllDocs};
+use lucene_spatial3d::PlanetModel;
 use lucene_store::ByteBuffersDirectory;
 use lucene_util::geo::{LatLonGeometry, Polygon, XYPolygon};
-use lucene_util::spatial3d::PlanetModel;
 
 const DOCS: usize = 200_000;
 

@@ -238,6 +238,7 @@ pub(crate) fn build<'a>(
         ExtendedQuery::Function(q) => super::function::function_query(ctx, q, boost),
         ExtendedQuery::FunctionRange(q) => super::function::function_range(ctx, q),
         ExtendedQuery::FunctionMatch(q) => super::function::function_match(ctx, q, boost, mode),
+        ExtendedQuery::Substring(q) => super::substring::substring(ctx, q, boost, mode),
         ExtendedQuery::Interval(q) => super::intervals::interval(ctx, q, boost, mode),
         ExtendedQuery::Span(q) => super::spans::span_node(ctx, q, boost, mode),
         ExtendedQuery::Covering(q) => {
@@ -251,6 +252,12 @@ pub(crate) fn build<'a>(
         }
         // `PhraseWildcardQuery.createWeight` expands its multi-terms over
         // the whole reader.
+        ExtendedQuery::MultiPhrasePrefix(_) => Err(crate::Error::IllegalState(
+            "MultiPhrasePrefixQuery is only highlighted".into(),
+        )),
+        ExtendedQuery::VisitOnly(_) | ExtendedQuery::Visited(_) => Err(crate::Error::IllegalState(
+            "a visit-only query is only highlighted".into(),
+        )),
         ExtendedQuery::PhraseWildcard(_) => Err(crate::Error::IllegalState(
             "PhraseWildcardQuery must be rewritten against the searcher \
              (rescorer::rewrite_rescore_clauses) before it is searched"

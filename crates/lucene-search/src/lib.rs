@@ -196,12 +196,9 @@
 //! concept this port doesn't have yet) and skip-index-driven range pruning (this
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
-pub mod aggs;
 pub mod bayesian_estimator;
 mod bit_set_pool;
-pub mod bucket_aggs;
 mod bulk_scorer;
-pub mod cardinality_sketch;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;
@@ -222,11 +219,14 @@ pub mod extended_query;
 pub mod field_norms;
 pub mod function;
 pub mod fuzzy_like_this;
+pub mod global_ords;
 pub mod index_searcher;
 pub mod intervals;
+pub mod java_math;
 pub mod java_priority_queue;
 pub mod join;
 pub mod knn_collectors;
+pub mod knn_recall;
 pub mod knn_search;
 pub mod leaf_collector;
 pub mod live_segment;
@@ -254,8 +254,8 @@ pub mod reference_manager;
 pub mod rescorer;
 pub mod sandbox;
 pub mod segment_cacheable;
+pub mod segment_match;
 pub mod segment_order;
-pub mod significant_text;
 pub mod similarities;
 pub mod similarity;
 pub mod simpletext_native;
@@ -266,10 +266,8 @@ pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod spans;
 mod sparse_docs_cache;
-pub mod tdigest;
 pub mod term_vectors_query;
 pub mod terminate;
-pub mod terms_agg;
 #[cfg(any(test, feature = "asserting"))]
 pub mod test_support;
 pub mod top_docs;
@@ -290,6 +288,10 @@ pub use doc_value_query::{
     sort_by_numeric_doc_value, sort_top_n_by_numeric_doc_value, MissingValue,
 };
 pub use exec::cache::{sort_column_bytes, SegmentQueryCache};
+/// The node-wide budget of every segment's query cache.
+pub mod query_cache_budget {
+    pub use crate::exec::cache::{node_stats, set_node_budget, DEFAULT_NODE_BYTES};
+}
 pub use explain::{explain_clause, Explanation};
 pub use field_norms::FieldNorms;
 pub use multi_segment::{
@@ -350,6 +352,14 @@ impl std::error::Error for NodeCommunicationError {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The request was stopped by its memory bound or cancelled
+    /// ([`lucene_util::memory`]).
+    #[error(transparent)]
+    Memory(#[from] lucene_util::memory::Exceeded),
+    /// An aggregation made more buckets than the request allows
+    /// (`search.max_buckets`): at least the first number, over the second.
+    #[error("too many buckets: at least {0}, over the limit of {1}")]
+    TooManyBuckets(usize, usize),
     #[error(transparent)]
     BlockTree(#[from] blocktree::Error),
     /// A multi-term [`PhraseQuery`] needs an opened `.pos` file to check
@@ -435,9 +445,12 @@ pub enum Error {
     /// who sent a bad request (see `lucene_ffi::vectors`).
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
-    /// The IVF index of a `LuceneRustIvfVectorsFormat` field.
+    /// The IVF index of a `IvfVectorsFormat` field.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
+    /// The disk files of a `DiskHnswVectorsFormat` instance.
+    #[error(transparent)]
+    DiskHnsw(#[from] lucene_disk_hnsw::Error),
     /// A KNN query this segment cannot answer as asked -- Java's
     /// `IllegalArgumentException` from `AbstractKnnVectorQuery`'s constructor
     /// and its two subclasses' `approximateSearch`, carrying Java's own
@@ -512,11 +525,11 @@ pub enum Error {
     /// to seek, `ord()` on a dictionary without ordinals).
     #[error("{0}")]
     Unsupported(String),
-    /// A Spatial4j / spatial-extras exception (`lucene_util::spatial4j`):
+    /// A Spatial4j / spatial-extras exception (`lucene_spatial4j::spatial4j`):
     /// what a spatial strategy, its queries and value sources throw, with
-    /// Java's class ([`lucene_util::spatial4j::Error::java_class`]).
+    /// Java's class ([`lucene_spatial4j::spatial4j::Error::java_class`]).
     #[error(transparent)]
-    Spatial(#[from] lucene_util::spatial4j::Error),
+    Spatial(#[from] lucene_spatial4j::spatial4j::Error),
     /// `NodeCommunicationException`: the other node of a replication group
     /// could not be reached.
     #[error(transparent)]

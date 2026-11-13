@@ -205,6 +205,7 @@ struct LeafVectors<'r> {
     scalar_quantized:
         Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'r>>,
     hnsw_codes: Option<std::sync::Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
+    disk_hnsw: Option<std::sync::Arc<lucene_disk_hnsw::DiskHnswReader>>,
 }
 
 impl<'r> LeafVectors<'r> {
@@ -219,17 +220,26 @@ impl<'r> LeafVectors<'r> {
     {
         VectorsInput {
             flat: self.flat.clone(),
-            hnsw: match (&self.ivf, &self.scalar_quantized, &self.hnsw_codes) {
-                (Some(ivf), _, _) => Some(GraphReader::Ivf(ivf.clone())),
-                (None, Some(codes), _) => Some(GraphReader::ScalarQuantized {
+            hnsw: match (
+                &self.ivf,
+                &self.scalar_quantized,
+                &self.hnsw_codes,
+                &self.disk_hnsw,
+            ) {
+                (Some(ivf), _, _, _) => Some(GraphReader::Ivf(ivf.clone())),
+                (None, Some(codes), _, _) => Some(GraphReader::ScalarQuantized {
                     graph: self.graph.clone(),
                     codes: codes.clone(),
                 }),
-                (None, None, Some(codes)) => Some(GraphReader::HnswQuantized {
+                (None, None, Some(codes), _) => Some(GraphReader::HnswQuantized {
                     graph: self.graph.clone(),
                     codes: codes.clone(),
                 }),
-                (None, None, None) => self.graph.clone().map(GraphReader::from),
+                (None, None, None, Some(disk)) => Some(GraphReader::HnswDisk {
+                    graph: self.graph.clone(),
+                    disk: disk.clone(),
+                }),
+                (None, None, None, None) => self.graph.clone().map(GraphReader::from),
             },
             field_infos: reader.field_infos(),
             live_docs,
@@ -256,12 +266,14 @@ fn open_leaf<'r>(reader: &'r SegmentReader, field: &str) -> Result<Option<LeafVe
     let ivf = reader.ivf_for(info.number)?;
     let scalar_quantized = reader.scalar_quantized_for(info.number)?;
     let hnsw_codes = reader.hnsw_codes_for(info.number)?;
+    let disk_hnsw = reader.disk_hnsw_for(info.number)?;
     Ok(Some(LeafVectors {
         flat,
         graph,
         ivf,
         scalar_quantized,
         hnsw_codes,
+        disk_hnsw,
     }))
 }
 
@@ -282,11 +294,22 @@ pub fn knn_top_hits(
     candidates: usize,
     filter: Option<&Clause>,
 ) -> Result<Vec<ScoreDoc>> {
-    top_hits(segments, field, target, k, candidates, filter, None, 0, &[])
+    top_hits(
+        segments,
+        field,
+        target,
+        k,
+        candidates,
+        filter,
+        None,
+        0,
+        &[],
+        Depth::AS_ASKED,
+    )
 }
 
 /// [`knn_top_hits`] probing `ivf_nprobes` clusters in each segment whose
-/// field has an IVF index (`LuceneRustIvfVectorsFormat`); `0` probes the
+/// field has an IVF index (`IvfVectorsFormat`); `0` probes the
 /// depth each segment calibrated. Other formats ignore it.
 ///
 /// # Errors
@@ -310,6 +333,7 @@ pub fn knn_top_hits_with(
         None,
         ivf_nprobes,
         &[],
+        Depth::AS_ASKED,
     )
 }
 
@@ -332,8 +356,13 @@ pub struct BufferedVectors<'a> {
 /// its segments one by one. The hits merge as every segment's do: the
 /// scores are the flat format's either way.
 ///
+/// `exploration_slack` is the graph walks' opt-in adaptive beam stop over
+/// the best `k` ([`KnnFloatVectorQuery::exploration_slack`]); the buffers'
+/// own indexes do not take it.
+///
 /// # Errors
-/// As [`knn_top_hits`], and a `buffers` segment outside `segments`.
+/// As [`knn_top_hits`], a `buffers` segment outside `segments`, and a
+/// slack that is not a finite number `>= 0`.
 #[allow(clippy::too_many_arguments)]
 pub fn knn_top_hits_buffered(
     segments: &[OpenSegment<'_>],
@@ -344,6 +373,7 @@ pub fn knn_top_hits_buffered(
     filter: Option<&Clause>,
     ivf_nprobes: usize,
     buffers: &[BufferedVectors<'_>],
+    exploration_slack: Option<f32>,
 ) -> Result<Vec<ScoreDoc>> {
     top_hits(
         segments,
@@ -355,6 +385,10 @@ pub fn knn_top_hits_buffered(
         None,
         ivf_nprobes,
         buffers,
+        Depth {
+            exploration_slack,
+            ..Depth::AS_ASKED
+        },
     )
 }
 
@@ -412,6 +446,7 @@ pub fn knn_top_hits_nested_with(
         Some((parents, expand)),
         ivf_nprobes,
         &[],
+        Depth::AS_ASKED,
     )
 }
 
@@ -648,8 +683,29 @@ pub fn knn_top_hits_grouped(
     Ok(top.into_sorted().into_iter().map(|h| h.0).collect())
 }
 
+/// How deep [`top_hits`] searches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Depth {
+    /// [`KnnFloatVectorQuery::search_effort`].
+    pub(crate) effort: f32,
+    /// Every segment scanned exhaustively, its index unused: the exact
+    /// top hits.
+    pub(crate) exact: bool,
+    /// [`KnnFloatVectorQuery::exploration_slack`] over the best `k`, for a
+    /// graph walk of a non-nested search.
+    pub(crate) exploration_slack: Option<f32>,
+}
+
+impl Depth {
+    pub(crate) const AS_ASKED: Depth = Depth {
+        effort: 1.0,
+        exact: false,
+        exploration_slack: None,
+    };
+}
+
 #[allow(clippy::too_many_arguments)]
-fn top_hits(
+pub(crate) fn top_hits(
     segments: &[OpenSegment<'_>],
     field: &str,
     target: &KnnTarget,
@@ -659,6 +715,7 @@ fn top_hits(
     nested: Option<(&dyn BitSetProducer, bool)>,
     ivf_nprobes: usize,
     buffers: &[BufferedVectors<'_>],
+    depth: Depth,
 ) -> Result<Vec<ScoreDoc>> {
     if buffers.iter().any(|b| b.segments.end > segments.len()) {
         return Err(Error::MissingSegmentReader(format!(
@@ -696,8 +753,13 @@ fn top_hits(
             continue;
         }
         let filter = filters.as_ref().map(|f| &f[i]);
+        let mut input = vectors.input(reader, seg.live_docs, filter);
+        if depth.exact {
+            // No index: every leaf is scanned exhaustively.
+            input.hnsw = None;
+        }
         knn.push(KnnSegment {
-            vectors: vectors.input(reader, seg.live_docs, filter),
+            vectors: input,
             doc_base: seg.doc_base,
         });
         leaves.push(i);
@@ -715,26 +777,48 @@ fn top_hits(
         .map(|(reader, _)| usize::try_from(reader.max_doc).unwrap_or(0))
         .fold(0usize, usize::saturating_add)
         .max(1);
+    // A search effort scales an IVF field's probes in each leaf, and any
+    // other field's candidates (an HNSW graph's beam) here.
+    let ivf = knn
+        .iter()
+        .any(|s| matches!(s.vectors.hnsw, Some(GraphReader::Ivf(_))));
+    let (candidates, effort) = match depth.effort {
+        e if e.is_finite() && e > 0.0 && e != 1.0 && !ivf => {
+            let scaled = (candidates.max(k) as f64 * f64::from(e)).ceil() as usize;
+            (scaled, 1.0)
+        }
+        e => (candidates, e),
+    };
     let candidates = candidates.max(k).min(docs);
     let parents: Vec<Option<&FixedBitSet>> = parent_sets.iter().map(|b| b.as_deref()).collect();
     let mut hits = match (target, nested.is_some()) {
         _ if knn.is_empty() => Vec::new(),
         (KnnTarget::Float(t), false) => {
-            let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
-                .with_ivf_nprobes(ivf_nprobes);
+            let mut q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
+                .with_ivf_nprobes(ivf_nprobes)
+                .with_search_effort(effort);
+            if let Some(slack) = depth.exploration_slack {
+                q = q.with_exploration_slack(k, slack)?;
+            }
             vector_query::search_knn_float_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Byte(t), false) => {
-            let q = KnnByteVectorQuery::new(field, t.clone(), candidates)?;
+            let mut q =
+                KnnByteVectorQuery::new(field, t.clone(), candidates)?.with_search_effort(effort);
+            if let Some(slack) = depth.exploration_slack {
+                q = q.with_exploration_slack(k, slack)?;
+            }
             vector_query::search_knn_byte_vector_query_multi_segment(&knn, &q)?
         }
         (KnnTarget::Float(t), true) => {
             let q = KnnFloatVectorQuery::new(field, t.clone(), candidates)?
-                .with_ivf_nprobes(ivf_nprobes);
+                .with_ivf_nprobes(ivf_nprobes)
+                .with_search_effort(effort);
             vector_query::search_diversifying_children_float_knn_multi_segment(&knn, &parents, &q)?
         }
         (KnnTarget::Byte(t), true) => {
-            let q = KnnByteVectorQuery::new(field, t.clone(), candidates)?;
+            let q =
+                KnnByteVectorQuery::new(field, t.clone(), candidates)?.with_search_effort(effort);
             vector_query::search_diversifying_children_byte_knn_multi_segment(&knn, &parents, &q)?
         }
     };

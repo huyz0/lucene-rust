@@ -14,7 +14,7 @@ DOCS="${2:-500000}"
 OUT="${3:-target/analyze-tenants}"
 HEAP="${HEAP:-2g}"
 PORT=9250
-DEFAULT_CONFIGS='plugin:partitioned:{"lucene_rust.partition_field":"tenant","lucene_rust.partition_pool_docs":0}|plugin:shared:{}|plugin:sorted:{"sort.field":"tenant"}|stock:stock-shared:{}|stock:stock-sorted:{"sort.field":"tenant"}'
+DEFAULT_CONFIGS='plugin:partitioned:{"segment_partition.field":"tenant"}|plugin:shared:{}|plugin:sorted:{"sort.field":"tenant"}|stock:stock-shared:{}|stock:stock-sorted:{"sort.field":"tenant"}'
 CONFIGS="${CONFIGS:-$DEFAULT_CONFIGS}"
 mkdir -p "$OUT"
 perf_args=()
@@ -27,7 +27,7 @@ for cfg in "${cfgs[@]}"; do
     args=()
     if [[ "$node" == plugin ]]; then
         image=lucene-rust-opensearch:3.9.0
-        args=(-e lucene_rust.engine.default=true)
+        args=(-e indices.engine.accelerated.default=true)
     else
         image=opensearch-stock-min:3.9.0
     fi

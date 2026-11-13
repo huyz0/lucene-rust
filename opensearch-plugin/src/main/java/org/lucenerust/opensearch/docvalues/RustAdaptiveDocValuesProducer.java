@@ -33,13 +33,17 @@ import org.apache.lucene.util.packed.DirectMonotonicReader;
  * NUMERIC and SORTED_NUMERIC fields whose value array is adaptive blocks, which this class decodes.
  *
  * <p>Lucene90's producer parses the whole {@code .dvm} -- an adaptive entry keeps Lucene90's shape,
- * with a {@code tableSize} of {@value #ADAPTIVE_TABLE_SIZE} -- and never touches those value arrays,
+ * with a {@code tableSize} of {@value #ADAPTIVE_TABLE_SIZE}, or {@value #ADAPTIVE_ZONES_TABLE_SIZE} when
+ * per-1024-value statistics follow the block descriptor (which only the native aggregations read)
+ * -- and never touches those value arrays,
  * since every read of an adaptive field comes here. This class walks the same {@code .dvm} to find
  * them ({@link #readFields}), mirroring {@code Lucene90DocValuesProducer.readFields}.
  */
 final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
     /** {@code ADAPTIVE_TABLE_SIZE} in {@code doc_values.rs}. */
     static final int ADAPTIVE_TABLE_SIZE = -1000;
+    /** {@code ADAPTIVE_ZONES_TABLE_SIZE} in {@code doc_values.rs}. */
+    static final int ADAPTIVE_ZONES_TABLE_SIZE = -1001;
 
     private static final String META_CODEC = "Lucene90DocValuesMetadata";
     private static final String DATA_CODEC = "Lucene90DocValuesData";
@@ -191,7 +195,7 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
         e.valuesOffset = meta.readLong();
         e.valuesLength = meta.readLong();
         e.descriptorOffset = meta.readLong();
-        e.adaptive = tableSize == ADAPTIVE_TABLE_SIZE;
+        e.adaptive = tableSize == ADAPTIVE_TABLE_SIZE || tableSize == ADAPTIVE_ZONES_TABLE_SIZE;
         return e;
     }
 

@@ -653,7 +653,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured")
+    @org.junit.Ignore("merges are the accelerated writer's own policy, run at commit; index.merge_on_flush is not honoured")
     public void testMergeSegmentsOnCommitIsDisabled() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
 
@@ -725,7 +725,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured")
+    @org.junit.Ignore("merges are the accelerated writer's own policy, run at commit; index.merge_on_flush is not honoured")
     public void testMergeSegmentsOnCommit() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
 
@@ -794,7 +794,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured")
+    @org.junit.Ignore("merges are the accelerated writer's own policy, run at commit; index.merge_on_flush is not honoured")
     public void testMergeSegmentsOnCommitDefault() throws Exception {
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
 
@@ -2874,7 +2874,7 @@ public class RustEngineTests extends RustEngineTestCase {
     // #5891: make sure IndexWriter's infoStream output is
     // sent to lucene.iw with log level TRACE:
 
-    @org.junit.Ignore("asserts on Lucene IndexWriter's infoStream log lines; the Rust writer has no infoStream")
+    @org.junit.Ignore("asserts on Lucene IndexWriter's infoStream log lines; the accelerated writer has no infoStream")
     public void testIndexWriterInfoStream() throws IllegalAccessException, IOException {
         assumeFalse("who tests the tester?", VERBOSE);
         MockAppender mockAppender = new MockAppender("testIndexWriterInfoStream");
@@ -3233,7 +3233,7 @@ public class RustEngineTests extends RustEngineTestCase {
     }
 
     // #8603: make sure we can separately log IFD's messages
-    @org.junit.Ignore("asserts on Lucene IndexFileDeleter's infoStream log lines; the Rust writer has no infoStream")
+    @org.junit.Ignore("asserts on Lucene IndexFileDeleter's infoStream log lines; the accelerated writer has no infoStream")
     public void testIndexWriterIFDInfoStream() throws IllegalAccessException, IOException {
         assumeFalse("who tests the tester?", VERBOSE);
         MockAppender mockAppender = new MockAppender("testIndexWriterIFDInfoStream");
@@ -3444,7 +3444,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabled() throws Exception {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3647,7 +3647,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpDisabled() throws Exception {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -3752,7 +3752,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory")
     public void testUnreferencedFileCleanUpFailsOnSegmentMergeFailureWhenDirectoryClosed() throws Exception {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final CountDownLatch cleanupCompleted = new CountDownLatch(1);
@@ -4071,7 +4071,7 @@ public class RustEngineTests extends RustEngineTestCase {
         engine = new RustEngine(config);
     }
 
-    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory")
     public void testTranslogReplayWithFailure() throws IOException {
         final MockDirectoryWrapper directory = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testTranslogReplayWithFailure");
@@ -4611,7 +4611,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter")
     public void testHandleDocumentFailure() throws Exception {
         try (Store store = createStore()) {
             final ParsedDocument doc1 = testParsedDocument("1", null, testDocumentWithTextField(), B_1, null);
@@ -5404,7 +5404,7 @@ public class RustEngineTests extends RustEngineTestCase {
         return engine.getNumIndexVersionsLookups();
     }
 
-    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory")
+    @org.junit.Ignore("injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory")
     public void testFailEngineOnRandomIO() throws IOException, InterruptedException {
         MockDirectoryWrapper wrapper = newMockFSDirectory(createTempDir());
         final Path translogPath = createTempDir("testFailEngineOnRandomIO");
@@ -7977,7 +7977,7 @@ public class RustEngineTests extends RustEngineTestCase {
             .collect(Collectors.toMap(e -> e.getKey(), e -> (DeleteVersionValue) e.getValue()));
     }
 
-    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter")
     public void testTreatDocumentFailureAsFatalError() throws Exception {
         AtomicReference<IOException> addDocException = new AtomicReference<>();
         IndexWriterFactory indexWriterFactory = (dir, iwc) -> new IndexWriter(dir, iwc) {
@@ -8051,7 +8051,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter")
     public void testNoOpFailure() throws IOException {
         engine.close();
         try (Store store = createStore(); Engine engine = createEngine((dir, iwc) -> new IndexWriter(dir, iwc) {
@@ -8072,7 +8072,7 @@ public class RustEngineTests extends RustEngineTestCase {
         }
     }
 
-    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter")
+    @org.junit.Ignore("injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter")
     public void testDeleteFailureDocAlreadyDeleted() throws IOException {
         runTestDeleteFailure(RustEngine::delete);
     }

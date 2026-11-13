@@ -27,37 +27,37 @@ spatial/prefix/PrefixTreeStrategy	ported	crates/lucene-spatial-extras/src/prefix
 spatial/prefix/RecursivePrefixTreeStrategy	ported	crates/lucene-spatial-extras/src/prefix/mod.rs::RecursivePrefixTreeStrategy
 spatial/prefix/TermQueryPrefixTreeStrategy	ported	crates/lucene-spatial-extras/src/prefix/mod.rs::TermQueryPrefixTreeStrategy
 spatial/prefix/WithinPrefixTreeQuery	ported	crates/lucene-spatial-extras/src/prefix/query.rs::WithinPrefixTreeQuery
-spatial/prefix/tree/Cell	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::Cell
-spatial/prefix/tree/CellCanPrune	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::sub_cells_size
-spatial/prefix/tree/CellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::CellIterator
-spatial/prefix/tree/DateRangePrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/date_range.rs::DateRangePrefixTree
-spatial/prefix/tree/FilterCellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::FilterCellIterator
-spatial/prefix/tree/GeohashPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/geohash.rs::GeohashPrefixTree
-spatial/prefix/tree/LegacyCell	ported	crates/lucene-util/src/spatial_extras/prefix_tree/legacy.rs::LegacyCell
-spatial/prefix/tree/LegacyPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/legacy.rs::LegacyGrid
-spatial/prefix/tree/NumberRangePrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/number_range.rs::NumberRangePrefixTree
-spatial/prefix/tree/PackedQuadPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/packed_quad.rs::PackedQuadPrefixTree
-spatial/prefix/tree/QuadPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/quad.rs::QuadPrefixTree
-spatial/prefix/tree/S2PrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/s2.rs::S2PrefixTree
-spatial/prefix/tree/S2PrefixTreeCell	ported	crates/lucene-util/src/spatial_extras/prefix_tree/s2.rs::S2PrefixTreeCell
-spatial/prefix/tree/S2ShapeFactory	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::S2ShapeFactory
-spatial/prefix/tree/SingletonCellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::SingletonCellIterator
-spatial/prefix/tree/SpatialPrefixTree	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::SpatialPrefixTree
-spatial/prefix/tree/SpatialPrefixTreeFactory	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::make_spt
-spatial/prefix/tree/TreeCellIterator	ported	crates/lucene-util/src/spatial_extras/prefix_tree/mod.rs::TreeCellIterator
-spatial/query/SpatialArgs	ported	crates/lucene-util/src/spatial_extras/query.rs::SpatialArgs
-spatial/query/SpatialArgsParser	ported	crates/lucene-util/src/spatial_extras/query.rs::SpatialArgsParser
-spatial/query/SpatialOperation	ported	crates/lucene-util/src/spatial_extras/query.rs::SpatialOperation
-spatial/query/UnsupportedSpatialOperation	ported	crates/lucene-util/src/spatial_extras/query.rs::unsupported
+spatial/prefix/tree/Cell	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::Cell
+spatial/prefix/tree/CellCanPrune	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::sub_cells_size
+spatial/prefix/tree/CellIterator	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::CellIterator
+spatial/prefix/tree/DateRangePrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/date_range.rs::DateRangePrefixTree
+spatial/prefix/tree/FilterCellIterator	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::FilterCellIterator
+spatial/prefix/tree/GeohashPrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/geohash.rs::GeohashPrefixTree
+spatial/prefix/tree/LegacyCell	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/legacy.rs::LegacyCell
+spatial/prefix/tree/LegacyPrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/legacy.rs::LegacyGrid
+spatial/prefix/tree/NumberRangePrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/number_range.rs::NumberRangePrefixTree
+spatial/prefix/tree/PackedQuadPrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/packed_quad.rs::PackedQuadPrefixTree
+spatial/prefix/tree/QuadPrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/quad.rs::QuadPrefixTree
+spatial/prefix/tree/S2PrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/s2.rs::S2PrefixTree
+spatial/prefix/tree/S2PrefixTreeCell	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/s2.rs::S2PrefixTreeCell
+spatial/prefix/tree/S2ShapeFactory	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::S2ShapeFactory
+spatial/prefix/tree/SingletonCellIterator	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::SingletonCellIterator
+spatial/prefix/tree/SpatialPrefixTree	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::SpatialPrefixTree
+spatial/prefix/tree/SpatialPrefixTreeFactory	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::make_spt
+spatial/prefix/tree/TreeCellIterator	ported	crates/lucene-spatial4j/src/spatial_extras/prefix_tree/mod.rs::TreeCellIterator
+spatial/query/SpatialArgs	ported	crates/lucene-spatial4j/src/spatial_extras/query.rs::SpatialArgs
+spatial/query/SpatialArgsParser	ported	crates/lucene-spatial4j/src/spatial_extras/query.rs::SpatialArgsParser
+spatial/query/SpatialOperation	ported	crates/lucene-spatial4j/src/spatial_extras/query.rs::SpatialOperation
+spatial/query/UnsupportedSpatialOperation	ported	crates/lucene-spatial4j/src/spatial_extras/query.rs::unsupported
 spatial/serialized/SerializedDVStrategy	ported	crates/lucene-spatial-extras/src/serialized.rs::SerializedDVStrategy
-spatial/spatial4j/Geo3dBinaryCodec	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dBinaryCodec
-spatial/spatial4j/Geo3dCircleShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- one struct with a kind stands for the four shape classes (new_circle)
-spatial/spatial4j/Geo3dDistanceCalculator	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dDistanceCalculator
-spatial/spatial4j/Geo3dPointShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- (new_point)
-spatial/spatial4j/Geo3dRectangleShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape -- (new_rectangle)
-spatial/spatial4j/Geo3dShape	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShape
-spatial/spatial4j/Geo3dShapeFactory	ported	crates/lucene-util/src/spatial_extras/spatial4j.rs::Geo3dShapeFactory
-spatial/spatial4j/Geo3dSpatialContextFactory	ported	crates/lucene-util/src/spatial4j/context.rs::SpatialContextFactory -- its geo3d() kind (FactoryKind::Geo3d)
+spatial/spatial4j/Geo3dBinaryCodec	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dBinaryCodec
+spatial/spatial4j/Geo3dCircleShape	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dShape -- one struct with a kind stands for the four shape classes (new_circle)
+spatial/spatial4j/Geo3dDistanceCalculator	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dDistanceCalculator
+spatial/spatial4j/Geo3dPointShape	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dShape -- (new_point)
+spatial/spatial4j/Geo3dRectangleShape	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dShape -- (new_rectangle)
+spatial/spatial4j/Geo3dShape	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dShape
+spatial/spatial4j/Geo3dShapeFactory	ported	crates/lucene-spatial4j/src/spatial_extras/spatial4j.rs::Geo3dShapeFactory
+spatial/spatial4j/Geo3dSpatialContextFactory	ported	crates/lucene-spatial4j/src/spatial4j/context.rs::SpatialContextFactory -- its geo3d() kind (FactoryKind::Geo3d)
 spatial/util/CachingDoubleValueSource	ported	crates/lucene-spatial-extras/src/util.rs::CachingDoubleValueSource
 spatial/util/DistanceToShapeValueSource	ported	crates/lucene-spatial-extras/src/util.rs::DistanceToShapeValueSource
 spatial/util/ReciprocalDoubleValuesSource	ported	crates/lucene-spatial-extras/src/util.rs::ReciprocalDoubleValuesSource

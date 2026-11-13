@@ -38,8 +38,8 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * search is not a bounded time.
  */
 public final class NativeBridge {
-    /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 134;
+    /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
+    public static final int EXPECTED_ABI_VERSION = 177;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -48,8 +48,14 @@ public final class NativeBridge {
     public static final int BUFFER_TOO_SMALL = 8;
     public static final int PANIC = 9;
     public static final int INVALID_ARGUMENT = 10;
+    /** The request outgrew the memory it was granted, or the node is over its off-heap bound. */
+    public static final int MEMORY_LIMIT = 12;
+    /** The request was cancelled while the native call ran ({@link #memoryScopeCancel}). */
+    public static final int CANCELLED = 13;
+    /** An aggregation made more buckets than the request allows; the last error is the count. */
+    public static final int TOO_MANY_BUCKETS = 14;
 
-    /** Query blob tags ({@code decode_query} in {@code jvm_reader.rs}). */
+    /** Query blob tags ({@code decode_query} in {@code query_blob.rs}). */
     public static final byte QUERY_TERM = 0;
     public static final byte QUERY_BOOLEAN = 1;
     public static final byte QUERY_TREE = 2;
@@ -128,6 +134,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle PARENT_CACHE_STATS = bind("ffi_jvm_parent_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle KNN_RECALL_STATS = bind("ffi_knn_recall_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle DOC_FREQ = bind(
             "ffi_jvm_reader_doc_freq",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -176,6 +183,18 @@ public final class NativeBridge {
         static final MethodHandle AGGREGATE_TREE = bind(
             "ffi_jvm_reader_aggregate_tree_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle AGGREGATE_TREE_CACHED = bind(
+            "ffi_jvm_reader_aggregate_tree_cached_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle AGG_CACHE_SET_BUDGET = bind(
+            "ffi_agg_segment_cache_set_budget",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle AGG_CACHE_STATS = bind(
+            "ffi_agg_segment_cache_stats",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle SEARCH_HYBRID = bind(
             "ffi_jvm_reader_search_hybrid_alloc",
@@ -229,6 +248,10 @@ public final class NativeBridge {
             "ffi_jvm_reader_stored_source_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
+        static final MethodHandle STORED_VALUE = bind(
+            "ffi_jvm_reader_stored_value_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
         static final MethodHandle PREFETCH_DOCUMENTS = bind(
             "ffi_jvm_reader_prefetch_documents",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
@@ -249,10 +272,6 @@ public final class NativeBridge {
         );
         static final MethodHandle STORE_UNBIND = bind("ffi_store_unbind", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
         static final MethodHandle STORE_IS_FIPS = bind("ffi_store_is_fips", FunctionDescriptor.of(JAVA_INT));
-        static final MethodHandle STORE_SET_LAZY_DECRYPT = bind(
-            "ffi_store_set_lazy_decrypt",
-            FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG)
-        );
         static final MethodHandle STORE_LAZY_DECRYPT_ACTIVE = bind("ffi_store_lazy_decrypt_active", FunctionDescriptor.of(JAVA_INT));
         static final MethodHandle STORE_BIND_PAGE_CACHE = bind(
             "ffi_store_bind_page_cache",
@@ -267,7 +286,26 @@ public final class NativeBridge {
             "ffi_store_set_page_cache_budget",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
         );
+        static final MethodHandle STORE_SET_READ_ADVICE = bind(
+            "ffi_store_set_read_advice",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
+        );
         static final MethodHandle STORE_PAGE_CACHE_RESIDENT = bind("ffi_store_page_cache_resident_bytes", FunctionDescriptor.of(JAVA_LONG));
+        static final MethodHandle STORE_PAGE_CACHE_STATS = bind("ffi_store_page_cache_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle HIGHLIGHT_UNIFIED = bind(
+            "ffi_jvm_highlight_unified_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle HIGHLIGHT_PLAIN = bind(
+            "ffi_jvm_highlight_plain_alloc",
+            FunctionDescriptor.of(
+                JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS
+            )
+        );
+        static final MethodHandle HIGHLIGHT_FVH = bind(
+            "ffi_jvm_highlight_fvh_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ANALYZE = bind(
             "ffi_jvm_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
@@ -375,6 +413,10 @@ public final class NativeBridge {
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
         );
+        static final MethodHandle WRITER_UPGRADE = bind(
+            "ffi_engine_writer_upgrade",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, ADDRESS, ADDRESS)
+        );
         static final MethodHandle WRITER_SET_PLUGGABLE_MERGE_POLICY = bind(
             "ffi_engine_writer_set_pluggable_merge_policy",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG)
@@ -385,6 +427,23 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
         );
         static final MethodHandle SET_MERGE_UPCALL = bind("ffi_engine_set_merge_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle MEMORY_SET_UPCALL = bind("ffi_memory_set_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle MEMORY_SCOPE_BEGIN = bind(
+            "ffi_memory_scope_begin",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle MEMORY_SCOPE_END = bind("ffi_memory_scope_end", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+        static final MethodHandle MEMORY_SCOPE_CANCEL = bind("ffi_memory_scope_cancel", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle MEMORY_SCOPE_SET_DEADLINE = bind(
+            "ffi_memory_scope_set_deadline",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle MEMORY_SET_PROCESS_LIMIT = bind(
+            "ffi_memory_set_process_limit",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle MEMORY_STATS = bind("ffi_memory_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+        static final MethodHandle QUERY_CACHE_SET_BUDGET = bind("ffi_query_cache_set_budget", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle WRITER_MERGE_STATE = bind(
             "ffi_engine_writer_merge_state",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, ADDRESS)
@@ -424,6 +483,19 @@ public final class NativeBridge {
             "ffi_ml_hf_analyze_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
+        static final MethodHandle SPARSE_CLUSTERER_OPEN = bind(
+            "ffi_sparse_clusterer_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_ADD = bind(
+            "ffi_sparse_clusterer_add",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
+        );
+        static final MethodHandle SPARSE_CLUSTERER_CLOSE = bind("ffi_sparse_clusterer_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle SPARSE_POSTINGS_WRITE = bind(
+            "ffi_sparse_postings_write_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ML_SPARSE_ENCODING_OPEN = bind(
             "ffi_ml_sparse_encoding_open",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
@@ -441,6 +513,19 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ML_MASTER_KEY = bind("ffi_ml_master_key_alloc", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle ML_CREDENTIAL_ENCRYPT = bind(
+            "ffi_ml_credential_encrypt_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_REMOTE_OPEN = bind(
+            "ffi_ml_remote_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_REMOTE_CALL = bind(
+            "ffi_ml_remote_call_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ML_TORCH_INIT = bind(
             "ffi_ml_torch_init",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT)
@@ -782,6 +867,24 @@ public final class NativeBridge {
             MemorySegment out = s.alloc(2 * Long.BYTES);
             int rc = (int) H.PARENT_CACHE_STATS.invokeExact(out);
             return rc == OK ? new long[] { out.get(JAVA_LONG, 0), out.get(JAVA_LONG, Long.BYTES) } : new long[] { -1, -1 };
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * What each recall-targeted k-NN tuner on this node measured, as a JSON object keyed by {@code
+     * <index uuid>/<shard>/<field>}; null when the native call fails.
+     */
+    public static String knnRecallStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.KNN_RECALL_STATS.invokeExact(ptrOf(slot), lenOf(slot));
+            if (rc != OK) {
+                return null;
+            }
+            byte[] json = take(slot);
+            return json == null ? "{}" : new String(json, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -1364,6 +1467,15 @@ public final class NativeBridge {
      * {@code jvm_aggs.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
      */
     public static int aggregateTree(long handle, byte[] query, byte[] tree, byte[][] out) {
+        return aggregateTree(handle, query, tree, false, out);
+    }
+
+    /**
+     * {@link #aggregateTree(long, byte[], byte[], byte[][])}; with {@code cached}, each committed
+     * segment's collected part is read from and kept in the node's aggregation segment cache
+     * ({@link #aggCacheSetBudget}): the same results.
+     */
+    public static int aggregateTree(long handle, byte[] query, byte[] tree, boolean cached, byte[][] out) {
         if (query == null) {
             return nullArgument("query");
         }
@@ -1375,7 +1487,8 @@ public final class NativeBridge {
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment result = ownedSlot(s);
-            int rc = (int) H.AGGREGATE_TREE.invokeExact(
+            MethodHandle call = cached ? H.AGGREGATE_TREE_CACHED : H.AGGREGATE_TREE;
+            int rc = (int) call.invokeExact(
                 handle,
                 s.bytes(query),
                 (long) query.length,
@@ -1577,6 +1690,30 @@ public final class NativeBridge {
     }
 
     /**
+     * The value of the field at position {@code ordinal} of segment {@code segment}'s document {@code
+     * doc}, as raw bytes (UTF-8 for a string), lent to {@code use}: the value a {@code DEFERRED} field
+     * of {@link #document} leaves out.
+     */
+    public static int storedValue(long handle, int segment, int doc, int ordinal, Borrowed use) throws IOException {
+        if (use == null) {
+            return nullArgument("use");
+        }
+        MemorySegment bytes;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.STORED_VALUE.invokeExact(handle, segment, doc, ordinal, ptrOf(result), lenOf(result));
+            if (rc != OK) {
+                return rc;
+            }
+            bytes = owned(result);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+        lend(bytes, use);
+        return OK;
+    }
+
+    /**
      * {@code StoredFields.prefetch} for the documents {@code docs} (segment-local) of segment {@code
      * segment}: their stored-fields chunks fetched together where the segment is read by range, so
      * the fetch phase's reads one at a time find them local. Nothing to do for files on local disk.
@@ -1652,18 +1789,9 @@ public final class NativeBridge {
     }
 
     /**
-     * Turns demand decryption of encrypted shards on or off for directories the engine opens from now
-     * on, keeping at most {@code budgetBytes} of decrypted pages resident (0 keeps the current budget).
+     * Whether the engine reads encrypted shards through the page cache, decrypting each chunk once as
+     * it is read in ({@code userfaultfd} is available); otherwise it decrypts each file whole.
      */
-    public static int storeSetLazyDecrypt(boolean enabled, long budgetBytes) {
-        try {
-            return (int) H.STORE_SET_LAZY_DECRYPT.invokeExact(enabled ? 1 : 0, budgetBytes);
-        } catch (Throwable t) {
-            throw rethrow(t);
-        }
-    }
-
-    /** Whether encrypted shards the engine opens now are demand-decrypted (on, and supported here). */
     public static boolean storeLazyDecryptActive() {
         try {
             return (int) H.STORE_LAZY_DECRYPT_ACTIVE.invokeExact() == 1;
@@ -1721,6 +1849,77 @@ public final class NativeBridge {
         }
     }
 
+    /**
+     * Sets the bytes the aggregation segment cache keeps parts in across the node; 0 turns it off
+     * and drops every part.
+     */
+    public static int aggCacheSetBudget(long budgetBytes) {
+        try {
+            return (int) H.AGG_CACHE_SET_BUDGET.invokeExact(budgetBytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Sets how mapped shard files are read, by extension: {@code spec} is comma-separated
+     * {@code ext:advice} entries ({@code normal}, {@code random}, {@code sequential},
+     * {@code willneed}), {@code *} for every other extension, empty for the defaults.
+     */
+    public static int storeSetReadAdvice(String spec, boolean warmRandom) {
+        byte[] utf8 = (spec == null ? "" : spec).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            return (int) H.STORE_SET_READ_ADVICE.invokeExact(s.bytes(utf8), (long) utf8.length, warmRandom ? 1 : 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The counters {@link #aggCacheStats} reads. */
+    public static final int AGG_CACHE_STATS = 6;
+
+    /**
+     * The aggregation segment cache's counters into {@code out} ({@link #AGG_CACHE_STATS} slots):
+     * hits, misses, evictions, entries, bytes, budget.
+     */
+    public static int aggCacheStats(long[] out) {
+        if (out == null || out.length < AGG_CACHE_STATS) {
+            return fail(INVALID_ARGUMENT, "out holds fewer than " + AGG_CACHE_STATS + " slots");
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment buf = a.allocate(JAVA_LONG, AGG_CACHE_STATS);
+            int rc = (int) H.AGG_CACHE_STATS.invokeExact(buf, (long) AGG_CACHE_STATS);
+            if (rc == OK) {
+                MemorySegment.copy(buf, JAVA_LONG, 0, out, 0, AGG_CACHE_STATS);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** How many values {@link #storePageCacheStats} returns. */
+    public static final int PAGE_CACHE_STATS = 8;
+
+    /**
+     * The page cache's numbers: {@code [budget, resident bytes, bytes of files read whole at open,
+     * faults, pages read again after eviction, evictions, pages that could not be read, nanoseconds
+     * serving faults]}; every value -1 if the call fails.
+     */
+    public static long[] storePageCacheStats() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment out = s.alloc(PAGE_CACHE_STATS * Long.BYTES);
+            int rc = (int) H.STORE_PAGE_CACHE_STATS.invokeExact(out);
+            long[] values = new long[PAGE_CACHE_STATS];
+            for (int i = 0; i < PAGE_CACHE_STATS; i++) {
+                values[i] = rc == OK ? out.get(JAVA_LONG, (long) i * Long.BYTES) : -1;
+            }
+            return values;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Bytes the page cache holds resident now, across every bound shard. */
     public static long storePageCacheResidentBytes() {
         try {
@@ -1744,8 +1943,171 @@ public final class NativeBridge {
     }
 
     /**
+     * One hit's {@code plain} fragments ({@code jvm_highlight_plain.rs}): {@code values} highlighted
+     * as {@code request} asks, and with no fragment, the end of {@code summary}'s {@code
+     * noMatchSize} summary ({@code summary} null for none); {@code waitForPos} is the span
+     * fragmenter's state the field's previous call returned (-1 at first).
+     */
+    public static int highlightPlain(
+        byte[] request,
+        java.util.List<String> values,
+        int noMatchSize,
+        String summary,
+        int waitForPos,
+        byte[][] out
+    ) {
+        if (request == null || values == null) {
+            return nullArgument(request == null ? "request" : "values");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            long total = 0;
+            for (String v : values) {
+                total += v.length();
+            }
+            MemorySegment chars = s.alloc(total * Character.BYTES);
+            MemorySegment lengths = s.alloc((long) values.size() * Integer.BYTES);
+            long at = 0;
+            for (int i = 0; i < values.size(); i++) {
+                String v = values.get(i);
+                MemorySegment.copy(v.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, at * Character.BYTES, v.length());
+                lengths.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, i, v.length());
+                at += v.length();
+            }
+            MemorySegment summaryChars = MemorySegment.NULL;
+            long summaryLen = -1;
+            if (summary != null) {
+                summaryChars = s.alloc((long) summary.length() * Character.BYTES);
+                MemorySegment.copy(summary.toCharArray(), 0, summaryChars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, 0, summary.length());
+                summaryLen = summary.length();
+            }
+            int rc = (int) H.HIGHLIGHT_PLAIN.invokeExact(
+                s.bytes(request),
+                (long) request.length,
+                chars,
+                total,
+                lengths,
+                (long) values.size(),
+                noMatchSize,
+                summaryChars,
+                summaryLen,
+                waitForPos,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the fragments");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's {@code fvh} fragments ({@code jvm_highlight_fvh.rs}): segment {@code segment}'s
+     * document {@code doc} of {@code handle}'s reader, whose values are {@code values}, highlighted
+     * as the field's {@code request} asks; the result in {@code out[0]}.
+     */
+    public static int highlightFvh(long handle, byte[] request, int segment, int doc, java.util.List<String> values, byte[][] out) {
+        if (request == null || values == null) {
+            return nullArgument(request == null ? "request" : "values");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            long total = 0;
+            for (String v : values) {
+                total += v.length();
+            }
+            MemorySegment chars = s.alloc(total * Character.BYTES);
+            MemorySegment lengths = s.alloc((long) values.size() * Integer.BYTES);
+            long at = 0;
+            for (int i = 0; i < values.size(); i++) {
+                String v = values.get(i);
+                MemorySegment.copy(v.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, at * Character.BYTES, v.length());
+                lengths.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, i, v.length());
+                at += v.length();
+            }
+            int rc = (int) H.HIGHLIGHT_FVH.invokeExact(
+                handle,
+                s.bytes(request),
+                (long) request.length,
+                segment,
+                doc,
+                chars,
+                total,
+                lengths,
+                (long) values.size(),
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the fragments");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One hit's unified-highlighter snippets ({@code jvm_highlight.rs}): segment {@code segment}'s
+     * document {@code doc} of {@code handle}'s reader, whose loaded value is {@code content},
+     * highlighted as the field's {@code request} asks; the result in {@code out[0]}.
+     */
+    public static int highlightUnified(long handle, byte[] request, int segment, int doc, String content, byte[][] out) {
+        if (request == null || content == null) {
+            return nullArgument(request == null ? "request" : "content");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int n = content.length();
+            MemorySegment chars = s.alloc((long) n * Character.BYTES);
+            MemorySegment.copy(content.toCharArray(), 0, chars, java.lang.foreign.ValueLayout.JAVA_CHAR_UNALIGNED, 0, n);
+            int rc = (int) H.HIGHLIGHT_UNIFIED.invokeExact(
+                handle,
+                s.bytes(request),
+                (long) request.length,
+                segment,
+                doc,
+                chars,
+                (long) n,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the snippets");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
      * {@code text} analyzed as field {@code field} by the analyzer {@code spec} describes ({@code
-     * jvm_analysis.rs}; {@link AnalyzerSpec} writes the spec), its tokens in {@code out[0]}.
+     * analysis.rs}; {@link AnalyzerSpec} writes the spec), its tokens in {@code out[0]}.
      */
     public static int analyze(byte[] spec, byte[] field, byte[] text, byte[][] out) {
         if (spec == null || field == null || text == null) {
@@ -1781,7 +2143,7 @@ public final class NativeBridge {
 
     /**
      * Whether the native runtime runs the Painless score script {@code spec} describes (the node's
-     * fields after its sub-query, {@code jvm_painless_score.rs}) exactly as Painless would, decided
+     * fields after its sub-query, {@code painless_score.rs}) exactly as Painless would, decided
      * before anything runs: {@code out[0]} empty when it does, else the reason as UTF-8.
      */
     public static int painlessCheck(byte[] spec, byte[][] out) {
@@ -1841,7 +2203,7 @@ public final class NativeBridge {
     public static final int STORED_FIELDS_BEST_COMPRESSION = 1;
     public static final int STORED_FIELDS_ZSTD = 2;
     public static final int STORED_FIELDS_ZSTD_NO_DICT = 3;
-    /** The Rust engine's paged zstd stored fields ({@code index.lucene_rust.stored_fields.paged_zstd}). */
+    /** The Rust engine's paged zstd stored fields ({@code index.codec.stored_fields.page_aligned}). */
     public static final int STORED_FIELDS_ZSTD_PAGED = 4;
 
     // ---- ml-commons local models (ml.rs). ----
@@ -1993,6 +2355,73 @@ public final class NativeBridge {
     }
 
     /**
+     * Opens a clusterer for {@code sparse_vector} field {@code number} ({@code name}) of a segment of
+     * {@code maxDoc} documents, its attributes encoded as a little-endian {@code u32} count then per
+     * entry a {@code u32} length and UTF-8 key, a {@code u32} length and UTF-8 value; its handle goes
+     * to {@code outHandle[0]}.
+     */
+    public static int sparseClustererOpen(byte[] name, int number, byte[] attributes, int maxDoc, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.SPARSE_CLUSTERER_OPEN.invokeExact(
+                s.bytes(name),
+                (long) name.length,
+                number,
+                s.bytes(attributes),
+                (long) attributes.length,
+                maxDoc,
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Adds {@code doc}'s forward-index value, {@code length} bytes of {@code bytes} from {@code offset}. */
+    public static int sparseClustererAdd(long handle, int doc, byte[] bytes, int offset, int length) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment value = s.alloc(length);
+            MemorySegment.copy(bytes, offset, value, JAVA_BYTE, 0, length);
+            return (int) H.SPARSE_CLUSTERER_ADD.invokeExact(handle, doc, value, (long) length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Releases a clusterer {@link #sparsePostingsWrite} did not take. */
+    public static int sparseClustererClose(long handle) {
+        try {
+            return (int) H.SPARSE_CLUSTERER_CLOSE.invokeExact(handle);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Clusters the fields of {@code handles} (in field-name order, each released whatever the
+     * outcome) and encodes the segment's {@code .sit} and {@code .sip}: the {@code .sit} length as
+     * a little-endian {@code u64}, then {@code .sit}, then {@code .sip}. {@code null} on failure,
+     * with the reason in {@link #lastError}.
+     */
+    public static byte[] sparsePostingsWrite(long[] handles, byte[] segmentId) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            MemorySegment hs = handles.length == 0 ? s.alloc(Long.BYTES) : s.longs(handles);
+            int rc = (int) H.SPARSE_POSTINGS_WRITE.invokeExact(hs, (long) handles.length, s.bytes(segmentId), ptrOf(slot), lenOf(slot));
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
      * Opens the ONNX sparse encoding model ({@code sparse} true) or cross-encoder at {@code modelPath}
      * with the {@code tokenizer.json} bytes; its handle goes to {@code outHandle[0]}.
      */
@@ -2137,6 +2566,72 @@ public final class NativeBridge {
         }
     }
 
+    /** A new ml-commons master key (base64), or {@code null} with the reason in {@link #lastError}. */
+    public static String mlMasterKey() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_MASTER_KEY.invokeExact(ptrOf(slot), lenOf(slot));
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Credential value {@code plain} encrypted under the base64 master key {@code key}, as
+     * ml-commons stores it; {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static String mlCredentialEncrypt(String key, String plain) {
+        byte[] k = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] p = plain.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_CREDENTIAL_ENCRYPT.invokeExact(s.bytes(k), (long) k.length, s.bytes(p), (long) p.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens connector document {@code connectorJson} (credentials as stored, decrypted under the
+     * base64 master key {@code key}) as a remote model; its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlRemoteOpen(String connectorJson, String key, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] d = connectorJson.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] k = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_REMOTE_OPEN.invokeExact(s.bytes(d), (long) d.length, s.bytes(k), (long) k.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One step of a call to remote model {@code handle}: the JSON request and answer that
+     * {@code ml_remote.rs} documents. {@code null} on failure, with the status in {@code status[0]}
+     * and the reason in {@link #lastError}.
+     */
+    public static String mlRemoteCall(long handle, String request, int[] status) {
+        byte[] r = request.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_REMOTE_CALL.invokeExact(handle, s.bytes(r), (long) r.length, ptrOf(slot), lenOf(slot));
+            status[0] = rc;
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** Releases a handle from any of the {@code ml*Open} calls. */
     public static int mlModelClose(long handle) {
         try {
@@ -2207,8 +2702,8 @@ public final class NativeBridge {
      * test-only panic operation; {@code sparse} writes the segments of an {@code index.sparse} index,
      * with neural-search's codec and clustered postings; {@code liveSearch} keeps what a search of the
      * buffered documents reads ({@link #liveViewOpen}); {@code adaptiveDocValues} writes doc values in
-     * the {@code RustAdaptive} format; {@code zstdTerms} writes every field's terms in the {@code
-     * RustZstd104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
+     * the {@code Adaptive90} format; {@code zstdTerms} writes every field's terms in the {@code
+     * ZstdTerms104} postings format, with zstd term blocks; {@code mergeLz4Hc} has merges write {@code BEST_SPEED} stored
      * fields with the high-compression LZ4 match finder (stock-readable); with {@code partitioned} every segment holds one partition
      * (the value of the index's partition field) and records it, and merges never mix partitions;
      * {@code knn} writes a k-NN index's segments under the k-NN codec's name, listing the fields
@@ -2361,7 +2856,7 @@ public final class NativeBridge {
     }
 
     /**
-     * Registers an analyzer for indexing ({@code jvm_analysis::register}: its spec and the
+     * Registers an analyzer for indexing ({@code analysis::register}: its spec and the
      * similarity's name), its id in {@code outId[0]}.
      */
     public static int analysisRegister(byte[] spec, String similarity, int[] outId) {
@@ -2567,10 +3062,15 @@ public final class NativeBridge {
         }
     }
 
-    /** Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by merges. */
-    public static int writerSetRetention(long handle, boolean enabled, long minRetainedSeqNo) {
+    /**
+     * Soft-deleted documents with {@code _seq_no} below {@code minRetainedSeqNo} are dropped by
+     * merges; with {@code seqNoSentinels}, merges also write {@code UNASSIGNED_SEQ_NO} and {@code
+     * UNASSIGNED_PRIMARY_TERM} for every document below it.
+     */
+    public static int writerSetRetention(long handle, boolean enabled, boolean seqNoSentinels, long minRetainedSeqNo) {
         try {
-            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, (byte) (enabled ? 1 : 0), minRetainedSeqNo);
+            byte flags = (byte) ((enabled ? 1 : 0) | (seqNoSentinels ? 2 : 0));
+            return (int) H.WRITER_SET_RETENTION.invokeExact(handle, flags, minRetainedSeqNo);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -2661,6 +3161,29 @@ public final class NativeBridge {
                 s.bytes(names),
                 (long) names.length
             );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code ffi_engine_writer_upgrade}: rewrites every committed segment an older Lucene than
+     * {@code major.minor} wrote (an older major only, when {@code onlyAncient}), each on its own.
+     * {@code out[0]} is the newest commit's generation, {@code out[1]} the segments rewritten.
+     */
+    public static int writerUpgrade(long handle, int major, int minor, boolean onlyAncient, long[] out) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment generation = s.alloc(Long.BYTES);
+            MemorySegment upgraded = s.alloc(Integer.BYTES);
+            int rc = (int) H.WRITER_UPGRADE.invokeExact(handle, major, minor, (byte) (onlyAncient ? 1 : 0), generation, upgraded);
+            if (rc == OK) {
+                if (out == null || out.length < 2) {
+                    return fail(INVALID_ARGUMENT, "out holds fewer than two slots");
+                }
+                out[0] = generation.get(JAVA_LONG, 0);
+                out[1] = upgraded.get(JAVA_INT, 0);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -2766,6 +3289,112 @@ public final class NativeBridge {
         }
     }
 
+    // ---- Memory accounting (memory.rs) ----------------------------------------------------
+
+    /** Registers the upcall a request's scope asks for more memory through ({@code MemoryUpcall}). */
+    public static int memorySetUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.MEMORY_SET_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens a memory scope on this thread for the request {@code token}: what the next native calls
+     * on it allocate is charged to it, at most {@code hardLimit} bytes (0: only the grants bound it).
+     */
+    public static int memoryScopeBegin(long token, long hardLimit, byte[] label) {
+        try (Scratch s = Scratch.open()) {
+            return (int) H.MEMORY_SCOPE_BEGIN.invokeExact(token, hardLimit, s.bytes(label), (long) label.length);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Closes this thread's innermost memory scope: {@code out} gets the bytes granted, the most held,
+     * what was still held and 1 when its deadline passed while it collected, as far as it reaches.
+     */
+    public static int memoryScopeEnd(long[] out) {
+        try (Scratch s = Scratch.open()) {
+            int n = out == null ? 0 : out.length;
+            MemorySegment values = s.alloc(Math.max(1, n) * (long) Long.BYTES);
+            int rc = (int) H.MEMORY_SCOPE_END.invokeExact(values, (long) n);
+            if (rc == OK) {
+                for (int i = 0; i < n; i++) {
+                    out[i] = values.getAtIndex(JAVA_LONG, i);
+                }
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Stops the request {@code token} at its next checkpoint, from any thread. */
+    public static int memoryScopeCancel(long token) {
+        try {
+            return (int) H.MEMORY_SCOPE_CANCEL.invokeExact(token);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Gives the request {@code token} a deadline {@code nanos} from now (0 or less: passed): once it
+     * passes, its native calls collect no more and answer with what they collected.
+     */
+    public static int memoryScopeSetDeadline(long token, long nanos) {
+        try {
+            return (int) H.MEMORY_SCOPE_SET_DEADLINE.invokeExact(token, nanos);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The bytes every segment's native query cache may hold together. */
+    public static int queryCacheSetBudget(long bytes) {
+        try {
+            return (int) H.QUERY_CACHE_SET_BUDGET.invokeExact(bytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** The node's bound on what the library holds, in bytes; 0 removes it. */
+    public static int memorySetProcessLimit(long bytes) {
+        try {
+            return (int) H.MEMORY_SET_PROCESS_LIMIT.invokeExact(bytes);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The accounting's counters into {@code out}: bytes held, the most held, the bound, requests
+     * stopped by their grant, requests stopped by the bound, requests cancelled; then the native
+     * query caches' bytes, budget and evictions, decoded sort columns' bytes, the global ordinals'
+     * bytes, and requests that stopped collecting at their deadline.
+     */
+    public static int memoryStats(long[] out) {
+        if (out == null) {
+            return nullArgument("out");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment values = s.alloc(Math.max(1, out.length) * (long) Long.BYTES);
+            int rc = (int) H.MEMORY_STATS.invokeExact(values, (long) out.length);
+            if (rc == OK) {
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = values.getAtIndex(JAVA_LONG, i);
+                }
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code engine_writer.rs}). */
     public static final int MERGE_EVENT_BEFORE = 0;
     public static final int MERGE_EVENT_AFTER = 1;
@@ -2823,20 +3452,20 @@ public final class NativeBridge {
     // ---- Live search of the writer's buffers (live.rs). ----
 
     /**
-     * Opens a view of the documents buffered in writer {@code writer} that a reader of commit
-     * {@code commitGeneration} lacks: its handle into {@code outView[0]}, its blob ({@code published:
+     * Opens a view of the documents buffered in writer {@code writer} that a reader of the segment
+     * list at version {@code readerVersion} (a commit's or an NRT snapshot's) lacks: its handle into {@code outView[0]}, its blob ({@code published:
      * i64}, {@code count: i32}, then per buffer {@code maxDoc: i32}, {@code deleted: i32} and that many
      * deleted documents, little-endian) into {@code outBlob[0]}. {@link #INVALID_ARGUMENT} when the
-     * buffers cannot be read for that commit; the caller then searches the reader alone.
+     * buffers cannot be read for that list; the caller then searches the reader alone.
      */
-    public static int liveViewOpen(long writer, long commitGeneration, long[] outView, byte[][] outBlob) {
+    public static int liveViewOpen(long writer, long readerVersion, long[] outView, byte[][] outBlob) {
         if (outView == null || outView.length < 1 || outBlob == null || outBlob.length < 1) {
             return fail(INVALID_ARGUMENT, "outView and outBlob need a slot each");
         }
         try (Scratch s = Scratch.open()) {
             MemorySegment view = s.alloc(Long.BYTES);
             MemorySegment blob = ownedSlot(s);
-            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, commitGeneration, view, ptrOf(blob), lenOf(blob));
+            int rc = (int) H.LIVE_VIEW_OPEN.invokeExact(writer, readerVersion, view, ptrOf(blob), lenOf(blob));
             if (rc == OK) {
                 long id = view.get(JAVA_LONG, 0);
                 byte[] bytes = take(blob);
@@ -2969,10 +3598,10 @@ public final class NativeBridge {
         }
     }
 
-    /** Lets go of the buffers a reader of commit {@code generation} already has, once no view reads them. */
-    public static int writerReleaseLive(long writer, long generation) {
+    /** Lets go of the buffers a reader of the segment list at {@code version} already has, once no view reads them. */
+    public static int writerReleaseLive(long writer, long version) {
         try {
-            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, generation);
+            return (int) H.WRITER_RELEASE_LIVE.invokeExact(writer, version);
         } catch (Throwable t) {
             throw rethrow(t);
         }
@@ -3114,7 +3743,7 @@ public final class NativeBridge {
         }
     }
 
-    // ---- RustZstd104 terms dictionaries (zstd_terms.rs). ----
+    // ---- ZstdTerms104 terms dictionaries (zstd_terms.rs). ----
 
     /** Prepares a field's zstd term-block dictionary; its handle into {@code outHandle[0]}. */
     public static int zstdTermsDictionaryOpen(byte[] dictionary, long[] outHandle) {

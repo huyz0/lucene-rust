@@ -838,8 +838,17 @@ public final class NativeAggregationTree {
      * {@code global} over every document (one pass), in the request's order within each.
      */
     public record Tree(List<Node> main, List<Node> global, byte[] globalQuery) {
-        /** The tree blob ({@code decode_tree} in {@code jvm_aggs.rs}). */
+        /** The tree blob ({@code decode_tree} in {@code jvm_aggs.rs}), without a bucket limit. */
         byte[] blob(int[][] slices) {
+            return blob(slices, -1);
+        }
+
+        /**
+         * The tree blob with {@code bucketLimit}, the buckets the request may still make ({@link
+         * NativeAggregations#bucketLimit}; negative for none): past it the native pass stops before
+         * building its buckets.
+         */
+        byte[] blob(int[][] slices, int bucketLimit) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(main.size());
             for (Node n : main) {
@@ -857,6 +866,9 @@ public final class NativeAggregationTree {
                 }
             }
             NativeAggregations.writeSlices(out, slices);
+            if (bucketLimit >= 0) {
+                NativeAggregations.writeInt(out, bucketLimit);
+            }
             return out.toByteArray();
         }
 

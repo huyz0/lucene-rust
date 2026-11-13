@@ -1,4 +1,4 @@
-//! The `RustAdaptive` doc-values format end to end at the codec layer: what
+//! The `Adaptive90` doc-values format end to end at the codec layer: what
 //! [`doc_values::write_fields_with_format`] writes under it reads back value
 //! for value through every reader path, a Lucene90 file never carries an
 //! adaptive value array, and the format falls back to Lucene90's encodings
@@ -285,9 +285,9 @@ fn lucene90_encodings_win_where_they_are_smaller() {
             Lucene90DocValuesFormat::default(),
             &[],
         );
-        // The same bytes as Lucene90 wrote, under a segment suffix 4 bytes
-        // longer.
-        assert_eq!(data.len(), ldata.len() + 4);
+        // The same bytes as Lucene90 wrote, under a segment suffix 2 bytes
+        // longer ("Adaptive90" against "Lucene90").
+        assert_eq!(data.len(), ldata.len() + 2);
         let parsed = parse(&meta, &data, format, &fis);
         let entry = parsed.numeric_entry(0).unwrap();
         assert!(entry.adaptive.is_none());
@@ -319,4 +319,119 @@ fn corrupt_adaptive_values_are_errors_not_panics() {
     )));
     assert!(NumericReader::new(&data, &entry).value(0).is_err());
     assert!(numeric_value(&data, &entry, 0).is_err());
+}
+
+#[test]
+fn per_document_value_arrays_carry_window_statistics() {
+    use lucene_codecs::adaptive_zones::ZONE_SIZE;
+    let n = 3 * ZONE_SIZE + 100;
+    let ts = timestamps(n, 11);
+    let single: Vec<Vec<i64>> = ts.iter().map(|&t| vec![t]).collect();
+    let multi: Vec<Vec<i64>> = ts.iter().map(|&t| vec![t, t + 1]).collect();
+    let sparse: Vec<(i32, i64)> = (0..n as i32)
+        .filter(|d| d % 3 != 0)
+        .map(|d| (d, ts[d as usize]))
+        .collect();
+    let every: Vec<(i32, i64)> = (0..n as i32).map(|d| (d, ts[d as usize])).collect();
+    let fields = [
+        DenseField::Numeric(0, &ts),
+        DenseField::SortedNumeric(1, &single),
+        DenseField::SortedNumeric(2, &multi),
+        DenseField::SparseNumeric(3, &sparse),
+        DenseField::SparseNumeric(4, &every),
+    ];
+    let format = Lucene90DocValuesFormat::rust_adaptive();
+    let (meta, data) = write(&fields, n as i32, format, &[]);
+    let parsed = parse(
+        &meta,
+        &data,
+        format,
+        &infos(
+            &[
+                DocValuesType::Numeric,
+                DocValuesType::SortedNumeric,
+                DocValuesType::SortedNumeric,
+                DocValuesType::Numeric,
+                DocValuesType::Numeric,
+            ],
+            false,
+        ),
+    );
+    let sorted = |f: i32| {
+        &parsed
+            .sorted_numeric
+            .iter()
+            .find(|e| e.field_number == f)
+            .unwrap()
+            .numeric
+    };
+    let entries = [
+        (parsed.numeric_entry(0).unwrap(), true),
+        (sorted(1), true),
+        (sorted(2), false),
+        (parsed.numeric_entry(3).unwrap(), false),
+        (parsed.numeric_entry(4).unwrap(), true),
+    ];
+    for (f, (entry, zoned)) in entries.into_iter().enumerate() {
+        assert_eq!(entry.adaptive.as_ref().unwrap().zones, zoned, "field {f}");
+        let r = NumericReader::new(&data, entry);
+        if !zoned {
+            assert_eq!(r.window_stats(0).unwrap(), None, "field {f}");
+            continue;
+        }
+        for (z, chunk) in ts.chunks(ZONE_SIZE).enumerate() {
+            let (stats, count) = r.window_stats((z * ZONE_SIZE) as i32).unwrap().unwrap();
+            assert_eq!(count, chunk.len());
+            assert_eq!(stats.min, *chunk.iter().min().unwrap());
+            assert_eq!(stats.max, *chunk.iter().max().unwrap());
+            assert_eq!(stats.sum, Some(chunk.iter().sum::<i64>()));
+        }
+        // Off a zone boundary, past the end, or negative: no statistics.
+        for start in [1, 100, ZONE_SIZE as i32 + 64, (4 * ZONE_SIZE) as i32, -1] {
+            assert_eq!(r.window_stats(start).unwrap(), None, "start {start}");
+        }
+        // The values read back as before.
+        let mut r = NumericReader::new(&data, entry);
+        for d in (0..n).step_by(97) {
+            assert_eq!(r.value(d as i32).unwrap(), Some(ts[d]));
+        }
+    }
+
+    // A Lucene90 entry, and an adaptive one too short for a zone, have none.
+    let (lmeta, ldata) = write(
+        &fields[..1],
+        n as i32,
+        Lucene90DocValuesFormat::default(),
+        &[],
+    );
+    let fis = infos(&[DocValuesType::Numeric], false);
+    let lparsed = parse(&lmeta, &ldata, Lucene90DocValuesFormat::default(), &fis);
+    let lentry = lparsed.numeric_entry(0).unwrap();
+    assert_eq!(
+        NumericReader::new(&ldata, lentry).window_stats(0).unwrap(),
+        None
+    );
+    let short = &ts[..ZONE_SIZE - 1];
+    let (smeta, sdata) = write(
+        &[DenseField::Numeric(0, short)],
+        short.len() as i32,
+        format,
+        &[],
+    );
+    let sparsed = parse(&smeta, &sdata, format, &fis);
+    let sentry = sparsed.numeric_entry(0).unwrap();
+    assert!(!sentry.adaptive.as_ref().unwrap().zones);
+    assert_eq!(
+        NumericReader::new(&sdata, sentry).window_stats(0).unwrap(),
+        None
+    );
+
+    // A zone section cut short is an error, not a panic: field 0 alone puts
+    // it last before the footer.
+    let (zmeta, zdata) = write(&fields[..1], n as i32, format, &[]);
+    let zparsed = parse(&zmeta, &zdata, format, &fis);
+    let zentry = zparsed.numeric_entry(0).unwrap();
+    assert!(zentry.adaptive.as_ref().unwrap().zones);
+    let cut = &zdata[..zdata.len() - 16 - 20];
+    assert!(NumericReader::new(cut, zentry).window_stats(0).is_err());
 }

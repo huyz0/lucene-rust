@@ -25,6 +25,7 @@
 
 pub mod hf_analyzer;
 pub mod onnx;
+pub mod remote;
 pub mod runtime;
 pub mod sparse_encoding;
 pub mod sparse_tokenize;

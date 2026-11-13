@@ -28,7 +28,7 @@ import java.nio.charset.StandardCharsets;
 /**
  * The geo half of {@link QueryEncoder}: the Lucene queries OpenSearch builds for {@code
  * geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and {@code geo_shape}, as
- * the nodes {@code decode_node} in {@code crates/lucene-ffi/src/jvm_reader.rs} reads.
+ * the nodes {@code decode_node} in {@code crates/lucene-engine/src/query_blob.rs} reads.
  *
  * <ul>
  *   <li>{@code LatLonPoint.newBoxQuery}: its two-dimension {@link PointRangeQuery} (an anonymous

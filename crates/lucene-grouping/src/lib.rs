@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `lucene-grouping` (Lucene 10.5.0, `org.apache.lucene.search.grouping`):
 //! grouping a search's hits by a value -- a keyword field's term
 //! ([`TermGroupSelector`]), a numeric range ([`LongRangeGroupSelector`],

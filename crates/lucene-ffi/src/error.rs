@@ -15,82 +15,67 @@
 use std::cell::RefCell;
 use std::sync::Once;
 
-/// Every exported function's return code: `0` is success, any other value a
-/// stable failure reason the caller can branch on without parsing the message.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FfiStatus {
-    Ok = 0,
-    NullPointer = 1,
-    InvalidUtf8 = 2,
-    InvalidHandle = 3,
-    Io = 4,
-    Decode = 5,
-    Search = 6,
-    IndexOutOfBounds = 7,
-    BufferTooSmall = 8,
-    Panic = 9,
-    InvalidArgument = 10,
-    /// A registry cannot issue any more handles of that kind -- see
-    /// [`crate::handle::MAX_SLOTS`]. Only reachable by leaking handles
-    /// (never closing them); the fix is on the caller's side, so this is a
-    /// distinct code rather than a generic failure.
-    HandleLimit = 11,
-}
-
-impl FfiStatus {
-    pub fn code(self) -> i32 {
-        self as i32
-    }
-
-    /// The message [`guard`] records when a failing body returned this
-    /// status without calling [`set_last_error`] itself -- see `guard`'s doc
-    /// comment for why no error path may leave the thread-local slot holding
-    /// an *older*, unrelated failure's text.
-    pub(crate) fn default_message(self) -> &'static str {
-        match self {
-            FfiStatus::Ok => "ok",
-            FfiStatus::NullPointer => {
-                "null pointer: a required pointer argument was null (no further detail recorded)"
-            }
-            FfiStatus::InvalidUtf8 => "invalid UTF-8 in a caller-supplied string argument",
-            FfiStatus::InvalidHandle => "unknown, already-closed, or wrong-kind handle",
-            FfiStatus::Io => "I/O error",
-            FfiStatus::Decode => "decode error",
-            FfiStatus::Search => "search failed",
-            FfiStatus::IndexOutOfBounds => "index out of bounds",
-            FfiStatus::BufferTooSmall => {
-                "caller-allocated buffer too small: call the matching `*_len` accessor first"
-            }
-            FfiStatus::Panic => "a Rust panic was caught at the FFI boundary",
-            FfiStatus::InvalidArgument => "invalid argument",
-            FfiStatus::HandleLimit => "handle registry exhausted: too many open handles",
-        }
-    }
-}
+/// Every exported function's return code ([`lucene_engine::Status`]): `0`
+/// is success, any other value a stable failure reason the caller can
+/// branch on without parsing the message.
+pub use lucene_engine::status::Status as FfiStatus;
+pub use lucene_engine::status::{last_error, set_last_error};
 
 thread_local! {
-    static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
     /// Set only while a [`guard`] call's `catch_unwind`-wrapped body is
     /// running on this thread -- lets [`install_panic_hook`]'s process-wide
-    /// hook write straight to this thread's own [`LAST_ERROR`] slot without
+    /// hook write straight to this thread's own the last-error slot slot without
     /// touching any other thread's panic (see `install_panic_hook`'s doc
     /// comment for why the hook, not `Any` downcasting, is this module's
     /// message-capture mechanism).
     static CAPTURING_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Set by [`set_last_error`], cleared by [`guard`] before each body runs.
-    /// Lets `guard` tell "this call recorded its own message" from "this call
-    /// failed but left the slot holding a *previous* call's message", so the
-    /// second case can be backfilled with [`FfiStatus::default_message`]
-    /// rather than reported as if it were this call's diagnosis.
-    static ERROR_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The shard paths the running [`guard`] call read through
+    /// ([`note_shard`]), and how deep in nested guard calls this thread is.
+    static CALL_SHARDS: RefCell<Vec<std::sync::Arc<str>>> = const { RefCell::new(Vec::new()) };
+    static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// [`lucene_store::read_failures::epoch`] when the outermost running
+    /// [`guard`] call started.
+    static CALL_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Notes that the running call reads the shard at `path`: if a page of a
+/// file under it fails to decode (an encrypted chunk that fails
+/// authentication) or cannot be read from disk while the call runs,
+/// [`guard`] fails the call with that error.
+///
+/// Noting a shard makes the call checked
+/// ([`lucene_store::read_failures::set_checked`]) until it ends: only then
+/// may a page that cannot be read be handed to it as zeros, since only then
+/// does the failure fail the call.
+pub(crate) fn note_shard(path: &std::sync::Arc<str>) {
+    lucene_store::read_failures::set_checked(true);
+    CALL_SHARDS.with(|c| {
+        let mut shards = c.borrow_mut();
+        if !shards.iter().any(|s| std::sync::Arc::ptr_eq(s, path)) {
+            shards.push(std::sync::Arc::clone(path));
+        }
+    });
+}
+
+/// A recorded read failure under one of the shards the running call read
+/// ([`lucene_store::read_failures`]); one atomic load while none is.
+fn shard_read_failure() -> Option<String> {
+    if lucene_store::read_failures::count() == 0 {
+        return None;
+    }
+    let since = CALL_EPOCH.with(|e| e.get());
+    CALL_SHARDS.with(|c| {
+        c.borrow()
+            .iter()
+            .find_map(|path| lucene_store::read_failures::failure_under(path, since))
+    })
 }
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
 
 /// Installs a process-wide panic hook (once) that -- for any thread
 /// currently inside a [`guard`] call -- writes the panic's formatted
-/// message into that thread's [`LAST_ERROR`] slot.
+/// message into that thread's the last-error slot slot.
 ///
 /// **Why a hook instead of downcasting the `catch_unwind` payload
 /// (`Box<dyn Any + Send>`) to `&str`/`String`**: the ordinary approach
@@ -116,23 +101,12 @@ fn install_panic_hook() {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info: &std::panic::PanicHookInfo<'_>| {
             if CAPTURING_PANIC.with(|c| c.get()) {
-                ERROR_RECORDED.with(|c| c.set(true));
-                LAST_ERROR.with(|slot| *slot.borrow_mut() = format!("panic: {info}"));
+                set_last_error(format!("panic: {info}"));
             } else {
                 previous(info);
             }
         }));
     });
-}
-
-/// Records `message` as this thread's last error, replacing the previous one.
-pub fn set_last_error(message: impl Into<String>) {
-    ERROR_RECORDED.with(|c| c.set(true));
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = message.into());
-}
-
-pub(crate) fn last_error() -> String {
-    LAST_ERROR.with(|slot| slot.borrow().clone())
 }
 
 /// Runs `body` under `catch_unwind`, converting a caught panic into
@@ -150,26 +124,49 @@ where
 {
     install_panic_hook();
     crate::register_codecs();
-    ERROR_RECORDED.with(|c| c.set(false));
+    lucene_engine::status::begin_call();
+    let depth = GUARD_DEPTH.with(|d| {
+        let depth = d.get();
+        d.set(depth.saturating_add(1));
+        depth
+    });
+    if depth == 0 {
+        CALL_SHARDS.with(|c| c.borrow_mut().clear());
+        CALL_EPOCH.with(|e| e.set(lucene_store::read_failures::epoch()));
+    }
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);
-    CAPTURING_PANIC.with(|c| c.set(false));
+    GUARD_DEPTH.with(|d| d.set(depth));
+    if depth == 0 {
+        lucene_store::read_failures::set_checked(false);
+    }
+    // A nested call returns into its caller's guard, which is still running.
+    CAPTURING_PANIC.with(|c| c.set(depth > 0));
     match outcome {
-        Ok(Ok(())) => FfiStatus::Ok.code(),
+        Ok(Ok(())) => match shard_read_failure() {
+            // The call may have read a page that failed to decode or could
+            // not be read, and zeros stood in for it: its result cannot be
+            // trusted.
+            Some(message) => {
+                set_last_error(format!("reading the shard failed: {message}"));
+                FfiStatus::Io.code()
+            }
+            None => FfiStatus::Ok.code(),
+        },
         Ok(Err(status)) => {
             // Every non-`Ok` return must leave a message describing *this*
             // call -- a body that returned early without calling
             // `set_last_error` (e.g. a bare null-pointer or buffer-too-small
             // check) would otherwise leave the slot holding an older,
             // unrelated failure, which is worse than no message at all.
-            if !ERROR_RECORDED.with(|c| c.get()) {
+            if !lucene_engine::status::error_recorded() {
                 set_last_error(status.default_message());
             }
             status.code()
         }
         Err(_payload) => {
             // The installed panic hook (see `install_panic_hook`) already wrote
-            // this thread's formatted panic message into `LAST_ERROR` while
+            // this thread's formatted panic message into the last-error slot while
             // `CAPTURING_PANIC` was `true` above -- nothing left to do here but
             // report the status code.
             FfiStatus::Panic.code()
@@ -264,25 +261,5 @@ mod tests {
         });
         assert_eq!(code, FfiStatus::InvalidArgument.code());
         assert_eq!(last_error(), "specific detail from the body");
-    }
-
-    #[test]
-    fn every_status_has_a_nonempty_default_message() {
-        for status in [
-            FfiStatus::Ok,
-            FfiStatus::NullPointer,
-            FfiStatus::InvalidUtf8,
-            FfiStatus::InvalidHandle,
-            FfiStatus::Io,
-            FfiStatus::Decode,
-            FfiStatus::Search,
-            FfiStatus::IndexOutOfBounds,
-            FfiStatus::BufferTooSmall,
-            FfiStatus::Panic,
-            FfiStatus::InvalidArgument,
-            FfiStatus::HandleLimit,
-        ] {
-            assert!(!status.default_message().is_empty(), "{status:?}");
-        }
     }
 }

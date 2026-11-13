@@ -331,9 +331,12 @@ pub enum Error {
     /// share one `Error` type, the way they share one on-disk format family.
     #[error(transparent)]
     Vectors(#[from] lucene_codecs::vectors::Error),
-    /// The IVF index of a `LuceneRustIvfVectorsFormat` group.
+    /// The IVF index of a `IvfVectorsFormat` group.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
+    /// The disk files of a `DiskHnswVectorsFormat` instance.
+    #[error(transparent)]
+    DiskHnsw(#[from] lucene_disk_hnsw::Error),
     #[error(transparent)]
     DocValuesWrite(#[from] lucene_codecs::doc_values::WriteError),
     #[error(transparent)]
@@ -808,6 +811,34 @@ pub struct MergeSource<'a> {
     /// this merge drops from some of this source's documents -- see
     /// [`PrunedField`]. `None` keeps every field of every merged document.
     pub pruned_field: Option<PrunedField<'a>>,
+    /// NUMERIC doc-values fields this merge rewrites on some of this
+    /// source's documents -- see [`SentinelValues`]. `None` copies every
+    /// value as it is.
+    pub numeric_floor: Option<SentinelValues<'a>>,
+}
+
+/// Documents whose NUMERIC doc values a merge rewrites to fixed values:
+/// OpenSearch's `_seq_no` and `_primary_term` of every document soft-deletes
+/// retention no longer needs, as `UNASSIGNED_SEQ_NO` and
+/// `UNASSIGNED_PRIMARY_TERM` (Elasticsearch's
+/// `index.disable_sequence_numbers`). A document without a value keeps none.
+#[derive(Clone, Copy, Debug)]
+pub struct SentinelValues<'a> {
+    /// The documents rewritten (this source's doc ids).
+    pub docs: &'a FixedBitSet,
+    /// Each rewritten field's number in this source, and its new value.
+    pub fields: &'a [(i32, i64)],
+}
+
+impl SentinelValues<'_> {
+    /// `value` of the field numbered `field_number` (in this source) on
+    /// `doc`, as the merge writes it.
+    fn apply(&self, field_number: i32, doc: i32, value: i64) -> i64 {
+        match self.fields.iter().find(|(n, _)| *n == field_number) {
+            Some(&(_, replacement)) if self.docs.get_doc(doc) => replacement,
+            _ => value,
+        }
+    }
 }
 
 /// OpenSearch's `RecoverySourcePruneMergePolicy`: `_recovery_source` -- a
@@ -877,6 +908,7 @@ impl<'a> MergeSource<'a> {
             min_version,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         }
     }
 }
@@ -988,11 +1020,12 @@ impl SegmentFormat {
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
             // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`;
-            // `.ivm`/`.ivp`/`.ivv`: `LuceneRustIvfVectorsFormat`'s IVF index;
-            // `.vqm`/`.vqd`: `LuceneRustHnswQuantizedVectorsFormat`'s codes.
+            // `.ivm`/`.ivp`/`.ivv`: `IvfVectorsFormat`'s IVF index;
+            // `.vqm`/`.vqd`: `HnswQuantizedVectorsFormat`'s codes;
+            // `.dhm`/`.dhc`/`.dhn`: `DiskHnswVectorsFormat`'s disk layout.
             SegmentFormat::KnnVectors => &[
                 "vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb", "ivm", "ivp", "ivv",
-                "vqm", "vqd",
+                "vqm", "vqd", "dhm", "dhc", "dhn",
             ],
         }
     }
@@ -3594,7 +3627,12 @@ fn merge_numeric_doc_values(
                 .pruned_field
                 .zip(per_source_entry[src_idx])
                 .is_some_and(|(pruned, entry)| pruned.drops(entry.entry.field_number, doc_id));
-            let value = value.filter(|_| !pruned);
+            let value = value.filter(|_| !pruned).map(|v| {
+                match (sources[src_idx].numeric_floor, per_source_entry[src_idx]) {
+                    (Some(floor), Some(entry)) => floor.apply(entry.entry.field_number, doc_id, v),
+                    _ => v,
+                }
+            });
             match (value, sparse.as_mut()) {
                 (Some(value), None) => dense.push(value),
                 (Some(value), Some(sparse)) => sparse.push((merged_doc_id as i32, value)),
@@ -3700,7 +3738,7 @@ fn merge_binary_doc_values(
             let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
             };
-            if let Some(value) = reader.value(doc_id)? {
+            if let Some(value) = reader.value_ref(doc_id)? {
                 column.docs.push(merged_doc_id as i32);
                 column.lengths.push(value.len() as u32);
                 column.bytes.extend_from_slice(value);
@@ -4485,7 +4523,7 @@ pub struct VectorGroup<'a> {
     /// group -- the one reader `Lucene104ScalarQuantizedVectorsWriter
     /// .getCentroid` recognises, so the only centroids a merge reuses.
     pub flat_quantized: Option<&'a scalar_quantized_vectors::ScalarQuantizedVectorsReader<'a>>,
-    /// The IVF files of a `LuceneRustIvfVectorsFormat` group, whose
+    /// The IVF files of a `IvfVectorsFormat` group, whose
     /// clusters a merge into that format reuses.
     pub ivf: Option<&'a crate::ivf_vectors::IvfInputs>,
 }
@@ -5350,6 +5388,40 @@ fn merge_vector_group(
             hnsw_vectors::write_hnsw_vectors(&hnsw_fields, merged_segment_id, suffix)?;
         files.push(("vex", vex_bytes));
         files.push(("vem", vem_bytes));
+        if format.hnsw_disk_quantizer().is_some() {
+            // The merged graph and vectors are copied into node records
+            // afresh.
+            let mut merged_fields = Vec::new();
+            for (merged_field, graph) in plan.iter().map(|p| &p.0).zip(&graphs) {
+                let Some(graph) = graph else { continue };
+                if merged_field.vector_encoding != VectorEncoding::Float32 {
+                    continue;
+                }
+                let values = flat.float_vector_values(merged_field.number)?;
+                let docs = (0..values.size())
+                    .map(|ord| values.ord_to_doc(ord))
+                    .collect::<std::result::Result<Vec<i32>, _>>()?;
+                merged_fields.push((merged_field, docs, values.all_vectors()?, graph));
+            }
+            let disk: Vec<crate::disk_hnsw_vectors::DiskField<'_>> = merged_fields
+                .iter()
+                .map(
+                    |(field, docs, vectors, graph)| crate::disk_hnsw_vectors::DiskField {
+                        number: field.number,
+                        similarity: field.vector_similarity_function,
+                        dimension: usize::try_from(field.vector_dimension).unwrap_or(0),
+                        docs,
+                        vectors,
+                        graph,
+                    },
+                )
+                .collect();
+            if let Some(written) =
+                crate::disk_hnsw_vectors::write(format, &disk, merged_segment_id, suffix)?
+            {
+                files.extend(written);
+            }
+        }
     }
     files.insert(0, ("vemf", vemf_bytes));
     Ok((files, vec_name))
@@ -8103,6 +8175,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8121,6 +8194,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -8260,6 +8334,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -8352,6 +8427,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         // Source 1 has live docs but no numeric doc-values entry at all for
         // field "num": Java's `values == null` sub, i.e. all-missing.
@@ -8448,6 +8524,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -8558,6 +8635,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8576,6 +8654,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -8658,6 +8737,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         // Source 1 has live docs but no binary doc-values entry at all for
         // field "bin" -- `DocValuesConsumer`'s "not a sub" case: its
@@ -8754,6 +8834,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -8923,6 +9004,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -8941,6 +9023,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let tmp_dir = FsDirectory::open(&tmp);
@@ -9028,6 +9111,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9046,6 +9130,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -9109,6 +9194,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         // Source 1 has live docs but no SORTED doc-values entry at all for
         // field "word".
@@ -9204,6 +9290,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -9284,6 +9371,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -9365,6 +9453,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -9472,6 +9561,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9490,6 +9580,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -9579,6 +9670,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9597,6 +9689,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -9925,6 +10018,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -9943,6 +10037,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -10020,6 +10115,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10038,6 +10134,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -10117,6 +10214,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, Some(version()));
 
@@ -10734,6 +10832,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10752,6 +10851,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -10852,6 +10952,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -10870,6 +10971,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -11038,6 +11140,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11056,6 +11159,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -11228,6 +11332,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11246,6 +11351,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let merged_id = [9u8; ID_LENGTH];
@@ -11777,6 +11883,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -11795,6 +11902,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let keys0: Vec<Option<i64>> = vec![Some(10), Some(30)];
@@ -11987,6 +12095,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1_num = MergeSource {
             field_infos: &stored1.fields,
@@ -12005,6 +12114,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -12066,6 +12176,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1_sorted = MergeSource {
             field_infos: &stored1.fields,
@@ -12084,6 +12195,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -12134,6 +12246,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1_sn = MergeSource {
             field_infos: &stored1.fields,
@@ -12152,6 +12265,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -12194,6 +12308,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1_ss = MergeSource {
             field_infos: &stored1.fields,
@@ -12212,6 +12327,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         merge_sorted_stored_only_segments(
             &dir,
@@ -12566,6 +12682,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12584,6 +12701,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -12647,6 +12765,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         // Source 1 has live docs but no SORTED_NUMERIC doc-values entry at
         // all for field "nums".
@@ -12727,6 +12846,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -12893,6 +13013,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -12911,6 +13032,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -13007,6 +13129,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13025,6 +13148,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -13091,6 +13215,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         // Source 1 has live docs but no SORTED_SET doc-values entry at all
         // for field "word".
@@ -13171,6 +13296,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -13675,6 +13801,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13693,6 +13820,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -13908,6 +14036,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -13926,6 +14055,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -14114,6 +14244,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -14132,6 +14263,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let tmp2 = tmp.path().to_path_buf();
@@ -14287,6 +14419,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -14477,6 +14610,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -14495,6 +14629,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -14777,6 +14912,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -14795,6 +14931,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -15013,6 +15150,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -15031,6 +15169,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -15311,6 +15450,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -15329,6 +15469,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let result = merge_stored_only_segments(
@@ -15498,6 +15639,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -15516,6 +15658,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -15706,6 +15849,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let result = merge_stored_only_segments(
@@ -15837,6 +15981,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -15855,6 +16000,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -15956,6 +16102,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         merge_stored_only_segments(
@@ -16028,6 +16175,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -16046,6 +16194,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sources = [source0, source1];
@@ -16234,6 +16383,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -16252,6 +16402,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let result = merge_stored_only_segments(
@@ -16382,6 +16533,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -16400,6 +16552,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let result = merge_stored_only_segments(
@@ -16489,6 +16642,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -16507,6 +16661,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let sci = merge_stored_only_segments(
@@ -16616,6 +16771,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
         let source1 = MergeSource {
             field_infos: &stored1.fields,
@@ -16634,6 +16790,7 @@ mod tests {
             min_version: None,
             has_blocks: false,
             pruned_field: None,
+            numeric_floor: None,
         };
 
         let result = merge_stored_only_segments(
@@ -17143,6 +17300,7 @@ mod tests {
                 min_version: Some(v(10, 1, 0)),
                 has_blocks: false,
                 pruned_field: None,
+                numeric_floor: None,
                 ..MergeSource::stored_only(&seg0.fields, &reader0, None, Some(version()))
             },
             MergeSource {
@@ -17151,6 +17309,7 @@ mod tests {
                 min_version: Some(v(9, 11, 2)),
                 has_blocks: true,
                 pruned_field: None,
+                numeric_floor: None,
                 ..MergeSource::stored_only(&seg1.fields, &reader1, None, Some(version()))
             },
         ];

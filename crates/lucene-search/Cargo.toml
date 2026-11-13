@@ -7,10 +7,13 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
+lucene-spatial3d = { path = "../lucene-spatial3d" }
+lucene-spatial4j = { path = "../lucene-spatial4j" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-ivf = { path = "../lucene-ivf" }
+lucene-disk-hnsw = { path = "../lucene-disk-hnsw" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).
@@ -51,7 +54,7 @@ lucene-suggest = { path = "../lucene-suggest" }
 lucene-grouping = { path = "../lucene-grouping" }
 lucene-expressions = { path = "../lucene-expressions" }
 lucene-facet = { path = "../lucene-facet" }
-lucene-sandbox = { path = "../lucene-sandbox" }
+lucene-aggs = { path = "../lucene-aggs" }
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.

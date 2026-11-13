@@ -46,7 +46,7 @@ for name, typ in INDICES.items():
     except RuntimeError:
         pass
     req("PUT", f"/{name}", {"settings": {"index": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
-                                                    "translog.durability": "async", "lucene_rust.engine": True}},
+                                                    "translog.durability": "async", "engine.accelerated": True}},
                             "mappings": {"properties": {"trace": {"properties": {"id": {"type": typ}}}}}})
 
 sample = []

@@ -35,19 +35,22 @@ import java.util.function.LongSupplier;
  */
 public final class RustEngineSupport {
     /**
-     * What an index that does not set {@code index.lucene_rust.engine} gets, on this node -- so a
-     * node can serve every index, system indices included, with the Rust engine, as the REST
-     * suites' run of {@code scripts/verify-opensearch.sh --engine} does.
+     * What an index that does not set {@code index.engine.accelerated} gets, on this node: every
+     * such index, system indices and indices created before the plugin included, is served by the
+     * accelerated engine where it can be, and by OpenSearch's where it needs something the
+     * accelerated writer refuses. On by default: the segments are stock Lucene's either way and such an index stores
+     * no setting, so a node without the plugin opens it unchanged. {@code false} keeps OpenSearch's
+     * engine for every index that does not ask.
      */
     public static final Setting<Boolean> ENGINE_DEFAULT = Setting.boolSetting(
-        "lucene_rust.engine.default",
-        false,
+        "indices.engine.accelerated.default",
+        true,
         Setting.Property.NodeScope
     );
 
     /** Serves the index's primaries (and document-replication replicas) with {@link RustEngine}. */
     public static final Setting<Boolean> ENGINE_ENABLED = Setting.boolSetting(
-        "index.lucene_rust.engine",
+        "index.engine.accelerated",
         ENGINE_DEFAULT,
         Setting.Property.IndexScope,
         Setting.Property.Final
@@ -58,7 +61,7 @@ public final class RustEngineSupport {
      * plain scored query sees every document indexed before it started.
      */
     public static final Setting<Boolean> REALTIME_SEARCH = Setting.boolSetting(
-        "index.lucene_rust.realtime_search",
+        "index.search.realtime.enabled",
         false,
         Setting.Property.IndexScope,
         Setting.Property.Final
@@ -74,7 +77,7 @@ public final class RustEngineSupport {
      * a higher search latency while indexing.
      */
     public static final Setting<org.opensearch.common.unit.TimeValue> REALTIME_MAX_STALENESS = Setting.timeSetting(
-        "index.lucene_rust.realtime_max_staleness",
+        "index.search.realtime.max_staleness",
         org.opensearch.common.unit.TimeValue.timeValueMillis(20),
         org.opensearch.common.unit.TimeValue.ZERO,
         org.opensearch.common.unit.TimeValue.timeValueSeconds(1),
@@ -83,50 +86,52 @@ public final class RustEngineSupport {
     );
 
     /**
-     * Whether the Rust engine writes doc values in the {@code RustAdaptive} format: numeric and
+     * Whether the Rust engine writes doc values in the {@code Adaptive90} format: numeric and
      * date columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values), several
      * times smaller for timestamps and decimal doubles. Off by default, which writes stock
-     * Lucene90 doc values. Only nodes with this plugin read {@code RustAdaptive} segments; to go
+     * Lucene90 doc values. Only nodes with this plugin read {@code Adaptive90} segments; to go
      * back, close the index, set this to false, reopen it and force-merge, which rewrites every
      * segment stock-readable.
      */
     public static final Setting<Boolean> ADAPTIVE_DOC_VALUES = Setting.boolSetting(
-        "index.lucene_rust.adaptive_doc_values",
+        "index.codec.adaptive_doc_values",
         false,
         Setting.Property.IndexScope
     );
 
     /**
-     * Whether the Rust engine writes terms dictionaries in the {@code RustZstd104} postings format:
+     * {@code zstd} writes terms dictionaries in the {@code ZstdTerms104} postings format:
      * Lucene104's postings under a block-tree dictionary whose term blocks are zstd-compressed where
      * that saves an eighth or more, a large field's against a dictionary trained on its own blocks
-     * (about a third smaller for text, more for keywords, ids and log fields). Off by default, which
-     * writes stock Lucene104 postings. Only nodes with this plugin read {@code RustZstd104}
-     * segments; to go back, close the index, set this to false, reopen it and force-merge, which
+     * (about a third smaller for text, more for keywords, ids and log fields). {@code none} (the
+     * default) writes stock Lucene104 postings. Only nodes with this plugin read {@code ZstdTerms104}
+     * segments; to go back, close the index, set this to none, reopen it and force-merge, which
      * rewrites every segment stock-readable.
      */
-    public static final Setting<Boolean> ZSTD_TERMS = Setting.boolSetting(
-        "index.lucene_rust.zstd_terms",
-        false,
-        Setting.Property.IndexScope
-    );
+    public static final Setting<Boolean> ZSTD_TERMS = new Setting<>("index.codec.terms_compression", "none", v -> switch (v) {
+        case "zstd" -> true;
+        case "none" -> false;
+        default -> throw new IllegalArgumentException("[index.codec.terms_compression] must be [none] or [zstd], got [" + v + "]");
+    }, Setting.Property.IndexScope);
 
     /**
      * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
      * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
      * 8-33% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
-     * segment already written this way is copied by later merges rather than compressed again. Off
-     * by default, like stock.
+     * segment already written this way is copied by later merges rather than compressed again. On
+     * by default: on 2M log events merged stored fields are 28% smaller (the index 16%) and fetches
+     * about 30% faster, for about 1.4 CPU-s more per million documents indexed; on text the
+     * stored fields are 9% smaller.
      */
     public static final Setting<Boolean> MERGE_LZ4_HIGH_COMPRESSION = Setting.boolSetting(
-        "index.lucene_rust.stored_fields.merge_lz4_high_compression",
-        false,
+        "index.codec.stored_fields.recompress_on_merge",
+        true,
         Setting.Property.IndexScope
     );
 
     /**
      * Whether the Rust engine writes its paged zstd stored fields (codec {@code
-     * LuceneRustZstdPaged104}) instead of {@code index.codec}'s: 16 KiB chunks of one zstd frame each,
+     * PagedZstd104}) instead of {@code index.codec}'s: 16 KiB chunks of one zstd frame each,
      * packed so no chunk crosses a 16 KiB page, which a page cache then decodes page by page. A merge
      * of more than 16 MiB of stored fields trains a dictionary for its segment. At {@code
      * index.codec.compression_level} when {@code index.codec} is a zstd codec, level 3 otherwise.
@@ -134,7 +139,7 @@ public final class RustEngineSupport {
      * these segments.
      */
     public static final Setting<Boolean> PAGED_ZSTD_STORED_FIELDS = Setting.boolSetting(
-        "index.lucene_rust.stored_fields.paged_zstd",
+        "index.codec.stored_fields.page_aligned",
         false,
         Setting.Property.IndexScope,
         Setting.Property.Final
@@ -145,13 +150,13 @@ public final class RustEngineSupport {
      * them, as stock OpenSearch's {@code mmapfs} and {@code hybridfs} stores do. {@code page_cache}
      * reads them through the plugin's own page cache instead: pages read on first touch with direct
      * I/O, small hot files (terms index, norms, metadata) held whole, and every shard's pages within
-     * one node budget ({@code lucene_rust.store.page_cache.size}) rather than the kernel's page cache.
+     * one node budget ({@code indices.store.page_cache.size}) rather than the kernel's page cache.
      * {@code page_cache_vectors} reads only the vector formats' files (HNSW and IVF) that way and maps
      * the rest. Needs Linux with {@code userfaultfd} permitted; elsewhere the index stays mapped. The
      * files on disk are the same either way.
      */
     public static final Setting<String> STORE_MODE = new Setting<>(
-        "index.lucene_rust.store_mode",
+        "index.store.read_mode",
         "mmap",
         RustEngineSupport::parseStoreMode,
         Setting.Property.IndexScope
@@ -164,7 +169,7 @@ public final class RustEngineSupport {
         throw new IllegalArgumentException(
             "unknown value ["
                 + value
-                + "] for [index.lucene_rust.store_mode]: expected [mmap], [page_cache] or [page_cache_vectors]"
+                + "] for [index.store.read_mode]: expected [mmap], [page_cache] or [page_cache_vectors]"
         );
     }
 
@@ -185,6 +190,69 @@ public final class RustEngineSupport {
     }
 
     /**
+     * The mean recall at {@code k} a {@code knn} query on this index's {@code extended} or
+     * {@code lucene} engine fields should reach. A value in {@code (0, 1]} turns on recall-targeted
+     * search: each shard tunes each field's search depth (an HNSW search's candidates, an IVF
+     * search's probes and rerank depth, from a quarter to 64 times the asked one) to the
+     * shallowest one that reaches the target, measured by checking sampled queries against an exact
+     * scan of the field on a thread of their own. {@code 0} (the default) searches at the depth asked,
+     * as stock does. A query that sets {@code method_parameters.ef_search} or {@code nprobes} is
+     * never tuned. On GloVe-100 (390k vectors, 4 segments) a 0.95 target ran IVF 1.9x faster than its
+     * calibrated default (0.968 recall where the default over-reached to 0.988) and picked an HNSW
+     * candidate count of 200; every target was met on held-out queries. See {@code
+     * GET /_plugins/lucene_rust/stats}, {@code knn_recall}, for what each tuner measured.
+     */
+    public static final Setting<Float> KNN_TARGET_RECALL = new Setting<>(
+        "index.knn.target_recall",
+        "0",
+        v -> unitFloat("index.knn.target_recall", v, true),
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * The most queries a recall-targeted search ({@link #KNN_TARGET_RECALL}) checks, as a share of
+     * them, in {@code (0, 1]}.
+     */
+    public static final Setting<Float> KNN_RECALL_SAMPLE_RATE = new Setting<>(
+        "index.knn.target_recall_sample_rate",
+        "0.01",
+        v -> unitFloat("index.knn.target_recall_sample_rate", v, false),
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * The most CPU time a recall-targeted search's checks ({@link #KNN_TARGET_RECALL}) take, as a
+     * share of the time its searches took, once the first 64 checks are done (those take up to as
+     * long as the searches): an exact scan reads every vector of the field, so on a large shard this
+     * budget, not the sample rate, sets how often one runs.
+     */
+    public static final Setting<Float> KNN_RECALL_CHECK_BUDGET = Setting.floatSetting(
+        "index.knn.target_recall_check_budget",
+        0.05f,
+        0f,
+        Setting.Property.IndexScope,
+        Setting.Property.Dynamic
+    );
+
+    /** {@code value} as a float in {@code (0, 1]} (or {@code 0} when {@code zero} allows it). */
+    static float unitFloat(String key, String value, boolean zero) {
+        float f;
+        try {
+            f = Float.parseFloat(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Failed to parse value [" + value + "] for setting [" + key + "]", e);
+        }
+        if ((f > 0f && f <= 1f) || (zero && f == 0f)) {
+            return f;
+        }
+        throw new IllegalArgumentException(
+            "Failed to parse value [" + value + "] for setting [" + key + "] must be " + (zero ? "0 or " : "") + "in (0, 1]"
+        );
+    }
+
+    /**
      * The least vectors a partition of a sorted index needs for its IVF clusters to be its own: at
      * flush and merge, each partition of the index sort's first field (a tenant id, say) with at
      * least this many vectors in the segment is clustered on its own, and the smaller ones are
@@ -196,7 +264,7 @@ public final class RustEngineSupport {
      * keep whole-field clusters). Segments read like any other IVF segment.
      */
     public static final Setting<Integer> IVF_PARTITION_CLUSTERS = Setting.intSetting(
-        "index.lucene_rust.knn.ivf_partition_clusters",
+        "index.knn.ivf.partition_min_vectors",
         0,
         0,
         Setting.Property.IndexScope,
@@ -212,7 +280,7 @@ public final class RustEngineSupport {
      * segments do, so OpenSearch's own engine reads and merges them alike.
      */
     public static final Setting<String> PARTITION_FIELD = Setting.simpleString(
-        "index.lucene_rust.partition_field",
+        "index.segment_partition.field",
         Setting.Property.IndexScope,
         Setting.Property.Final
     );
@@ -222,7 +290,7 @@ public final class RustEngineSupport {
      * its lock, for the "a panic fails exactly one shard" check. Never set on a real index.
      */
     public static final Setting<Boolean> FAULT_INJECTION = Setting.boolSetting(
-        "index.lucene_rust.engine.fault_injection",
+        "index.testing.fault_injection",
         false,
         Setting.Property.IndexScope,
         Setting.Property.Final
@@ -253,14 +321,14 @@ public final class RustEngineSupport {
     );
 
     /** Why an index with a fuzzy-set {@code _id} postings format cannot be served. */
-    public static final String FUZZY_SET_REFUSED = "the Rust engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
+    public static final String FUZZY_SET_REFUSED = "the accelerated engine does not support index.optimize_doc_id_lookup.fuzzy_set.enabled";
 
     /**
      * Whether an index with these settings is served by the Rust engine: it asked for it (or for
      * realtime search, which only it serves), or it inherits the node default and none of its static settings sends it to OpenSearch's engine.
      */
     public static boolean servedByRust(org.opensearch.common.settings.Settings settings) {
-        if (ENGINE_ENABLED.get(settings) == false) {
+        if (openSearchEngine(settings)) {
             return false;
         }
         return ENGINE_ENABLED.exists(settings)
@@ -270,8 +338,51 @@ public final class RustEngineSupport {
                     || unsupportedSort(settings) == null));
     }
 
+    /**
+     * The setting cross-cluster replication puts on a follower index
+     * ({@code ReplicationPlugin.REPLICATED_INDEX_SETTING}): the index it follows.
+     */
+    static final String CCR_FOLLOWER = "index.plugins.replication.follower.leader_index";
+
+    /**
+     * Whether OpenSearch's engine, or another plugin's, serves an index whatever else its settings ask:
+     * {@link #ENGINE_ENABLED} is off, or the index is a cross-cluster replication follower that the
+     * replication plugin serves with its own engine. A follower keeps its leader's settings, the
+     * accelerated engine's included; OpenSearch refuses an index two plugins offer an engine for.
+     */
+    public static boolean openSearchEngine(org.opensearch.common.settings.Settings settings) {
+        return ENGINE_ENABLED.get(settings) == false || (follower(settings) && followersDelegated == false);
+    }
+
+    /** Whether {@code settings} are a cross-cluster replication follower index's. */
+    public static boolean follower(org.opensearch.common.settings.Settings settings) {
+        return settings.get(CCR_FOLLOWER) != null;
+    }
+
+    /**
+     * The replication plugin's node setting choosing who serves follower indices: {@code replication}
+     * (its own engine, the default) or {@code delegate} (the one engine plugin that serves followers,
+     * this one). The setting is the replication plugin's; this plugin only reads it.
+     */
+    public static final String CCR_FOLLOWER_ENGINE = "plugins.replication.follower.engine";
+
+    private static volatile boolean followersDelegated;
+
+    /** Reads {@link #CCR_FOLLOWER_ENGINE} from the node's settings, once at plugin start. */
+    public static void readFollowerEngine(org.opensearch.common.settings.Settings nodeSettings) {
+        followersDelegated = "delegate".equals(nodeSettings.get(CCR_FOLLOWER_ENGINE));
+    }
+
+    /**
+     * Whether this plugin provides the engine of follower index {@code settings}: the replication
+     * plugin on this node delegates it ({@link #CCR_FOLLOWER_ENGINE}).
+     */
+    public static boolean servesFollower(org.opensearch.common.settings.Settings settings) {
+        return followersDelegated && follower(settings);
+    }
+
     /** The circuit breaker the plugin registers for the writers' buffers. */
-    public static final String BREAKER_NAME = "lucene_rust_writer";
+    public static final String BREAKER_NAME = "indexing_buffers";
 
     private static volatile CircuitBreaker breaker;
 
@@ -280,6 +391,11 @@ public final class RustEngineSupport {
     /** Set once, by the plugin, when OpenSearch hands it the breaker it registered. */
     public static void setBreaker(CircuitBreaker b) {
         breaker = b;
+    }
+
+    /** The breaker the plugin registered, or null before OpenSearch hands it over. */
+    public static CircuitBreaker breaker() {
+        return breaker;
     }
 
     /** Throws when the Rust writer cannot produce what this index is configured for. */
@@ -295,7 +411,7 @@ public final class RustEngineSupport {
         // A segment-replication primary needs RustIndexerFactory in its shard (see there).
         if (config.getIndexSettings().isSegRepLocalEnabled() && RustIndexerFactory.building() == false) {
             throw new IllegalArgumentException(
-                "the Rust engine for "
+                "the accelerated engine for "
                     + config.getShardId()
                     + " was not built through RustIndexerFactory, so it cannot be a segment-replication primary; "
                     + "use index.replication.type: DOCUMENT"
@@ -313,7 +429,7 @@ public final class RustEngineSupport {
         if (config.getPrimaryOperationPolicy() instanceof DefaultPrimaryOperationPolicy) {
             return null;
         }
-        return "the Rust engine supports the default primary operation policy only, and "
+        return "the accelerated engine supports the default primary operation policy only, and "
             + config.getShardId()
             + " has ["
             + config.getPrimaryOperationPolicy()
@@ -350,16 +466,16 @@ public final class RustEngineSupport {
     public static String unsupported(IndexSettings settings, boolean indexSorted) {
         String codec = settings.getValue(EngineConfig.INDEX_CODEC_SETTING);
         if (CODECS.containsKey(codec) == false) {
-            return "the Rust engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
+            return "the accelerated engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
         }
         if ((CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED || PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings()))
             && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
             if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
-                return "the Rust engine writes an index.sparse index with the default stored fields only, and "
+                return "the accelerated engine writes an index.sparse index with the default stored fields only, and "
                     + PAGED_ZSTD_STORED_FIELDS.getKey()
                     + " is set";
             }
-            return "the Rust engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
+            return "the accelerated engine writes an index.sparse index with the default codec only, and index.codec is [" + codec + "]";
         }
         if (indexSorted && unsupportedSort(settings.getSettings()) != null) {
             return unsupportedSort(settings.getSettings());
@@ -375,20 +491,20 @@ public final class RustEngineSupport {
             return FUZZY_SET_REFUSED;
         }
         if (settings.isContextAwareEnabled()) {
-            return "the Rust engine does not support context-aware segments";
+            return "the accelerated engine does not support context-aware segments";
         }
         // Remote-backed storage uploads segments through RemoteStoreRefreshListener, which asks for an
         // InternalEngine by class; segment replication between nodes is served through
         // RustIndexerFactory.
         if (settings.isRemoteStoreEnabled() || settings.isAssignedOnRemoteNode()) {
-            return "the Rust engine does not support remote-backed storage";
+            return "the accelerated engine does not support remote-backed storage";
         }
         // The engine writes the shard's files itself: a store type that changes the bytes on disk
-        // (another plugin's encryption, say) would be bypassed. `rust_encrypted` is the encrypted one
+        // (another plugin's encryption, say) would be bypassed. `encrypted` is the encrypted one
         // it writes through.
         String storeType = settings.getValue(org.opensearch.index.IndexModule.INDEX_STORE_TYPE_SETTING);
         if (org.lucenerust.opensearch.store.NativeStores.STORE_TYPES.contains(storeType) == false) {
-            return "the Rust engine cannot write through index.store.type [" + storeType + "]; use [rust_encrypted] for encryption at rest";
+            return "the accelerated engine cannot write through index.store.type [" + storeType + "]; use [encrypted] for encryption at rest";
         }
         return null;
     }
@@ -481,10 +597,10 @@ public final class RustEngineSupport {
     static String unsupportedSort(org.opensearch.common.settings.Settings settings) {
         if (org.opensearch.cluster.metadata.IndexMetadata.SETTING_INDEX_VERSION_CREATED.get(settings)
             .before(org.opensearch.Version.V_3_2_0)) {
-            return "the Rust engine supports index sorting on indices created on 3.2.0 or later";
+            return "the accelerated engine supports index sorting on indices created on 3.2.0 or later";
         }
         if (REALTIME_SEARCH.get(settings)) {
-            return "index.lucene_rust.realtime_search does not support index sorting";
+            return "index.search.realtime.enabled does not support index sorting";
         }
         return null;
     }
@@ -541,6 +657,10 @@ public final class RustEngineSupport {
         boolean success = false;
         try {
             writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
+            writer.setSeqNoLayout(
+                SeqNoSettings.docValuesOnly(indexSettings.getSettings()),
+                SeqNoSettings.sentinels(indexSettings.getSettings())
+            );
             refreshMergePolicy(writer, config);
             int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
             if (ivfPartitionClusters > 0) {
@@ -624,7 +744,7 @@ public final class RustEngineSupport {
     }
 
     /**
-     * The shard's {@code index.lucene_rust.bp_reorder.*}. A sparse index has its own segment layout,
+     * The shard's {@code index.merge.reorder.*}. A sparse index has its own segment layout,
      * which BP reordering does not support, so it is never reordered.
      */
     static BpReorderSettings.Values bpReorder(IndexSettings indexSettings) {
@@ -648,16 +768,19 @@ public final class RustEngineSupport {
      * own postings format, for instance) must be the ones the Rust writer lays out.
      */
     private static String unsupportedFormat(Codec codec, String field, FieldSchema schema) {
+        if (codec instanceof org.lucenerust.opensearch.sparse.SparseCodec sparse) {
+            codec = sparse.delegate();
+        }
         if (schema.indexOptions != IndexOptions.NONE && codec.postingsFormat() instanceof PerFieldPostingsFormat p) {
             String name = p.getPostingsFormatForField(field).getName();
             if (name.equals("Lucene104") == false) {
-                return "field [" + field + "] uses postings format [" + name + "], which the Rust engine does not write";
+                return "field [" + field + "] uses postings format [" + name + "], which the accelerated engine does not write";
             }
         }
         if (schema.docValuesType != DocValuesType.NONE && codec.docValuesFormat() instanceof PerFieldDocValuesFormat d) {
             String name = d.getDocValuesFormatForField(field).getName();
             if (name.equals("Lucene90") == false) {
-                return "field [" + field + "] uses doc values format [" + name + "], which the Rust engine does not write";
+                return "field [" + field + "] uses doc values format [" + name + "], which the accelerated engine does not write";
             }
         }
         return null;

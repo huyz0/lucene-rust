@@ -12,7 +12,8 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              enough that HNSW finds the true neighbours on both nodes, so every
              top-k, filtered, ef_search, boosted and radial query must return
              the same hits with the same scores (1e-4), and the same hits as an
-             exhaustive scan computed here.
+             exhaustive scan computed here; the plugin's own
+             `method_parameters.exploration_slack` too (scan only).
   half_float float vectors stored as half floats (cosine ones normalized
              first, as stock does): checked as exact, against a scan over the
              half-float values.
@@ -36,7 +37,7 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              expand_nested_docs with inner hits, the same hits, scores and
              inner hits as stock; the same queries on a nested `ivf` field
              probing every cluster, stock's hits too.
-  ivf        the plugin's own opt-in `lucene_rust` engine (`method: ivf`, no
+  ivf        the plugin's own opt-in `extended` engine (`method: ivf`, no
              stock counterpart, so stock must refuse the mapping): every
              hit scores its exact score (f32 and half-float rerank vectors,
              1-bit, 2-bit OSQ and 4-bit Extended RaBitQ codes);
@@ -46,7 +47,7 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              of it flushed, after deletes and after a force merge; the
              calibrated depth finds most of them; one probe finds fewer, so
              the index is what is searched.
-  rust hnsw  the `lucene_rust` engine's `method: hnsw` (the graph walked on
+  rust hnsw  the `extended` engine's `method: hnsw` (the graph walked on
              1-bit RaBitQ, 2-bit and 4-bit Extended RaBitQ codes; stock must
              refuse the mapping): every hit scores its exact score, the top 10
              is nearly the exhaustive scan's (filtered too), a filter few
@@ -59,11 +60,16 @@ answer the same queries. The Rust engine writes the plugin node's segments.
              script_score and script_fields: the same hits, scores and values
              as stock, and the same refusals. Scripts run in Java for now, so
              they are left out of the no-fallback count.
-  realtime   an `index.lucene_rust.realtime_search` index (HNSW, l2, never
+  realtime   an `index.search.realtime.enabled` index (HNSW, l2, never
              refreshed): documents indexed after the last flush, an update
              and a delete since are seen by top-k, filtered and in-bool knn
              queries, which return the exhaustive scan's hits and scores
              over every live document, all of them in Rust.
+  recall     `index.knn.target_recall` (opt-in) on an IVF and
+             an HNSW index: at a 0.99 target the top 10 is nearly the scan's,
+             the stats show the tuner's sampled checks, a query setting its
+             own depth is not tuned, a target over 1 is refused, and 0
+             turns tuning off.
   errors     requests the stock plugin refuses are refused here too; faiss
              mappings, which stock accepts, are refused here.
 
@@ -176,7 +182,7 @@ def create(port, index, spec, docs, rust, extra=None):
     settings = {**(extra or {}), "index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                 "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
     if rust:
-        settings["index.lucene_rust.engine"] = True
+        settings["index.engine.accelerated"] = True
     mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "emb": field_mapping(spec)}}
     req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
     per = len(docs) // SEGMENTS
@@ -431,7 +437,7 @@ def nested_check(failures):
         settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                     "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
         if rust:
-            settings["index.lucene_rust.engine"] = True
+            settings["index.engine.accelerated"] = True
         req(port, "PUT", f"/{name}", {"settings": settings, "mappings": m})
         per = len(docs) // SEGMENTS
         for s in range(SEGMENTS):
@@ -519,15 +525,15 @@ IVF_ALL = 100_000
 
 def ivf_mapping(**params):
     return {"type": "knn_vector", "dimension": DIM,
-            "method": {"name": "ivf", "engine": "lucene_rust", "space_type": "l2",
+            "method": {"name": "ivf", "engine": "extended", "space_type": "l2",
                        "parameters": {"target_cluster_size": 16, **params}}}
 
 
 def ivf_check(failures):
-    """The `lucene_rust` engine's IVF fields on the plugin node (see the module doc)."""
+    """The `extended` engine's IVF fields on the plugin node (see the module doc)."""
     checked = 0
     # ivf_tenants: sorted by tenant, each tenant's vectors clustered on their own.
-    tenants = {"index.sort.field": "tenant", "index.lucene_rust.knn.ivf_partition_clusters": 50}
+    tenants = {"index.sort.field": "tenant", "index.knn.ivf.partition_min_vectors": 50}
     for index, params, extra in (("ivf_f32", {"rerank_encoding": "float"}, {}),
                                  ("ivf_f16", {"rerank_encoding": "half_float"}, {}),
                                  ("ivf_osq2", {"rerank_encoding": "float", "quantizer": "osq2"}, {}),
@@ -537,18 +543,18 @@ def ivf_check(failures):
         rng = random.Random(f"{SEED}-{index}")
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "tenant": i % 3,
                  "emb": vector(rng, False)} for i in range(DOCS)]
-        settings = {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
+        settings = {"index.knn": True, "index.engine.accelerated": True, "number_of_shards": 1,
                     "number_of_replicas": 0, "refresh_interval": -1,
                     "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100, **extra}
         mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "tenant": {"type": "integer"},
                                   "emb": ivf_mapping(**params)}}
         r = req(STOCK[1], "PUT", f"/{index}", {"settings": {"index.knn": True}, "mappings": mapping}, ok_errors=True)
         if r.get("status", 200) != 400:
-            failures.append(f"{index}: stock accepted the lucene_rust mapping: {json.dumps(r)[:200]}")
+            failures.append(f"{index}: stock accepted the extended mapping: {json.dumps(r)[:200]}")
             req(STOCK[1], "DELETE", f"/{index}", ok_errors=True)
         req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
         persisted = req(OURS[1], "GET", f"/{index}/_mapping")[index]["mappings"]["properties"]["emb"]
-        if persisted.get("method", {}).get("engine") != "lucene_rust" or persisted["method"].get("name") != "ivf":
+        if persisted.get("method", {}).get("engine") != "extended" or persisted["method"].get("name") != "ivf":
             failures.append(f"{index}: persisted as {persisted}")
         if "quantizer" in params and persisted["method"].get("parameters", {}).get("quantizer") != params["quantizer"]:
             failures.append(f"{index}: quantizer persisted as {persisted}")
@@ -633,22 +639,22 @@ def ivf_check(failures):
         ("ivf 8-bit osq", ivf_mapping(quantizer="osq8")),
         ("ivf unknown parameter", ivf_mapping(nlist=4)),
         ("ivf on_disk", {**ivf_mapping(), "mode": "on_disk"}),
-        ("lucene_rust hnsw osq", rust_hnsw_mapping(quantizer="osq2")),
-        ("lucene_rust hnsw bbq", rust_hnsw_mapping(quantizer="bbq")),
-        ("lucene_rust hnsw auto", rust_hnsw_mapping(quantizer="auto")),
-        ("lucene_rust hnsw quantizer", rust_hnsw_mapping(quantizer="pq")),
-        ("lucene_rust hnsw byte", {**rust_hnsw_mapping(), "data_type": "byte"}),
-        ("lucene_rust hnsw on_disk", {**rust_hnsw_mapping(), "mode": "on_disk"}),
-        ("lucene_rust hnsw encoder", rust_hnsw_mapping(encoder={"name": "sq", "parameters": {"bits": 4}})),
-        ("lucene_rust hnsw ef_search", rust_hnsw_mapping(ef_search=100)),
-        ("lucene_rust flat", {"type": "knn_vector", "dimension": DIM,
-                              "method": {"name": "flat", "engine": "lucene_rust", "space_type": "l2"}}),
+        ("extended hnsw osq", rust_hnsw_mapping(quantizer="osq2")),
+        ("extended hnsw bbq", rust_hnsw_mapping(quantizer="bbq")),
+        ("extended hnsw auto", rust_hnsw_mapping(quantizer="auto")),
+        ("extended hnsw quantizer", rust_hnsw_mapping(quantizer="pq")),
+        ("extended hnsw byte", {**rust_hnsw_mapping(), "data_type": "byte"}),
+        ("extended hnsw on_disk", {**rust_hnsw_mapping(), "mode": "on_disk"}),
+        ("extended hnsw encoder", rust_hnsw_mapping(encoder={"name": "sq", "parameters": {"bits": 4}})),
+        ("extended hnsw ef_search", rust_hnsw_mapping(ef_search=100)),
+        ("extended flat", {"type": "knn_vector", "dimension": DIM,
+                              "method": {"name": "flat", "engine": "extended", "space_type": "l2"}}),
         ("lucene ivf", {"type": "knn_vector", "dimension": DIM,
                         "method": {"name": "ivf", "engine": "lucene", "space_type": "l2"}}),
     ]
-    off = [("ivf off the Rust engine", ivf_mapping(), False), ("lucene_rust hnsw off the Rust engine", rust_hnsw_mapping(), False)]
+    off = [("ivf off the accelerated engine", ivf_mapping(), False), ("extended hnsw off the accelerated engine", rust_hnsw_mapping(), False)]
     for label, m, rust in [(label, m, True) for label, m in bad] + off:
-        settings = {"index.knn": True, **({"index.lucene_rust.engine": True} if rust else {})}
+        settings = {"index.knn": True, "index.engine.accelerated": rust}
         r = req(OURS[1], "PUT", "/bad-mapping", {"settings": settings,
                                                  "mappings": {"properties": {"v": m}}}, ok_errors=True)
         if r.get("status", 200) != 400:
@@ -657,31 +663,98 @@ def ivf_check(failures):
     return checked
 
 
-def rust_hnsw_mapping(**params):
+def recall_target_check(failures):
+    """`index.knn.target_recall` on an IVF and an HNSW index (see the module doc)."""
+    checked = 0
+    for index, mapping in (("rt_ivf", ivf_mapping(rerank_encoding="float")),
+                           ("rt_hnsw", {"type": "knn_vector", "dimension": DIM,
+                                        "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}})):
+        rng = random.Random(f"{SEED}-{index}")
+        docs = [{"_id": f"d{i}", "emb": vector(rng, False)} for i in range(DOCS)]
+        settings = {"index.knn": True, "index.engine.accelerated": True, "number_of_shards": 1,
+                    "number_of_replicas": 0, "refresh_interval": -1,
+                    "index.knn.target_recall": 0.99,
+                    "index.knn.target_recall_sample_rate": 1.0,
+                    "index.knn.target_recall_check_budget": 1000.0}
+        req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": {"properties": {"emb": mapping}}})
+        lines = []
+        for d in docs:
+            lines.append(json.dumps({"index": {"_index": index, "_id": d["_id"]}}))
+            lines.append(json.dumps({"emb": d["emb"]}))
+        r = req(OURS[1], "POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        assert not r["errors"], json.dumps(r)[:2000]
+        req(OURS[1], "POST", f"/{index}/_refresh")
+        uuid = req(OURS[1], "GET", f"/{index}/_settings")[index]["settings"]["index"]["uuid"]
+        key = f"{uuid}/0/emb"
+
+        def tuner():
+            return req(OURS[1], "GET", "/_plugins/lucene_rust/stats").get("knn_recall", {}).get(key)
+
+        targets = [vector(rng, False) for _ in range(40)]
+        found = 0
+        for t in targets:
+            got = search(OURS[1], index, {"size": 10, "query": knn(t, k=10)})
+            found += len({i for _, i in exact_top(IVF, docs, t, 10)} & {i for i, _ in got})
+            checked += 1
+        recall = found / (10 * len(targets))
+        print(f"{index}: recall@10 {recall:.3f} at target 0.99")
+        if recall < 0.95:
+            failures.append(f"{index}: recall@10 {recall:.3f} at target 0.99")
+        # The checks run behind the searches.
+        stats = tuner()
+        for _ in range(300):
+            if stats and stats["samples"] > 0:
+                break
+            time.sleep(0.1)
+            stats = tuner()
+        if not stats or stats["samples"] == 0 or stats["queries"] < len(targets) or stats["target_recall"] != 0.99:
+            failures.append(f"{index}: tuner stats {stats}")
+            continue
+        # A query asking for its own depth is not tuned.
+        own = {"nprobes": 4} if index == "rt_ivf" else {"ef_search": 50}
+        search(OURS[1], index, {"size": 10, "query": knn(targets[0], k=10, method_parameters=own)})
+        if tuner()["queries"] != stats["queries"]:
+            failures.append(f"{index}: a query with method_parameters {own} was tuned")
+        r = req(OURS[1], "PUT", f"/{index}/_settings", {"index.knn.target_recall": 1.5}, ok_errors=True)
+        if r.get("status", 200) != 400:
+            failures.append(f"{index}: target_recall 1.5 accepted: {json.dumps(r)[:200]}")
+        # Off again (the setting is dynamic): searched as asked.
+        req(OURS[1], "PUT", f"/{index}/_settings", {"index.knn.target_recall": 0})
+        before = tuner()["queries"]
+        search(OURS[1], index, {"size": 10, "query": knn(targets[0], k=10)})
+        if tuner()["queries"] != before:
+            failures.append(f"{index}: target_recall 0 still tuned")
+        checked += 3
+    return checked
+
+
+def rust_hnsw_mapping(method="hnsw", **params):
     return {"type": "knn_vector", "dimension": DIM,
-            "method": {"name": "hnsw", "engine": "lucene_rust", "space_type": "l2", "parameters": params}}
+            "method": {"name": method, "engine": "extended", "space_type": "l2", "parameters": params}}
 
 
 def rust_hnsw_check(failures):
-    """The `lucene_rust` engine's quantized HNSW fields on the plugin node (see the module doc)."""
+    """The `extended` engine's quantized and disk HNSW fields on the plugin node (see the module doc)."""
     checked = 0
-    for index, params in (("rq_rabitq", {"quantizer": "rabitq"}), ("rq_erq2", {}),
-                          ("rq_erq4", {"quantizer": "erq4", "m": 8, "ef_construction": 64})):
+    for index, method, params in (("rq_rabitq", "hnsw", {"quantizer": "rabitq"}), ("rq_erq2", "hnsw", {}),
+                                  ("rq_erq4", "hnsw", {"quantizer": "erq4", "m": 8, "ef_construction": 64}),
+                                  ("disk_bbq", "disk_hnsw", {}),
+                                  ("disk_erq4", "disk_hnsw", {"quantizer": "erq4", "m": 8, "ef_construction": 64})):
         rng = random.Random(f"{SEED}-{index}")
         docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
                 for i in range(DOCS)]
-        settings = {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
+        settings = {"index.knn": True, "index.engine.accelerated": True, "number_of_shards": 1,
                     "number_of_replicas": 0, "refresh_interval": -1,
                     "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
         mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"},
-                                  "emb": rust_hnsw_mapping(**params)}}
+                                  "emb": rust_hnsw_mapping(method, **params)}}
         r = req(STOCK[1], "PUT", f"/{index}", {"settings": {"index.knn": True}, "mappings": mapping}, ok_errors=True)
         if r.get("status", 200) != 400:
-            failures.append(f"{index}: stock accepted the lucene_rust mapping: {json.dumps(r)[:200]}")
+            failures.append(f"{index}: stock accepted the extended mapping: {json.dumps(r)[:200]}")
             req(STOCK[1], "DELETE", f"/{index}", ok_errors=True)
         req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
         persisted = req(OURS[1], "GET", f"/{index}/_mapping")[index]["mappings"]["properties"]["emb"]
-        if persisted.get("method", {}).get("engine") != "lucene_rust" or persisted["method"].get("name") != "hnsw":
+        if persisted.get("method", {}).get("engine") != "extended" or persisted["method"].get("name") != method:
             failures.append(f"{index}: persisted as {persisted}")
         if persisted["method"].get("parameters", {}).get("quantizer") != params.get("quantizer"):
             failures.append(f"{index}: quantizer persisted as {persisted}")
@@ -785,7 +858,7 @@ def realtime_check(failures):
     rng = random.Random(f"{SEED}-{index}")
     docs = [{"_id": f"d{i}", "tag": "even" if i % 2 == 0 else "odd", "n": i, "emb": vector(rng, False)}
             for i in range(DOCS)]
-    settings = {"index.knn": True, "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True,
+    settings = {"index.knn": True, "index.engine.accelerated": True, "index.search.realtime.enabled": True,
                 "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
     mapping = {"properties": {"tag": {"type": "keyword"}, "n": {"type": "integer"}, "emb": field_mapping(spec)}}
     req(OURS[1], "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
@@ -864,7 +937,7 @@ def phases_check(failures):
         settings = {"index.knn": True, "index.knn.derived_source.enabled": True, "number_of_shards": 3,
                     "number_of_replicas": 0, "refresh_interval": -1}
         if rust:
-            settings["index.lucene_rust.engine"] = True
+            settings["index.engine.accelerated"] = True
         req(port, "PUT", f"/{index}", {"settings": settings, "mappings": mapping})
         per = len(docs) // SEGMENTS
         for s in range(SEGMENTS):
@@ -916,7 +989,7 @@ def phases_check(failures):
 
     def stats():
         st = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
-        return st["knn_hits"]["reused"], st["native_sources_without_vectors"]
+        return st["knn_hits"]["reused"], st["accelerated_sources_without_vectors"]
 
     reused0, unspliced0 = stats()
     checked, fetches, dropping = 0, 0, 0
@@ -981,8 +1054,8 @@ def phases_check(failures):
 
     # A realtime index: half its documents flushed, half buffered.
     rt = "phases_realtime"
-    settings = {"index.knn": True, "index.knn.derived_source.enabled": True, "index.lucene_rust.engine": True,
-                "index.lucene_rust.realtime_search": True, "number_of_shards": 3, "number_of_replicas": 0,
+    settings = {"index.knn": True, "index.knn.derived_source.enabled": True, "index.engine.accelerated": True,
+                "index.search.realtime.enabled": True, "number_of_shards": 3, "number_of_replicas": 0,
                 "refresh_interval": -1}
     # No nested field: a realtime view does not search nested documents natively.
     flat = {"properties": {k: v for k, v in mapping["properties"].items() if k != "nest"}}
@@ -1295,10 +1368,20 @@ def main():
                             scan = exact_top(spec, docs, t, kk, keep_doc or (lambda d: True))
                             if not same(got, [(i, sc) for sc, i in scan], ties=binary):
                                 failures.append(f"{index} {label} query {qi}: not the exhaustive scan's top {kk}")
+                    if not binary:
+                        # The plugin's own opt-in adaptive beam stop (stock has no such method
+                        # parameter): on these small graphs a slack of 0.5 still finds the scan's top k.
+                        body = {"size": 50, "query": knn(t, k=k, method_parameters={"exploration_slack": 0.5})}
+                        got = search(OURS[1], index, body)
+                        scan = [(i, sc) for sc, i in exact_top(spec, docs, t, k)]
+                        checked += 1
+                        if not (close(got, scan) if half_cosine(spec) else same(got, scan)):
+                            failures.append(f"{index} exploration_slack query {qi}: {got[:3]} vs the scan's {scan[:3]}")
         checked += nested_check(failures)
         checked += grouped_check(failures)
         checked += ivf_check(failures)
         checked += rust_hnsw_check(failures)
+        checked += recall_target_check(failures)
         checked += realtime_check(failures)
         checked += phases_check(failures)
         print(f"compared {checked} queries")
@@ -1317,6 +1400,9 @@ def main():
             ("binary values", "lucene_binary", {"query": knn([200] * 8, k=3)}),
             ("half_float dimension", "lucene_half_l2", {"query": knn([0.1] * (DIM + 1), k=3)}),
             ("expand not nested", "lucene_l2", {"query": knn([0.1] * DIM, k=3, expand_nested_docs=True)}),
+            # Stock refuses the unknown parameter, the plugin a negative slack: both 400.
+            ("negative exploration_slack", "lucene_l2",
+             {"query": knn([0.1] * DIM, k=3, method_parameters={"exploration_slack": -1})}),
         ]
         for label, index, body in errors:
             a = req(OURS[1], "POST", f"/{index}/_search", body, ok_errors=True)
@@ -1374,7 +1460,7 @@ def main():
         req(OURS[1], "DELETE", "/no-engine")
 
         after = req(OURS[1], "GET", "/_plugins/lucene_rust/stats")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         fallbacks = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")

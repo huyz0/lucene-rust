@@ -27,22 +27,22 @@ import org.opensearch.plugins.CryptoKeyProviderPlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 
 /**
- * The {@code rust_encrypted} store type: a shard's files encrypted at rest with per-file data keys
+ * The {@code encrypted} store type: a shard's files encrypted at rest with per-file data keys
  * from a KMS (BYOK), readable and writable by both Lucene and the Rust engine.
  *
  * <pre>
- * index.store.type: rust_encrypted
- * index.store.rust_encrypted.key_provider_type: aws-kms          # a CryptoKeyProviderPlugin's type
- * index.store.rust_encrypted.key_provider: my-kms                # its name
- * index.store.rust_encrypted.kms.key_arn: arn:aws:kms:...        # what that provider reads
- * index.store.rust_encrypted.kms.encryption_context: tenant=a
+ * index.store.type: encrypted
+ * index.store.encrypted.key_provider_type: aws-kms          # a CryptoKeyProviderPlugin's type
+ * index.store.encrypted.key_provider: my-kms                # its name
+ * index.store.encrypted.kms.key_arn: arn:aws:kms:...        # what that provider reads
+ * index.store.encrypted.kms.encryption_context: tenant=a
  * </pre>
  *
- * The key provider type {@code lucene_rust_local} instead wraps data keys with a key held in the
- * node's keystore ({@code lucene_rust.store.local_key}), for tests and clusters without a KMS.
+ * The key provider type {@code local_keystore} instead wraps data keys with a key held in the
+ * node's keystore ({@code indices.store.encrypted.local_key}), for tests and clusters without a KMS.
  */
 public final class RustEncryptedDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
-    public static final String TYPE = "rust_encrypted";
+    public static final String TYPE = "encrypted";
     private static final String PREFIX = "index.store." + TYPE + ".";
 
     public static final Setting<String> KEY_PROVIDER_TYPE = Setting.simpleString(

@@ -291,9 +291,37 @@ def derive_engine(src: str) -> str:
         "    @Override\n    protected final ReferenceManager<OpenSearchDirectoryReader> getReferenceManager(SearcherScope scope) {",
     )
 
+    # `_seq_no` may be indexed without points (SeqNoSettings): the restore range reads it either way.
+    p.sub(
+        "            LongPoint.newRangeQuery(SeqNoFieldMapper.NAME, getPersistedLocalCheckpoint() + 1, Long.MAX_VALUE),",
+        "            SeqNoQueries.range(directoryReader, getPersistedLocalCheckpoint() + 1, Long.MAX_VALUE),",
+    )
+    p.sub("import org.apache.lucene.document.LongPoint;\n", "")
+
     # Package-private in Engine: not overridable from this package.
     p.drop_block("    final boolean assertSearcherIsWarmedUp(String source, SearcherScope scope) {")
     return NOTICE + p.text
+
+
+def derive_changes_snapshot(text: str) -> str:
+    """History ranges read `_seq_no` whichever way it is indexed (SeqNoSettings)."""
+    p = Patcher(text)
+    p.sub("import org.apache.lucene.document.LongPoint;\n", "import org.apache.lucene.index.IndexReader;\n")
+    p.sub(
+        "    private static Query operationsRangeQuery(long fromSeqNo, long toSeqNo) {\n"
+        "        return new BooleanQuery.Builder().add(LongPoint.newRangeQuery(SeqNoFieldMapper.NAME, fromSeqNo, toSeqNo), BooleanClause.Occur.MUST)",
+        "    private static Query operationsRangeQuery(IndexReader reader, long fromSeqNo, long toSeqNo) {\n"
+        "        return new BooleanQuery.Builder().add(SeqNoQueries.range(reader, fromSeqNo, toSeqNo), BooleanClause.Occur.MUST)",
+    )
+    p.sub(
+        "        return indexSearcher.count(operationsRangeQuery(fromSeqNo, toSeqNo));",
+        "        return indexSearcher.count(operationsRangeQuery(indexSearcher.getIndexReader(), fromSeqNo, toSeqNo));",
+    )
+    p.sub(
+        "        final Query rangeQuery = operationsRangeQuery(Math.max(fromSeqNo, lastSeenSeqNo), toSeqNo);",
+        "        final Query rangeQuery = operationsRangeQuery(indexSearcher.getIndexReader(), Math.max(fromSeqNo, lastSeenSeqNo), toSeqNo);",
+    )
+    return p.text
 
 
 def main() -> None:
@@ -305,6 +333,8 @@ def main() -> None:
     (out / "RustEngine.java").write_text(engine)
     for name in HELPERS:
         text = relocate((src / f"{name}.java").read_text())
+        if name == "LuceneChangesSnapshot":
+            text = derive_changes_snapshot(text)
         if name == "IndexingThrottler":
             # Engine.NoOpLock is protected; EngineAccess.NoOpLock is the same class.
             h = Patcher(text)

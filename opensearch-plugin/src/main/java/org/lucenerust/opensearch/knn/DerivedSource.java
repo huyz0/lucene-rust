@@ -61,8 +61,8 @@ import java.util.function.Function;
  * reads JSON only: a {@code _source} in another content type is stored whole there.
  */
 public final class DerivedSource {
-    /** The field attribute the Rust writer lists a field for ({@code engine_writer.rs}). */
-    public static final String FIELD_ATTRIBUTE = "lucene_rust.derived_source";
+    /** The field attribute the Rust writer lists a field for ({@code writer_blob.rs}). */
+    public static final String FIELD_ATTRIBUTE = "accelerated.derived_source";
     /** {@code KNN10010DerivedSourceStoredFieldsWriter.MASK}. */
     static final Byte MASK = 0x1;
 
