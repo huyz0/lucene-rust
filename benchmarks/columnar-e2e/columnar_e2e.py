@@ -8,10 +8,10 @@ results compared for equality. Shared by the columnar stages' before/after runs.
   columnar_e2e.py stats BASE OUT    store bytes, segments, indexing time -> OUT (JSON)
   columnar_e2e.py time BASE DATASET LABEL OUT
         every shape over all docs and over a 10% time range (WARMUP, then ROUNDS sequential
-        requests, request_cache=false); median and p90 ms plus the response go to OUT
+        requests, request_cache=false), then the fetch shapes (hits with _source); median and p90 ms plus the response go to OUT
   columnar_e2e.py compare A.json B.json
         per shape: median ms of each, ratio, and whether the responses are equal
-        (`exact`; `approx` when only floats differ, within 1e-9 relative; `sketch` for percentiles within 5%; else `DIFF`).
+        (`exact`; `approx` when only floats differ, within 1e-9 relative; `sketch` for percentiles within 2% of the p1-p99 spread; else `DIFF`).
         Exit status 1 on any DIFF.
 
 DATASET: taxi (pickup, pu_location keyword, passengers int, fare/tip/distance/total double) or
@@ -68,9 +68,33 @@ def sh(dataset):
         ("date_histogram(1d)>sum(passengers)", {"date_histogram": {"field": "pickup", "fixed_interval": "1d"}, "aggs": {"s": s("passengers")}}),
         ("terms(pu)>avg(fare)", {"terms": {"field": "pu_location", "size": 300}, "aggs": {"a": {"avg": {"field": "fare"}}}}),
         ("stats(fare)", {"stats": {"field": "fare"}}),
-        ("stats(tip) sparse-ish", {"stats": {"field": "tip"}}),
+        ("stats(tip)", {"stats": {"field": "tip"}}),
         ("percentiles(total)", {"percentiles": {"field": "total"}}),
     ]
+
+
+def fetch_shapes(dataset):
+    """(name, body, source filter): hit-returning requests, for derived-source A/B. Hits are
+    compared only where the result set cannot depend on tie order (a window of at most 100)."""
+    f = TS[dataset]
+    out = [("newest 100 _source", {"size": 100, "sort": [{f: "desc"}]})]
+    if dataset == "bgl":
+        out.append(("match error 100 _source", {"size": 100, "query": {"match": {"message": "error"}}, "sort": [{f: "desc"}]}))
+        out.append(("level FATAL 100 _source", {"size": 100, "query": {"term": {"level": "FATAL"}}, "sort": [{f: "asc"}]}))
+    return out
+
+
+def small_window(dataset, lo, hi):
+    """A time window holding between 40 and 100 documents (binary search on the count)."""
+    f = TS[dataset]
+    a, b = lo, hi
+    for _ in range(60):
+        mid = (a + b) // 2
+        c = bn.req("POST", "/bench/_count", {"query": {"range": {f: {"gte": lo, "lt": mid}}}})["count"]
+        if 40 <= c <= 100:
+            return f, lo, mid
+        a, b = (mid, b) if c < 40 else (a, mid)
+    return f, lo, (a + b) // 2
 
 
 def body(aggs, window):
@@ -96,7 +120,12 @@ def canon(x):
     return json.dumps(x, sort_keys=True)
 
 
-def strip(r):
+def strip(r, sources=False):
+    if sources:
+        hits = r["hits"]["hits"]
+        return {"total": r["hits"]["total"], "n": len(hits),
+                "sources": sorted(canon(h["_source"]) for h in hits) if len(hits) == r["hits"]["total"]["value"] <= 100
+                else sorted(set(k for h in hits for k in h["_source"]))}
     return {"total": r["hits"]["total"], "aggs": r.get("aggregations"), "timed_out": r.get("timed_out"),
             "shards": {k: v for k, v in r["_shards"].items() if k in ("total", "successful", "failed")}}
 
@@ -133,6 +162,24 @@ def time_all(dataset, label, out):
                         "p90_ms": round(wall[max(0, int(len(wall) * 0.9) - 1)], 3), "took_ms": r["took"],
                         "response": strip(r)}
             print(f"  {label} {key:52s} {res[key]['median_ms']:9.2f} ms", flush=True)
+    lo2 = bn.req("POST", "/bench/_search", {"size": 0, "aggs": {"lo": {"min": {"field": f}}, "hi": {"max": {"field": f}}}})["aggregations"]
+    swin = small_window(dataset, int(lo2["lo"]["value"]), int(lo2["hi"]["value"]))
+    fs = fetch_shapes(dataset) + [("window <=100 hits _source", {"size": 100, "query": {"range": {swin[0]: {"gte": swin[1], "lt": swin[2]}}}})]
+    for name, b in fs:
+        key = f"fetch | {name}"
+        b = dict(b, track_total_hits=True)
+        for _ in range(WARMUP):
+            r = search(b)
+        wall = []
+        for _ in range(ROUNDS):
+            t = time.perf_counter()
+            r = search(b)
+            wall.append((time.perf_counter() - t) * 1000)
+        wall.sort()
+        res[key] = {"median_ms": round(statistics.median(wall), 3),
+                    "p90_ms": round(wall[max(0, int(len(wall) * 0.9) - 1)], 3), "took_ms": r["took"],
+                    "response": strip(r, sources=True)}
+        print(f"  {label} {key:52s} {res[key]['median_ms']:9.2f} ms", flush=True)
     json.dump(res, open(out, "w"), indent=1)
 
 
@@ -145,13 +192,16 @@ def load(dataset, corpus, settings, mapping):
     st.update(settings)
     bn.req("PUT", "/bench", {"settings": st, "mappings": mapping or MAPPINGS[dataset]})
     files = sorted(glob.glob(os.path.join(corpus, "bulk-*.ndjson")))
+    cpu0 = bn.cpu_seconds(None)
     indexed, refreshed = bn.load(files)
+    cpu1 = bn.cpu_seconds(None)
     want = sum(1 for f in files for _ in open(f)) // 2
     got = bn.req("GET", "/bench/_count")["count"]
     if got != want:
         sys.exit(f"load: {got} documents indexed, corpus has {want} (bulk errors?)")
     print(f"loaded {len(files)} files in {indexed:.1f}s, refreshed {refreshed:.1f}s")
-    json.dump({"index_s": indexed, "refresh_s": refreshed}, open("/tmp/columnar_e2e_load.json", "w"))
+    json.dump({"index_s": indexed, "refresh_s": refreshed, "load_cpu_s": cpu1 - cpu0, "cpu_at_loaded": cpu1},
+              open("/tmp/columnar_e2e_load.json", "w"))
 
 
 def stats(out):
@@ -175,9 +225,12 @@ def compare(a, b):
         ra, rb = A[k]["response"], B[k]["response"]
         same = "exact" if canon(ra) == canon(rb) else ("approx" if close(ra, rb) else "DIFF")
         # percentiles are a t-digest: the two engines merge centroids in different orders, so
-        # their estimates differ by up to about a percent in the tails; anything beyond 5% is a real DIFF.
-        if same == "DIFF" and "percentiles" in k and close(ra, rb, 5e-2):
-            same = "sketch"
+        # their estimates differ in the tails; a quantile more than 2% of the p1-p99 spread apart is a real DIFF.
+        if same == "DIFF" and "percentiles" in k and ra["total"] == rb["total"]:
+            va, vb = ra["aggs"]["a"]["values"], rb["aggs"]["a"]["values"]
+            spread = max(va.values()) - min(va.values())
+            if va.keys() == vb.keys() and all(abs(va[q] - vb[q]) <= 0.02 * spread for q in va):
+                same = "sketch"
         bad += same == "DIFF"
         print(f"{k:56s} {A[k]['median_ms']:10.2f} {B[k]['median_ms']:10.2f} {B[k]['median_ms'] / A[k]['median_ms']:6.2f} {same}")
     sys.exit(1 if bad else 0)
@@ -192,9 +245,18 @@ def main():
         a = sys.argv
         load(a[3], a[4], json.loads(a[5]) if len(a) > 5 and a[5] else {}, json.loads(open(a[6]).read()) if len(a) > 6 else None)
     elif cmd == "merge":
+        t0 = time.perf_counter()
         bn.req("POST", "/bench/_forcemerge?max_num_segments=1", timeout=3600)
         bn.req("POST", "/bench/_refresh", timeout=3600)
-        print("merged")
+        wall = time.perf_counter() - t0
+        try:
+            d = json.load(open("/tmp/columnar_e2e_load.json"))
+            d["forcemerge_s"] = wall
+            d["forcemerge_cpu_s"] = bn.cpu_seconds(None) - d.pop("cpu_at_loaded")
+            json.dump(d, open("/tmp/columnar_e2e_load.json", "w"))
+        except OSError:
+            pass
+        print(f"merged in {wall:.1f}s")
     elif cmd == "stats":
         stats(sys.argv[3])
     elif cmd == "time":

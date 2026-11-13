@@ -43,5 +43,5 @@ run colplugin lucene-rust-opensearch:3.9.0 "$PLUGIN_SO" plugin "$PLUGIN_SETTINGS
 echo; python3 -c "
 import json
 for l in ('stock','plugin'):
-    s=json.load(open('out/$TAG-%s.stats.json'%l)); print(f\"{l:7s} docs {s['docs']} store {s['store_bytes']/2**20:8.1f} MiB  index {s['index_s']:6.1f}s  segments {s['segments']}\")"
+    s=json.load(open('out/$TAG-%s.stats.json'%l)); print(f\"{l:7s} docs {s['docs']} store {s['store_bytes']/2**20:8.1f} MiB  index {s['index_s']:6.1f}s  segments {s['segments']}  load cpu {s.get('load_cpu_s',0):6.1f}s  merge {s.get('forcemerge_s',0):5.1f}s cpu {s.get('forcemerge_cpu_s',0):6.1f}s\")"
 $S compare out/$TAG-stock.json out/$TAG-plugin.json

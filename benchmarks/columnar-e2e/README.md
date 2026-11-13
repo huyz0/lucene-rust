@@ -16,7 +16,7 @@ Sources: `koorukuroo/yellow_tripdata` (`yellow_tripdata_2025-01.parquet`, `-02`)
 shape over all documents and over the first 10% of the time span (request cache off, 5 warmup then
 20 rounds), then prints store size, indexing time and a table of stock ms, plugin ms, ratio and
 whether the responses are equal. `exact` is byte-identical JSON, `approx` differs only in float
-rounding (1e-9), `sketch` is a percentiles t-digest within 5%, `DIFF` fails the run (exit 1).
+rounding (1e-9), `sketch` is a percentiles t-digest within 2% of the p1-p99 spread, `DIFF` fails the run (exit 1).
 
 Knobs: `STOCK_SETTINGS` / `PLUGIN_SETTINGS` (index settings JSON per node; the plugin default is
 `{"index.engine.accelerated":true}`), `MAPPING` (a mappings JSON file replacing the dataset's),
