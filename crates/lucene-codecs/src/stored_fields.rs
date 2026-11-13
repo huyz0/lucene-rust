@@ -1584,6 +1584,7 @@ impl SlicedDocument<'_, '_> {
         self.buf_at + self.pos
     }
 
+    // ARITH: `pos <= buf.len()` (see `at`), so the difference is not negative.
     #[allow(clippy::arithmetic_side_effects)]
     fn buffered(&self) -> usize {
         self.buf.len() - self.pos
