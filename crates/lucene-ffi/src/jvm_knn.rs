@@ -7,7 +7,7 @@
 //! native like any other.
 //!
 //! Request blob: `field` (`i32 len`, UTF-8), the target
-//! ([`crate::jvm_queries::decode_knn_target`]), `k: i32`, `candidates: i32`
+//! ([`lucene_engine::queries::decode_knn_target`]), `k: i32`, `candidates: i32`
 //! (the beam the search keeps before cutting to `k`, `max(k, ef_search)`),
 //! `has_filter: u8` and the filter (a query-tree node) when `1`, then
 //! `nested: u8`: when `1`, the field is nested and the parent filter (a
@@ -44,10 +44,11 @@ use lucene_search::join::BitSetProducer;
 use lucene_search::knn_recall::{RecallTarget, RecallTuner};
 use lucene_search::multi_segment::OpenSegment;
 
-use crate::clauses::map_search_error;
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::jvm_reader::{lookup, Cursor};
+use crate::jvm_reader::lookup;
 use crate::raw::bytes_from_raw;
+use lucene_engine::clauses::map_search_error;
+use lucene_engine::query_blob::Cursor;
 
 /// A decoded request.
 pub(crate) struct Request {
@@ -85,7 +86,7 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
     let field = std::str::from_utf8(c.bytes()?)
         .map_err(|_| FfiStatus::InvalidUtf8)?
         .to_string();
-    let target = crate::jvm_queries::decode_knn_target(&mut c)?;
+    let target = lucene_engine::queries::decode_knn_target(&mut c)?;
     let positive = |v: i32, what: &str| {
         usize::try_from(v)
             .ok()
@@ -99,7 +100,7 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
         0 => (None, 0..0),
         1 => {
             let start = blob.len() - c.remaining();
-            let node = crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)?;
+            let node = lucene_engine::query_blob::decode_node(&mut c, 0, &mut nodes)?;
             (Some(node), start..blob.len() - c.remaining())
         }
         _ => return Err(invalid("filter flag (expected 0..=1)")),
@@ -107,7 +108,7 @@ pub(crate) fn decode(blob: &[u8]) -> Result<Request, FfiStatus> {
     let nested = match c.u8()? {
         0 => None,
         1 => {
-            let parents = crate::jvm_nodes::decode_parents(&mut c, 0, &mut nodes)?;
+            let parents = lucene_engine::nodes::decode_parents(&mut c, 0, &mut nodes)?;
             let expand = match c.u8()? {
                 0 => false,
                 1 => true,
@@ -401,7 +402,7 @@ fn with_segments<T>(
     })?;
     if let Some(filter) = &request.filter {
         let probe = lucene_search::query::BooleanQuery::new().with_filter([filter.clone()]);
-        if crate::jvm_reader::boolean_uses_points(&probe) {
+        if lucene_engine::query_blob::boolean_uses_points(&probe) {
             opened.open_points().map_err(|e| {
                 set_last_error(format!("opening segment points: {e}"));
                 FfiStatus::Decode
@@ -496,7 +497,7 @@ mod tests {
         let mut b = Vec::new();
         b.extend_from_slice(&1i32.to_le_bytes());
         b.push(b'v');
-        b.push(crate::jvm_queries::KNN_TARGET_FLOAT);
+        b.push(lucene_engine::queries::KNN_TARGET_FLOAT);
         b.extend_from_slice(&2i32.to_le_bytes());
         b.extend_from_slice(&1.0f32.to_bits().to_le_bytes());
         b.extend_from_slice(&0.5f32.to_bits().to_le_bytes());

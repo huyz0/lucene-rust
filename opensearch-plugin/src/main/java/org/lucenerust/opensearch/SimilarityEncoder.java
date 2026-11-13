@@ -48,7 +48,7 @@ import java.util.function.Predicate;
 
 /**
  * The searcher's similarity for each field a query scores, as the table {@code
- * crates/lucene-ffi/src/jvm_similarity.rs} reads in front of the query blob.
+ * crates/lucene-engine/src/similarity.rs} reads in front of the query blob.
  *
  * <p>As the {@link QueryEncoder}'s field predicate it accepts a field whose similarity is
  * Lucene's default {@code BM25Similarity} (nothing to send) or one of the classes OpenSearch's

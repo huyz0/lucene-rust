@@ -49,7 +49,8 @@ use lucene_highlighter::{
 
 use crate::error::{set_last_error, FfiStatus};
 use crate::jvm_highlight::{invalid, put_i32, utf8};
-use crate::jvm_reader::{self, Cursor};
+use crate::jvm_reader::{self};
+use lucene_engine::query_blob::Cursor;
 
 /// The request layout's version.
 pub(crate) const REQUEST_VERSION: u8 = 1;

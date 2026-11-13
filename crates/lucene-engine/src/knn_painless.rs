@@ -1,7 +1,7 @@
 //! A Painless `script_score` script made of one k-NN Painless function call
 //! (`l2Squared`, `l1Norm`, `lInfNorm`, `innerProduct`, `cosineSimilarity`)
 //! inside arithmetic on number literals, run natively as the formula of the
-//! `knn_score` node ([`crate::jvm_knn_score`]).
+//! `knn_score` node ([`crate::knn_score`]).
 //!
 //! The plugin's encoder parses the script, folds its constant parts with
 //! Painless's (Java's) numeric promotion, and sends a typed postfix program:
@@ -34,9 +34,9 @@ use lucene_search::{Error, Result};
 use lucene_util::simd::cosine_parts_f32;
 use lucene_util::vector_util::cosine_sums_i8;
 
-use crate::error::FfiStatus;
-use crate::jvm_nodes::invalid;
-use crate::jvm_reader::Cursor;
+use crate::nodes::invalid;
+use crate::query_blob::Cursor;
+use crate::status::Status;
 
 /// The most operations a program may have: far more than any script the
 /// encoder accepts.
@@ -97,7 +97,7 @@ impl Arith {
 
 /// The script: its function and the program around it.
 #[derive(Debug, Clone)]
-pub(crate) struct Painless {
+pub struct Painless {
     function: Function,
     norm: f32,
     ops: Vec<Op>,
@@ -109,7 +109,7 @@ enum Ty {
     Double,
 }
 
-pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Painless, FfiStatus> {
+pub fn decode(c: &mut Cursor<'_>) -> std::result::Result<Painless, Status> {
     let function = match c.u8()? {
         0 => Function::L2Squared,
         1 => Function::L1Norm,
@@ -124,7 +124,7 @@ pub(crate) fn decode(c: &mut Cursor<'_>) -> std::result::Result<Painless, FfiSta
         }
     };
     let norm = f32::from_bits(c.i32()? as u32);
-    let n = c.len()?;
+    let n = c.length()?;
     if n == 0 || n > MAX_OPS {
         return Err(invalid(format!(
             "query tree: painless program of {n} operations (expected 1..={MAX_OPS})"
@@ -215,7 +215,7 @@ fn nan_cosine() -> Error {
 impl Painless {
     /// Whether the function reads the query as floats on a byte field, which
     /// the encoder never sends.
-    pub(crate) fn needs_float_target(&self) -> bool {
+    pub fn needs_float_target(&self) -> bool {
         self.function == Function::CosineWithNorm
     }
 
@@ -317,28 +317,28 @@ impl Painless {
         stack[0] as f32
     }
 
-    pub(crate) fn score_floats(&self, q: &[f32], v: &[f32]) -> Result<f32> {
+    pub fn score_floats(&self, q: &[f32], v: &[f32]) -> Result<f32> {
         Ok(self.run(self.value_floats(q, v)?))
     }
 
-    pub(crate) fn score_bytes(&self, q: &[u8], v: &[u8]) -> Result<f32> {
+    pub fn score_bytes(&self, q: &[u8], v: &[u8]) -> Result<f32> {
         Ok(self.run(self.value_bytes(q, v)?))
     }
 
-    pub(crate) fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         format!("{:?}{:?}", self.function, self.ops)
     }
 }
 
 /// The error a document without a vector gets: Painless's `getValue` throws.
-pub(crate) fn missing(field: &str, doc: i32) -> Error {
+pub fn missing(field: &str, doc: i32) -> Error {
     Error::IllegalArgument(format!("document [{doc}] has no value for field '{field}'"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jvm_nodes::tests::Blob;
+    use crate::query_blob::test_support::Blob;
 
     fn program(function: u8, norm: f32, ops: &[Blob]) -> Blob {
         let mut b = Blob::default().u8(function).f32(norm).i32(ops.len() as i32);
@@ -360,7 +360,7 @@ mod tests {
         op(1).f64(x)
     }
 
-    fn decoded(b: &Blob) -> std::result::Result<Painless, FfiStatus> {
+    fn decoded(b: &Blob) -> std::result::Result<Painless, Status> {
         decode(&mut Cursor::new(&b.0))
     }
 

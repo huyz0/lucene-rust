@@ -1,6 +1,5 @@
 use super::*;
-use crate::jvm_analysis::tests::spec;
-use crate::jvm_reader;
+use lucene_engine::analysis::test_support::spec;
 
 const TEXT: &str = "The quick brown fox jumps over the lazy dog. A second sentence mentions \
 the fox again & it ends here! Third <b>sentence</b> without the animal.";
@@ -11,7 +10,7 @@ fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
 }
 
 fn term_query(field: &str, term: &str) -> Vec<u8> {
-    let mut q = vec![jvm_reader::QUERY_TERM];
+    let mut q = vec![lucene_engine::query_blob::QUERY_TERM];
     put_bytes(&mut q, field.as_bytes());
     put_bytes(&mut q, term.as_bytes());
     q
@@ -228,7 +227,10 @@ fn bad_requests_and_buffers_are_refused() {
 }
 
 fn fuzzy_query(term: &str, max_edits: u8) -> Vec<u8> {
-    let mut q = vec![jvm_reader::QUERY_TREE, crate::jvm_queries::NODE_FUZZY];
+    let mut q = vec![
+        lucene_engine::query_blob::QUERY_TREE,
+        lucene_engine::queries::NODE_FUZZY,
+    ];
     put_bytes(&mut q, b"body");
     put_bytes(&mut q, term.as_bytes());
     q.push(max_edits);
