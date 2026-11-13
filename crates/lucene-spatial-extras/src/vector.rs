@@ -8,8 +8,8 @@ use std::sync::Arc;
 use lucene_index::document::{
     DocValuesType, DoublePoint, Field, FieldType, NumericDocValuesField, StoredValue,
 };
-use lucene_util::spatial4j::{DistanceCalculator, Point, Rectangle, Shape, SpatialContext};
-use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
+use lucene_spatial4j::spatial4j::{DistanceCalculator, Point, Rectangle, Shape, SpatialContext};
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 
 use super::bbox::numeric;
 use super::bool_query::{docs_of, BoolQuery, ConstantScoreBool};
@@ -30,9 +30,9 @@ pub const SUFFIX_X: &str = "__x";
 pub const SUFFIX_Y: &str = "__y";
 
 fn unsupported(message: impl Into<String>) -> Error {
-    Error::Spatial(lucene_util::spatial4j::Error::UnsupportedOperation(Some(
-        message.into(),
-    )))
+    Error::Spatial(lucene_spatial4j::spatial4j::Error::UnsupportedOperation(
+        Some(message.into()),
+    ))
 }
 
 /// `PointVectorStrategy`.

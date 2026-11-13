@@ -525,11 +525,11 @@ pub enum Error {
     /// to seek, `ord()` on a dictionary without ordinals).
     #[error("{0}")]
     Unsupported(String),
-    /// A Spatial4j / spatial-extras exception (`lucene_util::spatial4j`):
+    /// A Spatial4j / spatial-extras exception (`lucene_spatial4j::spatial4j`):
     /// what a spatial strategy, its queries and value sources throw, with
-    /// Java's class ([`lucene_util::spatial4j::Error::java_class`]).
+    /// Java's class ([`lucene_spatial4j::spatial4j::Error::java_class`]).
     #[error(transparent)]
-    Spatial(#[from] lucene_util::spatial4j::Error),
+    Spatial(#[from] lucene_spatial4j::spatial4j::Error),
     /// `NodeCommunicationException`: the other node of a replication group
     /// could not be reached.
     #[error(transparent)]

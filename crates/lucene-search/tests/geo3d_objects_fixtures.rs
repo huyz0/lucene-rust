@@ -13,9 +13,9 @@ use lucene_search::document::geo::geo3d::PointInGeo3DShapeQuery;
 use lucene_search::extended_query::DocumentClause;
 use lucene_search::query::Clause;
 use lucene_search::query_visitor::{visit, QueryVisitor};
-use lucene_util::spatial3d::serializable::Input;
-use lucene_util::spatial3d::standard_objects::{read_planet_object, StandardObject};
-use lucene_util::spatial3d::GeoShape;
+use lucene_spatial3d::serializable::Input;
+use lucene_spatial3d::standard_objects::{read_planet_object, StandardObject};
+use lucene_spatial3d::GeoShape;
 
 fn read(file: &str) -> String {
     std::fs::read_to_string(

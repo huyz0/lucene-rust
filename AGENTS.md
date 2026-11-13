@@ -23,8 +23,10 @@ estimates — is [`PLAN.md`](PLAN.md). The OpenSearch plugin lives in
 
 1. **Downward-only crate deps.** `util ← store ← codecs ← index ← search ←
    {facet, grouping, aggs, highlighter, queryparser, suggest, ...} ← ffi`, with
-   `analysis` beside `store` and the vector crates (`vector-quant`, `ivf`)
-   under `index`. There is no `lucene-core` crate: it is `util` to `search`.
+   `analysis` beside `store`, `spatial3d` and `spatial4j` (geometry; `spatial3d`
+   under `index`, `spatial4j` over it) beside `util`, and the vector crates
+   (`vector-quant`, `ivf`) under `index`. There is no `lucene-core` crate: it
+   is `util` to `search`.
    Siblings never depend on each other. See the **architecture** skill.
 2. **Port by on-disk format, not by class hierarchy.** The Java class graph is
    not the target; the byte-level wire format is. See **architecture** and

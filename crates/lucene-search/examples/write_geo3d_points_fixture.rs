@@ -16,8 +16,8 @@ use lucene_index::document::geo3d::from_degrees;
 use lucene_index::document::{Document, Geo3DDocValuesField, Geo3DPoint, Store, StringField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
+use lucene_spatial3d::{GeoPoint, PlanetModel};
 use lucene_store::FsDirectory;
-use lucene_util::spatial3d::{GeoPoint, PlanetModel};
 
 fn main() {
     let out = std::env::args()

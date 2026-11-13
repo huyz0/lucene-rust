@@ -28,6 +28,8 @@ lucene-codecs = { path = "../../crates/lucene-codecs", features = ["test-support
 lucene-index = { path = "../../crates/lucene-index" }
 lucene-ffi = { path = "../../crates/lucene-ffi" }
 lucene-util = { path = "../../crates/lucene-util" }
+lucene-spatial3d = { path = "../../crates/lucene-spatial3d" }
+lucene-spatial4j = { path = "../../crates/lucene-spatial4j" }
 lucene-analysis = { path = "../../crates/lucene-analysis" }
 lucene-analysis-phonetic = { path = "../../crates/lucene-analysis-phonetic" }
 lucene-analysis-stempel = { path = "../../crates/lucene-analysis-stempel" }
