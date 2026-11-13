@@ -201,6 +201,21 @@ as on stock OpenSearch: a `CopyState` in that window fails there too.
 Remote-backed storage stays refused, because its upload listener asks for an
 `InternalEngine` by class, in a place no factory reaches.
 
+**Cross-cluster replication.** A leader on the accelerated engine serves the replication
+plugin as OpenSearch's engine does. Replication reads changes from the Java
+translog, which honours replication's retention-lease translog deletion policy,
+or from soft-deleted history (`newChangesSnapshot`). With k-NN derived source,
+the translog holds the vectors and the stored `_source` reads them back. A
+follower keeps its leader's settings, `index.engine.accelerated` included, and
+replication serves it with its own `ReplicationEngine`. OpenSearch refuses an
+index for which two plugins offer an engine, so the plugin offers none to an
+index carrying `index.plugins.replication.follower.leader_index`
+(`RustEngineSupport.openSearchEngine`). It also masks no derived source there,
+and does not route that index's realtime searches. The follower writes stock
+segments, which native reads serve, so an `extended` k-NN field cannot be
+followed. The follower cluster needs this plugin for the settings and the
+mappings.
+
 ## Where it behaves differently
 
 - **Refresh is a commit.** Every refreshed operation is already in the last
