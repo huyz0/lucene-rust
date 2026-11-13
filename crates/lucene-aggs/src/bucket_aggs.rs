@@ -1485,6 +1485,9 @@ struct Leaf<'a> {
     memo: (i64, i64, i64, u32, u32),
     /// This segment was answered from the points ([`count_from_points`]).
     done: bool,
+    /// The current window was folded from block statistics
+    /// ([`zone_window`]): neither read ahead nor collected.
+    zoned: bool,
     /// A window of a single-valued numeric column read ahead
     /// ([`Leaf::prefetch`]): document `pre_base + i`'s value is `pre_vals[i]`
     /// when bit `i` of `pre_bits` is set, for `i < pre_len`.
@@ -2015,6 +2018,7 @@ fn open_leaf<'a>(
         max_to,
         memo: (1, 0, 0, 0, u32::MAX),
         done: false,
+        zoned: false,
         pre_base: 0,
         pre_len: 0,
         pre_vals: Vec::new(),
@@ -3282,6 +3286,115 @@ fn collect_subs_window(
     Ok(())
 }
 
+/// Windows [`zone_window`] has answered, process-wide.
+static ZONE_WINDOWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many whole windows a `date_histogram` has answered from block
+/// statistics instead of collecting them, since the process started.
+pub fn zone_windows_folded() -> u64 {
+    ZONE_WINDOWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A top-level `date_histogram` whose sub-aggregations are all metrics
+/// over the whole window `base..base + len` -- every document matching and
+/// live -- answered from the columns' block statistics
+/// (`NumericReader::window_stats`) when the window's dates all fall in one
+/// bucket: the bucket counts `len` documents and each metric folds its
+/// window's statistics ([`metric_aggs::fold_zone_needs`]), exactly as
+/// collecting each document would. False, with nothing changed, when any
+/// part cannot: the window is then collected as usual.
+fn zone_window(
+    node: &AggNode,
+    state: &mut State,
+    leaf: &mut Leaf<'_>,
+    base: i32,
+    len: usize,
+) -> Result<bool> {
+    let (
+        AggNode::DateHistogram {
+            rounding,
+            hard_bounds,
+            subs: sub_nodes,
+            ..
+        },
+        State::Keyed {
+            ords,
+            keys,
+            docs: counts,
+            subs: sub_states,
+        },
+    ) = (node, &mut *state)
+    else {
+        return Ok(false);
+    };
+    if leaf.done || leaf.nested.is_some() {
+        return Ok(false);
+    }
+    let stats_of = |l: &Leaf<'_>| -> Result<Option<lucene_codecs::adaptive_zones::ZoneStats>> {
+        match &l.col {
+            Col::Values(Values::Single(r), false) => Ok(r
+                .window_stats(base)
+                .map_err(lucene_search::Error::from)?
+                .and_then(|(stats, count)| (count == len).then_some(stats))),
+            _ => Ok(None),
+        }
+    };
+    let Some(dates) = stats_of(leaf)? else {
+        return Ok(false);
+    };
+    // Every date of the window in one bucket: `bucket` gives the range of
+    // values rounding to its start.
+    let Some((from, to)) = rounding.bucket(dates.min) else {
+        return Ok(false);
+    };
+    if dates.min < from || dates.max >= to {
+        return Ok(false);
+    }
+    let contained = !hard_bounds.1.is_some_and(|max| from >= max)
+        && !hard_bounds.0.is_some_and(|min| from < min);
+    if !contained {
+        return Ok(false);
+    }
+    // The bucket: its key is inside the hard bounds (checked above), so
+    // collecting the window would make it at its first document, and making
+    // it now changes nothing should the window be collected after all. Then
+    // each sub-aggregation's folded state, before anything else is changed.
+    let ord = keyed_ord_cached(&mut leaf.key_cache, ords, keys, 0, from);
+    let mut folded = Vec::with_capacity(sub_nodes.len());
+    for ((n, s), l) in sub_nodes.iter().zip(sub_states.iter()).zip(&leaf.subs) {
+        let (
+            AggNode::Metric {
+                kind, script: None, ..
+            },
+            State::Metric(col),
+        ) = (n, s)
+        else {
+            return Ok(false);
+        };
+        let Some(stats) = stats_of(l)? else {
+            return Ok(false);
+        };
+        let current = col.get(ord as usize);
+        let Some(next) = metric_aggs::fold_zone_needs(col.needs(), current, stats, len, *kind)
+        else {
+            return Ok(false);
+        };
+        folded.push(next);
+    }
+    // ARITH: `len` documents of one window.
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        *slot(counts, ord as usize) += len as u64;
+    }
+    for (s, next) in sub_states.iter_mut().zip(folded) {
+        if let State::Metric(col) = s {
+            with_metric_col!(col, v => metric_aggs::MetricSlot::set(slot(v, ord as usize), next));
+        }
+    }
+    ZONE_WINDOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(true)
+}
+
 /// `LeafBucketCollector.collect(doc, owningBucketOrd)` for `node`.
 fn collect(
     node: &AggNode,
@@ -4499,7 +4612,7 @@ pub fn aggregate_tree_cached(
                     }
                 }
                 for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
-                    if l.done {
+                    if l.done || l.zoned {
                     } else if no_windows() {
                         for &doc in docs {
                             collect(n, s, l, doc, 0)?;
@@ -4513,11 +4626,24 @@ pub fn aggregate_tree_cached(
         // Windows of documents, each column read ahead for the window
         // where the matches are dense enough to repay reading every
         // document's value (one in eight).
-        let window = |leaves: &mut [Leaf<'_>], base: i32, end: i32, matches: usize| {
+        // A window every document of which matches and is live (`live`
+        // of its `matches`) is first offered to the block statistics
+        // ([`zone_window`]); a node they answer is neither read ahead nor
+        // collected for it.
+        let window = |states: &mut [State],
+                      leaves: &mut [Leaf<'_>],
+                      base: i32,
+                      end: i32,
+                      matches: usize,
+                      live: usize| {
             // ARITH: `base < end <= max_doc`.
             #[allow(clippy::arithmetic_side_effects)]
             let len = (end - base) as usize;
-            for l in leaves.iter_mut().filter(|l| !l.done) {
+            let full = matches == len && live == len && !no_windows();
+            for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(leaves.iter_mut()) {
+                l.zoned = full && !l.done && zone_window(n, s, l, base, len)?;
+            }
+            for l in leaves.iter_mut().filter(|l| !l.done && !l.zoned) {
                 if matches.saturating_mul(8) >= len && !no_windows() {
                     l.prefetch(base, len)?;
                 } else {
@@ -4540,7 +4666,7 @@ pub fn aggregate_tree_cached(
                     let base = first - first.rem_euclid(WINDOW);
                     let end = base.saturating_add(WINDOW).min(max_doc).max(first + 1);
                     let j = i + docs[i..].partition_point(|&d| d < end);
-                    window(leaves, base, end, j - i)?;
+                    window(states, leaves, base, end, j - i, j - i)?;
                     visit_window(states, leaves, &docs[i..j])?;
                     i = j;
                 }
@@ -4620,7 +4746,8 @@ pub fn aggregate_tree_cached(
                             }
                         }
                         let end = base.saturating_add(WINDOW).min(max_doc);
-                        window(&mut leaves, base, end, window_docs.len())?;
+                        let matches = window_docs.len();
+                        window(states, &mut leaves, base, end, matches, matches)?;
                         visit_window(states, &mut leaves, window_docs)?;
                     }
                 }
@@ -4662,12 +4789,15 @@ pub fn aggregate_tree_cached(
                     let mut base = lo;
                     while base < hi && !lucene_util::memory::past_deadline() {
                         let end = base.saturating_add(WINDOW).min(hi);
-                        window(&mut leaves, base, end, (end - base) as usize)?;
                         live_window.clear();
                         match live {
                             None => live_window.extend(base..end),
                             Some(l) => live_window.extend((base..end).filter(|&d| l.get_doc(d))),
                         }
+                        // ARITH: `base < end`.
+                        #[allow(clippy::arithmetic_side_effects)]
+                        let matches = (end - base) as usize;
+                        window(states, &mut leaves, base, end, matches, live_window.len())?;
                         visit_window(states, &mut leaves, &live_window)?;
                         base = end;
                     }
@@ -5736,6 +5866,7 @@ mod tests {
             max_to: Vec::new(),
             memo: (1, 0, 0, 0, u32::MAX),
             done: false,
+            zoned: false,
             pre_base: 0,
             pre_len: len,
             pre_bits: vec![u64::MAX; len.div_ceil(64)],
