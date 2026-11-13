@@ -39,6 +39,7 @@ mod micro_completion;
 mod micro_doc_index;
 mod micro_drill_sideways;
 mod micro_expressions;
+mod micro_extended_queries;
 mod micro_facet_counts;
 mod micro_freetext;
 mod micro_fst_lookup;
@@ -54,7 +55,6 @@ mod micro_hunspell;
 mod micro_infix;
 mod micro_ints_ref_fst_enum;
 mod micro_join;
-mod micro_extended_queries;
 mod micro_memory_index;
 mod micro_monitor;
 mod micro_queries;
@@ -2116,7 +2116,9 @@ fn main() {
         "analysis_common" => micro_analysis_common::bench_analysis_common(warmup, measure),
         "analysis_lang" => micro_analysis_lang::bench_analysis_lang(warmup, measure),
         "analysis_misc" => micro_analysis_misc::bench_analysis_misc(warmup, measure),
-        "analysis_language_modules" => micro_analysis_language_modules::bench_analysis_language_modules(warmup, measure),
+        "analysis_language_modules" => {
+            micro_analysis_language_modules::bench_analysis_language_modules(warmup, measure)
+        }
         "analysis_icu" => micro_analysis_icu::bench_analysis_icu(warmup, measure),
         "analysis_icu_parts" => micro_analysis_icu_parts::bench_analysis_icu_parts(warmup, measure),
         "analysis_opennlp" => micro_analysis_opennlp::bench_analysis_opennlp(warmup, measure),
@@ -2274,7 +2276,9 @@ fn main() {
                 .nth(2)
                 .unwrap_or_else(|| panic!("{index_bench} needs an index directory"));
             match index_bench {
-                "extended_corpus" => micro_extended_queries::bench_extended_corpus(warmup, measure, &index),
+                "extended_corpus" => {
+                    micro_extended_queries::bench_extended_corpus(warmup, measure, &index)
+                }
                 "similarity" => micro_extended_queries::bench_similarity(warmup, measure, &index),
                 _ => micro_extended_queries::bench_sort_pruning(warmup, measure, &index),
             }
