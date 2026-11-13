@@ -71,7 +71,7 @@ written), `method.engine` picks the k-NN engine. `extended` needs
 | `indices.aggregation_segment_cache.size` | node | `256mb` | bytes the aggregation segment cache keeps parts in across the indices that opt in; least recently used parts go first. `0` turns it off. Its counters are under `aggregation_segment_cache` in `GET /_plugins/lucene_rust/stats` |
 | `indices.fetch.accelerated_reader` | node | `true`, `false` with the security plugin | install the reader wrapper native stored-field reads need. The security plugin needs the index's one reader wrapper slot for field- and document-level security, so with it installed the default is off |
 | `index.engine.accelerated` | index, final | the node default | `true`: the index's shards are written by the accelerated engine. Set at creation; creation fails with the reason if the index's configuration is one the engine refuses |
-| `indices.engine.accelerated.default` | node | `true` | the default of the setting above, for every index without its own setting: new ones, ones created before the plugin (on OpenSearch 3.x; 2.x-created indices keep OpenSearch's engine), and system indices. An index that only inherits it stores no setting (a node without the plugin opens it unchanged) and falls back to OpenSearch's engine where the accelerated one would refuse it. `false` keeps OpenSearch's engine for every index that does not ask |
+| `indices.engine.accelerated.default` | node | `true` | the default of the setting above, for every index without its own setting: new ones, ones created before the plugin (on OpenSearch 3.x or 2.x), and system indices. An index that only inherits it stores no setting (a node without the plugin opens it unchanged) and falls back to OpenSearch's engine where the accelerated one would refuse it. `false` keeps OpenSearch's engine for every index that does not ask |
 | `index.codec.stored_fields.recompress_on_merge` | index | `true` | accelerated engine, `index.codec: default`: merges write stored fields with a high-compression LZ4 match finder. Same LZ4 format, so OpenSearch's engine and stock Lucene read it; merged stored fields 9-28% smaller and fetches up to 30% faster, for about 1.4 CPU-s more per million log events indexed (see [benchmarks/settings-defaults.md](benchmarks/settings-defaults.md)). `false` writes stock's fast LZ4 |
 | `indices.engine.accelerated.node_enabled` | node | `true` | `false`: this node builds OpenSearch's engine even for accelerated-engine indices. Used for rolling back and for mixed clusters |
 | `breaker.indexing_buffers.limit` | node | 3 × `indices.memory.index_buffer_size` + `indices.store.page_cache.size` | circuit breaker for the accelerated writer's buffered documents, which the page cache's resident bytes are also charged to (never refused). A trip is a 429 on the indexing request |
@@ -266,9 +266,10 @@ set of answers checked after every step; timings below).
    inherits `indices.engine.accelerated.default` (on), stores no setting, and
    keeps its stock segments, which the accelerated engine reads and merges as
    they are. While the restart runs, an index has copies on both engines,
-   which replicate to each other. Indices created on OpenSearch 2.x (Lucene 9
-   segments) are the exception: they stay on OpenSearch's engine until
-   reindexed. Eligible searches run natively from the moment a shard is on an
+   which replicate to each other. Indices created on OpenSearch 2.x move too:
+   their Lucene 9 segments are read and merged as they are, a force merge
+   merges them into Lucene 10.5 segments, and `POST /<index>/_upgrade`
+   rewrites each one on its own, as OpenSearch's engine does. Eligible searches run natively from the moment a shard is on an
    upgraded node. To keep existing indices on OpenSearch's engine, start the
    upgraded nodes with `indices.engine.accelerated.default: false`.
 2. **Check.** Watch `accelerated_errors` (0) and the fallback mix
