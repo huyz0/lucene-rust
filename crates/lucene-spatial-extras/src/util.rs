@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use lucene_spatial4j::spatial4j::{DistanceCalculator, Point, Shape, SpatialContext};
+use lucene_spatial4j::spatial_extras::prefix_tree::SpatialPrefixTree;
+use lucene_spatial4j::spatial_extras::query::SpatialOperation;
 use lucene_util::geo::java_double_string;
-use lucene_util::spatial4j::{DistanceCalculator, Point, Shape, SpatialContext};
-use lucene_util::spatial_extras::prefix_tree::SpatialPrefixTree;
-use lucene_util::spatial_extras::query::SpatialOperation;
 
 use lucene_search::explain::Explanation;
 use lucene_search::reader::{LeafReader, PostingsFlags};

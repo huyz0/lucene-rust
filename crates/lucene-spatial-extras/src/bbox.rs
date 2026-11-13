@@ -11,8 +11,8 @@ use lucene_index::document::{
     DocValuesType, DoublePoint, Field, FieldType, IndexOptions, IndexableField,
     NumericDocValuesField, StoredValue, StringField,
 };
-use lucene_util::spatial4j::{Point, Rectangle, RectangleImpl, Shape, SpatialContext};
-use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
+use lucene_spatial4j::spatial4j::{Point, Rectangle, RectangleImpl, Shape, SpatialContext};
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 
 use super::bool_query::{BoolQuery, ConstantScoreBool, Occur};
 use super::util::{DistanceToShapeValueSource, ShapeValues, ShapeValuesSource, WithDefault};
@@ -44,9 +44,9 @@ pub fn default_field_type() -> FieldType {
 }
 
 fn unsupported(message: impl Into<String>) -> Error {
-    Error::Spatial(lucene_util::spatial4j::Error::UnsupportedOperation(Some(
-        message.into(),
-    )))
+    Error::Spatial(lucene_spatial4j::spatial4j::Error::UnsupportedOperation(
+        Some(message.into()),
+    ))
 }
 
 /// `BBoxStrategy`.
