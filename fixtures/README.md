@@ -401,7 +401,7 @@ Every fixture `java` runs with `-Dlucene.useScalarFMA=true
 `scripts/lib-lucene-jars.sh`). Lucene decides whether its float vector kernels
 fuse multiply-add from a CPU heuristic (`Constants.HAS_FAST_SCALAR_FMA`: on for
 Intel and arm64 Linux, off for most AMD), so without the pin a vector score's
-last bits depend on the machine -- `m7_*_index/searches.tsv` regenerated
+last bits depend on the machine -- `extended_*_index/searches.tsv` regenerated
 byte for byte locally and differed on an AMD CI runner.
 
 ## Verifying the write path (reverse direction)

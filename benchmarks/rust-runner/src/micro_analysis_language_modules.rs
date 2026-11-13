@@ -1,4 +1,4 @@
-//! The pairs (`benchmarks/micro/java/AnalysisM12Micro.java` is the Java
+//! The pairs (`benchmarks/micro/java/AnalysisLanguageModulesMicro.java` is the Java
 //! twin): the language modules' filters over corpora both sides generate
 //! from `SweepMicro.Rng`.
 
@@ -59,14 +59,14 @@ fn run(name: &str, a: &Analyzer, docs: &[String], w: Duration, m: Duration) {
     });
 }
 
-/// `AnalysisM12Micro.SYLLABLES`.
+/// `AnalysisLanguageModulesMicro.SYLLABLES`.
 const SYLLABLES: [&str; 50] = [
     "an", "ber", "schm", "idt", "ko", "wal", "ski", "mc", "don", "ald", "ph", "ough", "tz", "sch",
     "ch", "cz", "rz", "ei", "ie", "ou", "th", "gh", "w", "y", "ss", "ll", "tt", "n", "m", "r", "l",
     "k", "s", "t", "d", "b", "g", "p", "f", "v", "z", "x", "q", "j", "h", "a", "e", "i", "o", "u",
 ];
 
-/// `AnalysisM12Micro.names`.
+/// `AnalysisLanguageModulesMicro.names`.
 fn names(seed: u64, docs: usize) -> Vec<String> {
     let mut r = Rng(seed);
     (0..docs)
@@ -104,7 +104,7 @@ fn phonetic(simple: &'static str, inject: bool) -> Analyzer {
     })
 }
 
-pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
+pub(super) fn bench_analysis_language_modules(w: Duration, m: Duration) {
     let names = names(0x9E37_79B9_7F4A_7C15, 100);
     let few = names_few();
     run("ph_soundex", &phonetic("Soundex", true), &names, w, m);
@@ -380,7 +380,7 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
     );
 }
 
-/// `AnalysisM12Micro.fixtureDocs`: 50-word documents from a fixture file's
+/// `AnalysisLanguageModulesMicro.fixtureDocs`: 50-word documents from a fixture file's
 /// first column (escaped lines skipped), read from the repository root.
 fn fixture_docs(file: &str) -> Vec<String> {
     let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
@@ -392,7 +392,7 @@ fn fixture_docs(file: &str) -> Vec<String> {
     words.chunks_exact(50).map(|c| c.join(" ")).collect()
 }
 
-/// `AnalysisM12Micro.japaneseDocs`.
+/// `AnalysisLanguageModulesMicro.japaneseDocs`.
 fn japanese_docs() -> Vec<String> {
     line_docs(&[
         "fixtures/corpus/analysis-japanese.txt",
@@ -400,7 +400,7 @@ fn japanese_docs() -> Vec<String> {
     ])
 }
 
-/// `AnalysisM12Micro.lineDocs`: every non-empty line of the files.
+/// `AnalysisLanguageModulesMicro.lineDocs`: every non-empty line of the files.
 fn line_docs(files: &[&str]) -> Vec<String> {
     files
         .iter()
@@ -419,7 +419,7 @@ fn names_few() -> Vec<String> {
     names(0x2545_F491_4F6C_DD1D, 10)
 }
 
-/// `AnalysisM12Micro.WholeSentenceTokenizer`.
+/// `AnalysisLanguageModulesMicro.WholeSentenceTokenizer`.
 #[derive(Default)]
 struct WholeSentence {
     bounds: Option<(usize, usize)>,

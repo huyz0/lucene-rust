@@ -313,7 +313,7 @@ language modules, one crate per Lucene module) that a source under
 `benchmarks/rust-runner/src` imports with `use lucene_analysis_<module>::..`,
 the status carries a `Bench` clause -- the ratio against Lucene, or `Bench:
 see` the row that holds it. The M12 part 2 review found the Nori rows silent
-about an `analysis_m12` bench that existed and had been run; the ratios were
+about an `analysis_language_modules` bench that existed and had been run; the ratios were
 only in a commit message.
 
 **Seen to fail** on that tree, before the rows were written: `docs/parity/analysis-lang-modules.md:21:

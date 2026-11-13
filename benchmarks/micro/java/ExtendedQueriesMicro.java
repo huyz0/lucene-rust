@@ -43,18 +43,18 @@ import org.apache.lucene.util.Version;
 
 /**
  * Java side of the benchmark pairs; the Rust side is {@code
- * benchmarks/rust-runner/src/micro_m7.rs}, with the same bench and case names.
+ * benchmarks/rust-runner/src/micro_extended_queries.rs}, with the same bench and case names.
  *
- * <p>The queries are parsed by the fixture generators' own {@code parse} ({@link GenM7Queries},
+ * <p>The queries are parsed by the fixture generators' own {@code parse} ({@link GenExtendedQueries},
  * {@link GenSimilaritySearch}, {@code BenchRunner.Sexpr}/{@code BenchRunner.sort}), compiled
  * alongside this class by {@code scripts/bench-micro.sh}, so both engines time the shapes the
  * differential tests verify. Every case prints a {@code #check} digest of its results (FNV-1a over
  * each top hit's document and score bits) that the report compares across the engines before it
  * shows a ratio.
  *
- * <p>Usage: {@code M7Micro <bench> [index-dir]}
+ * <p>Usage: {@code ExtendedQueriesMicro <bench> [index-dir]}
  */
-public final class M7Micro {
+public final class ExtendedQueriesMicro {
 
   interface Op {
     long run() throws IOException;
@@ -124,14 +124,14 @@ public final class M7Micro {
     String bench = args[0];
     String index = args.length > 1 ? args[1] : null;
     switch (bench) {
-      case "m7_fixture" -> m7Fixture();
-      case "m7_corpus" -> m7Corpus(index);
+      case "extended_fixture" -> extendedFixture();
+      case "extended_corpus" -> extendedCorpus(index);
       case "similarity" -> similarity(index);
       case "sort_pruning" -> sortPruning(index);
       case "query_builder" -> queryBuilder();
       case "stored_fields_write" -> storedFieldsWrite();
       default -> {
-        System.err.println("M7Micro: unknown bench " + bench);
+        System.err.println("ExtendedQueriesMicro: unknown bench " + bench);
         System.exit(2);
       }
     }
@@ -169,17 +169,17 @@ public final class M7Micro {
     return "other";
   }
 
-  static Query parseM7(String q) {
-    GenM7Queries.pos = 0;
+  static Query parseExtended(String q) {
+    GenExtendedQueries.pos = 0;
     String[] tok = q.split(" ");
-    Query query = GenM7Queries.parse(tok);
-    if (GenM7Queries.pos != tok.length) throw new AssertionError("trailing tokens in " + q);
+    Query query = GenExtendedQueries.parse(tok);
+    if (GenExtendedQueries.pos != tok.length) throw new AssertionError("trailing tokens in " + q);
     return query;
   }
 
   record Search(IndexSearcher searcher, Query query, int top) {}
 
-  static void runM7Cases(String prefix, Path dir, List<String[]> lines) throws IOException {
+  static void runExtendedCases(String prefix, Path dir, List<String[]> lines) throws IOException {
     try (FSDirectory d = FSDirectory.open(dir);
         DirectoryReader reader = DirectoryReader.open(d)) {
       Map<String, IndexSearcher> searchers = new TreeMap<>();
@@ -190,12 +190,12 @@ public final class M7Micro {
                 l[0],
                 k -> {
                   IndexSearcher is = new IndexSearcher(reader);
-                  is.setSimilarity(GenM7Queries.sims().get(k));
+                  is.setSimilarity(GenExtendedQueries.sims().get(k));
                   return is;
                 });
         groups
             .computeIfAbsent(prefix + "_" + family(l[1]), k -> new ArrayList<>())
-            .add(new Search(s, parseM7(l[1]), Integer.parseInt(l[2])));
+            .add(new Search(s, parseExtended(l[1]), Integer.parseInt(l[2])));
       }
       for (Map.Entry<String, List<Search>> e : groups.entrySet()) {
         List<Search> searches = new ArrayList<>();
@@ -232,13 +232,13 @@ public final class M7Micro {
     return out;
   }
 
-  static void m7Fixture() throws IOException {
-    float[] qvec = GenM7Queries.QVEC;
-    runM7Cases("fx", Paths.get("fixtures/data/m7_queries_index"), fixtureLines("m7_queries_index", 20));
-    GenM7Queries.QVEC = new float[] {0.1f, -0.3f, 0.25f, 0.6f, -0.05f, 0.4f, -0.2f, 0.15f};
-    runM7Cases("fxknn", Paths.get("fixtures/data/m7_knn_index"), fixtureLines("m7_knn_index", 50));
-    GenM7Queries.QVEC = qvec;
-    runM7Cases("fxdv", Paths.get("fixtures/data/m7_dv_index"), fixtureLines("m7_dv_index", 50));
+  static void extendedFixture() throws IOException {
+    float[] qvec = GenExtendedQueries.QVEC;
+    runExtendedCases("fx", Paths.get("fixtures/data/extended_queries_index"), fixtureLines("extended_queries_index", 20));
+    GenExtendedQueries.QVEC = new float[] {0.1f, -0.3f, 0.25f, 0.6f, -0.05f, 0.4f, -0.2f, 0.15f};
+    runExtendedCases("fxknn", Paths.get("fixtures/data/extended_knn_index"), fixtureLines("extended_knn_index", 50));
+    GenExtendedQueries.QVEC = qvec;
+    runExtendedCases("fxdv", Paths.get("fixtures/data/extended_dv_index"), fixtureLines("extended_dv_index", 50));
   }
 
   /** Rust {@code CORPUS_QUERIES}, character for character. */
@@ -292,10 +292,10 @@ public final class M7Micro {
     "B 0 2 0 BY 1.5 1 0 T body t2 T body t5",
   };
 
-  static void m7Corpus(String index) throws IOException {
+  static void extendedCorpus(String index) throws IOException {
     List<String[]> lines = new ArrayList<>();
     for (String q : CORPUS_QUERIES) lines.add(new String[] {"bm25", q, "10"});
-    runM7Cases("c", Paths.get(index), lines);
+    runExtendedCases("c", Paths.get(index), lines);
   }
 
   static final String[] SIM_QUERIES = {

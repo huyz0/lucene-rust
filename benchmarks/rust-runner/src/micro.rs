@@ -22,14 +22,14 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
-#[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
-mod m7grammar;
+#[path = "../../../crates/lucene-search/tests/extended_grammar/mod.rs"]
+mod extended_grammar;
 mod micro_aggs;
 mod micro_analysis_common;
 mod micro_analysis_icu;
 mod micro_analysis_icu_parts;
 mod micro_analysis_lang;
-mod micro_analysis_m12;
+mod micro_analysis_language_modules;
 mod micro_analysis_misc;
 mod micro_analysis_opennlp;
 mod micro_analyzing;
@@ -54,7 +54,7 @@ mod micro_hunspell;
 mod micro_infix;
 mod micro_ints_ref_fst_enum;
 mod micro_join;
-mod micro_m7;
+mod micro_extended_queries;
 mod micro_memory_index;
 mod micro_monitor;
 mod micro_queries;
@@ -2116,7 +2116,7 @@ fn main() {
         "analysis_common" => micro_analysis_common::bench_analysis_common(warmup, measure),
         "analysis_lang" => micro_analysis_lang::bench_analysis_lang(warmup, measure),
         "analysis_misc" => micro_analysis_misc::bench_analysis_misc(warmup, measure),
-        "analysis_m12" => micro_analysis_m12::bench_analysis_m12(warmup, measure),
+        "analysis_language_modules" => micro_analysis_language_modules::bench_analysis_language_modules(warmup, measure),
         "analysis_icu" => micro_analysis_icu::bench_analysis_icu(warmup, measure),
         "analysis_icu_parts" => micro_analysis_icu_parts::bench_analysis_icu_parts(warmup, measure),
         "analysis_opennlp" => micro_analysis_opennlp::bench_analysis_opennlp(warmup, measure),
@@ -2266,17 +2266,17 @@ fn main() {
                 .expect("ssdv_facets needs the SsdvFacetsMicro corpus directory");
             micro_ssdv_facets::bench_ssdv_facets(warmup, measure, &index);
         }
-        "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
-        "query_builder" => micro_m7::bench_query_builder(warmup, measure),
-        "stored_fields_write" => micro_m7::bench_stored_fields_write(warmup, measure),
-        index_bench @ ("m7_corpus" | "similarity" | "sort_pruning") => {
+        "extended_fixture" => micro_extended_queries::bench_extended_fixture(warmup, measure),
+        "query_builder" => micro_extended_queries::bench_query_builder(warmup, measure),
+        "stored_fields_write" => micro_extended_queries::bench_stored_fields_write(warmup, measure),
+        index_bench @ ("extended_corpus" | "similarity" | "sort_pruning") => {
             let index = std::env::args()
                 .nth(2)
                 .unwrap_or_else(|| panic!("{index_bench} needs an index directory"));
             match index_bench {
-                "m7_corpus" => micro_m7::bench_m7_corpus(warmup, measure, &index),
-                "similarity" => micro_m7::bench_similarity(warmup, measure, &index),
-                _ => micro_m7::bench_sort_pruning(warmup, measure, &index),
+                "extended_corpus" => micro_extended_queries::bench_extended_corpus(warmup, measure, &index),
+                "similarity" => micro_extended_queries::bench_similarity(warmup, measure, &index),
+                _ => micro_extended_queries::bench_sort_pruning(warmup, measure, &index),
             }
         }
         corpus @ ("postings_adv" | "postings_freq" | "positions" | "term_seek" | "doc_values"
