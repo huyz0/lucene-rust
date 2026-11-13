@@ -264,7 +264,12 @@ def pipeline_error(port, body):
 
 
 def stats_answer(port, path):
-    """A stats call's status and body, its node ids, timestamps and memory left out."""
+    """A stats call's status and body, its node ids, timestamps and memory left out.
+
+    `trailing_interval_value` counts the events inside a sliding time window, so
+    it differs by whichever node's window a request fell in; the all-time
+    `value` beside it is still compared.
+    """
     import urllib.request, urllib.error
     try:
         with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=60) as r:
@@ -278,7 +283,7 @@ def stats_answer(port, path):
     def clean(v):
         if isinstance(v, dict):
             return {k: clean(x) for k, x in v.items()
-                    if k not in ("nodes", "minutes_since_last_event") and not k.startswith("memory")}
+                    if k not in ("nodes", "minutes_since_last_event", "trailing_interval_value") and not k.startswith("memory")}
         return v
     return status, clean(body)
 
