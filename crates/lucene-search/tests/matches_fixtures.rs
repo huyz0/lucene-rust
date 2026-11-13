@@ -14,13 +14,13 @@
 //! score, boost, match-all, points ranges, fields without offsets and without
 //! positions. Named clauses are checked through `findNamedMatches`.
 
-mod m7support;
+mod extended_support;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::matches::{self, clause_name, find_named_matches, named_matches, Matches};
 use lucene_store::FsDirectory;
-use m7support::{fixture, Grammar, Manifest};
+use extended_support::{fixture, Grammar, Manifest};
 
 const GRAMMAR: Grammar = Grammar {
     text: "body",

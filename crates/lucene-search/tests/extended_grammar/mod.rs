@@ -1,9 +1,9 @@
-//! `GenM7Queries`' prefix query grammar, shared by
-//! `tests/m7_query_fixtures.rs` (hits and score bits against Lucene) and the
-//! `m7_queries` micro benchmark (`benchmarks/rust-runner/src/micro_m7.rs`,
+//! `GenExtendedQueries`' prefix query grammar, shared by
+//! `tests/extended_query_fixtures.rs` (hits and score bits against Lucene) and the
+//! `extended_queries` micro benchmark (`benchmarks/rust-runner/src/micro_extended_queries.rs`,
 //! which includes this file by path), so the benchmark times exactly the
 //! queries the differential test verifies. The Java twin is
-//! `GenM7Queries.parse`, which `benchmarks/micro/java/QueryMicro.java` calls.
+//! `GenExtendedQueries.parse`, which `benchmarks/micro/java/QueryMicro.java` calls.
 #![allow(dead_code, clippy::arithmetic_side_effects)]
 
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ use lucene_search::vector_query::{
     PatienceKnnVectorQuery, VectorsInput,
 };
 
-/// `GenM7Queries.sims()`.
+/// `GenExtendedQueries.sims()`.
 pub fn sim(name: &str) -> Arc<dyn Similarity> {
     match name {
         "bm25" => Arc::new(Bm25Similarity::default()),
@@ -77,7 +77,7 @@ pub fn floats(s: &str) -> Option<Vec<f32>> {
     (s != "-").then(|| s.split(',').map(|x| x.parse().unwrap()).collect())
 }
 
-/// `GenM7Queries.parse`: the queries' prefix syntax. `None` for an op this
+/// `GenExtendedQueries.parse`: the queries' prefix syntax. `None` for an op this
 /// test does not run.
 pub fn parse(
     tok: &mut std::iter::Peekable<std::slice::Iter<'_, &str>>,
@@ -373,7 +373,7 @@ pub fn query(text: &str, ctx: &Ctx<'_>) -> Option<BooleanQuery> {
     })
 }
 
-/// `GenM7Queries.QVEC`/`QBVEC`.
+/// `GenExtendedQueries.QVEC`/`QBVEC`.
 pub const QVEC: [f32; 4] = [0.5, -0.25, 0.75, 0.1];
 pub const QBVEC: [u8; 4] = [12, (-7i8) as u8, 30, 1];
 

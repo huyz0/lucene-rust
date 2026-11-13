@@ -12,8 +12,8 @@
 //! Run with `cargo bench -p lucene-search --bench string_val_sort`. Skips
 //! itself when the fixture has not been generated.
 
-#[path = "../tests/m7support/mod.rs"]
-mod m7support;
+#[path = "../tests/extended_support/mod.rs"]
+mod extended_support;
 
 use std::collections::HashMap;
 
@@ -22,7 +22,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::top_field::{search_sorted, SortField};
 use lucene_store::FsDirectory;
-use m7support::{fixture, Grammar};
+use extended_support::{fixture, Grammar};
 
 fn bench(c: &mut Criterion) {
     let dir = fixture("sort_val_index");
