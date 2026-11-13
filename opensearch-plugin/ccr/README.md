@@ -4,7 +4,7 @@ OpenSearch takes one engine factory per index. The stock replication plugin offe
 `ReplicationEngine` for every follower index, so this plugin steps aside there: a follower runs on
 OpenSearch's Java engine, and an `extended` k-NN field cannot be followed.
 
-`0001-configurable-follower-engine.patch` (against cross-cluster-replication 3.9.0.0) adds a
+`0001-configurable-follower-engine.patch` (against cross-cluster-replication 3.9.0.0; also on the `3.9` branch of huyz0/cross-cluster-replication) adds a
 static node setting to the replication plugin:
 
 | `plugins.replication.follower.engine` | follower index engine |
