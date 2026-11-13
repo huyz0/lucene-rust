@@ -1,10 +1,10 @@
-//! The benchmark pairs, against `benchmarks/micro/java/M7Micro.java`: the
+//! The benchmark pairs, against `benchmarks/micro/java/ExtendedQueriesMicro.java`: the
 //! extended queries and similarities in the scorer tree, the sorted
 //! searches' comparator pruning, `QueryBuilder`, and stored-fields writes in
 //! both modes (the zlib port behind `BEST_COMPRESSION`).
 //!
 //! The queries are the differential tests' own: each case parses query text
-//! with the grammar the fixture tests read (`GenM7Queries`',
+//! with the grammar the fixture tests read (`GenExtendedQueries`',
 //! `GenSimilaritySearch`' and `GenSortedSearch`'s, included by path below),
 //! and the Java side builds the same text with the generators' own `parse`.
 //! So a case times exactly the shapes that are verified bit for bit, and
@@ -30,9 +30,9 @@ use lucene_search::query::{BooleanQuery, Clause};
 use lucene_search::similarities::{Bm25Similarity, Similarity};
 use lucene_store::MmapDirectory;
 
-use super::{m7grammar, measure, sexpr, simgrammar};
+use super::{extended_grammar, measure, sexpr, simgrammar};
 
-/// FNV-1a over 64-bit words, identical to `M7Micro.fnv`.
+/// FNV-1a over 64-bit words, identical to `ExtendedQueriesMicro.fnv`.
 #[derive(Clone, Copy)]
 struct Fnv(u64);
 
@@ -75,7 +75,7 @@ fn check(case: &str, digest: Fnv, n: usize) {
     println!("#check\t{case}\t{:016x}\t{n}", digest.0);
 }
 
-/// `M7Micro.family`: the family a `GenM7Queries` query is reported under --
+/// `ExtendedQueriesMicro.family`: the family a `GenExtendedQueries` query is reported under --
 /// its first op, the multi-term ones by rewrite method.
 fn family(q: &str) -> String {
     let toks: Vec<&str> = q.split(' ').collect();
@@ -130,8 +130,8 @@ struct Search {
     top: usize,
 }
 
-/// Runs the `GenM7Queries` searches of one index, grouped into cases by `family`.
-fn run_m7_cases(
+/// Runs the `GenExtendedQueries` searches of one index, grouped into cases by `family`.
+fn run_extended_cases(
     w: Duration,
     m: Duration,
     prefix: &str,
@@ -149,22 +149,23 @@ fn run_m7_cases(
         .unwrap();
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(Some).collect();
-    let vectors = m7grammar::VectorFiles::read(dir, &reader);
+    let vectors = extended_grammar::VectorFiles::read(dir, &reader);
     let knn = |op: &str, field: &str, arg: &str, clause: Option<Clause>| -> Option<Clause> {
-        m7grammar::knn_clause(
+        extended_grammar::knn_clause(
             op, field, arg, clause, &reader, &segments, &norms, &vectors, qvec,
         )
     };
-    let ctx = m7grammar::Ctx { knn: &knn };
+    let ctx = extended_grammar::Ctx { knn: &knn };
 
     let mut groups: BTreeMap<String, Vec<Search>> = BTreeMap::new();
     for (sim, text, top) in lines {
-        let parsed = (!is_vector(text)).then(|| m7grammar::query(text, &ctx).expect("parse"));
+        let parsed =
+            (!is_vector(text)).then(|| extended_grammar::query(text, &ctx).expect("parse"));
         groups
             .entry(format!("{prefix}_{}", family(text)))
             .or_default()
             .push(Search {
-                sim: m7grammar::sim(sim),
+                sim: extended_grammar::sim(sim),
                 text: text.clone(),
                 parsed,
                 top: *top,
@@ -183,7 +184,7 @@ fn run_m7_cases(
             let bq = match &s.parsed {
                 Some(bq) => bq,
                 None => {
-                    reparsed = m7grammar::query(&s.text, &ctx).expect("parse");
+                    reparsed = extended_grammar::query(&s.text, &ctx).expect("parse");
                     &reparsed
                 }
             };
@@ -218,7 +219,7 @@ fn run_m7_cases(
     }
 }
 
-/// `searches.tsv` of a `GenM7Queries` index: `(similarity, query, top)`.
+/// `searches.tsv` of a `GenExtendedQueries` index: `(similarity, query, top)`.
 fn fixture_lines(name: &str, top: usize) -> Vec<(String, String, usize)> {
     let text = std::fs::read_to_string(format!("fixtures/data/{name}/searches.tsv"))
         .expect("run from the repository root");
@@ -230,29 +231,34 @@ fn fixture_lines(name: &str, top: usize) -> Vec<(String, String, usize)> {
         .collect()
 }
 
-/// Every search `GenM7Queries` records, over its three fixture indexes, by
+/// Every search `GenExtendedQueries` records, over its three fixture indexes, by
 /// family: small indexes (180, 2,500 and 17,000 documents), so these weigh
 /// a query's fixed costs -- rewrite, statistics, scorer construction -- as
 /// much as its per-document loop. The KNN, vector-threshold, index-sort and
 /// multi-dimensional point families exist only here (the corpus has no
 /// vectors, no index sort and one-dimensional points).
-pub fn bench_m7_fixture(w: Duration, m: Duration) {
+pub fn bench_extended_fixture(w: Duration, m: Duration) {
     for (prefix, name, top, qvec) in [
-        ("fx", "m7_queries_index", 20, &m7grammar::QVEC[..]),
-        ("fxknn", "m7_knn_index", 50, &QVEC8[..]),
-        ("fxdv", "m7_dv_index", 50, &m7grammar::QVEC[..]),
+        (
+            "fx",
+            "extended_queries_index",
+            20,
+            &extended_grammar::QVEC[..],
+        ),
+        ("fxknn", "extended_knn_index", 50, &QVEC8[..]),
+        ("fxdv", "extended_dv_index", 50, &extended_grammar::QVEC[..]),
     ] {
         let dir = std::path::PathBuf::from(format!("fixtures/data/{name}"));
-        run_m7_cases(w, m, prefix, &dir, &fixture_lines(name, top), qvec);
+        run_extended_cases(w, m, prefix, &dir, &fixture_lines(name, top), qvec);
     }
 }
 
-/// `GenM7Queries.QVEC8`.
+/// `GenExtendedQueries.QVEC8`.
 const QVEC8: [f32; 8] = [0.1, -0.3, 0.25, 0.6, -0.05, 0.4, -0.2, 0.15];
 
-/// `M7Micro.CORPUS_QUERIES`: the query families the benchmark corpus can run
+/// `ExtendedQueriesMicro.CORPUS_QUERIES`: the query families the benchmark corpus can run
 /// (`body`/`title` text, `keyword` SORTED doc values, `num` 1-D long points
-/// and NUMERIC doc values), at a million documents, in `GenM7Queries`'
+/// and NUMERIC doc values), at a million documents, in `GenExtendedQueries`'
 /// grammar.
 pub const CORPUS_QUERIES: [&str; 47] = [
     "S body 2 t1 1 t2 1",
@@ -306,15 +312,15 @@ pub const CORPUS_QUERIES: [&str; 47] = [
 
 /// The query families over the million-document benchmark corpus, top 10 under
 /// BM25.
-pub fn bench_m7_corpus(w: Duration, m: Duration, index: &str) {
+pub fn bench_extended_corpus(w: Duration, m: Duration, index: &str) {
     let lines: Vec<(String, String, usize)> = CORPUS_QUERIES
         .iter()
         .map(|q| ("bm25".to_string(), q.to_string(), 10))
         .collect();
-    run_m7_cases(w, m, "c", std::path::Path::new(index), &lines, &[]);
+    run_extended_cases(w, m, "c", std::path::Path::new(index), &lines, &[]);
 }
 
-/// `M7Micro.SIM_QUERIES`, in `GenSimilaritySearch`' grammar.
+/// `ExtendedQueriesMicro.SIM_QUERIES`, in `GenSimilaritySearch`' grammar.
 const SIM_QUERIES: [&str; 6] = [
     "T body t1",
     "T body tz",
@@ -324,7 +330,7 @@ const SIM_QUERIES: [&str; 6] = [
     "P body 0 2 t0 t1",
 ];
 
-/// `M7Micro.SPAN_QUERIES`: spans as scorer-tree clauses.
+/// `ExtendedQueriesMicro.SPAN_QUERIES`: spans as scorer-tree clauses.
 const SPAN_QUERIES: [&str; 4] = [
     "N 0 1 2 S body t0 S body t1",
     "N 3 0 2 S body t2 S body t0",
@@ -332,7 +338,7 @@ const SPAN_QUERIES: [&str; 4] = [
     "B 0 2 0 N 1 0 2 S body t4 S body t0 T body t2",
 ];
 
-/// `M7Micro.SPAN_CASES`: each span query alone under BM25.
+/// `ExtendedQueriesMicro.SPAN_CASES`: each span query alone under BM25.
 const SPAN_CASES: [(&str, usize); 4] = [
     ("span_near_ordered", 0),
     ("span_near_unordered", 1),
@@ -477,7 +483,7 @@ pub fn bench_sort_pruning(w: Duration, m: Duration, index: &str) {
     }
 }
 
-/// `M7Micro.queryTexts`: 2,000 query strings of 1-8 words over the corpus
+/// `ExtendedQueriesMicro.queryTexts`: 2,000 query strings of 1-8 words over the corpus
 /// vocabulary, some capitalised, some punctuated.
 fn query_texts() -> Vec<String> {
     let mut r = super::Rng(0x5EED_0F00_D15E_A5E5);
@@ -562,7 +568,7 @@ pub fn bench_query_builder(w: Duration, m: Duration) {
 }
 
 /// `GenStoredFieldsDeflate`'s documents, from its LCG, with the field
-/// numbers `M7Micro.storedDocs` assigns: text 0, blob 1, run 2, num 3, big 4.
+/// numbers `ExtendedQueriesMicro.storedDocs` assigns: text 0, blob 1, run 2, num 3, big 4.
 fn stored_docs() -> Vec<lucene_codecs::stored_fields::Document> {
     use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
     const WORDS: [&str; 28] = [
