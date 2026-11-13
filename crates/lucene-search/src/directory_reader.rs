@@ -3231,6 +3231,11 @@ impl StoredFiles {
                 }
             }
         }
+        // A large chunk is advised (or fetched) only up to its head: the
+        // reader advises the rest ahead of the bytes it decompresses.
+        if self.will_need_chunks || matches!(*self.fdt, Input::External(_)) {
+            return Ok(reader.with_read_ahead(&self.fdt));
+        }
         Ok(reader)
     }
 
@@ -3257,6 +3262,7 @@ impl StoredFiles {
     /// left alone (one `mincore`); a larger one is always advised, its
     /// decoding dwarfing the call.
     fn will_need_chunk(&self, range: std::ops::Range<usize>) -> Result<()> {
+        let range = lucene_codecs::stored_fields::StoredFieldsReader::advised_range(range);
         if range.len() <= RESIDENT_CHECK_MAX && self.fdt.is_resident(range.start, range.len()) {
             return Ok(());
         }

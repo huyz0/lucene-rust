@@ -607,9 +607,6 @@ public class RustSearchPlugin extends Plugin implements
             || indexSettings.getValue(RustEngineSupport.REALTIME_SEARCH);
         boolean sorted = indexSettings.getIndexSortConfig().hasIndexSort();
         if (asked == false) {
-            if (RustEngineSupport.inheritsOntoLucene10(indexSettings.getSettings()) == false) {
-                return openSearch;
-            }
             if (RustEngineSupport.unsupported(indexSettings, sorted) != null) {
                 return openSearch;
             }
