@@ -1131,9 +1131,9 @@ def run_js(index, shards):
         after = stats()
         diff = same(got, want)
         check(diff is None, f"{label}: differs from Painless: {diff}")
-        ran = after["native_queries"] - before["native_queries"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
         check(ran == shards, f"{label}: ran native on {ran} of {shards} shards; fallbacks {fallback_delta(before, after)}")
-        check(after["native_errors"] == before["native_errors"], f"{label}: native errors")
+        check(after["accelerated_errors"] == before["accelerated_errors"], f"{label}: native errors")
     score = lambda src: {"query": {"script_score": {"query": {"match": {"body": "alpha"}}, "script": {"lang": "js", "source": src}}}}
     for name, body, want in [
         ("missing value", score("doc['sp'].value + 1"), "Error: A document doesn't have a value for a field!"),
@@ -1155,7 +1155,7 @@ def run_js(index, shards):
     set_native(index, False)
     status, resp = raw_search(index, score("1"))
     check(status >= 400 or failed_shards(resp), f"js {index} [in Java]: fails ({status})")
-    check("run only in the native engine" in json.dumps(resp), f"js {index} [in Java]: says why: {json.dumps(resp)[:500]}")
+    check("run only in the accelerated engine" in json.dumps(resp), f"js {index} [in Java]: says why: {json.dumps(resp)[:500]}")
     set_native(index, True)
     print(f"  js {index}: {len(js_rows())} rows as Painless answers them, errors as js script_exceptions")
 
