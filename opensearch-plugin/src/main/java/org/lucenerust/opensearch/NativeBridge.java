@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 175;
+    public static final int EXPECTED_ABI_VERSION = 177;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;

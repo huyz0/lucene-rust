@@ -53,7 +53,9 @@
 //! writes these same files, except that a NUMERIC or SORTED_NUMERIC value
 //! array may instead be [`crate::adaptive_values`] blocks where those are
 //! smaller (see [`AdaptiveEntry`]). Stock Lucene does not know the format
-//! name, so it refuses such a field rather than misreading it.
+//! name, so it refuses such a field rather than misreading it. The ordinals
+//! of SORTED and SORTED_SET fields may be adaptive blocks too (see
+//! `ORDS_SLACK_PERCENT`).
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -88,6 +90,9 @@ const ADAPTIVE_ZONES_TABLE_SIZE: i32 = -1001;
 /// `DirectMonotonicWriter` block shift of an adaptive value array's block
 /// addresses.
 const ADAPTIVE_ADDRESS_BLOCK_SHIFT: u32 = 16;
+/// How much larger, in percent, an `Adaptive90` ordinal array with
+/// statistics may be than Lucene90's packing of the same ordinals.
+const ORDS_SLACK_PERCENT: usize = 3;
 const VERSION_START: i32 = 0;
 const VERSION_SKIPPER_SEPARATE_FILE: i32 = 1;
 const VERSION_SKIPPER_MAX_VALUE_COUNT: i32 = 2;
@@ -550,7 +555,6 @@ pub fn parse_meta(
         }
     }
 
-    check_adaptive_entries(&meta)?;
     if header.version < VERSION_SKIPPER_MAX_VALUE_COUNT {
         infer_max_value_counts(&mut meta, field_infos);
     }
@@ -855,22 +859,6 @@ fn read_adaptive_numeric_entry(
             ..AdaptiveEntry::new(descriptor_offset)
         })),
     })
-}
-
-/// [`parse_meta`]'s check that adaptive value arrays appear only where the
-/// `Adaptive90` format writes them: NUMERIC and SORTED_NUMERIC values,
-/// never SORTED or SORTED_SET ordinals.
-fn check_adaptive_entries(meta: &DocValuesMeta) -> Result<()> {
-    let adaptive = |e: &NumericEntry| e.adaptive.is_some();
-    let in_ords = meta.sorted.iter().any(|e| adaptive(&e.ords))
-        || meta.sorted_set.iter().any(|e| match &e.kind {
-            SortedSetKind::Single(s) => adaptive(&s.ords),
-            SortedSetKind::Multi { ords, .. } => adaptive(&ords.numeric),
-        });
-    if in_ords {
-        return Err(Error::InvalidTableSize(ADAPTIVE_TABLE_SIZE));
-    }
-    Ok(())
 }
 
 /// Validates a whole `.dvd` data file's header/footer, mirroring
@@ -3690,9 +3678,10 @@ pub struct Lucene90DocValuesFormat {
     /// one without changing its files (`AssertingDocValuesFormat`'s
     /// `Asserting`).
     name: &'static str,
-    /// Whether NUMERIC and SORTED_NUMERIC values may be written as
-    /// [`crate::adaptive_values`] blocks: the `Adaptive90` format
-    /// ([`Self::rust_adaptive`]), which Lucene cannot read.
+    /// Whether NUMERIC and SORTED_NUMERIC values and the ordinals of SORTED
+    /// and SORTED_SET fields may be written as [`crate::adaptive_values`]
+    /// blocks: the `Adaptive90` format ([`Self::rust_adaptive`]), which Lucene
+    /// cannot read.
     adaptive: bool,
     /// The block shift BINARY values are written in as
     /// [`crate::substring`] blocks: the `Substring90` format
@@ -3973,7 +3962,7 @@ fn write_field_entry(
         match field {
             DenseField::Numeric(_, values) => {
                 meta.push(DOC_VALUES_TYPE_NUMERIC);
-                write_dense_numeric_entry_body_with(meta, data, values, adaptive, true);
+                write_dense_numeric_entry_body_with(meta, data, values, adaptive, true, false);
             }
             DenseField::SparseNumeric(_, pairs) => {
                 let mut sorted: Vec<(i32, i64)> = pairs.to_vec();
@@ -4017,7 +4006,7 @@ fn write_field_entry(
             DenseField::Sorted(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED);
                 let (dict, ords) = build_sorted_dict_and_ords(values);
-                write_dense_numeric_entry_body(meta, data, &ords);
+                write_dense_numeric_entry_body_with(meta, data, &ords, adaptive, true, true);
                 write_terms_dict(meta, data, &dict);
             }
             DenseField::SortedNumeric(_, values) => {
@@ -4026,7 +4015,7 @@ fn write_field_entry(
             }
             DenseField::SortedSet(_, values) => {
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
-                write_dense_sorted_set_entry_body(meta, data, values);
+                write_dense_sorted_set_entry_body(meta, data, values, adaptive);
             }
             DenseField::SparseBinary(_, pairs) => {
                 let sorted = sort_sparse_pairs(pairs, max_doc)?;
@@ -4041,7 +4030,7 @@ fn write_field_entry(
                 let values: Vec<Vec<u8>> = sorted.into_iter().map(|(_, v)| v).collect();
                 let (dict, ords) = build_sorted_dict_and_ords(&values);
                 meta.push(DOC_VALUES_TYPE_SORTED);
-                write_numeric_entry_body(meta, data, &doc_ids, &ords, max_doc);
+                write_numeric_entry_body_as(meta, data, &doc_ids, &ords, max_doc, adaptive, true);
                 write_terms_dict(meta, data, &dict);
             }
             DenseField::SparseSortedNumeric(_, pairs) => {
@@ -4066,12 +4055,20 @@ fn write_field_entry(
                 let doc_ids: Vec<i32> = sorted.iter().map(|(doc, _)| *doc).collect();
                 let per_doc: Vec<Vec<Vec<u8>>> = sorted.into_iter().map(|(_, v)| v).collect();
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
-                write_sorted_set_entry_body(meta, data, &doc_ids, &per_doc, max_doc);
+                write_sorted_set_entry_body(meta, data, &doc_ids, &per_doc, max_doc, adaptive);
             }
             DenseField::SortedOrds(_, column) => {
                 check_ascending_docs(&column.docs, max_doc)?;
                 meta.push(DOC_VALUES_TYPE_SORTED);
-                write_numeric_entry_body(meta, data, &column.docs, &column.ords, max_doc);
+                write_numeric_entry_body_as(
+                    meta,
+                    data,
+                    &column.docs,
+                    &column.ords,
+                    max_doc,
+                    adaptive,
+                    true,
+                );
                 write_terms_dict(meta, data, &column.dict);
             }
             DenseField::SortedSetOrds(_, column) => {
@@ -4080,7 +4077,7 @@ fn write_field_entry(
                     return Err(WriteError::EmptyMultiValuedDoc(column.docs[k]));
                 }
                 meta.push(DOC_VALUES_TYPE_SORTED_SET);
-                write_sorted_set_ords_entry_body(meta, data, column, max_doc);
+                write_sorted_set_ords_entry_body(meta, data, column, max_doc, adaptive);
             }
             DenseField::SortedNumericColumn(_, column) => {
                 check_ascending_docs(&column.docs, max_doc)?;
@@ -4382,20 +4379,6 @@ fn end_offsets(lengths: impl ExactSizeIterator<Item = usize>) -> Vec<i64> {
     ends
 }
 
-/// A NUMERIC entry body for a column that may be sparse: the docs-with-field
-/// header for `doc_ids`, then the shared values tail. `values` is indexed by
-/// *rank among present docs*, not by doc id.
-fn write_numeric_entry_body(
-    meta: &mut Vec<u8>,
-    data: &mut Vec<u8>,
-    doc_ids: &[i32],
-    values: &[i64],
-    max_doc: i32,
-) {
-    write_docs_with_field(meta, data, doc_ids, max_doc);
-    write_numeric_values_body(meta, data, values);
-}
-
 /// [`write_numeric_entry_body`], its values as adaptive blocks when
 /// `adaptive` and that is smaller, with [`crate::adaptive_zones`] statistics
 /// when every document has exactly one value.
@@ -4407,10 +4390,24 @@ fn write_numeric_entry_body_with(
     max_doc: i32,
     adaptive: bool,
 ) {
+    write_numeric_entry_body_as(meta, data, doc_ids, values, max_doc, adaptive, false);
+}
+
+/// [`write_numeric_entry_body_with`] for the ordinals of a SORTED or
+/// SORTED_SET field when `ords`: see [`ORDS_SLACK_PERCENT`].
+fn write_numeric_entry_body_as(
+    meta: &mut Vec<u8>,
+    data: &mut Vec<u8>,
+    doc_ids: &[i32],
+    values: &[i64],
+    max_doc: i32,
+    adaptive: bool,
+    ords: bool,
+) {
     write_docs_with_field(meta, data, doc_ids, max_doc);
     // Dense with one value per document: value `i` is document `i`'s.
     let per_doc = doc_ids.len() == max_doc as usize && values.len() == doc_ids.len();
-    write_numeric_values_body_with(meta, data, values, adaptive, per_doc);
+    write_numeric_values_body_with(meta, data, values, adaptive, per_doc, ords);
 }
 
 /// [`write_dense_numeric_entry_body`], its values as adaptive blocks when
@@ -4422,13 +4419,14 @@ fn write_dense_numeric_entry_body_with(
     values: &[i64],
     adaptive: bool,
     per_doc: bool,
+    ords: bool,
 ) {
     if adaptive {
         meta.write_i64(DOCS_WITH_FIELD_DENSE);
         meta.write_i64(0);
         meta.write_i16(-1); // jumpTableEntryCount
         meta.push(0xFF); // denseRankPower (-1 as u8)
-        write_numeric_values_body_with(meta, data, values, true, per_doc);
+        write_numeric_values_body_with(meta, data, values, true, per_doc, ords);
     } else {
         write_dense_numeric_entry_body(meta, data, values);
     }
@@ -4449,6 +4447,7 @@ fn write_numeric_values_body_with(
     values: &[i64],
     adaptive: bool,
     zones: bool,
+    ords: bool,
 ) {
     let (meta_start, data_start) = (meta.len(), data.len());
     write_numeric_values_body(meta, data, values);
@@ -4461,15 +4460,27 @@ fn write_numeric_values_body_with(
     // numValues, tableSize, bpv, min, gcd, offsets and lengths, block shift.
     let fixed = 8 + 4 + 1 + 8 * 5 + 5 + 16;
     let adaptive_len = fixed + addr_meta.len() + blocks.len() + addr_data.len();
-    if adaptive_len >= lucene90 {
+    // Ordinals may cost a little more than Lucene90's packing: the blocks
+    // and statistics are what whole-window folds read.
+    let budget = if ords {
+        lucene90 + lucene90 * ORDS_SLACK_PERCENT / 100
+    } else {
+        lucene90.saturating_sub(1)
+    };
+    if adaptive_len > budget {
         return;
     }
-    // The statistics only where adaptive blocks still win with them.
+    // The statistics only where adaptive blocks still fit with them.
     let zone_bytes = if zones {
-        crate::adaptive_zones::encode(values).filter(|z| adaptive_len + z.len() < lucene90)
+        crate::adaptive_zones::encode_with(values, !ords)
+            .filter(|z| adaptive_len + z.len() <= budget)
     } else {
         None
     };
+    if ords && zone_bytes.is_none() && adaptive_len >= lucene90 {
+        // Without statistics an ordinal array must be strictly smaller.
+        return;
+    }
     meta.truncate(meta_start);
     data.truncate(data_start);
     meta.write_i64(values.len() as i64);
@@ -4656,13 +4667,25 @@ fn write_sorted_set_ords_entry_body(
     data: &mut Vec<u8>,
     column: &SortedSetOrdsColumn,
     max_doc: i32,
+    adaptive: bool,
 ) {
+    let ords = |meta: &mut Vec<u8>, data: &mut Vec<u8>| {
+        write_numeric_entry_body_as(
+            meta,
+            data,
+            &column.docs,
+            &column.ords,
+            max_doc,
+            adaptive,
+            true,
+        );
+    };
     if column.counts.iter().all(|&c| c == 1) {
         meta.push(0); // multiValued = false: the plain SORTED shape.
-        write_numeric_entry_body(meta, data, &column.docs, &column.ords, max_doc);
+        ords(meta, data);
     } else {
         meta.push(1); // multiValued = true.
-        write_numeric_entry_body(meta, data, &column.docs, &column.ords, max_doc);
+        ords(meta, data);
         let num_docs_with_field = column.docs.len() as i32;
         meta.write_i32(num_docs_with_field);
         if column.docs.len() != column.ords.len() {
@@ -4692,6 +4715,7 @@ fn write_sorted_set_entry_body(
     doc_ids: &[i32],
     per_doc: &[Vec<Vec<u8>>],
     max_doc: i32,
+    adaptive: bool,
 ) {
     let mut dict: Vec<Vec<u8>> = per_doc.iter().flatten().cloned().collect();
     dict.sort_unstable();
@@ -4713,12 +4737,12 @@ fn write_sorted_set_entry_body(
     let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
     if per_doc_ords.iter().all(|ords| ords.len() == 1) {
         meta.push(0); // multiValued = false: the plain SORTED shape.
-        write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
+        write_numeric_entry_body_as(meta, data, doc_ids, &flat, max_doc, adaptive, true);
         write_terms_dict(meta, data, &dict);
         return;
     }
     meta.push(1); // multiValued = true.
-    write_numeric_entry_body(meta, data, doc_ids, &flat, max_doc);
+    write_numeric_entry_body_as(meta, data, doc_ids, &flat, max_doc, adaptive, true);
 
     let num_docs_with_field = per_doc_ords.len() as i32;
     meta.write_i32(num_docs_with_field);
@@ -4811,7 +4835,7 @@ fn write_dense_sorted_numeric_entry_body(
     let flat: Vec<i64> = values.iter().flatten().copied().collect();
 
     let per_doc = flat.len() == values.len();
-    write_dense_numeric_entry_body_with(meta, data, &flat, adaptive, per_doc);
+    write_dense_numeric_entry_body_with(meta, data, &flat, adaptive, per_doc, false);
 
     meta.write_i32(num_docs_with_field);
     if num_docs_with_field as i64 != flat.len() as i64 {
@@ -4850,6 +4874,7 @@ fn write_dense_sorted_set_entry_body(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
     values: &[Vec<Vec<u8>>],
+    adaptive: bool,
 ) {
     let all_values: Vec<&[u8]> = values.iter().flatten().map(Vec::as_slice).collect();
     let (dict, value_ords) = sorted_dict_and_ords(&all_values);
@@ -4878,10 +4903,10 @@ fn write_dense_sorted_set_entry_body(
 
     if all_single {
         meta.push(0); // multiValued = false: plain SORTED shape.
-        write_dense_numeric_entry_body(meta, data, &flat);
+        write_dense_numeric_entry_body_with(meta, data, &flat, adaptive, true, true);
     } else {
         meta.push(1); // multiValued = true.
-        write_dense_numeric_entry_body(meta, data, &flat);
+        write_dense_numeric_entry_body_with(meta, data, &flat, adaptive, false, true);
 
         meta.write_i32(num_docs_with_field);
         if num_docs_with_field as i64 != flat.len() as i64 {
