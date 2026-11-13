@@ -1825,6 +1825,7 @@ fn build_view_reader(
         return Err(FfiStatus::Decode);
     }
     phases.lap(phases::SNAPSHOT);
+    let mut widened: Vec<bool> = Vec::new();
     for (i, (((b, plan), parts), cached)) in v
         .view
         .buffers
@@ -1870,8 +1871,24 @@ fn build_view_reader(
                 .map(|&d| d.saturating_sub(p.start))
                 .collect();
             masks.push(buffer_mask(len, &deleted, r.max_doc));
+            widened.push(r.max_doc != len);
             extra.push(r);
         }
+    }
+    // A leaf of a published buffer holds the documents added after the view too (masked), so
+    // it is wider than the JVM's leaf of the view's documents, and every leaf after it starts
+    // later than the JVM's does: the hits it gives would name other documents there. Only the
+    // last leaf may be wider, which moves none.
+    if widened.iter().rev().skip(1).any(|&w| w) {
+        let msg = "live search: a buffer was flushed with documents added after the view opened, \
+                   which a leaf after it cannot be numbered around"
+            .to_string();
+        v.whole
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failed = Some(msg.clone());
+        set_last_error(msg);
+        return Err(FfiStatus::InvalidArgument);
     }
     phases.lap(phases::OVERLAY);
     let reader = h.reader.with_readers_appended(extra).map_err(|e| {
@@ -3182,4 +3199,83 @@ impl lucene_search::derived_source::VectorSource for BufferVectors<'_> {
             })
             .collect())
     }
+}
+
+/// What a test checks of the segments [`ffi_live_view_lucene`] hands a JVM: that document
+/// `p.start + d` of the segment a buffer was published as is the buffer's document
+/// `p.start + d`, by its `_id` (stored field number `id_field`).
+#[cfg(test)]
+pub(crate) fn check_published_numbering(view_id: u64, id_field: i32) -> Result<usize, String> {
+    let v = view(view_id).map_err(|e| format!("{e:?}"))?;
+    let w = v.writer.writer();
+    let id_of = |fields: &[lucene_codecs::stored_fields::StoredField]| {
+        fields
+            .iter()
+            .find_map(|f| match (&f.value, f.field_number) {
+                (FieldValue::String(s), n) if n == id_field => Some(s.clone()),
+                _ => None,
+            })
+    };
+    let mut checked = 0;
+    for (bi, (b, plan)) in v.view.buffers.iter().zip(&v.plans).enumerate() {
+        let Some(sci) = w.live_published_segment(b.id) else {
+            continue;
+        };
+        let reader = SegmentReader::open_one(w.directory(), &sci).map_err(|e| format!("{e:?}"))?;
+        for p in plan {
+            for d in p.start..p.end {
+                let native = w
+                    .live_document(&v.view, bi, d)
+                    .map_err(|e| format!("native {d}: {e:?}"))?;
+                let segment = reader
+                    .stored_document(d)
+                    .map_err(|e| format!("segment {d}: {e:?}"))?
+                    .ok_or("no stored fields")?;
+                let (a, s) = (id_of(&native), id_of(&segment.fields));
+                if a != s {
+                    return Err(format!(
+                        "buffer {bi} doc {d}: view says {a:?}, published segment {} says {s:?}",
+                        sci.segment_name
+                    ));
+                }
+                checked += 1;
+            }
+        }
+    }
+    Ok(checked)
+}
+
+/// What a test checks of a reader [`ffi_live_view_reader`] made over view `view_id`: that each
+/// leaf of the view but the last starts where the JVM's leaf of those documents does (its
+/// chunk's width after the reader's own segments), as the JVM numbers hits the native search
+/// gives by.
+#[cfg(test)]
+pub(crate) fn check_view_reader_numbering(reader: u64, view_id: u64) -> Result<(), String> {
+    let v = view(view_id).map_err(|e| format!("{e:?}"))?;
+    let h = lookup(reader, "test").map_err(|e| format!("{e:?}"))?;
+    let segments = h.reader.segment_readers();
+    let base = h.cacheable;
+    let widths: Vec<i32> = v
+        .plans
+        .iter()
+        .flat_map(|plan| plan.iter().map(|p| p.end - p.start))
+        .collect();
+    if segments.len() != base + widths.len() {
+        return Err(format!(
+            "{} leaves for {base} committed and {} chunks",
+            segments.len(),
+            widths.len()
+        ));
+    }
+    let mut expected = segments.get(base).map_or(0, |s| s.doc_base);
+    for (i, (s, w)) in segments[base..].iter().zip(&widths).enumerate() {
+        if s.doc_base != expected {
+            return Err(format!(
+                "chunk {i} starts at {} natively, {expected} for the JVM",
+                s.doc_base
+            ));
+        }
+        expected += w;
+    }
+    Ok(())
 }
