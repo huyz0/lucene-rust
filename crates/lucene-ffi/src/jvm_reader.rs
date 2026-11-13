@@ -1681,7 +1681,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+    let min = min_score.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
     let sliced = lucene_search::aggs::aggregate_sliced_counting(
         &segments,
         readers,
@@ -1822,7 +1822,7 @@ pub(crate) fn count_terminates_blobs(
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+    let min = min_score.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
     let counted = lucene_search::terminate::count_terminates(
         &segments,
         &q,

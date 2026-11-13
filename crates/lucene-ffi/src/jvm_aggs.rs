@@ -114,7 +114,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lucene_search::aggs::{MinScore, Source, ValueKind};
+use lucene_search::aggs::{Source, ValueKind};
 use lucene_search::bucket_aggs::{
     self, AcceptedOrds, AggNode, AggResult, CardinalityKind, CompositeAfter, CompositeKeyValue,
     CompositeSource, CompositeValues, DateRounding, DateUnit, Globals, MissingOrder, RoundingKind,
@@ -122,6 +122,7 @@ use lucene_search::bucket_aggs::{
 };
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
+use lucene_search::segment_match::MinScore;
 use lucene_search::BooleanQuery;
 
 use crate::error::{set_last_error, FfiStatus};

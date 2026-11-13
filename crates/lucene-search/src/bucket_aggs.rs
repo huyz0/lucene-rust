@@ -54,10 +54,11 @@ use lucene_codecs::terms_dict::TermsDict;
 use crate::aggs::{self, MetricState, Source, ValueKind, Values};
 use crate::directory_reader::SegmentReader;
 use crate::exec;
+use crate::global_ords::{GlobalOrds, Ords};
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
-use crate::terms_agg::{GlobalOrds, Ords};
 use crate::Result;
+use crate::{java_math, segment_match};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 pub mod segment_cache;
@@ -1959,7 +1960,7 @@ fn open_leaf<'a>(
             ..
         } => {
             let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
-            Col::Ords(crate::terms_agg::open_ords(reader, field)?.0, map)
+            Col::Ords(crate::global_ords::open_ords(reader, field)?.0, map)
         }
         AggNode::Cardinality { field, .. }
         | AggNode::Percentiles { field, .. }
@@ -2179,12 +2180,12 @@ fn composite_leaf<'a>(
 fn filter_bits(seg: &OpenSegment<'_>, filter: &BooleanQuery) -> Result<Option<Vec<u64>>> {
     let rewritten = crate::multi_segment::rewrite_points_ranges(filter, std::slice::from_ref(seg));
     let filter = rewritten.as_ref().unwrap_or(filter);
-    let clause = aggs::lone_clause(filter);
-    let ctx = aggs::plain_context(seg);
+    let clause = segment_match::lone_clause(filter);
+    let ctx = segment_match::plain_context(seg);
     let max_doc = seg.max_doc.unwrap_or(0);
     let max = usize::try_from(max_doc).unwrap_or(0);
     let mut words = Vec::new();
-    match aggs::segment_match_bits(&ctx, filter, &clause, None, max_doc, &mut words)? {
+    match segment_match::segment_match_bits(&ctx, filter, &clause, None, max_doc, &mut words)? {
         None => words = vec![0; max.div_ceil(64)],
         Some(false) => return Ok(None),
         Some(true) => {}
@@ -3139,7 +3140,7 @@ fn collect_composite_sorted(
     let Some(terms) = seg.fields.field(&first.field) else {
         return Ok(false);
     };
-    let Some(mut dict) = crate::terms_agg::open_ords(reader, &first.field)?.1 else {
+    let Some(mut dict) = crate::global_ords::open_ords(reader, &first.field)?.1 else {
         return Ok(false);
     };
     // `seekCeil(after)`: the first term at or past `after`'s.
@@ -3887,7 +3888,7 @@ fn collect(
 /// `Double.doubleToLongBits`: every `NaN` is the canonical one.
 fn java_double_bits(d: f64) -> i64 {
     if d.is_nan() {
-        crate::aggs::JAVA_NAN.to_bits() as i64
+        crate::java_math::JAVA_NAN.to_bits() as i64
     } else {
         d.to_bits() as i64
     }
@@ -3913,7 +3914,7 @@ fn max_to(ranges: &[(f64, f64)]) -> Vec<f64> {
     for (i, &(_, to)) in ranges.iter().enumerate() {
         out.push(match i {
             0 => to,
-            _ => aggs::java_max(to, out[i - 1]),
+            _ => java_math::java_max(to, out[i - 1]),
         });
     }
     out
@@ -4339,7 +4340,7 @@ enum Matches<'b> {
 
 /// The documents a pass collects: `min_score` behind the query, or none.
 pub struct PassScoring<'a, 'n> {
-    pub min_score: &'a aggs::MinScore<'a, 'n>,
+    pub min_score: &'a segment_match::MinScore<'a, 'n>,
 }
 
 /// One pass of aggregations: `nodes` over `query`'s live matches in the
@@ -4357,7 +4358,7 @@ pub fn aggregate_tree(
     nodes: &[AggNode],
     globals: &Globals<'_>,
     slices: &[Vec<usize>],
-    min_score: Option<&aggs::MinScore<'_, '_>>,
+    min_score: Option<&segment_match::MinScore<'_, '_>>,
 ) -> Result<Vec<Vec<AggResult>>> {
     aggregate_tree_cached(
         segments, readers, query, nodes, globals, slices, min_score, None,
@@ -4379,7 +4380,7 @@ pub fn aggregate_tree_cached(
     nodes: &[AggNode],
     globals: &Globals<'_>,
     slices: &[Vec<usize>],
-    min_score: Option<&aggs::MinScore<'_, '_>>,
+    min_score: Option<&segment_match::MinScore<'_, '_>>,
     cache: Option<&segment_cache::CacheRequest<'_>>,
 ) -> Result<Vec<Vec<AggResult>>> {
     let nodes_asked = nodes;
@@ -4408,7 +4409,7 @@ pub fn aggregate_tree_cached(
     let original = query;
     let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let clause = aggs::lone_clause(query);
+    let clause = segment_match::lone_clause(query);
     // Scoring, for `min_score`: the reader's statistics, once; without it,
     // the function queries' reader-wide preparation alone.
     let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
@@ -4442,7 +4443,7 @@ pub fn aggregate_tree_cached(
      -> Result<()> {
         let ctx = exec::LeafContext {
             global: global.as_ref(),
-            ..aggs::plain_context(seg)
+            ..segment_match::plain_context(seg)
         };
         let live: Option<&FixedBitSet> = seg.live_docs;
         let view = SegmentView {
@@ -4461,13 +4462,14 @@ pub fn aggregate_tree_cached(
                     global: Some(g),
                     ..ctx
                 };
-                match aggs::segment_matches_scoring(&scored, query, live, m.min, docs_buf)? {
+                match segment_match::segment_matches_scoring(&scored, query, live, m.min, docs_buf)?
+                {
                     None => Matches::None,
                     Some(None) => Matches::All,
                     Some(Some(docs)) => Matches::List(docs),
                 }
             }
-            None => match aggs::segment_match_bits(
+            None => match segment_match::segment_match_bits(
                 &ctx,
                 query,
                 &clause,
@@ -4641,7 +4643,8 @@ pub fn aggregate_tree_cached(
                         global: Some(g),
                         ..ctx
                     };
-                    let mut ranges = aggs::ScoredRanges::open(&ctx, query, live, m.min, lo)?;
+                    let mut ranges =
+                        segment_match::ScoredRanges::open(&ctx, query, live, m.min, lo)?;
                     while !lucene_util::memory::past_deadline() {
                         let more = {
                             let mut c = scored_chunk.borrow_mut();
@@ -4884,7 +4887,7 @@ impl<'r> TermLookup<'r> {
         let slot = &mut per_segment[seg];
         if slot.is_none() {
             *slot = Some(match readers.get(seg) {
-                Some(r) => crate::terms_agg::open_ords(r, field)?.1,
+                Some(r) => crate::global_ords::open_ords(r, field)?.1,
                 None => None,
             });
         }
@@ -6128,9 +6131,9 @@ mod tests {
         let mut out = Vec::new();
         let mut buf = Vec::new();
         for (i, (seg, r)) in segments.iter().zip(reader.segment_readers()).enumerate() {
-            let clause = aggs::lone_clause(query);
-            let docs: Vec<i32> = match aggs::segment_matches(
-                &aggs::plain_context(seg),
+            let clause = segment_match::lone_clause(query);
+            let docs: Vec<i32> = match segment_match::segment_matches(
+                &segment_match::plain_context(seg),
                 query,
                 &clause,
                 seg.live_docs,
@@ -7020,7 +7023,7 @@ mod tests {
             for r in reader.segment_readers() {
                 let open = || -> Option<Box<lucene_codecs::doc_values::SortedNumericReader<'_>>> {
                     if keyword {
-                        match crate::terms_agg::open_ords(r, field).unwrap().0 {
+                        match crate::global_ords::open_ords(r, field).unwrap().0 {
                             Ords::Multi(m) => Some(m),
                             _ => None,
                         }
@@ -7284,9 +7287,10 @@ mod tests {
         opened.open_points().unwrap();
         let segments = opened.as_open_segments();
         for field in ["kw", "mkw"] {
-            let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), field)
-                .unwrap()
-                .value_count();
+            let terms_count =
+                crate::global_ords::GlobalOrds::build(reader.segment_readers(), field)
+                    .unwrap()
+                    .value_count();
             let q = BooleanQuery {
                 must: vec![Clause::PointsRange(PointsRangeQuery::new("r", 0, 2))],
                 ..Default::default()
@@ -7396,7 +7400,7 @@ mod tests {
         assert_eq!(got, inserted);
         // `min_doc_count: 0`: the inserted term is one of the empty buckets'.
         let every = list(node(Some(&after), TermsOrder::KeyAsc, true));
-        let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), "mkw")
+        let terms_count = crate::global_ords::GlobalOrds::build(reader.segment_readers(), "mkw")
             .unwrap()
             .value_count();
         assert_eq!(every.len(), terms_count + 1);
@@ -7760,7 +7764,7 @@ mod tests {
     #[test]
     fn keyword_terms_keep_the_accepted_terms() {
         let reader = fixture("terms_aggs_index");
-        let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), "mkw")
+        let terms_count = crate::global_ords::GlobalOrds::build(reader.segment_readers(), "mkw")
             .unwrap()
             .value_count();
         let every_third = |count: usize| {
@@ -8132,7 +8136,7 @@ mod tests {
         let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
             owned.iter().map(Some).collect();
         let behind = |q: &BooleanQuery, min: f32| {
-            let m = crate::aggs::MinScore { min, norms: &norms };
+            let m = crate::segment_match::MinScore { min, norms: &norms };
             aggregate_tree(
                 &segments,
                 reader.segment_readers(),
@@ -8193,7 +8197,7 @@ mod tests {
             })
             .collect();
         let run_scored = |q: &BooleanQuery, nodes: &[AggNode], slices: &[Vec<usize>], min: f32| {
-            let m = crate::aggs::MinScore { min, norms: &norms };
+            let m = crate::segment_match::MinScore { min, norms: &norms };
             aggregate_tree(
                 &segments,
                 readers,
@@ -8306,7 +8310,7 @@ mod tests {
             let reader = fixture(index);
             let readers = reader.segment_readers();
             let globals =
-                (!numeric).then(|| crate::terms_agg::GlobalOrds::build(readers, field).unwrap());
+                (!numeric).then(|| crate::global_ords::GlobalOrds::build(readers, field).unwrap());
             for q in [all(), body("w1")] {
                 let mut opened = reader.open_segments().unwrap();
                 opened.open_points().unwrap();
@@ -8316,9 +8320,9 @@ mod tests {
                     let mut buf = Vec::new();
                     for &i in slice {
                         let (seg, r) = (&segments[i], &readers[i]);
-                        let clause = aggs::lone_clause(&q);
-                        let docs: Vec<i32> = match aggs::segment_matches(
-                            &aggs::plain_context(seg),
+                        let clause = segment_match::lone_clause(&q);
+                        let docs: Vec<i32> = match segment_match::segment_matches(
+                            &segment_match::plain_context(seg),
                             &q,
                             &clause,
                             seg.live_docs,
@@ -8337,7 +8341,7 @@ mod tests {
                             let mut v = Vec::new();
                             if let Some(g) = &globals {
                                 let map = g.segment_map(i).unwrap_or(&[]);
-                                match &mut crate::terms_agg::open_ords(r, field).unwrap().0 {
+                                match &mut crate::global_ords::open_ords(r, field).unwrap().0 {
                                     Ords::Absent => {}
                                     Ords::Single(c) => v.extend(c.value(doc).unwrap()),
                                     Ords::Multi(c) => c.values(doc, &mut v).unwrap(),
@@ -8477,7 +8481,7 @@ mod tests {
                     sort: Arc::clone(&sort),
                     track_scores: track,
                 };
-                let m = crate::aggs::MinScore {
+                let m = crate::segment_match::MinScore {
                     min: f32::NEG_INFINITY,
                     norms: &norms,
                 };

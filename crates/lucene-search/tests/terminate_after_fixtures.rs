@@ -451,7 +451,7 @@ fn counts_read_through_wrappers_and_refuse_unknown_slices() {
     let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let run = |min: Option<f32>, n: u64| {
-        let m = min.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+        let m = min.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
         lucene_search::terminate::count_terminates(
             &segments,
             &plain,

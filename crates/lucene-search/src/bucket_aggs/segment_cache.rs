@@ -63,6 +63,7 @@ use super::{keyed_ord, slot, AggNode, Globals, State};
 use crate::aggs::{self, MetricState, ValueKind};
 use crate::directory_reader::SegmentReader;
 use crate::extended_query::ExtendedQuery;
+use crate::java_math;
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::Result;
@@ -1143,9 +1144,9 @@ fn add_metric(dst: &mut MetricState, src: &MetricState, sums: bool) -> bool {
         dst.sum += src.sum;
     }
     dst.count += src.count;
-    dst.min = aggs::java_min(dst.min, src.min);
-    dst.max = aggs::java_max(dst.max, src.max);
-    dst.min_of_mins = aggs::java_min(dst.min_of_mins, src.min_of_mins);
-    dst.max_of_maxes = aggs::java_max(dst.max_of_maxes, src.max_of_maxes);
+    dst.min = java_math::java_min(dst.min, src.min);
+    dst.max = java_math::java_max(dst.max, src.max);
+    dst.min_of_mins = java_math::java_min(dst.min_of_mins, src.min_of_mins);
+    dst.max_of_maxes = java_math::java_max(dst.max_of_maxes, src.max_of_maxes);
     true
 }
