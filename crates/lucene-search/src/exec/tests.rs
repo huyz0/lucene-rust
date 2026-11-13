@@ -1362,7 +1362,7 @@ fn check_tail_only_first_doc(
 #[test]
 fn a_tail_only_terms_first_doc_matches_its_cursor() {
     let (answered, few, docs_only, _) =
-        check_tail_only_first_doc("m7_queries_index", &["body", "title", "tag"], "tag", 256);
+        check_tail_only_first_doc("extended_queries_index", &["body", "title", "tag"], "tag", 256);
     assert!(
         answered > 0 && few > 0 && docs_only > 0,
         "{answered} {few} {docs_only}"
@@ -1411,7 +1411,7 @@ fn visit_terms_stops_where_the_sink_breaks() {
     use std::ops::ControlFlow;
     let dir = lucene_store::FsDirectory::open(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/data/m7_queries_index"
+        "/../../fixtures/data/extended_queries_index"
     ));
     let reader = DirectoryReader::open(&dir).unwrap();
     let opened = reader.open_segments().unwrap();
@@ -2875,7 +2875,7 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
     use crate::query::{BooleanQuery, Clause, TermQuery};
     let dir = lucene_store::FsDirectory::open(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/data/m7_queries_index"
+        "/../../fixtures/data/extended_queries_index"
     ));
     let reader = DirectoryReader::open(&dir).unwrap();
     let mut opened = reader.open_segments().unwrap();

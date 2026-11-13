@@ -13,7 +13,7 @@
 //! exists, and booleans (all four occurrences, nested prohibited clauses),
 //! dis-max, constant score and boost around them.
 
-mod m7support;
+mod extended_support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,7 +23,7 @@ use lucene_search::query_visitor::{
     extract_terms, visit, Occur, QueryVisitor, SubVisitor, Term, TermMatcher,
 };
 use lucene_search::Clause;
-use m7support::{fixture, Grammar, Manifest};
+use extended_support::{fixture, Grammar, Manifest};
 
 const GRAMMAR: Grammar = Grammar {
     text: "body",

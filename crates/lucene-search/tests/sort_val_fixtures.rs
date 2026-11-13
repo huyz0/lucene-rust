@@ -13,7 +13,7 @@
 //! hit is compared by document and sort values, with the total and its
 //! relation.
 
-mod m7support;
+mod extended_support;
 
 use std::collections::HashMap;
 
@@ -22,7 +22,7 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::top_field::{search_sorted, FieldDoc, Selector, SortField, SortType};
 use lucene_store::FsDirectory;
-use m7support::{fixture, Grammar, Manifest};
+use extended_support::{fixture, Grammar, Manifest};
 
 const GRAMMAR: Grammar = Grammar {
     text: "body",
