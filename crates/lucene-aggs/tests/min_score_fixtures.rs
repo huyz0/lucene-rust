@@ -17,8 +17,8 @@
 
 use std::collections::HashMap;
 
-use lucene_search::aggs::{
-    aggregate_sliced_min_score, MetricSpec, MinScore, Source, ValueKind, NEED_ALL,
+use lucene_aggs::metric_aggs::{
+    aggregate_sliced_min_score, MetricSpec, Source, ValueKind, NEED_ALL,
 };
 use lucene_search::collector::TotalHitsRelation;
 use lucene_search::directory_reader::DirectoryReader;
@@ -27,6 +27,7 @@ use lucene_search::multi_segment::{
     count_boolean_query_min_score, search_boolean_query_multi_segment_min_score,
 };
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
+use lucene_search::segment_match::MinScore;
 use lucene_search::top_field::{FieldDoc, Selector, SortField, SortType};
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;

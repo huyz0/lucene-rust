@@ -34,7 +34,7 @@ import java.util.stream.Stream;
 
 /**
  * OpenSearch's numeric metric aggregations ({@code min}, {@code max}, {@code sum}, {@code avg},
- * {@code value_count}, {@code stats}) recorded for crates/lucene-search/tests/metric_aggs_fixtures.rs.
+ * {@code value_count}, {@code stats}) recorded for crates/lucene-aggs/tests/metric_aggs_fixtures.rs.
  *
  * <p>The expected state is computed here the way OpenSearch's aggregators compute it -- this
  * generator runs on Lucene's jars alone, so their loops are reproduced: every live match in

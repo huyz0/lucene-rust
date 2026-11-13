@@ -1563,11 +1563,11 @@ impl PainlessAggValues {
     }
 }
 
-impl lucene_search::bucket_aggs::ScriptValuesSource for PainlessAggValues {
+impl lucene_aggs::bucket_aggs::ScriptValuesSource for PainlessAggValues {
     fn open<'a>(
         &self,
         reader: &'a lucene_search::directory_reader::SegmentReader,
-    ) -> Result<Box<dyn lucene_search::bucket_aggs::ScriptValues + 'a>> {
+    ) -> Result<Box<dyn lucene_aggs::bucket_aggs::ScriptValues + 'a>> {
         let leaf = scripts(&self.0, reader, Leaf::Base(reader.doc_base), None)?;
         Ok(Box::new(AggLeaf(leaf)))
     }
@@ -1595,7 +1595,7 @@ pub fn agg_double(v: &Value) -> Result<f64> {
     })
 }
 
-impl lucene_search::bucket_aggs::ScriptValues for AggLeaf<'_> {
+impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
     fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
         let s = &mut self.0;
         s.env.doc = doc;

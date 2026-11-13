@@ -42,7 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Turns OpenSearch's Lucene documents into the operation blobs {@code engine_writer.rs} decodes.
+ * Turns OpenSearch's Lucene documents into the operation blobs {@code writer_blob.rs} decodes.
  *
  * <p>Everything that decides <em>what</em> gets indexed happens here, in the JVM, with the shard's
  * own analyzer and similarity, exactly as Lucene's {@code IndexingChain} would: the per-document
@@ -243,7 +243,7 @@ final class DocumentEncoder {
             }
         }
         if (vectors != null) {
-            // engine_writer.rs's decode_op: each document's KNN vectors, after the documents.
+            // writer_blob.rs's decode_op: each document's KNN vectors, after the documents.
             while (vectors.size() < docs.size()) {
                 vectors.add(List.of());
             }
@@ -257,7 +257,7 @@ final class DocumentEncoder {
         return b;
     }
 
-    /** One {@code KnnFloatVectorField} or {@code KnnByteVectorField}: engine_writer.rs's document_vector. */
+    /** One {@code KnnFloatVectorField} or {@code KnnByteVectorField}: writer_blob.rs's document_vector. */
     private static void vector(Blob b, IndexableField field) {
         b.string(field.name());
         if (field instanceof KnnFloatVectorField f) {
@@ -484,7 +484,7 @@ final class DocumentEncoder {
         b.i32(invertedCount);
         for (PerField pf : ws.order) {
             if (pf.nativeField != null) {
-                // engine_writer.rs's analyzed_field: Rust analyzes and inverts these values.
+                // writer_blob.rs's analyzed_field: Rust analyzes and inverts these values.
                 int norm = pf.schema.omitNorms ? 0 : pf.nativeField.discountOverlaps() ? 1 : 2;
                 b.i32(pf.number).u8(2).i32(pf.nativeField.id()).u8(pf.nativeOptions.ordinal()).u8(norm).string(pf.schema.name);
                 b.i32(pf.texts.size());
