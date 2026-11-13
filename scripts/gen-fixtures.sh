@@ -361,11 +361,13 @@ GENERATED_NOISE='(^|/)write\.lock$'
 # Deterministic on one machine, but not across machines: segment sizes include
 # the .si diagnostics (Runtime.version(), os.version, java.vendor, which no
 # system property pins); monitor's debug(), presearch and tree rows list tied terms in the JDK's
-# hash order; a walked demo index numbers documents in file-system order. Two
+# hash order; a walked demo index numbers documents in file-system order, and so
+# does Luke's `create` (the order documents reach the writer fixes the field
+# numbers, hence Luke's field order in create-overview/create-stored). Two
 # runs here agree, so they would be held to the committed bytes, which another
 # JDK build or kernel cannot reproduce. Their Rust tests read them beside the
 # index they were generated with (sizes, ids) or compare order-insensitively.
-MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/(debug|presearch|tree)\.tsv|tools/demo/out/walk-(create-again(-search)?|knn)\.out|tools/luke/out/commits\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
+MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/(debug|presearch|tree)\.tsv|tools/demo/out/walk-(create-again(-search)?|knn)\.out|tools/luke/out/(commits|create-overview|create-stored)\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
 
 while IFS= read -r rel; do
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
