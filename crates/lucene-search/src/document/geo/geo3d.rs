@@ -8,7 +8,7 @@
 //! x/y/z solid whose `getRelationship` with the shape decides; a leaf value
 //! inside the bounds is kept when the shape contains it. An exception a
 //! shape method throws inside the walk (raised, see
-//! `lucene_util::spatial3d::errors`) is the search's error, as Java's
+//! `lucene_spatial3d::errors`) is the search's error, as Java's
 //! would propagate.
 
 use std::sync::Arc;
@@ -16,22 +16,22 @@ use std::sync::Arc;
 use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_index::document::geo3d::from_degrees;
 use lucene_index::document::{sortable_bytes_to_int, Geo3DPoint};
-use lucene_util::fixed_bit_set::FixedBitSet;
-use lucene_util::geo::{GeoUtils, Polygon};
-use lucene_util::spatial3d::errors::catch;
-use lucene_util::spatial3d::geo_area_factory::make_geo_area;
-use lucene_util::spatial3d::geo_bbox_factory::make_geo_bbox;
-use lucene_util::spatial3d::geo_circle_factory::make_geo_circle;
-use lucene_util::spatial3d::geo_composite::GeoCompositePolygon;
-use lucene_util::spatial3d::geo_path_factory::make_geo_path;
-use lucene_util::spatial3d::geo_polygon_factory::{
+use lucene_spatial3d::errors::catch;
+use lucene_spatial3d::geo_area_factory::make_geo_area;
+use lucene_spatial3d::geo_bbox_factory::make_geo_bbox;
+use lucene_spatial3d::geo_circle_factory::make_geo_circle;
+use lucene_spatial3d::geo_composite::GeoCompositePolygon;
+use lucene_spatial3d::geo_path_factory::make_geo_path;
+use lucene_spatial3d::geo_polygon_factory::{
     make_geo_polygon_with_holes, make_large_geo_polygon, PolygonDescription,
 };
-use lucene_util::spatial3d::vector::MINIMUM_RESOLUTION;
-use lucene_util::spatial3d::{
+use lucene_spatial3d::vector::MINIMUM_RESOLUTION;
+use lucene_spatial3d::{
     GeoAreaRelationship, GeoBBox, GeoCircle, GeoPath, GeoPoint, GeoPolygon, GeoShape, PlanetModel,
     XYZBounds,
 };
+use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::geo::{GeoUtils, Polygon};
 
 use super::point_queries::points_of;
 use super::{check_walk, collect_bits, idx, illegal, set_doc, write_doc_bitset, write_doc_range};
@@ -40,7 +40,7 @@ use crate::document::{reader, DocumentQuery};
 use crate::multi_segment::OpenSegment;
 use crate::{Error, Result};
 
-fn s3d(e: lucene_util::spatial3d::Error) -> Error {
+fn s3d(e: lucene_spatial3d::Error) -> Error {
     illegal(e.to_string())
 }
 
@@ -350,7 +350,7 @@ struct ShapeVisitor<'s> {
     result: FixedBitSet,
     bad: Option<i32>,
     /// An exception relating a cell (`makeGeoArea`'s or the relation's).
-    error: Option<lucene_util::spatial3d::Error>,
+    error: Option<lucene_spatial3d::Error>,
 }
 
 impl ShapeVisitor<'_> {
