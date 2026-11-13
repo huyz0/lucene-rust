@@ -19,7 +19,7 @@ import org.apache.lucene.spatial3d.geom.XYZBounds;
  * geo3d's geometric primitives -- {@code Vector}, {@code GeoPoint}, {@code Plane}, {@code
  * SidedPlane}, {@code PlanetModel} (and its {@code DocValueEncoder}), {@code XYZBounds}, {@code
  * LatLonBounds}, {@code DistanceStyle} -- called directly through their public API on seeded random
- * inputs, near-degenerate ones included, for {@code crates/lucene-util/tests/geo3d_fixtures.rs}.
+ * inputs, near-degenerate ones included, for {@code crates/lucene-spatial3d/tests/geo3d_fixtures.rs}.
  *
  * <p>Each line is {@code M op inputs => result}: the inputs are hex double bits (a vector is three,
  * a sided plane is the nine of the {@code SidedPlane(p, A, B)} it is built from, a planet model an

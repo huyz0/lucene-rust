@@ -249,7 +249,7 @@ javac -nowarn -cp "$CP:$LANGUAGE_MODULES_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]
 # arguments, so spatial3d's output would depend on the CPU the fixture was made
 # on (arm64 and the interpreter-free paths disagree with x86-64). Disabled,
 # Math.sin *is* StrictMath.sin everywhere -- which is what the Rust port
-# computes. See crates/lucene-util/src/spatial3d/mod.rs ("Trigonometry").
+# computes. See crates/lucene-spatial3d/src/lib.rs ("Trigonometry").
 generator_jvm_opts() {
   case "$1" in
     GenGeo3d*|GenSpatial*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan" ;;

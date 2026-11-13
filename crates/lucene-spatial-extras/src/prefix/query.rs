@@ -26,11 +26,11 @@ use std::sync::Arc;
 
 use lucene_codecs::blocktree::{self, FieldTerms, SeekStatus, TermsEnum};
 use lucene_codecs::postings::{DocInput, LazyDocsCursor, PostingsFlags, NO_MORE_DOCS};
-use lucene_util::fixed_bit_set::FixedBitSet;
-use lucene_util::spatial4j::{DistanceUtils, Shape, SpatialContext, SpatialRelation};
-use lucene_util::spatial_extras::prefix_tree::{
+use lucene_spatial4j::spatial4j::{DistanceUtils, Shape, SpatialContext, SpatialRelation};
+use lucene_spatial4j::spatial_extras::prefix_tree::{
     Cell, CellIterator, QuadCellRelater, SpatialPrefixTree,
 };
+use lucene_util::fixed_bit_set::FixedBitSet;
 
 use lucene_search::collector::ScoringCollector;
 use lucene_search::document::geo::{check_walk, collect_bits, idx, set_doc};
