@@ -51,7 +51,7 @@ import java.util.Objects;
  * SourceFieldMatchQuery} runs it over {@code _source}.
  *
  * <p>An exact phrase ({@link #positions()} not null) is encoded natively as node 47 of the query
- * tree ({@code crates/lucene-ffi/src/jvm_pattern_phrase.rs}), which matches and scores the same.
+ * tree ({@code crates/lucene-engine/src/pattern_phrase.rs}), which matches and scores the same.
  */
 public final class PatternPhraseQuery extends Query {
     private final String field;

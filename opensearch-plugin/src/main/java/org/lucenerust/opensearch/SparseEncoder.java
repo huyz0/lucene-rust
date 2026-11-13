@@ -11,7 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 /**
- * The feature and sparse nodes of the query tree ({@code jvm_queries.rs}):
+ * The feature and sparse nodes of the query tree ({@code queries.rs}):
  *
  * <ul>
  *   <li>{@code FeatureField}'s {@code FeatureQuery} ({@code rank_feature}, {@code neural_sparse} on
