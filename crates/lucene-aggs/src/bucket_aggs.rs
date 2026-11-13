@@ -1513,6 +1513,9 @@ struct Leaf<'a> {
     key_cache: KeyCache,
     /// [`zone_window`]'s buckets for the current window, kept for reuse.
     zone_ords: Vec<u32>,
+    /// Windows [`zone_window`] answered in this segment, added to
+    /// [`zone_windows_folded`] once at its end.
+    folded: u64,
     /// The node's `missing`: what a document without a value reads.
     missing: Option<i64>,
     /// A keyword `terms`' `missing` term: the global key its documents
@@ -2032,6 +2035,7 @@ fn open_leaf<'a>(
         term_buckets: Vec::new(),
         key_cache: KeyCache::default(),
         zone_ords: Vec::new(),
+        folded: 0,
         missing: node.missing(),
         missing_key: globals.missing_key(node)?,
         filter: globals.leaf_filter(node)?,
@@ -3410,11 +3414,13 @@ fn zone_window(
             },
         ) => {
             // The key is monotonic in the value, so both ends' keys equal
-            // (to the bit: `-0.0` is its own bucket) are every value's.
+            // (to the bit: `-0.0` is its own bucket) are every value's. A
+            // key of negative infinity is never collected.
             let key = |v: f64| ((v - offset) / interval).floor();
             match window_doubles(*kind, stats) {
                 Some((lo, hi))
-                    if java_double_bits(key(lo)) == java_double_bits(key(hi))
+                    if key(lo) != f64::NEG_INFINITY
+                        && java_double_bits(key(lo)) == java_double_bits(key(hi))
                         && !hard_bounds.1.is_some_and(|max| key(lo) * interval > max)
                         && !hard_bounds.0.is_some_and(|min| key(lo) * interval < min) =>
                 {
@@ -3477,8 +3483,10 @@ fn zone_window(
         None => false,
     };
     leaf.zone_ords = targets;
+    // ARITH: windows of one segment.
+    #[allow(clippy::arithmetic_side_effects)]
     if done {
-        ZONE_WINDOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        leaf.folded += 1;
     }
     Ok(done)
 }
@@ -3529,6 +3537,14 @@ fn fold_targets(
             *slot(counts, ord as usize) += len as u64;
         }
     }
+    debug_assert_eq!(
+        folded.len(),
+        targets.len()
+            * sub_states
+                .iter()
+                .filter(|s| matches!(s, State::Metric(_)))
+                .count()
+    );
     let mut next = folded.into_iter();
     for s in sub_states.iter_mut() {
         if let State::Metric(col) = s {
@@ -4952,6 +4968,9 @@ pub fn aggregate_tree_cached(
             }
             for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
                 end_segment(n, s, l)?;
+                if l.folded > 0 {
+                    ZONE_WINDOWS.fetch_add(l.folded, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         Ok(())
@@ -6025,6 +6044,7 @@ mod tests {
             term_buckets: Vec::new(),
             key_cache: KeyCache::default(),
             zone_ords: Vec::new(),
+            folded: 0,
             missing: None,
             missing_key: None,
             filter: None,
