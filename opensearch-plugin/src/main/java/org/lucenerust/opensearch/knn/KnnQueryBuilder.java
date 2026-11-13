@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.lucenerust.opensearch.engine.RustEngineSupport;
 import org.lucenerust.opensearch.knn.rest.KnnStats;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.search.MatchNoDocsQuery;
@@ -20,6 +21,7 @@ import org.opensearch.core.ParseField;
 import org.opensearch.core.common.ParsingException;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.xcontent.ObjectParser;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.mapper.MappedFieldType;
@@ -70,6 +72,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     private Float minScore;
     private Integer efSearch;
     private Integer nprobes;
+    /** {@code method_parameters.exploration_slack}: this plugin's opt-in adaptive beam stop. */
+    private Float explorationSlack;
     private QueryBuilder filter;
     /** {@code rescore}: null unset, false off, true on (with {@link #oversample} when given). */
     private Boolean rescore;
@@ -99,6 +103,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         oversample = in.readOptionalFloat();
         expandNested = in.readOptionalBoolean();
         ignoreUnmapped = in.readBoolean();
+        explorationSlack = in.readOptionalFloat();
     }
 
     /**
@@ -124,6 +129,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         out.writeOptionalFloat(oversample);
         out.writeOptionalBoolean(expandNested);
         out.writeBoolean(ignoreUnmapped);
+        out.writeOptionalFloat(explorationSlack);
     }
 
     /**
@@ -177,6 +183,19 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
 
     public String fieldName() {
         return fieldName;
+    }
+
+    public Float getMaxDistance() {
+        return maxDistance;
+    }
+
+    public Float getMinScore() {
+        return minScore;
+    }
+
+    /** k-NN's {@code setK}: MMR widens a query's k to its candidate count before the search runs. */
+    public void setK(int k) {
+        this.k = k;
     }
 
     public Integer getK() {
@@ -283,6 +302,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                 Object np = methodParameters.get("nprobes");
                 b.efSearch = ef == null ? null : ((Number) ef).intValue();
                 b.nprobes = np == null ? null : ((Number) np).intValue();
+                b.explorationSlack = KnnQueryParsers.explorationSlack(methodParameters);
             }
             if (rescoreContext != null) {
                 b.rescore = rescoreContext.isRescoreEnabled();
@@ -328,96 +348,78 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
     }
 
-    /** {@code KNNQueryBuilder.fromXContent}: one field, its parameters an object. */
+    /** {@code KNNQueryBuilderParser}'s object parser: a field's parameters. */
+    private static final ObjectParser<KnnQueryBuilder, Void> PARSER = new ObjectParser<>(NAME, KnnQueryBuilder::new);
+    /** {@code RescoreParser}'s: {@code oversample_factor}, unset when absent. */
+    private static final ObjectParser<Float[], Void> RESCORE_PARSER = new ObjectParser<>(RESCORE_FIELD.getPreferredName(), () -> new Float[1]);
+
+    static {
+        PARSER.declareFloat(KnnQueryBuilder::boost, BOOST_FIELD);
+        PARSER.declareString(KnnQueryBuilder::queryName, NAME_FIELD);
+        PARSER.declareFloatArray((b, v) -> b.vector = floats(v), VECTOR_FIELD);
+        PARSER.declareInt((b, v) -> b.k = v, K_FIELD);
+        PARSER.declareBoolean((b, v) -> b.ignoreUnmapped = v, IGNORE_UNMAPPED_FIELD);
+        PARSER.declareFloat((b, v) -> b.maxDistance = v, MAX_DISTANCE_FIELD);
+        PARSER.declareFloat((b, v) -> b.minScore = v, MIN_SCORE_FIELD);
+        PARSER.declareObject((b, v) -> b.methodParameters = v, (p, c) -> KnnQueryParsers.methodParametersFromXContent(p), METHOD_PARAMETERS_FIELD);
+        PARSER.declareObject((b, v) -> b.filter = v, (p, c) -> parseInnerQueryBuilder(p), FILTER_FIELD);
+        PARSER.declareField((p, b, c) -> {
+            if (p.currentToken() == XContentParser.Token.VALUE_BOOLEAN) {
+                b.rescore = p.booleanValue();
+                b.oversample = null;
+            } else {
+                b.rescore = true;
+                b.oversample = RESCORE_PARSER.apply(p, null)[0];
+            }
+        }, RESCORE_FIELD, ObjectParser.ValueType.OBJECT_OR_BOOLEAN);
+        PARSER.declareBoolean((b, v) -> b.expandNested = v, EXPAND_NESTED_FIELD);
+        RESCORE_PARSER.declareFloat((f, v) -> f[0] = v, OVERSAMPLE_FIELD);
+    }
+
+    /** Method parameters parsed but not yet checked: stock checks them after k, distance and score. */
+    private Map<String, ?> methodParameters;
+
+    /** {@code KNNQueryBuilderParser.fromXContent}: one field, its parameters an object or the vector alone. */
     public static KnnQueryBuilder fromXContent(XContentParser parser) throws IOException {
-        KnnQueryBuilder b = new KnnQueryBuilder();
+        String fieldName = null;
         String current = null;
         XContentParser.Token token;
+        KnnQueryBuilder b = null;
+        List<Object> vector = null;
         while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
             if (token == XContentParser.Token.FIELD_NAME) {
                 current = parser.currentName();
             } else if (token == XContentParser.Token.START_OBJECT) {
-                if (b.fieldName != null) {
-                    throw new ParsingException(
-                        parser.getTokenLocation(),
-                        "[" + NAME + "] query doesn't support multiple fields, found [" + b.fieldName + "] and [" + current + "]"
-                    );
-                }
-                b.fieldName = current;
-                parseField(parser, b);
+                multipleFields(parser, fieldName, current);
+                fieldName = current;
+                b = PARSER.apply(parser, null);
             } else {
-                throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] unknown token [" + token + "] after [" + current + "]");
+                multipleFields(parser, fieldName, parser.currentName());
+                fieldName = parser.currentName();
+                vector = parser.list();
             }
         }
-        if (b.fieldName == null) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] requires a field");
+        if (b == null) {
+            b = new KnnQueryBuilder();
+            b.vector = objects(vector);
         }
-        b.validate(parser);
+        b.fieldName = fieldName;
+        b.validate();
         return b;
     }
 
-    private static void parseField(XContentParser parser, KnnQueryBuilder b) throws IOException {
-        String current = null;
-        XContentParser.Token token;
-        while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
-            if (token == XContentParser.Token.FIELD_NAME) {
-                current = parser.currentName();
-            } else if (VECTOR_FIELD.match(current, parser.getDeprecationHandler())) {
-                b.vector = floats(parser);
-            } else if (FILTER_FIELD.match(current, parser.getDeprecationHandler())) {
-                b.filter = parseInnerQueryBuilder(parser);
-            } else if (METHOD_PARAMETERS_FIELD.match(current, parser.getDeprecationHandler())) {
-                methodParameters(parser, b);
-            } else if (RESCORE_FIELD.match(current, parser.getDeprecationHandler())) {
-                if (token == XContentParser.Token.START_OBJECT) {
-                    b.rescore = true;
-                    String inner = null;
-                    while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
-                        if (token == XContentParser.Token.FIELD_NAME) {
-                            inner = parser.currentName();
-                        } else if (OVERSAMPLE_FIELD.match(inner, parser.getDeprecationHandler())) {
-                            b.oversample = parser.floatValue();
-                            if (b.oversample < 1 || b.oversample > 100) {
-                                throw new ParsingException(parser.getTokenLocation(), "Oversample factor must be between 1.0 and 100.0");
-                            }
-                        } else {
-                            throw new ParsingException(parser.getTokenLocation(), "Unknown field in rescore: " + inner);
-                        }
-                    }
-                } else {
-                    b.rescore = parser.booleanValue();
-                }
-            } else if (token.isValue()) {
-                if (K_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.k = parser.intValue(false);
-                } else if (MAX_DISTANCE_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.maxDistance = parser.floatValue();
-                } else if (MIN_SCORE_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.minScore = parser.floatValue();
-                } else if (EXPAND_NESTED_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.expandNested = parser.booleanValue();
-                } else if (IGNORE_UNMAPPED_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.ignoreUnmapped = parser.booleanValue();
-                } else if (BOOST_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.boost(parser.floatValue());
-                } else if (NAME_FIELD.match(current, parser.getDeprecationHandler())) {
-                    b.queryName(parser.text());
-                } else {
-                    throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] query does not support [" + current + "]");
-                }
-            } else {
-                throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] unknown token [" + token + "] after [" + current + "]");
-            }
+    private static void multipleFields(XContentParser parser, String fieldName, String current) {
+        if (fieldName != null) {
+            throw new ParsingException(
+                parser.getTokenLocation(),
+                "[" + NAME + "] query doesn't support multiple fields, found [" + fieldName + "] and [" + current + "]"
+            );
         }
     }
 
-    private static float[] floats(XContentParser parser) throws IOException {
-        if (parser.currentToken() != XContentParser.Token.START_ARRAY) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] [vector] must be an array of numbers");
-        }
-        List<Float> values = new ArrayList<>();
-        while (parser.nextToken() != XContentParser.Token.END_ARRAY) {
-            values.add(parser.floatValue());
+    private static float[] floats(List<Float> values) {
+        if (values == null || values.isEmpty()) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] field 'vector' requires to be non-null and non-empty", NAME));
         }
         float[] v = new float[values.size()];
         for (int i = 0; i < v.length; i++) {
@@ -426,45 +428,58 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         return v;
     }
 
-    private static void methodParameters(XContentParser parser, KnnQueryBuilder b) throws IOException {
-        if (parser.currentToken() != XContentParser.Token.START_OBJECT) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] [method_parameters] must be an object");
+    private static float[] objects(List<Object> values) {
+        if (values == null || values.isEmpty()) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] field 'vector' requires to be non-null and non-empty", NAME));
         }
-        String current = null;
-        XContentParser.Token token;
-        while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
-            if (token == XContentParser.Token.FIELD_NAME) {
-                current = parser.currentName();
-            } else if ("ef_search".equals(current)) {
-                b.efSearch = parser.intValue(false);
-                if (b.efSearch <= 0) {
-                    throw new ParsingException(parser.getTokenLocation(), "Validation Failed: 1: ef_search should be greater than 0;");
-                }
-            } else if ("nprobes".equals(current)) {
-                b.nprobes = parser.intValue(false);
-                if (b.nprobes <= 0) {
-                    throw new ParsingException(parser.getTokenLocation(), "Validation Failed: 1: nprobes should be greater than 0;");
-                }
+        float[] v = new float[values.size()];
+        for (int i = 0; i < v.length; i++) {
+            if (values.get(i) instanceof Number n) {
+                v[i] = n.floatValue();
             } else {
-                throw new ParsingException(parser.getTokenLocation(), "Validation Failed: 1: unknown method parameter found [" + current + "];");
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] field 'vector' requires to be an array of numbers", NAME));
             }
         }
+        return v;
     }
 
-    /** {@code KNNQueryBuilder}'s checks that need no mapping. */
-    private void validate(XContentParser parser) {
-        if (vector == null || vector.length == 0) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] query vector is empty");
+    /** {@code KNNQueryBuilder.Builder.validate}, in its order. */
+    private void validate() {
+        if (fieldName == null || fieldName.isEmpty()) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires fieldName", NAME));
+        }
+        if (vector == null) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires query vector", NAME));
+        } else if (vector.length == 0) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] query vector is empty", NAME));
         }
         int set = (k != null ? 1 : 0) + (maxDistance != null ? 1 : 0) + (minScore != null ? 1 : 0);
         if (set != 1) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] requires exactly one of k, distance or score to be set");
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires exactly one of k, distance or score to be set", NAME));
         }
         if (k != null && (k <= 0 || k > MAX_K)) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] requires k to be in the range (0, " + MAX_K + "]");
+            throw new IllegalArgumentException("[" + NAME + "] requires k to be in the range (0, " + MAX_K + "]");
         }
         if (minScore != null && minScore <= 0) {
-            throw new ParsingException(parser.getTokenLocation(), "[" + NAME + "] requires minScore to be greater than 0");
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires minScore to be greater than 0", NAME));
+        }
+        if (methodParameters != null) {
+            org.opensearch.common.ValidationException e = KnnQueryParsers.validateMethodParameters(methodParameters);
+            if (e != null) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] errors in method parameter [%s]", NAME, e.getMessage()));
+            }
+            Object ef = methodParameters.get("ef_search");
+            Object np = methodParameters.get("nprobes");
+            efSearch = ef == null ? null : ((Number) ef).intValue();
+            nprobes = np == null ? null : ((Number) np).intValue();
+            explorationSlack = KnnQueryParsers.explorationSlack(methodParameters);
+            methodParameters = null;
+        }
+        if (Boolean.TRUE.equals(rescore) && oversample != null) {
+            org.opensearch.common.ValidationException e = KnnQueryParsers.validateRescore(new RescoreContext(oversample, true));
+            if (e != null) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] errors in rescore parameter [%s]", NAME, e.getMessage()));
+            }
         }
     }
 
@@ -485,13 +500,16 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (filter != null) {
             builder.field(FILTER_FIELD.getPreferredName(), filter);
         }
-        if (efSearch != null || nprobes != null) {
+        if (efSearch != null || nprobes != null || explorationSlack != null) {
             builder.startObject(METHOD_PARAMETERS_FIELD.getPreferredName());
             if (efSearch != null) {
                 builder.field("ef_search", efSearch);
             }
             if (nprobes != null) {
                 builder.field("nprobes", nprobes);
+            }
+            if (explorationSlack != null) {
+                builder.field(KnnQueryParsers.EXPLORATION_SLACK, explorationSlack);
             }
             builder.endObject();
         }
@@ -536,6 +554,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         c.minScore = minScore;
         c.efSearch = efSearch;
         c.nprobes = nprobes;
+        c.explorationSlack = explorationSlack;
         c.filter = filter;
         c.rescore = rescore;
         c.oversample = oversample;
@@ -557,6 +576,10 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         KnnVectorFieldMapper.KnnVectorFieldType knn = (KnnVectorFieldMapper.KnnVectorFieldType) ft;
         if (knn.isIndexedForAnn() == false) {
             throw new IllegalArgumentException(String.format(Locale.ROOT, "Field '%s' is not built for ANN search.", fieldName));
+        }
+        // k-NN's getVectorQueryType: k 0 (as MMR's candidates 0 leaves it) counts as unset.
+        if (maxDistance == null && minScore == null && (k == null || k == 0)) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires exactly one of k, distance or score to be set", NAME));
         }
         // Counted where the stock plugin counts: once the field is a knn one, before the vector is checked.
         KnnStats.query(
@@ -612,15 +635,17 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
         Query filterQuery = filterQuery(context);
         if (k != null) {
+            KnnTopVectorQuery.RecallTarget recall = recallTarget(context);
             if (config.ivf()) {
                 // IVF sizes its own rerank from k; ef_search widens it only when asked for.
                 int candidates = efSearch == null ? k : Math.max(k, efSearch);
                 return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withNprobes(
                     nprobes == null ? 0 : nprobes
-                );
+                ).withRecallTarget(recall);
             }
             int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
-            return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand);
+            KnnTopVectorQuery q = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
+            return explorationSlack == null ? q : q.withExplorationSlack(explorationSlack);
         }
         float threshold;
         if (maxDistance != null) {
@@ -679,6 +704,29 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     }
 
     /**
+     * The index's {@code index.knn.target_recall} for this shard's field, or null when it
+     * is off or the query asks for its own depth ({@code ef_search} or {@code nprobes}), which is
+     * then searched as asked.
+     */
+    private KnnTopVectorQuery.RecallTarget recallTarget(QueryShardContext context) {
+        if (efSearch != null || nprobes != null) {
+            return null;
+        }
+        Settings settings = context.getIndexSettings().getSettings();
+        float recall = RustEngineSupport.KNN_TARGET_RECALL.get(settings);
+        if (recall <= 0f) {
+            return null;
+        }
+        String key = context.index().getUUID() + "/" + context.getShardId() + "/" + fieldName;
+        return new KnnTopVectorQuery.RecallTarget(
+            recall,
+            RustEngineSupport.KNN_RECALL_SAMPLE_RATE.get(settings),
+            RustEngineSupport.KNN_RECALL_CHECK_BUDGET.get(settings),
+            key
+        );
+    }
+
+    /**
      * {@code IndexHyperParametersUtil.getHNSWEFSearchValue}: the index's {@code
      * knn.algo_param.ef_search}, whose default is 512 for indexes created before 2.12.
      */
@@ -699,6 +747,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             && Objects.equals(minScore, o.minScore)
             && Objects.equals(efSearch, o.efSearch)
             && Objects.equals(nprobes, o.nprobes)
+            && Objects.equals(explorationSlack, o.explorationSlack)
             && Objects.equals(filter, o.filter)
             && Objects.equals(rescore, o.rescore)
             && Objects.equals(oversample, o.oversample)
@@ -708,7 +757,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
 
     @Override
     protected int doHashCode() {
-        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, filter, rescore, oversample, expandNested, ignoreUnmapped);
+        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, explorationSlack, filter, rescore, oversample, expandNested, ignoreUnmapped);
     }
 
     @Override

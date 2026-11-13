@@ -11,7 +11,7 @@
 //! | `30` doc-values numeric set | `field`, `count: i32`, the `i64`s | `SortedNumericDocValuesSetQuery` (`terms` on a doc-values-only number) |
 //! | `31` doc-values ordinal range | `field`, `flags: u8` (as `NODE_TERM_RANGE`'s), the bounds it says are present | `SortedSetDocValuesRangeQuery` (`range`/`term` on a doc-values-only `keyword` or `ip`) |
 //! | `32` doc-values multi-range | `field`, `count: i32`, each `lower`, `upper` (inclusive) | `SortedSetDocValuesMultiRangeQuery` (`terms` on a doc-values-only `ip`) |
-//! | `33` covering | `count: i32`, the sub-queries (nodes), the minimum: `0` + `i64` constant, or `1` + `field` (the field's first sorted-numeric value) | `CoveringQuery` (`terms_set`) |
+//! | `33` covering | `count: i32`, the sub-queries (nodes), the minimum: `0` + `i64` constant, or `1` + `field` (the field's first sorted-numeric value), or `2` + a checked Painless `terms_set` script (`jvm_painless_score::PainlessMinimum`) | `CoveringQuery` (`terms_set`) |
 //! | `34` long distance feature | `field`, `origin: i64`, `pivot: i64` | `LongDistanceFeatureQuery` (`distance_feature` on a `date`) |
 //! | `35` lat/lon distance feature | `field`, `lat: f64`, `lon: f64`, `pivot: f64` (metres) | `LatLonPointDistanceFeatureQuery` (`distance_feature` on a `geo_point`) |
 //! | `36` synonym | `field`, `count: i32`, each `term: bytes`, `boost: f32` bits as `i32` | `SynonymQuery` (a `match` whose analyzer stacks tokens: `hunspell`, `synonym_graph`, `keyword_repeat`) |
@@ -39,10 +39,11 @@ use lucene_search::document::{
     SortedSetDocValuesRangeQuery,
 };
 use lucene_search::extended_query::{
-    AutomatonQuery, DocumentClause, ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
-    SynonymQuery,
+    AutomatonQuery, DocumentClause, ExtendedQuery, IndexOrDocValuesQuery, MultiTermQuery,
+    MultiTermSource, NumericDocValuesRangeQuery, RewriteMethod, SubstringKind, SubstringQuery,
+    SynonymQuery, VisitEvent, VisitRecord,
 };
-use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery};
+use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery, PointsRangeQuery};
 use lucene_search::reader::doc_values::get_sorted_numeric;
 use lucene_search::reader::SortedNumericDocValues;
 use lucene_search::values_source::{
@@ -77,9 +78,69 @@ pub(crate) const NODE_KNN_SCORE: u8 = crate::jvm_knn_score::NODE_KNN_SCORE;
 pub(crate) const NODE_PAINLESS_SCORE: u8 = crate::jvm_painless_score::NODE_PAINLESS_SCORE;
 /// `max_sim` over a `multi_vector` field ([`crate::jvm_max_sim`]).
 pub(crate) const NODE_MAX_SIM: u8 = crate::jvm_max_sim::NODE_MAX_SIM;
+/// `script` query running a Painless script ([`crate::jvm_painless_score`]).
+pub(crate) const NODE_PAINLESS_FILTER: u8 = crate::jvm_painless_score::NODE_PAINLESS_FILTER;
+/// A phrase over a `pattern_text` field ([`crate::jvm_pattern_phrase`]).
+pub(crate) const NODE_PATTERN_PHRASE: u8 = crate::jvm_pattern_phrase::NODE_PATTERN_PHRASE;
 /// The first and last kinds this module decodes.
 pub(crate) const NODE_FIRST: u8 = NODE_MULTI_TERM;
-pub(crate) const NODE_LAST: u8 = NODE_MAX_SIM;
+/// OpenSearch's `has_child`/`has_parent` (`HasChildQueryBuilder.LateParsingQuery`):
+/// `join_field`, `score_mode: u8` (as the to-parent node's), `min: i32`,
+/// `max: i32`, the to query (a node), the from query (a node). Searched once
+/// [`crate::jvm_join::resolve`] has run its from side.
+pub(crate) const NODE_JOIN: u8 = 46;
+/// OpenSearch's range on a long, date or double field with doc values
+/// (`IndexOrDocValuesQuery` of `LongPoint.newRangeQuery` and
+/// `SortedNumericDocValuesField.newSlowRangeQuery` over the same field and
+/// bounds): `field`, `min: i64`, `max: i64`, the inclusive bounds as sortable
+/// longs. Kept a choice so a cheap lead (a tenant's doc-id run) checks its
+/// documents' doc values instead of collecting the range's points.
+pub(crate) const NODE_POINT_RANGE_OR_DV: u8 = 48;
+/// A query on the plugin's `compact_wildcard` field ([`SubstringQuery`]):
+/// `field`, `kind: u8` ([`SUBSTRING_WILDCARD`], [`SUBSTRING_REGEXP`],
+/// [`SUBSTRING_CONTAINS`] or [`SUBSTRING_EXACT`]), `case_insensitive: u8`,
+/// `pattern: bytes` (UTF-8). Constant-scored 1.
+pub(crate) const NODE_SUBSTRING: u8 = 49;
+/// A `PhraseQuery` with its terms' own positions (a removed stopword leaves a
+/// gap): `field`, `slop: i32`, `count: i32`, then per term `position: i32`
+/// and the term. Only the highlighter's request holds one
+/// ([`crate::jvm_highlight`]): the search falls such a phrase back.
+pub(crate) const NODE_PHRASE_POSITIONS: u8 = 50;
+/// `MultiPhraseQuery`, for the highlighter: `field`, `slop: i32`, `count:
+/// i32`, then per position `position: i32`, `terms: i32` and the terms
+/// (`bytes`).
+pub(crate) const NODE_MULTI_PHRASE: u8 = 51;
+/// OpenSearch's `MultiPhrasePrefixQuery` (`match_phrase_prefix`), for the
+/// highlighters: laid out as [`NODE_MULTI_PHRASE`] with `max_expansions:
+/// i32` after the slop, the last position's terms the prefixes.
+pub(crate) const NODE_MULTI_PHRASE_PREFIX: u8 = 52;
+/// `FuzzyQuery`, for the `plain` highlighter (which weights each term it
+/// expands to by its similarity, and keeps every one): `field`, `term:
+/// bytes`, `max_edits: u8`, `prefix_length: i32`, `transpositions: u8`.
+pub(crate) const NODE_FUZZY: u8 = 53;
+/// OpenSearch's `FunctionScoreQuery` as the `unified` highlighter reads it
+/// (its query visited as `MUST`, unknown to the phrase helper): the
+/// wrapped query, a node.
+pub(crate) const NODE_VISIT_ONLY: u8 = 54;
+/// A query the `unified` highlighter reads only through its `visit`: what
+/// that visit did, a record -- `count: i32`, then per event a kind
+/// (`VISIT_*`) and: terms, a guard (`present: u8`, field) then `count: i32`
+/// `(field, term)` pairs; a leaf, a guard; a sub-visitor, `occur: u8` (0
+/// `MUST`, 1 `FILTER`, 2 `SHOULD`, 3 `MUST_NOT`) and a record; a query
+/// handed over whole, a node.
+pub(crate) const NODE_VISITED: u8 = 55;
+pub(crate) const NODE_LAST: u8 = NODE_VISITED;
+
+const VISIT_TERMS: u8 = 0;
+const VISIT_LEAF: u8 = 1;
+const VISIT_SUB: u8 = 2;
+const VISIT_NODE: u8 = 3;
+
+/// [`NODE_SUBSTRING`]'s kinds.
+pub(crate) const SUBSTRING_WILDCARD: u8 = 0;
+pub(crate) const SUBSTRING_REGEXP: u8 = 1;
+pub(crate) const SUBSTRING_CONTAINS: u8 = 2;
+pub(crate) const SUBSTRING_EXACT: u8 = 3;
 
 /// The KNN node's kinds.
 pub(crate) const KNN_TOP_K: u8 = 0;
@@ -145,6 +206,7 @@ const REWRITE_DOC_VALUES: u8 = 2;
 /// The covering node's minimum sources.
 const MINIMUM_CONSTANT: u8 = 0;
 const MINIMUM_FIELD: u8 = 1;
+const MINIMUM_PAINLESS: u8 = 2;
 
 /// `NODE_TERM_RANGE`'s flags, which the ordinal range shares.
 const RANGE_HAS_LOWER: u8 = 1;
@@ -274,9 +336,12 @@ pub(crate) fn decode(
             let minimum: Arc<dyn LongValuesSource> = match c.u8()? {
                 MINIMUM_CONSTANT => long_constant(c.i64()?),
                 MINIMUM_FIELD => Arc::new(FirstValueSource(field(c)?)),
+                MINIMUM_PAINLESS => {
+                    Arc::new(crate::jvm_painless_score::PainlessMinimum::decode(c)?)
+                }
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown covering minimum {other} (expected 0..=1)"
+                        "query tree: unknown covering minimum {other} (expected 0..=2)"
                     )))
                 }
             };
@@ -413,6 +478,160 @@ pub(crate) fn decode(
         NODE_KNN_SCORE => return crate::jvm_knn_score::decode(c, depth, nodes),
         NODE_PAINLESS_SCORE => return crate::jvm_painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::jvm_max_sim::decode(c, depth, nodes),
+        NODE_PAINLESS_FILTER => return crate::jvm_painless_score::decode_filter(c),
+        NODE_PATTERN_PHRASE => return crate::jvm_pattern_phrase::decode(c),
+        NODE_POINT_RANGE_OR_DV => {
+            let field = field(c)?;
+            let (min, max) = (c.i64()?, c.i64()?);
+            return Ok(IndexOrDocValuesQuery::new(
+                PointsRangeQuery::new(field.clone(), min, max),
+                NumericDocValuesRangeQuery::new(field, min, max),
+            )
+            .into());
+        }
+        NODE_PHRASE_POSITIONS => {
+            let field = field(c)?;
+            let slop = u32::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a phrase with a negative slop"))?;
+            let count = c.len()?;
+            *nodes = nodes.saturating_add(count);
+            crate::clauses::check_clause_count(*nodes)?;
+            if count == 0 {
+                return Err(invalid("query tree: a phrase with no terms"));
+            }
+            let mut terms = Vec::new();
+            for _ in 0..count {
+                let position = c.i32()?;
+                terms.push((c.bytes()?.to_vec(), position));
+            }
+            let phrase = lucene_search::query::PhraseQuery::with_positions(field, terms)
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .with_slop(slop);
+            return Ok(Clause::Phrase(phrase));
+        }
+        NODE_MULTI_PHRASE | NODE_MULTI_PHRASE_PREFIX => {
+            let field = field(c)?;
+            let slop = u32::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a multi-phrase with a negative slop"))?;
+            let max_expansions = if kind == NODE_MULTI_PHRASE_PREFIX {
+                c.i32()?
+            } else {
+                0
+            };
+            let count = c.len()?;
+            if count == 0 {
+                return Err(invalid("query tree: a multi-phrase with no terms"));
+            }
+            let mut arrays = crate::raw::try_with_capacity(count.min(1024))?;
+            for _ in 0..count {
+                let position = c.i32()?;
+                let n = c.len()?;
+                if n == 0 {
+                    return Err(invalid("query tree: a multi-phrase position with no terms"));
+                }
+                *nodes = nodes.saturating_add(n);
+                crate::clauses::check_clause_count(*nodes)?;
+                let mut terms = crate::raw::try_with_capacity(n.min(1024))?;
+                for _ in 0..n {
+                    terms.push(c.bytes()?.to_vec());
+                }
+                arrays.push((terms, position));
+            }
+            if kind == NODE_MULTI_PHRASE_PREFIX {
+                let (terms, positions) = arrays.into_iter().unzip();
+                let q = lucene_search::extended_query::MultiPhrasePrefixQuery::new(
+                    field, terms, positions, slop,
+                )
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .with_max_expansions(max_expansions);
+                return Ok(q.into());
+            }
+            let phrase = lucene_search::query::MultiPhraseQuery::with_positions(field, arrays)
+                .map_err(|e| invalid(format!("query tree: {e}")))?
+                .with_slop(slop);
+            return Ok(Clause::MultiPhrase(phrase));
+        }
+        NODE_VISITED => {
+            let record = visit_record(c, depth + 1, nodes)?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::Visited(record))));
+        }
+        NODE_VISIT_ONLY => {
+            let inner = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::VisitOnly(
+                Box::new(inner),
+            ))));
+        }
+        NODE_FUZZY => {
+            let field = field(c)?;
+            let term = c.bytes()?.to_vec();
+            let max_edits = c.u8()?;
+            if max_edits > 2 {
+                return Err(invalid(format!("query tree: fuzzy max edits {max_edits}")));
+            }
+            let prefix_length = usize::try_from(c.i32()?)
+                .map_err(|_| invalid("query tree: a fuzzy with a negative prefix length"))?;
+            let transpositions = c.u8()? != 0;
+            return Ok(Clause::Fuzzy(
+                lucene_search::query::FuzzyQuery::new(field, term)
+                    .with_max_edits(max_edits)
+                    .with_prefix_length(prefix_length)
+                    .with_transpositions(transpositions),
+            ));
+        }
+        NODE_SUBSTRING => {
+            let field = field(c)?;
+            let kind = match c.u8()? {
+                SUBSTRING_WILDCARD => SubstringKind::Wildcard,
+                SUBSTRING_REGEXP => SubstringKind::Regexp,
+                SUBSTRING_CONTAINS => SubstringKind::Contains,
+                SUBSTRING_EXACT => SubstringKind::Exact,
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: substring kind {other} (expected 0..=3)"
+                    )))
+                }
+            };
+            let case_insensitive = match c.u8()? {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err(invalid(format!(
+                        "query tree: substring case flag {other} (expected 0..=1)"
+                    )))
+                }
+            };
+            let pattern = std::str::from_utf8(c.bytes()?)
+                .map_err(|_| FfiStatus::InvalidUtf8)?
+                .to_string();
+            let query = SubstringQuery::new(field, kind, pattern, case_insensitive)
+                .map_err(|e| invalid(format!("query tree: {e}")))?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::Substring(query))));
+        }
+        NODE_JOIN => {
+            let join_field = std::str::from_utf8(c.bytes()?)
+                .map_err(|_| FfiStatus::InvalidUtf8)?
+                .to_string();
+            let score_mode = crate::jvm_nodes::decode_score_mode(c)?;
+            let min = c.i32()?;
+            let max = c.i32()?;
+            if min < 0 || max < min {
+                return Err(invalid(format!(
+                    "query tree: join min_children {min} and max_children {max}"
+                )));
+            }
+            let to_query = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+            let from_query = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::LateJoin(
+                lucene_search::join::LateJoinQuery {
+                    join_field,
+                    from_query: Box::new(from_query),
+                    to_query: Box::new(to_query),
+                    score_mode,
+                    min,
+                    max,
+                },
+            ))));
+        }
         NODE_TO_CHILD => {
             let parents = crate::jvm_nodes::decode_parents(c, depth + 1, nodes)?;
             let parent = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
@@ -516,6 +735,77 @@ impl LongValuesSource for FirstValueSource {
     fn describe(&self) -> String {
         format!("long({})", self.0)
     }
+}
+
+/// A [`NODE_VISITED`] record.
+fn visit_record(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<VisitRecord, FfiStatus> {
+    use crate::clauses::MAX_CLAUSE_DEPTH;
+    use lucene_search::query_visitor::{Occur, Term};
+    if depth >= MAX_CLAUSE_DEPTH {
+        return Err(invalid(format!(
+            "query tree: nesting depth exceeds the maximum of {MAX_CLAUSE_DEPTH}"
+        )));
+    }
+    let utf8 = |b: &[u8]| {
+        std::str::from_utf8(b)
+            .map(str::to_owned)
+            .map_err(|_| FfiStatus::InvalidUtf8)
+    };
+    let guard = |c: &mut Cursor<'_>| -> Result<Option<String>, FfiStatus> {
+        match c.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(utf8(c.bytes()?)?)),
+            other => Err(invalid(format!(
+                "query tree: visit guard flag {other} (expected 0..=1)"
+            ))),
+        }
+    };
+    let count = c.len()?;
+    *nodes = nodes.saturating_add(count);
+    check_clause_count(*nodes)?;
+    let mut events = Vec::with_capacity(count); // alloc-ok: count is within the clause limit
+    for _ in 0..count {
+        events.push(match c.u8()? {
+            VISIT_TERMS => {
+                let guard = guard(c)?;
+                let n = c.len()?;
+                *nodes = nodes.saturating_add(n);
+                check_clause_count(*nodes)?;
+                let mut terms = Vec::with_capacity(n); // alloc-ok: n is within the clause limit
+                for _ in 0..n {
+                    let field = utf8(c.bytes()?)?;
+                    terms.push(Term::new(field, c.bytes()?.to_vec()));
+                }
+                VisitEvent::Terms { guard, terms }
+            }
+            VISIT_LEAF => VisitEvent::Leaf { guard: guard(c)? },
+            VISIT_SUB => {
+                let occur = match c.u8()? {
+                    0 => Occur::Must,
+                    1 => Occur::Filter,
+                    2 => Occur::Should,
+                    3 => Occur::MustNot,
+                    other => {
+                        return Err(invalid(format!(
+                            "query tree: unknown Occur tag {other} (expected 0..=3)"
+                        )))
+                    }
+                };
+                VisitEvent::Sub(occur, visit_record(c, depth + 1, nodes)?)
+            }
+            VISIT_NODE => VisitEvent::Node(crate::jvm_reader::decode_node(c, depth + 1, nodes)?),
+            other => {
+                return Err(invalid(format!(
+                    "query tree: unknown visit event {other} (expected 0..=3)"
+                )))
+            }
+        });
+    }
+    Ok(VisitRecord { events })
 }
 
 #[cfg(test)]
@@ -681,6 +971,27 @@ mod tests {
         let (rc, e) = fails(h, &synonym(&[("delta", 2.0)]));
         assert_ne!(rc, 0);
         assert!(e.contains("synonym query"), "{e}");
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_range_with_doc_values_matches_its_points() {
+        let tmp = index("jvm-queries-range-or-dv");
+        let h = open(&tmp);
+        let range = |kind: u8, lo: i64, hi: i64| {
+            let b = Blob::tree().u8(kind).str("date");
+            Blob([b.0, lo.to_le_bytes().to_vec(), hi.to_le_bytes().to_vec()].concat())
+        };
+        let want = matching(|i| (3..=7).contains(&i));
+        assert_eq!(docs(h, &range(NODE_POINT_RANGE_OR_DV, 3000, 7000)), want);
+        assert_eq!(
+            docs(h, &range(NODE_POINT_RANGE_OR_DV, 3000, 7000)),
+            docs(h, &range(crate::jvm_reader::NODE_POINT_RANGE, 3000, 7000))
+        );
+        assert!(docs(h, &range(NODE_POINT_RANGE_OR_DV, 7000, 3000)).is_empty());
+        let mut short = range(NODE_POINT_RANGE_OR_DV, 3000, 7000);
+        short.0.truncate(short.0.len() - 1);
+        assert_ne!(fails(h, &short).0, 0);
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 

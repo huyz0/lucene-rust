@@ -5,7 +5,7 @@
 //! Text is UTF-16, as Java's `StringBuilder` indexes it, so the offsets of
 //! the term vector address it directly.
 
-use lucene_codecs::stored_fields::FieldValue;
+use lucene_codecs::stored_fields::{DocumentVisitor, FieldValue};
 
 use super::super::unified::break_iterators::BreakIterator;
 use super::super::{DefaultEncoder, Encoder, Error, Result};
@@ -174,6 +174,8 @@ pub struct FragmentsBuilder {
     multi_valued_separator: u16,
     boundary_scanner: Box<dyn BoundaryScanner>,
     discrete_multi_value_highlighting: bool,
+    fix_broken_analysis: bool,
+    strict_utf16: bool,
 }
 
 impl FragmentsBuilder {
@@ -186,6 +188,8 @@ impl FragmentsBuilder {
             multi_valued_separator: u16::from(b' '),
             boundary_scanner: Box::new(SimpleBoundaryScanner::new()),
             discrete_multi_value_highlighting: false,
+            fix_broken_analysis: false,
+            strict_utf16: false,
         }
     }
 
@@ -227,6 +231,20 @@ impl FragmentsBuilder {
     /// `setDiscreteMultiValueHighlighting(discrete)`.
     pub fn set_discrete_multi_value_highlighting(&mut self, discrete: bool) {
         self.discrete_multi_value_highlighting = discrete;
+    }
+
+    /// OpenSearch's `SimpleFragmentsBuilder` over a field whose analyzer has
+    /// a filter that `breaksFastVectorHighlighter`: each fragment starts no
+    /// later than its first match (`FragmentBuilderHelper.fixWeightedFragInfo`).
+    pub fn set_fix_broken_analysis(&mut self, fix: bool) {
+        self.fix_broken_analysis = fix;
+    }
+
+    /// A cut through a surrogate pair, or an unpaired surrogate in the text,
+    /// is an error instead of U+FFFD, for a caller that must give Java's
+    /// UTF-16 exactly.
+    pub fn set_strict_utf16(&mut self, strict: bool) {
+        self.strict_utf16 = strict;
     }
 
     /// `isDiscreteMultiValueHighlighting()`.
@@ -320,13 +338,45 @@ impl FragmentsBuilder {
                 "maxNumFragments({max_num_fragments}) must be positive number."
             )));
         }
-        let mut frag_infos: Vec<WeightedFragInfo> = frag_list.frag_infos().to_vec();
         let values = Self::fields(reader, doc, field)?;
+        self.create_fragments_from_values(
+            &values,
+            frag_list,
+            max_num_fragments,
+            pre_tags,
+            post_tags,
+            encoder,
+        )
+    }
+
+    /// `createFragments(..., maxNumFragments, preTags, postTags, encoder)`
+    /// over values already loaded (`getFields`'s, in order): `None` for no
+    /// values.
+    ///
+    /// # Errors
+    /// A negative `max_num_fragments`, empty tags, or offsets that lie
+    /// outside the text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_fragments_from_values(
+        &mut self,
+        values: &[Vec<u16>],
+        frag_list: &FieldFragList,
+        max_num_fragments: i32,
+        pre_tags: &[String],
+        post_tags: &[String],
+        encoder: &dyn Encoder,
+    ) -> Result<Option<Vec<String>>> {
+        if max_num_fragments < 0 {
+            return Err(Error::IllegalArgument(format!(
+                "maxNumFragments({max_num_fragments}) must be positive number."
+            )));
+        }
+        let mut frag_infos: Vec<WeightedFragInfo> = frag_list.frag_infos().to_vec();
         if values.is_empty() {
             return Ok(None);
         }
         if self.discrete_multi_value_highlighting && values.len() > 1 {
-            frag_infos = Self::discrete_multi_value_highlighting(frag_infos, &values)?;
+            frag_infos = Self::discrete_multi_value_highlighting(frag_infos, values)?;
         }
         if self.order == FragmentsOrder::ScoreOrder {
             frag_infos.sort_by(|o1, o2| {
@@ -345,11 +395,14 @@ impl FragmentsBuilder {
         let mut fragments = Vec::with_capacity(limit);
         let mut buffer: Vec<u16> = Vec::new();
         let mut next_value_index = 0usize;
-        for frag_info in &frag_infos[..limit] {
+        for frag_info in &mut frag_infos[..limit] {
+            if self.fix_broken_analysis {
+                fix_weighted_frag_info(frag_info);
+            }
             fragments.push(self.make_fragment(
                 &mut buffer,
                 &mut next_value_index,
-                &values,
+                values,
                 frag_info,
                 pre_tags,
                 post_tags,
@@ -367,19 +420,25 @@ impl FragmentsBuilder {
             .iter()
             .find(|s| s.doc_base <= doc && doc - s.doc_base < s.max_doc)
             .ok_or_else(|| Error::IllegalArgument(format!("doc {doc} is in no segment")))?;
-        let stored = segment
-            .stored_document(doc - segment.doc_base)
-            .map_err(|e| Error::Io(e.to_string()))?;
         let mut values = Vec::new();
-        let Some(stored) = stored else {
+        // Java's visitor answers YES for this field and NO for every other,
+        // so the rest of the document (a large `_source`) is never decoded.
+        let Some(number) = segment
+            .field_infos()
+            .field_by_name(field)
+            .map(|fi| fi.number)
+        else {
             return Ok(values);
         };
-        for f in &stored.fields {
-            let named = segment
-                .field_infos()
-                .field_by_number(f.field_number)
-                .is_some_and(|fi| fi.name == field);
-            if let (true, FieldValue::String(text)) = (named, &f.value) {
+        let mut visitor = DocumentVisitor::for_fields(&[number]);
+        let stored = segment
+            .visit_stored_document(doc - segment.doc_base, &mut visitor)
+            .map_err(|e| Error::Io(e.to_string()))?;
+        if !stored {
+            return Ok(values);
+        }
+        for f in &visitor.into_document().fields {
+            if let FieldValue::String(text) = &f.value {
                 values.push(text.encode_utf16().collect());
             }
         }
@@ -411,14 +470,29 @@ impl FragmentsBuilder {
             for to in &sub.terms_offsets {
                 let start = to.start_offset().wrapping_sub(modified_start);
                 let end = to.end_offset().wrapping_sub(modified_start);
-                fragment.push_str(&encoder.encode_text(&substring(&src, src_index, start)?));
+                fragment.push_str(&encoder.encode_text(&substring(
+                    &src,
+                    self.strict_utf16,
+                    src_index,
+                    start,
+                )?));
                 fragment.push_str(tag(pre_tags, sub.seqnum)?);
-                fragment.push_str(&encoder.encode_text(&substring(&src, start, end)?));
+                fragment.push_str(&encoder.encode_text(&substring(
+                    &src,
+                    self.strict_utf16,
+                    start,
+                    end,
+                )?));
                 fragment.push_str(tag(post_tags, sub.seqnum)?);
                 src_index = end;
             }
         }
-        fragment.push_str(&encoder.encode_text(&substring(&src, src_index, len_i32(&src))?));
+        fragment.push_str(&encoder.encode_text(&substring(
+            &src,
+            self.strict_utf16,
+            src_index,
+            len_i32(&src),
+        )?));
         Ok(fragment)
     }
 
@@ -577,14 +651,116 @@ fn tag(tags: &[String], num: i32) -> Result<&str> {
 
 /// `String.substring(begin, end)` over UTF-16 text; an unpaired surrogate at
 /// a cut reads as U+FFFD.
-fn substring(text: &[u16], begin: i32, end: i32) -> Result<String> {
+fn substring(text: &[u16], strict: bool, begin: i32, end: i32) -> Result<String> {
     if begin < 0 || end < begin || end > len_i32(text) {
         return Err(Error::IllegalArgument(format!(
             "begin {begin}, end {end}, length {}",
             text.len()
         )));
     }
-    Ok(String::from_utf16_lossy(
-        &text[begin as usize..end as usize],
-    ))
+    let units = &text[begin as usize..end as usize];
+    if strict {
+        return String::from_utf16(units)
+            .map_err(|_| Error::Runtime("unpaired surrogate in a fragment".to_string()));
+    }
+    Ok(String::from_utf16_lossy(units))
+}
+
+/// `FragmentBuilderHelper.fixWeightedFragInfo`: the sub infos sorted by
+/// their first match (`CollectionUtil.introSort`), and the fragment made to
+/// start no later than the first of them.
+fn fix_weighted_frag_info(frag_info: &mut WeightedFragInfo) {
+    if frag_info.sub_infos.is_empty() {
+        return;
+    }
+    struct ByFirstMatch<'a>(&'a mut [SubInfo], i32);
+    impl ByFirstMatch<'_> {
+        fn key(&self, i: usize) -> i32 {
+            self.0[i]
+                .terms_offsets
+                .first()
+                .map_or(i32::MIN, Toffs::start_offset)
+        }
+    }
+    impl lucene_util::sorter::IntroTarget for ByFirstMatch<'_> {
+        fn swap(&mut self, i: usize, j: usize) {
+            self.0.swap(i, j);
+        }
+        fn set_pivot(&mut self, i: usize) {
+            self.1 = self.key(i);
+        }
+        fn compare_pivot(&mut self, j: usize) -> i32 {
+            self.1.cmp(&self.key(j)) as i32
+        }
+    }
+    let n = frag_info.sub_infos.len();
+    if n > 1 {
+        lucene_util::sorter::intro_sort(&mut ByFirstMatch(&mut frag_info.sub_infos, 0), 0, n);
+    }
+    if let Some(first) = frag_info.sub_infos[0].terms_offsets.first() {
+        frag_info.start_offset = frag_info.start_offset.min(first.start_offset());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sub(start: i32, seqnum: i32) -> SubInfo {
+        SubInfo {
+            text: String::new(),
+            terms_offsets: vec![Toffs::new(start, start + 3)],
+            seqnum,
+            boost: 1.0,
+        }
+    }
+
+    #[test]
+    fn the_fix_sorts_by_first_match_and_starts_no_later() {
+        let mut info = WeightedFragInfo {
+            sub_infos: vec![sub(20, 0), sub(4, 1), sub(12, 2)],
+            total_boost: 3.0,
+            start_offset: 10,
+            end_offset: 40,
+        };
+        fix_weighted_frag_info(&mut info);
+        let starts: Vec<i32> = info
+            .sub_infos
+            .iter()
+            .map(|s| s.terms_offsets[0].start_offset())
+            .collect();
+        assert_eq!(starts, vec![4, 12, 20]);
+        assert_eq!((info.start_offset, info.end_offset), (4, 40));
+        // a fragment without phrases is left as it is
+        let mut empty = WeightedFragInfo {
+            sub_infos: Vec::new(),
+            total_boost: 0.0,
+            start_offset: 7,
+            end_offset: 9,
+        };
+        fix_weighted_frag_info(&mut empty);
+        assert_eq!(empty.start_offset, 7);
+        // many phrases: the intro sort past its insertion-sort threshold
+        let mut many = WeightedFragInfo {
+            sub_infos: (0..40).rev().map(|i| sub(i * 2 + 30, i)).collect(),
+            total_boost: 40.0,
+            start_offset: 5,
+            end_offset: 200,
+        };
+        fix_weighted_frag_info(&mut many);
+        assert!(many
+            .sub_infos
+            .windows(2)
+            .all(|w| w[0].terms_offsets[0].start_offset() <= w[1].terms_offsets[0].start_offset()));
+        assert_eq!(many.start_offset, 5);
+    }
+
+    #[test]
+    fn strict_text_refuses_half_a_surrogate_pair() {
+        let text: Vec<u16> = "a😀b".encode_utf16().collect();
+        assert_eq!(substring(&text, false, 0, 2).unwrap(), "a\u{FFFD}");
+        assert!(substring(&text, true, 0, 2).is_err());
+        assert_eq!(substring(&text, true, 0, 4).unwrap(), "a😀b");
+        assert!(substring(&text, true, 3, 2).is_err());
+    }
 }

@@ -36,6 +36,14 @@ pub enum FfiStatus {
     /// (never closing them); the fix is on the caller's side, so this is a
     /// distinct code rather than a generic failure.
     HandleLimit = 11,
+    /// The request outgrew the memory its host granted it, or the process
+    /// is over its bound ([`crate::memory`]); the message says which.
+    MemoryLimit = 12,
+    /// The host cancelled the request mid-call ([`crate::memory`]).
+    Cancelled = 13,
+    /// An aggregation made more buckets than the request allows; the last
+    /// error is the count, in decimal ([`crate::jvm_aggs`]).
+    TooManyBuckets = 14,
 }
 
 impl FfiStatus {
@@ -65,6 +73,9 @@ impl FfiStatus {
             FfiStatus::Panic => "a Rust panic was caught at the FFI boundary",
             FfiStatus::InvalidArgument => "invalid argument",
             FfiStatus::HandleLimit => "handle registry exhausted: too many open handles",
+            FfiStatus::MemoryLimit => "the request is over its memory limit",
+            FfiStatus::Cancelled => "the request was cancelled",
+            FfiStatus::TooManyBuckets => "an aggregation made too many buckets",
         }
     }
 }
@@ -84,6 +95,46 @@ thread_local! {
     /// second case can be backfilled with [`FfiStatus::default_message`]
     /// rather than reported as if it were this call's diagnosis.
     static ERROR_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The shard paths the running [`guard`] call read through
+    /// ([`note_shard`]), and how deep in nested guard calls this thread is.
+    static CALL_SHARDS: RefCell<Vec<std::sync::Arc<str>>> = const { RefCell::new(Vec::new()) };
+    static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// [`lucene_store::read_failures::epoch`] when the outermost running
+    /// [`guard`] call started.
+    static CALL_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Notes that the running call reads the shard at `path`: if a page of a
+/// file under it fails to decode (an encrypted chunk that fails
+/// authentication) or cannot be read from disk while the call runs,
+/// [`guard`] fails the call with that error.
+///
+/// Noting a shard makes the call checked
+/// ([`lucene_store::read_failures::set_checked`]) until it ends: only then
+/// may a page that cannot be read be handed to it as zeros, since only then
+/// does the failure fail the call.
+pub(crate) fn note_shard(path: &std::sync::Arc<str>) {
+    lucene_store::read_failures::set_checked(true);
+    CALL_SHARDS.with(|c| {
+        let mut shards = c.borrow_mut();
+        if !shards.iter().any(|s| std::sync::Arc::ptr_eq(s, path)) {
+            shards.push(std::sync::Arc::clone(path));
+        }
+    });
+}
+
+/// A recorded read failure under one of the shards the running call read
+/// ([`lucene_store::read_failures`]); one atomic load while none is.
+fn shard_read_failure() -> Option<String> {
+    if lucene_store::read_failures::count() == 0 {
+        return None;
+    }
+    let since = CALL_EPOCH.with(|e| e.get());
+    CALL_SHARDS.with(|c| {
+        c.borrow()
+            .iter()
+            .find_map(|path| lucene_store::read_failures::failure_under(path, since))
+    })
 }
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
@@ -151,11 +202,34 @@ where
     install_panic_hook();
     crate::register_codecs();
     ERROR_RECORDED.with(|c| c.set(false));
+    let depth = GUARD_DEPTH.with(|d| {
+        let depth = d.get();
+        d.set(depth.saturating_add(1));
+        depth
+    });
+    if depth == 0 {
+        CALL_SHARDS.with(|c| c.borrow_mut().clear());
+        CALL_EPOCH.with(|e| e.set(lucene_store::read_failures::epoch()));
+    }
     CAPTURING_PANIC.with(|c| c.set(true));
     let outcome = std::panic::catch_unwind(body);
-    CAPTURING_PANIC.with(|c| c.set(false));
+    GUARD_DEPTH.with(|d| d.set(depth));
+    if depth == 0 {
+        lucene_store::read_failures::set_checked(false);
+    }
+    // A nested call returns into its caller's guard, which is still running.
+    CAPTURING_PANIC.with(|c| c.set(depth > 0));
     match outcome {
-        Ok(Ok(())) => FfiStatus::Ok.code(),
+        Ok(Ok(())) => match shard_read_failure() {
+            // The call may have read a page that failed to decode or could
+            // not be read, and zeros stood in for it: its result cannot be
+            // trusted.
+            Some(message) => {
+                set_last_error(format!("reading the shard failed: {message}"));
+                FfiStatus::Io.code()
+            }
+            None => FfiStatus::Ok.code(),
+        },
         Ok(Err(status)) => {
             // Every non-`Ok` return must leave a message describing *this*
             // call -- a body that returned early without calling

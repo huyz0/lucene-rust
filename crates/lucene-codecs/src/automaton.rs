@@ -122,6 +122,16 @@ pub struct ByteDfa {
 }
 
 impl ByteDfa {
+    /// The heap bytes the automaton holds (its transition table, byte
+    /// classes and accept flags), what a cache of automata bounds.
+    pub fn ram_bytes(&self) -> usize {
+        self.table
+            .len()
+            .saturating_mul(4)
+            .saturating_add(256)
+            .saturating_add(self.accept.len())
+    }
+
     /// The start state, or [`DEAD`] when the automaton accepts nothing.
     #[inline]
     pub fn start(&self) -> u32 {
@@ -505,6 +515,11 @@ pub struct CompiledDfa {
 }
 
 impl CompiledDfa {
+    /// [`ByteDfa::ram_bytes`] with the per-state totality flags.
+    pub fn ram_bytes(&self) -> usize {
+        self.dfa.ram_bytes().saturating_add(self.utf8_total.len())
+    }
+
     /// A DFA whose language is finite -- a Levenshtein automaton's, every
     /// string within a fixed number of edits of one term -- has no state
     /// accepting every suffix, so [`ByteDfa::utf8_total_states`]' product

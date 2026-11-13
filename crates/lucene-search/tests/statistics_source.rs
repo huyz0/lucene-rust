@@ -10,11 +10,12 @@
 //! searcher over all three segments does (scores bit for bit, under BM25 and
 //! a non-default similarity), and the plain per-segment searcher must not.
 
-mod m7support;
+mod extended_support;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use extended_support::{fixture, Grammar};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, StatisticsSource};
@@ -25,7 +26,6 @@ use lucene_search::similarities::{
 use lucene_search::top_field::SortField;
 use lucene_search::Result;
 use lucene_store::FsDirectory;
-use m7support::{fixture, Grammar};
 
 /// Every term's and field's statistics as the whole reader has them.
 struct Global {

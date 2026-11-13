@@ -5,14 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror.workspace = true
 # An indexing thread's scheduling priority (`yield_to_searches`).
 libc.workspace = true
 # Started before an indexing thread lowers its priority, which threads it
 # starts would inherit (`yield_to_searches`).
 rayon.workspace = true
 lucene-store = { path = "../lucene-store" }
-# The `rust_encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
+# The `encrypted` store (`store.rs`): AWS-LC by default, its FIPS 140-3
 # module with feature `fips` (build with `--no-default-features`, see
 # scripts/build-fips.sh).
 lucene-store-crypto = { path = "../lucene-store-crypto", default-features = false }
@@ -30,11 +29,14 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-zstd = { path = "../lucene-zstd" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
+# The unified highlighter the fetch phase runs (`jvm_highlight.rs`).
+lucene-highlighter = { path = "../lucene-highlighter" }
 lucene-facet = { path = "../lucene-facet" }
 lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-misc = { path = "../lucene-misc" }
 lucene-sparse = { path = "../lucene-sparse" }
 lucene-tensor = { path = "../lucene-tensor" }
+lucene-pattern-text = { path = "../lucene-pattern-text" }
 # The ml-commons port's local model inference (`ml.rs`).
 lucene-ml = { path = "../lucene-ml", default-features = false }
 # libtorch and the TorchScript shim (`ml_torch.rs`), opened at run time.

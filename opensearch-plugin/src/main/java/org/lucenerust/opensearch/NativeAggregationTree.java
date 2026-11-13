@@ -35,6 +35,7 @@ import org.opensearch.search.aggregations.bucket.terms.DoubleTerms;
 import org.opensearch.search.aggregations.bucket.terms.LongTerms;
 import org.opensearch.search.aggregations.bucket.terms.StringTerms;
 import org.opensearch.search.aggregations.metrics.AbstractHyperLogLogPlusPlus;
+import org.opensearch.search.aggregations.support.CoreValuesSourceType;
 import org.opensearch.search.aggregations.support.ValuesSourceConfig;
 import org.opensearch.search.internal.SearchContext;
 
@@ -86,6 +87,8 @@ public final class NativeAggregationTree {
     static final byte COMPOSITE = 10;
     static final byte NESTED = 15;
     static final byte REVERSE_NESTED = 16;
+    /** A metric over a Painless script's values ({@link ScriptMetricNode}). */
+    static final byte SCRIPT_METRIC = 18;
     /** {@code date_histogram} unit codes, in the order {@code jvm_aggs.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -177,7 +180,24 @@ public final class NativeAggregationTree {
         }
     }
 
-    static final class MetricNode extends Node {
+    /** A metric over a Painless aggregation script's values: its needs, then the script. */
+    static final class ScriptMetricNode extends MetricNode {
+        final byte[] script;
+
+        ScriptMetricNode(AggregatorBase agg, NativeAggregations.Metric metric, byte[] script) {
+            super(agg, metric);
+            this.script = script;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(SCRIPT_METRIC);
+            out.write(metric.needs());
+            out.writeBytes(script);
+        }
+    }
+
+    static class MetricNode extends Node {
         final NativeAggregations.Metric metric;
 
         MetricNode(AggregatorBase agg, NativeAggregations.Metric metric) {
@@ -818,8 +838,17 @@ public final class NativeAggregationTree {
      * {@code global} over every document (one pass), in the request's order within each.
      */
     public record Tree(List<Node> main, List<Node> global, byte[] globalQuery) {
-        /** The tree blob ({@code decode_tree} in {@code jvm_aggs.rs}). */
+        /** The tree blob ({@code decode_tree} in {@code jvm_aggs.rs}), without a bucket limit. */
         byte[] blob(int[][] slices) {
+            return blob(slices, -1);
+        }
+
+        /**
+         * The tree blob with {@code bucketLimit}, the buckets the request may still make ({@link
+         * NativeAggregations#bucketLimit}; negative for none): past it the native pass stops before
+         * building its buckets.
+         */
+        byte[] blob(int[][] slices, int bucketLimit) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(main.size());
             for (Node n : main) {
@@ -837,6 +866,9 @@ public final class NativeAggregationTree {
                 }
             }
             NativeAggregations.writeSlices(out, slices);
+            if (bucketLimit >= 0) {
+                NativeAggregations.writeInt(out, bucketLimit);
+            }
             return out.toByteArray();
         }
 
@@ -974,6 +1006,23 @@ public final class NativeAggregationTree {
     private static final String TERMS_FACTORY = AGGS + "bucket.terms.TermsAggregatorFactory";
     private static final String SIGNIFICANT_FACTORY = AGGS + "bucket.terms.SignificantTermsAggregatorFactory";
 
+    /**
+     * A numeric metric over a script alone ({@code ValuesSource.Numeric.Script}) whose Painless
+     * script the native runtime runs, or null.
+     */
+    private static Node scriptMetric(AggregatorFactory f, AggregatorBase agg, List<Node> subs, ValuesSourceConfig config)
+        throws IllegalAccessException {
+        if (subs.isEmpty() == false || config.missing() != null || config.valueSourceType() != CoreValuesSourceType.NUMERIC) {
+            return null;
+        }
+        NativeAggregations.Metric m = NativeAggregations.scriptMetric(f, config);
+        if (m == null) {
+            return null;
+        }
+        ByteArrayOutputStream script = new ByteArrayOutputStream();
+        return ExtendedEncoder.painlessAggregation(config.script(), script) == null ? new ScriptMetricNode(agg, m, script.toByteArray()) : null;
+    }
+
     /** One factory and the aggregator built from it, or null when either is not supported. */
     @SuppressWarnings("unchecked")
     private static Node node(SearchContext ctx, AggregatorFactory f, AggregatorBase agg, boolean top, Predicate<String> fieldOk)
@@ -1038,6 +1087,9 @@ public final class NativeAggregationTree {
         }
         // The values-source aggregations: a mapped field, no script or missing value.
         ValuesSourceConfig config = (ValuesSourceConfig) CONFIG.get(f);
+        if (config != null && config.script() != null && config.fieldContext() == null) {
+            return scriptMetric(f, agg, subs, config);
+        }
         if (config == null || config.script() != null || config.fieldContext() == null) {
             return null;
         }

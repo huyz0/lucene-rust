@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `org.apache.lucene.monitor`: the percolator. Queries are
 //! registered once; a document batch is matched against all of them,
 //! narrowed by a presearcher over each query's term tree.

@@ -27,6 +27,7 @@ members = [
     "crates/lucene-facet",
     "crates/lucene-sparse",
     "crates/lucene-tensor",
+    "crates/lucene-pattern-text",
     "crates/lucene-ml",
     "crates/lucene-vector-quant",
     "crates/lucene-ivf",
@@ -71,6 +72,7 @@ default-members = [
     "crates/lucene-facet",
     "crates/lucene-sparse",
     "crates/lucene-tensor",
+    "crates/lucene-pattern-text",
     "crates/lucene-ml",
     "crates/lucene-vector-quant",
     "crates/lucene-ivf",
@@ -110,7 +112,9 @@ crc32fast = "1"
 # same lock Java's `FileChannel.tryLock` takes, so the two engines exclude each
 # other. Already in the tree through memmap2 (docs/licences.md).
 libc = "0.2"
-lz4_flex = "0.11"
+# Substring search over a block of values (`lucene-codecs`' `substring`).
+# Already in the tree through `regex` (docs/licences.md).
+memchr = "2"
 miniz_oxide = "0.9"
 # Zstandard, through the C library zstd-jni wraps on the JVM: the `zstd` and
 # `zstd_no_dict` stored fields of OpenSearch's custom-codecs plugin

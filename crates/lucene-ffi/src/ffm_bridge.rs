@@ -394,6 +394,37 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_alloc(
     })
 }
 
+/// [`ffi_jvm_reader_aggregate_tree_alloc`], each committed segment's
+/// collected part read from and kept in the process's aggregation segment
+/// cache ([`crate::jvm_aggs::ffi_agg_segment_cache_set_budget`]): the same
+/// results, and with the cache off the same pass.
+///
+/// # Safety
+/// As [`ffi_jvm_reader_aggregate_tree_alloc`].
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree_cached_alloc(
+    handle: u64,
+    query: *const u8,
+    query_len: usize,
+    tree: *const u8,
+    tree_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(query, query_len)? };
+        // SAFETY: caller contract.
+        let tree_blob = unsafe { bytes_from_raw(tree, tree_len)? };
+        let encoded = crate::jvm_aggs::aggregate_tree_blobs_cached(handle, blob, tree_blob, true)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`jvm_reader::search_hybrid_blobs`]: a hybrid query's shard phase, its
 /// slices' answers encoded in an owned buffer.
 ///
@@ -532,7 +563,54 @@ pub unsafe extern "C" fn ffi_jvm_reader_derived_source_alloc(
     guard(|| {
         // SAFETY: caller contract.
         unsafe { clear_out(out_ptr, out_len)? };
-        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc)?;
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, true)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_fetch::source_blob`] without the vectors: a derived-source document's `_source`
+/// as stored, each vector masked, as an owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_source_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::source_blob(handle, segment, doc, false)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
+/// [`crate::jvm_fetch::stored_value`]: the value a document blob left out as `DEFERRED`, as an
+/// owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_value_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    ordinal: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::stored_value(handle, segment, doc, ordinal)?;
         // SAFETY: caller contract.
         unsafe { give(encoded, out_ptr, out_len) };
         Ok(())

@@ -31,6 +31,8 @@ import urllib.request
 
 import geo_matrix
 import extended_matrix
+import hex_id_matrix
+import compact_wildcard_matrix
 
 BASE = "http://localhost:9200"
 FAILURES = []
@@ -42,6 +44,8 @@ UNVERIFIABLE = []
 # Similarities the e2e index maps on `tuned.*`. OpenSearch 2.x has no `LegacyBM25` type, so
 # verify_upgrade.py, whose indices 2.x creates, drops it.
 SIMILARITIES = ("dfr", "ib", "lmd", "lmj", "dfi", "bool", "legacy")
+# Scripted similarities: native, weighted, throwing, and one the static check refuses.
+SCRIPTED = ("scr", "scrw", "scrx", "scrs", "scrn")
 
 
 def req(method, path, body=None, ndjson=False):
@@ -70,11 +74,16 @@ def stats():
 
 
 def set_native(index, on):
-    req("PUT", f"/{index}/_settings", {"index.lucene_rust.search.enabled": on})
+    req("PUT", f"/{index}/_settings", {"index.search.accelerated": on})
 
 
 def set_shapes(index, mode):
-    req("PUT", f"/{index}/_settings", {"index.lucene_rust.search.native_shapes": mode})
+    req("PUT", f"/{index}/_settings", {"index.search.accelerated_shapes": mode})
+
+
+def set_exact_approximation(index, on):
+    """`index.search.approximation.exact`; `None` restores the default (on)."""
+    req("PUT", f"/{index}/_settings", {"index.search.approximation.exact": on})
 
 
 WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho "
@@ -108,9 +117,16 @@ def create(index, shards, index_sort=None):
             "bool": {"type": "boolean"},
             "legacy": {"type": "LegacyBM25", "k1": 1.5, "b": 0.6},
             "scr": {"type": "scripted", "script": {"source": "return query.boost * doc.freq;"}},
+            "scrw": {"type": "scripted",
+                     "weight_script": {"source": "return query.boost * Math.log((field.docCount + 1.0) / (term.docFreq + 1.0));"},
+                     "script": {"source": "double tf = Math.sqrt(doc.freq); double norm = 1 / Math.sqrt(doc.length); return weight * tf * norm;"}},
+            "scrs": {"type": "scripted", "script": {"source": "return [doc.freq, 1.0].stream().mapToDouble(x -> x).sum();"}},
+            # Index creation validates every similarity at boost 2: these fail only below it.
+            "scrx": {"type": "scripted", "script": {"source": "if (query.boost < 1.5 && doc.length > 3) { throw new IllegalStateException('length ' + doc.length); } return doc.freq;"}},
+            "scrn": {"type": "scripted", "script": {"source": "return query.boost < 1.5 ? doc.freq - 1.5 : doc.freq;"}},
         },
     }
-    settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned", "scr")}
+    settings["similarity"] = {k: v for k, v in settings["similarity"].items() if k in SIMILARITIES + ("tuned",) + SCRIPTED}
     # A hunspell analyzer over config/hunspell/en_US
     # (opensearch-plugin/e2e/hunspell), on the nodes verify-opensearch.sh mounts
     # it into; elsewhere (upgrade, rollback) `hun` is a plain text field.
@@ -129,7 +145,7 @@ def create(index, shards, index_sort=None):
             "hun": {"type": "text", "analyzer": "hun"} if HUNSPELL else {"type": "text"},
             "title": {"type": "text", "store": True},
             "tuned": {"type": "text", "similarity": "tuned", "fields": {
-                k: {"type": "text", "similarity": k} for k in SIMILARITIES + ("scr",)
+                k: {"type": "text", "similarity": k} for k in SIMILARITIES + SCRIPTED
             }},
             "tag": {"type": "keyword"},
             "mtag": {"type": "keyword"},
@@ -206,7 +222,7 @@ def load(index, docs, seed, deletes=True):
 
 
 # (name, request body, expected): "native" runs native in both routing modes
-# (no encodable shape is routed to Lucene as slower, so `native_shapes` fast
+# (no encodable shape is routed to Lucene as slower, so `accelerated_shapes` fast
 # and all agree); anything else is the fallback reason
 # expected in both modes ("query_*" matches any query class).
 def matrix():
@@ -273,7 +289,19 @@ def matrix():
     add("fuzzy constant_score", {"query": {"fuzzy": {"body": {"value": "alpah", "rewrite": "constant_score"}}}}, "native")
     add("prefix constant_score_blended", {"query": {"prefix": {"body": {"value": "be", "rewrite": "constant_score_blended"}}}}, "native")
     add("terms_set field", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"], "minimum_should_match_field": "qty"}}}}, "native")
-    add("terms_set script", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}}}, "covering_script")
+    add("terms_set script", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}}}, "native")
+    add("terms_set script num_terms", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3", "delta4"],
+        "minimum_should_match_script": {"source": "doc['qty'].size() == 0 ? 1 : Math.min(params.num_terms, doc['qty'].value % 3 + 1)"}}}}}, "native")
+    add("terms_set script null minimum", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2", "gamma3"],
+        "minimum_should_match_script": {"source": "def m = null; if (doc['qty'].size() > 0 && doc['qty'].value <= 20) { m = 1; } return m;"}}}}}, "native")
+    add("terms_set script refused", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+        "minimum_should_match_script": {"source": "doc['m'].stream().count() > 1 ? 2 : 1"}}}}}, "covering_painless")
+    add("terms_set script options", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+        "minimum_should_match_script": {"source": "int s = 0; for (int i = 0; i < 3; i++) { s++; } return s - 2;", "options": {"max_loop_counter": "100"}}}}}}, "covering_options")
+    # Two minimums over the same terms are two clauses: the rewrite keeps both.
+    add("terms_set two scripts", {"query": {"bool": {"filter": [
+        {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "1"}}}},
+        {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"], "minimum_should_match_script": {"source": "2"}}}}]}}}, "native")
     add("distance_feature date", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "should": [{"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "7d"}}]}}}, "native")
     add("distance_feature date alone", {"track_total_hits": True, "query": {"distance_feature": {"field": "ts", "origin": 1_700_100_000_000, "pivot": "1d"}}}, "native")
     add("terms keyword", {"query": {"terms": {"tag": ["alpha", "beta", "omega"]}}}, "native")
@@ -322,10 +350,13 @@ def matrix():
     for k in SIMILARITIES:
         add(f"similarity {k}", {"query": {"bool": {"should": [{"match": {f"tuned.{k}": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
     add("similarity dfr phrase", {"query": {"match_phrase": {"tuned.dfr": {"query": "alpha beta", "slop": 2}}}}, "native")
-    # A scripted similarity runs the user's script, which stays on the JVM.
+    # Scripted similarities run natively when the static check passes them.
     # (`classic` is native too, but OpenSearch refuses it in a mapping now, so
     # only the self-test reaches it.)
-    add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "field_similarity")
+    add("similarity scripted", {"query": {"match": {"tuned.scr": "alpha"}}}, "native")
+    add("similarity scripted weight", {"query": {"bool": {"should": [{"match": {"tuned.scrw": "alpha beta"}}, {"match": {"body": "gamma"}}]}}}, "native")
+    add("similarity scripted phrase", {"query": {"match_phrase": {"tuned.scrw": "beta alpha"}}}, "native")
+    add("similarity scripted refused", {"query": {"match": {"tuned.scrs": "alpha"}}}, "field_similarity")
     # Sorted searches: numeric keys of every type, missing values, several keys,
     # the score and _doc, search_after, and the ones that stay on Lucene.
     add("sort long desc", {"query": {"match": {"body": "alpha"}}, "sort": [{"n": "desc"}]}, "native")
@@ -429,6 +460,17 @@ def matrix():
     add("agg missing date_histogram", {"size": 0, "aggs": {"h": {"date_histogram": {"field": "ts", "calendar_interval": "day", "missing": "2023-11-15"}}}}, "native")
     add("agg missing range", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"r": {"range": {"field": "m", "missing": 500, "ranges": [{"to": 100}, {"from": 100, "to": 600}, {"from": 600}]}}}}, "native")
     add("agg missing terms double", {"size": 0, "aggs": {"t": {"terms": {"field": "md", "size": 4, "missing": -1.25}}}}, "native")
+    # Metrics over a Painless script alone, checked as other scripts are.
+    def sc(source, **params):
+        return {"script": {"source": source, "params": params}}
+    add("agg script stats", {"size": 0, "query": {"match": {"body": "alpha"}},
+                             "aggs": {"s": {"stats": sc("doc['qty'].size() == 0 ? 0 : doc['qty'].value * params.f", f=2)}}}, "native")
+    add("agg script sum avg min", {"size": 0, "aggs": {"s": {"sum": sc("doc['n'].value % 7")}, "a": {"avg": sc("doc['ratio'].size() == 0 ? 1 : doc['ratio'].value")},
+                                                       "lo": {"min": sc("doc['tag'].size() == 0 ? -1 : doc['tag'].value.length()")}}}, "native")
+    add("agg script list values", {"size": 0, "aggs": {"s": {"sum": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")},
+                                                       "hi": {"max": sc("def l = []; for (def v : doc['m']) { l.add(v * 2); } return l;")}}}, "native")
+    add("agg script boolean", {"size": 0, "aggs": {"s": {"sum": sc("doc['qty'].size() > 0 && doc['qty'].value > 3")}}}, "native")
+    add("agg script under terms", {"size": 0, "aggs": {"t": {"terms": {"field": "tag", "size": 5}, "aggs": {"m": {"max": sc("doc['n'].value * 3")}}}}}, "native")
     add("agg missing fraction on a long", {"size": 0, "aggs": {"t": {"terms": {"field": "m", "missing": 3.5}}}}, "aggregations")
     add("agg missing keyword terms", {"size": 0, "aggs": {"t": {"terms": {"field": "mtag", "missing": "none"}}}}, "native")
     add("agg missing keyword terms existing term", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"t": {"terms": {"field": "mtag", "size": 5, "missing": "alpha3"}}}}, "native")
@@ -822,6 +864,42 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
     """The whole matrix (or `rows`) against the Lucene reference, under one routing mode."""
     label = f"{label}/{shapes}"
     set_shapes(index, shapes)
+    # OpenSearch's approximation is the reference here: rows that expect "approximate" stay on it.
+    # check_exact_approximation covers the default, which answers them natively and exactly.
+    set_exact_approximation(index, False)
+    try:
+        return run_matrix_rows(index, shards, label, shapes, index_sorted, rows)
+    finally:
+        set_exact_approximation(index, None)
+
+
+def check_exact_approximation(index, shards, label):
+    """With `index.search.approximation.exact` at its default, the rows OpenSearch would approximate run
+    natively: their hits are the exact ones (OpenSearch's with `track_total_hits: true`, which
+    turns the approximation off), their totals OpenSearch's own."""
+    # A post_filter's approximation is not the query's: those rows stay on OpenSearch either way.
+    rows = [(n, b) for n, b, e in matrix() if e == "approximate" and "post_filter" not in b]
+    check(rows, f"{label} {index}: no approximate rows")
+    set_native(index, False)
+    approx, exact = {}, {}
+    for name, body in rows:
+        approx[name] = shape(complete(search(index, body)), search_url(index, body)[1])
+        exact[name] = shape(complete(search(index, {**body, "track_total_hits": True})), search_url(index, body)[1])
+    set_native(index, True)
+    for name, body in rows:
+        before = stats()
+        got = shape(search(index, body), search_url(index, body)[1])
+        after = stats()
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
+        check(ran_native == shards, f"{label} {index} [{name}]: exact approximation ran native on {ran_native} of {shards} shards; fallbacks {fallback_delta(before, after)}")
+        check(got["total"] == approx[name]["total"], f"{label} {index} [{name}]: total {got['total']} vs OpenSearch's {approx[name]['total']}")
+        # Only the hits: the exact request's total and early termination are its own.
+        loose = {"total": None, "terminated_early": None}
+        diff = same({**got, **loose}, {**exact[name], **loose})
+        check(diff is None, f"{label} {index} [{name}]: exact approximation differs from the exact answer: {diff}")
+
+
+def run_matrix_rows(index, shards, label, shapes, index_sorted, rows):
     queries = rows if rows is not None else matrix()
     set_native(index, False)
     reference = {}
@@ -842,7 +920,7 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
             expect = "native" if shapes == "all" else "slower_shape"
         if expect == "slow_agg":
             # An aggregation OpenSearch answers faster (an early-terminating sorted read, the
-            # filter rewrite): native only under native_shapes: all.
+            # filter rewrite): native only under accelerated_shapes: all.
             expect = "native" if shapes == "all" else "aggregations"
         if expect == "dfs_multi":
             # OpenSearch runs a one-shard dfs search as query_then_fetch
@@ -858,8 +936,8 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
         after = stats()
         diff = same(got, reference[name])
         check(diff is None, f"{label} {index} [{name}]: native-enabled response differs from Lucene: {diff}")
-        ran_native = after["native_queries"] - before["native_queries"]
-        errors = after["native_errors"] - before["native_errors"]
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
+        errors = after["accelerated_errors"] - before["accelerated_errors"]
         check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
         if expect == "either":
             # The two engines' responses agree (checked above); where it ran is not pinned.
@@ -903,12 +981,15 @@ def raw_search(index, body):
         return e.code, json.loads(e.read().decode())
 
 
-def error_shape(resp):
+def error_shape(resp, suppressed=True):
     """A failed search's response with the parts that name a node or time dropped, and its
-    shard failures in shard order."""
+    shard failures in shard order; without `suppressed`, the other slices' exceptions a
+    concurrent search adds to the first are dropped too."""
+    drop = ("node", "took") if suppressed else ("node", "took", "suppressed")
+
     def norm(v):
         if isinstance(v, dict):
-            return {k: norm(x) for k, x in v.items() if k not in ("node", "took")}
+            return {k: norm(x) for k, x in v.items() if k not in drop}
         if isinstance(v, list):
             items = [norm(x) for x in v]
             if items and all(isinstance(x, dict) and "shard" in x for x in items):
@@ -922,7 +1003,7 @@ def error_shape(resp):
 
 
 def script_errors(index, shards):
-    """Painless scripts that throw at run time: the native engine runs them (each passed the
+    """Painless scripts that throw at run time (score, function_score and filter scripts): the native engine runs them (each passed the
     static check) and fails exactly as stock does -- the same status, exception type, reason,
     script_stack and position -- without re-running the search in Java (no fallback)."""
     rows = [
@@ -949,6 +1030,37 @@ def script_errors(index, shards):
         ("function NaN score", {"query": {"function_score": {"query": {"match": {"body": "alpha"}}, "boost_mode": "replace",
                                                             "functions": [{"script_score": {"script": {"source": "Double.NaN"}}}]}}}),
     ]
+    # A sort script's exception.
+    queries += [
+        ("sort missing value", {"query": {"match": {"body": "alpha"}},
+                                "sort": [{"_script": {"type": "number", "script": {"source": "doc['sp'].value"}}}]}),
+    ]
+    # Aggregation scripts: the script's exception, and a value that is not a number.
+    queries += [
+        ("agg script missing value", {"size": 0, "aggs": {"s": {"sum": {"script": {"source": "doc['sp'].value"}}}}}),
+        ("agg script string value", {"size": 0, "aggs": {"s": {"max": {"script": {"source": "doc['tag'].size() == 0 ? 1 : doc['tag'].value"}}}}}),
+    ]
+    # intervals: a script filter's exception.
+    queries += [
+        ("interval filter division by zero", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+                                              "filter": {"script": {"source": "1 / (interval.start - interval.start) > 0"}}}}}}}),
+    ]
+    # A scripted similarity's exception.
+    queries += [
+        ("similarity script throws", {"query": {"match": {"tuned.scrx": "alpha"}}}),
+        ("similarity negative score", {"query": {"match": {"tuned.scrn": "alpha"}}}),
+    ]
+    # terms_set: a minimum_should_match_script's exception.
+    queries += [
+        ("terms_set minimum missing value", {"query": {"terms_set": {"mtag": {"terms": ["alpha1", "beta2"],
+                                             "minimum_should_match_script": {"source": "doc['sp'].value"}}}}}),
+    ]
+    # script queries: a filter script's exception.
+    queries += [
+        ("filter missing value", {"query": {"bool": {"filter": [{"script": {"script": {"source": "doc['sp'].value > 1"}}}]}}}),
+        ("filter unmapped field", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
+                                                      "filter": [{"script": {"script": {"source": "doc['nosuch'].value > 0"}}}]}}}),
+    ]
     for name, body in queries:
         set_native(index, False)
         want = raw_search(index, body)
@@ -959,11 +1071,15 @@ def script_errors(index, shards):
         label = f"script errors {index} [{name}]"
         check(want[0] != 200 or failed_shards(want[1]), f"{label}: the stock engine fails ({want[0]})")
         check(got[0] == want[0], f"{label}: status {got[0]} vs stock {want[0]}")
-        a, b = error_shape(got[1]), error_shape(want[1])
+        # A request with aggregations runs concurrently in stock (search.concurrent_segment_search
+        # auto): each slice's first exception after the first is suppressed into it. The native
+        # aggregation stops at the first.
+        whole = not name.startswith("agg ")
+        a, b = error_shape(got[1], whole), error_shape(want[1], whole)
         check(a == b, f"{label}: native error differs from stock: {json.dumps(a, sort_keys=True)[:1500]} vs {json.dumps(b, sort_keys=True)[:1500]}")
         delta = fallback_delta(before, after)
         check(not delta, f"{label}: no fallback (the script never re-runs in Java), got {delta}")
-        check(after["native_errors"] == before["native_errors"], f"{label}: not counted as a native error")
+        check(after["accelerated_errors"] == before["accelerated_errors"], f"{label}: not counted as a native error")
         failed = after["script_errors"] - before["script_errors"]
         check(failed >= 1, f"{label}: {failed} script errors counted on {shards} shards")
         print(f"  {label}: status {got[0]}, {failed} script errors, no fallback")
@@ -996,7 +1112,7 @@ def run_scroll(index, shards, label):
         for i, (g, r) in enumerate(zip(got, reference)):
             diff = same(g, r)
             check(diff is None, f"{label} {index} [{name}]: page {i} differs from Lucene: {diff}")
-        ran_native = after["native_queries"] - before["native_queries"]
+        ran_native = after["accelerated_queries"] - before["accelerated_queries"]
         check(ran_native == len(got) * shards,
               f"{label} {index} [{name}]: ran native {ran_native} times for {len(got)} pages on {shards} shards; fallbacks {fallback_delta(before, after)}")
 
@@ -1038,7 +1154,7 @@ def lifecycle(index, container):
     for rnd in (1, 2):
         req("POST", f"/{index}/_search?request_cache=false", {"query": {"match": {"body": "alpha beta"}}})
         s0 = stats()
-        check(s0["open_native_readers"] >= 1, f"lifecycle {rnd}: a native reader is open before the merge")
+        check(s0["open_accelerated_readers"] >= 1, f"lifecycle {rnd}: a native reader is open before the merge")
         segs_before = len(req("GET", f"/_cat/segments/{index}?format=json"))
         req("POST", f"/{index}/_forcemerge?max_num_segments=1")
         req("POST", f"/{index}/_refresh")
@@ -1048,16 +1164,16 @@ def lifecycle(index, container):
         leftover = None
         while time.time() < deadline:
             leftover = deleted_index_mappings(container)
-            if not leftover and stats()["open_native_readers"] <= s0["open_native_readers"]:
+            if not leftover and stats()["open_accelerated_readers"] <= s0["open_accelerated_readers"]:
                 break
             time.sleep(1)
         segs_after = len(req("GET", f"/_cat/segments/{index}?format=json"))
         print(f"lifecycle {rnd}: {segs_before} segments -> {segs_after}; open native readers "
-              f"{s0['open_native_readers']} -> {stats()['open_native_readers']}")
+              f"{s0['open_accelerated_readers']} -> {stats()['open_accelerated_readers']}")
         check(segs_after == 1, f"lifecycle {rnd}: force merge left {segs_after} segments")
         check(not leftover, f"lifecycle {rnd}: deleted index files still mapped after the merge: {leftover[:3]}")
-        check(stats()["open_native_readers"] <= s0["open_native_readers"],
-              f"lifecycle {rnd}: native readers leaked: {stats()['open_native_readers']}")
+        check(stats()["open_accelerated_readers"] <= s0["open_accelerated_readers"],
+              f"lifecycle {rnd}: native readers leaked: {stats()['open_accelerated_readers']}")
         if rnd == 1:
             # New segments on top of the merged one, for the second round.
             load_more(index, 2000)
@@ -1165,7 +1281,7 @@ def crash(container, indices):
     wait_up()
     # Read before the counts below: a _count is a match_all, which runs natively.
     s = stats()
-    check(s["native_queries"] == 0, f"crash: stats reset with the process ({s['native_queries']})")
+    check(s["accelerated_queries"] == 0, f"crash: stats reset with the process ({s['accelerated_queries']})")
     for i in indices:
         req("POST", f"/{i}/_refresh")
         got = req("GET", f"/{i}/_count")["count"]
@@ -1174,7 +1290,7 @@ def crash(container, indices):
 
 def bench(index, out, rounds):
     """REST latency, native vs Lucene, same node, same index, same queries --
-    every shape the engine answers natively (native_shapes=all), so the
+    every shape the engine answers natively (accelerated_shapes=all), so the
     routing policy's "slow" shapes are measured too."""
     set_shapes(index, "all")
     queries = [(n, b) for n, b, e in matrix() if e in ("native", "slow", "slow_agg") and "highlight" not in n]
@@ -1206,7 +1322,7 @@ def bench(index, out, rounds):
 
 
 def set_fetch(index, on):
-    req("PUT", f"/{index}/_settings", {"index.lucene_rust.fetch.enabled": on})
+    req("PUT", f"/{index}/_settings", {"index.fetch.accelerated": on})
 
 
 FETCH_ROWS = [
@@ -1231,7 +1347,7 @@ def fetched(resp):
 
 def fetch_counters():
     st = stats()
-    return st["native_fetches"], st["native_sequential_fetches"], st["fetch_nanos"]["lucene_count"], st["native_errors"]
+    return st["accelerated_fetches"], st["accelerated_sequential_fetches"], st["fetch_nanos"]["fallback_count"], st["accelerated_errors"]
 
 
 def run_fetch(index, label):
@@ -1274,13 +1390,13 @@ def run_fetch(index, label):
         req("POST", f"/{seq}/_refresh")
         # The query phase opens the native reader the fetch then reads through.
         req("POST", f"/{seq}/_search", {"size": 0, "query": {"match_all": {}}})
-        before = stats()["native_sequential_fetches"]
+        before = stats()["accelerated_sequential_fetches"]
         set_fetch(seq, False)
         want = fetched(req("POST", f"/{seq}/_search?request_cache=false", {"size": 30, "query": {"match_all": {}}, "sort": ["_doc"]}))
         set_fetch(seq, True)
         got = fetched(req("POST", f"/{seq}/_search?request_cache=false", {"size": 30, "query": {"match_all": {}}, "sort": ["_doc"]}))
         check(got == want and len(got) == 30, f"{label} {seq}: native sequential fetch differs from Lucene's")
-        check(stats()["native_sequential_fetches"] >= before + 30, f"{label} {seq}: the sequential reader served nothing natively")
+        check(stats()["accelerated_sequential_fetches"] >= before + 30, f"{label} {seq}: the sequential reader served nothing natively")
         req("DELETE", f"/{seq}")
     for doc_id in ids[:10]:
         # A realtime get may read through the engine's internal reader, which no search opened
@@ -1294,7 +1410,7 @@ def run_fetch(index, label):
 
 def bench_fetch(index, out, rounds):
     """REST latency of the fetch phase, native stored fields against Lucene's: the same searches
-    (their query phase native both times) with index.lucene_rust.fetch.enabled toggled, interleaved,
+    (their query phase native both times) with index.fetch.accelerated toggled, interleaved,
     median wall time; and the get API the same way."""
     rows = [(n, b) for n, b in FETCH_ROWS if b.get("_source", True) is not False or "stored_fields" in b]
     rows.append(("fetch 100 _source", {"size": 100, "query": {"match": {"body": "alpha"}}}))
@@ -1324,9 +1440,9 @@ def bench_fetch(index, out, rounds):
     # StoredFields.document per document, per path, from the plugin's own counters: the fetch's
     # shard-side cost without the REST round trip (warm-up requests included on both sides).
     per_doc = {}
-    for path in ("native", "lucene"):
-        docs = after[f"{path}_count"] - before[f"{path}_count"]
-        per_doc[path] = (after[path] - before[path]) / docs if docs else None
+    for path, key in (("native", "accelerated"), ("lucene", "fallback")):
+        docs = after[f"{key}_count"] - before[f"{key}_count"]
+        per_doc[path] = (after[key] - before[key]) / docs if docs else None
     try:
         with open(out) as f:
             data = json.load(f)
@@ -1466,6 +1582,8 @@ def main():
     for shapes in ("fast", "all"):
         native += run_matrix("single", 1, "initial", shapes) + run_matrix("multi", 3, "initial", shapes)
     native += run_matrix("clean", 1, "no deletions")
+    for index, shards in (("single", 1), ("multi", 3), ("clean", 1)):
+        check_exact_approximation(index, shards, "exact approximation")
     # An index sorted by qty then n: a search whose sort begins it ends each
     # segment at its first non-competitive document (TopFieldCollector).
     try:
@@ -1491,7 +1609,7 @@ def main():
         native += run_matrix(index, shards, "extended", rows=extended_matrix.rows())
     for index, shards in (("single", 1), ("multi", 3)):
         script_errors(index, shards)
-    # parent-join: has_child/has_parent fall back (see extended_matrix.join_rows).
+    # parent-join: has_child/has_parent run natively (see extended_matrix.join_rows).
     try:
         req("DELETE", "/pj")
     except RuntimeError:
@@ -1522,6 +1640,9 @@ def main():
     # Five rounds: a filter is cached on its fifth use (UsageTrackingQueryCachingPolicy).
     for _ in range(5):
         native += run_matrix("geo", 1, "geo merged", rows=geo_matrix.rows())
+    # hex_id against keyword on the same values, under both engines and derived source.
+    native += hex_id_matrix.run(req, check, stats)
+    native += compact_wildcard_matrix.run(req, check, stats)
     print(f"matrix: {len(matrix())} request shapes x 4 indices, {len(geo_matrix.rows())} geo shapes x 2 indices; {native} shard queries ran native")
     # The fetch phase and get API with native stored fields.
     run_fetch("single", "fetch")

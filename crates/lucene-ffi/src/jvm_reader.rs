@@ -38,7 +38,7 @@ use lucene_search::top_field::{
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
-    count_boolean_query_segment, search_boolean_query_multi_segment_maxscore_counting,
+    count_boolean_query_segment_with, search_boolean_query_multi_segment_maxscore_counting,
     search_term_query_multi_segment_counting, ScoreDoc, TotalHits, TotalHitsRelation,
 };
 use lucene_store::Directory;
@@ -49,15 +49,6 @@ use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
 use std::sync::Arc;
-
-/// The version of the contract between this library and the Java classes in
-/// `opensearch-plugin/`: the entry points in this module, `engine_writer.rs`
-/// and `ffm_bridge.rs`, their argument order, and the query blob layout. The plugin refuses to
-/// start against a library reporting any other number -- a jar carrying a
-/// stale `.so` must not get as far as reading an index.
-///
-/// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 115;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -81,7 +72,7 @@ const NODE_PHRASE: u8 = 7;
 const NODE_TERM_SET: u8 = 8;
 const NODE_PREFIX: u8 = 9;
 const NODE_WILDCARD: u8 = 10;
-const NODE_POINT_RANGE: u8 = 11;
+pub(crate) const NODE_POINT_RANGE: u8 = 11;
 const NODE_REGEXP: u8 = 12;
 const NODE_EXISTS: u8 = 13;
 const NODE_TERM_STATS: u8 = 14;
@@ -110,12 +101,6 @@ const GEOMETRY_LINE: u8 = 1;
 const GEOMETRY_POLYGON: u8 = 2;
 const GEOMETRY_RECTANGLE: u8 = 3;
 const GEOMETRY_CIRCLE: u8 = 4;
-
-/// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
-#[no_mangle]
-pub extern "C" fn ffi_jvm_abi_version() -> u32 {
-    JVM_ABI_VERSION
-}
 
 /// A request's query blob: the query, and the `min_score` in front of it
 /// ([`QUERY_MIN_SCORE`]) when there is one -- rewritten, as
@@ -185,6 +170,20 @@ pub(crate) fn rewritten(query: JvmQuery) -> JvmQuery {
                 ..Default::default()
             }),
         },
+    }
+}
+
+/// `r`, a search's result over `sim`'s similarities, or the error a
+/// scripted similarity's scorer kept (a `SimScorer` cannot fail): the
+/// search's error, whatever else it returned.
+pub(crate) fn similarity_checked<T>(
+    sim: Option<&PerFieldSimilarity>,
+    r: Result<T, FfiStatus>,
+) -> Result<T, FfiStatus> {
+    use lucene_search::similarities::Similarity;
+    match sim.and_then(|s| s.take_failure()) {
+        Some(e) => Err(crate::clauses::map_search_error(e)),
+        None => r,
     }
 }
 
@@ -457,7 +456,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
         // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
         // mapping lives as long as the segment reader, which is why closing the
         // handle matters.
-        // A `rust_encrypted` shard's path is bound to an encrypting directory
+        // A `encrypted` shard's path is bound to an encrypting directory
         // over the mapping (`store.rs`), which decrypts each file on open.
         let dir = crate::store::shard_directory(path).map_err(|e| {
             set_last_error(format!("opening the shard directory [{path}]: {e}"));
@@ -499,11 +498,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             }));
             live_docs.push(live);
         }
+        let cacheable = live_docs.len();
         let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(JvmReaderHandle {
             reader,
             live_docs,
             deleted,
             commit_live: std::sync::Mutex::new(None),
+            cacheable,
+            agg_identities: std::sync::OnceLock::new(),
+            path: std::sync::Arc::from(path),
         }))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
@@ -514,13 +517,15 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
-    read_recovering(jvm_readers())
+    let reader = read_recovering(jvm_readers())
         .get(handle)
         .cloned()
         .ok_or_else(|| {
             set_last_error(missing);
             FfiStatus::InvalidHandle
-        })
+        })?;
+    crate::error::note_shard(&reader.path);
+    Ok(reader)
 }
 
 /// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
@@ -613,10 +618,14 @@ pub unsafe extern "C" fn ffi_jvm_reader_search(
             handle,
             "ffi_jvm_reader_search: unknown or already-closed handle",
         )?;
-        let (hits, total, lower_bound) = match min_score {
-            Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim)?,
-            None => search(&h, &query, top_n, count_limit, sim)?,
-        };
+        let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
+        let (hits, total, lower_bound) = similarity_checked(
+            sim,
+            match min_score {
+                Some(min) => search_min_score(&h, &query, top_n, count_limit, min, sim),
+                None => search(&h, &query, top_n, count_limit, sim),
+            },
+        )?;
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
             for (i, hit) in hits.iter().enumerate() {
@@ -651,6 +660,11 @@ const SORT_HALF_FLOAT: u8 = 9;
 /// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
 /// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
 const SORT_UNSIGNED_LONG: u8 = 10;
+/// A Painless `_script` key of type `number`
+/// ([`crate::jvm_painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
+/// only, then the script ([`crate::jvm_painless_score`]'s layout, context
+/// `3` or `4`).
+pub(crate) const SORT_SCRIPT: u8 = 11;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
 const MAX_GEO_ORIGINS: usize = 1024;
@@ -769,6 +783,19 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
         let mode = flags & SORT_MODE_MASK;
+        if ty == SORT_SCRIPT {
+            if flags & !SORT_REVERSE != 0 {
+                return Err(bad(format!("sort blob: _script key flags {flags:#x}")));
+            }
+            let source = crate::jvm_painless_score::PainlessSort::decode(&mut c)?;
+            keys.push(SortField::with_source(
+                "_script",
+                Arc::new(source),
+                flags & SORT_REVERSE != 0,
+            ));
+            lucene_geo.push(false);
+            continue;
+        }
         if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             lucene_geo.push(false);
@@ -1234,19 +1261,26 @@ pub(crate) fn search_sorted_blobs(
         handle,
         "ffi_jvm_reader_search_sorted: unknown or already-closed handle",
     )?;
-    let (hits, total, lower_bound, max_score, terminated) = search_sorted(
-        &h,
-        &query,
-        &keys,
-        after.as_ref(),
-        top_n,
-        count_limit,
-        track,
-        &slices,
-        terminate_after,
-        &index_sorted,
-        min_score,
+    let query = similarity_checked(
         sim.as_ref(),
+        crate::jvm_join::resolve(&h, query, sim.as_ref()),
+    )?;
+    let (hits, total, lower_bound, max_score, terminated) = similarity_checked(
+        sim.as_ref(),
+        search_sorted(
+            &h,
+            &query,
+            &keys,
+            after.as_ref(),
+            top_n,
+            count_limit,
+            track,
+            &slices,
+            terminate_after,
+            &index_sorted,
+            min_score,
+            sim.as_ref(),
+        ),
     )?;
     let terms = encode_terms(&keys, &hits)?;
     Ok(SortedOut {
@@ -1338,6 +1372,7 @@ pub(crate) fn search_collapsed_blobs(
         handle,
         "ffi_jvm_reader_search_collapsed: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1381,7 +1416,7 @@ pub(crate) fn search_collapsed_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     if let Some((n, _)) = terminate_after {
-        let (top, cut) = lucene_search::top_field::search_collapsed_until(
+        let top_cut = lucene_search::top_field::search_collapsed_until(
             &segments,
             h.reader.segment_readers(),
             &q,
@@ -1394,7 +1429,8 @@ pub(crate) fn search_collapsed_blobs(
             track,
             n,
         )
-        .map_err(map_search_error)?;
+        .map_err(map_search_error);
+        let (top, cut) = similarity_checked(sim, top_cut)?;
         return encode_collapsed(&keys, &[top], cut.terminated);
     }
     let parts = lucene_search::top_field::search_collapsed(
@@ -1411,7 +1447,8 @@ pub(crate) fn search_collapsed_blobs(
         &slices,
         min_score,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let parts = similarity_checked(sim, parts)?;
     encode_collapsed(&keys, &parts, false)
 }
 
@@ -1508,6 +1545,7 @@ pub(crate) fn rescore_hits(
         handle,
         "ffi_jvm_reader_rescore: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1562,7 +1600,8 @@ pub(crate) fn rescore_hits(
         rescore_query_weight,
         mode,
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let rescored = similarity_checked(sim, rescored)?;
     for (i, hit) in hits.iter().enumerate() {
         docs[i] = hit.doc;
         scores[i] = hit.score;
@@ -1895,6 +1934,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
         handle,
         "ffi_jvm_reader_aggregate: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1956,7 +1996,7 @@ pub(crate) fn aggregate_counting_blobs_seen(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let (sliced, seen) = lucene_search::aggs::aggregate_sliced_counting(
+    let sliced = lucene_search::aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -1966,7 +2006,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
         &slices,
         min.as_ref(),
     )
-    .map_err(map_search_error)?;
+    .map_err(map_search_error);
+    let (sliced, seen) = similarity_checked(sim, sliced)?;
     let mut states = Vec::new();
     let mut results = Vec::new();
     for (m, t) in sliced {
@@ -2048,6 +2089,7 @@ pub(crate) fn count_terminates_blobs(
         handle,
         "ffi_jvm_reader_count_terminates: unknown or already-closed handle",
     )?;
+    let query = similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -2095,8 +2137,16 @@ pub(crate) fn count_terminates_blobs(
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    lucene_search::terminate::count_terminates(&segments, &q, &slices, &iterate, n, min.as_ref())
-        .map_err(map_search_error)
+    let counted = lucene_search::terminate::count_terminates(
+        &segments,
+        &q,
+        &slices,
+        &iterate,
+        n,
+        min.as_ref(),
+    )
+    .map_err(map_search_error);
+    similarity_checked(sim, counted)
 }
 
 /// Whether a concurrent `size: 0` search's count stops early
@@ -2597,7 +2647,7 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
             }
         }
     }
-    Ok(out)
+    similarity_checked(sim.as_ref(), Ok(out))
 }
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
@@ -2873,11 +2923,19 @@ fn total_hits_with(
     if bound > count_limit {
         return Ok((bound, true));
     }
+    // A function query's reader-wide preparation, once for every segment.
+    let counted = (0..segments.len()).all(|i| known.get(i).copied().flatten().is_some());
+    let global = match query {
+        JvmQuery::Boolean(q) if !counted => {
+            lucene_search::count_preparation(segments, q).map_err(map_search_error)?
+        }
+        _ => None,
+    };
     let mut total = 0i64;
     for (i, seg) in segments.iter().enumerate() {
         let n = match known.get(i).copied().flatten() {
             Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
-            None => count_segment(seg, query)?,
+            None => count_segment(seg, query, global.as_ref())?,
         };
         total = total.saturating_add(n);
         if total > count_limit {
@@ -2952,14 +3010,17 @@ fn lower_bound(seg: &OpenSegment<'_>, deleted: i64, clause: &Clause) -> Result<i
 }
 
 /// `IndexSearcher.count` for one segment.
-fn count_segment(seg: &OpenSegment<'_>, query: &JvmQuery) -> Result<i64, FfiStatus> {
+fn count_segment(
+    seg: &OpenSegment<'_>,
+    query: &JvmQuery,
+    global: Option<&lucene_search::GlobalStats>,
+) -> Result<i64, FfiStatus> {
     Ok({
         match query {
             JvmQuery::Term(q) => count_term_query(seg.fields, seg.doc_in, seg.live_docs, q),
             // The scored search's scorer tree, in `COMPLETE_NO_SCORES`.
-            JvmQuery::Boolean(q) => {
-                count_boolean_query_segment(seg, q).map(|n| i64::try_from(n).unwrap_or(i64::MAX))
-            }
+            JvmQuery::Boolean(q) => count_boolean_query_segment_with(seg, q, global)
+                .map(|n| i64::try_from(n).unwrap_or(i64::MAX)),
         }
         .map_err(map_search_error)?
     })
@@ -3505,7 +3566,7 @@ pub(crate) mod tests {
 
     /// Opens the fixture with `live[i]` as segment `i`'s live-docs words
     /// (missing or empty: no deletions).
-    fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
+    pub(crate) fn open_live(max_docs: &[i32], previous: u64, live: &[&[u64]]) -> (i32, u64) {
         let infos = infos();
         let counts: Vec<usize> = (0..max_docs.len())
             .map(|i| live.get(i).map_or(0, |w| w.len()))
@@ -3544,7 +3605,7 @@ pub(crate) mod tests {
     }
 
     /// Opens `fixtures/data/<rel>` as [`open_bwc`] opens a version.
-    fn open_fixture(rel: &str) -> u64 {
+    pub(crate) fn open_fixture(rel: &str) -> u64 {
         let path = format!("{}/../../fixtures/data/{rel}", env!("CARGO_MANIFEST_DIR"));
         let dir = lucene_store::FsDirectory::open(&path);
         let files: Vec<String> = std::fs::read_dir(&path)
@@ -3947,9 +4008,9 @@ pub(crate) mod tests {
     }
 
     /// `(hits as (doc, values), total, lower_bound)`, or the status.
-    type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
+    pub(crate) type SortedRun = (Vec<(i32, Vec<i64>)>, i64, bool);
 
-    fn run_sorted(
+    pub(crate) fn run_sorted(
         handle: u64,
         query: &[u8],
         sort: &[u8],
@@ -5413,11 +5474,6 @@ pub(crate) mod tests {
         ffi_close_jvm_reader(h);
     }
 
-    #[test]
-    fn abi_version_is_the_constant() {
-        assert_eq!(ffi_jvm_abi_version(), JVM_ABI_VERSION);
-    }
-
     /// Hits and scores are Lucene's own, bit for bit, from the fixture's
     /// manifest -- the JVM reader is the multi-segment searcher, not a
     /// re-derivation of it.
@@ -6522,6 +6578,28 @@ pub(crate) mod tests {
     /// A prefix query's blob.
     pub(crate) fn prefix_blob(field: &str, prefix: &str) -> Vec<u8> {
         tree(N::Pre(field, prefix))
+    }
+
+    /// `+field:term #range(numeric, min, max)`'s blob.
+    pub(crate) fn term_and_range_blob(
+        field: &str,
+        term: &str,
+        numeric: &str,
+        min: i64,
+        max: i64,
+    ) -> Vec<u8> {
+        tree(N::B(
+            0,
+            vec![
+                (crate::clauses::OCCUR_MUST, N::T(field, term)),
+                (crate::clauses::OCCUR_FILTER, N::R(numeric, min, max)),
+            ],
+        ))
+    }
+
+    /// `#range(numeric, min, max)`'s blob.
+    pub(crate) fn range_blob(numeric: &str, min: i64, max: i64) -> Vec<u8> {
+        tree(N::R(numeric, min, max))
     }
 
     fn tree(n: N<'_>) -> Vec<u8> {

@@ -1,0 +1,19 @@
+[package]
+name = "lucene-pattern-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+thiserror.workspace = true
+
+[dev-dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+lucene-store = { path = "../lucene-store" }
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
+
+[lints]
+workspace = true

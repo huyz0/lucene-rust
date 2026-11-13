@@ -25,8 +25,17 @@ Driven by scripts/verify-opensearch-upgrade.sh, in two phases:
           scores (1e-5), totals and aggregations, and the plugin's stats show
           it ran natively on every shard (or fell back for the stated reason);
         * the same after restoring the 2.19 snapshot into both nodes;
+        * the upgrade API (`_upgrade?only_ancient_segments=true`) on the restored
+          copies rewrites each Lucene 9.12 segment on its own on both nodes,
+          and the answers still agree;
         * a force merge rewrites every segment as Lucene 10.5.x on both nodes,
-          and the answers still agree, still natively.
+          and the answers still agree, still natively;
+        * the 2.x-created indices are on the accelerated engine, as any index
+          that inherits the node default.
+
+  removed <stock-base> <record>
+      A stock 3.9.0 node, the plugin removed, opens the plugin node's data
+      directory: every index green with the documents `verify` recorded.
 
 Standard library only; reuses verify_opensearch.py's matrix and comparison.
 """
@@ -120,6 +129,24 @@ def load(base, docs):
           f"{counts}; snapshot {SNAPSHOT}")
 
 
+def segment_count(index):
+    return len(vo.req("GET", f"/_cat/segments/{index}?format=json"))
+
+
+def removed(base, record):
+    """After the plugin is removed, a stock node opens the plugin node's data directory as it is:
+    every index green, the same documents, every segment the Lucene 10.5 one the plugin's force
+    merge wrote."""
+    green(base, list(INDICES))
+    with open(record) as f:
+        counts = json.load(f)
+    for index, count in counts.items():
+        got = vo.req("GET", f"/{index}/_count")["count"]
+        vo.check(got == count, f"plugin removed: {index} holds {got} documents, {count} before")
+    check_versions("plugin removed", (base,), NEW_LUCENE, INDICES)
+    print(f"plugin removed: {vo.CHECKS[0]} checks, {len(vo.FAILURES)} failures")
+
+
 def segment_versions(index):
     return {s["version"] for s in vo.req("GET", f"/_cat/segments/{index}?format=json")}
 
@@ -174,19 +201,23 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         expect = expect_override or expect
         if expect == "dfs_multi":
             expect = "dfs" if shards > 1 else "native"
-        # The plugin node runs the default native_shapes: fast.
+        # The plugin node runs the default accelerated_shapes: fast.
         if expect == "slow":
             expect = "slower_shape"
         if expect == "slow_agg":
             expect = "aggregations"
+        # The plugin node runs the default exact approximation: a sorted range or match_all
+        # OpenSearch approximates runs natively, a post_filter one still falls back.
+        if expect == "approximate":
+            expect = "native|approximate"
         before = vo.stats()
         url, b = vo.search_url(index, body)
         got = vo.shape(vo.search(index, body), b)
         after = vo.stats()
         diff = vo.same(got, reference[name])
         vo.check(diff is None, f"{label} {index} [{name}]: the plugin node differs from the stock node: {diff}")
-        ran = after["native_queries"] - before["native_queries"]
-        errors = after["native_errors"] - before["native_errors"]
+        ran = after["accelerated_queries"] - before["accelerated_queries"]
+        errors = after["accelerated_errors"] - before["accelerated_errors"]
         delta = vo.fallback_delta(before, after)
         vo.check(errors == 0, f"{label} {index} [{name}]: {errors} native errors")
         if expect == "either":
@@ -266,6 +297,21 @@ def verify(plugin, stock):
     check_versions("restored", (plugin, stock), OLD_LUCENE, [f"restored_{i}" for i in INDICES])
     total += serve_all("snapshot restore", plugin, stock, "restored_")
 
+    # The upgrade API on the restored copies: each Lucene 9 segment rewritten on its own (no
+    # merging down), on both nodes alike.
+    restored = [f"restored_{i}" for i in INDICES]
+    after = {}
+    for base in (plugin, stock):
+        on(base)
+        res = vo.req("POST", f"/{','.join(restored)}/_upgrade?only_ancient_segments=true")
+        vo.check(res["_shards"]["failed"] == 0, f"{base}: _upgrade failed on a shard: {res['_shards']}")
+        vo.req("POST", f"/{','.join(restored)}/_refresh")
+        after[base] = {i: segment_count(i) for i in restored}
+    vo.check(after[plugin] == after[stock],
+             f"an upgrade leaves the same segment counts on both nodes: plugin {after[plugin]}, stock {after[stock]}")
+    check_versions("upgraded", (plugin, stock), NEW_LUCENE, restored)
+    total += serve_all("after upgrade", plugin, stock, "restored_", merged=True)
+
     # A force merge on both nodes: Lucene 10.5.x rewrites every segment.
     for base in (plugin, stock):
         on(base)
@@ -278,6 +324,12 @@ def verify(plugin, stock):
     on(plugin)
     s = vo.stats()
     print(f"plugin stats: {json.dumps(s, sort_keys=True)}")
+    # Indices created on 2.x inherit the accelerated engine default like any other.
+    vo.check(s["engines"]["accelerated"] > 0, f"2.x-created indices move onto the accelerated engine: {s['engines']}")
+    record = os.environ.get("UPGRADE_RECORD")
+    if record:
+        with open(record, "w") as f:
+            json.dump({i: vo.req("GET", f"/{i}/_count")["count"] for i in INDICES}, f)
     print(f"verify_upgrade: {vo.CHECKS[0]} checks, {len(vo.FAILURES)} failures, {len(vo.UNVERIFIABLE)} rows "
           f"the stock node failed; {total} shard queries ran native")
     return total
@@ -287,11 +339,13 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "load":
         docs = int(sys.argv[3]) if len(sys.argv) > 3 else 10000
         load(sys.argv[2], docs)
+    elif len(sys.argv) == 4 and sys.argv[1] == "removed":
+        removed(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 4 and sys.argv[1] == "verify":
         if verify(sys.argv[2], sys.argv[3]) == 0:
             vo.check(False, "nothing ran native")
     else:
-        sys.exit("usage: verify_upgrade.py load <base> [docs] | verify <plugin-base> <stock-base>")
+        sys.exit("usage: verify_upgrade.py load <base> [docs] | verify <plugin-base> <stock-base> | removed <base> <record>")
     if vo.FAILURES:
         print(f"{len(vo.FAILURES)} failures", file=sys.stderr)
     sys.exit(1 if vo.FAILURES else 0)

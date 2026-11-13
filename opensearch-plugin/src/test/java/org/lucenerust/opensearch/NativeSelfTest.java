@@ -47,8 +47,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -129,6 +132,8 @@ public final class NativeSelfTest {
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
         realtimePrimary();
+        ccrFollower();
+        sparseCodec();
 
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
         NativeSelfTestAnalysis.run(new Random(23), (ok, what) -> check(ok, what));
@@ -148,6 +153,18 @@ public final class NativeSelfTest {
         if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
+        // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
+        if ("substring".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (substring only): %d queries compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestSubstring.encoded, checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
+        // SELFTEST_ONLY=pattern_text: NativeSelfTestPatternText alone.
+        if ("pattern_text".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (pattern_text only): %d phrases compared; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestPatternText.encoded, checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
         // SELFTEST_ONLY=similarity: NativeSelfTestSimilarity's per-field similarities alone.
@@ -183,6 +200,10 @@ public final class NativeSelfTest {
         check(NativeSelfTestKnn.encoded >= 300 && NativeSelfTestKnn.topCompared >= 90, "knn queries compared: " + NativeSelfTestKnn.encoded + " encoded, " + NativeSelfTestKnn.topCompared + " whole-reader");
         NativeSelfTestTensor.run(new Random(37), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestTensor.encoded >= 150, "max_sim queries compared: " + NativeSelfTestTensor.encoded);
+        NativeSelfTestPatternText.run(new Random(41), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestPatternText.encoded >= 300, "pattern_text phrases compared: " + NativeSelfTestPatternText.encoded);
+        NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSubstring.encoded >= 150, "compact_wildcard queries compared: " + NativeSelfTestSubstring.encoded);
         System.out.printf("NativeSelfTest: leaf queries encoded and compared, by shape: %s%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList());
         for (var e : NativeSelfTestExtended.ENCODED.entrySet()) {
             check(e.getValue()[0] >= 100, "extended " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -281,6 +302,133 @@ public final class NativeSelfTest {
                 .settings(settings)
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
+        }
+    }
+
+    /**
+     * A cross-cluster replication follower keeps its leader's settings, the accelerated engine's
+     * included, and is served by replication's own engine: this plugin offers it none, masks no
+     * derived source and routes no search for it, whatever the inherited settings ask.
+     */
+    private static void ccrFollower() {
+        String follower = "index.plugins.replication.follower.leader_index";
+        record Case(Boolean engine, boolean realtime, boolean follows, boolean rust) {}
+        Case[] cases = {
+            new Case(true, false, false, true),
+            new Case(null, true, false, true),
+            new Case(true, false, true, false),
+            new Case(true, true, true, false),
+            new Case(null, false, true, false),
+            new Case(false, false, false, false) };
+        for (Case c : cases) {
+            org.opensearch.common.settings.Settings.Builder b = org.opensearch.common.settings.Settings.builder()
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REPLICATION_TYPE, "SEGMENT")
+                .put(org.lucenerust.opensearch.engine.RustEngineSupport.REALTIME_SEARCH.getKey(), c.realtime());
+            if (c.engine() != null) {
+                b.put(org.lucenerust.opensearch.engine.RustEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
+            }
+            if (c.follows()) {
+                b.put(follower, "leader-cluster:docs");
+            }
+            org.opensearch.common.settings.Settings settings = b.build();
+            check(org.lucenerust.opensearch.engine.RustEngineSupport.openSearchEngine(settings) != c.rust(), "ccr follower: engine offered: " + c);
+            check(org.lucenerust.opensearch.engine.RustEngineSupport.servedByRust(settings) == c.rust(), "ccr follower: served by Rust: " + c);
+            org.opensearch.cluster.metadata.IndexMetadata index = org.opensearch.cluster.metadata.IndexMetadata.builder("f")
+                .settings(settings)
+                .build();
+            check(RealtimePrimaryFilter.segmentCopies(index) == (c.realtime() && c.rust()), "ccr follower: realtime primary routing: " + c);
+            check(org.lucenerust.opensearch.engine.RustEngineSupport.servesFollower(settings) == false, "ccr follower: not delegated: " + c);
+        }
+        // With plugins.replication.follower.engine: delegate, replication leaves followers to this plugin.
+        org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(
+            org.opensearch.common.settings.Settings.builder().put(org.lucenerust.opensearch.engine.RustEngineSupport.CCR_FOLLOWER_ENGINE, "delegate").build()
+        );
+        try {
+            for (Case c : cases) {
+                org.opensearch.common.settings.Settings.Builder b = org.opensearch.common.settings.Settings.builder()
+                    .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT);
+                if (c.engine() != null) {
+                    b.put(org.lucenerust.opensearch.engine.RustEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
+                }
+                if (c.follows()) {
+                    b.put(follower, "leader-cluster:docs");
+                }
+                org.opensearch.common.settings.Settings settings = b.build();
+                boolean rust = c.engine() != Boolean.FALSE;
+                check(org.lucenerust.opensearch.engine.RustEngineSupport.servedByRust(settings) == rust, "ccr follower delegated: served: " + c);
+                check(org.lucenerust.opensearch.engine.RustEngineSupport.servesFollower(settings) == c.follows(), "ccr follower delegated: engine: " + c);
+            }
+        } finally {
+            org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(org.opensearch.common.settings.Settings.EMPTY);
+        }
+    }
+
+    /**
+     * The codec OpenSearch's engine writes an {@code index.sparse} index with: every flushed and
+     * merged segment gets {@code .sit}/{@code .sip}, with terms only for a field at or over its
+     * threshold, and the segments read back under {@code Sparse10010Codec}.
+     */
+    private static void sparseCodec() throws IOException {
+        org.apache.lucene.document.FieldType vector = new org.apache.lucene.document.FieldType();
+        vector.setDocValuesType(org.apache.lucene.index.DocValuesType.BINARY);
+        vector.putAttribute("sparse_vector_field", "true");
+        vector.putAttribute("approximate_threshold", "20");
+        vector.putAttribute("cluster_ratio", "0.1");
+        vector.freeze();
+        Path dir = Files.createTempDirectory("sparse-codec");
+        org.apache.lucene.index.IndexWriterConfig config = new org.apache.lucene.index.IndexWriterConfig()
+            .setCodec(new org.lucenerust.opensearch.sparse.SparseCodec(org.apache.lucene.codecs.Codec.getDefault()))
+            .setUseCompoundFile(false)
+            .setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+        Map<String, Long> sizes = new HashMap<>();
+        try (
+            org.apache.lucene.store.Directory d = org.apache.lucene.store.FSDirectory.open(dir);
+            org.apache.lucene.index.IndexWriter w = new org.apache.lucene.index.IndexWriter(d, config)
+        ) {
+            // Segment _0: 30 docs, over the threshold; _1: 5 docs, under it.
+            for (int[] seg : new int[][] { { 0, 30 }, { 30, 35 } }) {
+                for (int i = seg[0]; i < seg[1]; i++) {
+                    java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(16);
+                    b.putInt(i % 4).putFloat(0.5f + i / 40f).putInt(100 + i).putFloat(1.0f);
+                    org.apache.lucene.document.Document doc = new org.apache.lucene.document.Document();
+                    doc.add(new org.apache.lucene.document.Field("emb", b.array(), vector));
+                    doc.add(new org.apache.lucene.document.NumericDocValuesField("n", i));
+                    doc.add(new org.apache.lucene.document.StringField("id", "d" + i, org.apache.lucene.document.Field.Store.NO));
+                    w.addDocument(doc);
+                }
+                w.commit();
+            }
+            for (String f : d.listAll()) {
+                sizes.put(f, d.fileLength(f));
+            }
+            check(sizes.containsKey("_0.sit") && sizes.containsKey("_0.sip"), "flushed sparse segment has .sit/.sip: " + sizes.keySet());
+            check(sizes.containsKey("_1.sit") && sizes.containsKey("_1.sip"), "segment under the threshold has .sit/.sip: " + sizes.keySet());
+            check(sizes.getOrDefault("_0.sip", 0L) > sizes.getOrDefault("_1.sip", 0L), "clustered segment's postings are written: " + sizes);
+            // A doc values update generation leaves the segment's clustered postings alone.
+            w.updateNumericDocValue(new org.apache.lucene.index.Term("id", "d3"), "n", -1);
+            w.commit();
+            List<String> generations = Arrays.stream(d.listAll()).filter(f -> f.endsWith(".sit") && f.indexOf('_', 1) > 0).toList();
+            check(generations.isEmpty(), "doc values updates write no .sit: " + generations);
+            w.getConfig().setMergePolicy(new org.apache.lucene.index.TieredMergePolicy());
+            w.forceMerge(1);
+            w.commit();
+            Set<String> files = Set.of(d.listAll());
+            check(files.contains("_2.sit") && files.contains("_2.sip"), "merged sparse segment has .sit/.sip: " + files);
+            try (org.apache.lucene.index.DirectoryReader r = org.apache.lucene.index.DirectoryReader.open(d)) {
+                org.apache.lucene.index.SegmentInfos infos = org.apache.lucene.index.SegmentInfos.readLatestCommit(d);
+                check(infos.size() == 1 && infos.info(0).info.getCodec().getName().equals("Sparse10010Codec"), "merged segment records Sparse10010Codec");
+                org.apache.lucene.index.BinaryDocValues v = r.leaves().get(0).reader().getBinaryDocValues("emb");
+                int n = 0;
+                while (v.nextDoc() != org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS) {
+                    n++;
+                }
+                check(n == 35, "sparse forward index reads back: " + n);
+            }
+        } finally {
+            org.apache.lucene.util.IOUtils.rm(dir);
         }
     }
 
@@ -392,6 +540,24 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(IntPoint.newSetQuery("i", 1, 5, 9), f -> true).blob() != null, "an int point set encodes");
         check(QueryEncoder.encode(LongPoint.newSetQuery("n"), f -> true).blob() != null, "an empty point set encodes");
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        // A range with doc values is one node (kind 48) after the tree tag; any other
+        // IndexOrDocValuesQuery is its index side.
+        byte[] both = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 5)
+            ),
+            f -> true
+        ).blob();
+        check(both != null && both[1] == 48, "a long range with doc values encodes as one node");
+        byte[] other = QueryEncoder.encode(
+            new org.apache.lucene.search.IndexOrDocValuesQuery(
+                LongPoint.newRangeQuery("n", 1, 5),
+                org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("n", 1, 6)
+            ),
+            f -> true
+        ).blob();
+        check(other != null && other[1] == 11, "a range whose sides differ encodes its index side");
         // Query_string's [a TO b] and a keyword range, under the searcher's rewrite.
         IndexSearcher empty = new IndexSearcher(new MultiReader());
         check(
@@ -483,7 +649,7 @@ public final class NativeSelfTest {
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
                 // `range`, `term` and `terms` on the other numeric widths and
                 // `ip`: points boxes and point sets (OpenSearch 3.9.0 upgrade).
-                case 10 -> switch (r.nextInt(6)) {
+                case 10 -> switch (r.nextInt(7)) {
                     case 0 -> IntPoint.newRangeQuery("si", r.nextInt(50) - 5, r.nextInt(60));
                     case 1 -> org.apache.lucene.document.FloatPoint.newRangeQuery("sf", (float) r.nextGaussian(), (float) r.nextGaussian() + 1f);
                     case 2 -> {
@@ -495,6 +661,15 @@ public final class NativeSelfTest {
                         // A range on an index-sorted shard's sort field: encoded as its fallback.
                         long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
                         yield new org.apache.lucene.search.IndexSortSortedNumericDocValuesRangeQuery("sl", a, b, LongPoint.newRangeQuery("sl", a, b));
+                    }
+                    case 5 -> {
+                        // A long range on a field with doc values, as OpenSearch builds it: one
+                        // node, either side per segment.
+                        long a = r.nextInt(200) - 100, b = a + r.nextInt(80);
+                        yield new org.apache.lucene.search.IndexOrDocValuesQuery(
+                            LongPoint.newRangeQuery("sl", a, b),
+                            org.apache.lucene.document.SortedNumericDocValuesField.newSlowRangeQuery("sl", a, b)
+                        );
                     }
                     default -> new BoostQuery(IntPoint.newRangeQuery("si", 10, 20), 2f);
                 };
@@ -1531,12 +1706,19 @@ public final class NativeSelfTest {
                 DirectoryReader plain = NativeStoredFieldsReader.wrap(lucene, readers, stats, () -> true, false);
                 org.apache.lucene.index.LeafReader leaf0 = plain.leaves().get(0).reader();
                 check(leaf0.getSortedNumericDocValues("num") instanceof NativeDocValues.Numbers == false, "plain index: Lucene's doc values");
-                NativeStoredFieldsReader.fetchStarted();
+                NativeStoredFieldsReader.fetchStarted(true);
                 try {
                     check(leaf0.getSortedSetDocValues("kw") instanceof NativeDocValues.Terms, "fetch phase: native doc values");
+                    check(NativeStoredFieldsReader.vectorsDropped(), "a fetch phase dropping vectors");
+                    // A fetch phase run inside another (inner hits, top hits) has its own filter.
+                    NativeStoredFieldsReader.fetchStarted(false);
+                    check(NativeStoredFieldsReader.vectorsDropped() == false, "an inner fetch phase keeping vectors");
+                    NativeStoredFieldsReader.fetchEnded();
+                    check(NativeStoredFieldsReader.vectorsDropped(), "the outer fetch phase again");
                 } finally {
                     NativeStoredFieldsReader.fetchEnded();
                 }
+                check(NativeStoredFieldsReader.vectorsDropped() == false, "outside a fetch phase, vectors are read");
                 check(leaf0.getSortedSetDocValues("missing") == null, "an absent field has none");
                 check(leaf0.getSortedSetDocValues("num") == null, "a field of another doc-values type has none");
             }
@@ -1561,14 +1743,17 @@ public final class NativeSelfTest {
             for (int i = 0; i < 3000; i++) {
                 Document doc = new Document();
                 doc.add(new StringField("id", Integer.toString(i), Field.Store.YES));
-                doc.add(new org.apache.lucene.document.StoredField("_source", randomBytes(r, r.nextInt(400))));
+                // Now and then a value past the native document's deferral size (1 MiB), which
+                // the replay reads on its own when the visitor wants it.
+                boolean big = i % 499 == 7;
+                doc.add(new org.apache.lucene.document.StoredField("_source", randomBytes(r, big ? (1 << 20) + r.nextInt(1 << 21) : r.nextInt(400))));
                 if (r.nextBoolean()) {
                     doc.add(new org.apache.lucene.document.StoredField("i", r.nextInt()));
                 }
                 doc.add(new org.apache.lucene.document.StoredField("l", r.nextLong()));
                 doc.add(new org.apache.lucene.document.StoredField("f", r.nextFloat() - 0.5f));
                 doc.add(new org.apache.lucene.document.StoredField("d", r.nextGaussian()));
-                doc.add(new org.apache.lucene.document.StoredField("s", "t" + r.nextInt(100) + "\u00e9"));
+                doc.add(new org.apache.lucene.document.StoredField("s", big ? "\u00e9t".repeat(400_000 + r.nextInt(1000)) : "t" + r.nextInt(100) + "\u00e9"));
                 w.addDocument(doc);
                 if (i % 1000 == 999) {
                     w.commit();
@@ -1601,10 +1786,19 @@ public final class NativeSelfTest {
                     org.apache.lucene.index.StoredFields gotFields = got.storedFields();
                     org.apache.lucene.codecs.StoredFieldsReader sequential =
                         ((org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader) got).getSequentialStoredFieldsReader();
+                    java.util.TreeSet<Integer> docs = new java.util.TreeSet<>();
                     for (int doc = 0; doc < want.maxDoc(); doc += 1 + r.nextInt(7)) {
-                        for (int mode = 0; mode < 3; mode++) {
+                        docs.add(doc);
+                    }
+                    for (int doc = 0; doc < want.maxDoc(); doc++) {
+                        if ((leaf * 1000 + doc) % 499 == 7) {
+                            docs.add(doc); // every document with deferred values
+                        }
+                    }
+                    for (int doc : docs) {
+                        for (int mode = 0; mode < 4; mode++) {
                             int stopAfter = mode == 2 ? 1 + r.nextInt(5) : Integer.MAX_VALUE;
-                            String[] no = mode == 1 ? skip : new String[0];
+                            String[] no = mode == 1 ? skip : mode == 3 ? new String[] { "_source" } : new String[0];
                             Recorder a = new Recorder(no, stopAfter);
                             Recorder b = new Recorder(no, stopAfter);
                             Recorder c = new Recorder(no, stopAfter);

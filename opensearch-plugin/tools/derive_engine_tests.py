@@ -48,26 +48,26 @@ SKIPPED: dict[str, str] = {
     "testSegmentsWithNestedFieldIndexSortWithMerge": "index sorting is refused (RustEngineSupport.checkSupported)",
     "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabledWithIndexSort": "index sorting is refused (RustEngineSupport.checkSupported)",
     # Failure injection through Java's writer or directory.
-    "testHandleDocumentFailure": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter",
-    "testDeleteFailureDocAlreadyDeleted": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter",
-    "testNoOpFailure": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter",
-    "testTreatDocumentFailureAsFatalError": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the Rust engine builds no Java IndexWriter",
-    "testFailEngineOnRandomIO": "injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory",
-    "testTranslogReplayWithFailure": "injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory",
-    "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabled": "injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory",
-    "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpDisabled": "injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory",
-    "testUnreferencedFileCleanUpFailsOnSegmentMergeFailureWhenDirectoryClosed": "injects I/O failures through a wrapped in-memory Directory; the Rust writer does its own file I/O on a filesystem directory",
-    "testIndexWriterInfoStream": "asserts on Lucene IndexWriter's infoStream log lines; the Rust writer has no infoStream",
-    "testIndexWriterIFDInfoStream": "asserts on Lucene IndexFileDeleter's infoStream log lines; the Rust writer has no infoStream",
+    "testHandleDocumentFailure": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter",
+    "testDeleteFailureDocAlreadyDeleted": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter",
+    "testNoOpFailure": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter",
+    "testTreatDocumentFailureAsFatalError": "injects failures through a Java IndexWriter subclass (IndexWriterFactory); the accelerated engine builds no Java IndexWriter",
+    "testFailEngineOnRandomIO": "injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory",
+    "testTranslogReplayWithFailure": "injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory",
+    "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpEnabled": "injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory",
+    "testUnreferencedFileCleanUpOnSegmentMergeFailureWithCleanUpDisabled": "injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory",
+    "testUnreferencedFileCleanUpFailsOnSegmentMergeFailureWhenDirectoryClosed": "injects I/O failures through a wrapped in-memory Directory; the accelerated writer does its own file I/O on a filesystem directory",
+    "testIndexWriterInfoStream": "asserts on Lucene IndexWriter's infoStream log lines; the accelerated writer has no infoStream",
+    "testIndexWriterIFDInfoStream": "asserts on Lucene IndexFileDeleter's infoStream log lines; the accelerated writer has no infoStream",
     "testSyncedFlushSurvivesEngineRestart": "commits a synced-flush id through the engine's Lucene IndexWriter directly",
     "testSyncedFlushVanishesOnReplay": "commits a synced-flush id through the engine's Lucene IndexWriter directly",
     # Documented behaviour differences (docs/opensearch-engine.md).
     "testTranslogReplay": "refresh is a Rust commit, so every refreshed operation is already in the last commit",
     "testNRTSegmentInfosCarriesLastCommittedUserData": "refresh is a Rust commit, so every refreshed operation is already in the last commit",
     "testSegments": "segment stats count only hard deletes: OpenSearch reads them off the unwrapped SegmentReader, as on NRTReplicationEngine replicas",
-    "testMergeSegmentsOnCommit": "merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured",
-    "testMergeSegmentsOnCommitDefault": "merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured",
-    "testMergeSegmentsOnCommitIsDisabled": "merges are the Rust writer's own policy, run at commit; index.merge_on_flush is not honoured",
+    "testMergeSegmentsOnCommit": "merges are the accelerated writer's own policy, run at commit; index.merge_on_flush is not honoured",
+    "testMergeSegmentsOnCommitDefault": "merges are the accelerated writer's own policy, run at commit; index.merge_on_flush is not honoured",
+    "testMergeSegmentsOnCommitIsDisabled": "merges are the accelerated writer's own policy, run at commit; index.merge_on_flush is not honoured",
     "testNotWarmUpSearcherInEngineCtor": "asserts through Engine.assertSearcherIsWarmedUp, which is package-private and cannot be overridden from a plugin",
 }
 
@@ -88,7 +88,7 @@ def rename(text: str) -> str:
 
 
 def drop_create_writer_overrides(p: Patcher) -> None:
-    """The anonymous engines' `createWriter` overrides: the Rust engine has no IndexWriter."""
+    """The anonymous engines' `createWriter` overrides: the accelerated engine has no IndexWriter."""
     pattern = re.compile(r"\n( *)@Override\n\s*IndexWriter createWriter\(Directory directory, IndexWriterConfig iwc\) throws IOException \{")
     while True:
         m = pattern.search(p.text)

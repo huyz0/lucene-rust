@@ -66,7 +66,7 @@ def exact_top10(docs, qs):
 def index(port, docs, rust):
     settings = {"index.sparse": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
     if rust:
-        settings["index.lucene_rust.engine"] = True
+        settings["index.engine.accelerated"] = True
     mapping = {"properties": {"emb": {"type": "sparse_vector", "method": {"name": "seismic", "parameters": PARAMS}}}}
     try:
         check.req(port, "DELETE", f"/{INDEX}")

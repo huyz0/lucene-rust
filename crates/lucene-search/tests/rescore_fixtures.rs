@@ -21,11 +21,12 @@
 //!   `DOUBLE`, score, doc) and `RescoreTopNQuery` over three sources -- every
 //!   hit by document and score bits (and sort values).
 
-mod m7support;
+mod extended_support;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use extended_support::{fixture, Grammar, Manifest};
 use lucene_codecs::field_infos::VectorSimilarityFunction;
 use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
@@ -46,7 +47,6 @@ use lucene_search::values_source::{
 use lucene_search::vector_query::VectorsInput;
 use lucene_search::{TotalHits, TotalHitsRelation};
 use lucene_store::FsDirectory;
-use m7support::{fixture, Grammar, Manifest};
 
 const QV: [f32; 4] = [0.5, -1.25, 2.0, 0.75];
 const QEU: [f32; 3] = [1.0, 0.5, -0.5];

@@ -11,6 +11,13 @@ use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 
 /// Maps a search error to [`FfiStatus::Search`], recording its message.
 pub(crate) fn map_search_error(e: lucene_search::Error) -> FfiStatus {
+    if let lucene_search::Error::Memory(m) = &e {
+        return crate::memory::exceeded(m);
+    }
+    if let lucene_search::Error::TooManyBuckets(count, _) = e {
+        set_last_error(count.to_string());
+        return FfiStatus::TooManyBuckets;
+    }
     set_last_error(format!("search failed: {e}"));
     FfiStatus::Search
 }

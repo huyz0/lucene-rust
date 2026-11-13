@@ -119,6 +119,23 @@ pub(crate) fn decode_parents(
     }))
 }
 
+/// A block or query-time join's `ScoreMode`, by ordinal: `0` None, `1` Avg,
+/// `2` Max, `3` Total, `4` Min.
+pub(crate) fn decode_score_mode(c: &mut Cursor<'_>) -> Result<ScoreMode, FfiStatus> {
+    Ok(match c.u8()? {
+        0 => ScoreMode::None,
+        1 => ScoreMode::Avg,
+        2 => ScoreMode::Max,
+        3 => ScoreMode::Total,
+        4 => ScoreMode::Min,
+        other => {
+            return Err(invalid(format!(
+                "query tree: unknown block-join score mode {other} (expected 0..=4)"
+            )))
+        }
+    })
+}
+
 /// A node of kind 20-24, its kind byte read; `start` is the node's offset.
 pub(crate) fn decode(
     c: &mut Cursor<'_>,
@@ -129,18 +146,7 @@ pub(crate) fn decode(
 ) -> Result<Clause, FfiStatus> {
     let extended = match kind {
         NODE_TO_PARENT => {
-            let score_mode = match c.u8()? {
-                0 => ScoreMode::None,
-                1 => ScoreMode::Avg,
-                2 => ScoreMode::Max,
-                3 => ScoreMode::Total,
-                4 => ScoreMode::Min,
-                other => {
-                    return Err(invalid(format!(
-                        "query tree: unknown block-join score mode {other} (expected 0..=4)"
-                    )))
-                }
-            };
+            let score_mode = decode_score_mode(c)?;
             let parents = decode_parents(c, depth + 1, nodes)?;
             let child = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
             ExtendedQuery::ToParentBlockJoin(ToParentBlockJoinQuery::new(
@@ -324,7 +330,7 @@ const MAX_AUTOMATON_STATES: usize = 1 << 16;
 /// | `2` | `DisjunctionIntervalsSource` | `pull_up: u8`, sources |
 /// | `3` / `4` | `Ordered`/`UnorderedIntervalsSource` | sources |
 /// | `5` | `RepeatingIntervalsSource` | `count: i32` (at least 1), `name: u8` (`0` none, `1` `ORDERED`, `2` `UNORDERED`), source |
-/// | `6` | `FilteredIntervalsSource` | `kind: u8` (`0` `MaxGaps`, `1` `MaxWidth`), `n: i32`, source |
+/// | `6` | `FilteredIntervalsSource` | `kind: u8`, then `0` `MaxGaps` / `1` `MaxWidth`: `n: i32`; `2` OpenSearch's `ScriptFilterSource`: `name` (bytes), a checked Painless interval filter script ([`crate::jvm_painless_score::PainlessInterval`]); then the source |
 /// | `7` | `ExtendedIntervalsSource` | `before: i32`, `after: i32`, source |
 /// | `8` | `OffsetIntervalsSource` | `before: u8`, source |
 /// | `9` | `FixedFieldIntervalsSource` | `field`, source |
@@ -397,14 +403,18 @@ pub(crate) fn decode_source(
             }
         }
         SOURCE_FILTERED => {
-            let kind = c.u8()?;
-            let n = c.i32()?;
-            let filter = match kind {
-                0 => IntervalFilterKind::MaxGaps(n),
-                1 => IntervalFilterKind::MaxWidth(n),
+            let filter = match c.u8()? {
+                0 => IntervalFilterKind::MaxGaps(c.i32()?),
+                1 => IntervalFilterKind::MaxWidth(c.i32()?),
+                2 => IntervalFilterKind::Script {
+                    name: std::str::from_utf8(c.bytes()?)
+                        .map_err(|_| FfiStatus::InvalidUtf8)?
+                        .to_string(),
+                    script: Arc::new(crate::jvm_painless_score::PainlessInterval::decode(c)?),
+                },
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown interval filter {other} (expected 0 or 1)"
+                        "query tree: unknown interval filter {other} (expected 0..=2)"
                     )))
                 }
             };

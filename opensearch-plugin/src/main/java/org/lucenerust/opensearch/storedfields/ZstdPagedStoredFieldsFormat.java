@@ -30,11 +30,11 @@ import org.apache.lucene.util.IOUtils;
  */
 public final class ZstdPagedStoredFieldsFormat extends StoredFieldsFormat {
     /** {@code ZSTD_PAGED_ATTRIBUTE} in {@code segment_writer.rs}. */
-    public static final String MODE_KEY = "LuceneRustStoredFieldsFormat.mode";
+    public static final String MODE_KEY = "PagedZstdStoredFieldsFormat.mode";
     /** {@code ZSTD_PAGED_VALUE} in {@code segment_writer.rs}. */
     public static final String MODE = "ZSTD_PAGED";
     /** {@code DATA_CODEC_ZSTD_PAGED} in {@code stored_fields.rs}. */
-    public static final String FORMAT_NAME = "RustZstdPagedStoredFieldsData";
+    public static final String FORMAT_NAME = "PagedZstdStoredFieldsData";
     /** The chunk geometry, as in {@code stored_fields.rs}. */
     static final int ZSTD_PAGED_CHUNK_SIZE = 16 << 10;
     /** As in {@code stored_fields.rs}. */

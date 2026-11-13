@@ -50,7 +50,15 @@ def rows():
     add("intervals prefix", {"query": {"intervals": {"body": {"prefix": {"prefix": "ga"}}}}}, "native")
     add("intervals wildcard", {"query": {"intervals": {"body": {"wildcard": {"pattern": "*ta"}}}}}, "native")
     add("intervals fuzzy", {"query": {"intervals": {"body": {"fuzzy": {"term": "alpah"}}}}}, "native")
-    add("intervals script filter", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "filter": {"script": {"source": "interval.start > 1"}}}}}}}, "interval_*")
+    add("intervals script filter", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "filter": {"script": {"source": "interval.start > 1"}}}}}}}, "native")
+    add("intervals script filter gaps", {"query": {"intervals": {"body": {"match": {"query": "gamma delta epsilon", "max_gaps": 10,
+        "filter": {"script": {"source": "interval.getGaps() <= 2 && interval.getEnd() - interval.getStart() < 6"}}}}}}}, "native")
+    add("intervals script filter loop", {"query": {"intervals": {"body": {"all_of": {"ordered": True, "intervals": [{"match": {"query": "alpha"}}, {"match": {"query": "beta"}}],
+        "filter": {"script": {"source": "int w = 0; for (int i = interval.start; i <= interval.end; i++) { w++; } return w % 2 == 0;"}}}}}}}, "native")
+    add("intervals script filter refused", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+        "filter": {"script": {"source": "[interval.start, interval.end].stream().allMatch(x -> x > 0)"}}}}}}}, "interval_painless")
+    add("intervals script filter options", {"query": {"intervals": {"body": {"match": {"query": "alpha beta",
+        "filter": {"script": {"source": "interval.start >= 0", "options": {"max_loop_counter": "100"}}}}}}}}, "interval_options")
 
     # combined_fields (`CombinedFieldQuery`, node 23).
     add("combined_fields", {"query": {"combined_fields": {"query": "alpha beta", "fields": ["body", "title^2"]}}}, "native")
@@ -106,6 +114,23 @@ def rows():
     add("script_score painless refused", {"query": {"script_score": {"query": {"match": {"body": "gamma"}}, "script": {
         "source": "String t = doc['tag'].size() == 0 ? '' : doc['tag'].value; return t =~ /a$/ ? 2 : 1;"}}}}, "script_score_painless")
 
+    # Painless script queries (filter scripts), checked the same way.
+    def sq(source, **params):
+        return {"script": {"script": {"source": source, "params": params}}}
+    add("script query", {"query": {"bool": {"filter": [sq("doc['qty'].size() > 0 && doc['qty'].value > params.t", t=3)]}}}, "native")
+    add("script query beside match", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}],
+                                                        "filter": [sq("doc['tag'].size() > 0 && doc['tag'].value == params.t", t="alpha")]}}}, "native")
+    add("script query loop", {"query": {"bool": {"filter": [sq("long s = 0; for (def v : doc['m']) { s += v; } return s % 3 == 0;")]}}, "size": 20}, "native")
+    add("script query refused", {"query": {"bool": {"filter": [sq("doc['m'].stream().anyMatch(x -> x > 3)")]}}}, "script_query_painless")
+
+    # Painless number sort scripts.
+    def ss(source, order="asc", **params):
+        return [{"_script": {"type": "number", "order": order, "script": {"source": source, "params": params}}}]
+    add("script sort", {"query": {"match": {"body": "alpha"}}, "sort": ss("doc['qty'].size() == 0 ? -1 : doc['qty'].value * params.f", "desc", f=2)}, "native")
+    add("script sort then doc", {"query": {"match_all": {}}, "size": 20,
+                                 "sort": ss("doc['tag'].size() == 0 ? 0 : doc['tag'].value.length()") + [{"n": "asc"}]}, "native")
+    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "sort_script_score")
+
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.
     add("more_like_this text", {"query": {"more_like_this": {"fields": ["body"], "like": "alpha beta gamma delta epsilon", "min_term_freq": 1, "min_doc_freq": 1}}}, "native")
@@ -160,19 +185,39 @@ def load_join(req, check, index, questions, seed):
             lines.append(json.dumps({"index": {"_index": index, "_id": f"a{aid}", "routing": f"q{qn}"}}))
             lines.append(json.dumps({"body": " ".join(r.choice(words) for _ in range(r.randint(1, 8))), "rel": {"name": "answer", "parent": f"q{qn}"}}))
             aid += 1
-    res = req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
-    check(not res["errors"], f"{index}: parent-join bulk has no errors")
+    # Three segments (a join over several needs the global ordinal map), then a few deletes.
+    third = (len(lines) // 6) * 2
+    for part in (lines[:third], lines[third:2 * third], lines[2 * third:]):
+        for at in range(0, len(part), 40000):
+            res = req("POST", "/_bulk", "\n".join(part[at:at + 40000]) + "\n", ndjson=True)
+            check(not res["errors"], f"{index}: parent-join bulk has no errors")
+        req("POST", f"/{index}/_refresh")
+    for n in range(0, min(aid, 1700), 17):
+        req("DELETE", f"/{index}/_doc/a{n}?routing=x&refresh=false")
     req("POST", f"/{index}/_refresh")
 
 
 def join_rows():
-    """parent-join: has_child/has_parent rewrite to JoinUtil's global-ordinal
-    joins in Java (the from side searched during the rewrite, over OpenSearch's
-    own global ordinals), which the native side does not take over; parent_id
-    is a boolean of term queries."""
+    """parent-join: has_child/has_parent run natively -- the from side searched
+    and joined by global ordinal in Rust (JoinRequestFilter defers OpenSearch's
+    Java rewrite); parent_id is a boolean of term queries."""
     q = []
     add = lambda name, body, expect: q.append((name, body, expect))
-    add("has_child", {"query": {"has_child": {"type": "answer", "query": {"match": {"body": "alpha"}}, "score_mode": "max"}}}, "query_GlobalOrdinalsWithScoreQuery")
-    add("has_parent", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta"}}, "score": True}}}, "query_GlobalOrdinalsWithScoreQuery")
+    child = lambda mode, **kw: {"query": {"has_child": {"type": "answer", "query": {"match": {"body": "alpha"}}, "score_mode": mode, **kw}}}
+    for mode in ("none", "avg", "max", "sum", "min"):
+        add(f"has_child {mode}", child(mode), "native")
+    add("has_child min/max children", child("sum", min_children=2, max_children=3), "native")
+    add("has_parent score", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta"}}, "score": True}}}, "native")
+    add("has_parent no score", {"query": {"has_parent": {"parent_type": "question", "query": {"match": {"body": "beta gamma"}}}}}, "native")
+    add("has_child in bool", {"query": {"bool": {
+        "should": [child("max")["query"], {"match": {"body": "delta"}}],
+        "must_not": [{"has_child": {"type": "answer", "query": {"term": {"body": "zeta"}}}}],
+    }}}, "native")
+    add("has_child boosted", {"query": {"has_child": {"type": "answer", "query": {"match_all": {}}, "boost": 2.5}}}, "native")
+    add("has_parent inside has_child", {"query": {"has_child": {"type": "answer", "score_mode": "avg", "query": {"bool": {
+        "must": [{"match": {"body": "eta"}}],
+        "filter": [{"has_parent": {"parent_type": "question", "query": {"match": {"body": "theta"}}}}],
+    }}}}}, "native")
+    add("has_child count", {"size": 0, "track_total_hits": True, "query": child("avg")["query"]}, "native")
     add("parent_id", {"query": {"parent_id": {"type": "answer", "id": "q3"}}}, "native")
     return q

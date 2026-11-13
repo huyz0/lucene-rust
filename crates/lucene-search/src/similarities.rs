@@ -210,6 +210,20 @@ pub trait Similarity: NormSimilarity {
     fn simple_name(&self) -> &str {
         "Similarity"
     }
+
+    /// The error a scorer of this similarity met, taken: a `SimScorer`
+    /// cannot fail, so one whose scores can (a script's) keeps its first
+    /// error for the search to fail with once it has run. `None` for every
+    /// similarity that cannot fail.
+    fn take_failure(&self) -> Option<crate::Error> {
+        None
+    }
+
+    /// When this similarity's kept error was met, in an order shared by
+    /// every similarity: of two that failed, the search reports the first.
+    fn failure_order(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// `TFIDFSimilarity`'s `tf` and `idf`, which the function queries' `tf()`
@@ -2260,6 +2274,24 @@ impl Similarity for PerFieldSimilarity {
 
     fn shared(&self) -> Option<Arc<dyn Similarity>> {
         Some(Arc::new(self.clone()))
+    }
+
+    fn take_failure(&self) -> Option<crate::Error> {
+        let all = || std::iter::once(&self.default).chain(self.fields.values());
+        match all()
+            .filter_map(|s| s.failure_order().map(|o| (o, s)))
+            .min_by_key(|&(o, _)| o)
+        {
+            Some((_, first)) => first.take_failure(),
+            None => all().find_map(|s| s.take_failure()),
+        }
+    }
+
+    fn failure_order(&self) -> Option<u64> {
+        std::iter::once(&self.default)
+            .chain(self.fields.values())
+            .filter_map(|s| s.failure_order())
+            .min()
     }
 }
 

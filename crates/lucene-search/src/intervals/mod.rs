@@ -178,13 +178,45 @@ impl MultiTermPattern {
     }
 }
 
-/// `FilteredIntervalsSource`'s two filters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `FilteredIntervalsSource`'s filters.
+#[derive(Debug, Clone)]
 pub enum IntervalFilterKind {
     /// `MaxGaps`: `it.gaps() <= n`.
     MaxGaps(i32),
     /// `MaxWidth`: `(it.end() - it.start()) + 1 <= n`.
     MaxWidth(i32),
+    /// OpenSearch's `ScriptFilterSource`: a script over each interval's
+    /// start, end and gaps. `name` is `FilteredIntervalsSource`'s name (`FILTER(source)`),
+    /// which equality compares, as Java's does.
+    Script {
+        name: String,
+        script: std::sync::Arc<dyn IntervalScript>,
+    },
+}
+
+impl PartialEq for IntervalFilterKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::MaxGaps(a), Self::MaxGaps(b)) | (Self::MaxWidth(a), Self::MaxWidth(b)) => a == b,
+            (Self::Script { name: a, .. }, Self::Script { name: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for IntervalFilterKind {}
+
+/// A script that accepts or refuses intervals: `FilteredIntervalsSource.accept`
+/// for OpenSearch's `ScriptFilterSource`.
+pub trait IntervalScript: fmt::Debug + Send + Sync {
+    /// The script for one iterator.
+    fn accepter(&self) -> Result<Box<dyn IntervalAccept>>;
+}
+
+/// An [`IntervalScript`] ready to run.
+pub trait IntervalAccept {
+    /// Whether the interval `start..=end` with `gaps` passes.
+    fn accept(&mut self, start: i32, end: i32, gaps: i32) -> Result<bool>;
 }
 
 /// `IntervalsSource`: one variant per Java implementation.
@@ -479,6 +511,7 @@ impl fmt::Display for IntervalsSource {
             S::Filtered { source, filter } => match filter {
                 IntervalFilterKind::MaxGaps(n) => write!(f, "MAXGAPS/{n}({source})"),
                 IntervalFilterKind::MaxWidth(n) => write!(f, "MAXWIDTH/{n}({source})"),
+                IntervalFilterKind::Script { name, .. } => write!(f, "{name}({source})"),
             },
             S::Extended {
                 source,

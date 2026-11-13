@@ -56,6 +56,14 @@ name = "merge-bench"
 path = "src/merge_bench.rs"
 
 [[bin]]
+name = "agg-memory"
+path = "src/agg_memory.rs"
+
+[[bin]]
+name = "sweep"
+path = "src/sweep.rs"
+
+[[bin]]
 name = "micro"
 path = "src/micro.rs"
 
@@ -66,3 +74,7 @@ debug = true          # keep frame pointers/symbols for profiling (T1.4)
 # (lucene-search -> lucene-codecs -> lucene-store).
 lto = "fat"
 codegen-units = 1
+
+[[bin]]
+name = "logs-write"
+path = "src/logs_write.rs"

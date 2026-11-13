@@ -2,7 +2,7 @@
 """End-to-end verification of the Rust engine inside a real OpenSearch node.
 
 Two indices with the same mapping and shard count -- one on OpenSearch's own engine, one created
-with index.lucene_rust.engine: true -- receive the same operation stream, operation for operation.
+with index.engine.accelerated: true -- receive the same operation stream, operation for operation.
 Because both run InternalEngine's contracts (the Rust engine is InternalEngine with the writer
 swapped), every observable result must be identical:
 
@@ -20,7 +20,7 @@ swapped), every observable result must be identical:
   * failure containment: a Rust-engine shard whose writer panics is failed and recovered, and
     no other shard notices;
   * the writer's circuit breaker trips (HTTP 429) instead of the node running out of memory;
-  * the rust_encrypted store (encryption at rest) on both engines: plaintext-equal results, every
+  * the encrypted store (encryption at rest) on both engines: plaintext-equal results, every
     shard file encrypted on disk, recovery after SIGKILL;
   * index.codec best_compression, zstd and zstd_no_dict (the bundled custom-codecs plugin's) on
     the Rust engine: the same results and _source as the default codec, and segments recorded
@@ -28,6 +28,8 @@ swapped), every observable result must be identical:
   * index.derived_source.enabled (and its translog form): _source rebuilt from doc values and
     stored fields the same on both engines, through searches, gets, top_hits, updates and
     SIGKILL, and on realtime search's buffered hits.
+  * the logs preset's component templates: registered, and an index composed of them answering log
+    searches as an OpenSearch-engine index with the stock mapping does.
 
 Usage: verify_engine.py <base-url> <container-name> [--ops N]
 Standard library only.
@@ -89,8 +91,8 @@ MAPPING = {
         "code": {"type": "text", "analyzer": "parts", "index_options": "offsets"},
         "syn": {"type": "text", "analyzer": "syn"},
         "hun": {"type": "text", "analyzer": "hun"},
-        # The plugin's rust_thai analyzer, and its tokenizer in a custom chain.
-        "thai": {"type": "text", "analyzer": "rust_thai"},
+        # The plugin's thai_dictionary analyzer, and its tokenizer in a custom chain.
+        "thai": {"type": "text", "analyzer": "thai_dictionary"},
         "thai_html": {"type": "text", "analyzer": "thai_html"},
         "tag": {"type": "keyword"},
         "n": {"type": "long"},
@@ -124,7 +126,7 @@ ANALYSIS = {
                 "filter": ["lowercase", "overrides", "synonyms", "porter_stem"]},
         # config/hunspell/en_US (opensearch-plugin/e2e/hunspell), two .dic files.
         "hun": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "en_stem"]},
-        "thai_html": {"type": "custom", "char_filter": ["html_strip"], "tokenizer": "rust_thai",
+        "thai_html": {"type": "custom", "char_filter": ["html_strip"], "tokenizer": "thai_dictionary",
                       "filter": ["lowercase"]},
     },
     "filter": {
@@ -175,10 +177,10 @@ def source(r, i):
 
 
 def create(index, rust, extra=None, mapping=None):
-    # Explicit both ways: on a node whose lucene_rust.engine.default is true, an index that says
+    # Explicit both ways: on a node whose indices.engine.accelerated.default is true, an index that says
     # nothing is a Rust one.
     settings = {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
-                "index.lucene_rust.engine": bool(rust)}
+                "index.engine.accelerated": bool(rust)}
     settings["analysis"] = ANALYSIS
     settings.update(extra or {})
     must("PUT", f"/{index}", {"settings": settings, "mappings": mapping or MAPPING})
@@ -437,7 +439,7 @@ def insert_only_scoring():
 
 
 def realtime_shared():
-    """index.lucene_rust.realtime_search with the default realtime_max_staleness: searches share
+    """index.search.realtime.enabled with the default realtime_max_staleness: searches share
     a view the writer opens every few milliseconds, with the reads of the requests that repeat
     made ahead. A write is found within the bound, and after a refresh=wait_for write every search
     reads it; the results equal a refreshed index's, repeated requests included."""
@@ -445,7 +447,7 @@ def realtime_shared():
     for idx in (rt, ref):
         req("DELETE", f"/{idx}")
     flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
-    create(rt, True, {"index.lucene_rust.realtime_search": True, "refresh_interval": "30s"}, flat)
+    create(rt, True, {"index.search.realtime.enabled": True, "refresh_interval": "30s"}, flat)
     create(ref, True, None, flat)
     wait_green(f"{rt},{ref}")
     r = random.Random(23)
@@ -499,7 +501,7 @@ def realtime_shared():
 
 
 def realtime():
-    """index.lucene_rust.realtime_search: a plain scored search sees what was indexed before it,
+    """index.search.realtime.enabled: a plain scored search sees what was indexed before it,
     with no refresh, and scores it as a refreshed index scores the same documents. Aggregations
     and sorted searches see the same documents too, through the buffers written as segments."""
     rt, ref = "rt_live", "rt_ref"
@@ -507,7 +509,7 @@ def realtime():
         req("DELETE", f"/{idx}")
     # Nested documents stay on the last refresh: no nested field here.
     flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
-    create(rt, True, {"index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms"}, flat)
+    create(rt, True, {"index.search.realtime.enabled": True, "index.search.realtime.max_staleness": "0ms"}, flat)
     create(ref, True, None, flat)
     wait_green(f"{rt},{ref}")
     before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
@@ -731,7 +733,7 @@ def realtime():
     # primary (the replica here is unassigned: the search must still answer from the primary).
     seg = "rt_segrep"
     req("DELETE", f"/{seg}")
-    create(seg, True, {"index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms", "index.replication.type": "SEGMENT",
+    create(seg, True, {"index.search.realtime.enabled": True, "index.search.realtime.max_staleness": "0ms", "index.replication.type": "SEGMENT",
                        "number_of_replicas": 1}, flat)
     must("GET", f"/_cluster/health/{seg}?wait_for_status=yellow&timeout=60s")
     must("PUT", f"/{seg}/_doc/s1", {"body": "segrep fox", "tag": "t1"})
@@ -741,15 +743,15 @@ def realtime():
 
 
 def bp_reorder():
-    """index.lucene_rust.bp_reorder.*: a forced merge renumbers the documents, and searches find and
+    """index.merge.reorder.*: a forced merge renumbers the documents, and searches find and
     score the same documents as on an index merged in order."""
     bp, ref = "bp_on", "bp_ref"
     for idx in (bp, ref):
         req("DELETE", f"/{idx}")
     flat = {"properties": {k: v for k, v in MAPPING["properties"].items() if v.get("type") != "nested"}}
-    create(bp, True, {"index.lucene_rust.bp_reorder.enabled": True, "index.lucene_rust.bp_reorder.min_doc_freq": 2,
-                      "index.lucene_rust.bp_reorder.min_partition_size": 4,
-                      "index.lucene_rust.bp_reorder.min_merge_docs": 1}, flat)
+    create(bp, True, {"index.merge.reorder.enabled": True, "index.merge.reorder.min_doc_freq": 2,
+                      "index.merge.reorder.min_partition_size": 4,
+                      "index.merge.reorder.min_merge_docs": 1}, flat)
     create(ref, True, None, flat)
     wait_green(f"{bp},{ref}")
     r = random.Random(23)
@@ -778,7 +780,7 @@ def bp_reorder():
     on, off = order(bp), order(ref)
     check(sorted(on) == sorted(off) and len(on) == 1600, "bp_reorder: every document survives the merge")
     check(on != off, "bp_reorder: the forced merge renumbered the documents")
-    must("PUT", f"/{bp}/_settings", {"index.lucene_rust.bp_reorder.enabled": False})
+    must("PUT", f"/{bp}/_settings", {"index.merge.reorder.enabled": False})
     for idx in (bp, ref):
         must("DELETE", f"/{idx}")
 
@@ -831,7 +833,7 @@ def wait(pred, what, timeout=120):
 
 def fault_containment():
     """A panic inside one Rust shard's writer fails that shard only."""
-    create("fault_rust", True, {"index.lucene_rust.engine.fault_injection": True})
+    create("fault_rust", True, {"index.testing.fault_injection": True})
     create("fault_peer", True)
     for idx in ("fault_rust", "fault_peer"):
         wait_green(idx)
@@ -875,7 +877,7 @@ def breaker():
     the refused documents fail: the no-ops recording them are not refused, so no shard fails."""
     create("breaker_rust", True)
     wait_green("breaker_rust")
-    must("PUT", "/_cluster/settings", {"transient": {"breaker.lucene_rust_writer.limit": "1kb"}})
+    must("PUT", "/_cluster/settings", {"transient": {"breaker.indexing_buffers.limit": "1kb"}})
     try:
         r = random.Random(7)
         lines = []
@@ -888,17 +890,17 @@ def breaker():
         check(429 in statuses, f"a tripped write is a 429: {set(statuses)}")
         stats = must("GET", "/_nodes/stats/breaker")["nodes"]
         node = next(iter(stats.values()))
-        check("lucene_rust_writer" in node["breakers"], "the breaker is listed in node stats")
-        check(node["breakers"]["lucene_rust_writer"]["tripped"] > 0, "node stats count the trip")
+        check("indexing_buffers" in node["breakers"], "the breaker is listed in node stats")
+        check(node["breakers"]["indexing_buffers"]["tripped"] > 0, "node stats count the trip")
     finally:
-        must("PUT", "/_cluster/settings", {"transient": {"breaker.lucene_rust_writer.limit": None}})
+        must("PUT", "/_cluster/settings", {"transient": {"breaker.indexing_buffers.limit": None}})
     status, out = req("PUT", "/breaker_rust/_doc/after", {"n": 1})
     check(status in (200, 201), f"writes resume under the default limit: {status}")
     must("POST", "/breaker_rust/_refresh")
     stats = must("GET", "/_nodes/stats/breaker")["nodes"]
     node = next(iter(stats.values()))
-    check(node["breakers"]["lucene_rust_writer"]["estimated_size_in_bytes"] == 0,
-          f"a refresh releases the accounted buffer: {node['breakers']['lucene_rust_writer']}")
+    check(node["breakers"]["indexing_buffers"]["estimated_size_in_bytes"] == 0,
+          f"a refresh releases the accounted buffer: {node['breakers']['indexing_buffers']}")
     wait_green("breaker_rust")
     types = recovery_types("breaker_rust")
     check(types == {"EMPTY_STORE"}, f"a refused document fails no shard (recoveries: {types})")
@@ -925,11 +927,11 @@ def merge_policies():
 
 
 def unsupported():
-    """What the Rust writer cannot produce is refused, never written differently."""
+    """What the accelerated writer cannot produce is refused, never written differently."""
     refused = (("bad_codec", {"index.sparse": True, "index.codec": "zstd"}, "default codec"),
                ("bad_fuzzy_set", {"index.optimize_doc_id_lookup.fuzzy_set.enabled": True}, "fuzzy_set"))
     for index, extra, named in refused:
-        status, out = req("PUT", f"/{index}", {"settings": {"index.lucene_rust.engine": True,
+        status, out = req("PUT", f"/{index}", {"settings": {"index.engine.accelerated": True,
                                                             "number_of_replicas": 0, **extra}})
         if status in (200, 201):
             time.sleep(3)
@@ -952,14 +954,24 @@ def unsupported():
     check(status in (200, 201), "the shard carries on after a refused document")
     must("DELETE", "/tv_rust")
     nodes = must("GET", "/_nodes/settings?flat_settings=true")["nodes"].values()
-    if any(n["settings"].get("lucene_rust.engine.default") == "true" for n in nodes):
+    if all(n["settings"].get("indices.engine.accelerated.default", "true") == "true" for n in nodes):
+        # The default: an index that says nothing is served by the accelerated engine, and stores no
+        # setting, so a node without the plugin opens it as it is.
+        before = must("GET", "/_plugins/lucene_rust/stats")["engines"]["accelerated"]
+        must("PUT", "/inherited", {"settings": {"number_of_shards": 1, "number_of_replicas": 0}})
+        wait_green("inherited")
+        stored = must("GET", "/inherited/_settings?flat_settings=true")["inherited"]["settings"]
+        check("index.engine.accelerated" not in stored, f"an inherited-default index stores no engine setting: {stored}")
+        after = must("GET", "/_plugins/lucene_rust/stats")["engines"]["accelerated"]
+        check(after > before, f"an inherited-default index is on the accelerated engine: {before} -> {after}")
+        must("DELETE", "/inherited")
         # Only asked-for is strict: an index that merely inherits the node default and needs what
         # the Rust writer cannot produce is served by OpenSearch's engine.
         must("PUT", "/fallback_codec", {"settings": {"index.sparse": True, "index.codec": "zstd",
                                                       "number_of_replicas": 0}})
         wait_green("fallback_codec")
         status, _ = req("PUT", "/fallback_codec/_doc/1?refresh=true", {"n": 1})
-        check(status in (200, 201), "an inherited-default index the Rust writer cannot serve falls back")
+        check(status in (200, 201), "an inherited-default index the accelerated writer cannot serve falls back")
         must("DELETE", "/fallback_codec")
 
 
@@ -1000,7 +1012,7 @@ def derived_source(container):
     for idx, on_rust in ((java, False), (rust, True)):
         req("DELETE", f"/{idx}")
         must("PUT", f"/{idx}", {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
-                                            "index.lucene_rust.engine": on_rust,
+                                            "index.engine.accelerated": on_rust,
                                             "index.derived_source.enabled": True,
                                             "index.derived_source.translog.enabled": True},
                                "mappings": DS_MAPPING})
@@ -1045,9 +1057,9 @@ def derived_source(container):
         ids = {"ids": [f"d{i}" for i in range(0, 3000, 151)]}
         check(strip(must("POST", f"/{java}/_mget", ids)) == strip(must("POST", f"/{rust}/_mget", ids)), f"{label}: mget")
 
-    before = must("GET", "/_plugins/lucene_rust/stats").get("native_doc_values", 0)
+    before = must("GET", "/_plugins/lucene_rust/stats").get("accelerated_doc_values", 0)
     same("derived source")
-    after = must("GET", "/_plugins/lucene_rust/stats").get("native_doc_values", 0)
+    after = must("GET", "/_plugins/lucene_rust/stats").get("accelerated_doc_values", 0)
     check(after > before, f"derived source: doc values read natively: {before} -> {after}")
     # Updates (partial ones read the derived _source), deletes, then a realtime get from the translog.
     for idx in (java, rust):
@@ -1078,11 +1090,11 @@ def derived_source(container):
     rt = "ds_realtime"
     req("DELETE", f"/{rt}")
     must("PUT", f"/{rt}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
-                                       "index.lucene_rust.engine": True, "index.lucene_rust.realtime_search": True, "index.lucene_rust.realtime_max_staleness": "0ms",
+                                       "index.engine.accelerated": True, "index.search.realtime.enabled": True, "index.search.realtime.max_staleness": "0ms",
                                        "index.derived_source.enabled": True}, "mappings": DS_MAPPING})
     req("DELETE", "/ds_rt_java")
     must("PUT", "/ds_rt_java", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
-                                            "index.lucene_rust.engine": False, "index.derived_source.enabled": True},
+                                            "index.engine.accelerated": False, "index.derived_source.enabled": True},
                                "mappings": DS_MAPPING})
     wait_green(f"{rt},ds_rt_java")
     live_before = must("GET", "/_plugins/lucene_rust/stats").get("live_queries", 0)
@@ -1167,17 +1179,125 @@ def codecs(container):
         check(len(out) == 2 and all(int(c) > 0 for c in out),
               f"{idx}: every shard's segment records stored fields mode {modes[idx]}: {out}")
     stats = must("GET", "/_plugins/lucene_rust/stats")
-    check(stats.get("native_errors", 0) == 0, f"no native errors on codec indices: {stats.get('native_errors')}")
+    check(stats.get("accelerated_errors", 0) == 0, f"no native errors on codec indices: {stats.get('accelerated_errors')}")
     for idx, _, _, _ in names:
         must("DELETE", f"/{idx}")
 
 
+def logs_preset():
+    """The logs preset's component templates: registered by the cluster manager, inert until an
+    index template names them, and an index composed of them answers log searches (terms, phrases,
+    windows, newest first, stats and timecharts) exactly as an OpenSearch-engine index with the
+    stock mapping does, with its small fields kept as doc values only."""
+    names = ("logs_preset@settings", "logs_preset@mappings")
+    have = {}
+    for _ in range(30):
+        have = {t["name"]: t["component_template"] for t in
+                req("GET", "/_component_template/logs_preset*")[1].get("component_templates", [])}
+        if len(have) == 2:
+            break
+        time.sleep(1)
+    check(sorted(have) == sorted(names) and all(t.get("version", 0) >= 1 for t in have.values()),
+          f"logs preset component templates registered: {sorted(have)}")
+    for idx in ("logs_java", "logs_preset"):
+        req("DELETE", f"/{idx}")
+    must("PUT", "/_index_template/logs_preset_e2e", {"index_patterns": ["logs_preset"], "composed_of": list(names),
+         "template": {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1}}})
+    must("PUT", "/logs_preset")
+    must("PUT", "/logs_java", {"settings": {"number_of_shards": 2, "number_of_replicas": 0, "refresh_interval": -1,
+                                            "index.engine.accelerated": False},
+                               "mappings": {"properties": {"@timestamp": {"type": "date"}, "message": {"type": "text"},
+                                                           "host": {"properties": {"name": {"type": "keyword"}}},
+                                                           "service": {"properties": {"name": {"type": "keyword"}}},
+                                                           "log": {"properties": {"level": {"type": "keyword"}}},
+                                                           "http": {"properties": {"response": {"properties": {
+                                                               "status_code": {"type": "integer"}}}}},
+                                                           "event": {"properties": {"duration": {"type": "long"}}},
+                                                           "trace": {"properties": {"id": {"type": "keyword"}}},
+                                                           "user": {"type": "keyword"}, "bytes": {"type": "long"}}}})
+    settings = must("GET", "/logs_preset/_settings")["logs_preset"]["settings"]["index"]
+    check(settings.get("engine", {}).get("accelerated") == "true" and settings.get("sort", {}).get("field") in ("@timestamp", ["@timestamp"]),
+          f"logs preset settings applied: {settings.get('sort')}")
+    props = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
+    check(props["@timestamp"].get("skip_list") is True and props["event"]["properties"]["duration"].get("index") is False
+          and props["host"]["properties"]["name"].get("index") is False and props["message"].get("norms") is False
+          and props["trace"]["properties"]["id"]["type"] == "hex_id",
+          f"logs preset mapping applied: {json.dumps(props)[:300]}")
+    r = random.Random(17)
+    t0 = 1_760_000_000_000
+    msgs = ("connection reset by peer", "GET /api/v1/cart HTTP/1.1 200", "java.net.SocketTimeoutException: timed out",
+            "user logged in from 10.0.0.1", "block blk_123 replicated", "cache miss for key session")
+    for batch in range(6):
+        lines = []
+        for i in range(500):
+            n = batch * 500 + i
+            doc = {"@timestamp": t0 + n * 1000 + r.randrange(1000), "message": f"{r.choice(msgs)} {r.choice(WORDS)} {n}",
+                   "host": {"name": f"h{r.randrange(12)}"}, "service": {"name": r.choice(("cart", "auth", "search"))},
+                   "log": {"level": r.choice(("INFO",) * 8 + ("WARN", "ERROR"))},
+                   "http": {"response": {"status_code": r.choice((200, 200, 200, 404, 500, 503))}},
+                   "event": {"duration": r.randrange(1, 5000)}, "trace": {"id": f"{r.randrange(40):032x}"}, "user": f"u{r.randrange(50)}", "bytes": r.randrange(10**6)}
+            lines += [{"index": {"_id": f"l{n}"}}, doc]
+        body = "\n".join(json.dumps(l) for l in lines) + "\n"
+        for idx in ("logs_java", "logs_preset"):
+            out = must("POST", f"/{idx}/_bulk", body, ndjson=True)
+            check(not out["errors"], f"{idx}: bulk {batch} applies every operation")
+            if batch % 2 == 1:
+                must("POST", f"/{idx}/_flush")
+    dyn = must("GET", "/logs_preset/_mapping")["logs_preset"]["mappings"]["properties"]
+    check(dyn["bytes"].get("index") is False and dyn["user"]["type"] == "keyword",
+          f"logs preset dynamic templates: bytes {dyn['bytes']}, user {dyn['user']}")
+    end = t0 + 3000 * 1000
+    win = lambda a: {"range": {"@timestamp": {"gte": end - a, "lt": end}}}
+    desc = [{"@timestamp": "desc"}, {"_id": "asc"}]
+    shapes = [
+        {"size": 20, "sort": desc, "query": {"match": {"message": "timed"}}},
+        {"size": 20, "sort": desc, "query": {"bool": {"must": {"match_phrase": {"message": "connection reset by peer"}},
+                                                      "filter": win(1_200_000)}}},
+        {"size": 20, "sort": desc, "query": {"bool": {"filter": [{"term": {"host.name": "h3"}},
+                                                                 {"term": {"log.level": "ERROR"}}, win(1_800_000)]}}},
+        {"size": 30, "sort": desc, "query": {"match_all": {}}},
+        {"size": 0, "query": {"bool": {"filter": [{"term": {"log.level": "ERROR"}}, win(2_000_000)]}},
+         "aggs": {"s": {"terms": {"field": "service.name"}}}},
+        {"size": 0, "query": {"bool": {"filter": win(600_000)}},
+         "aggs": {"t": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1m"},
+                        "aggs": {"l": {"terms": {"field": "log.level"}}}}}},
+        {"size": 0, "track_total_hits": True, "query": {"range": {"http.response.status_code": {"gte": 500}}},
+         "aggs": {"p": {"max": {"field": "event.duration"}}, "b": {"sum": {"field": "bytes"}}}},
+        {"size": 0, "track_total_hits": True, "query": {"terms": {"service.name": ["cart", "auth"]}}},
+        {"size": 10, "sort": desc, "query": {"term": {"trace.id": f"{7:032x}"}},
+         "aggs": {"t": {"terms": {"field": "trace.id", "size": 5}}}},
+        {"size": 10, "sort": desc, "query": {"bool": {"filter": [{"term": {"user": "u7"}}, {"range": {"bytes": {"lt": 500000}}}]}}},
+    ]
+
+    def answers(idx):
+        out = []
+        for body in shapes:
+            res = must("POST", f"/{idx}/_search?request_cache=false", body)
+            out.append((res["hits"]["total"], [(h["_id"], h.get("_source"), h.get("sort")) for h in res["hits"]["hits"]],
+                        res.get("aggregations")))
+        return out
+
+    for label in ("logs preset", "logs preset, force-merged"):
+        for idx in ("logs_java", "logs_preset"):
+            must("POST", f"/{idx}/_refresh")
+        java, preset = answers("logs_java"), answers("logs_preset")
+        for i, (a, b) in enumerate(zip(java, preset)):
+            check(a == b, f"{label}: search {i} answers as the stock mapping does: {json.dumps(a)[:200]} vs {json.dumps(b)[:200]}")
+        for idx in ("logs_java", "logs_preset"):
+            must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
+    stats = must("GET", "/_plugins/lucene_rust/stats")
+    check(stats.get("accelerated_errors", 0) == 0, f"no native errors on logs preset indices: {stats.get('accelerated_errors')}")
+    must("DELETE", "/_index_template/logs_preset_e2e")
+    for idx in ("logs_java", "logs_preset"):
+        must("DELETE", f"/{idx}")
+
+
 def encrypted(container):
-    """The rust_encrypted store (BYOK encryption at rest) under both engines: the same results as a
+    """The encrypted store (BYOK encryption at rest) under both engines: the same results as a
     plaintext index, every shard file encrypted on disk, and both survive SIGKILL."""
-    enc = {"index.store.type": "rust_encrypted",
-           "index.store.rust_encrypted.key_provider_type": "lucene_rust_local",
-           "index.store.rust_encrypted.chunk_size": "16kb"}
+    enc = {"index.store.type": "encrypted",
+           "index.store.encrypted.key_provider_type": "local_keystore",
+           "index.store.encrypted.chunk_size": "16kb"}
     names = (("enc_plain", False, None), ("enc_java", False, enc), ("enc_rust", True, enc))
     for idx, rust, extra in names:
         req("DELETE", f"/{idx}")
@@ -1204,7 +1324,7 @@ def encrypted(container):
         must("POST", f"/{idx}/_flush")
         must("POST", f"/{idx}/_refresh")
     compare_searches("encrypted, Java engine", scores=False, java="enc_plain", rust="enc_java")
-    compare_searches("encrypted, Rust engine", scores=False, java="enc_plain", rust="enc_rust")
+    compare_searches("encrypted, accelerated engine", scores=False, java="enc_plain", rust="enc_rust")
 
     for idx in ("enc_java", "enc_rust"):
         uuid = must("GET", f"/{idx}/_settings")[idx]["settings"]["index"]["uuid"]
@@ -1221,20 +1341,20 @@ def encrypted(container):
         wrong = [l for l in out if l.startswith("LRSE ") == commit(l)]
         check(len(out) > 4 and not wrong, f"{idx}: every shard file but commit metadata is encrypted ({len(out)} files): {wrong[:5]}")
     stats = must("GET", "/_plugins/lucene_rust/stats")
-    check(stats.get("native_errors", 0) == 0, f"no native errors on encrypted indices: {stats.get('native_errors')}")
+    check(stats.get("accelerated_errors", 0) == 0, f"no native errors on encrypted indices: {stats.get('accelerated_errors')}")
 
     subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
     subprocess.run(["docker", "start", container], check=True, capture_output=True)
     check(wait_green("enc_plain,enc_java,enc_rust", 300), "encrypted indices green after SIGKILL")
-    compare_searches("encrypted after SIGKILL, Rust engine", scores=False, java="enc_plain", rust="enc_rust")
+    compare_searches("encrypted after SIGKILL, accelerated engine", scores=False, java="enc_plain", rust="enc_rust")
     for idx in ("enc_java", "enc_rust"):
         must("POST", f"/{idx}/_forcemerge?max_num_segments=1")
     compare_searches("encrypted, force-merged", scores=False, java="enc_plain", rust="enc_rust")
 
     # A store type the Rust engine cannot write through is refused, not bypassed.
-    status, out = req("PUT", "/enc_bad", {"settings": {"index.lucene_rust.engine": True,
-                                                        "index.store.type": "rust_encrypted",
-                                                        "index.store.rust_encrypted.key_provider_type": "aws-kms",
+    status, out = req("PUT", "/enc_bad", {"settings": {"index.engine.accelerated": True,
+                                                        "index.store.type": "encrypted",
+                                                        "index.store.encrypted.key_provider_type": "aws-kms",
                                                         "number_of_replicas": 0}})
     if status in (200, 201):
         time.sleep(3)
@@ -1265,7 +1385,7 @@ def main():
     check(stats["segments"]["index_writer_memory_in_bytes"] >= 0, "writer memory is reported")
     analyzed = must("GET", "/_plugins/lucene_rust/stats").get("analyzed_values", {})
     # title (english), body (standard), note and code (custom) are all Lucene components.
-    check(analyzed.get("native", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
+    check(analyzed.get("accelerated", 0) > a.ops // 2, f"text values analyzed in Rust: {analyzed}")
     compare_all("after the stream", stream.ids)
     # Merges run in the Rust writer and are reported back, as OpenSearch's merge scheduler reports them.
     merges = must("GET", f"/{RUST}/_stats/merge")["_all"]["primaries"]["merges"]
@@ -1288,6 +1408,7 @@ def main():
     unsupported()
     codecs(a.container)
     derived_source(a.container)
+    logs_preset()
     encrypted(a.container)
     print(f"verify_engine: {CHECKS[0]} checks, {len(FAILURES)} failures", flush=True)
     sys.exit(1 if FAILURES else 0)

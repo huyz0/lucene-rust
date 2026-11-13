@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![deny(unsafe_code)]
 //! Application-level encryption (ALE) for lucene-store directories, with
 //! bring-your-own-key (BYOK) key providers.
@@ -34,8 +35,6 @@ pub mod backend;
 pub mod directory;
 pub mod format;
 pub mod key_provider;
-#[cfg(target_os = "linux")]
-pub mod lazy;
 mod pages;
 
 use std::sync::Arc;
@@ -43,10 +42,7 @@ use std::sync::Arc;
 use lucene_store::{register_store_wrapper, Directory, Error, StoreSettings};
 
 pub use backend::{backend_name, is_fips};
-pub use directory::{
-    is_commit_metadata, lazy_available, lazy_decrypt_default, set_lazy_decrypt_default,
-    EncryptedDirectory, PlaintextCache,
-};
+pub use directory::{is_commit_metadata, EncryptedDirectory, PlaintextCache};
 pub use format::DataKey;
 pub use key_provider::{
     key_provider, key_unavailable, register_key_provider, CachingKeyProvider, GeneratedKey,
@@ -59,9 +55,6 @@ pub const WRAPPER_NAME: &str = "encrypted";
 pub const SETTING_KEY_PROVIDER: &str = "encryption.key_provider";
 /// The optional setting for new files' chunk size, in bytes.
 pub const SETTING_CHUNK_SIZE: &str = "encryption.chunk_size";
-/// The optional setting turning demand decryption on (`true`) or off
-/// (`false`) for this store; unset follows [`set_lazy_decrypt_default`].
-pub const SETTING_LAZY_DECRYPT: &str = "encryption.lazy_decrypt";
 
 /// Registers the [`WRAPPER_NAME`] store wrapper. Idempotent.
 pub fn register() {
@@ -83,12 +76,6 @@ fn wrap(
             Error::IllegalArgument(format!("[{SETTING_CHUNK_SIZE}] is not a number: {size}"))
         })?;
         dir = dir.with_chunk_size(size)?;
-    }
-    if let Some(lazy) = settings.get(SETTING_LAZY_DECRYPT) {
-        let lazy = lazy.parse::<bool>().map_err(|_| {
-            Error::IllegalArgument(format!("[{SETTING_LAZY_DECRYPT}] is not a boolean: {lazy}"))
-        })?;
-        dir = dir.with_lazy_decrypt(lazy);
     }
     Ok(Box::new(dir))
 }
@@ -125,7 +112,6 @@ mod tests {
         );
         let bad = base.with(SETTING_KEY_PROVIDER, "lib-test");
         assert!(err(bad.clone().with(SETTING_CHUNK_SIZE, "x")).contains("not a number"));
-        assert!(err(bad.clone().with(SETTING_CHUNK_SIZE, "0")).contains("chunk size 0"));
-        assert!(err(bad.with(SETTING_LAZY_DECRYPT, "yes")).contains("not a boolean"));
+        assert!(err(bad.with(SETTING_CHUNK_SIZE, "0")).contains("chunk size 0"));
     }
 }

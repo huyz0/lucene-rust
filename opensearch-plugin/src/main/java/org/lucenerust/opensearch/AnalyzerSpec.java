@@ -129,6 +129,27 @@ public final class AnalyzerSpec {
         return spec;
     }
 
+    /**
+     * The described analyzers, by instance (not by {@code equals}: OpenSearch's {@code NamedAnalyzer}
+     * compares by name alone, so two indices' {@code default} analyzers would share a spec) and
+     * field, each described once.
+     */
+    private static final org.apache.lucene.util.WeakIdentityMap<Analyzer, java.util.Map<String, Spec>> CACHED =
+        org.apache.lucene.util.WeakIdentityMap.newHashMap();
+
+    /** {@link #describe}, kept for the life of {@code analyzer}. */
+    public static Spec cached(Analyzer analyzer, String field) {
+        java.util.Map<String, Spec> byField;
+        synchronized (CACHED) {
+            byField = CACHED.get(analyzer);
+            if (byField == null) {
+                byField = new java.util.concurrent.ConcurrentHashMap<>();
+                CACHED.put(analyzer, byField);
+            }
+        }
+        return byField.computeIfAbsent(field, f -> describe(analyzer, f));
+    }
+
     /** {@link #describe} without the probe check, for the self-test that runs its own. */
     public static Spec describeUnchecked(Analyzer analyzer, String field) {
         List<Object> filters = new ArrayList<>();
@@ -389,7 +410,7 @@ public final class AnalyzerSpec {
     }
 
     /**
-     * A synonym filter's map, entry by entry ({@code lucene_rust.synonym_entries}): each input with
+     * A synonym filter's map, entry by entry ({@code accelerated.synonym_entries}): each input with
      * its {@code keepOrig} and outputs in order, as the FST holds them, so the Rust map is this one.
      */
     private static String synonyms(Object o, Component c, String name) {
@@ -418,7 +439,7 @@ public final class AnalyzerSpec {
         }
         c.name = name;
         c.arg("synonyms", c.writer.resource(sb.toString()))
-            .arg("format", "lucene_rust.synonym_entries")
+            .arg("format", "accelerated.synonym_entries")
             .arg("ignoreCase", flag(readBool(o, "ignoreCase")));
         return null;
     }

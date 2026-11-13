@@ -9,10 +9,16 @@
 //! length; trailing bytes are an error.
 //!
 //! ```text
-//! blob     := nodes global slices
+//! blob     := nodes global slices [bucket_limit:i32]
+//!             (the buckets the request may still make, `search.max_buckets`
+//!              less those made; past them the call stops with
+//!              `TOO_MANY_BUCKETS`, the count made in the last error)
 //! nodes    := count:u8 node*                  (at most MAX_NODES in all)
 //! global   := 0 | 1 query:bytes nodes         (the global pass: its query and nodes)
 //! node     := METRIC value_kind:u8 source:u8 needs:u8 field
+//!           | SCRIPT_METRIC needs:u8 script   (a metric over a Painless
+//!                                              script's doubles; the script in
+//!                                              `jvm_painless_score`'s layout)
 //!           | CARDINALITY card_kind:u8 precision:u8 field
 //!           | PERCENTILES value_kind:u8 compression:f64 field   (a t-digest per bucket;
 //!                                              compression in (0, MAX_COMPRESSION])
@@ -141,6 +147,8 @@ const AGG_HDR_PERCENTILES: u8 = 14;
 const AGG_NESTED: u8 = 15;
 const AGG_REVERSE_NESTED: u8 = 16;
 const AGG_SIGNIFICANT_TEXT: u8 = 17;
+/// A metric over a Painless script's values ([`crate::jvm_painless_score::PainlessAggValues`]).
+const AGG_SCRIPT_METRIC: u8 = 18;
 /// The most source fields a `significant_text` may read.
 const MAX_SOURCE_FIELDS: i32 = 1024;
 /// The largest t-digest compression a tree may ask for: a digest holds
@@ -173,6 +181,9 @@ pub(crate) struct DecodedTree {
     pub(crate) nodes: Vec<AggNode>,
     pub(crate) global: Option<(BooleanQuery, Vec<AggNode>)>,
     pub(crate) slices: Vec<Vec<usize>>,
+    /// The buckets the request may still make (`search.max_buckets` less
+    /// those made); `usize::MAX` when the blob gives none.
+    pub(crate) bucket_limit: usize,
 }
 
 fn bad(msg: String) -> FfiStatus {
@@ -342,6 +353,22 @@ fn node_of(
                 kind,
                 source,
                 needs,
+                script: None,
+            }
+        }
+        AGG_SCRIPT_METRIC => {
+            let needs = c.u8()?;
+            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+                return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
+            }
+            let values = crate::jvm_painless_score::PainlessAggValues::decode(c)?;
+            AggNode::Metric {
+                missing: None,
+                field: String::new(),
+                kind: ValueKind::Double,
+                source: Source::DocValues,
+                needs,
+                script: Some(Arc::new(values)),
             }
         }
         AGG_PERCENTILES => {
@@ -761,6 +788,11 @@ pub(crate) fn decode_tree(blob: &[u8]) -> Result<DecodedTree, FfiStatus> {
         f => return Err(bad(format!("aggregation tree: global flag {f}"))),
     };
     let slices = jvm_reader::decode_slices(&mut c, &bad)?;
+    let bucket_limit = if c.pos() == blob.len() {
+        usize::MAX
+    } else {
+        usize::try_from(c.i32()?).unwrap_or(0)
+    };
     if c.pos() != blob.len() {
         return Err(bad(format!(
             "aggregation tree: {} trailing bytes",
@@ -774,6 +806,7 @@ pub(crate) fn decode_tree(blob: &[u8]) -> Result<DecodedTree, FfiStatus> {
         nodes: main,
         global,
         slices,
+        bucket_limit,
     })
 }
 
@@ -1028,6 +1061,18 @@ pub(crate) fn aggregate_tree_blobs(
     query_blob: &[u8],
     tree_blob: &[u8],
 ) -> Result<Vec<u8>, FfiStatus> {
+    aggregate_tree_blobs_cached(handle, query_blob, tree_blob, false)
+}
+
+/// [`aggregate_tree_blobs`], with `cached` each committed segment's part
+/// read from and kept in the process's aggregation segment cache
+/// ([`lucene_search::bucket_aggs::segment_cache`]): the same results.
+pub(crate) fn aggregate_tree_blobs_cached(
+    handle: u64,
+    query_blob: &[u8],
+    tree_blob: &[u8],
+    cached: bool,
+) -> Result<Vec<u8>, FfiStatus> {
     let (query, min_score, sim) = jvm_reader::decode_request(query_blob)?;
     let sim = sim.as_ref();
     let tree = decode_tree(tree_blob)?;
@@ -1035,6 +1080,8 @@ pub(crate) fn aggregate_tree_blobs(
         handle,
         "ffi_jvm_reader_aggregate_tree: unknown or already-closed handle",
     )?;
+    let query =
+        crate::jvm_reader::similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
@@ -1100,7 +1147,7 @@ pub(crate) fn aggregate_tree_blobs(
             .map_err(crate::clauses::map_search_error)?;
         ords.insert(f.to_string(), g);
     }
-    let globals = Globals::new(&ords);
+    let globals = Globals::new(&ords).with_bucket_limit(tree.bucket_limit);
     // A pass scores its query behind `min_score`, or for a `top_hits`
     // (behind none: `-inf`), with the norms of the fields it scores.
     let main_scores = tree.nodes.iter().any(AggNode::needs_scores);
@@ -1136,9 +1183,15 @@ pub(crate) fn aggregate_tree_blobs(
         min: f32::NEG_INFINITY,
         norms: &norms,
     });
+    let cache = bucket_aggs::segment_cache::AggSegmentCache::global();
+    let request =
+        (cached && cache.budget() > 0).then(|| bucket_aggs::segment_cache::CacheRequest {
+            cache,
+            segments: h.agg_identities(),
+        });
     let mut out = Vec::new();
     if !tree.nodes.is_empty() {
-        let sliced = bucket_aggs::aggregate_tree(
+        let sliced = bucket_aggs::aggregate_tree_cached(
             &segments,
             readers,
             &q,
@@ -1146,8 +1199,12 @@ pub(crate) fn aggregate_tree_blobs(
             &globals,
             &slices,
             min.as_ref(),
+            request.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        // A similarity script's error first: the search met it before
+        // anything that ended it.
+        let sliced = jvm_reader::similarity_checked(sim, sliced)?;
         for results in &sliced {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1158,7 +1215,7 @@ pub(crate) fn aggregate_tree_blobs(
         // The aggregation processor's `postProcess` searches the global
         // query with the same slices (one collector over every segment, in
         // order, without them).
-        let results = bucket_aggs::aggregate_tree(
+        let results = bucket_aggs::aggregate_tree_cached(
             &segments,
             readers,
             gq,
@@ -1166,15 +1223,17 @@ pub(crate) fn aggregate_tree_blobs(
             &globals,
             &slices,
             global_min.as_ref(),
+            request.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error)?;
+        .map_err(crate::clauses::map_search_error);
+        let results = jvm_reader::similarity_checked(sim, results)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;
             }
         }
     }
-    Ok(out)
+    jvm_reader::similarity_checked(sim, Ok(out))
 }
 
 /// The aggregations of a tree blob over the live matches of the query blob:
@@ -1221,6 +1280,47 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_tree(
         Ok(())
     })
 }
+
+/// Sets the bytes the aggregation segment cache keeps parts in, across
+/// every index of the process (0 turns it off and drops every part); the
+/// parts past a smaller budget are dropped now.
+#[no_mangle]
+pub extern "C" fn ffi_agg_segment_cache_set_budget(budget_bytes: u64) -> i32 {
+    crate::error::guard(|| {
+        bucket_aggs::segment_cache::AggSegmentCache::global().set_budget(budget_bytes);
+        if budget_bytes == 0 {
+            bucket_aggs::segment_cache::AggSegmentCache::global().clear();
+        }
+        Ok(())
+    })
+}
+
+/// The aggregation segment cache's counters into `out` (at least
+/// [`AGG_CACHE_STATS`] `u64`s): hits, misses, evictions, entries, bytes,
+/// budget.
+///
+/// # Safety
+/// `out` must be valid for `len` `u64` writes.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_agg_segment_cache_stats(out: *mut u64, len: usize) -> i32 {
+    crate::error::guard(|| {
+        if out.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        if len < AGG_CACHE_STATS {
+            set_last_error(format!("{len} slots for {AGG_CACHE_STATS} counters"));
+            return Err(FfiStatus::BufferTooSmall);
+        }
+        let s = bucket_aggs::segment_cache::AggSegmentCache::global().stats();
+        let values = [s.hits, s.misses, s.evictions, s.entries, s.bytes, s.budget];
+        // SAFETY: `out` is valid for `len >= AGG_CACHE_STATS` writes.
+        unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), out, values.len()) };
+        Ok(())
+    })
+}
+
+/// The counters [`ffi_agg_segment_cache_stats`] writes.
+pub const AGG_CACHE_STATS: usize = 6;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -1346,6 +1446,109 @@ pub(crate) mod tests {
         }
         b.extend_from_slice(&0i32.to_le_bytes());
         b
+    }
+
+    /// A dashboard: `date_histogram(n, 3) > terms(body, 5) > stats(n)`
+    /// beside `range(n) > filters(fox, other) > stats(n)`, `kind` the
+    /// metrics' value kind.
+    pub(crate) fn dashboard_tree(kind: u8) -> Vec<u8> {
+        let mut b = vec![2u8];
+        b.push(AGG_DATE_HISTOGRAM);
+        string(&mut b, "n");
+        b.push(UNIT_INTERVAL);
+        b.extend_from_slice(&3i64.to_le_bytes());
+        b.extend_from_slice(&0i64.to_le_bytes());
+        b.extend_from_slice(&0i64.to_le_bytes());
+        b.push(0);
+        b.push(1);
+        b.push(AGG_TERMS);
+        string(&mut b, "body");
+        b.extend_from_slice(&5i32.to_le_bytes());
+        b.push(0);
+        b.push(0);
+        b.push(1);
+        metric(&mut b, kind, 0, "n");
+        b.push(AGG_RANGE);
+        string(&mut b, "n");
+        b.push(0);
+        b.extend_from_slice(&2i32.to_le_bytes());
+        f64s(&mut b, &[f64::NEG_INFINITY, 3.0, 3.0, f64::INFINITY]);
+        b.push(1);
+        b.push(AGG_FILTERS);
+        b.extend_from_slice(&1i32.to_le_bytes());
+        let fox = term_blob("body", "fox");
+        b.extend_from_slice(&(fox.len() as i32).to_le_bytes());
+        b.extend_from_slice(&fox);
+        b.push(1);
+        b.push(1);
+        metric(&mut b, kind, 0, "n");
+        b.push(0);
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn the_segment_cache_answers_as_the_pass_without_it() {
+        use crate::jvm_reader::tests::{open_live, range_blob, term_and_range_blob};
+        use lucene_search::bucket_aggs::segment_cache::AggSegmentCache;
+        let cache = AggSegmentCache::global();
+        cache.set_budget(64 << 20);
+        let trees = [
+            dashboard_tree(0),
+            dashboard_tree(1),
+            terms_tree("body", 2),
+            histogram_of_filters("n", 2.0, &term_blob("body", "fox")),
+            every_kind(true),
+        ];
+        let queries = [
+            term_blob("body", "fox"),
+            term_blob("body", "the"),
+            range_blob("n", i64::MIN, i64::MAX),
+            range_blob("n", 2, 5),
+            range_blob("n", -10, 1),
+            term_and_range_blob("body", "the", "n", 1, 100),
+            term_and_range_blob("body", "fox", "n", 3, 3),
+        ];
+        // No deletions, then one in each segment, then a whole segment.
+        let lives: [&[&[u64]]; 3] = [&[], &[&[0b1110], &[0b0111]], &[&[0], &[0b1111]]];
+        let before = cache.stats();
+        for live in lives {
+            let (rc, h) = open_live(&[4, 4], 0, live);
+            assert_eq!(rc, 0, "{}", crate::error::last_error());
+            for (t, tree) in trees.iter().enumerate() {
+                for (q, query) in queries.iter().enumerate() {
+                    let plain = aggregate_tree_blobs(h, query, tree).unwrap();
+                    for round in 0..2 {
+                        assert_eq!(
+                            aggregate_tree_blobs_cached(h, query, tree, true).unwrap(),
+                            plain,
+                            "tree {t}, query {q}, live {live:?}, round {round}"
+                        );
+                    }
+                }
+            }
+            crate::jvm_reader::ffi_close_jvm_reader(h);
+        }
+        let after = cache.stats();
+        assert!(after.hits > before.hits, "{before:?} {after:?}");
+        assert!(after.misses > before.misses, "{before:?} {after:?}");
+        assert!(after.entries > 0 && after.bytes > 0);
+        // The counters through the C entry point.
+        let mut out = [0u64; AGG_CACHE_STATS];
+        assert_eq!(
+            unsafe { ffi_agg_segment_cache_stats(out.as_mut_ptr(), out.len()) },
+            0
+        );
+        assert!(out[0] >= after.hits && out[5] == 64 << 20);
+        assert_eq!(
+            unsafe { ffi_agg_segment_cache_stats(out.as_mut_ptr(), 2) },
+            FfiStatus::BufferTooSmall.code()
+        );
+        assert_eq!(
+            unsafe { ffi_agg_segment_cache_stats(std::ptr::null_mut(), 6) },
+            FfiStatus::NullPointer.code()
+        );
+        assert_eq!(ffi_agg_segment_cache_set_budget(64 << 20), 0);
     }
 
     #[test]

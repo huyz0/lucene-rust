@@ -262,7 +262,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
     let tmp = TempDir::new("live-flushing");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
     for i in 0..5 {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
     }
@@ -302,7 +302,7 @@ fn a_buffer_being_flushed_stays_readable_until_published() {
     // A commit holds every buffer; once released, an older reader is
     // refused rather than answered without them.
     w.commit().unwrap();
-    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = w.with_writer(|iw| iw.segment_infos().version);
     let snap = w
         .live_snapshot(&body(false, &["common"]), Some(generation))
         .unwrap();
@@ -337,7 +337,7 @@ fn released_buffers_go_when_their_last_view_closes() {
     let tmp = TempDir::new("live-release");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let generation = || w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = || w.with_writer(|iw| iw.segment_infos().version);
     let req = body(false, &["common"]);
     let mut gens = Vec::new();
     for i in 0..2 {
@@ -391,7 +391,7 @@ fn a_view_of_a_commit_carries_the_deletes_issued_since() {
     let tmp = TempDir::new("live-commit-deletes");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let generation = || w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = || w.with_writer(|iw| iw.segment_infos().version);
     let deletes = |g: i64| {
         let view = w.open_live_view(Some(g)).unwrap();
         w.close_live_view(&view);
@@ -453,11 +453,114 @@ fn a_view_of_a_commit_carries_the_deletes_issued_since() {
     assert!(deletes(g1).is_empty());
 }
 
+/// An NRT snapshot is a reader's segment list as a commit is, with no
+/// commit written: a view of its version reads the buffers it lacks and
+/// names the deletes issued since, a snapshot that changed nothing keeps
+/// the version, and releasing it lets older readers' buffers go.
+#[test]
+fn a_view_of_an_nrt_snapshot_reads_what_it_lacks() {
+    use crate::nrt::NrtSource;
+    let tmp = TempDir::new("live-nrt");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
+    for i in 0..3 {
+        w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
+    }
+    w.delete_documents_by_term(&[id(0)]).unwrap();
+    let v0 = w.nrt_snapshot(true, true).unwrap().segment_infos.version;
+    assert!(v0 > start);
+    assert_eq!(
+        w.with_writer(|iw| iw.segment_infos().generation),
+        generation,
+        "no commit"
+    );
+    let view = w.open_live_view(Some(v0)).unwrap();
+    w.close_live_view(&view);
+    assert!(view.buffers.is_empty(), "the snapshot holds every document");
+    assert!(view.commit_deletes.is_empty(), "and the delete before it");
+
+    w.soft_update_explicit_documents(id(1), vec![doc(&f, 1)], &[soft_delete(1)])
+        .unwrap();
+    w.add_explicit_documents(vec![doc(&f, 3)]).unwrap();
+    let view = w.open_live_view(Some(v0)).unwrap();
+    w.close_live_view(&view);
+    let max_docs: Vec<i32> = view.buffers.iter().map(|b| b.max_doc).collect();
+    assert_eq!(max_docs, [2]);
+    let ids: Vec<&[u8]> = view.commit_deletes.iter().map(|t| &t.bytes[..]).collect();
+    assert_eq!(ids, [b"d1"]);
+
+    // A later snapshot holds them; one with nothing new is the same list.
+    let v1 = w.nrt_snapshot(true, true).unwrap().segment_infos.version;
+    assert!(v1 > v0);
+    assert_eq!(
+        w.nrt_snapshot(true, true).unwrap().segment_infos.version,
+        v1
+    );
+    let view = w.open_live_view(Some(v1)).unwrap();
+    w.close_live_view(&view);
+    assert!(view.buffers.is_empty() && view.commit_deletes.is_empty());
+    // The older reader still reads the published buffer until released.
+    let view = w.open_live_view(Some(v0)).unwrap();
+    w.close_live_view(&view);
+    assert_eq!(view.buffers.len(), 1);
+    w.release_live(v1).unwrap();
+    assert!(matches!(
+        w.open_live_view(Some(v0)),
+        Err(Error::LiveSearch(_))
+    ));
+    // A commit after them keys its own list, above every snapshot's.
+    w.add_explicit_documents(vec![doc(&f, 4)]).unwrap();
+    w.commit().unwrap();
+    let committed = w.with_writer(|iw| iw.segment_infos().version);
+    assert!(committed > v1);
+    let view = w.open_live_view(Some(committed)).unwrap();
+    w.close_live_view(&view);
+    assert!(view.buffers.is_empty());
+}
+
 /// A view of the buffers alone names no deletes: no reader needs them.
 fn deletes_none(w: &ConcurrentIndexWriter<'_>) -> bool {
     let view = w.open_live_view(None).unwrap();
     w.close_live_view(&view);
     view.commit_deletes.is_empty()
+}
+
+/// A big document's stored fields are read from the compressed chunk the
+/// buffer wrote, through its flush and publish, not from a second copy.
+#[test]
+fn a_big_document_is_read_from_its_compressed_chunk() {
+    let tmp = TempDir::new("live-big");
+    let dir = FsDirectory::open(tmp.path());
+    let (w, f) = open(&dir, 1, true);
+    // Compressible, as `_source` is: a small part of it stays in memory.
+    let source: String = (0..400_000)
+        .map(|i| format!("{{\"k{}\":{i}}}", i % 50))
+        .collect();
+    for i in 0..5 {
+        let mut d = doc(&f, i);
+        if i == 2 {
+            d.stored[0].value = FieldValue::String(source.clone());
+        }
+        w.add_explicit_documents(vec![d]).unwrap();
+    }
+    let view = w.open_live_view(None).unwrap();
+    let read = |doc| w.live_document(&view, 0, doc).unwrap();
+    assert_eq!(read(2)[0].value, FieldValue::String(source.clone()));
+    assert_eq!(read(1)[0].value, FieldValue::String("d1".into()));
+    assert_eq!(read(4)[1].value, FieldValue::Long(4));
+    assert!(
+        w.live_bytes() < source.len() / 2,
+        "{} live bytes for a {} byte document",
+        w.live_bytes(),
+        source.len()
+    );
+    // Flushed and published, the view still reads it.
+    w.commit().unwrap();
+    assert_eq!(read(2)[0].value, FieldValue::String(source));
+    assert_eq!(read(3)[0].value, FieldValue::String("d3".into()));
+    w.close_live_view(&view);
 }
 
 /// A view holds its buffers' documents and deletes as of its opening, and
@@ -500,10 +603,10 @@ fn a_view_reads_its_buffers_as_of_its_opening() {
     assert!(w.live_document(&view, 1, 0).is_err());
 
     // Committed and released, the buffer stays while the view is open.
-    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
     let old = w.open_live_view(Some(start)).unwrap();
     w.commit().unwrap();
-    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = w.with_writer(|iw| iw.segment_infos().version);
     w.release_live(generation).unwrap();
     let snap = w
         .live_view_snapshot(&view, &body(false, &["common"]))
@@ -1029,7 +1132,7 @@ fn a_published_buffer_keeps_its_files_while_a_view_reads_it() {
     let tmp = TempDir::new("live-published-files");
     let dir = FsDirectory::open(tmp.path());
     let (w, f) = open(&dir, 1, true);
-    let start = w.with_writer(|iw| iw.segment_infos().generation);
+    let start = w.with_writer(|iw| iw.segment_infos().version);
     let mut ids = Vec::new();
     for i in 0..2 {
         w.add_explicit_documents(vec![doc(&f, i)]).unwrap();
@@ -1052,7 +1155,7 @@ fn a_published_buffer_keeps_its_files_while_a_view_reads_it() {
     w.with_writer(|iw| iw.force_merge(1)).unwrap();
     assert_eq!(w.with_writer(|iw| iw.segment_infos().segments.len()), 1);
     w.commit().unwrap();
-    let generation = w.with_writer(|iw| iw.segment_infos().generation);
+    let generation = w.with_writer(|iw| iw.segment_infos().version);
     w.release_live(generation).unwrap();
     for name in &held {
         assert!(
@@ -1127,7 +1230,7 @@ fn add_vector_doc(w: &ConcurrentIndexWriter<'_>, id: i32, i: i64) {
 
 /// With live search on, the flush writes the graph kept over the buffer's
 /// vectors, and the segment is byte for byte the one it writes with live
-/// search off, which builds the graph at the flush.
+/// search off.
 #[test]
 fn live_search_flushes_the_vector_graph_it_kept() {
     let flushed = |live: bool| {
@@ -1143,22 +1246,12 @@ fn live_search_flushes_the_vector_graph_it_kept() {
         let infos = crate::segment_infos::read_latest(&dir).unwrap();
         assert_eq!(infos.segments.len(), 1);
         let sci = &infos.segments[0];
+        assert!(kept(&sci.segment_id), "the flush wrote the kept graph");
         let files = segment_files(tmp.path(), sci, &sci.segment_name);
         assert!(files.iter().any(|(n, _)| n.ends_with(".vex")), "{files:?}");
         files
     };
-    let kept = || {
-        crate::index_writer::KEPT_GRAPHS
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|&&n| n == 2000)
-            .count()
-    };
-    let before = kept();
     let on = flushed(true);
-    // Its 2000 vectors (no other test keeps a graph of that many).
-    assert!(kept() > before, "the flush wrote the kept graph");
     let off = flushed(false);
     let names: Vec<&str> = on.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
@@ -1168,6 +1261,187 @@ fn live_search_flushes_the_vector_graph_it_kept() {
     for ((name, a), (_, b)) in on.iter().zip(&off) {
         assert!(a == b, "{name} differs with live search on");
     }
+}
+
+/// The `.vex` and `.vem` a flush writes for a graph built over `vectors`
+/// (16-d dot product, in ordinal order, field 1) and then, when given,
+/// renumbered by `old_to_new`: with a zero segment id and no checksum, as
+/// [`segment_files`] reads files.
+fn expected_graph_files(
+    vectors: &[Vec<f32>],
+    old_to_new: Option<&[i32]>,
+    suffix: &str,
+) -> (Vec<u8>, Vec<u8>) {
+    use lucene_codecs::field_infos::{VectorEncoding, VectorSimilarityFunction};
+    use lucene_codecs::{hnsw, hnsw_vectors, vectors as flat};
+    let id = [0u8; 16];
+    let count = i32::try_from(vectors.len()).unwrap();
+    let field = flat::FlatVectorsField {
+        field_number: 1,
+        similarity: VectorSimilarityFunction::DotProduct,
+        dimension: 16,
+        docs: (0..count).collect(),
+        values: flat::FieldVectorData::Float32(vectors.concat()),
+    };
+    let (vec, vemf) = flat::write_flat_vectors(&[field], count, &id, "").unwrap();
+    let reader = flat::FlatVectorsReader::open(&vemf, &vec, &id, "").unwrap();
+    let values = reader.float_vector_values(1).unwrap();
+    let mut graph =
+        hnsw::HnswGraphBuilder::new(values.ord_scorer(), 16, 100, hnsw::DEFAULT_RAND_SEED)
+            .unwrap()
+            .build(count)
+            .unwrap();
+    if let Some(map) = old_to_new {
+        graph = graph.renumbered(map).unwrap();
+    }
+    let (mut vex, mut vem) = hnsw_vectors::write_hnsw_vectors(
+        &[hnsw_vectors::HnswVectorsField {
+            field_number: 1,
+            encoding: VectorEncoding::Float32,
+            similarity: VectorSimilarityFunction::DotProduct,
+            dimension: 16,
+            count,
+            graph: Some(&graph),
+            m: 16,
+        }],
+        &id,
+        suffix,
+    )
+    .unwrap();
+    vex.truncate(vex.len() - 8);
+    vem.truncate(vem.len() - 8);
+    (vex, vem)
+}
+
+/// Whether segment `id`'s flush wrote a graph its buffer kept.
+fn kept(id: &[u8; 16]) -> bool {
+    crate::index_writer::KEPT_GRAPHS
+        .lock()
+        .unwrap()
+        .contains(id)
+}
+
+/// The one segment's files, and the vector format's segment suffix. Its
+/// flush wrote the graph its buffer kept.
+fn single_segment(dir: &FsDirectory, path: &std::path::Path) -> (Vec<(String, Vec<u8>)>, String) {
+    let infos = crate::segment_infos::read_latest(dir).unwrap();
+    assert_eq!(infos.segments.len(), 1);
+    let sci = &infos.segments[0];
+    assert!(kept(&sci.segment_id), "the flush wrote the kept graph");
+    let files = segment_files(path, sci, &sci.segment_name);
+    let suffix = files
+        .iter()
+        .find_map(|(n, _)| n.strip_suffix(".vex"))
+        .and_then(|n| n.strip_prefix('_'))
+        .expect("a .vex")
+        .to_string();
+    (files, suffix)
+}
+
+fn file<'f>(files: &'f [(String, Vec<u8>)], ext: &str) -> &'f [u8] {
+    &files.iter().find(|(n, _)| n.ends_with(ext)).unwrap().1
+}
+
+/// Without live search the buffer builds its graph as the vectors arrive
+/// and the flush writes it: the graph `HnswGraphBuilder` builds over the
+/// flushed vectors.
+#[test]
+fn a_flush_writes_the_graph_built_as_vectors_arrived() {
+    let tmp = TempDir::new("flush-kept-graph");
+    let dir = FsDirectory::open(tmp.path());
+    {
+        let (w, id) = vector_writer(&dir, false);
+        for i in 0..3000 {
+            add_vector_doc(&w, id, i);
+        }
+        w.commit().unwrap();
+    }
+    let (files, suffix) = single_segment(&dir, tmp.path());
+    let vectors: Vec<Vec<f32>> = (0..3000).filter(|i| i % 5 != 0).map(unit).collect();
+    let (vex, vem) = expected_graph_files(&vectors, None, &suffix);
+    assert!(file(&files, ".vex") == vex.as_slice());
+    assert!(file(&files, ".vem") == vem.as_slice());
+}
+
+/// Under an index sort the flush writes the graph built in arrival order,
+/// renumbered to the sorted ordinals, as `Lucene99HnswVectorsWriter`'s
+/// `writeSortingField` does.
+#[test]
+fn a_sorted_flush_renumbers_the_graph_built_as_vectors_arrived() {
+    let tmp = TempDir::new("flush-sorted-graph");
+    let dir = FsDirectory::open(tmp.path());
+    const DOCS: i64 = 2500;
+    // A permutation of the documents: 7919 is prime to 2500.
+    let rank = |i: i64| (i * 7919) % DOCS;
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_ram_buffer_size_mb(64.0).unwrap();
+        w.enable_explicit_documents().unwrap();
+        let id = w
+            .register_field(
+                FieldInfo::new("_id", 0)
+                    .with_index_options(IndexOptions::Docs)
+                    .with_omit_norms(true),
+            )
+            .unwrap();
+        let v = w
+            .register_field(FieldInfo::new("v", 0).with_vectors(
+                16,
+                lucene_codecs::field_infos::VectorEncoding::Float32,
+                lucene_codecs::field_infos::VectorSimilarityFunction::DotProduct,
+            ))
+            .unwrap();
+        assert_eq!(v, 1);
+        let r = w
+            .register_field(FieldInfo::new("rank", 0).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .unwrap();
+        w.set_index_sort(Some(&[crate::segment_info::IndexSortField::long(
+            "rank", false, None,
+        )]))
+        .unwrap();
+        let w = ConcurrentIndexWriter::new(w, 1).unwrap();
+        for i in 0..DOCS {
+            let doc = ExplicitDocument {
+                stored: Vec::new(),
+                fields: ExplicitFields {
+                    inverted: vec![InvertedField {
+                        field_number: id,
+                        terms: vec![term(&format!("d{i}"), &[])].into(),
+                        norm: None,
+                    }],
+                    doc_values: vec![StoredField {
+                        field_number: r,
+                        value: FieldValue::Long(rank(i)),
+                    }],
+                    ..ExplicitFields::default()
+                },
+            };
+            let vectors = if i % 5 == 0 {
+                Vec::new()
+            } else {
+                vec![crate::index_writer::DocumentVector::float32("v", unit(i))]
+            };
+            w.add_explicit_documents_with_vectors_in(None, vec![doc], vec![vectors])
+                .unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let (files, suffix) = single_segment(&dir, tmp.path());
+    let arrived: Vec<i64> = (0..DOCS).filter(|i| i % 5 != 0).collect();
+    let mut sorted = arrived.clone();
+    sorted.sort_by_key(|&i| rank(i));
+    let old_to_new: Vec<i32> = arrived
+        .iter()
+        .map(|i| i32::try_from(sorted.iter().position(|j| j == i).unwrap()).unwrap())
+        .collect();
+    let vectors: Vec<Vec<f32>> = arrived.iter().map(|&i| unit(i)).collect();
+    let (vex, vem) = expected_graph_files(&vectors, Some(&old_to_new), &suffix);
+    assert!(file(&files, ".vex") == vex.as_slice());
+    assert!(file(&files, ".vem") == vem.as_slice());
 }
 
 /// A view holds each buffer's vector graph with the vectors it saw, and a

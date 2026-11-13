@@ -1126,6 +1126,17 @@ struct RawVectorValues<'a> {
 }
 
 impl RawVectorValues<'_> {
+    /// [`crate::hnsw::VectorScorer::read_ahead_span`].
+    fn read_ahead_span(&self) -> usize {
+        crate::hnsw::read_ahead_span(self.vector_bytes)
+    }
+
+    /// [`crate::hnsw::VectorScorer::read_ahead`]: the vectors of ordinals
+    /// `from..to`, clamped to the field.
+    fn read_ahead(&self, from: i32, to: i32) {
+        crate::hnsw::read_ahead_rows(self.slice, self.size, self.vector_bytes, from, to);
+    }
+
     /// Two byte vectors' score under this field's scoring: its similarity,
     /// or [`hamming_score`] for a [`HAMMING_FORMAT_NAME`] field.
     #[inline]
@@ -2173,6 +2184,14 @@ pub(crate) fn query_norm(query: &[f32]) -> f32 {
 }
 
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        self.values.values.read_ahead_span()
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        self.values.values.read_ahead(from, to)
+    }
+
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector_ref(node, &mut self.scratch)?;
         Ok(if self.similarity == VectorSimilarityFunction::Cosine {
@@ -2248,6 +2267,14 @@ pub struct ByteVectorScorer<'a> {
 }
 
 impl crate::hnsw::VectorScorer for ByteVectorScorer<'_> {
+    fn read_ahead_span(&self) -> usize {
+        self.values.values.read_ahead_span()
+    }
+
+    fn read_ahead(&self, from: i32, to: i32) {
+        self.values.values.read_ahead(from, to)
+    }
+
     fn score(&mut self, node: i32) -> Result<f32> {
         let candidate = self.values.vector(node)?;
         Ok(self.values.values.score_bytes(&self.query, candidate))

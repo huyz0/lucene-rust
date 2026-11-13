@@ -126,7 +126,7 @@ Acceptance:
       1.04×, r3 `OR` 1.39×, r4 dismax 4.1×, r5 `must` + msm 1.3×, r6
       `must` + `should` 1.4–3.0×, r7 one term 1.6×, r8 `multi_match`
       (dismax, tie-breaker 0) 1.30× merged and 3.45× segmented.
-- [ ] Over REST (`docs/opensearch-native-queries.md`), 20 of 23 shapes are
+- [ ] Over REST (`docs/accelerated-queries.md`), 20 of 23 shapes are
       1.04–1.51×; msm 2 (0.97×), `must` + msm (0.99×) and `multi_match`
       (1.00×) are inside the run-to-run spread but not clearly above it.
       Carried to R7.
@@ -780,12 +780,12 @@ never opened for the fetch: a reader no search opened natively -- the
 realtime get's internal reader -- is read by Lucene rather than paying a
 native open for a handful of documents. A document the native side fails to
 read (a damaged segment, one without stored-fields files) is read by Lucene
-too, and `index.lucene_rust.fetch.enabled` (dynamic, default on) sends every
+too, and `index.fetch.accelerated` (dynamic, default on) sends every
 document to Lucene.
 
 An index takes one reader wrapper (`IndexModule.setReaderWrapper` is
 set-once), and the security plugin claims it for field- and document-level
-security. The node setting `lucene_rust.fetch.reader_wrapper` decides
+security. The node setting `indices.fetch.accelerated_reader` decides
 whether this plugin installs its wrapper: on by default, off by default when
 the security plugin is installed beside it (stored fields are then Lucene's),
 and a wrapper another plugin set first is left in place with a warning.

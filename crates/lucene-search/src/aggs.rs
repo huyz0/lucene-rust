@@ -41,6 +41,7 @@
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
 use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::numeric_utils::{sortable_int_to_float, sortable_long_to_double};
 
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode};
@@ -137,26 +138,7 @@ impl Default for MetricState {
 impl MetricState {
     /// `CompensatedSum.add(value)`.
     fn add(&mut self, value: f64) {
-        // "If the value is Inf or NaN, just add it to the running tally."
-        if !value.is_finite() {
-            // Java's `value = v + value`, in Java's operand order, and the
-            // result canonicalised to Java's `Double.NaN`. The bits of a NaN
-            // this addition makes are not Java's to promise nor Rust's: x86
-            // gives `inf + -inf` the negative default NaN (`0xfff8...`),
-            // aarch64 the positive one, and with two NaN operands keeps
-            // whichever the optimiser put first -- so a release build
-            // differed from a debug one. OpenSearch only ever sees the value
-            // through `doubleToLongBits` (`StreamOutput.writeDouble`), which
-            // is Java's `Double.NaN`; so is this.
-            let sum = value + self.sum;
-            self.sum = if sum.is_nan() { JAVA_NAN } else { sum };
-        }
-        if self.sum.is_finite() {
-            let corrected = value + self.delta;
-            let updated = self.sum + corrected;
-            self.delta = corrected - (updated - self.sum);
-            self.sum = updated;
-        }
+        compensated_add(&mut self.sum, &mut self.delta, value);
     }
 
     /// A document with the one value `v`, keeping the parts in `N`.
@@ -177,21 +159,6 @@ impl MetricState {
         }
         if N & NEED_MAX != 0 {
             self.max_of_maxes = java_max(self.max_of_maxes, v);
-        }
-    }
-
-    /// A document's stored values, ascending, read as `kind`, keeping the
-    /// parts `needs` names (more is never wrong: an unrecognised mix keeps
-    /// every part), as the flat pass's fold does.
-    pub(crate) fn collect_needs(&mut self, needs: u8, kind: ValueKind, values: &[i64]) {
-        match needs {
-            NEED_MIN => self.many::<NEED_MIN>(kind, values),
-            NEED_MAX => self.many::<NEED_MAX>(kind, values),
-            NEED_COUNT => self.many::<NEED_COUNT>(kind, values),
-            n if n & !(NEED_COUNT | NEED_SUM) == 0 => {
-                self.many::<{ NEED_COUNT | NEED_SUM }>(kind, values)
-            }
-            _ => self.many::<NEED_ALL>(kind, values),
         }
     }
 
@@ -222,6 +189,198 @@ impl MetricState {
         }
         if N & NEED_MAX != 0 {
             self.max_of_maxes = java_max(self.max_of_maxes, to_double(kind, last));
+        }
+    }
+}
+
+/// `CompensatedSum.add(value)` on its `value()` and `delta()`.
+#[inline]
+fn compensated_add(sum_ref: &mut f64, delta_ref: &mut f64, value: f64) {
+    let (mut sum, mut delta) = (*sum_ref, *delta_ref);
+    // "If the value is Inf or NaN, just add it to the running tally."
+    if !value.is_finite() {
+        // Java's `value = v + value`, in Java's operand order, and the
+        // result canonicalised to Java's `Double.NaN`. The bits of a NaN
+        // this addition makes are not Java's to promise nor Rust's: x86
+        // gives `inf + -inf` the negative default NaN (`0xfff8...`),
+        // aarch64 the positive one, and with two NaN operands keeps
+        // whichever the optimiser put first -- so a release build
+        // differed from a debug one. OpenSearch only ever sees the value
+        // through `doubleToLongBits` (`StreamOutput.writeDouble`), which
+        // is Java's `Double.NaN`; so is this.
+        let tally = value + sum;
+        sum = if tally.is_nan() { JAVA_NAN } else { tally };
+    }
+    if sum.is_finite() {
+        let corrected = value + delta;
+        let updated = sum + corrected;
+        delta = corrected - (updated - sum);
+        sum = updated;
+    }
+    *sum_ref = sum;
+    *delta_ref = delta;
+}
+
+/// One owning bucket's metric in the form a bucketed state keeps it: only
+/// the parts its node reads (`NEED_*`), read back as a [`MetricState`]
+/// whose other parts are their defaults.
+pub(crate) trait MetricSlot: Default + Clone {
+    /// The parts kept.
+    const NEEDS: u8;
+    /// A document with the one value `v`.
+    fn one(&mut self, v: f64);
+    /// A document's stored values, ascending, read as `kind`.
+    fn many(&mut self, kind: ValueKind, values: &[i64]);
+    /// A bound read from the points, for a `min` (`is_min`) or a `max`.
+    fn bound(&mut self, is_min: bool, v: f64);
+    /// The state as the result reads it.
+    fn state(&self) -> MetricState;
+}
+
+impl MetricSlot for MetricState {
+    const NEEDS: u8 = NEED_ALL;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        MetricState::one::<NEED_ALL>(self, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        MetricState::many::<NEED_ALL>(self, kind, values);
+    }
+    fn bound(&mut self, is_min: bool, v: f64) {
+        if is_min {
+            self.min_of_mins = java_min(self.min_of_mins, v);
+        } else {
+            self.max_of_maxes = java_max(self.max_of_maxes, v);
+        }
+    }
+    fn state(&self) -> MetricState {
+        *self
+    }
+}
+
+/// `value_count`, `sum` and `avg`: the count and the compensated sum.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct CountSum {
+    count: u64,
+    sum: f64,
+    delta: f64,
+}
+
+impl MetricSlot for CountSum {
+    const NEEDS: u8 = NEED_COUNT | NEED_SUM;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.count += 1;
+        compensated_add(&mut self.sum, &mut self.delta, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        self.count += values.len() as u64;
+        for &v in values {
+            compensated_add(&mut self.sum, &mut self.delta, to_double(kind, v));
+        }
+    }
+    fn bound(&mut self, _: bool, _: f64) {}
+    fn state(&self) -> MetricState {
+        MetricState {
+            count: self.count,
+            sum: self.sum,
+            delta: self.delta,
+            ..MetricState::default()
+        }
+    }
+}
+
+/// `value_count` alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Count(u64);
+
+impl MetricSlot for Count {
+    const NEEDS: u8 = NEED_COUNT;
+    #[inline]
+    fn one(&mut self, _: f64) {
+        self.0 += 1;
+    }
+    #[inline]
+    fn many(&mut self, _: ValueKind, values: &[i64]) {
+        self.0 += values.len() as u64;
+    }
+    fn bound(&mut self, _: bool, _: f64) {}
+    fn state(&self) -> MetricState {
+        MetricState {
+            count: self.0,
+            ..MetricState::default()
+        }
+    }
+}
+
+/// `min`: the smallest of each document's smallest value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MinOf(f64);
+
+impl Default for MinOf {
+    fn default() -> Self {
+        Self(f64::INFINITY)
+    }
+}
+
+impl MetricSlot for MinOf {
+    const NEEDS: u8 = NEED_MIN;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.0 = java_min(self.0, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        if let Some(&first) = values.first() {
+            self.0 = java_min(self.0, to_double(kind, first));
+        }
+    }
+    fn bound(&mut self, is_min: bool, v: f64) {
+        if is_min {
+            self.0 = java_min(self.0, v);
+        }
+    }
+    fn state(&self) -> MetricState {
+        MetricState {
+            min_of_mins: self.0,
+            ..MetricState::default()
+        }
+    }
+}
+
+/// `max`: the largest of each document's largest value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MaxOf(f64);
+
+impl Default for MaxOf {
+    fn default() -> Self {
+        Self(f64::NEG_INFINITY)
+    }
+}
+
+impl MetricSlot for MaxOf {
+    const NEEDS: u8 = NEED_MAX;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        self.0 = java_max(self.0, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        if let Some(&last) = values.last() {
+            self.0 = java_max(self.0, to_double(kind, last));
+        }
+    }
+    fn bound(&mut self, is_min: bool, v: f64) {
+        if !is_min {
+            self.0 = java_max(self.0, v);
+        }
+    }
+    fn state(&self) -> MetricState {
+        MetricState {
+            max_of_maxes: self.0,
+            ..MetricState::default()
         }
     }
 }
@@ -284,16 +443,6 @@ fn java_max_tie(a: f64, b: f64) -> f64 {
         return b;
     }
     a
-}
-
-/// `NumericUtils.sortableLongToDouble`.
-fn sortable_long_to_double(v: i64) -> f64 {
-    f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
-}
-
-/// `NumericUtils.sortableIntToFloat`.
-fn sortable_int_to_float(v: i32) -> f32 {
-    f32::from_bits((v ^ ((v >> 31) & 0x7fff_ffff)) as u32)
 }
 
 pub(crate) fn to_double(kind: ValueKind, v: i64) -> f64 {
@@ -689,6 +838,14 @@ fn slice_states(
     global: Option<&crate::GlobalStats>,
 ) -> Result<SliceStates> {
     let mut seen = Vec::with_capacity(slice.len());
+    // A count per global ordinal: as large as the field's cardinality, so
+    // asked of the request's memory bound before it is allocated.
+    lucene_util::memory::reserve(
+        globals
+            .iter()
+            .map(|g| g.value_count().saturating_mul(8))
+            .fold(0, usize::saturating_add),
+    )?;
     let mut term_counts: Vec<Vec<u64>> = globals.iter().map(|g| vec![0; g.value_count()]).collect();
     let mut term_extra: Vec<std::collections::HashMap<Vec<u8>, u64>> =
         vec![std::collections::HashMap::new(); globals.len()];
@@ -1016,42 +1173,6 @@ pub(crate) fn segment_match_read<'b>(
             u64::try_from(count).unwrap_or(u64::MAX),
         )));
     }
-    struct Marks<'w>(&'w mut [u64]);
-    impl crate::collector::ScoringCollector for Marks<'_> {
-        #[inline]
-        fn collect(&mut self, doc_id: i32, _score: f32) {
-            let d = doc_id as u32 as usize;
-            if let Some(w) = self.0.get_mut(d >> 6) {
-                *w |= 1 << (d & 63);
-            }
-        }
-        fn score_mode(&self) -> crate::collector::ScoreMode {
-            crate::collector::ScoreMode::CompleteNoScores
-        }
-        /// No threshold: a batch is marked whole.
-        /// The batch's bits gathered in a register while its documents stay
-        /// in one word (ascending, they mostly do), each word stored once:
-        /// a store per document would wait on the previous one's.
-        fn collect_many(&mut self, docs: &[i32], _scores: &[f32], doc_base: i32) -> usize {
-            let mut at = usize::MAX;
-            let mut bits = 0u64;
-            for &d in docs {
-                let d = d.saturating_add(doc_base) as u32 as usize;
-                if d >> 6 != at {
-                    if let Some(w) = self.0.get_mut(at) {
-                        *w |= bits;
-                    }
-                    at = d >> 6;
-                    bits = 0;
-                }
-                bits |= 1 << (d & 63);
-            }
-            if let Some(w) = self.0.get_mut(at) {
-                *w |= bits;
-            }
-            docs.len()
-        }
-    }
     let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::NoScores)? else {
         return Ok(None);
     };
@@ -1088,6 +1209,79 @@ pub(crate) fn segment_match_read<'b>(
         return Ok(Some((ColumnRead::Seek(docs), count)));
     }
     Ok(Some((ColumnRead::Stream(Accept::Marked(words)), count)))
+}
+
+/// A bulk scorer's matches marked in a segment's bit set.
+struct Marks<'w>(&'w mut [u64]);
+impl crate::collector::ScoringCollector for Marks<'_> {
+    #[inline]
+    fn collect(&mut self, doc_id: i32, _score: f32) {
+        let d = doc_id as u32 as usize;
+        if let Some(w) = self.0.get_mut(d >> 6) {
+            *w |= 1 << (d & 63);
+        }
+    }
+    fn score_mode(&self) -> crate::collector::ScoreMode {
+        crate::collector::ScoreMode::CompleteNoScores
+    }
+    /// No threshold: a batch is marked whole.
+    /// The batch's bits gathered in a register while its documents stay
+    /// in one word (ascending, they mostly do), each word stored once:
+    /// a store per document would wait on the previous one's.
+    fn collect_many(&mut self, docs: &[i32], _scores: &[f32], doc_base: i32) -> usize {
+        let mut at = usize::MAX;
+        let mut bits = 0u64;
+        for &d in docs {
+            let d = d.saturating_add(doc_base) as u32 as usize;
+            if d >> 6 != at {
+                if let Some(w) = self.0.get_mut(at) {
+                    *w |= bits;
+                }
+                at = d >> 6;
+                bits = 0;
+            }
+            bits |= 1 << (d & 63);
+        }
+        if let Some(w) = self.0.get_mut(at) {
+            *w |= bits;
+        }
+        docs.len()
+    }
+}
+
+/// [`segment_matches`] as the segment's bit set (`words`, one bit per
+/// document, live ones only): `None` when the query matches nothing in the
+/// segment, `Some(false)` when it matches every live document (`words`
+/// untouched), `Some(true)` when `words` holds the matches. The same
+/// documents as [`segment_matches`], in 1 bit a document instead of 32 a
+/// match.
+pub(crate) fn segment_match_bits(
+    ctx: &exec::LeafContext<'_>,
+    query: &BooleanQuery,
+    clause: &Clause,
+    live: Option<&FixedBitSet>,
+    max_doc: i32,
+    words: &mut Vec<u64>,
+) -> Result<Option<bool>> {
+    if matches_everything(clause) {
+        return Ok(Some(false));
+    }
+    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::NoScores)? else {
+        return Ok(None);
+    };
+    let max = usize::try_from(max_doc).unwrap_or(0);
+    words.clear();
+    words.resize(max.div_ceil(64), 0);
+    if !copy_constant_bits(&bulk, live, words) {
+        exec::score_segment(
+            &mut bulk,
+            Mode::NoScores,
+            live,
+            &mut Marks(words),
+            ctx.max_doc,
+        )?;
+    }
+    Ok(Some(true))
 }
 
 /// The marks of a bulk scorer over a constant-scored bit set (a points range
@@ -1164,38 +1358,83 @@ pub(crate) fn segment_matches_scoring<'b>(
     Ok(Some(Some(&buf[..])))
 }
 
-/// [`segment_matches_scoring`] keeping each match's score too: the matches
-/// in `docs`, by document, their scores in `scores`.
-pub(crate) fn segment_matches_scored(
-    ctx: &exec::LeafContext<'_>,
-    query: &BooleanQuery,
-    live: Option<&FixedBitSet>,
+/// [`segment_matches_scoring`] keeping each match's score too, a range of
+/// documents at a time (`BulkScorer.score(collector, acceptDocs, min, max)`
+/// over consecutive windows): what a pass reading scores holds is one
+/// range's matches, not the segment's.
+pub(crate) struct ScoredRanges<'a> {
+    bulk: Option<exec::Bulk<'a>>,
+    live: Option<&'a FixedBitSet>,
     min: f32,
-    docs: &mut Vec<i32>,
-    scores: &mut Vec<f32>,
-) -> Result<()> {
-    struct Hits<'v>(&'v mut Vec<(i32, f32)>);
-    impl crate::collector::ScoringCollector for Hits<'_> {
-        fn collect(&mut self, doc_id: i32, score: f32) {
-            self.0.push((doc_id, score));
+    /// The first document the next range scores.
+    next: i32,
+}
+
+impl<'a> ScoredRanges<'a> {
+    /// `query` over the segment of `ctx` from document `from` on, scored in
+    /// `COMPLETE` mode behind `min_score` `min`.
+    ///
+    /// # Errors
+    /// What building the scorer reports.
+    pub(crate) fn open(
+        ctx: &exec::LeafContext<'a>,
+        query: &BooleanQuery,
+        live: Option<&'a FixedBitSet>,
+        min: f32,
+        from: i32,
+    ) -> Result<Self> {
+        Ok(ScoredRanges {
+            bulk: exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)?,
+            live,
+            min,
+            next: from,
+        })
+    }
+
+    /// The matches of the next range of `width` documents below `end`, by
+    /// document, in `docs` and their scores in `scores`; `false` once
+    /// nothing is left to score below `end`. A range may hold no match.
+    ///
+    /// # Errors
+    /// What scoring reports.
+    pub(crate) fn next(
+        &mut self,
+        width: i32,
+        end: i32,
+        docs: &mut Vec<i32>,
+        scores: &mut Vec<f32>,
+    ) -> Result<bool> {
+        struct Hits<'v>(&'v mut Vec<i32>, &'v mut Vec<f32>);
+        impl crate::collector::ScoringCollector for Hits<'_> {
+            fn collect(&mut self, doc_id: i32, score: f32) {
+                self.0.push(doc_id);
+                self.1.push(score);
+            }
         }
+        docs.clear();
+        scores.clear();
+        let Some(bulk) = self.bulk.as_mut() else {
+            return Ok(false);
+        };
+        if self.next >= end {
+            return Ok(false);
+        }
+        let max = self.next.saturating_add(width).min(end);
+        let mut sink = Hits(docs, scores);
+        let mut passing = crate::collector::MinScoreCollector::new(&mut sink, self.min);
+        self.next = bulk.score(Mode::Complete, self.live, &mut passing, self.next, max)?;
+        if !docs.windows(2).all(|w| w[0] < w[1]) {
+            let mut hits: Vec<(i32, f32)> =
+                docs.iter().copied().zip(scores.iter().copied()).collect();
+            hits.sort_by_key(|h| h.0);
+            hits.dedup_by_key(|h| h.0);
+            docs.clear();
+            scores.clear();
+            docs.extend(hits.iter().map(|h| h.0));
+            scores.extend(hits.iter().map(|h| h.1));
+        }
+        Ok(true)
     }
-    docs.clear();
-    scores.clear();
-    let Some(mut bulk) = exec::bulk_boolean(ctx, query, 1.0, Mode::Complete)? else {
-        return Ok(());
-    };
-    let mut hits = Vec::new();
-    let mut sink = Hits(&mut hits);
-    let mut passing = crate::collector::MinScoreCollector::new(&mut sink, min);
-    exec::score_segment(&mut bulk, Mode::Complete, live, &mut passing, ctx.max_doc)?;
-    if !hits.windows(2).all(|w| w[0].0 < w[1].0) {
-        hits.sort_by_key(|h| h.0);
-        hits.dedup_by_key(|h| h.0);
-    }
-    docs.extend(hits.iter().map(|h| h.0));
-    scores.extend(hits.iter().map(|h| h.1));
-    Ok(())
 }
 
 /// How a segment's matches meet a column.

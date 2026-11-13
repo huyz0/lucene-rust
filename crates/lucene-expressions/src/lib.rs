@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `lucene-expressions`: compiling JavaScript-like expressions over named
 //! variables and using them as [`DoubleValuesSource`]s -- to sort by, to
 //! rescore with, to score a [`lucene_search::function::FunctionScoreQuery`] with.

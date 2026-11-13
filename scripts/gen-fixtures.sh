@@ -223,7 +223,7 @@ ICU_CP=$(lucene_classpath lucene-analysis-icu):$(thirdparty_classpath "${ICU_DEP
 OPENNLP_CP=$(lucene_classpath lucene-analysis-opennlp):$(thirdparty_classpath "${OPENNLP_DEPS[@]}")
 # The lucene-expressions and the ANTLR/ASM jars it runs on (EXPRESSIONS_DEPS).
 EXPRESSIONS_CP=$(lucene_classpath lucene-expressions):$(thirdparty_classpath "${EXPRESSIONS_DEPS[@]}")
-M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP:$EXPRESSIONS_CP"
+LANGUAGE_MODULES_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP:$EXPRESSIONS_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -241,7 +241,7 @@ trap 'rm -rf "$CLASSES" ${TMP_A:-} ${TMP_B:-}' EXIT
 # VerifyCompressingCodecs) compile and run in verify-write-path.sh, whose
 # classpath has that jar; no generator needs them.
 mapfile -t SOURCES < <(grep -L '^import org\.apache\.lucene\.tests\.' "$FIXTURES"/src/*.java)
-javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]}"
+javac -nowarn -cp "$CP:$LANGUAGE_MODULES_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]}"
 
 # JVM flags one generator needs on top of LUCENE_FIXTURE_JVM_OPTS. The geo3d
 # generators run with HotSpot's Math.sin/cos/tan intrinsics disabled: on x86-64
@@ -379,6 +379,9 @@ while IFS= read -r rel; do
     deterministic=$((deterministic+1))
     if ! cmp -s "$a" "$c"; then
       echo "  MISMATCH (deterministic file differs from committed): $rel"
+      if grep -qI . "$c"; then  # a text file: show what changed
+        diff -u "$c" "$a" | head -40 | sed 's/^/    /' || true
+      fi
       mismatched=$((mismatched+1)); status=1
     fi
   else

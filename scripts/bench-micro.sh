@@ -100,13 +100,13 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
   # The language modules' filters over generated corpora; each module's
-  # third-party jars join through M12_THIRDPARTY.
-  analysis_m12)
-    MAIN=AnalysisM12Micro
-    SRC=benchmarks/micro/java/AnalysisM12Micro.java
+  # third-party jars join through LANGUAGE_MODULES_THIRDPARTY.
+  analysis_language_modules)
+    MAIN=AnalysisLanguageModulesMicro
+    SRC=benchmarks/micro/java/AnalysisLanguageModulesMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-phonetic lucene-analysis-stempel lucene-analysis-morfologik lucene-analysis-kuromoji lucene-analysis-nori lucene-analysis-smartcn"
-    M12_THIRDPARTY=1 ;;
+    LANGUAGE_MODULES_THIRDPARTY=1 ;;
   # Analysis-icu over ICU4J (its jar joins through ICU_THIRDPARTY).
   analysis_icu)
     MAIN=AnalysisIcuMicro
@@ -325,15 +325,15 @@ case "$BENCH" in
     MAIN=ConcurrentIndexMicro
     SRC=benchmarks/micro/java/ConcurrentIndexMicro.java
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
-  # The pairs (M7Micro.java): the queries parse with the fixture generators'
+  # The pairs (ExtendedQueriesMicro.java): the queries parse with the fixture generators'
   # own grammars, so those sources compile alongside; spans need lucene-queries.
-  m7_fixture|query_builder|stored_fields_write|m7_corpus|similarity|sort_pruning)
-    MAIN=M7Micro
-    SRC=benchmarks/micro/java/M7Micro.java
-    EXTRA_SRC="fixtures/src/GenM7Queries.java fixtures/src/GenSimilaritySearch.java fixtures/src/GenStoredFieldsDeflate.java benchmarks/java-runner/src/BenchRunner.java"
+  extended_fixture|query_builder|stored_fields_write|extended_corpus|similarity|sort_pruning)
+    MAIN=ExtendedQueriesMicro
+    SRC=benchmarks/micro/java/ExtendedQueriesMicro.java
+    EXTRA_SRC="fixtures/src/GenExtendedQueries.java fixtures/src/GenSimilaritySearch.java fixtures/src/GenStoredFieldsDeflate.java benchmarks/java-runner/src/BenchRunner.java"
     JAR_MODULES="lucene-core lucene-queries"
     JAVA_ARGS=("$BENCH")
-    case "$BENCH" in m7_corpus|similarity|sort_pruning) NEEDS_INDEX=1 ;; esac ;;
+    case "$BENCH" in extended_corpus|similarity|sort_pruning) NEEDS_INDEX=1 ;; esac ;;
   # The geo pair (GeoMicro.java / micro_geo.rs): the Tessellator, Component2D
   # build/relate/contains/intersectsTriangle and haversin, over the inputs of
   # the fixtures under fixtures/data/geo/ (read from the repository root).
@@ -534,7 +534,7 @@ if [ -n "${ICU_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${ICU_DEPS
 if [ -n "${OPENNLP_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${OPENNLP_DEPS[@]}")"; fi
 # lucene-expressions' ANTLR runtime and ASM.
 if [ -n "${EXPRESSIONS_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${EXPRESSIONS_DEPS[@]}")"; fi
-if [ -n "${M12_THIRDPARTY:-}" ]; then
+if [ -n "${LANGUAGE_MODULES_THIRDPARTY:-}" ]; then
   CP="$CP:$(thirdparty_classpath "${PHONETIC_DEPS[@]}" "${MORFOLOGIK_DEPS[@]}")"
 fi
 

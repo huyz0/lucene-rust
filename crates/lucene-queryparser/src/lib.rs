@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `lucene-queryparser`: query strings into queries.
 //!
 //! [`ParsedQuery`] is the query tree a parser yields, Lucene's query classes

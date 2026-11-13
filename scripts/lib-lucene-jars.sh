@@ -16,7 +16,7 @@ MAVEN_BASE="https://repo1.maven.org/maven2/org/apache/lucene"
 # multiply-add only where Constants.HAS_FAST_SCALAR_FMA guesses it is fast --
 # on for Intel and arm64 Linux, off for an AMD CPU below AVX-512 -- so the
 # same generator writes different vector score bits on different machines.
-# That is how m7_*_index/searches.tsv failed `gen-fixtures.sh --check` on a CI
+# That is how extended_*_index/searches.tsv failed `gen-fixtures.sh --check` on a CI
 # runner while regenerating byte for byte locally. The committed fixtures are
 # the FMA kernel's (crates/lucene-codecs/tests/vectors_fixtures.rs says so), so
 # pin it on. It takes effect wherever the CPU has FMA at all (HotSpot UseFMA),

@@ -55,7 +55,7 @@ def open_files(container):
 def breaker_bytes(base):
     try:
         n = next(iter(req(base, "GET", "/_nodes/stats/breaker")["nodes"].values()))
-        return n["breakers"].get("lucene_rust_writer", {}).get("estimated_size_in_bytes", 0)
+        return n["breakers"].get("indexing_buffers", {}).get("estimated_size_in_bytes", 0)
     except Exception:
         return 0
 
