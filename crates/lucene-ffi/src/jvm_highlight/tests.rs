@@ -1,6 +1,6 @@
 use super::*;
-use crate::jvm_analysis::tests::spec;
 use crate::jvm_reader::tests::open_fixture;
+use lucene_engine::analysis::test_support::spec;
 
 /// `fixtures/corpus/matchhighlight-docs.tsv`'s first document, the value of
 /// its `offs`, `tv` and `both` fields in `fixtures/data/uhighlight/index`.
@@ -17,14 +17,14 @@ fn standard() -> Vec<u8> {
 }
 
 fn term_query(field: &str, term: &str) -> Vec<u8> {
-    let mut q = vec![jvm_reader::QUERY_TERM];
+    let mut q = vec![lucene_engine::query_blob::QUERY_TERM];
     put_bytes(&mut q, field.as_bytes());
     put_bytes(&mut q, term.as_bytes());
     q
 }
 
 fn tree(node: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
-    let mut q = vec![jvm_reader::QUERY_TREE];
+    let mut q = vec![lucene_engine::query_blob::QUERY_TREE];
     node(&mut q);
     q
 }
@@ -104,14 +104,14 @@ fn parse(out: &[u8]) -> (u8, Vec<(String, bool)>) {
         return (out[0], Vec::new());
     }
     let mut c = Cursor::new(&out[1..]);
-    let n = c.len().unwrap();
+    let n = c.length().unwrap();
     let mut snippets = Vec::new();
     for _ in 0..n {
         let score = f32::from_bits(c.i32().unwrap() as u32);
         let highlighted = c.u8().unwrap() != 0;
         // a no-match summary's passage is scored NaN, as Lucene's
         assert_eq!(score.is_nan(), !highlighted);
-        let len = c.len().unwrap();
+        let len = c.length().unwrap();
         let mut units = Vec::with_capacity(len);
         for _ in 0..len {
             let lo = c.u8().unwrap();
@@ -274,7 +274,7 @@ fn re_analysis_without_its_analyzer_needs_the_jvm() {
 fn phrases_with_their_own_positions_and_multi_phrases_decode() {
     let h = open_fixture("uhighlight/index");
     let phrase = tree(|q| {
-        q.push(crate::jvm_queries::NODE_PHRASE_POSITIONS);
+        q.push(lucene_engine::queries::NODE_PHRASE_POSITIONS);
         put_bytes(q, b"offs");
         put_i32(q, 0);
         put_i32(q, 2);
@@ -286,7 +286,7 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
     let (_, snippets) = run(h, &Req::new("offs", phrase, 1), 0, D0);
     assert!(snippets[0].0.contains("<em>lazy</em> <em>dog</em>"));
     let multi = tree(|q| {
-        q.push(crate::jvm_queries::NODE_MULTI_PHRASE);
+        q.push(lucene_engine::queries::NODE_MULTI_PHRASE);
         put_bytes(q, b"offs");
         put_i32(q, 0);
         put_i32(q, 2);
@@ -302,7 +302,7 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
     assert!(snippets[0].0.contains("<em>lazy</em> <em>dog</em>"));
     assert!(!snippets[0].0.contains("<em>brown</em>"));
     let prefix = tree(|q| {
-        q.push(crate::jvm_queries::NODE_MULTI_PHRASE_PREFIX);
+        q.push(lucene_engine::queries::NODE_MULTI_PHRASE_PREFIX);
         put_bytes(q, b"offs");
         put_i32(q, 0);
         put_i32(q, 50);
@@ -318,7 +318,7 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
     assert!(snippets[0].0.contains("<em>lazy</em> <em>dog</em>"));
     // a phrase prefix of no positions
     let empty = tree(|q| {
-        q.push(crate::jvm_queries::NODE_MULTI_PHRASE_PREFIX);
+        q.push(lucene_engine::queries::NODE_MULTI_PHRASE_PREFIX);
         put_bytes(q, b"offs");
         put_i32(q, 0);
         put_i32(q, 50);
@@ -328,21 +328,21 @@ fn phrases_with_their_own_positions_and_multi_phrases_decode() {
     for bad in [
         // no positions
         tree(|q| {
-            q.push(crate::jvm_queries::NODE_MULTI_PHRASE);
+            q.push(lucene_engine::queries::NODE_MULTI_PHRASE);
             put_bytes(q, b"offs");
             put_i32(q, 0);
             put_i32(q, 0);
         }),
         // a negative slop
         tree(|q| {
-            q.push(crate::jvm_queries::NODE_MULTI_PHRASE);
+            q.push(lucene_engine::queries::NODE_MULTI_PHRASE);
             put_bytes(q, b"offs");
             put_i32(q, -1);
             put_i32(q, 0);
         }),
         // positions out of order
         tree(|q| {
-            q.push(crate::jvm_queries::NODE_MULTI_PHRASE);
+            q.push(lucene_engine::queries::NODE_MULTI_PHRASE);
             put_bytes(q, b"offs");
             put_i32(q, 0);
             put_i32(q, 2);
@@ -435,8 +435,8 @@ fn the_per_thread_cache_keeps_the_latest_requests() {
 fn a_visit_only_node_highlights_its_phrase_as_terms() {
     let h = open_fixture("uhighlight/index");
     let wrapped = tree(|q| {
-        q.push(crate::jvm_queries::NODE_VISIT_ONLY);
-        q.push(crate::jvm_queries::NODE_PHRASE_POSITIONS);
+        q.push(lucene_engine::queries::NODE_VISIT_ONLY);
+        q.push(lucene_engine::queries::NODE_PHRASE_POSITIONS);
         put_bytes(q, b"offs");
         put_i32(q, 0);
         put_i32(q, 2);
@@ -458,7 +458,7 @@ fn a_visit_only_node_highlights_its_phrase_as_terms() {
 /// `MUST` sub-visitor.
 fn visited(guard: Option<&[u8]>, kind_override: Option<u8>) -> Vec<u8> {
     tree(|q| {
-        q.push(crate::jvm_queries::NODE_VISITED);
+        q.push(lucene_engine::queries::NODE_VISITED);
         put_i32(q, 1);
         q.push(2); // sub
         q.push(0); // MUST
@@ -477,7 +477,7 @@ fn visited(guard: Option<&[u8]>, kind_override: Option<u8>) -> Vec<u8> {
         put_bytes(q, b"offs");
         put_bytes(q, b"dog");
         q.push(3); // a node handed over whole
-        q.push(crate::jvm_queries::NODE_PHRASE_POSITIONS);
+        q.push(lucene_engine::queries::NODE_PHRASE_POSITIONS);
         put_bytes(q, b"offs");
         put_i32(q, 0);
         put_i32(q, 1);

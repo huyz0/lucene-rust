@@ -48,7 +48,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Describes a Lucene {@link Analyzer} as the spec {@code jvm_analysis.rs} builds its own copy from:
+ * Describes a Lucene {@link Analyzer} as the spec {@code analysis.rs} builds its own copy from:
  * the char filters, tokenizer and token filters of the chain the analyzer really builds for a
  * field, each by its Lucene SPI name and the factory arguments that rebuild it, recovered from the
  * objects themselves. This covers Lucene's own analyzers ({@code standard}, the language
@@ -61,7 +61,7 @@ import java.util.regex.Pattern;
  * match, or the analyzer stays in Java ({@code analysis_mismatch}).
  */
 public final class AnalyzerSpec {
-    /** The layout version {@code jvm_analysis.rs} expects. */
+    /** The layout version {@code analysis.rs} expects. */
     static final int VERSION = 1;
 
     /** A description, or why there is none. */
@@ -276,7 +276,7 @@ public final class AnalyzerSpec {
         return decode(out[0]);
     }
 
-    /** {@code jvm_analysis::analyze}'s layout. */
+    /** {@code analysis::analyze}'s layout. */
     static Tokens decode(byte[] blob) {
         ByteBuffer b = ByteBuffer.wrap(blob == null ? new byte[8] : blob).order(ByteOrder.LITTLE_ENDIAN);
         int n = blob == null ? 0 : b.getInt();

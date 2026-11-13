@@ -1,5 +1,5 @@
 //! OpenSearch's parent-join queries (`has_child`, `has_parent`): the
-//! [`crate::jvm_queries::NODE_JOIN`] nodes of a decoded request made into
+//! [`lucene_engine::queries::NODE_JOIN`] nodes of a decoded request made into
 //! the global-ordinals joins they rewrite to, against the reader the request
 //! searches.
 //!
@@ -20,10 +20,10 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
 
-use crate::clauses::map_search_error;
 use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_reader::JvmQuery;
 use crate::registry::JvmReaderHandle;
+use lucene_engine::clauses::map_search_error;
+use lucene_engine::query_blob::JvmQuery;
 
 /// `query` with its joins resolved against `h`'s reader; the query itself
 /// when it has none.
@@ -57,7 +57,7 @@ pub(crate) fn resolve_boolean(
     let from_sides = from_sides(b);
     if from_sides
         .iter()
-        .any(crate::jvm_reader::boolean_uses_points)
+        .any(lucene_engine::query_blob::boolean_uses_points)
     {
         opened.open_points().map_err(|e| {
             set_last_error(format!("opening segment points: {e}"));
@@ -76,7 +76,7 @@ pub(crate) fn resolve_boolean(
         .collect();
     let mut fields: Vec<String> = Vec::new();
     for side in &from_sides {
-        for f in crate::clauses::clause_field_names(side) {
+        for f in lucene_engine::clauses::clause_field_names(side) {
             if !fields.iter().any(|g| g == f) {
                 fields.push(f.to_string());
             }
