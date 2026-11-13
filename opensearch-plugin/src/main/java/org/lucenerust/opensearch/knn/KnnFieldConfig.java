@@ -40,7 +40,12 @@ import java.util.Map;
  * reranked on the raw vectors ({@code HnswQuantizedVectorsFormat}); {@code
  * parameters.quantizer} ({@link #HNSW_QUANTIZERS}: {@code erq2} by default) picks the codes. Lucene's
  * own scalar quantization stays the {@code lucene} engine's ({@code encoder}, {@code
- * compression_level}). Both methods are for float fields only, in an index on the Rust engine
+ * compression_level}). Its {@code method: disk_hnsw} is the same graph with a page-aligned copy of every
+ * node (its neighbours and vector in one record, {@code DiskHnswVectorsFormat}), searched by
+ * ranking candidates on {@code parameters.quantizer} ({@link #DISK_HNSW_QUANTIZERS}: {@code bbq} by
+ * default) codes and reading one record per expanded node: for an index larger than memory, where it
+ * reads far fewer pages than {@code hnsw}, at the cost of a second copy of the vectors on disk. All three
+ * methods are for float fields only, in an index on the Rust engine
  * ({@code index.engine.accelerated}), which builds the index. A stock node does not know the engine,
  * so it refuses the mapping rather than reading the field another way.
  *
@@ -51,6 +56,7 @@ import java.util.Map;
  * @param clusterSize an IVF field's target cluster size, {@code 0} for an HNSW one
  * @param rerankEncoding an IVF field's rerank encoding wire number ({@link #RERANK_ENCODINGS})
  * @param quantizer a {@code extended} field's quantizer wire number ({@link #IVF_QUANTIZERS})
+ * @param disk a {@code disk_hnsw} field of the {@code extended} engine
  */
 public record KnnFieldConfig(
     int dimension,
@@ -66,12 +72,14 @@ public record KnnFieldConfig(
     String compression,
     int clusterSize,
     int rerankEncoding,
-    int quantizer
+    int quantizer,
+    boolean disk
 ) {
     public static final String FAISS = "faiss";
     public static final String LUCENE = "lucene";
     public static final String EXTENDED = "extended";
     public static final String IVF = "ivf";
+    public static final String DISK_HNSW = "disk_hnsw";
     public static final int DEFAULT_CLUSTER_SIZE = 384;
     /** {@code IvfVectorsFormat}'s rerank encodings, by wire number. */
     public static final List<String> RERANK_ENCODINGS = List.of("float", "half_float", "bfloat16", "int8");
@@ -94,6 +102,9 @@ public record KnnFieldConfig(
     /** The quantizers of the {@code extended} engine's {@code hnsw}: 1-bit RaBitQ and Extended RaBitQ at 2 to 8 bits. */
     public static final List<String> HNSW_QUANTIZERS = List.of("rabitq", "erq2", "erq3", "erq4", "erq5", "erq6", "erq7", "erq8");
     static final String DEFAULT_HNSW_QUANTIZER = "erq2";
+    /** The codes a {@code disk_hnsw} ranks candidates on: every IVF quantizer but {@code auto}. */
+    public static final List<String> DISK_HNSW_QUANTIZERS = IVF_QUANTIZERS.subList(0, IVF_QUANTIZERS.size() - 1);
+    static final String DEFAULT_DISK_HNSW_QUANTIZER = "bbq";
     static final int MIN_CLUSTER_SIZE = 16;
     static final int MAX_CLUSTER_SIZE = 65_536;
     public static final int MAX_DIMENSION = 16_000;
@@ -118,7 +129,7 @@ public record KnnFieldConfig(
         return EXTENDED.equals(engine) && clusterSize > 0;
     }
 
-    /** A field of the Rust engine's own: {@code extended} engine, {@code ivf} or {@code hnsw}. */
+    /** A field of the Rust engine's own: {@code extended} engine, {@code ivf}, {@code hnsw} or {@code disk_hnsw}. */
     public boolean rustEngine() {
         return EXTENDED.equals(engine);
     }
@@ -127,6 +138,9 @@ public record KnnFieldConfig(
     public VectorsFormatSpec format() {
         if (ivf()) {
             return VectorsFormatSpec.ivf(clusterSize, rerankEncoding, quantizer);
+        }
+        if (disk) {
+            return VectorsFormatSpec.hnswDisk(quantizer, m, efConstruction);
         }
         if (rustEngine()) {
             return VectorsFormatSpec.hnswRq(quantizer, m, efConstruction);
@@ -292,7 +306,7 @@ public record KnnFieldConfig(
             if ("16x".equals(level)) {
                 throw new MapperParsingException("Compression level [16x] for [data_type] [half_float] is not supported by this node");
             }
-            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level, 0, 0, 0);
+            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level, 0, 0, 0, false);
         }
 
         if (level != null) {
@@ -313,7 +327,7 @@ public record KnnFieldConfig(
         if (encoding >= 0 && encodingType == VectorEncoding.BYTE) {
             throw new MapperParsingException("Quantization is only supported for [data_type] [float]");
         }
-        return new KnnFieldConfig(dimension, encodingType, binary, false, spaceType, engine, m, efConstruction, encoding, resolvedMode, level, 0, 0, 0);
+        return new KnnFieldConfig(dimension, encodingType, binary, false, spaceType, engine, m, efConstruction, encoding, resolvedMode, level, 0, 0, 0, false);
     }
 
     /** A {@code extended} engine mapping: {@code method: ivf} or {@code hnsw} over float vectors. */
@@ -327,9 +341,9 @@ public record KnnFieldConfig(
         String mode,
         String level
     ) {
-        if (methodName.equals(IVF) == false && methodName.equals("hnsw") == false) {
+        if (methodName.equals(IVF) == false && methodName.equals("hnsw") == false && methodName.equals(DISK_HNSW) == false) {
             throw new MapperParsingException(
-                String.format(Locale.ROOT, "Invalid method name for the [extended] engine: %s; supported: [ivf, hnsw]", methodName)
+                String.format(Locale.ROOT, "Invalid method name for the [extended] engine: %s; supported: [ivf, hnsw, disk_hnsw]", methodName)
             );
         }
         if (dataType.equalsIgnoreCase("float") == false) {
@@ -346,11 +360,13 @@ public record KnnFieldConfig(
             throw new MapperParsingException(
                 methodName.equals(IVF)
                     ? "[mode] and [compression_level] are not supported by the [extended] engine's [ivf]; set [parameters.rerank_encoding]"
-                    : "[mode] and [compression_level] are not supported by the [extended] engine's [hnsw]; set [parameters.quantizer]"
+                    : "[mode] and [compression_level] are not supported by the [extended] engine's ["
+                        + methodName
+                        + "]; set [parameters.quantizer]"
             );
         }
-        if (methodName.equals("hnsw")) {
-            return rustHnsw(dimension, encodingType, spaceType, params);
+        if (methodName.equals("hnsw") || methodName.equals(DISK_HNSW)) {
+            return rustHnsw(dimension, encodingType, spaceType, params, methodName.equals(DISK_HNSW));
         }
         int clusterSize = DEFAULT_CLUSTER_SIZE;
         int rerank = 1;
@@ -384,14 +400,22 @@ public record KnnFieldConfig(
                 default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for ivf: %s", p.getKey()));
             }
         }
-        return new KnnFieldConfig(dimension, encodingType, false, false, spaceType, EXTENDED, 0, 0, -1, null, null, clusterSize, rerank, quantizer);
+        return new KnnFieldConfig(dimension, encodingType, false, false, spaceType, EXTENDED, 0, 0, -1, null, null, clusterSize, rerank, quantizer, false);
     }
 
     /** A {@code extended} engine {@code hnsw} mapping: the graph walked on {@link #HNSW_QUANTIZERS} codes. */
-    private static KnnFieldConfig rustHnsw(int dimension, VectorEncoding encodingType, SpaceType spaceType, Map<String, Object> params) {
+    private static KnnFieldConfig rustHnsw(
+        int dimension,
+        VectorEncoding encodingType,
+        SpaceType spaceType,
+        Map<String, Object> params,
+        boolean disk
+    ) {
         int m = DEFAULT_M;
         int efConstruction = DEFAULT_EF_CONSTRUCTION;
-        String quantizer = DEFAULT_HNSW_QUANTIZER;
+        String quantizer = disk ? DEFAULT_DISK_HNSW_QUANTIZER : DEFAULT_HNSW_QUANTIZER;
+        String method = disk ? DISK_HNSW : "hnsw";
+        List<String> allowed = disk ? DISK_HNSW_QUANTIZERS : HNSW_QUANTIZERS;
         for (Map.Entry<String, Object> p : params.entrySet()) {
             switch (p.getKey()) {
                 case "m" -> m = positiveInt(p.getValue(), "m", MAX_M);
@@ -399,27 +423,28 @@ public record KnnFieldConfig(
                 case "ef_search" -> throw new MapperParsingException("Invalid parameter: ef_search for the extended engine; set it in the query");
                 case "quantizer" -> {
                     quantizer = String.valueOf(p.getValue()).toLowerCase(Locale.ROOT);
-                    if (HNSW_QUANTIZERS.contains(quantizer) == false) {
+                    if (allowed.contains(quantizer) == false) {
                         throw new MapperParsingException(
                             "auto".equals(quantizer)
                                 ? String.format(
                                     Locale.ROOT,
-                                    "[quantizer] [auto] is for the [extended] engine's [ivf] only; its [hnsw] supports %s",
-                                    HNSW_QUANTIZERS
+                                    "[quantizer] [auto] is for the [extended] engine's [ivf] only; its [%s] supports %s",
+                                    method,
+                                    allowed
                                 )
-                                : IVF_QUANTIZERS.contains(quantizer)
+                                : disk == false && IVF_QUANTIZERS.contains(quantizer)
                                 ? String.format(
                                     Locale.ROOT,
                                     "[quantizer] [%s] is Lucene's scalar quantization: use the [lucene] engine's [encoder] or [compression_level]; "
                                         + "the [extended] engine's [hnsw] supports %s",
                                     quantizer,
-                                    HNSW_QUANTIZERS
+                                    allowed
                                 )
-                                : String.format(Locale.ROOT, "Invalid [quantizer]: %s; supported: %s", p.getValue(), HNSW_QUANTIZERS)
+                                : String.format(Locale.ROOT, "Invalid [quantizer]: %s; supported: %s", p.getValue(), allowed)
                         );
                     }
                 }
-                default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for hnsw: %s", p.getKey()));
+                default -> throw new MapperParsingException(String.format(Locale.ROOT, "Invalid parameter for %s: %s", method, p.getKey()));
             }
         }
         return new KnnFieldConfig(
@@ -436,7 +461,8 @@ public record KnnFieldConfig(
             null,
             0,
             0,
-            IVF_QUANTIZERS.indexOf(quantizer)
+            IVF_QUANTIZERS.indexOf(quantizer),
+            disk
         );
     }
 

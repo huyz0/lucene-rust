@@ -109,8 +109,9 @@ impl Default for PagedFsConfig {
 
 /// The files of the vector formats: HNSW (`.vec` vectors, `.vex` graph,
 /// `.veq` quantized vectors) and IVF (`.ivp` cluster codes, `.ivv` rerank
-/// vectors), what [`PagedFsConfig::vectors_only`] reads through the pager.
-pub const VECTOR_EXTENSIONS: &[&str] = &["vec", "vex", "veq", "ivp", "ivv"];
+/// vectors) and disk HNSW (`.dhn` node records), what
+/// [`PagedFsConfig::vectors_only`] reads through the pager.
+pub const VECTOR_EXTENSIONS: &[&str] = &["vec", "vex", "veq", "ivp", "ivv", "dhn"];
 
 impl PagedFsConfig {
     /// The default settings with only the vector formats' files read
@@ -126,8 +127,9 @@ impl PagedFsConfig {
 }
 
 /// Extensions of files read at random a few hundred bytes at a time:
-/// full-precision vectors read for scoring or reranking.
-const RANDOM_ACCESS_EXTENSIONS: &[&str] = &["vec", "ivv"];
+/// full-precision vectors read for scoring or reranking, and disk HNSW's
+/// node records, one page each.
+const RANDOM_ACCESS_EXTENSIONS: &[&str] = &["vec", "ivv", "dhn"];
 /// Extensions of the structures every vector search walks: the HNSW graph,
 /// quantized vectors, IVF cluster codes.
 const SEARCH_STRUCTURE_EXTENSIONS: &[&str] = &["vex", "veq", "ivp"];
