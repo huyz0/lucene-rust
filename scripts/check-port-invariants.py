@@ -1065,6 +1065,49 @@ def rule_bench_not_asserting(_files, problems, stats):
             )
 
 
+# The `unsafe`-scoping invariant (AGENTS.md): only these crates may contain
+# `unsafe`; every other crate's lib.rs declares `#![forbid(unsafe_code)]`, so a
+# stray block is a compile error. `UNSAFE_BURNDOWN` lists crates that still
+# hold `unsafe` and so cannot forbid it yet; a crate leaves the list when its
+# `unsafe` is gone, and the rule fails when a listed crate no longer needs it.
+
+UNSAFE_CRATES = {"lucene-util", "lucene-store", "lucene-ffi"}
+UNSAFE_BURNDOWN = {"lucene-expressions"}
+FORBID_UNSAFE = re.compile(r"^\s*#!\[forbid\(unsafe_code\)\]", re.M)
+UNSAFE_USE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")
+
+
+def rule_unsafe_scoped(files, problems, stats):
+    by_crate = {}
+    for rel, lines in files:
+        by_crate.setdefault(rel.split("/")[1], []).append((rel, lines))
+    for crate in sorted(os.listdir(CRATES)):
+        lib = os.path.join(CRATES, crate, "src", "lib.rs")
+        if crate in UNSAFE_CRATES or not os.path.isfile(lib):
+            continue
+        stats["unsafe_crates_checked"] += 1
+        with open(lib, encoding="utf-8") as fh:
+            forbids = bool(FORBID_UNSAFE.search(fh.read()))
+        uses = any(
+            UNSAFE_USE.search(strip_comment(line))
+            for _rel, lines in by_crate.get(crate, [])
+            for line in blank_cfg_test(lines)
+        )
+        rel_lib = f"crates/{crate}/src/lib.rs"
+        if crate in UNSAFE_BURNDOWN:
+            if not uses:
+                problems.append(
+                    f"{rel_lib}: {crate} has no `unsafe` left; drop it from UNSAFE_BURNDOWN "
+                    "and add #![forbid(unsafe_code)]. (docs/mechanical-gates.md#unsafe-scoped)"
+                )
+        elif not forbids:
+            problems.append(
+                f"{rel_lib}: missing #![forbid(unsafe_code)]; only lucene-util, "
+                "lucene-store and lucene-ffi may contain `unsafe`. "
+                "(docs/mechanical-gates.md#unsafe-scoped)"
+            )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -1081,6 +1124,7 @@ RULES = (
     ("literal-space-run", rule_literal_space_run),
     ("test-framework-dev-only", rule_test_framework_dev_only),
     ("bench-not-asserting", rule_bench_not_asserting),
+    ("unsafe-scoped", rule_unsafe_scoped),
 )
 
 
@@ -1110,6 +1154,7 @@ def main(argv):
         "space_run_sites": 0,
         "test_framework_edges": 0,
         "bench_feature_lists": 0,
+        "unsafe_crates_checked": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1134,6 +1179,7 @@ def main(argv):
         print(f"literal space runs (all waived)     : {stats['space_run_sites']}")
         print(f"lucene-test-framework edges         : {stats['test_framework_edges']}")
         print(f"bench-runner feature lists          : {stats['bench_feature_lists']}")
+        print(f"crates checked for forbid(unsafe)   : {stats['unsafe_crates_checked']}")
 
     if problems:
         for p in problems:
