@@ -201,7 +201,7 @@ public final class KnnVectorFieldMapper extends ParametrizedFieldMapper {
                     "["
                         + CONTENT_TYPE
                         + "] the [extended] engine's ["
-                        + (config.ivf() ? "ivf" : "hnsw")
+                        + (config.ivf() ? "ivf" : config.disk() ? "disk_hnsw" : "hnsw")
                         + "] needs an index on the accelerated engine ([index.engine.accelerated: true])"
                 );
             }
