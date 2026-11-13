@@ -8,16 +8,16 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use lucene_index::document::{Document, IndexableField, Store, StringField};
+use lucene_spatial4j::spatial4j::{Shape, SpatialContext, SpatialContextFactory};
+use lucene_spatial4j::spatial_extras::prefix_tree::{
+    Calendar, DateRangePrefixTree, GeohashPrefixTree, PackedQuadPrefixTree, QuadPrefixTree,
+    S2PrefixTree,
+};
 use lucene_spatial_extras::bbox::BBoxStrategy;
 use lucene_spatial_extras::{
     CompositeSpatialStrategy, NumberRangePrefixTreeStrategy, PointVectorStrategy,
     RecursivePrefixTreeStrategy, SerializedDVStrategy, SpatialStrategy,
     TermQueryPrefixTreeStrategy,
-};
-use lucene_util::spatial4j::{Shape, SpatialContext, SpatialContextFactory};
-use lucene_util::spatial_extras::prefix_tree::{
-    Calendar, DateRangePrefixTree, GeohashPrefixTree, PackedQuadPrefixTree, QuadPrefixTree,
-    S2PrefixTree,
 };
 
 fn ctx(kv: &[(&str, &str)]) -> Arc<SpatialContext> {
@@ -53,7 +53,7 @@ pub fn corpus() -> Corpus {
     ]);
     let dates = Arc::new(DateRangePrefixTree::new(&Calendar::new_default()).unwrap());
     let mut s: HashMap<&'static str, Box<dyn SpatialStrategy>> = HashMap::new();
-    let rpt = |grid: Arc<dyn lucene_util::spatial_extras::prefix_tree::SpatialPrefixTree>,
+    let rpt = |grid: Arc<dyn lucene_spatial4j::spatial_extras::prefix_tree::SpatialPrefixTree>,
                name: &str| { RecursivePrefixTreeStrategy::new(grid, name).unwrap() };
     s.insert(
         "rgh",

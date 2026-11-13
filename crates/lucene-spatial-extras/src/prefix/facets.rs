@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lucene_spatial4j::spatial4j::{Rectangle, Shape, SpatialRelation};
+use lucene_spatial4j::spatial_extras::prefix_tree::{Cell, UnitNRShape};
 use lucene_util::fixed_bit_set::FixedBitSet;
-use lucene_util::spatial4j::{Rectangle, Shape, SpatialRelation};
-use lucene_util::spatial_extras::prefix_tree::{Cell, UnitNRShape};
 
 use super::query::{visit, Traverser, VisitingQuery, Visitor};
 use super::PrefixTreeStrategy;
@@ -640,7 +640,7 @@ fn clone_unit(u: &UnitNRShape) -> Result<UnitNRShape> {
     if u.level() == 0 {
         let len = u.tree().tree().base().max_term_len();
         return Err(Error::Spatial(
-            lucene_util::spatial4j::Error::ArrayIndexOutOfBounds(format!(
+            lucene_spatial4j::spatial4j::Error::ArrayIndexOutOfBounds(format!(
                 "Index -1 out of bounds for length {len}"
             )),
         ));
@@ -731,7 +731,7 @@ impl FacetVisitor for NumberRangeFacetVisitor<'_> {
                 .ok()
                 .and_then(|i| counts.get_mut(i))
                 .ok_or_else(|| {
-                    Error::Spatial(lucene_util::spatial4j::Error::ArrayIndexOutOfBounds(
+                    Error::Spatial(lucene_spatial4j::spatial4j::Error::ArrayIndexOutOfBounds(
                         format!("Index {i} out of bounds for length {len}"),
                     ))
                 })?;
