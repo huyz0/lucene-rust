@@ -6,9 +6,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use lucene_index::document::BinaryDocValuesField;
-use lucene_util::spatial4j::binary_codec::DataInput;
-use lucene_util::spatial4j::{Point, Shape, SpatialContext};
-use lucene_util::spatial_extras::query::SpatialArgs;
+use lucene_spatial4j::spatial4j::binary_codec::DataInput;
+use lucene_spatial4j::spatial4j::{Point, Shape, SpatialContext};
+use lucene_spatial4j::spatial_extras::query::SpatialArgs;
 
 use super::util::{
     DistanceToShapeValueSource, ShapeValues, ShapeValuesPredicate, ShapeValuesSource,

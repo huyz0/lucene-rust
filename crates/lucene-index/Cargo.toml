@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
+lucene-spatial3d = { path = "../lucene-spatial3d" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-analysis = { path = "../lucene-analysis" }

@@ -35,7 +35,7 @@ import org.apache.lucene.spatial3d.geom.XYZSolidFactory;
 
 /**
  * Cross-engine ground truth for {@code lucene-util}'s {@code spatial3d} module: {@code
- * geo3d/shapes.tsv}, replayed by {@code crates/lucene-util/tests/geo3d_fixtures.rs}.
+ * geo3d/shapes.tsv}, replayed by {@code crates/lucene-spatial3d/tests/geo3d_fixtures.rs}.
  *
  * <p>A seeded corpus over five planet models (SPHERE, WGS84, CLARKE_1866, a random oblate and a
  * prolate ellipsoid):
