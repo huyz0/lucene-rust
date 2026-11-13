@@ -1,9 +1,9 @@
 //! `GenSimilaritySearch`' prefix query grammar and similarity names, shared
 //! by `tests/similarity_search_fixtures.rs` (hits and score bits against
 //! Lucene under every similarity) and the `similarity` micro benchmark
-//! (`benchmarks/rust-runner/src/micro_m7.rs`, which includes this file by
+//! (`benchmarks/rust-runner/src/micro_extended_queries.rs`, which includes this file by
 //! path). The Java twin is `GenSimilaritySearch.parse`/`sims`, which
-//! `benchmarks/micro/java/M7Micro.java` calls.
+//! `benchmarks/micro/java/ExtendedQueriesMicro.java` calls.
 #![allow(dead_code, clippy::arithmetic_side_effects)]
 
 use std::sync::Arc;

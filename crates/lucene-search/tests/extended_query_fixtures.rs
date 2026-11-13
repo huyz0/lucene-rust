@@ -1,5 +1,5 @@
 //! The query and scoring half, differentially against Lucene 10.5.0:
-//! `fixtures/src/GenM7Queries.java`.
+//! `fixtures/src/GenExtendedQueries.java`.
 //!
 //! One three-segment, index-sorted index with deletions, searched with every
 //! extended query in the scorer tree -- synonyms, BM25F, n-gram phrases,
@@ -10,10 +10,11 @@
 //! scoring ones, `ClassicSimilarity` and a DFR similarity. Every top-20 hit
 //! and its score bits must be Java's.
 
-mod m7grammar;
+mod extended_grammar;
 
 use std::collections::HashMap;
 
+use extended_grammar::{knn_clause, query, sim, Ctx, VectorFiles, QVEC};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::{
@@ -22,7 +23,6 @@ use lucene_search::multi_segment::{
 };
 use lucene_search::query::Clause;
 use lucene_store::FsDirectory;
-use m7grammar::{knn_clause, query, sim, Ctx, VectorFiles, QVEC};
 
 fn data(path: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,25 +41,25 @@ fn want(hits: &str) -> Vec<(i32, u32)> {
 }
 
 #[test]
-fn m7_queries_match_lucene_bit_for_bit() {
-    let cases = check_fixture("m7_queries_index", &QVEC, 20, true);
+fn extended_queries_match_lucene_bit_for_bit() {
+    let cases = check_fixture("extended_queries_index", &QVEC, 20, true);
     assert!(cases >= 200, "{cases} searches");
 }
 
 /// The vector queries over graphs large enough for filtered
 /// (`FilteredHnswGraphSearcher`), patient and seeded walks to happen.
 #[test]
-fn m7_knn_queries_match_lucene_bit_for_bit() {
-    let cases = check_fixture("m7_knn_index", &QVEC8, 50, false);
+fn extended_knn_queries_match_lucene_bit_for_bit() {
+    let cases = check_fixture("extended_knn_index", &QVEC8, 50, false);
     assert!(cases >= 16, "{cases} searches");
 }
 
 /// Doc-values ranges over fields with a skip index (`SkipBlockRangeIterator`,
 /// `DocValuesRangeIterator`), several skip blocks a segment.
 #[test]
-fn m7_doc_values_skip_ranges_match_lucene_bit_for_bit() {
+fn extended_doc_values_skip_ranges_match_lucene_bit_for_bit() {
     // The ranges must run on the skip-index path, not the plain-column one.
-    let reader = DirectoryReader::open(&FsDirectory::open(data("m7_dv_index"))).unwrap();
+    let reader = DirectoryReader::open(&FsDirectory::open(data("extended_dv_index"))).unwrap();
     for seg in reader.segment_readers() {
         for field in ["sk", "msk"] {
             let number = seg.field_infos().field_by_name(field).unwrap().number;
@@ -71,11 +71,11 @@ fn m7_doc_values_skip_ranges_match_lucene_bit_for_bit() {
         let body = seg.field_infos().field_by_name("body").unwrap().number;
         assert!(seg.doc_values_skip_index(body).unwrap().is_none());
     }
-    let cases = check_fixture("m7_dv_index", &QVEC, 50, false);
+    let cases = check_fixture("extended_dv_index", &QVEC, 50, false);
     assert!(cases >= 9, "{cases} searches");
 }
 
-/// `GenM7Queries.QVEC8`.
+/// `GenExtendedQueries.QVEC8`.
 const QVEC8: [f32; 8] = [0.1, -0.3, 0.25, 0.6, -0.05, 0.4, -0.2, 0.15];
 
 /// Runs every search `name`'s `searches.tsv` records and fails on the first
@@ -83,7 +83,7 @@ const QVEC8: [f32; 8] = [0.1, -0.3, 0.25, 0.6, -0.05, 0.4, -0.2, 0.15];
 fn check_fixture(name: &str, qvec: &[f32], top: usize, estimator: bool) -> usize {
     let dir = data(name);
     let text = std::fs::read_to_string(dir.join("searches.tsv"))
-        .expect("run scripts/gen-fixtures.sh --only GenM7Queries");
+        .expect("run scripts/gen-fixtures.sh --only GenExtendedQueries");
     let reader = DirectoryReader::open(&FsDirectory::open(&dir)).unwrap();
     assert!(reader.segment_readers().len() >= 2);
     assert!(
@@ -201,7 +201,7 @@ fn check_fixture(name: &str, qvec: &[f32], top: usize, estimator: bool) -> usize
 }
 
 /// The range, point and doc-values-rewrite queries at their edges, each
-/// against the query it must equal over `m7_queries_index` (Lucene's own
+/// against the query it must equal over `extended_queries_index` (Lucene's own
 /// answers for the ordinary shapes are the searches above): a range over
 /// every value is `FieldExistsQuery` (`rewrite`), an inverted or absent one
 /// nothing; `IndexSortSortedNumericDocValuesRangeQuery` on an index not
@@ -222,7 +222,7 @@ fn range_and_point_queries_equal_their_rewrites_at_the_edges() {
     use lucene_search::query::{BooleanQuery, FieldExistsQuery, PrefixQuery};
     use std::sync::Arc;
 
-    let reader = DirectoryReader::open(&FsDirectory::open(data("m7_queries_index"))).unwrap();
+    let reader = DirectoryReader::open(&FsDirectory::open(data("extended_queries_index"))).unwrap();
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
     let segments = opened.as_open_segments();
@@ -649,7 +649,7 @@ fn a_sorted_flush_keeps_each_documents_positions() {
 }
 
 /// Doc-values rewrites and point queries over an index this port writes with
-/// the shapes `m7_queries_index` lacks: a `SORTED` and a single-valued
+/// the shapes `extended_queries_index` lacks: a `SORTED` and a single-valued
 /// `SORTED_SET` keyword (`DOC_VALUES_REWRITE` against
 /// `CONSTANT_SCORE_REWRITE`), a keyword without doc values and an absent one
 /// (nothing, as `DocValuesRewriteMethod` finds no values), a long point on
@@ -786,7 +786,7 @@ fn doc_values_rewrites_and_points_on_shapes_the_fixture_lacks() {
 #[test]
 fn the_estimator_falls_back_without_a_vocabulary_and_samples_past_its_reservoir() {
     use lucene_search::bayesian_estimator::estimate;
-    let reader = DirectoryReader::open(&FsDirectory::open(data("m7_queries_index"))).unwrap();
+    let reader = DirectoryReader::open(&FsDirectory::open(data("extended_queries_index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let owned = reader

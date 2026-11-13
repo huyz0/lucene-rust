@@ -63,7 +63,7 @@ import org.apache.lucene.util.BytesRef;
  * Searches over a {@code SimpleTextCodec} index: the routing of every query family through
  * SimpleText segments ({@code lucene-search/src/directory_reader/simpletext_search.rs}).
  *
- * <p>{@code simpletext_search/index}: {@link GenM7Queries}' three-segment, index-sorted schema
+ * <p>{@code simpletext_search/index}: {@link GenExtendedQueries}' three-segment, index-sorted schema
  * and documents (same seed), written by {@code SimpleTextCodec} with six deletions -- text,
  * keywords with sorted-set doc values, long points with numeric doc values, the index-sort field,
  * 2-D, 1-D and 16-byte points, float and byte vectors.
@@ -71,7 +71,7 @@ import org.apache.lucene.util.BytesRef;
  * <pre>
  *   simpletext_search/
  *     index/          the index
- *     searches.tsv    similarity, GenM7Queries' query text, top-20 "doc:scoreBits" -- every
+ *     searches.tsv    similarity, GenExtendedQueries' query text, top-20 "doc:scoreBits" -- every
  *                     SCORED query under each of its similarities, every UNSCORED one (doc-values
  *                     rewrites and ranges, the index-sort range, points, IndexOrDocValuesQuery,
  *                     vector thresholds, KNN as a clause; SimpleText's KNN is exhaustive)
@@ -123,24 +123,24 @@ public final class GenSimpleTextSearch {
   }
 
   static String hits(TopDocs td) {
-    return GenM7Queries.hits(td);
+    return GenExtendedQueries.hits(td);
   }
 
   static Query parse(String q) {
-    GenM7Queries.pos = 0;
+    GenExtendedQueries.pos = 0;
     String[] tok = q.split(" ");
-    Query query = GenM7Queries.parse(tok);
-    if (GenM7Queries.pos != tok.length) throw new AssertionError("trailing tokens in " + q);
+    Query query = GenExtendedQueries.parse(tok);
+    if (GenExtendedQueries.pos != tok.length) throw new AssertionError("trailing tokens in " + q);
     return query;
   }
 
   public static void main(String[] args) throws IOException {
     Path root = Path.of(args[0]);
     Path out = root.resolve("simpletext_search");
-    GenM7Queries.deleteRecursive(out);
+    GenExtendedQueries.deleteRecursive(out);
     Path index = out.resolve("index");
     Files.createDirectories(index);
-    // GenM7Queries.main's documents, field for field and draw for draw.
+    // GenExtendedQueries.main's documents, field for field and draw for draw.
     Random r = new Random(20261001L);
     try (Directory dir = FSDirectory.open(index)) {
       IndexWriterConfig cfg = new IndexWriterConfig(new StandardAnalyzer());
@@ -155,11 +155,11 @@ public final class GenSimpleTextSearch {
             Document doc = new Document();
             doc.add(new StringField("id", Integer.toString(id), Field.Store.NO));
             doc.add(new TextField("body",
-                GenM7Queries.words(r, 1 + r.nextInt(r.nextInt(4) == 0 ? 50 : 12), 40), Field.Store.NO));
+                GenExtendedQueries.words(r, 1 + r.nextInt(r.nextInt(4) == 0 ? 50 : 12), 40), Field.Store.NO));
             if (r.nextInt(5) != 0) {
-              doc.add(new TextField("title", GenM7Queries.words(r, 1 + r.nextInt(5), 12), Field.Store.NO));
+              doc.add(new TextField("title", GenExtendedQueries.words(r, 1 + r.nextInt(5), 12), Field.Store.NO));
             }
-            doc.add(new TextField("gram", GenM7Queries.bigrams(r), Field.Store.NO));
+            doc.add(new TextField("gram", GenExtendedQueries.bigrams(r), Field.Store.NO));
             int tags = r.nextInt(4);
             for (int t = 0; t < tags; t++) {
               String tag = String.format("k%02d", r.nextInt(20));
@@ -180,7 +180,7 @@ public final class GenSimpleTextSearch {
             }
             if (r.nextInt(3) != 0) {
               doc.add(new InetAddressPoint("ip",
-                  GenM7Queries.addr("10.0." + r.nextInt(2) + "." + r.nextInt(100))));
+                  GenExtendedQueries.addr("10.0." + r.nextInt(2) + "." + r.nextInt(100))));
             }
             if (r.nextInt(7) != 0) {
               float[] v = new float[4];
@@ -210,12 +210,12 @@ public final class GenSimpleTextSearch {
         if (reader.leaves().size() != 3) {
           throw new AssertionError("expected three segments, got " + reader.leaves().size());
         }
-        for (Map.Entry<String, Similarity> e : GenM7Queries.sims().entrySet()) {
+        for (Map.Entry<String, Similarity> e : GenExtendedQueries.sims().entrySet()) {
           IndexSearcher searcher = new IndexSearcher(reader);
           searcher.setQueryCache(null);
           searcher.setSimilarity(e.getValue());
-          List<String> qs = new ArrayList<>(List.of(GenM7Queries.SCORED));
-          if (e.getKey().equals("bm25")) qs.addAll(List.of(GenM7Queries.UNSCORED));
+          List<String> qs = new ArrayList<>(List.of(GenExtendedQueries.SCORED));
+          if (e.getKey().equals("bm25")) qs.addAll(List.of(GenExtendedQueries.UNSCORED));
           for (String q : qs) {
             TopDocs td = searcher.search(parse(q), TOP);
             searches.append(e.getKey()).append('\t').append(q).append('\t').append(hits(td)).append('\n');
