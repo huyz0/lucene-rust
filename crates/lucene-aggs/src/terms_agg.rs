@@ -29,12 +29,12 @@ use std::collections::HashMap;
 use lucene_codecs::doc_values::NumericReader;
 use lucene_codecs::terms_dict::TermsDict;
 
-use crate::directory_reader::SegmentReader;
-use crate::global_ords::{open_ords, store_err, GlobalOrds, Ords};
-use crate::multi_segment::OpenSegment;
-use crate::query::BooleanQuery;
-use crate::segment_match::ColumnRead;
-use crate::Result;
+use lucene_search::directory_reader::SegmentReader;
+use lucene_search::global_ords::{open_ords, store_err, GlobalOrds, Ords};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::BooleanQuery;
+use lucene_search::segment_match::ColumnRead;
+use lucene_search::Result;
 
 /// One slice's shard result: the kept buckets, by term ascending, and the
 /// documents counted in terms not kept.
@@ -81,8 +81,15 @@ pub fn terms_sliced(
         shard_size,
     }];
     let global = [std::sync::Arc::new(GlobalOrds::build(readers, field)?)];
-    let sliced =
-        crate::aggs::aggregate_sliced(segments, readers, query, &[], &spec, &global, slices)?;
+    let sliced = crate::metric_aggs::aggregate_sliced(
+        segments,
+        readers,
+        query,
+        &[],
+        &spec,
+        &global,
+        slices,
+    )?;
     Ok(sliced
         .into_iter()
         .filter_map(|(_, mut terms)| terms.pop())
@@ -124,7 +131,7 @@ pub(crate) struct TermsScratch {
 }
 
 /// Adds segment `seg`'s matches to `counts`, indexed by global ordinal: `read`
-/// says how the matches meet the column (see [`crate::segment_match::column_read`]).
+/// says how the matches meet the column (see [`lucene_search::segment_match::column_read`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn segment_counts(
     reader: &SegmentReader,
@@ -149,7 +156,7 @@ pub(crate) fn segment_counts(
     // has postings and at most `MAX_PRECOMPUTE_CARDINALITY` terms.
     if matches!(
         read,
-        ColumnRead::Stream(crate::segment_match::Accept::Live(None))
+        ColumnRead::Stream(lucene_search::segment_match::Accept::Live(None))
     ) {
         if let Some(terms) = postings.field(field) {
             let n = usize::try_from(terms.num_terms).unwrap_or(usize::MAX);
@@ -326,7 +333,7 @@ const COUNT_WINDOW: usize = 1024;
 /// ordinal past the dictionary (counted nowhere).
 fn count_window_stream(
     r: &mut NumericReader<'_>,
-    accept: &crate::segment_match::Accept<'_>,
+    accept: &lucene_search::segment_match::Accept<'_>,
     max_doc: i32,
     ords: usize,
     scratch: &mut TermsScratch,
@@ -356,7 +363,7 @@ const LANED_ORDS: usize = 2048;
 #[inline(never)]
 fn count_lanes<const L: usize>(
     r: &mut NumericReader<'_>,
-    accept: &crate::segment_match::Accept<'_>,
+    accept: &lucene_search::segment_match::Accept<'_>,
     max_doc: i32,
     ords: usize,
     scratch: &mut TermsScratch,
@@ -567,13 +574,13 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/data/terms_aggs_index"
         )));
-        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         // Laned (a small dictionary) and plain both met, each with a bad ordinal.
         let mut seen = [false; 2];
         for field in ["kw", "sk", "hk"] {
             for seg in reader.segment_readers() {
                 let Some((Ords::Single(mut r), _, entry)) =
-                    crate::global_ords::keyword_column(seg, field).unwrap()
+                    lucene_search::global_ords::keyword_column(seg, field).unwrap()
                 else {
                     continue;
                 };
@@ -583,7 +590,7 @@ mod tests {
                 let words: Vec<u64> = (0..usize::try_from(max_doc).unwrap().div_ceil(64))
                     .map(|_| 0x9249_2492_4924_9249)
                     .collect();
-                let accept = crate::segment_match::Accept::Marked(&words);
+                let accept = lucene_search::segment_match::Accept::Marked(&words);
                 let mut want = vec![0u32; ords];
                 for doc in 0..max_doc {
                     if accept.test(doc) {
@@ -618,7 +625,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/data/terms_aggs_index"
         )));
-        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         let readers = reader.segment_readers();
         assert!(readers.len() > 1);
         let global = GlobalOrds::build(readers, "no_such_field").unwrap();
@@ -627,8 +634,8 @@ mod tests {
         let opened = reader.open_segments().unwrap();
         let segments = opened.as_open_segments();
         let all = BooleanQuery {
-            must: vec![crate::query::Clause::MatchAllDocs(
-                crate::query::MatchAllDocsQuery::new(reader.max_doc()),
+            must: vec![lucene_search::query::Clause::MatchAllDocs(
+                lucene_search::query::MatchAllDocsQuery::new(reader.max_doc()),
             )],
             ..Default::default()
         };
@@ -646,7 +653,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/data/terms_aggs_index"
         )));
-        let reader = crate::directory_reader::DirectoryReader::open(&dir).unwrap();
+        let reader = lucene_search::directory_reader::DirectoryReader::open(&dir).unwrap();
         let opened = reader.open_segments().unwrap();
         for seg in opened.as_open_segments() {
             assert!(precomputable(seg.fields, "body"));

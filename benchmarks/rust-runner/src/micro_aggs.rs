@@ -12,10 +12,10 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_search::aggs::aggregate_sliced_counting;
+use lucene_aggs::metric_aggs::aggregate_sliced_counting;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::query::{BooleanQuery, Clause, PointsRangeQuery, TermQuery};
-use lucene_search::terms_agg::TermsSpec;
+use lucene_aggs::terms_agg::TermsSpec;
 use lucene_store::FsDirectory;
 
 use super::measure;

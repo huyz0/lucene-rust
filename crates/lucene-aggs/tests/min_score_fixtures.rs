@@ -17,7 +17,9 @@
 
 use std::collections::HashMap;
 
-use lucene_search::aggs::{aggregate_sliced_min_score, MetricSpec, Source, ValueKind, NEED_ALL};
+use lucene_aggs::metric_aggs::{
+    aggregate_sliced_min_score, MetricSpec, Source, ValueKind, NEED_ALL,
+};
 use lucene_search::collector::TotalHitsRelation;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
