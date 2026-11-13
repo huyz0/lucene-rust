@@ -103,6 +103,11 @@ def main():
     r["off_heap"] = mb.plugin_stats(base)
     result["cases"]["concurrent_%d" % CONCURRENCY] = r
     print(label, "concurrent", json.dumps({k: v for k, v in r.items() if k != "off_heap"}), flush=True)
+    # The same concurrency without _source: nothing large is read, so nothing should be refused.
+    r = mb.concurrent_case(base, container, "concurrent_no_source", cases()["no_source"], CONCURRENCY)
+    r["off_heap"] = mb.plugin_stats(base)
+    result["cases"]["concurrent_no_source_%d" % CONCURRENCY] = r
+    print(label, "concurrent_no_source", json.dumps({k: v for k, v in r.items() if k != "off_heap"}), flush=True)
     result["breakers"] = mb.breaker_stats(base)
     result["final_rss_mb"] = round(mb.cgroup_rss(container) / 2**20)
     with open(out_path, "w") as f:

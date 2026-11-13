@@ -1180,7 +1180,18 @@ impl MatchRegionRetriever {
             let local = doc_id - doc_base;
             let seg = &reader.segment_readers()[leaf];
             let mut values = StoredValues::default();
-            if let Some(doc) = seg.stored_document(local).map_err(io)? {
+            // Only the fields this highlighter loads are decoded (Java's
+            // visitor says NO to the rest), so a large `_source` is skipped.
+            let wanted: Vec<i32> = seg
+                .field_infos()
+                .fields
+                .iter()
+                .filter(|fi| self.should_load_stored_field(&fi.name))
+                .map(|fi| fi.number)
+                .collect();
+            let mut visitor = lucene_codecs::stored_fields::DocumentVisitor::for_fields(&wanted);
+            if seg.visit_stored_document(local, &mut visitor).map_err(io)? {
+                let doc = visitor.into_document();
                 for f in &doc.fields {
                     let Some(fi) = seg.field_infos().field_by_number(f.field_number) else {
                         continue;
