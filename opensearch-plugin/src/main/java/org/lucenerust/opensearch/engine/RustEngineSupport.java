@@ -346,12 +346,39 @@ public final class RustEngineSupport {
 
     /**
      * Whether OpenSearch's engine, or another plugin's, serves an index whatever else its settings ask:
-     * {@link #ENGINE_ENABLED} is off, or the index is a cross-cluster replication follower. A follower
-     * keeps its leader's settings, the accelerated engine's included, and is served by
-     * cross-cluster replication's own engine; OpenSearch refuses an index two plugins offer an engine for.
+     * {@link #ENGINE_ENABLED} is off, or the index is a cross-cluster replication follower that the
+     * replication plugin serves with its own engine. A follower keeps its leader's settings, the
+     * accelerated engine's included; OpenSearch refuses an index two plugins offer an engine for.
      */
     public static boolean openSearchEngine(org.opensearch.common.settings.Settings settings) {
-        return ENGINE_ENABLED.get(settings) == false || settings.get(CCR_FOLLOWER) != null;
+        return ENGINE_ENABLED.get(settings) == false || (follower(settings) && followersDelegated == false);
+    }
+
+    /** Whether {@code settings} are a cross-cluster replication follower index's. */
+    public static boolean follower(org.opensearch.common.settings.Settings settings) {
+        return settings.get(CCR_FOLLOWER) != null;
+    }
+
+    /**
+     * The replication plugin's node setting choosing who serves follower indices: {@code replication}
+     * (its own engine, the default) or {@code delegate} (the one engine plugin that serves followers,
+     * this one). The setting is the replication plugin's; this plugin only reads it.
+     */
+    public static final String CCR_FOLLOWER_ENGINE = "plugins.replication.follower.engine";
+
+    private static volatile boolean followersDelegated;
+
+    /** Reads {@link #CCR_FOLLOWER_ENGINE} from the node's settings, once at plugin start. */
+    public static void readFollowerEngine(org.opensearch.common.settings.Settings nodeSettings) {
+        followersDelegated = "delegate".equals(nodeSettings.get(CCR_FOLLOWER_ENGINE));
+    }
+
+    /**
+     * Whether this plugin provides the engine of follower index {@code settings}: the replication
+     * plugin on this node delegates it ({@link #CCR_FOLLOWER_ENGINE}).
+     */
+    public static boolean servesFollower(org.opensearch.common.settings.Settings settings) {
+        return followersDelegated && follower(settings);
     }
 
     /** The circuit breaker the plugin registers for the writers' buffers. */

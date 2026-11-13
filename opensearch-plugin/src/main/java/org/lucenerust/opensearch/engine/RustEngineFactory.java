@@ -33,12 +33,31 @@ public final class RustEngineFactory implements EngineFactory {
     public static final AtomicLong NRT_REPLICA = new AtomicLong();
 
     private final boolean nodeEnabled;
+    private final boolean follower;
 
     static final String SEQ_NO_NEEDS_ENGINE = "[index.seq_no.index_options: doc_values_only] needs the accelerated engine:"
         + " set [index.engine.accelerated] or [indices.engine.accelerated.default] on this node";
 
     public RustEngineFactory(boolean nodeEnabled) {
+        this(nodeEnabled, false);
+    }
+
+    /** With {@code follower}, the engines are {@link FollowerEngines}: a cross-cluster replication follower's. */
+    public RustEngineFactory(boolean nodeEnabled, boolean follower) {
         this.nodeEnabled = nodeEnabled;
+        this.follower = follower;
+    }
+
+    /** OpenSearch's engine for a follower index the accelerated engine does not serve. */
+    public static EngineFactory standardFollower() {
+        return config -> {
+            if (config.isReadOnlyReplica()) {
+                NRT_REPLICA.incrementAndGet();
+                return new NRTReplicationEngine(config);
+            }
+            JAVA.incrementAndGet();
+            return new FollowerEngines.Standard(config);
+        };
     }
 
     @Override
@@ -53,13 +72,13 @@ public final class RustEngineFactory implements EngineFactory {
         boolean asked = RustEngineSupport.ENGINE_ENABLED.exists(config.getIndexSettings().getSettings());
         if (nodeEnabled && (asked || RustEngineSupport.unsupportedPolicy(config) == null)) {
             RUST.incrementAndGet();
-            return new RustEngine(config);
+            return follower ? new FollowerEngines.Accelerated(config) : new RustEngine(config);
         }
         if (seqNoDocValuesOnly) {
             // OpenSearch's engine would run its history and retention ranges on points these segments lack.
             throw new IllegalArgumentException(SEQ_NO_NEEDS_ENGINE);
         }
         JAVA.incrementAndGet();
-        return new InternalEngine(config);
+        return follower ? new FollowerEngines.Standard(config) : new InternalEngine(config);
     }
 }
