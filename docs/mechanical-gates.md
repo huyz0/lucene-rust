@@ -1034,10 +1034,10 @@ built with `--workspace`, which unifies the feature in from
 ABI); every other crate declares `#![forbid(unsafe_code)]` so a stray block
 fails to compile. Nothing checked the declaration: twelve crates had
 silently never carried it, and `lucene-expressions` held six `unsafe` blocks
-in `vector.rs` (raw register views of its batch evaluator). The rule reads
-each other crate's `src/lib.rs` for the attribute. `lucene-expressions` is
-listed in `UNSAFE_BURNDOWN` until its register file is safe; the rule fails
-once a listed crate has no `unsafe` left, so the list only shrinks. **Seen to
+in `vector.rs` (raw register views of its batch evaluator; now safe). The rule reads
+each other crate's `src/lib.rs` for the attribute. `UNSAFE_BURNDOWN` (empty now)
+lists a crate that still holds `unsafe` and so cannot forbid it yet; the rule
+fails once a listed crate has no `unsafe` left, so the list only shrinks. **Seen to
 fail** on both shapes: the attribute deleted from `lucene-misc`
 (`missing #![forbid(unsafe_code)]`), and `lucene-misc` planted in the
 burn-down list (`has no unsafe left`). Blind to: `unsafe` produced by a macro
