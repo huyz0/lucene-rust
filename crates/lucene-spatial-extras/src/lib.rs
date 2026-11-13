@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Lucene's `lucene-spatial-extras` (`org.apache.lucene.spatial`): the
 //! [`SpatialStrategy`]s that index Spatial4j shapes into ordinary fields and
 //! query them back -- over the shapes, prefix trees and `SpatialArgs` of

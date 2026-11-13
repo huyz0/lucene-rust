@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `org.apache.lucene.search.highlight` (`lucene-highlighter`): the classic
 //! `Highlighter`. A token stream over the text is cut into fragments by a
 //! [`Fragmenter`], each token scored by a [`Scorer`] ([`QueryScorer`] reads the

@@ -112,7 +112,6 @@ crc32fast = "1"
 # same lock Java's `FileChannel.tryLock` takes, so the two engines exclude each
 # other. Already in the tree through memmap2 (docs/licences.md).
 libc = "0.2"
-lz4_flex = "0.11"
 # Substring search over a block of values (`lucene-codecs`' `substring`).
 # Already in the tree through `regex` (docs/licences.md).
 memchr = "2"
