@@ -1186,6 +1186,31 @@ final class RustIndexWriter implements DocumentIndexWriter {
         runForceMerge(maxNumSegments, false);
     }
 
+    /**
+     * The segment upgrade {@code OpenSearchMergePolicy} runs while {@code setUpgradeInProgress} is
+     * on: every committed segment an older Lucene than OpenSearch's wrote (an older major only, when
+     * {@code onlyAncientSegments}) is rewritten on its own. Returns how many were.
+     */
+    int upgradeSegments(boolean onlyAncientSegments) throws IOException {
+        synchronized (lock) {
+            ensureOpen();
+            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
+                commitLocked();
+            }
+            applyRetention();
+            org.apache.lucene.util.Version current = org.opensearch.Version.CURRENT.luceneVersion;
+            long[] out = new long[2];
+            indexing.writeLock().lock();
+            try {
+                check(NativeBridge.writerUpgrade(handle, current.major, current.minor, onlyAncientSegments, out), "segment upgrade");
+            } finally {
+                indexing.writeLock().unlock();
+            }
+            onNewCommits();
+            return (int) out[1];
+        }
+    }
+
     private void runForceMerge(int maxNumSegments, boolean onlyDeletes) throws IOException {
         synchronized (lock) {
             ensureOpen();

@@ -15,6 +15,12 @@
 //! the rest of the document, and most fetches (`_source: false`, `_id` only) never read it. The
 //! plugin asks [`source_blob`] for it when its visitor does.
 //!
+//! A string or binary value of at least [`DEFER_BYTES`] is left out too, as [`DEFERRED`]: its
+//! type ([`STRING`] or [`BINARY`]) as a `u8`, `len: i32` and `ordinal: i32` (its position among
+//! the document's fields). Such a value is mostly a large `_source`, which a `_source: false` or
+//! `stored_fields` fetch never reads, and the codec leaves its bytes compressed until someone does.
+//! The plugin asks [`stored_value`] for it when its visitor wants it.
+//!
 //! # The doc-values blob
 //!
 //! One document's values of the fields the plugin names
@@ -39,6 +45,12 @@ pub(crate) const FLOAT: u8 = 4;
 pub(crate) const DOUBLE: u8 = 5;
 /// A derived `_source`, its value left out: [`source_blob`] reads it.
 pub(crate) const DERIVED_SOURCE: u8 = 6;
+/// A large string or binary value left out: [`stored_value`] reads it.
+pub(crate) const DEFERRED: u8 = 7;
+/// The shortest value a document blob leaves out ([`DEFERRED`]). At this size a value spans
+/// many compression units, so reading it on its own later costs the decompression of at most the
+/// one unit it shares with the fields before it.
+pub(crate) const DEFER_BYTES: usize = 1 << 20;
 
 /// Segment `segment` of `handle`'s reader, checked.
 fn segment_reader<'h>(
@@ -86,6 +98,7 @@ pub(crate) fn document_blob(handle: u64, segment: i32, doc: i32) -> Result<Vec<u
         out: 0i32.to_le_bytes().to_vec(),
         count: 0,
         derived_source: reader.derived_source_number(),
+        ordinal: -1,
     };
     let stored = reader.visit_stored_document(doc, &mut blob).map_err(|e| {
         set_last_error(format!("reading stored fields: {e}"));
@@ -229,6 +242,67 @@ pub(crate) fn source_blob(
     })
 }
 
+/// Segment `segment`'s document `doc` (segment-local): the value of its field at position
+/// `ordinal`, which a document blob left out as [`DEFERRED`], as raw bytes (UTF-8 for a string).
+pub(crate) fn stored_value(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    ordinal: i32,
+) -> Result<Vec<u8>, FfiStatus> {
+    const WHAT: &str = "ffi_jvm_reader_stored_value";
+    let h = jvm_reader::lookup(
+        handle,
+        "ffi_jvm_reader_stored_value: unknown or already-closed handle",
+    )?;
+    let reader = segment_reader(&h, segment, WHAT)?;
+    check_doc(reader, doc, WHAT)?;
+    let mut value = NthValue {
+        ordinal,
+        at: 0,
+        value: None,
+    };
+    reader.visit_stored_document(doc, &mut value).map_err(|e| {
+        set_last_error(format!("reading stored fields: {e}"));
+        FfiStatus::Decode
+    })?;
+    value.value.ok_or_else(|| {
+        set_last_error(format!(
+            "{WHAT}: document {doc} has no string or binary field at {ordinal}"
+        ));
+        FfiStatus::InvalidArgument
+    })
+}
+
+/// Keeps the string or binary value of the field at position `ordinal` and stops there.
+struct NthValue {
+    ordinal: i32,
+    at: i32,
+    value: Option<Vec<u8>>,
+}
+
+impl StoredFieldVisitor for NthValue {
+    fn needs_field(&mut self, _field_number: i32) -> stored_fields::Result<VisitStatus> {
+        let at = self.at;
+        self.at = self.at.saturating_add(1);
+        Ok(match at.cmp(&self.ordinal) {
+            std::cmp::Ordering::Less => VisitStatus::No,
+            std::cmp::Ordering::Equal => VisitStatus::Yes,
+            std::cmp::Ordering::Greater => VisitStatus::Stop,
+        })
+    }
+
+    fn binary_field(&mut self, _: i32, value: &[u8]) -> stored_fields::Result<()> {
+        self.value = Some(value.to_vec());
+        Ok(())
+    }
+
+    fn string_field(&mut self, _: i32, value: &str) -> stored_fields::Result<()> {
+        self.value = Some(value.as_bytes().to_vec());
+        Ok(())
+    }
+}
+
 /// Keeps field `number`'s binary value and stops there.
 struct SourceOnly {
     number: i32,
@@ -274,6 +348,8 @@ struct Blob {
     count: i32,
     /// The `_source` field number in a derived-source segment: written as [`DERIVED_SOURCE`].
     derived_source: Option<i32>,
+    /// The position of the field being read, counted from 0.
+    ordinal: i32,
 }
 
 impl Blob {
@@ -299,7 +375,31 @@ fn too_large() -> stored_fields::Error {
 
 impl StoredFieldVisitor for Blob {
     fn needs_field(&mut self, _field_number: i32) -> stored_fields::Result<VisitStatus> {
+        self.ordinal = self.ordinal.checked_add(1).ok_or_else(too_large)?;
         Ok(VisitStatus::Yes)
+    }
+
+    fn defer_values_from(&self) -> usize {
+        DEFER_BYTES
+    }
+
+    /// A large value as [`DEFERRED`], or a large derived `_source` as [`DERIVED_SOURCE`]: the
+    /// plugin reads either only when its visitor wants it.
+    fn deferred_field(
+        &mut self,
+        number: i32,
+        string: bool,
+        length: usize,
+    ) -> stored_fields::Result<()> {
+        if self.derived_source == Some(number) {
+            return self.field(number, DERIVED_SOURCE);
+        }
+        self.field(number, DEFERRED)?;
+        self.out.push(if string { STRING } else { BINARY });
+        let len = i32::try_from(length).map_err(|_| too_large())?;
+        self.out.extend_from_slice(&len.to_le_bytes());
+        self.out.extend_from_slice(&self.ordinal.to_le_bytes());
+        Ok(())
     }
 
     /// One allocation for the whole blob: a field is at most 12 bytes longer
@@ -721,6 +821,120 @@ mod tests {
     }
 
     #[test]
+    fn large_values_are_deferred_and_read_on_their_own() {
+        use lucene_codecs::stored_fields::{Document, Mode, StoredField, StoredFieldsWriter};
+        let big = |n: usize, seed: u8| {
+            (0..n)
+                .map(|i| (i as u8).wrapping_mul(seed))
+                .collect::<Vec<u8>>()
+        };
+        let mut docs = Vec::new();
+        // The fixture's stored-fields files rewritten: the segment's document count, each
+        // document with small values around a large binary and a large string.
+        let (_tmp, h) = open_copy(|dir, id| {
+            let max_doc = lucene_search::directory_reader::DirectoryReader::open(
+                &lucene_store::directory::FsDirectory::open(dir.to_str().unwrap()),
+            )
+            .unwrap()
+            .segment_readers()[0]
+                .max_doc;
+            let mut w = StoredFieldsWriter::new(Mode::BestSpeed, &id, "");
+            for d in 0..max_doc {
+                let doc = Document {
+                    fields: vec![
+                        StoredField {
+                            field_number: 0,
+                            value: FieldValue::String(format!("id-{d}")),
+                        },
+                        StoredField {
+                            field_number: 1,
+                            value: FieldValue::Binary(big(DEFER_BYTES + d as usize, 7)),
+                        },
+                        StoredField {
+                            field_number: 2,
+                            value: FieldValue::Long(i64::from(d)),
+                        },
+                        StoredField {
+                            field_number: 3,
+                            value: FieldValue::String("x".repeat(DEFER_BYTES + 3)),
+                        },
+                        StoredField {
+                            field_number: 4,
+                            value: FieldValue::Binary(big(DEFER_BYTES - 1, 3)),
+                        },
+                    ],
+                };
+                w.add_document(&doc);
+                docs.push(doc);
+            }
+            let (fdt, fdx, fdm) = w.finish();
+            std::fs::write(dir.join("_0.fdt"), fdt).unwrap();
+            std::fs::write(dir.join("_0.fdx"), fdx).unwrap();
+            std::fs::write(dir.join("_0.fdm"), fdm).unwrap();
+        });
+        let doc = 1;
+        let blob = document_blob(h, 0, doc).unwrap();
+        // count, then: id string, deferred binary, long, deferred string, inline binary.
+        let mut at = 0;
+        assert_eq!(i32_at(&blob, &mut at), 5);
+        assert_eq!(i32_at(&blob, &mut at), 0);
+        assert_eq!(blob[at], STRING);
+        at += 1;
+        let len = i32_at(&blob, &mut at) as usize;
+        assert_eq!(&blob[at..at + len], b"id-1");
+        at += len;
+        assert_eq!(i32_at(&blob, &mut at), 1);
+        assert_eq!(&blob[at..at + 2], &[DEFERRED, BINARY]);
+        at += 2;
+        assert_eq!(i32_at(&blob, &mut at) as usize, DEFER_BYTES + 1);
+        assert_eq!(i32_at(&blob, &mut at), 1);
+        assert_eq!(i32_at(&blob, &mut at), 2);
+        assert_eq!(blob[at], LONG);
+        at += 1 + 8;
+        assert_eq!(i32_at(&blob, &mut at), 3);
+        assert_eq!(&blob[at..at + 2], &[DEFERRED, STRING]);
+        at += 2;
+        assert_eq!(i32_at(&blob, &mut at) as usize, DEFER_BYTES + 3);
+        assert_eq!(i32_at(&blob, &mut at), 3);
+        assert_eq!(i32_at(&blob, &mut at), 4);
+        assert_eq!(blob[at], BINARY);
+        at += 1;
+        assert_eq!(i32_at(&blob, &mut at) as usize, DEFER_BYTES - 1);
+        at += DEFER_BYTES - 1;
+        assert_eq!(at, blob.len(), "the large values stay out of the blob");
+        // Each deferred value on its own, as stored.
+        let FieldValue::Binary(want) = &docs[doc as usize].fields[1].value else {
+            unreachable!()
+        };
+        assert_eq!(&stored_value(h, 0, doc, 1).unwrap(), want);
+        assert_eq!(
+            stored_value(h, 0, doc, 3).unwrap(),
+            "x".repeat(DEFER_BYTES + 3).into_bytes()
+        );
+        // A numeric field, or a position past the document, has no such value.
+        assert_eq!(
+            stored_value(h, 0, doc, 2).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        assert_eq!(
+            stored_value(h, 0, doc, 9).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        assert_eq!(
+            stored_value(h, 0, -1, 1).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
+        let (mut ptr, mut len) = (std::ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            crate::ffm_bridge::ffi_jvm_reader_stored_value_alloc(h, 0, doc, 1, &mut ptr, &mut len)
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(len, want.len());
+        unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
+        crate::jvm_reader::ffi_close_jvm_reader(h);
+    }
+
+    #[test]
     fn a_document_that_does_not_decode_is_a_decode_error() {
         // The first chunk claims to start at document 127: no document of
         // the segment is in it.
@@ -762,6 +976,7 @@ mod tests {
             out: Vec::new(),
             count: i32::MAX,
             derived_source: None,
+            ordinal: -1,
         };
         let e = b.int_field(1, 1).unwrap_err();
         assert!(e.to_string().contains("too large for the JVM"), "{e}");
@@ -773,6 +988,7 @@ mod tests {
             out: 0i32.to_le_bytes().to_vec(),
             count: 0,
             derived_source: Some(7),
+            ordinal: -1,
         };
         assert_eq!(b.needs_field(3).unwrap(), VisitStatus::Yes);
         b.string_field(1, "héllo").unwrap();
