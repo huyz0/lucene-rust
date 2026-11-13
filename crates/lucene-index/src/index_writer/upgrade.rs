@@ -104,7 +104,7 @@ mod tests {
                     &s.codec_name,
                 )
                 .unwrap();
-                (si.version, si.doc_count - s.del_count)
+                (si.version, si.doc_count.saturating_sub(s.del_count))
             })
             .collect()
     }
