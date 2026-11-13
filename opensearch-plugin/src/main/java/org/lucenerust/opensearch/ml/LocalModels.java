@@ -55,6 +55,7 @@ public final class LocalModels {
     }
 
     private final Client client;
+    private final RemoteModels remote;
     private final Path cacheDir;
     private final Path runtimeLibrary;
     private final Map<String, Deployed> models = new ConcurrentHashMap<>();
@@ -65,8 +66,9 @@ public final class LocalModels {
     /** Guards loading libtorch, apart from this object so its download holds up no ONNX deploy. */
     private final Object torchLock = new Object();
 
-    LocalModels(Client client, Path cacheDir, Path runtimeLibrary) {
+    LocalModels(Client client, RemoteModels remote, Path cacheDir, Path runtimeLibrary) {
         this.client = client;
+        this.remote = remote;
         this.cacheDir = cacheDir;
         this.runtimeLibrary = runtimeLibrary;
     }
@@ -163,6 +165,13 @@ public final class LocalModels {
             Map<String, Object> model = r.getSourceAsMap();
             String function = String.valueOf(model.get("algorithm"));
             String format = String.valueOf(model.get("model_format"));
+            if ("REMOTE".equals(function)) {
+                remote.open(model, ActionListener.wrap(handle -> {
+                    put(modelId, new Deployed(handle, function, model));
+                    all.onResponse(null);
+                }, all::onFailure));
+                return;
+            }
             if (FUNCTIONS.contains(function) == false) {
                 throw new IllegalArgumentException("lucene-rust does not deploy " + function + " models yet");
             }
@@ -369,7 +378,7 @@ public final class LocalModels {
     private void put(String modelId, Deployed deployed) {
         Deployed previous = models.put(modelId, deployed);
         if (previous != null) {
-            NativeBridge.mlModelClose(previous.handle());
+            close(previous);
         }
         LOGGER.info("lucene-rust: deployed model [{}]", modelId);
     }
@@ -392,13 +401,25 @@ public final class LocalModels {
         if (d == null) {
             return false;
         }
-        NativeBridge.mlModelClose(d.handle());
+        close(d);
         try {
             IOUtils.rm(cacheDir.resolve("deploy").resolve(modelId));
         } catch (IOException e) {
             LOGGER.warn("lucene-rust: cannot remove the files of model [{}]", modelId, e);
         }
         return true;
+    }
+
+    private void close(Deployed d) {
+        NativeBridge.mlModelClose(d.handle());
+        if ("REMOTE".equals(d.functionName())) {
+            remote.closed(d.handle());
+        }
+    }
+
+    /** The native handle of {@code modelId}, deployed here. */
+    long handle(String modelId) {
+        return deployed(modelId).handle();
     }
 
     /** Undeploys every model, for node shutdown. */

@@ -39,7 +39,7 @@ lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-misc = { path = "../lucene-misc" }
 lucene-sparse = { path = "../lucene-sparse" }
 # The ml-commons port's local model inference (`ml.rs`).
-lucene-ml = { path = "../lucene-ml" }
+lucene-ml = { path = "../lucene-ml", default-features = false }
 # libtorch and the TorchScript shim (`ml_torch.rs`), opened at run time.
 libloading = "0.8"
 lucene-util = { path = "../lucene-util" }
@@ -58,8 +58,8 @@ default = [
 ]
 # The encrypted store's crypto: AWS-LC (`crypto`, default) or AWS-LC's FIPS
 # 140-3 module (`fips`, with `--no-default-features`). Exactly one.
-crypto = ["lucene-store-crypto/aws-lc"]
-fips = ["lucene-store-crypto/fips"]
+crypto = ["lucene-store-crypto/aws-lc", "lucene-ml/aws-lc"]
+fips = ["lucene-store-crypto/fips", "lucene-ml/fips"]
 analysis-icu = ["lucene-engine/analysis-icu"]
 mimalloc = ["dep:mimalloc"]
 analysis-kuromoji = ["lucene-engine/analysis-kuromoji"]
