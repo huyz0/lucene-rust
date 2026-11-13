@@ -22,6 +22,7 @@ pub mod analysis;
 pub mod analysis_modules;
 pub mod clauses;
 pub mod function_score;
+pub mod invert;
 pub mod knn_painless;
 pub mod knn_score;
 pub mod max_sim_query;
@@ -33,5 +34,7 @@ pub mod queries;
 pub mod query_blob;
 pub mod similarity;
 pub mod status;
+pub mod writer_blob;
+pub mod writer_error;
 
 pub use status::Status;

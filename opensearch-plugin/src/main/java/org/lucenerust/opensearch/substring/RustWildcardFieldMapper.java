@@ -73,7 +73,7 @@ public final class RustWildcardFieldMapper extends ParametrizedFieldMapper {
 
     /**
      * The field attribute that routes the field to the {@code Substring90} doc-values format;
-     * {@code SUBSTRING_ATTRIBUTE} in {@code engine_writer.rs}. Its value is the block shift.
+     * {@code SUBSTRING_ATTRIBUTE} in {@code writer_blob.rs}. Its value is the block shift.
      */
     public static final String SUBSTRING_ATTRIBUTE = "accelerated.substring";
     /** {@code DEFAULT_DEFAULT_BLOCK_SHIFT} in {@code substring.rs}: 32 documents per block. */
