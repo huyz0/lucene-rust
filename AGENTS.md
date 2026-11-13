@@ -13,17 +13,19 @@ version: **10.5.2** (OpenSearch `main`'s `gradle/libs.versions.toml`; index
 formats are those of 10.5.0/10.5.1 -- see `docs/parity.md`). The Java source of truth lives at `/home/tuong/work/lucene`;
 the OpenSearch checkout at `/home/tuong/work/OpenSearch`.
 
-Phase 1 (foundations: `lucene-util`/`lucene-store`) is in progress. The full
-plan — phases, crate layout, verification strategy, effort estimates — is
-[`PLAN.md`](PLAN.md). Delivery milestones are [`docs/roadmap.md`](docs/roadmap.md);
-the OpenSearch plugin (M2) lives in [`opensearch-plugin/`](opensearch-plugin/),
-pinned to **OpenSearch 3.8.0**.
+The port of Lucene's modules is delivered and OpenSearch serves search and
+indexing from it; what remains is tracked in [`docs/roadmap.md`](docs/roadmap.md).
+The original plan — phases, crate layout, verification strategy, effort
+estimates — is [`PLAN.md`](PLAN.md). The OpenSearch plugin lives in
+[`opensearch-plugin/`](opensearch-plugin/).
 
 ## Invariants (don't break)
 
 1. **Downward-only crate deps.** `util ← store ← codecs ← index ← search ←
-   core ← ffi`. Siblings never depend on each other. See the **architecture**
-   skill.
+   {facet, grouping, highlighter, queryparser, suggest, ...} ← ffi`, with
+   `analysis` beside `store` and the vector crates (`vector-quant`, `ivf`)
+   under `index`. There is no `lucene-core` crate: it is `util` to `search`.
+   Siblings never depend on each other. See the **architecture** skill.
 2. **Port by on-disk format, not by class hierarchy.** The Java class graph is
    not the target; the byte-level wire format is. See **architecture** and
    **rust-performance**.
