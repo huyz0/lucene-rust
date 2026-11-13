@@ -346,7 +346,7 @@ fn check(reader: &DirectoryReader, keep: &[usize], cache: &AggSegmentCache, end:
     let mut ords = HashMap::new();
     ords.insert(
         "host".to_string(),
-        Arc::new(lucene_search::terms_agg::GlobalOrds::build(&readers, "host").unwrap()),
+        Arc::new(lucene_search::global_ords::GlobalOrds::build(&readers, "host").unwrap()),
     );
     let globals = Globals::new(&ords);
     let ids = identities(&segments, &readers);
@@ -580,7 +580,7 @@ fn a_sliding_date_range_reads_covered_segments_back() {
     let mut ords = HashMap::new();
     ords.insert(
         "host".to_string(),
-        Arc::new(lucene_search::terms_agg::GlobalOrds::build(&readers, "host").unwrap()),
+        Arc::new(lucene_search::global_ords::GlobalOrds::build(&readers, "host").unwrap()),
     );
     let globals = Globals::new(&ords);
     let ids = identities(&segments, &readers);
