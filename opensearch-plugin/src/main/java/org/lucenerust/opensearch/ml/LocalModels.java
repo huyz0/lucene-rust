@@ -395,6 +395,9 @@ public final class LocalModels {
         Map<String, Object> extra = config.get("additional_config") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
         int maxLength = configInt(config, extra, "token_max_length", 512);
         int stride = configInt(config, extra, "token_overlap_stride", 128);
+        if (maxLength < 1 || stride < 0) {
+            throw new IllegalArgumentException("token_max_length must be positive and token_overlap_stride not negative");
+        }
         int flags = (configFlag(config, extra, "with_overflowing_tokens", true) ? NativeBridge.HIGHLIGHT_OVERFLOWING : 0)
             | (configFlag(config, extra, "padding", false) ? NativeBridge.HIGHLIGHT_PADDING : 0);
         loadTorch();
@@ -412,7 +415,7 @@ public final class LocalModels {
     }
 
     private static int configInt(Map<String, Object> config, Map<String, Object> extra, String key, int fallback) {
-        return configValue(config, extra, key) instanceof Number n ? n.intValue() : fallback;
+        return configValue(config, extra, key) instanceof Number n ? (int) Math.max(Integer.MIN_VALUE, Math.min(Integer.MAX_VALUE, n.longValue())) : fallback;
     }
 
     private static boolean configFlag(Map<String, Object> config, Map<String, Object> extra, String key, boolean fallback) {

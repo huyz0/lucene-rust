@@ -19,6 +19,9 @@ use tokenizers::{
 use crate::torchscript::{Data, Input, TorchScript};
 use crate::{MlError, Result};
 
+/// The longest chunk a configuration may ask for.
+const MAX_TOKEN_LENGTH: usize = 1 << 20;
+
 /// The marker for a token no sentence owns.
 const IGNORE_TOKEN_ID: i64 = -100;
 
@@ -95,6 +98,16 @@ impl HighlighterModel {
         tokenizer_json: &[u8],
         config: Config,
     ) -> Result<HighlighterModel> {
+        if config.max_length == 0 || config.max_length > MAX_TOKEN_LENGTH {
+            return Err(MlError::InvalidArgument(format!(
+                "token_max_length must be between 1 and {MAX_TOKEN_LENGTH}"
+            )));
+        }
+        if config.stride >= config.max_length {
+            return Err(MlError::InvalidArgument(
+                "token_overlap_stride must be less than token_max_length".into(),
+            ));
+        }
         let mut tokenizer =
             Tokenizer::from_bytes(tokenizer_json).map_err(|e| MlError::Tokenizer(e.to_string()))?;
         tokenizer
@@ -218,11 +231,20 @@ fn word_sentence_ids(sentences: &[Sentence], context: &str) -> Vec<i64> {
         starts.push(at);
         at = at.saturating_add(len).saturating_add(1);
     }
-    for (n, s) in sentences.iter().enumerate() {
-        for (w, &len) in lengths.iter().enumerate() {
-            let start = starts[w];
-            if start >= s.start && start.saturating_add(len) <= s.end {
+    // Sentences start no earlier than the one before ends, so a word can
+    // only sit in the last sentence that starts at or before it.
+    for (w, &len) in lengths.iter().enumerate() {
+        let start = starts[w];
+        let end = start.saturating_add(len);
+        let upto = sentences.partition_point(|s| s.start <= start);
+        for n in (0..upto).rev() {
+            let s = &sentences[n];
+            if end <= s.end {
                 ids[w] = i64::try_from(n).unwrap_or(i64::MAX);
+                break;
+            }
+            if s.end < start {
+                break;
             }
         }
     }
@@ -602,6 +624,71 @@ mod tests {
         )
         .unwrap();
         assert!(model.highlight("a", "a b.").unwrap().is_empty());
+    }
+
+    #[test]
+    fn refuses_chunk_sizes_the_tokenizer_cannot_cut() {
+        for (max_length, stride) in [(0, 0), (4, 4), (4, 9), (usize::MAX, 0)] {
+            let config = Config {
+                max_length,
+                stride,
+                ..Config::default()
+            };
+            let made =
+                HighlighterModel::torchscript(Box::new(Fixed(vec![])), &word_level(), config);
+            assert!(matches!(made, Err(MlError::InvalidArgument(_))));
+        }
+    }
+
+    #[test]
+    fn many_short_sentences_are_tagged_without_a_pass_per_sentence() {
+        let context = "a. ".repeat(200_000);
+        let ids = word_sentence_ids(&segment(&context), &context);
+        assert_eq!(ids.len(), 200_000);
+        assert_eq!((ids[0], ids[1], ids[199_999]), (0, 1, 199_999));
+    }
+
+    #[test]
+    fn tagging_matches_a_pass_over_every_sentence() {
+        let pieces = [
+            "a", "Dr.", "b.", "e.g.", "c!", "d?", " ", "  ", "\n", "x.y.", "\"", "J.R.",
+        ];
+        let mut seed = 7_u64;
+        for _ in 0..400 {
+            let mut context = String::new();
+            for _ in 0..12 {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                context.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
+                context.push(' ');
+            }
+            let sentences = segment(&context);
+            let units: Vec<u16> = context.encode_utf16().collect();
+            let lengths = split_lengths(&units, is_space);
+            let mut expected = vec![0_i64; lengths.len()];
+            for (n, s) in sentences.iter().enumerate() {
+                let mut start = 0;
+                for (w, &len) in lengths.iter().enumerate() {
+                    if start >= s.start && start + len <= s.end {
+                        expected[w] = n as i64;
+                    }
+                    start += len + 1;
+                }
+            }
+            assert_eq!(
+                word_sentence_ids(&sentences, &context),
+                expected,
+                "{context:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn marks_can_push_a_sentence_end_past_the_text() {
+        let context = "Dr. A. B. c";
+        let s = segment(context);
+        assert!(s.last().unwrap().end > context.len() - 3);
+        let ids = word_sentence_ids(&s, context);
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
