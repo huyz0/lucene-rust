@@ -17,7 +17,7 @@ use crate::ordinal_map::{KeptTerms, OrdinalMap, SegmentSource, TermCursor};
 use crate::Result;
 
 /// A segment's ordinal column for the field.
-pub(crate) enum Ords<'a> {
+pub enum Ords<'a> {
     Absent,
     Single(Box<NumericReader<'a>>),
     Multi(Box<SortedNumericReader<'a>>),
@@ -25,7 +25,7 @@ pub(crate) enum Ords<'a> {
 
 /// `field`'s keyword doc values in `reader`: its ordinal column and terms
 /// dictionary, or `None` when the segment has no doc values for it.
-pub(crate) fn keyword_column<'a>(
+pub fn keyword_column<'a>(
     reader: &'a SegmentReader,
     field: &str,
 ) -> Result<Option<(Ords<'a>, &'a [u8], &'a TermsDictEntry)>> {
@@ -89,7 +89,7 @@ fn dict_entry<'a>(
 }
 
 /// [`keyword_column`] with its dictionary opened.
-pub(crate) fn open_ords<'a>(
+pub fn open_ords<'a>(
     reader: &'a SegmentReader,
     field: &str,
 ) -> Result<(Ords<'a>, Option<TermsDict<'a>>)> {
@@ -150,11 +150,7 @@ impl GlobalOrds {
     ///
     /// # Errors
     /// As [`Self::build`].
-    pub(crate) fn build_keeping(
-        readers: &[SegmentReader],
-        field: &str,
-        skip_runs: bool,
-    ) -> Result<Self> {
+    pub fn build_keeping(readers: &[SegmentReader], field: &str, skip_runs: bool) -> Result<Self> {
         let readers: Vec<&SegmentReader> = readers.iter().collect();
         let (map, terms) = ordinal_map_keeping(&readers, field, skip_runs)?;
         Ok(GlobalOrds {
@@ -171,18 +167,18 @@ impl GlobalOrds {
     }
 
     /// Whether these ordinals kept their terms.
-    pub(crate) fn has_terms(&self) -> bool {
+    pub fn has_terms(&self) -> bool {
         self.terms.is_some()
     }
 
     /// Whether the segments with a keyword run are left out.
-    pub(crate) fn skips_runs(&self) -> bool {
+    pub fn skips_runs(&self) -> bool {
         self.skips_runs
     }
 
     /// Term `term`'s global ordinal, when these ordinals kept their terms
     /// and it is one of them.
-    pub(crate) fn ord_of(&self, term: &[u8]) -> Option<usize> {
+    pub fn ord_of(&self, term: &[u8]) -> Option<usize> {
         let terms = self.terms.as_ref()?;
         terms.binary_search_by(|t| (**t).cmp(term)).ok()
     }
@@ -239,17 +235,17 @@ impl GlobalOrds {
     }
 
     /// Segment `seg`'s ordinals to global ones.
-    pub(crate) fn segment_map(&self, seg: usize) -> Option<&[i64]> {
+    pub fn segment_map(&self, seg: usize) -> Option<&[i64]> {
         self.map.segment_ords(seg)
     }
 
     /// The first segment holding global ordinal `g`.
-    pub(crate) fn first_segment(&self, g: i64) -> Option<usize> {
+    pub fn first_segment(&self, g: i64) -> Option<usize> {
         self.map.first_segment(g)
     }
 
     /// Global ordinal `g`'s ordinal in [`Self::first_segment`].
-    pub(crate) fn first_segment_ord(&self, g: i64) -> Option<i64> {
+    pub fn first_segment_ord(&self, g: i64) -> Option<i64> {
         self.map.first_segment_ord(g)
     }
 
@@ -471,7 +467,7 @@ impl TermCursor for NoTerms {
     }
 }
 
-pub(crate) fn store_err(e: lucene_store::Error) -> crate::Error {
+pub fn store_err(e: lucene_store::Error) -> crate::Error {
     crate::Error::from(lucene_codecs::doc_values::Error::from(e))
 }
 

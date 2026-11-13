@@ -13,6 +13,8 @@ use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::Result;
 
+pub use crate::exec::LeafContext;
+
 /// OpenSearch's `min_score` in front of the aggregations: its
 /// `MinimumScoreCollector` wraps them too, so a document counts only when it
 /// scores at least `min` -- the query scored in `COMPLETE` mode with the

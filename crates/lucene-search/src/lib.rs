@@ -196,12 +196,9 @@
 //! concept this port doesn't have yet) and skip-index-driven range pruning (this
 //! port doesn't parse doc-values skip indexes) are both deliberately deferred.
 
-pub mod aggs;
 pub mod bayesian_estimator;
 mod bit_set_pool;
-pub mod bucket_aggs;
 mod bulk_scorer;
-pub mod cardinality_sketch;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;
@@ -259,7 +256,6 @@ pub mod sandbox;
 pub mod segment_cacheable;
 pub mod segment_match;
 pub mod segment_order;
-pub mod significant_text;
 pub mod similarities;
 pub mod similarity;
 pub mod simpletext_native;
@@ -270,10 +266,8 @@ pub mod sloppy_phrase;
 pub mod soft_deletes;
 pub mod spans;
 mod sparse_docs_cache;
-pub mod tdigest;
 pub mod term_vectors_query;
 pub mod terminate;
-pub mod terms_agg;
 #[cfg(any(test, feature = "asserting"))]
 pub mod test_support;
 pub mod top_docs;

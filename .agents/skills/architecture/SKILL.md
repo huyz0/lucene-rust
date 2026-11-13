@@ -7,7 +7,7 @@ description: "WHAT: Crate layout and the strict downward dependency graph. USE W
 
 lucene-rust is a workspace of crates mirroring Lucene's own module DAG, with a
 **strictly downward dependency graph**: `util ← store ← codecs ← index ←
-search ← the modules over search (facet, grouping, highlighter, queryparser,
+search ← the modules over search (facet, grouping, aggs, highlighter, queryparser,
 suggest, ...) ← engine ← ffi`. There is no `lucene-core` crate: Lucene's core is
 `util` to `search`. `analysis` sits beside `store` (`util ← analysis ←
 index`), and the language modules hang off it: `util, analysis ←

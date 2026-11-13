@@ -236,11 +236,11 @@ fn stable_sort(order: &mut [u32], values: &[f64]) {
 }
 
 fn java_min(a: f64, b: f64) -> f64 {
-    crate::java_math::java_min(a, b)
+    lucene_search::java_math::java_min(a, b)
 }
 
 fn java_max(a: f64, b: f64) -> f64 {
-    crate::java_math::java_max(a, b)
+    lucene_search::java_math::java_max(a, b)
 }
 
 #[cfg(test)]
