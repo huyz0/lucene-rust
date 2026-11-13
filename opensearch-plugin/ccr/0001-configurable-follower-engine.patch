@@ -1,17 +1,23 @@
-From c0bf2eb0c8d6fed9519012bed432f332ea75a907 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Thu, 12 Nov 2026 23:52:07 +0000
-Subject: [PATCH] Configurable follower engine:
- plugins.replication.follower.engine (replication | delegate)
-
-delegate leaves a follower index's engine to the one engine plugin that serves
-followers; replay fails if an engine applies an operation at a sequence number
-other than the leader's.
----
- .../replication/ReplicationPlugin.kt          | 19 +++++++++++++++++--
- .../replay/TransportReplayChangesAction.kt    | 14 ++++++++++++++
- 2 files changed, 31 insertions(+), 2 deletions(-)
-
+diff --git a/README.md b/README.md
+index c6a9afb..1656857 100644
+--- a/README.md
++++ b/README.md
+@@ -153,6 +153,15 @@ For much detailed instructions/examples please refer to [HANDBOOK](HANDBOOK.md).
+ 
+ For more details on design and architecture, please refer to [RFC](docs/RFC.md) under docs.
+ 
++## Follower engine
++
++By default a follower index runs on this plugin's `ReplicationEngine`. OpenSearch accepts only one engine
++factory per index, so another engine plugin cannot also serve followers. Set the node setting
++`plugins.replication.follower.engine: delegate` (default `replication`) on the follower cluster's nodes to
++have this plugin offer no engine for follower indices, so an engine plugin that replays operations at the
++leader's sequence numbers, as `ReplicationEngine` does, can serve them. Replay fails if the engine applies an
++operation at a different sequence number.
++
+ ## CONTRIBUTING GUIDELINES
+ 
+ See [CONTRIBUTING](CONTRIBUTING.md) for more information.
 diff --git a/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt b/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt
 index b2551c0..82b811d 100644
 --- a/src/main/kotlin/org/opensearch/replication/ReplicationPlugin.kt
@@ -86,6 +92,65 @@ index 354622b..bd75c4c 100644
      fun shouldSyncMappingAndRetry(result: Engine.Result): Boolean {
          /*
              1. Incase the doc index requires a mapping update, we get the result as MAPPING_UPDATE_REQUIRED.
--- 
-2.43.0
-
+diff --git a/src/test/kotlin/org/opensearch/replication/FollowerEngineSettingTests.kt b/src/test/kotlin/org/opensearch/replication/FollowerEngineSettingTests.kt
+new file mode 100644
+index 0000000..26b07da
+--- /dev/null
++++ b/src/test/kotlin/org/opensearch/replication/FollowerEngineSettingTests.kt
+@@ -0,0 +1,56 @@
++/*
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * The OpenSearch Contributors require contributions made to
++ * this file be licensed under the Apache-2.0 license or a
++ * compatible open source license.
++ */
++
++package org.opensearch.replication
++
++import org.opensearch.cluster.metadata.IndexMetadata
++import org.opensearch.common.settings.Settings
++import org.opensearch.core.index.Index
++import org.opensearch.test.IndexSettingsModule
++import org.opensearch.test.OpenSearchTestCase
++
++class FollowerEngineSettingTests : OpenSearchTestCase() {
++
++    private fun plugin(): ReplicationPlugin = ReplicationPlugin()
++
++    private fun indexSettings(follower: Boolean, node: Settings) =
++        IndexSettingsModule.newIndexSettings(
++            Index("follower", "uuid"),
++            Settings.builder()
++                .put(IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
++                .apply { if (follower) put(ReplicationPlugin.REPLICATED_INDEX_SETTING.key, "leader:idx") }
++                .build(),
++            node
++        )
++
++    fun `test default setting is replication`() {
++        assertEquals(
++            ReplicationPlugin.FOLLOWER_ENGINE_REPLICATION,
++            ReplicationPlugin.REPLICATION_FOLLOWER_ENGINE.get(Settings.EMPTY)
++        )
++    }
++
++    fun `test unknown value is rejected`() {
++        val bad = Settings.builder().put(ReplicationPlugin.REPLICATION_FOLLOWER_ENGINE.key, "other").build()
++        val e = expectThrows(IllegalArgumentException::class.java) { ReplicationPlugin.REPLICATION_FOLLOWER_ENGINE.get(bad) }
++        assertTrue(e.message!!, e.message!!.contains("must be [replication] or [delegate]"))
++    }
++
++    fun `test replication engine serves followers by default`() {
++        assertTrue(plugin().getEngineFactory(indexSettings(true, Settings.EMPTY)).isPresent)
++    }
++
++    fun `test non follower index never gets replication engine`() {
++        assertFalse(plugin().getEngineFactory(indexSettings(false, Settings.EMPTY)).isPresent)
++    }
++
++    fun `test delegate leaves followers to another engine plugin`() {
++        val node = Settings.builder().put(ReplicationPlugin.REPLICATION_FOLLOWER_ENGINE.key, "delegate").build()
++        assertFalse(plugin().getEngineFactory(indexSettings(true, node)).isPresent)
++    }
++}
