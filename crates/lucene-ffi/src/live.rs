@@ -45,13 +45,14 @@ use lucene_search::{
 };
 use lucene_util::fixed_bit_set::FixedBitSet;
 
-use crate::clauses::map_search_error;
 use crate::engine_writer::{self, EngineWriter};
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
-use crate::jvm_reader::{boolean_of, decode_request, lookup, JvmQuery};
+use crate::jvm_reader::lookup;
 use crate::raw::bytes_from_raw;
 use crate::registry::JvmReaderHandle;
+use lucene_engine::clauses::map_search_error;
+use lucene_engine::query_blob::{boolean_of, decode_request, JvmQuery};
 use lucene_index::concurrent_writer::{FieldTotals, LeanSegment, LiveRequest, ViewBuffer};
 use lucene_index::segment_infos::SegmentCommitInfo;
 use lucene_search::directory_reader::SegmentReader;
@@ -2713,7 +2714,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             s.similarity = sim.map(|p| p as &dyn Similarity);
         }
 
-        let fields: Vec<String> = crate::clauses::clause_field_names(&q)
+        let fields: Vec<String> = lucene_engine::clauses::clause_field_names(&q)
             .into_iter()
             .map(str::to_string)
             .collect();
@@ -2794,7 +2795,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
             ),
         }
         .map_err(map_search_error);
-        let (hits, total) = crate::jvm_reader::similarity_checked(sim, searched)?;
+        let (hits, total) = lucene_engine::query_blob::similarity_checked(sim, searched)?;
         laps.lap(lucene_index::live_timing::Phase::PlainQuery);
         let hits = if top_n == 0 { Vec::new() } else { hits };
         let (total, lower_bound) = if count_limit <= 0 {

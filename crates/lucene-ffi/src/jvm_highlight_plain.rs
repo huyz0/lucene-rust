@@ -10,8 +10,8 @@
 //! |---|---|
 //! | `version: u8` | [`REQUEST_VERSION`] |
 //! | `field: bytes` | UTF-8 |
-//! | `query: bytes` | a query blob ([`crate::jvm_reader::decode_query`]) |
-//! | `analyzer: bytes` | the field's index analyzer ([`crate::jvm_analysis`]) |
+//! | `query: bytes` | a query blob ([`lucene_engine::query_blob::decode_query`]) |
+//! | `analyzer: bytes` | the field's index analyzer ([`lucene_engine::analysis`]) |
 //! | `require_field_match: u8` | `1`: only the field's terms count |
 //! | `fragmenter: u8`, `fragment_size: i32` | `0` none (`number_of_fragments: 0`), `1` span, `2` simple |
 //! | `number_of_fragments: i32` | |
@@ -38,7 +38,7 @@ use lucene_highlighter::opensearch_plain::{
 
 use crate::error::{set_last_error, FfiStatus};
 use crate::jvm_highlight::{decode_clause, invalid, put_i32, utf8, Limited};
-use crate::jvm_reader::Cursor;
+use lucene_engine::query_blob::Cursor;
 
 /// The request layout's version.
 pub(crate) const REQUEST_VERSION: u8 = 1;
@@ -70,7 +70,7 @@ fn decode(blob: &[u8]) -> Result<PlainHighlighter, FfiStatus> {
     }
     let field = utf8(c.bytes()?, "the field")?.to_string();
     let query = decode_clause(c.bytes()?)?;
-    let analyzer = crate::jvm_analysis::analyzer(c.bytes()?)?;
+    let analyzer = lucene_engine::analysis::analyzer(c.bytes()?)?;
     let require_field_match = c.u8()? != 0;
     let kind = c.u8()?;
     let fragment_size = c.i32()?;

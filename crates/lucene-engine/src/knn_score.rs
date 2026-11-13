@@ -1,6 +1,6 @@
 //! OpenSearch's `script_score` (`ScriptScoreQuery`) running the k-NN
 //! plugin's `knn_score` script over a `knn_vector` space, as node `42` of the
-//! query tree ([`crate::jvm_queries`]).
+//! query tree ([`crate::queries`]).
 //!
 //! The sub-query's documents are scored by the script's distance, with the
 //! script's float arithmetic (the plugin's `KnnScoringScriptEngine` and
@@ -25,7 +25,7 @@
 //! | `data_type` | `u8`: `0` float, `1` byte or binary, `2` half_float |
 //! | `half_cosine` | `u8`: `1` scores cosine as `(1 + cos) / 2` (indexes created on 2.19 or later) |
 //! | target | `u8` `0` then `i32` count and that many `f32`, or `1` then bytes |
-//! | formula | `u8`: `0` `knn_score`'s, `1` a Painless script's ([`crate::jvm_knn_painless`], which follows) |
+//! | formula | `u8`: `0` `knn_score`'s, `1` a Painless script's ([`crate::knn_painless`], which follows) |
 //!
 //! Under a Painless formula the space and cosine flag are unused, and a
 //! document without a vector is an error rather than a score of 0.
@@ -47,11 +47,11 @@ use lucene_search::values_source::{
 use lucene_search::{Error, Result};
 use lucene_util::vector_util::{cosine_sums_i8, xor_bit_count};
 
-use crate::error::FfiStatus;
-use crate::jvm_nodes::invalid;
-use crate::jvm_reader::Cursor;
+use crate::nodes::invalid;
+use crate::query_blob::Cursor;
+use crate::status::Status;
 
-pub(crate) const NODE_KNN_SCORE: u8 = 42;
+pub const NODE_KNN_SCORE: u8 = 42;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Space {
@@ -78,7 +78,7 @@ enum Target {
 
 /// `knn_score`'s value for each document of a segment.
 #[derive(Debug, Clone)]
-pub(crate) struct KnnScoreSource {
+pub struct KnnScoreSource {
     field: String,
     space: Space,
     data_type: DataType,
@@ -87,17 +87,17 @@ pub(crate) struct KnnScoreSource {
     /// The float target's squared magnitude (`cosinesimilOptimized`'s).
     norm: f32,
     /// A Painless script's formula in place of `knn_score`'s.
-    painless: Option<Arc<crate::jvm_knn_painless::Painless>>,
+    painless: Option<Arc<crate::knn_painless::Painless>>,
 }
 
-pub(crate) fn decode(
+pub fn decode(
     c: &mut Cursor<'_>,
     depth: usize,
     nodes: &mut usize,
-) -> std::result::Result<Clause, FfiStatus> {
-    let sub = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
+) -> std::result::Result<Clause, Status> {
+    let sub = crate::query_blob::decode_node(c, depth + 1, nodes)?;
     let field = std::str::from_utf8(c.bytes()?)
-        .map_err(|_| FfiStatus::InvalidUtf8)?
+        .map_err(|_| Status::InvalidUtf8)?
         .to_string();
     let space = match c.u8()? {
         0 => Space::L2,
@@ -133,7 +133,7 @@ pub(crate) fn decode(
     };
     let target = match c.u8()? {
         0 => {
-            let n = c.len()?;
+            let n = c.length()?;
             let mut v = Vec::with_capacity(n.min(c.remaining() / 4)); // alloc-ok: bounded by the blob
             for _ in 0..n {
                 v.push(f32::from_bits(c.i32()? as u32));
@@ -149,7 +149,7 @@ pub(crate) fn decode(
     };
     let painless = match c.u8()? {
         0 => None,
-        1 => Some(Arc::new(crate::jvm_knn_painless::decode(c)?)),
+        1 => Some(Arc::new(crate::knn_painless::decode(c)?)),
         other => {
             return Err(invalid(format!(
                 "query tree: knn_score formula {other} (expected 0..=1)"
@@ -194,7 +194,7 @@ impl KnnScoreSource {
     fn missing(&self, doc: i32) -> Result<Option<f32>> {
         match &self.painless {
             None => Ok(None),
-            Some(_) => Err(crate::jvm_knn_painless::missing(&self.field, doc)),
+            Some(_) => Err(crate::knn_painless::missing(&self.field, doc)),
         }
     }
 
@@ -456,7 +456,7 @@ impl Ordinals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jvm_nodes::tests::Blob;
+    use crate::query_blob::test_support::Blob;
 
     fn node(space: u8, data_type: u8, target: Blob) -> Blob {
         Blob::default()
@@ -470,10 +470,10 @@ mod tests {
             .u8(0)
     }
 
-    fn decoded(blob: &Blob) -> std::result::Result<Clause, FfiStatus> {
+    fn decoded(blob: &Blob) -> std::result::Result<Clause, Status> {
         let mut c = Cursor::new(&blob.0);
         let mut nodes = 0;
-        crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)
+        crate::query_blob::decode_node(&mut c, 0, &mut nodes)
     }
 
     fn source(space: Space, half_cosine: bool, target: Target) -> KnnScoreSource {

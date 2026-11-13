@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use lucene_util::memory::{self, Entered, Reason, Scope};
+use lucene_util::memory::{self, Entered, Scope};
 
 use crate::error::{guard, set_last_error, FfiStatus};
 
@@ -217,15 +217,6 @@ pub extern "C" fn ffi_query_cache_set_budget(bytes: i64) -> i32 {
     })
 }
 
-/// The status and message for a request a bound or cancel stopped.
-pub(crate) fn exceeded(e: &memory::Exceeded) -> FfiStatus {
-    set_last_error(e.message.clone());
-    match e.reason {
-        Reason::Cancelled => FfiStatus::Cancelled,
-        Reason::Request | Reason::Process => FfiStatus::MemoryLimit,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,7 +254,7 @@ mod tests {
             .join()
             .unwrap();
         let e = memory::checkpoint().unwrap_err();
-        assert_eq!(exceeded(&e), FfiStatus::Cancelled);
+        assert_eq!(lucene_engine::memory::exceeded(&e), FfiStatus::Cancelled);
         // SAFETY: null out with n = 0.
         assert_eq!(unsafe { ffi_memory_scope_end(std::ptr::null_mut(), 0) }, 0);
         assert_eq!(ffi_memory_scope_cancel(42), 0, "closed: a no-op");
