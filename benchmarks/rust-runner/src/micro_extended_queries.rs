@@ -159,7 +159,8 @@ fn run_extended_cases(
 
     let mut groups: BTreeMap<String, Vec<Search>> = BTreeMap::new();
     for (sim, text, top) in lines {
-        let parsed = (!is_vector(text)).then(|| extended_grammar::query(text, &ctx).expect("parse"));
+        let parsed =
+            (!is_vector(text)).then(|| extended_grammar::query(text, &ctx).expect("parse"));
         groups
             .entry(format!("{prefix}_{}", family(text)))
             .or_default()
@@ -238,7 +239,12 @@ fn fixture_lines(name: &str, top: usize) -> Vec<(String, String, usize)> {
 /// vectors, no index sort and one-dimensional points).
 pub fn bench_extended_fixture(w: Duration, m: Duration) {
     for (prefix, name, top, qvec) in [
-        ("fx", "extended_queries_index", 20, &extended_grammar::QVEC[..]),
+        (
+            "fx",
+            "extended_queries_index",
+            20,
+            &extended_grammar::QVEC[..],
+        ),
         ("fxknn", "extended_knn_index", 50, &QVEC8[..]),
         ("fxdv", "extended_dv_index", 50, &extended_grammar::QVEC[..]),
     ] {
