@@ -3330,13 +3330,13 @@ pub struct DirectoryReader {
     /// Keyword fields' global ordinals, built on first use and kept for the
     /// reader's life -- the `OrdinalMap` Lucene caches per reader and field.
     global_ords:
-        std::sync::Mutex<std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>>,
+        std::sync::Mutex<std::collections::HashMap<String, Arc<crate::global_ords::GlobalOrds>>>,
     /// Global ordinals of the readers made from this one with segments
     /// appended ([`Self::with_readers_appended`]), which share its segments.
-    appended_ords: Arc<crate::terms_agg::GlobalOrdsCache>,
+    appended_ords: Arc<crate::global_ords::GlobalOrdsCache>,
     /// For a reader made with segments appended, its parent's
     /// `appended_ords`, which its global ordinals are built through.
-    ords_cache: Option<Arc<crate::terms_agg::GlobalOrdsCache>>,
+    ords_cache: Option<Arc<crate::global_ords::GlobalOrdsCache>>,
     /// BM25 norm tables by average field length's bits ([`Self::norm_table`]).
     norm_tables: std::sync::Mutex<std::collections::HashMap<u32, Arc<[f32; 256]>>>,
     /// Each field's norms across the segments, resolved once
@@ -3564,7 +3564,7 @@ impl DirectoryReader {
     pub fn global_ords_skipping_runs(
         &self,
         field: &str,
-    ) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
+    ) -> crate::Result<Arc<crate::global_ords::GlobalOrds>> {
         if !self.segments.iter().any(|s| s.keyword_run(field).is_some()) {
             return self.global_ords(field);
         }
@@ -3579,7 +3579,7 @@ impl DirectoryReader {
         }
         let built = match &self.ords_cache {
             Some(cache) => cache.ords_with(&self.segments, field, true)?,
-            None => Arc::new(crate::terms_agg::GlobalOrds::build_keeping(
+            None => Arc::new(crate::global_ords::GlobalOrds::build_keeping(
                 &self.segments,
                 field,
                 true,
@@ -3597,14 +3597,15 @@ impl DirectoryReader {
     }
 
     /// `field`'s global ordinals over this reader's segments, built on the
-    /// first call and kept (see [`crate::terms_agg::GlobalOrds`]).
+    /// first call and kept (see [`crate::global_ords::GlobalOrds`]).
     ///
     /// # Errors
-    /// What building them reports ([`crate::terms_agg::GlobalOrds::build`]).
-    pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::terms_agg::GlobalOrds>> {
-        let cached = |m: &std::collections::HashMap<String, Arc<crate::terms_agg::GlobalOrds>>| {
-            m.get(field).cloned()
-        };
+    /// What building them reports ([`crate::global_ords::GlobalOrds::build`]).
+    pub fn global_ords(&self, field: &str) -> crate::Result<Arc<crate::global_ords::GlobalOrds>> {
+        let cached = |m: &std::collections::HashMap<
+            String,
+            Arc<crate::global_ords::GlobalOrds>,
+        >| { m.get(field).cloned() };
         // A poisoned lock only means another thread panicked while holding
         // it; the map it guards is always whole.
         if let Some(g) = cached(&self.global_ords.lock().unwrap_or_else(|e| e.into_inner())) {
@@ -3614,7 +3615,10 @@ impl DirectoryReader {
         // is kept -- the same map either way.
         let built = match &self.ords_cache {
             Some(cache) => cache.ords(&self.segments, field)?,
-            None => Arc::new(crate::terms_agg::GlobalOrds::build(&self.segments, field)?),
+            None => Arc::new(crate::global_ords::GlobalOrds::build(
+                &self.segments,
+                field,
+            )?),
         };
         let mut map = self.global_ords.lock().unwrap_or_else(|e| e.into_inner());
         Ok(map.entry(field.to_string()).or_insert(built).clone())

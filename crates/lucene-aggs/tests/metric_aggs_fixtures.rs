@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use lucene_search::aggs::{
+use lucene_aggs::metric_aggs::{
     metric_states, metric_states_sliced, MetricSpec, Source, ValueKind, NEED_ALL, NEED_COUNT,
     NEED_MAX, NEED_MIN, NEED_SUM,
 };
@@ -211,7 +211,7 @@ fn metric_aggregations_match_opensearch_bit_for_bit() {
                 .collect();
             let got = metric_states(&segments, reader.segment_readers(), &q, &part).unwrap();
             for (g, f) in got.iter().zip(&full) {
-                let pick = |s: &lucene_search::aggs::MetricState| match needs {
+                let pick = |s: &lucene_aggs::metric_aggs::MetricState| match needs {
                     NEED_MIN => hex(s.min_of_mins),
                     NEED_MAX => hex(s.max_of_maxes),
                     NEED_COUNT => s.count.to_string(),

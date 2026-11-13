@@ -32,6 +32,7 @@ lucene-codecs = { path = "../lucene-codecs" }
 lucene-zstd = { path = "../lucene-zstd" }
 lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
+lucene-aggs = { path = "../lucene-aggs" }
 # The unified highlighter the fetch phase runs (`jvm_highlight.rs`).
 lucene-highlighter = { path = "../lucene-highlighter" }
 lucene-sandbox = { path = "../lucene-sandbox" }
