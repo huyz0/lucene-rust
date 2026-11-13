@@ -50,15 +50,6 @@ use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
 use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
 use std::sync::Arc;
 
-/// The version of the contract between this library and the Java classes in
-/// `opensearch-plugin/`: the entry points in this module, `engine_writer.rs`
-/// and `ffm_bridge.rs`, their argument order, and the query blob layout. The plugin refuses to
-/// start against a library reporting any other number -- a jar carrying a
-/// stale `.so` must not get as far as reading an index.
-///
-/// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 171;
-
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
 /// Blob tag for a `BooleanQuery` in the occur-tagged clause format.
@@ -110,12 +101,6 @@ const GEOMETRY_LINE: u8 = 1;
 const GEOMETRY_POLYGON: u8 = 2;
 const GEOMETRY_RECTANGLE: u8 = 3;
 const GEOMETRY_CIRCLE: u8 = 4;
-
-/// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
-#[no_mangle]
-pub extern "C" fn ffi_jvm_abi_version() -> u32 {
-    JVM_ABI_VERSION
-}
 
 /// A request's query blob: the query, and the `min_score` in front of it
 /// ([`QUERY_MIN_SCORE`]) when there is one -- rewritten, as
@@ -5487,11 +5472,6 @@ pub(crate) mod tests {
             Err(FfiStatus::InvalidArgument.code())
         );
         ffi_close_jvm_reader(h);
-    }
-
-    #[test]
-    fn abi_version_is_the_constant() {
-        assert_eq!(ffi_jvm_abi_version(), JVM_ABI_VERSION);
     }
 
     /// Hits and scores are Lucene's own, bit for bit, from the fixture's
