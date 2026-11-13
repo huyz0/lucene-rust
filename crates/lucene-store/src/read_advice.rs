@@ -70,7 +70,7 @@ impl ReadAdvice {
 
 /// The extensions advised [`ReadAdvice::Random`] unless [`set`] says
 /// otherwise.
-pub const DEFAULT_RANDOM_EXTENSIONS: [&str; 5] = ["vec", "vex", "ivv", "veq", "vqd"];
+pub const DEFAULT_RANDOM_EXTENSIONS: [&str; 6] = ["vec", "vex", "ivv", "veq", "vqd", "dhn"];
 
 /// The extensions advised [`ReadAdvice::Auto`] unless [`set`] says
 /// otherwise.

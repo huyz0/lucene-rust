@@ -334,6 +334,9 @@ pub enum Error {
     /// The IVF index of a `IvfVectorsFormat` group.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
+    /// The disk files of a `DiskHnswVectorsFormat` instance.
+    #[error(transparent)]
+    DiskHnsw(#[from] lucene_disk_hnsw::Error),
     #[error(transparent)]
     DocValuesWrite(#[from] lucene_codecs::doc_values::WriteError),
     #[error(transparent)]
@@ -1018,10 +1021,11 @@ impl SegmentFormat {
             // `.vemq`/`.veq` and `.vemb`/`.veb`: the retired quantized formats' codes
             // (Lucene 9.9-10.3), which a merge reads past to the raw `.vec`;
             // `.ivm`/`.ivp`/`.ivv`: `IvfVectorsFormat`'s IVF index;
-            // `.vqm`/`.vqd`: `HnswQuantizedVectorsFormat`'s codes.
+            // `.vqm`/`.vqd`: `HnswQuantizedVectorsFormat`'s codes;
+            // `.dhm`/`.dhc`/`.dhn`: `DiskHnswVectorsFormat`'s disk layout.
             SegmentFormat::KnnVectors => &[
                 "vec", "vemf", "vem", "vex", "vemq", "veq", "vemb", "veb", "ivm", "ivp", "ivv",
-                "vqm", "vqd",
+                "vqm", "vqd", "dhm", "dhc", "dhn",
             ],
         }
     }
@@ -5384,6 +5388,40 @@ fn merge_vector_group(
             hnsw_vectors::write_hnsw_vectors(&hnsw_fields, merged_segment_id, suffix)?;
         files.push(("vex", vex_bytes));
         files.push(("vem", vem_bytes));
+        if format.hnsw_disk_quantizer().is_some() {
+            // The merged graph and vectors are copied into node records
+            // afresh.
+            let mut merged_fields = Vec::new();
+            for (merged_field, graph) in plan.iter().map(|p| &p.0).zip(&graphs) {
+                let Some(graph) = graph else { continue };
+                if merged_field.vector_encoding != VectorEncoding::Float32 {
+                    continue;
+                }
+                let values = flat.float_vector_values(merged_field.number)?;
+                let docs = (0..values.size())
+                    .map(|ord| values.ord_to_doc(ord))
+                    .collect::<std::result::Result<Vec<i32>, _>>()?;
+                merged_fields.push((merged_field, docs, values.all_vectors()?, graph));
+            }
+            let disk: Vec<crate::disk_hnsw_vectors::DiskField<'_>> = merged_fields
+                .iter()
+                .map(
+                    |(field, docs, vectors, graph)| crate::disk_hnsw_vectors::DiskField {
+                        number: field.number,
+                        similarity: field.vector_similarity_function,
+                        dimension: usize::try_from(field.vector_dimension).unwrap_or(0),
+                        docs,
+                        vectors,
+                        graph,
+                    },
+                )
+                .collect();
+            if let Some(written) =
+                crate::disk_hnsw_vectors::write(format, &disk, merged_segment_id, suffix)?
+            {
+                files.extend(written);
+            }
+        }
     }
     files.insert(0, ("vemf", vemf_bytes));
     Ok((files, vec_name))

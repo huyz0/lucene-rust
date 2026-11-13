@@ -6,7 +6,9 @@
 //! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]
 //!   --formats L   comma list of hnsw, hnsw-int7, hnsw-sq1/sq2/sq4 (Lucene104
 //!                 scalar quantized HNSW), hnsw-<quantizer> (the graph walked on
-//!                 any `IVF_QUANTIZERS` codes: hnsw-erq2, hnsw-rabitq, ...), ivf,
+//!                 any `IVF_QUANTIZERS` codes: hnsw-erq2, hnsw-rabitq, ...),
+//!                 disk-<quantizer> (the disk HNSW layout ranking on those
+//!                 codes: disk-bbq, disk-erq4, ...), ivf,
 //!                 ivf-f16 and ivf-<quantizer> (f16 rerank, ivf-erq4, ivf-osq2, ...)
 //!                 (default hnsw, hnsw-int7, ivf, ivf-f16)
 //!   --queries N   measured queries (default 1000), after 200 warm-up ones
@@ -14,6 +16,10 @@
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
 //!   --ef L        HNSW candidate counts to sweep (default 100)
 //!   --dir D       where the indexes are written (default a temporary directory)
+//!   --paged-mb N  search through `PagedFsDirectory` (vector files through
+//!                 the demand pager) holding at most N MiB of them
+//!                 resident, and print page faults a query; needs
+//!                 userfaultfd
 //!   --mmap        search through `MmapDirectory` (read advice applies;
 //!                 `READ_ADVICE` sets `lucene_store::read_advice`) instead
 //!                 of files read whole
@@ -89,6 +95,13 @@ fn format(name: &str) -> KnnVectorsFormat {
                 .unwrap_or_else(|| panic!("unknown format {other}"));
             KnnVectorsFormat::hnsw_quantized(quantizer as u8, 16, 100).unwrap()
         }
+        other if other.starts_with("disk-") => {
+            let quantizer = IVF_QUANTIZERS
+                .iter()
+                .position(|&n| Some(n) == other.strip_prefix("disk-"))
+                .unwrap_or_else(|| panic!("unknown format {other}"));
+            KnnVectorsFormat::hnsw_disk(quantizer as u8, 16, 100).unwrap()
+        }
         other => {
             // `ivf-<quantizer>`: f16 rerank vectors, the named cluster codes.
             let quantizer = other
@@ -125,6 +138,7 @@ fn main() {
     let segments: usize = opt("--segments").map_or(1, |s| s.parse().unwrap());
     let merge = args.iter().any(|a| a == "--merge");
     let mmap = args.iter().any(|a| a == "--mmap");
+    let paged_mb: Option<u64> = opt("--paged-mb").map(|s| s.parse().unwrap());
     if let Ok(spec) = std::env::var("READ_ADVICE") {
         lucene_store::read_advice::set(&spec).unwrap();
     }
@@ -153,7 +167,7 @@ fn main() {
     let tune_queries: usize = opt("--tune-queries").map_or(3000, |s| s.parse().unwrap());
     let root = opt("--dir").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     eprintln!("{prefix}: {n} x {dim}, {nq} queries, {segments} segments, merge {merge}");
-    println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us");
+    println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us,faults_per_query");
     for name in formats.split(',') {
         let path = if reuse {
             root.join(format!("knn-formats-{name}"))
@@ -232,7 +246,20 @@ fn main() {
         let build = t.elapsed().as_secs_f64();
         let size = dir_size(&path) as f64 / 1e6;
         let mapped = lucene_store::MmapDirectory::open(&path);
-        let reader = if mmap {
+        let paged = paged_mb.map(|mb| {
+            let d = lucene_store::PagedFsDirectory::with_config(
+                &path,
+                lucene_store::PagedFsConfig::vectors_only(),
+            );
+            assert!(d.is_paged(), "userfaultfd is unavailable");
+            lucene_store::paged_input::Pager::global()
+                .unwrap()
+                .set_budget(mb << 20);
+            d
+        });
+        let reader = if let Some(paged) = &paged {
+            DirectoryReader::open(paged).unwrap()
+        } else if mmap {
             DirectoryReader::open(&mapped).unwrap()
         } else {
             DirectoryReader::open(&dir).unwrap()
@@ -382,6 +409,15 @@ fn main() {
             for q in nq..(nq + 200).min(nq_all) {
                 search(q);
             }
+            let faults = || {
+                lucene_store::paged_input::Pager::global()
+                    .filter(|_| paged.is_some())
+                    .map_or(0, |p| {
+                        let st = p.stats();
+                        st.faults + st.refaults
+                    })
+            };
+            let faults_before = faults();
             let mut times = Vec::with_capacity(nq);
             let mut found = 0usize;
             for q in 0..nq {
@@ -403,9 +439,21 @@ fn main() {
                 format!("ef={candidates}")
             };
             println!(
-                "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0}",
+                "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0},{:.1}",
                 reader.segment_readers().len(),
-                found as f64 / (nq * K) as f64
+                found as f64 / (nq * K) as f64,
+                (faults() - faults_before) as f64 / nq as f64
+            );
+        }
+        if let Some(p) = lucene_store::paged_input::Pager::global().filter(|_| paged.is_some()) {
+            let st = p.stats();
+            eprintln!(
+                "{name}: pager faults {} refaults {} evictions {} fault_ms {} resident_mb {}",
+                st.faults,
+                st.refaults,
+                st.evictions,
+                st.fault_nanos / 1_000_000,
+                p.resident_bytes() >> 20
             );
         }
         drop(opened);
