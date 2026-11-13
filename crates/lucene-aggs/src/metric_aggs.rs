@@ -404,6 +404,7 @@ impl MetricSlot for MaxOf {
     }
 }
 
+#[inline]
 pub(crate) fn to_double(kind: ValueKind, v: i64) -> f64 {
     match kind {
         ValueKind::Long => v as f64,
