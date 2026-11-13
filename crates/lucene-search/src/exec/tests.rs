@@ -1361,8 +1361,12 @@ fn check_tail_only_first_doc(
 /// gets no answer.
 #[test]
 fn a_tail_only_terms_first_doc_matches_its_cursor() {
-    let (answered, few, docs_only, _) =
-        check_tail_only_first_doc("extended_queries_index", &["body", "title", "tag"], "tag", 256);
+    let (answered, few, docs_only, _) = check_tail_only_first_doc(
+        "extended_queries_index",
+        &["body", "title", "tag"],
+        "tag",
+        256,
+    );
     assert!(
         answered > 0 && few > 0 && docs_only > 0,
         "{answered} {few} {docs_only}"
