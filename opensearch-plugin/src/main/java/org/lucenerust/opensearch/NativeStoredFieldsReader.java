@@ -78,6 +78,20 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
         throw new IOException("a derived _source from a reader that has none");
     };
 
+    /** A large string or binary value the blob leaves out: read with {@link ValueLoader} when wanted. */
+    static final byte DEFERRED = 7;
+
+    /** A {@code DEFERRED} value, read only when the visitor asks for it. */
+    @FunctionalInterface
+    interface ValueLoader {
+        /** Hands the value of the field at {@code ordinal}, {@code len} bytes of {@code type} ({@code STRING} or {@code BINARY}), to {@code visitor}. */
+        void load(FieldInfo fi, byte type, int len, int ordinal, StoredFieldVisitor visitor) throws IOException;
+    }
+
+    private static final ValueLoader NO_DEFERRED = (fi, type, len, ordinal, visitor) -> {
+        throw new IOException("a deferred value from a reader that has none");
+    };
+
     /** What the leaves share: the top reader, once built, and its native handle. */
     static final class Shared {
         final NativeReaders readers;
@@ -389,7 +403,8 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             if (l != null && l.doc == docID && l.thread == Thread.currentThread() && shared.enabled.getAsBoolean()) {
                 // The same document again, for another field a derived _source rebuilds from:
                 // counted and timed once, when it was read.
-                replay(fieldInfos, l.blob, visitor, (fi, v) -> derivedSource(shared.handle(), docID, fi, v, lucene));
+                long h = shared.handle();
+                replay(fieldInfos, l.blob, visitor, (fi, v) -> derivedSource(h, docID, fi, v, lucene), values(h, docID, lucene));
                 return;
             }
             long start = System.nanoTime();
@@ -433,17 +448,18 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                 // The replay copies the document onto the heap, and the response copies it again.
                 NativeMemory.chargeHeap(2 * bytes.byteSize());
                 SourceLoader source = (fi, v) -> derivedSource(h, docID, fi, v, lucene);
+                ValueLoader values = values(h, docID, lucene);
                 if (derived && bytes.byteSize() <= KEEP_BYTES) {
                     // Kept for the reads that follow: the bytes are freed once this returns.
                     byte[] blob = bytes.toArray(ValueLayout.JAVA_BYTE);
                     last = new LastDocument(Thread.currentThread(), docID, blob);
-                    replay(fieldInfos, blob, visitor, source);
+                    replay(fieldInfos, blob, visitor, source, values);
                     return;
                 }
                 if (derived) {
                     last = null;
                 }
-                replay(fieldInfos, bytes, visitor, source);
+                replay(fieldInfos, bytes, visitor, source, values);
             });
             // The fetch phase's memory bound or a cancel: the request fails as the breaker or the
             // task says, rather than reading the document again on the heap.
@@ -457,6 +473,67 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
             return true;
         }
 
+
+        /** {@code docID}'s {@code DEFERRED} values, natively, else from Lucene's codec. */
+        private ValueLoader values(long h, int docID, LuceneDocument lucene) {
+            return (fi, type, len, ordinal, visitor) -> deferredValue(h, docID, fi, type, len, ordinal, visitor, lucene);
+        }
+
+        /**
+         * The value a document blob left out ({@code DEFERRED}), read when the visitor wants it:
+         * charged to the request breaker as the document was (the replay and the response each copy
+         * it), natively, else from Lucene's codec.
+         */
+        private void deferredValue(
+            long h,
+            int docID,
+            FieldInfo fi,
+            byte type,
+            int len,
+            int ordinal,
+            StoredFieldVisitor visitor,
+            LuceneDocument lucene
+        ) throws IOException {
+            NativeMemory.chargeHeap(2L * len);
+            boolean[] read = new boolean[1];
+            int rc = NativeBridge.storedValue(h, ord, docID, ordinal, bytes -> {
+                if (bytes.byteSize() != len) {
+                    return;
+                }
+                ByteBuffer b = bytes.asByteBuffer();
+                if (type == STRING) {
+                    visitor.stringField(fi, string(b, 0, len));
+                } else {
+                    visitor.binaryField(fi, binary(b, 0, len));
+                }
+                read[0] = true;
+            });
+            NativeMemory.check(rc);
+            if (rc == NativeBridge.OK && read[0]) {
+                return;
+            }
+            shared.stats.nativeError();
+            logger.warn("lucene-rust: native stored value failed ({}), reading with Lucene: {}", rc, NativeBridge.lastError());
+            lucene.document(docID, new StoredFieldVisitor() {
+                private int at;
+
+                @Override
+                public Status needsField(FieldInfo field) {
+                    int i = at++;
+                    return i < ordinal ? Status.NO : i == ordinal ? Status.YES : Status.STOP;
+                }
+
+                @Override
+                public void binaryField(FieldInfo field, StoredFieldDataInput value) throws IOException {
+                    visitor.binaryField(fi, value);
+                }
+
+                @Override
+                public void stringField(FieldInfo field, String value) throws IOException {
+                    visitor.stringField(fi, value);
+                }
+            });
+        }
 
         /**
          * The {@code _source} of {@code docID} with its vectors spliced back, natively, else from
@@ -569,28 +646,32 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
      * (null for a number {@code infos} does not know, asked all the same) to {@code needsField} before
      * its value, {@code NO} skipping the value and {@code STOP} ending the document, a binary value
      * handed over as a {@link StoredFieldDataInput}. A {@code DERIVED_SOURCE} field's value comes from
-     * {@code source}, asked only when the visitor wants it.
+     * {@code source}, and a {@code DEFERRED} one's from {@code values}, each asked only when the
+     * visitor wants it.
      */
     static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor) throws IOException {
-        replay(infos, blob, visitor, NO_DERIVED_SOURCE);
+        replay(infos, blob, visitor, NO_DERIVED_SOURCE, NO_DEFERRED);
     }
 
-    static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
-        replay(infos, ByteBuffer.wrap(blob), visitor, source);
+    static void replay(FieldInfos infos, byte[] blob, StoredFieldVisitor visitor, SourceLoader source, ValueLoader values)
+        throws IOException {
+        replay(infos, ByteBuffer.wrap(blob), visitor, source, values);
     }
 
     /**
      * {@link #replay} over native bytes lent for the call: as with Lucene's own reader, a binary
      * value's input is valid only during {@code binaryField}, so a visitor copies what it keeps.
      */
-    static void replay(FieldInfos infos, MemorySegment blob, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
+    static void replay(FieldInfos infos, MemorySegment blob, StoredFieldVisitor visitor, SourceLoader source, ValueLoader values)
+        throws IOException {
         if (blob.byteSize() > Integer.MAX_VALUE) {
             throw new IOException("a native document of " + blob.byteSize() + " bytes");
         }
-        replay(infos, blob.asByteBuffer(), visitor, source);
+        replay(infos, blob.asByteBuffer(), visitor, source, values);
     }
 
-    private static void replay(FieldInfos infos, ByteBuffer b, StoredFieldVisitor visitor, SourceLoader source) throws IOException {
+    private static void replay(FieldInfos infos, ByteBuffer b, StoredFieldVisitor visitor, SourceLoader source, ValueLoader values)
+        throws IOException {
         b.order(ByteOrder.LITTLE_ENDIAN);
         int n = b.getInt();
         for (int i = 0; i < n; i++) {
@@ -606,6 +687,19 @@ final class NativeStoredFieldsReader extends FilterDirectoryReader {
                         throw new IOException("a derived _source of a field number the reader does not know");
                     }
                     source.load(fi, visitor);
+                }
+                continue;
+            }
+            if (type == DEFERRED) {
+                byte valueType = b.get();
+                int len = b.getInt();
+                int ordinal = b.getInt();
+                StoredFieldVisitor.Status status = visitor.needsField(fi);
+                if (status == StoredFieldVisitor.Status.STOP) {
+                    return;
+                }
+                if (status == StoredFieldVisitor.Status.YES) {
+                    values.load(fi, valueType, len, ordinal, visitor);
                 }
                 continue;
             }
