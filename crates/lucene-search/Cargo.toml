@@ -11,6 +11,7 @@ lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-ivf = { path = "../lucene-ivf" }
+lucene-disk-hnsw = { path = "../lucene-disk-hnsw" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).

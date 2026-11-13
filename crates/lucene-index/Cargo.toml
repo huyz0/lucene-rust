@@ -14,6 +14,7 @@ lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-analysis = { path = "../lucene-analysis" }
 lucene-ivf = { path = "../lucene-ivf" }
+lucene-disk-hnsw = { path = "../lucene-disk-hnsw" }
 lucene-vector-quant = { path = "../lucene-vector-quant" }
 rayon.workspace = true
 

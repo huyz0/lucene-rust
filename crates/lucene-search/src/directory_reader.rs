@@ -337,6 +337,8 @@ struct CodecFiles {
     scalar_quantized: Option<ScalarQuantizedFiles>,
     /// A `HnswQuantizedVectorsFormat` instance's codes.
     hnsw_codes: Option<HnswCodesFiles>,
+    /// A `DiskHnswVectorsFormat` instance's disk layout.
+    disk_hnsw: Option<DiskHnswFiles>,
     /// The vectors instance's flat reader, detached from its file: opened
     /// (header, footer, metadata) on first use, then shared by every read.
     flat_reader: OnceLock<lucene_codecs::vectors::FlatVectorsReader<'static>>,
@@ -376,6 +378,16 @@ struct HnswCodesFiles {
     meta: Arc<Input>,
     data: Arc<Input>,
     reader: OnceLock<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>,
+}
+
+/// A disk HNSW instance's `.dhm`, `.dhc` and `.dhn`, and the reader over
+/// them, opened on first search and shared by every search after it.
+#[derive(Debug)]
+struct DiskHnswFiles {
+    meta: Arc<Input>,
+    codes: Arc<Input>,
+    nodes: Arc<Input>,
+    reader: OnceLock<Arc<lucene_disk_hnsw::DiskHnswReader>>,
 }
 
 /// An IVF index's `.ivm`, `.ivp` and `.ivv`, and the reader over them,
@@ -1175,6 +1187,7 @@ impl SegmentReader {
                     ivf: None,
                     scalar_quantized: None,
                     hnsw_codes: None,
+                    disk_hnsw: None,
                     flat_reader: OnceLock::new(),
                     graph_reader: OnceLock::new(),
                     suffix: codec_suffix_of(&name, &segment_name, ".tvd"),
@@ -1257,6 +1270,21 @@ impl SegmentReader {
                         ))))
                     }
                 };
+                let disk_hnsw = match (open(".dhm")?, open(".dhc")?, open(".dhn")?) {
+                    (Some(meta), Some(codes), Some(nodes)) => Some(DiskHnswFiles {
+                        meta,
+                        codes,
+                        nodes,
+                        reader: OnceLock::new(),
+                    }),
+                    (None, None, None) => None,
+                    _ => {
+                        return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                            "segment {segment_name}: a disk HNSW layout without all of its \
+                             .dhm, .dhc and .dhn files"
+                        ))))
+                    }
+                };
                 vectors.push(Arc::new(CodecFiles {
                     data,
                     index: open(".vex")?,
@@ -1265,6 +1293,7 @@ impl SegmentReader {
                     ivf,
                     scalar_quantized,
                     hnsw_codes,
+                    disk_hnsw,
                     flat_reader: OnceLock::new(),
                     graph_reader: OnceLock::new(),
                     suffix,
@@ -1733,6 +1762,47 @@ impl SegmentReader {
         Ok(None)
     }
 
+    /// The disk HNSW layout of the instance field `field_number` was
+    /// written with (`DiskHnswVectorsFormat`), opened once per segment;
+    /// `None` when that instance has none or holds no layout for the field
+    /// (a byte field, or a segment too small for a graph).
+    ///
+    /// # Errors
+    /// Disk HNSW files that do not decode.
+    pub fn disk_hnsw_for(
+        &self,
+        field_number: i32,
+    ) -> crate::Result<Option<Arc<lucene_disk_hnsw::DiskHnswReader>>> {
+        let named = self.vectors_instance_of(field_number);
+        for f in self
+            .vectors
+            .iter()
+            .filter(|f| named.as_deref().is_none_or(|n| n == f.suffix))
+        {
+            let Some(disk) = &f.disk_hnsw else {
+                continue;
+            };
+            let reader = match disk.reader.get() {
+                Some(reader) => reader.clone(),
+                // A failed open is not kept: the next search tries again.
+                None => {
+                    let opened = Arc::new(lucene_index::disk_hnsw_vectors::open(
+                        &disk.meta,
+                        disk.codes.clone(),
+                        disk.nodes.clone(),
+                        &self.segment_id,
+                        &f.suffix,
+                    )?);
+                    disk.reader.get_or_init(|| opened).clone()
+                }
+            };
+            if reader.field(field_number).is_some() {
+                return Ok(Some(reader));
+            }
+        }
+        Ok(None)
+    }
+
     /// The scalar-quantized codes of the instance field `field_number` was
     /// written with (`Lucene104(Hnsw)ScalarQuantizedVectorsFormat`), its
     /// metadata parsed once per segment; `None` when that instance has none
@@ -1876,6 +1946,9 @@ impl SegmentReader {
         }
         for codes in self.vectors.iter().filter_map(|c| c.hnsw_codes.as_ref()) {
             files.extend([&**codes.meta, &**codes.data]);
+        }
+        for disk in self.vectors.iter().filter_map(|c| c.disk_hnsw.as_ref()) {
+            files.extend([&**disk.meta, &**disk.codes, &**disk.nodes]);
         }
         for g in &self.dv_generations {
             files.push(&g.data);

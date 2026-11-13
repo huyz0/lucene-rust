@@ -317,6 +317,9 @@ pub enum Error {
     /// The IVF index of a `IvfVectorsFormat` instance.
     #[error(transparent)]
     Ivf(#[from] lucene_ivf::Error),
+    /// The disk files of a `DiskHnswVectorsFormat` instance.
+    #[error(transparent)]
+    DiskHnsw(#[from] lucene_disk_hnsw::Error),
     #[error("set_vector_field: no field named {0:?} in this writer's field list")]
     UnknownVectorField(String),
     #[error(transparent)]
@@ -11723,6 +11726,30 @@ impl IndexWriter<'_> {
                 hnsw_vectors::write_hnsw_vectors(&hnsw_fields, segment_id, suffix)?;
             files.push(("vex", vex_bytes));
             files.push(("vem", vem_bytes));
+            if indexes && format.hnsw_disk_quantizer().is_some() {
+                let disk: Vec<crate::disk_hnsw_vectors::DiskField<'_>> = flat_fields
+                    .iter()
+                    .zip(&graphs)
+                    .filter_map(|(field, graph)| match (&field.values, graph) {
+                        (FieldVectorData::Float32(values), Some(graph)) => {
+                            Some(crate::disk_hnsw_vectors::DiskField {
+                                number: field.field_number,
+                                similarity: field.similarity,
+                                dimension: usize::try_from(field.dimension).unwrap_or(0),
+                                docs: &field.docs,
+                                vectors: values,
+                                graph,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(written) =
+                    crate::disk_hnsw_vectors::write(format, &disk, segment_id, suffix)?
+                {
+                    files.extend(written);
+                }
+            }
         }
         files.insert(0, ("vemf", vemf_bytes));
         files.insert(0, ("vec", vec_bytes));
