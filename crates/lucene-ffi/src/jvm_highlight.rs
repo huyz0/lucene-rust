@@ -14,9 +14,9 @@
 //! |---|---|
 //! | `version: u8` | [`REQUEST_VERSION`] |
 //! | `field: bytes` | UTF-8 |
-//! | `query: bytes` | a query blob ([`crate::jvm_reader::decode_query`]) |
+//! | `query: bytes` | a query blob ([`lucene_engine::query_blob::decode_query`]) |
 //! | `offset_source: u8` | `0` analysis, `1` postings, `2` postings with term vectors, `3` term vectors |
-//! | `analyzers: i32`, then per analyzer `field: bytes`, `spec: bytes` | the index analyzers of the field and its `matched_fields` that are described ([`crate::jvm_analysis`]) |
+//! | `analyzers: i32`, then per analyzer `field: bytes`, `spec: bytes` | the index analyzers of the field and its `matched_fields` that are described ([`lucene_engine::analysis`]) |
 //! | `offset_limit: i32` | `max_analyzer_offset` (a `LimitTokenOffsetFilter`), `-1` for none |
 //! | `breaks: u8`, `max_len: i32` | `0` one passage per value, `1` sentences, `2` sentences bounded to `max_len`, `3` words |
 //! | `max_passages: i32` | `number_of_fragments` (`i32::MAX - 1` for all) |
@@ -44,7 +44,8 @@ use lucene_highlighter::unified::strategies::LeafCtx;
 use lucene_search::query::Clause;
 
 use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_reader::{self, Cursor, JvmQuery};
+use crate::jvm_reader::{self};
+use lucene_engine::query_blob::{Cursor, JvmQuery};
 
 /// The request layout's version.
 pub(crate) const REQUEST_VERSION: u8 = 1;
@@ -127,10 +128,10 @@ impl AnalyzerWrapper for Limited {
 
 /// The query of a request, as the clause tree the highlighter visits.
 pub(crate) fn decode_clause(blob: &[u8]) -> Result<Clause, FfiStatus> {
-    if blob.first() == Some(&jvm_reader::QUERY_TREE) {
+    if blob.first() == Some(&lucene_engine::query_blob::QUERY_TREE) {
         let mut c = Cursor::new(&blob[1..]);
         let mut nodes = 0usize;
-        let clause = jvm_reader::decode_node(&mut c, 0, &mut nodes)?;
+        let clause = lucene_engine::query_blob::decode_node(&mut c, 0, &mut nodes)?;
         if c.remaining() != 0 {
             return Err(invalid(format!(
                 "highlight request: {} trailing bytes after the query",
@@ -139,7 +140,7 @@ pub(crate) fn decode_clause(blob: &[u8]) -> Result<Clause, FfiStatus> {
         }
         return Ok(clause);
     }
-    Ok(match jvm_reader::decode_query(blob)? {
+    Ok(match lucene_engine::query_blob::decode_query(blob)? {
         JvmQuery::Term(t) => Clause::Term(t),
         JvmQuery::Boolean(b) => Clause::Boolean(Box::new(b)),
     })
@@ -163,7 +164,7 @@ fn decode(blob: &[u8]) -> Result<Prepared, FfiStatus> {
         s => return Err(invalid(format!("highlight request: offset source {s}"))),
     };
     let mut specs = Vec::new();
-    for _ in 0..c.len()? {
+    for _ in 0..c.length()? {
         let f = utf8(c.bytes()?, "an analyzer's field")?.to_string();
         specs.push((f, c.bytes()?));
     }
@@ -188,7 +189,7 @@ fn decode(blob: &[u8]) -> Result<Prepared, FfiStatus> {
     let html = c.u8()? != 0;
     let require_field_match = c.u8()? != 0;
     let mut matched = BTreeSet::new();
-    for _ in 0..c.len()? {
+    for _ in 0..c.length()? {
         matched.insert(utf8(c.bytes()?, "a matched field")?.to_string());
     }
     let max_analyzed_offset = c.i32()?;
@@ -201,7 +202,7 @@ fn decode(blob: &[u8]) -> Result<Prepared, FfiStatus> {
     let analysis = offset_source == OffsetSource::Analysis;
     let mut by_field = HashMap::new();
     for (f, spec) in specs {
-        by_field.insert(f, crate::jvm_analysis::analyzer(spec)?);
+        by_field.insert(f, lucene_engine::analysis::analyzer(spec)?);
     }
     let described: BTreeSet<String> = by_field.keys().cloned().collect();
     let analyzer = Some(Arc::new(Analyzer::new(Limited {

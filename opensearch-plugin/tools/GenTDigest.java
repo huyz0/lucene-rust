@@ -3,7 +3,7 @@
  */
 
 /**
- * The vectors in {@code crates/lucene-search/src/tdigest.rs}'s tests, from t-digest 3.3's own
+ * The vectors in {@code crates/lucene-aggs/src/tdigest.rs}'s tests, from t-digest 3.3's own
  * {@code MergingDigest} (what OpenSearch's {@code TDigestState} extends): digests of a few value
  * sequences at several compressions, across merges in both directions, each state's every field
  * (counters, {@code min}/{@code max}, the merged and the buffered centroids) folded into one

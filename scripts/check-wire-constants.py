@@ -19,7 +19,7 @@ with its Rust counterpart and fails when the values differ:
     the Java file's `PREFIXES` entry (`AGG_TERMS` for `NativeAggregationTree`'s
     `TERMS`); `RENAMES` covers the rest. The exact name wins over a prefixed
     one, and candidates that disagree among themselves need a `RENAMES` entry.
-  * `NativeBridge`'s status codes pair with the `FfiStatus` variants
+  * `NativeBridge`'s status codes pair with the `Status` variants
     (`INVALID_ARGUMENT` for `InvalidArgument`), and `EXPECTED_ABI_VERSION`
     with `JVM_ABI_VERSION`.
   * A constant with no Rust counterpart (a Java-side batch size, say) must be
@@ -41,6 +41,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA_DIR = os.path.join(ROOT, "opensearch-plugin", "src", "main", "java")
 RUST_DIR = os.path.join(ROOT, "crates", "lucene-ffi", "src")
+# The query-blob decoders and the status codes, which the plugin encodes for
+# (what `lucene-ffi` used to hold itself).
+ENGINE_DIR = os.path.join(ROOT, "crates", "lucene-engine", "src")
 # The encrypted store's file format, which the plugin's store/Lrse.java reads
 # and writes too.
 CRYPTO_DIR = os.path.join(ROOT, "crates", "lucene-store-crypto", "src")
@@ -59,7 +62,7 @@ EXTRA_FILES = {
     "NativeStoredFieldsReader.java": ["jvm_fetch.rs"],
     "NativeTopHits.java": ["jvm_aggs.rs"],
     "NativeSignificantTerms.java": ["jvm_aggs.rs"],
-    "QueryEncoder.java": ["jvm_nodes.rs"],
+    "QueryEncoder.java": ["nodes.rs", "query_blob.rs"],
     "MultiVectorEncoding.java": ["max_sim.rs"],
 }
 
@@ -79,7 +82,7 @@ PREFIXES = {
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
 # more than a prefix or the prefix rule is ambiguous.
 RENAMES = {
-    ("ExtendedEncoder.java", "MAX_PATTERN_TERMS"): ("jvm_pattern_phrase.rs", "MAX_TERMS"),
+    ("ExtendedEncoder.java", "MAX_PATTERN_TERMS"): ("pattern_phrase.rs", "MAX_TERMS"),
     ("QueryEncoder.java", "MAX_DEPTH"): ("clauses.rs", "MAX_CLAUSE_DEPTH"),
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
@@ -90,19 +93,19 @@ RENAMES = {
     ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),
     ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("jvm_reader.rs", "MAX_HYBRID_QUERIES"),
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
-    ("AnalyzerSpec.java", "VERSION"): ("jvm_analysis.rs", "SPEC_VERSION"),
+    ("AnalyzerSpec.java", "VERSION"): ("analysis.rs", "SPEC_VERSION"),
     ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("abi.rs", "JVM_ABI_VERSION"),
     # format.rs re-exports these from backend.rs.
     ("Lrse.java", "NONCE_LEN"): ("backend.rs", "NONCE_LEN"),
     ("Lrse.java", "TAG_LEN"): ("backend.rs", "TAG_LEN"),
     ("ZstdTermBlocks.java", "CODE"): ("blocktree_writer.rs", "COMPRESSION_ZSTD"),
-    ("ExtendedEncoder.java", "NODE_TO_CHILD"): ("jvm_queries.rs", "NODE_TO_CHILD"),
-    ("ExtendedEncoder.java", "NODE_KNN_SCORE"): ("jvm_knn_score.rs", "NODE_KNN_SCORE"),
-    ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("jvm_painless_score.rs", "NODE_PAINLESS_SCORE"),
-    ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("jvm_max_sim.rs", "NODE_MAX_SIM"),
-    ("ExtendedEncoder.java", "NODE_PAINLESS_FILTER"): ("jvm_painless_score.rs", "NODE_PAINLESS_FILTER"),
-    ("ExtendedEncoder.java", "NODE_PATTERN_PHRASE"): ("jvm_pattern_phrase.rs", "NODE_PATTERN_PHRASE"),
-    ("ExtendedEncoder.java", "NODE_JOIN"): ("jvm_queries.rs", "NODE_JOIN"),
+    ("ExtendedEncoder.java", "NODE_TO_CHILD"): ("queries.rs", "NODE_TO_CHILD"),
+    ("ExtendedEncoder.java", "NODE_KNN_SCORE"): ("knn_score.rs", "NODE_KNN_SCORE"),
+    ("ExtendedEncoder.java", "NODE_PAINLESS_SCORE"): ("painless_score.rs", "NODE_PAINLESS_SCORE"),
+    ("ExtendedEncoder.java", "NODE_MAX_SIM"): ("max_sim_query.rs", "NODE_MAX_SIM"),
+    ("ExtendedEncoder.java", "NODE_PAINLESS_FILTER"): ("painless_score.rs", "NODE_PAINLESS_FILTER"),
+    ("ExtendedEncoder.java", "NODE_PATTERN_PHRASE"): ("pattern_phrase.rs", "NODE_PATTERN_PHRASE"),
+    ("ExtendedEncoder.java", "NODE_JOIN"): ("queries.rs", "NODE_JOIN"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "VERSION"): ("vectors.rs", "HALF_FLOAT_VERSION"),
     ("KNN1040HnswHalfFloatVectorsFormat.java", "ALIGNMENT"): ("vectors.rs", "HALF_FLOAT_ALIGNMENT"),
     ("ZstdTermBlocks.java", "SECTION_BYTES_PER_ENTRY"): ("blocktree.rs", "ZSTD_SECTION_BYTES_PER_ENTRY"),
@@ -202,7 +205,7 @@ def snake(camel):
 
 def load_rust():
     consts = {}
-    files = [(d, n) for d in (RUST_DIR, CRYPTO_DIR, CODECS_DIR, TENSOR_DIR) for n in sorted(os.listdir(d))]
+    files = [(d, n) for d in (RUST_DIR, ENGINE_DIR, CRYPTO_DIR, CODECS_DIR, TENSOR_DIR) for n in sorted(os.listdir(d))]
     files.append(os.path.split(MAX_SIM_RS))
     for d, name in files:
         if not name.endswith(".rs") or name in consts:
@@ -215,9 +218,9 @@ def load_rust():
             if v is not None:
                 found.setdefault(m.group(1), v)
         consts[name] = found
-    with open(os.path.join(RUST_DIR, "error.rs"), encoding="utf-8") as f:
+    with open(os.path.join(ENGINE_DIR, "status.rs"), encoding="utf-8") as f:
         text = f.read()
-    body = re.search(r"pub enum FfiStatus\s*\{(.*?)\n\}", text, re.S).group(1)
+    body = re.search(r"pub enum Status\s*\{(.*?)\n\}", text, re.S).group(1)
     status = {snake(m.group(1)): int(m.group(2)) for m in re.finditer(r"^\s*([A-Z]\w*)\s*=\s*(\d+)\s*,", body, re.M)}
     return consts, status
 
@@ -259,7 +262,7 @@ def main():
                 continue
             matches = [(rfile, rname, rust[rfile][rname])]
         elif jfile == "NativeBridge.java" and name in status:
-            matches = [("error.rs", f"FfiStatus::{name}", status[name])]
+            matches = [("status.rs", f"Status::{name}", status[name])]
         else:
             files = [f for f in refs + EXTRA_FILES.get(jfile, []) if f in rust]
             names = {name, PREFIXES.get(jfile, "") + name}

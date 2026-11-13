@@ -22,7 +22,7 @@ estimates — is [`PLAN.md`](PLAN.md). The OpenSearch plugin lives in
 ## Invariants (don't break)
 
 1. **Downward-only crate deps.** `util ← store ← codecs ← index ← search ←
-   {facet, grouping, highlighter, queryparser, suggest, ...} ← ffi`, with
+   {facet, grouping, aggs, highlighter, queryparser, suggest, ...} ← ffi`, with
    `analysis` beside `store` and the vector crates (`vector-quant`, `ivf`)
    under `index`. There is no `lucene-core` crate: it is `util` to `search`.
    Siblings never depend on each other. See the **architecture** skill.

@@ -55,7 +55,7 @@ public final class NativeBridge {
     /** An aggregation made more buckets than the request allows; the last error is the count. */
     public static final int TOO_MANY_BUCKETS = 14;
 
-    /** Query blob tags ({@code decode_query} in {@code jvm_reader.rs}). */
+    /** Query blob tags ({@code decode_query} in {@code query_blob.rs}). */
     public static final byte QUERY_TERM = 0;
     public static final byte QUERY_BOOLEAN = 1;
     public static final byte QUERY_TREE = 2;
@@ -2107,7 +2107,7 @@ public final class NativeBridge {
 
     /**
      * {@code text} analyzed as field {@code field} by the analyzer {@code spec} describes ({@code
-     * jvm_analysis.rs}; {@link AnalyzerSpec} writes the spec), its tokens in {@code out[0]}.
+     * analysis.rs}; {@link AnalyzerSpec} writes the spec), its tokens in {@code out[0]}.
      */
     public static int analyze(byte[] spec, byte[] field, byte[] text, byte[][] out) {
         if (spec == null || field == null || text == null) {
@@ -2143,7 +2143,7 @@ public final class NativeBridge {
 
     /**
      * Whether the native runtime runs the Painless score script {@code spec} describes (the node's
-     * fields after its sub-query, {@code jvm_painless_score.rs}) exactly as Painless would, decided
+     * fields after its sub-query, {@code painless_score.rs}) exactly as Painless would, decided
      * before anything runs: {@code out[0]} empty when it does, else the reason as UTF-8.
      */
     public static int painlessCheck(byte[] spec, byte[][] out) {
@@ -2856,7 +2856,7 @@ public final class NativeBridge {
     }
 
     /**
-     * Registers an analyzer for indexing ({@code jvm_analysis::register}: its spec and the
+     * Registers an analyzer for indexing ({@code analysis::register}: its spec and the
      * similarity's name), its id in {@code outId[0]}.
      */
     public static int analysisRegister(byte[] spec, String similarity, int[] outId) {

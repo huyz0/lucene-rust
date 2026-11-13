@@ -3,8 +3,10 @@
 //!
 //! - [`jvm_reader`] opens a shard's commit and runs query trees, sorts,
 //!   collapse and rescore; [`jvm_aggs`] collects aggregations; [`jvm_fetch`]
-//!   reads stored documents; [`jvm_analysis`] builds analyzers from the
-//!   plugin's specs.
+//!   reads stored documents. What a request's blobs mean (the query decoders,
+//!   analyzers built from specs) is in [`lucene_engine`], which has no
+//!   pointers or handles; this crate reads the caller's memory and hands the
+//!   engine slices.
 //! - [`engine_writer`] is the shard's index writer, fed operation blobs.
 //! - [`store`] binds encrypted shard directories to their key upcall.
 //! - [`ffm_bridge`] holds the allocation and error helpers only FFM needs.
@@ -79,30 +81,20 @@ unsafe impl<A: std::alloc::GlobalAlloc> std::alloc::GlobalAlloc for Accounting<A
 
 mod abi;
 mod analysis_modules;
-mod clauses;
+#[cfg(test)]
+mod engine_tests;
 pub(crate) mod engine_writer;
 mod error;
 mod ffm_bridge;
 mod handle;
 mod jvm_aggs;
-mod jvm_analysis;
 mod jvm_fetch;
-mod jvm_function_score;
 mod jvm_highlight;
 mod jvm_highlight_fvh;
 mod jvm_highlight_plain;
-mod jvm_invert;
 mod jvm_join;
 mod jvm_knn;
-mod jvm_knn_painless;
-mod jvm_knn_score;
-mod jvm_max_sim;
-mod jvm_nodes;
-mod jvm_painless_score;
-mod jvm_pattern_phrase;
-mod jvm_queries;
 mod jvm_reader;
-mod jvm_similarity;
 mod live;
 mod memory;
 mod ml;

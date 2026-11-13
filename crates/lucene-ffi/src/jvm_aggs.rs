@@ -1,5 +1,5 @@
 //! The plugin's aggregation trees: a tree blob decoded into
-//! [`lucene_search::bucket_aggs::AggNode`]s, run over a reader handle, and
+//! [`lucene_aggs::bucket_aggs::AggNode`]s, run over a reader handle, and
 //! the shard results encoded for the plugin's `NativeAggregations.Tree` to
 //! turn into OpenSearch's `InternalAggregation`s.
 //!
@@ -62,7 +62,7 @@
 //! bounds_*  := flags:u8 [min] [max]           (flag 1: a minimum, 2: a maximum)
 //! ```
 //!
-//! Queries are query blobs ([`crate::jvm_reader::decode_query`]); the slices
+//! Queries are query blobs ([`lucene_engine::query_blob::decode_query`]); the slices
 //! are [`crate::jvm_reader`]'s.
 //!
 //! # The result
@@ -114,19 +114,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lucene_search::aggs::{MinScore, Source, ValueKind};
-use lucene_search::bucket_aggs::{
+use lucene_aggs::bucket_aggs::{
     self, AcceptedOrds, AggNode, AggResult, CardinalityKind, CompositeAfter, CompositeKeyValue,
     CompositeSource, CompositeValues, DateRounding, DateUnit, Globals, MissingOrder, RoundingKind,
     SignificantKey, TermsOrder,
 };
+use lucene_aggs::metric_aggs::{Source, ValueKind};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
+use lucene_search::segment_match::MinScore;
 use lucene_search::BooleanQuery;
 
-use crate::clauses::map_search_error;
 use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_reader::{self, Cursor};
+use crate::jvm_reader::{self};
+use lucene_engine::clauses::map_search_error;
+use lucene_engine::query_blob::Cursor;
 
 const AGG_METRIC: u8 = 0;
 const AGG_CARDINALITY: u8 = 1;
@@ -147,7 +149,7 @@ const AGG_HDR_PERCENTILES: u8 = 14;
 const AGG_NESTED: u8 = 15;
 const AGG_REVERSE_NESTED: u8 = 16;
 const AGG_SIGNIFICANT_TEXT: u8 = 17;
-/// A metric over a Painless script's values ([`crate::jvm_painless_score::PainlessAggValues`]).
+/// A metric over a Painless script's values ([`lucene_engine::painless_score::PainlessAggValues`]).
 const AGG_SCRIPT_METRIC: u8 = 18;
 /// The most source fields a `significant_text` may read.
 const MAX_SOURCE_FIELDS: i32 = 1024;
@@ -258,7 +260,7 @@ fn terms_order(c: &mut Cursor<'_>) -> Result<TermsOrder, FfiStatus> {
 }
 
 fn width(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
-    let n = c.len()?;
+    let n = c.length()?;
     if n == 0 || n > MAX_WIDTH {
         return Err(bad(format!(
             "aggregation tree: {n} buckets, want 1..={MAX_WIDTH}"
@@ -268,7 +270,9 @@ fn width(c: &mut Cursor<'_>) -> Result<usize, FfiStatus> {
 }
 
 fn query_of(blob: &[u8]) -> Result<BooleanQuery, FfiStatus> {
-    Ok(jvm_reader::boolean_of(&jvm_reader::decode_query(blob)?))
+    Ok(lucene_engine::query_blob::boolean_of(
+        &lucene_engine::query_blob::decode_query(blob)?,
+    ))
 }
 
 fn nodes(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<Vec<AggNode>, FfiStatus> {
@@ -344,7 +348,7 @@ fn node_of(
                 }
             };
             let needs = c.u8()?;
-            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+            if needs == 0 || needs & !lucene_aggs::metric_aggs::NEED_ALL != 0 {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
             AggNode::Metric {
@@ -358,10 +362,10 @@ fn node_of(
         }
         AGG_SCRIPT_METRIC => {
             let needs = c.u8()?;
-            if needs == 0 || needs & !lucene_search::aggs::NEED_ALL != 0 {
+            if needs == 0 || needs & !lucene_aggs::metric_aggs::NEED_ALL != 0 {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
-            let values = crate::jvm_painless_score::PainlessAggValues::decode(c)?;
+            let values = lucene_engine::painless_score::PainlessAggValues::decode(c)?;
             AggNode::Metric {
                 missing: None,
                 field: String::new(),
@@ -423,7 +427,7 @@ fn node_of(
                 1 => true,
                 f => return Err(bad(format!("aggregation tree: significant_text flags {f}"))),
             };
-            let analyzer = crate::jvm_analysis::analyzer(c.bytes()?)?;
+            let analyzer = lucene_engine::analysis::analyzer(c.bytes()?)?;
             let name = field(c)?;
             let n = c.i32()?;
             if !(1..=MAX_SOURCE_FIELDS).contains(&n) {
@@ -442,7 +446,7 @@ fn node_of(
                 missing_term: None,
                 missing: None,
                 text: Some(std::sync::Arc::new(
-                    lucene_search::significant_text::TextSource {
+                    lucene_aggs::significant_text::TextSource {
                         source_fields,
                         field: name,
                         analyzer,
@@ -521,7 +525,7 @@ fn node_of(
             let accepted = if flags & 4 != 0 {
                 let count = u64::try_from(c.i64()?)
                     .map_err(|_| bad("aggregation tree: negative ordinal count".to_string()))?;
-                let words = c.len()?;
+                let words = c.length()?;
                 if u64::try_from(words).ok() != Some(count.div_ceil(64)) {
                     return Err(bad(format!(
                         "aggregation tree: {words} words for {count} ordinals"
@@ -682,7 +686,7 @@ fn node_of(
                 }
                 f => return Err(bad(format!("aggregation tree: after flag {f}"))),
             };
-            let segments = c.len()?;
+            let segments = c.length()?;
             let mut sorted_lead = Vec::new();
             for _ in 0..segments {
                 sorted_lead.push(match c.u8()? {
@@ -1066,27 +1070,29 @@ pub(crate) fn aggregate_tree_blobs(
 
 /// [`aggregate_tree_blobs`], with `cached` each committed segment's part
 /// read from and kept in the process's aggregation segment cache
-/// ([`lucene_search::bucket_aggs::segment_cache`]): the same results.
+/// ([`lucene_aggs::bucket_aggs::segment_cache`]): the same results.
 pub(crate) fn aggregate_tree_blobs_cached(
     handle: u64,
     query_blob: &[u8],
     tree_blob: &[u8],
     cached: bool,
 ) -> Result<Vec<u8>, FfiStatus> {
-    let (query, min_score, sim) = jvm_reader::decode_request(query_blob)?;
+    let (query, min_score, sim) = lucene_engine::query_blob::decode_request(query_blob)?;
     let sim = sim.as_ref();
     let tree = decode_tree(tree_blob)?;
     let h = jvm_reader::lookup(
         handle,
         "ffi_jvm_reader_aggregate_tree: unknown or already-closed handle",
     )?;
-    let query =
-        crate::jvm_reader::similarity_checked(sim, crate::jvm_join::resolve(&h, query, sim))?;
+    let query = lucene_engine::query_blob::similarity_checked(
+        sim,
+        crate::jvm_join::resolve(&h, query, sim),
+    )?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
         FfiStatus::Decode
     })?;
-    let q = jvm_reader::boolean_of(&query);
+    let q = lucene_engine::query_blob::boolean_of(&query);
     let mut filters = Vec::new();
     for n in tree
         .nodes
@@ -1096,12 +1102,12 @@ pub(crate) fn aggregate_tree_blobs_cached(
         n.filter_queries(&mut filters);
     }
     let global_query = tree.global.as_ref().map(|(gq, _)| gq);
-    let points = jvm_reader::query_uses_points(&query)
+    let points = lucene_engine::query_blob::query_uses_points(&query)
         || filters
             .iter()
             .copied()
             .chain(global_query)
-            .any(jvm_reader::boolean_uses_points)
+            .any(lucene_engine::query_blob::boolean_uses_points)
         || tree.nodes.iter().any(AggNode::reads_points)
         // A top-level histogram or range may be counted from the points.
         || tree
@@ -1144,7 +1150,7 @@ pub(crate) fn aggregate_tree_blobs_cached(
         let g: Arc<_> = h
             .reader
             .global_ords(f)
-            .map_err(crate::clauses::map_search_error)?;
+            .map_err(lucene_engine::clauses::map_search_error)?;
         ords.insert(f.to_string(), g);
     }
     let globals = Globals::new(&ords).with_bucket_limit(tree.bucket_limit);
@@ -1158,13 +1164,13 @@ pub(crate) fn aggregate_tree_blobs_cached(
     let mut norm_fields: Vec<String> = Vec::new();
     if min_score.is_some() || main_scores {
         norm_fields.extend(
-            crate::clauses::clause_field_names(&q)
+            lucene_engine::clauses::clause_field_names(&q)
                 .into_iter()
                 .map(str::to_string),
         );
     }
     if let (true, Some(gq)) = (global_scores, global_query) {
-        for f in crate::clauses::clause_field_names(gq) {
+        for f in lucene_engine::clauses::clause_field_names(gq) {
             if !norm_fields.iter().any(|n| n == f) {
                 norm_fields.push(f.to_string());
             }
@@ -1201,10 +1207,10 @@ pub(crate) fn aggregate_tree_blobs_cached(
             min.as_ref(),
             request.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error);
+        .map_err(lucene_engine::clauses::map_search_error);
         // A similarity script's error first: the search met it before
         // anything that ended it.
-        let sliced = jvm_reader::similarity_checked(sim, sliced)?;
+        let sliced = lucene_engine::query_blob::similarity_checked(sim, sliced)?;
         for results in &sliced {
             for r in results {
                 encode_result(r, &mut out)?;
@@ -1225,15 +1231,15 @@ pub(crate) fn aggregate_tree_blobs_cached(
             global_min.as_ref(),
             request.as_ref(),
         )
-        .map_err(crate::clauses::map_search_error);
-        let results = jvm_reader::similarity_checked(sim, results)?;
+        .map_err(lucene_engine::clauses::map_search_error);
+        let results = lucene_engine::query_blob::similarity_checked(sim, results)?;
         for results in &results {
             for r in results {
                 encode_result(r, &mut out)?;
             }
         }
     }
-    jvm_reader::similarity_checked(sim, Ok(out))
+    lucene_engine::query_blob::similarity_checked(sim, Ok(out))
 }
 
 /// The aggregations of a tree blob over the live matches of the query blob:
@@ -1339,7 +1345,7 @@ pub(crate) mod tests {
     }
 
     fn metric(b: &mut Vec<u8>, kind: u8, source: u8, field: &str) {
-        b.extend_from_slice(&[AGG_METRIC, kind, source, lucene_search::aggs::NEED_ALL]);
+        b.extend_from_slice(&[AGG_METRIC, kind, source, lucene_aggs::metric_aggs::NEED_ALL]);
         string(b, field);
     }
 
@@ -1490,7 +1496,7 @@ pub(crate) mod tests {
     #[test]
     fn the_segment_cache_answers_as_the_pass_without_it() {
         use crate::jvm_reader::tests::{open_live, range_blob, term_and_range_blob};
-        use lucene_search::bucket_aggs::segment_cache::AggSegmentCache;
+        use lucene_aggs::bucket_aggs::segment_cache::AggSegmentCache;
         let cache = AggSegmentCache::global();
         cache.set_budget(64 << 20);
         let trees = [
@@ -1911,7 +1917,7 @@ pub(crate) mod tests {
             );
         }
         // The result: a bucket that collected nothing, then a digest.
-        let mut d = lucene_search::tdigest::MergingDigest::new(100.0);
+        let mut d = lucene_aggs::tdigest::MergingDigest::new(100.0);
         for x in [3.0, 1.0, 2.0] {
             d.add(x).unwrap();
         }
@@ -2006,7 +2012,7 @@ pub(crate) mod tests {
 
     #[test]
     fn sorted_top_hits_decode_and_encode() {
-        use lucene_search::bucket_aggs::SortedHits;
+        use lucene_aggs::bucket_aggs::SortedHits;
         use lucene_search::top_field::{FieldDoc, SortField, SortType, TopFieldDocs};
         // A sort blob: `kw` ascending (missing last), then `n` (long) descending.
         let sort_blob = |after: bool, options: u8| {
@@ -2114,8 +2120,12 @@ pub(crate) mod tests {
 
     #[test]
     fn significant_text_decodes_and_a_refusal_encodes_as_minus_one() {
-        let spec =
-            crate::jvm_analysis::tests::spec(&[], ("whitespace", &[]), &[("lowercase", &[])], &[]);
+        let spec = lucene_engine::analysis::test_support::spec(
+            &[],
+            ("whitespace", &[]),
+            &[("lowercase", &[])],
+            &[],
+        );
         let mut b = vec![1u8, AGG_SIGNIFICANT_TEXT, 1];
         b.extend_from_slice(&(spec.len() as i32).to_le_bytes());
         b.extend_from_slice(&spec);
@@ -2332,7 +2342,7 @@ pub(crate) mod tests {
         assert!(count >= 0);
         // The metrics blob path agrees on the same query and field.
         let flat = jvm_reader::aggregate_blobs(h, &fox, &{
-            let mut b = vec![1u8, 0, 0, lucene_search::aggs::NEED_ALL];
+            let mut b = vec![1u8, 0, 0, lucene_aggs::metric_aggs::NEED_ALL];
             string(&mut b, "n");
             b.push(0);
             b.extend_from_slice(&0i32.to_le_bytes());
@@ -2392,7 +2402,7 @@ pub(crate) mod tests {
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
         // Behind min_score, and sliced.
-        let mut min = vec![jvm_reader::QUERY_MIN_SCORE];
+        let mut min = vec![lucene_engine::query_blob::QUERY_MIN_SCORE];
         min.extend_from_slice(&0.0f32.to_bits().to_le_bytes());
         min.extend_from_slice(&fox);
         let mut sliced = every_kind(false);

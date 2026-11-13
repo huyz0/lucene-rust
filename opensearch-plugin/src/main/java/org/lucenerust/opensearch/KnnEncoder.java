@@ -19,7 +19,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * The KNN nodes of the query tree ({@code jvm_queries.rs}) and the whole-reader KNN request
+ * The KNN nodes of the query tree ({@code queries.rs}) and the whole-reader KNN request
  * ({@code jvm_knn.rs}):
  *
  * <ul>

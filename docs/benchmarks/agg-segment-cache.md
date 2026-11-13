@@ -159,7 +159,7 @@ of the budget is not kept. Counters: `aggregation_segment_cache` in
   the plugin differ in `top_hosts` counts and error bounds, because their
   segments differ (20 vs 6) and each slice truncates its own terms. main and
   cache are bitwise identical there too.
-- Rust tests (`crates/lucene-search/tests/agg_segment_cache.rs`): every tree
+- Rust tests (`crates/lucene-aggs/tests/agg_segment_cache.rs`): every tree
   and query over refreshes, subsets of segments, deletes, a doc-values update,
   a force merge and eviction, whole-segment and in 64-document blocks, against
   the pass without the cache; sums near 2^51 fall back to the uncached pass.
