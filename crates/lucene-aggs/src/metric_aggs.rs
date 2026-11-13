@@ -43,18 +43,18 @@ use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::numeric_utils::{sortable_int_to_float, sortable_long_to_double};
 
-use crate::directory_reader::SegmentReader;
-use crate::exec;
-use crate::global_ords::GlobalOrds;
-use crate::java_math::{java_max, java_min, JAVA_NAN};
-use crate::multi_segment::OpenSegment;
-use crate::query::{BooleanQuery, Clause};
-use crate::segment_match::{
-    column_read, lone_clause, segment_match_read, segment_matches_scoring, Accept, ColumnRead,
-    MinScore,
-};
+use lucene_search::directory_reader::SegmentReader;
+
 use crate::terms_agg::{segment_counts, select_with, TermsResult, TermsScratch, TermsSpec};
-use crate::Result;
+use lucene_search::global_ords::GlobalOrds;
+use lucene_search::java_math::{java_max, java_min, JAVA_NAN};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::{BooleanQuery, Clause};
+use lucene_search::segment_match::{
+    column_read, lone_clause, plain_context, segment_match_read, segment_matches_scoring, Accept,
+    ColumnRead, MinScore,
+};
+use lucene_search::Result;
 
 /// How a field's stored longs become the `double`s an aggregation reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -650,7 +650,7 @@ pub fn aggregate_sliced_counting(
     min_score: Option<&MinScore<'_, '_>>,
 ) -> Result<(Vec<(Vec<MetricState>, Vec<TermsResult>)>, Vec<Option<u64>>)> {
     if globals.len() != terms.len() {
-        return Err(crate::Error::TermsAggType(format!(
+        return Err(lucene_search::Error::TermsAggType(format!(
             "{} terms aggregations with {} global ordinal maps",
             terms.len(),
             globals.len()
@@ -708,15 +708,16 @@ fn unique_states(
     slices: &[Vec<usize>],
     min_score: Option<&MinScore<'_, '_>>,
 ) -> Result<Vec<SliceStates>> {
-    let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
+    let rewritten = lucene_search::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
     let clause = lone_clause(query);
     // Scoring, for `min_score`: the reader's statistics, once; without it,
     // the function queries' reader-wide preparation alone.
-    let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
+    let global =
+        lucene_search::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
     let scoring = min_score.zip(global.as_ref());
     // Slices are independent, as a concurrent search's are: they run
-    // concurrently ([`crate::slices::run_slices`]) -- unless every
+    // concurrently ([`lucene_search::slices::run_slices`]) -- unless every
     // aggregation is a points bound (one read per segment), where handing
     // slices to other threads costs more than it saves.
     let one = |slice: &[usize]| {
@@ -748,9 +749,9 @@ fn unique_states(
     if points_only || stats_only {
         return slices.iter().map(|s| one(s)).collect();
     }
-    let parallel =
-        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
-    crate::slices::run_slices_if(parallel, slices, one)
+    let parallel = lucene_search::slices::estimated_matches(segments, query)
+        >= lucene_search::slices::SEQUENTIAL_BELOW;
+    lucene_search::slices::run_slices_if(parallel, slices, one)
         .into_iter()
         .collect()
 }
@@ -766,8 +767,8 @@ fn slice_states(
     terms: &[TermsSpec],
     globals: &[std::sync::Arc<GlobalOrds>],
     slice: &[usize],
-    scoring: Option<(&MinScore<'_, '_>, &crate::GlobalStats)>,
-    global: Option<&crate::GlobalStats>,
+    scoring: Option<(&MinScore<'_, '_>, &lucene_search::GlobalStats)>,
+    global: Option<&lucene_search::GlobalStats>,
 ) -> Result<SliceStates> {
     let mut seen = Vec::with_capacity(slice.len());
     // A count per global ordinal: as large as the field's cardinality, so
@@ -790,25 +791,12 @@ fn slice_states(
     let mut states = vec![MetricState::default(); specs.len()];
     for &i in slice {
         let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
-            return Err(crate::Error::SliceOutOfRange {
+            return Err(lucene_search::Error::SliceOutOfRange {
                 segment: i,
                 segments: segments.len().min(readers.len()),
             });
         };
-        let ctx = exec::LeafContext {
-            fields: seg.fields,
-            doc_in: seg.doc_in,
-            pos_in: seg.pos_in,
-            pay_in: seg.pay_in,
-            live_docs: seg.live_docs,
-            points: seg.points,
-            norms: None,
-            global,
-            max_doc: seg.max_doc,
-            cache: seg.cache,
-            reader: seg.reader,
-            similarity: seg.similarity,
-        };
+        let ctx = plain_context(seg).with_global(global);
         // The points shortcut first (AggregatorBase.getLeafCollector asks
         // tryPrecomputeAggregationForLeaf before collecting): a field it
         // answers is not read document by document in this segment.
@@ -837,11 +825,7 @@ fn slice_states(
         let live: Option<&FixedBitSet> = seg.live_docs;
         let read = match scoring {
             Some((m, global)) => {
-                let scored = exec::LeafContext {
-                    norms: m.norms.get(i).copied().flatten(),
-                    global: Some(global),
-                    ..ctx
-                };
+                let scored = ctx.with_scoring(m.norms.get(i).copied().flatten(), global);
                 let Some(docs) =
                     segment_matches_scoring(&scored, query, live, m.min, &mut docs_buf)?
                 else {

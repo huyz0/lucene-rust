@@ -765,7 +765,7 @@ pub(crate) fn global_function_stats(
 /// The statistics a search hands its leaves: every scored term's
 /// ([`global_boolean_stats_with_similarity`]) when `scores`, else only the
 /// function queries' ([`global_function_stats`]).
-pub(crate) fn leaf_stats(
+pub fn leaf_stats(
     segments: &[OpenSegment<'_>],
     query: &BooleanQuery,
     scores: bool,
@@ -1518,7 +1518,7 @@ pub fn count_boolean_query_min_score(
 /// required clause then drops, so `+t #range(all)` runs as `t` alone. The JVM
 /// rewrites before encoding; this is the same for a query built here. `None`
 /// when nothing changes (or the segments' points are not open).
-pub(crate) fn rewrite_points_ranges(
+pub fn rewrite_points_ranges(
     query: &BooleanQuery,
     segments: &[OpenSegment<'_>],
 ) -> Option<BooleanQuery> {
