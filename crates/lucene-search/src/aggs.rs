@@ -41,6 +41,7 @@
 use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
 use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::numeric_utils::{sortable_int_to_float, sortable_long_to_double};
 
 use crate::directory_reader::SegmentReader;
 use crate::exec::{self, Mode};
@@ -442,16 +443,6 @@ fn java_max_tie(a: f64, b: f64) -> f64 {
         return b;
     }
     a
-}
-
-/// `NumericUtils.sortableLongToDouble`.
-fn sortable_long_to_double(v: i64) -> f64 {
-    f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
-}
-
-/// `NumericUtils.sortableIntToFloat`.
-fn sortable_int_to_float(v: i32) -> f32 {
-    f32::from_bits((v ^ ((v >> 31) & 0x7fff_ffff)) as u32)
 }
 
 pub(crate) fn to_double(kind: ValueKind, v: i64) -> f64 {
