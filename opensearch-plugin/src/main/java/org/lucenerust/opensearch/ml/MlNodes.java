@@ -36,7 +36,9 @@ public final class MlNodes {
         DEPLOY,
         UNDEPLOY,
         PREDICT,
-        PROFILE
+        PROFILE,
+        UPDATE,
+        STATS
     }
 
     /** Deploy, undeploy and profile, on the deploy pool. */
