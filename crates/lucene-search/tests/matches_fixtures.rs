@@ -16,11 +16,11 @@
 
 mod extended_support;
 
+use extended_support::{fixture, Grammar, Manifest};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::matches::{self, clause_name, find_named_matches, named_matches, Matches};
 use lucene_store::FsDirectory;
-use extended_support::{fixture, Grammar, Manifest};
 
 const GRAMMAR: Grammar = Grammar {
     text: "body",

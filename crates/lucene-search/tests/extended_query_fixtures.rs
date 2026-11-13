@@ -14,6 +14,7 @@ mod extended_grammar;
 
 use std::collections::HashMap;
 
+use extended_grammar::{knn_clause, query, sim, Ctx, VectorFiles, QVEC};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::{
@@ -22,7 +23,6 @@ use lucene_search::multi_segment::{
 };
 use lucene_search::query::Clause;
 use lucene_store::FsDirectory;
-use extended_grammar::{knn_clause, query, sim, Ctx, VectorFiles, QVEC};
 
 fn data(path: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
