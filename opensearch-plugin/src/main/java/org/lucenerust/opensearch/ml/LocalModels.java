@@ -45,7 +45,7 @@ import java.util.zip.ZipInputStream;
 public final class LocalModels {
     private static final Logger LOGGER = LogManager.getLogger(LocalModels.class);
     /** The local model functions deployed here. */
-    static final Set<String> FUNCTIONS = Set.of("TEXT_EMBEDDING", "SPARSE_ENCODING", "SPARSE_TOKENIZE", "TEXT_SIMILARITY");
+    static final Set<String> FUNCTIONS = Set.of("TEXT_EMBEDDING", "SPARSE_ENCODING", "SPARSE_TOKENIZE", "TEXT_SIMILARITY", "QUESTION_ANSWERING");
 
     /**
      * A deployed model: its handle, the model document it was deployed from, and whether it is a
@@ -324,6 +324,9 @@ public final class LocalModels {
             openTorch(modelId, function, model, torchScript, tokenizer);
             return;
         }
+        if ("QUESTION_ANSWERING".equals(function)) {
+            throw new IllegalArgumentException("lucene-rust runs the question answering function on TorchScript models only");
+        }
         if ("SPARSE_ENCODING".equals(function) || "TEXT_SIMILARITY".equals(function)) {
             loadRuntime();
             long[] handle = new long[1];
@@ -357,6 +360,10 @@ public final class LocalModels {
         Map<String, Object> config = (Map<String, Object>) model.getOrDefault("model_config", Map.of());
         String pooling = String.valueOf(config.getOrDefault("pooling_mode", "MEAN"));
         boolean normalize = Boolean.TRUE.equals(config.get("normalize_result"));
+        if ("QUESTION_ANSWERING".equals(function)) {
+            openHighlighter(modelId, model, config, file, tokenizer);
+            return;
+        }
         int kind = switch (function) {
             case "SPARSE_ENCODING" -> NativeBridge.TORCH_SPARSE_ENCODING;
             case "TEXT_SIMILARITY" -> NativeBridge.TORCH_TEXT_SIMILARITY;
@@ -371,6 +378,65 @@ public final class LocalModels {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
         put(modelId, new Deployed(handle[0], function, model, true));
+    }
+
+    /**
+     * Opens the sentence highlighting model, the one question answering model stock ships a translator
+     * for here: {@code model_type} {@code sentence_highlighting}, cut into chunks as {@code
+     * token_max_length}, {@code token_overlap_stride}, {@code with_overflowing_tokens} and {@code
+     * padding} of its configuration say.
+     */
+    @SuppressWarnings("unchecked")
+    private void openHighlighter(String modelId, Map<String, Object> model, Map<String, Object> config, Path file, Path tokenizer)
+        throws IOException {
+        if ("sentence_highlighting".equalsIgnoreCase(String.valueOf(config.get("model_type"))) == false) {
+            throw new IllegalArgumentException("lucene-rust runs the sentence_highlighting question answering model only");
+        }
+        Map<String, Object> extra = config.get("additional_config") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+        int maxLength = configInt(config, extra, "token_max_length", 512);
+        int stride = configInt(config, extra, "token_overlap_stride", 128);
+        int flags = (configFlag(config, extra, "with_overflowing_tokens", true) ? NativeBridge.HIGHLIGHT_OVERFLOWING : 0)
+            | (configFlag(config, extra, "padding", false) ? NativeBridge.HIGHLIGHT_PADDING : 0);
+        loadTorch();
+        long[] handle = new long[1];
+        int rc = NativeBridge.mlHighlighterOpen(file.toString(), Files.readAllBytes(tokenizer), maxLength, stride, flags, handle);
+        if (rc != NativeBridge.OK) {
+            throw new IllegalArgumentException(NativeBridge.lastError());
+        }
+        put(modelId, new Deployed(handle[0], "QUESTION_ANSWERING", model, true));
+    }
+
+    private static Object configValue(Map<String, Object> config, Map<String, Object> extra, String key) {
+        Object v = extra.get(key);
+        return v != null ? v : config.get(key);
+    }
+
+    private static int configInt(Map<String, Object> config, Map<String, Object> extra, String key, int fallback) {
+        return configValue(config, extra, key) instanceof Number n ? n.intValue() : fallback;
+    }
+
+    private static boolean configFlag(Map<String, Object> config, Map<String, Object> extra, String key, boolean fallback) {
+        return configValue(config, extra, key) instanceof Boolean b ? b : fallback;
+    }
+
+    /** A sentence of a context that answers a question: its index, offsets in the context and text. */
+    public record Highlight(String text, int position, int start, int end) {}
+
+    /** The sentences of {@code context} that answer {@code question}, by highlighting model {@code modelId}. */
+    public List<Highlight> highlight(String modelId, String question, String context) {
+        Deployed d = deployed(modelId);
+        ByteBuffer r = result(NativeBridge.mlHighlight(d.handle(), question, context));
+        int n = r.getInt();
+        List<Highlight> hits = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            int position = r.getInt();
+            int start = r.getInt();
+            int end = r.getInt();
+            byte[] text = new byte[r.getInt()];
+            r.get(text);
+            hits.add(new Highlight(new String(text, StandardCharsets.UTF_8), position, start, end));
+        }
+        return hits;
     }
 
     /** Whether {@code modelId}, deployed here, is a TorchScript model. */

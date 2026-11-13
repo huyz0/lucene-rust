@@ -23,6 +23,7 @@ script serves over HTTP, and the answers are compared:
              embedding (every pooling mode), sparse encoding, cross-encoder
   modelops   model update, register_meta + upload_chunk, profile and stats
   pretrained models registered by name (needs network: --proxy-truststore; not in the default run)
+  highlighter the sentence highlighting model: highlights, chunks, refusals (same network need, not in the default run)
   tasks      delete while deployed, undeploy, delete, get after delete, tasks
 
 A stock node needs libtorch for DJL, which it downloads from publish.djl.ai
@@ -32,7 +33,7 @@ finds or downloads its own the same way, unless --our-libtorch names one
 (scripts/fetch-libtorch.sh fetches it), given as PYTORCH_LIBRARY_PATH.
 
   scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--our-libtorch DIR]
-                             [--keep] [--proxy-truststore P12] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks,remote,pretrained,modelops]
+                             [--keep] [--proxy-truststore P12] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks,remote,pretrained,modelops,highlighter]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
@@ -58,6 +59,9 @@ spec.loader.exec_module(remote_check)
 spec = importlib.util.spec_from_file_location("modelops_check", os.path.join(ROOT, "scripts", "ml-modelops-check.py"))
 modelops_check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(modelops_check)
+spec = importlib.util.spec_from_file_location("highlighter_check", os.path.join(ROOT, "scripts", "ml-highlighter-check.py"))
+highlighter_check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(highlighter_check)
 spec = importlib.util.spec_from_file_location("pretrained_check", os.path.join(ROOT, "scripts", "ml-pretrained-check.py"))
 pretrained_check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pretrained_check)
@@ -547,8 +551,9 @@ def main():
             "remote": lambda: remote_check.remote(c, ours, stock, RUN),
             "modelops": lambda: modelops_check.modelops(c, ours, stock, zips, register, RUN),
             "pretrained": lambda: pretrained_check.pretrained(c, ours, stock, close),
+            "highlighter": lambda: highlighter_check.highlighter(c, ours, stock, close),
         }
-        for name in (a.only.split(",") if a.only else [k for k in sections if k != "pretrained"]):
+        for name in (a.only.split(",") if a.only else [k for k in sections if k not in ("pretrained", "highlighter")]):
             sections[name]()
     finally:
         for f in c.failed:
