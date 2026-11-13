@@ -27,3 +27,6 @@ Needs the images `opensearchproject/opensearch:3.9.0` and `lucene-rust-opensearc
 (`scripts/bench-opensearch.sh` builds the latter).
 
 About 2 minutes per dataset at 1M documents, a few more at the full 7.0M (taxi) / 4.6M (bgl).
+
+`survey.py` is the field survey (presence and multi-valued rate of numeric fields in a corpus
+sample); `RESULTS.md` holds the stage 4-6 numbers from this harness and their downsides.

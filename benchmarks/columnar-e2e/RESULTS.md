@@ -83,7 +83,7 @@ text field). Loading CPU is the node's process CPU over the bulk load.
 
 Hits (source) are equal between stock and plugin in both modes. Derived source costs +0.9 to
 +2.4 ms per 100-hit fetch and saves 22-24% on this six-field log. Plugin's preset costs 43% more
-indexing CPU than stock (157 vs 110 s) and gives 28% smaller storage and 2-4x faster group-bys.
+indexing CPU than stock (157 vs 110 s) and gives 28% smaller storage and group-bys about 2x faster (stats and date_histogram 4-10x).
 
 Downsides: the saving here is small because BGL is six fields and the message dominates; wide JSON
 logs save more (docs/logs-preset.md: 715 -> 532 MiB on the synthetic corpus). A derived `_source`
