@@ -113,6 +113,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("MlStats.java", "RING"): "how many recent prediction timings the stats ring keeps for percentiles, in Java only",
     ("NativeMemory.java", "CANCEL_POLL_MILLIS"): "how often the Java watcher polls tasks for a cancel; Rust only sees the cancel call",
     ("KnnHitsMemo.java", "PER_CONTEXT"): "how many queries' k-NN hits a reader context keeps in Java between phases",
     ("HexIdCodec.java", "HEX"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
