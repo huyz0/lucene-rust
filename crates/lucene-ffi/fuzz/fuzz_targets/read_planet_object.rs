@@ -7,8 +7,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lucene_util::spatial3d::serializable::Input;
-use lucene_util::spatial3d::standard_objects::{read_planet_object, write_planet_object};
+use lucene_spatial3d::serializable::Input;
+use lucene_spatial3d::standard_objects::{read_planet_object, write_planet_object};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(object) = read_planet_object(&mut Input::new(data)) else {

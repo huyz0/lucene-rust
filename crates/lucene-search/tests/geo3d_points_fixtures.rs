@@ -25,9 +25,9 @@ use lucene_search::document::geo::{
 };
 use lucene_search::document::{self as dq, DocumentQuery};
 use lucene_search::multi_segment::OpenSegment;
+use lucene_spatial3d::{GeoPoint, PlanetModel};
 use lucene_store::FsDirectory;
 use lucene_util::geo::Polygon;
-use lucene_util::spatial3d::{GeoPoint, PlanetModel};
 use lucene_util::test_support::TempDir;
 
 fn root() -> std::path::PathBuf {

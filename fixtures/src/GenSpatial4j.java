@@ -27,7 +27,7 @@ import org.locationtech.spatial4j.shape.Shape;
 /**
  * The Spatial4j 0.8 subset spatial-extras uses, Lucene's Geo3D bridge to it
  * ({@code org.apache.lucene.spatial.spatial4j}) and the S2 cell ids {@code S2PrefixTree} uses,
- * called directly on seeded random inputs, for {@code crates/lucene-util/tests/spatial4j_fixtures.rs}.
+ * called directly on seeded random inputs, for {@code crates/lucene-spatial4j/tests/spatial4j_fixtures.rs}.
  *
  * <p>Each line is {@code op TAB inputs TAB => TAB result}. Shapes are written as specs the test
  * rebuilds through the same factory calls: {@code P x y}, {@code R minX maxX minY maxY}, {@code C
