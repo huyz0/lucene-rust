@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `lucene-misc` (Lucene 10.5.0's `misc` module), ported class by class. The
 //! inventory is `docs/inventory/lucene-misc.tsv`.
 
