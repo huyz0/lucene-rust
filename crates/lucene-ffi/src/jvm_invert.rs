@@ -1,5 +1,5 @@
 //! The plugin's index-time analysis in Rust: one field of one document,
-//! analyzed with a registered analyzer ([`crate::jvm_analysis::register`])
+//! analyzed with a registered analyzer ([`lucene_engine::analysis::register`])
 //! and inverted exactly as the plugin's `DocumentEncoder` inverts a field in
 //! the JVM -- itself a copy of Lucene's `IndexingChain.PerField.invert`,
 //! `TermsHashPerField.add` and `PerField.finish` -- with Java's `int`
@@ -11,7 +11,7 @@ use lucene_index::index_writer::{InvertedField, InvertedTerms};
 use lucene_util::small_float::int_to_byte4;
 
 use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_analysis::Registered;
+use lucene_engine::analysis::Registered;
 
 /// `IndexWriter.MAX_TERM_LENGTH`.
 const MAX_TERM_LENGTH: usize = 32766;
@@ -495,7 +495,7 @@ pub(crate) fn invert(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jvm_analysis::{register, registered, tests::spec};
+    use lucene_engine::analysis::{register, registered, test_support::spec};
 
     fn reg(stop: bool) -> std::sync::Arc<Registered> {
         let filters: &[(&str, &[(&str, &str)])] = if stop {

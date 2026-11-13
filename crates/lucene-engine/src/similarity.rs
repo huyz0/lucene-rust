@@ -22,7 +22,7 @@
 //!     7 classic          discount_overlaps: u8
 //!     8 LegacyBM25       k1: f32, b: f32, discount_overlaps: u8
 //!     9 scripted         OpenSearch's ScriptedSimilarity over Painless
-//!                        ([`crate::jvm_painless_score::ScriptedSimilarity`])
+//!                        ([`crate::painless_score::ScriptedSimilarity`])
 //!   normalization: u8 (0 none, 1 H1, 2 H2, 3 H3, 4 Z), then its f32 unless none
 //! ```
 //!
@@ -38,8 +38,8 @@ use lucene_search::similarities::{
     PerFieldSimilarity, Similarity,
 };
 
-use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_reader::Cursor;
+use crate::query_blob::Cursor;
+use crate::status::{set_last_error, Status};
 
 /// Blob tag: a similarity table, then the rest of the request.
 pub const QUERY_SIMILARITY: u8 = 4;
@@ -59,26 +59,26 @@ const CLASSIC: u8 = 7;
 const LEGACY_BM25: u8 = 8;
 const SCRIPTED: u8 = 9;
 
-fn bad(message: impl Into<String>) -> FfiStatus {
+fn bad(message: impl Into<String>) -> Status {
     set_last_error(format!("similarity table: {}", message.into()));
-    FfiStatus::InvalidArgument
+    Status::InvalidArgument
 }
 
 /// Reads a table after its tag.
-pub(crate) fn decode(c: &mut Cursor<'_>) -> Result<PerFieldSimilarity, FfiStatus> {
-    let count = c.len()?;
+pub fn decode(c: &mut Cursor<'_>) -> Result<PerFieldSimilarity, Status> {
+    let count = c.length()?;
     if count > MAX_FIELDS {
         return Err(bad(format!("{count} fields")));
     }
     let mut per_field = PerFieldSimilarity::new(Arc::new(Bm25Similarity::default()));
     for _ in 0..count {
-        let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+        let field = std::str::from_utf8(c.bytes()?).map_err(|_| Status::InvalidUtf8)?;
         per_field = per_field.with_field(field, similarity(c)?);
     }
     Ok(per_field)
 }
 
-fn similarity(c: &mut Cursor<'_>) -> Result<Arc<dyn Similarity>, FfiStatus> {
+fn similarity(c: &mut Cursor<'_>) -> Result<Arc<dyn Similarity>, Status> {
     let kind = c.u8()?;
     Ok(match kind {
         BM25 => {
@@ -86,7 +86,7 @@ fn similarity(c: &mut Cursor<'_>) -> Result<Arc<dyn Similarity>, FfiStatus> {
             Arc::new(Bm25Similarity::new(k1, b, discount(c)?).map_err(bad)?)
         }
         BOOLEAN => Arc::new(BooleanSimilarity),
-        SCRIPTED => Arc::new(crate::jvm_painless_score::ScriptedSimilarity::decode(c)?),
+        SCRIPTED => Arc::new(crate::painless_score::ScriptedSimilarity::decode(c)?),
         DFR => {
             let basic = match c.u8()? {
                 0 => BasicModel::G,
@@ -163,7 +163,7 @@ fn similarity(c: &mut Cursor<'_>) -> Result<Arc<dyn Similarity>, FfiStatus> {
     })
 }
 
-fn normalization(c: &mut Cursor<'_>) -> Result<Normalization, FfiStatus> {
+fn normalization(c: &mut Cursor<'_>) -> Result<Normalization, Status> {
     Ok(match c.u8()? {
         0 => Normalization::None,
         1 => Normalization::H1(f32_of(c)?),
@@ -174,11 +174,11 @@ fn normalization(c: &mut Cursor<'_>) -> Result<Normalization, FfiStatus> {
     })
 }
 
-fn f32_of(c: &mut Cursor<'_>) -> Result<f32, FfiStatus> {
+fn f32_of(c: &mut Cursor<'_>) -> Result<f32, Status> {
     Ok(f32::from_bits(c.i32()? as u32))
 }
 
-fn discount(c: &mut Cursor<'_>) -> Result<bool, FfiStatus> {
+fn discount(c: &mut Cursor<'_>) -> Result<bool, Status> {
     match c.u8()? {
         0 => Ok(false),
         1 => Ok(true),

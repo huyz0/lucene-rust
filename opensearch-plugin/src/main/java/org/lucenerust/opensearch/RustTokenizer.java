@@ -33,7 +33,7 @@ public final class RustTokenizer extends Tokenizer {
     final String spi;
     /** The Rust factory's arguments. */
     final Map<String, String> args;
-    /** A spec of this tokenizer alone ({@code jvm_analysis::build}'s layout). */
+    /** A spec of this tokenizer alone ({@code analysis::build}'s layout). */
     private final byte[] spec;
 
     private final CharTermAttribute term = addAttribute(CharTermAttribute.class);
