@@ -4,3 +4,4 @@ org.lucenerust.opensearch.knn.codec.KNN990HnswBinaryVectorsFormat
 org.lucenerust.opensearch.knn.codec.KNN1040HnswHalfFloatVectorsFormat
 org.lucenerust.opensearch.knn.codec.IvfVectorsFormat
 org.lucenerust.opensearch.knn.codec.HnswQuantizedVectorsFormat
+org.lucenerust.opensearch.knn.codec.DiskHnswVectorsFormat

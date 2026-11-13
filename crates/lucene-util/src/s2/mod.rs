@@ -8,7 +8,7 @@
 //! The rest of the library (regions, coverers, loops, polygons, edge
 //! indexes) is not used by spatial-extras -- Lucene relates an S2 cell to a
 //! query shape through Geo3D (`GeoS2Shape`), not through S2's own regions.
-//! `crates/lucene-util/tests/spatial4j_fixtures.rs` compares cell ids,
+//! `crates/lucene-spatial4j/tests/spatial4j_fixtures.rs` compares cell ids,
 //! levels, tokens and vertices against the real jar.
 //!
 //! The Java classes are `strictfp`; `Math.sin`/`cos` are `StrictMath`'s here

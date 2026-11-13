@@ -13,11 +13,11 @@ use std::sync::Arc;
 use lucene_index::document::{
     Field, FieldToken, FieldTokens, FieldType, IndexOptions, IndexableField,
 };
-use lucene_util::spatial4j::{Point, Shape, SpatialContext};
-use lucene_util::spatial_extras::prefix_tree::{
+use lucene_spatial4j::spatial4j::{Point, Shape, SpatialContext};
+use lucene_spatial4j::spatial_extras::prefix_tree::{
     Cell, CellIterator, DateRangePrefixTree, NumberRangePrefixTree, SpatialPrefixTree, UnitNRShape,
 };
-use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 
 use self::facets::{AcceptDocs, Facets, Heatmap};
 use self::query::{
@@ -450,13 +450,13 @@ impl VecCellIterator {
 }
 
 impl CellIterator for VecCellIterator {
-    fn has_next(&mut self) -> lucene_util::spatial4j::Result<bool> {
+    fn has_next(&mut self) -> lucene_spatial4j::spatial4j::Result<bool> {
         Ok(self.cells.len() > 0)
     }
 
-    fn next(&mut self) -> lucene_util::spatial4j::Result<Box<dyn Cell>> {
+    fn next(&mut self) -> lucene_spatial4j::spatial4j::Result<Box<dyn Cell>> {
         let cell = self.cells.next().ok_or_else(|| {
-            lucene_util::spatial4j::Error::Runtime("java.util.NoSuchElementException".into())
+            lucene_spatial4j::spatial4j::Error::Runtime("java.util.NoSuchElementException".into())
         })?;
         self.this_cell = Some(cell.clone_box());
         Ok(cell)
@@ -516,7 +516,7 @@ impl SpatialStrategy for RecursivePrefixTreeStrategy {
     ) -> Result<Arc<dyn DoubleValuesSource>> {
         if self.number_range {
             return Err(Error::Spatial(
-                lucene_util::spatial4j::Error::UnsupportedOperation(None),
+                lucene_spatial4j::spatial4j::Error::UnsupportedOperation(None),
             ));
         }
         Ok(self

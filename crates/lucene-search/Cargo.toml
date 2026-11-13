@@ -7,10 +7,13 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 lucene-util = { path = "../lucene-util" }
+lucene-spatial3d = { path = "../lucene-spatial3d" }
+lucene-spatial4j = { path = "../lucene-spatial4j" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
 lucene-ivf = { path = "../lucene-ivf" }
+lucene-disk-hnsw = { path = "../lucene-disk-hnsw" }
 lucene-analysis = { path = "../lucene-analysis" }
 rayon.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).

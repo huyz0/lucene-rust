@@ -130,3 +130,53 @@ set (about 2 MB) the prefetched pages are evicted before they are read
 vectors, one page a candidate; the cluster scans are one GET a probe.
 fastText-300 behaves the same way (IVF 0.88 ms at 2%, disk HNSW 5.1 ms at
 5%).
+
+## Wired in: `disk_hnsw` through the index path
+
+The `extended` k-NN engine's `method: disk_hnsw` writes `DiskHnswVectorsFormat`
+(`.dhm`/`.dhc`/`.dhn` beside stock HNSW's files) at flush and merge, and
+`knn_top_hits` walks it. Measured through the real index path
+(`crates/lucene-search/examples/knn_formats.rs --paged-mb N`: `IndexWriter`,
+segment reader, the demand pager holding at most N MiB of the vector files
+resident), against `hnsw` (stock graph on float vectors), one segment:
+synthetic 200 000 x 128 (Gaussian blobs around 2 000 centres, L2), `m` 16,
+`ef_construction` 100, BBQ codes, k 10, 300 queries after 200 warm-up ones,
+4 vCPU sandbox. Files: `hnsw` 111 MB (`.vec` + `.vex`), `disk_hnsw` 255 MB (the
+same, plus `.dhn` 117 MB of records and 3 MB of resident codes).
+`faults` is page faults and refills per query. Latency includes this
+sandbox's userfaultfd cost per fault (tens of microseconds), so read the
+fault counts as the I/O measure; on NVMe each fault costs about the same
+and on a blob cache more.
+
+| budget | format | ef | recall@10 | mean us | p99 us | faults |
+|---|---|---|---|---|---|---|
+| 16 MiB | hnsw | 100 | 0.9997 | 17 452 | 32 185 | 589 |
+| 16 MiB | disk_hnsw | 100 | 0.9967 | 4 126 | 13 218 | 80 |
+| 32 MiB | hnsw | 100 | 0.9997 | 14 796 | 28 052 | 418 |
+| 32 MiB | disk_hnsw | 100 | 0.9967 | 3 505 | 11 793 | 64 |
+| 64 MiB | hnsw | 100 | 0.9997 | 6 811 | 14 549 | 148 |
+| 64 MiB | disk_hnsw | 100 | 0.9967 | 2 076 | 7 262 | 38 |
+| 128 MiB (fits) | hnsw | 100 | 0.9997 | 100 | 169 | 0 |
+| 128 MiB (fits) | disk_hnsw | 100 | 0.9967 | 372 | 1 395 | 1.8 |
+| in memory | hnsw | 100 | 0.9998 | 149 | 275 | 0 |
+| in memory | disk_hnsw | 100 | 0.9952 | 208 | 653 | 0 |
+
+(`paged.csv` and `in-memory.csv`, with `ef` 200, are in the project files under
+`perf/disk-hnsw-wired/`. At `ef` 200 the order is the same: 18-49 ms against
+10-22 ms at 16-64 MiB.)
+
+- **When the index does not fit**, `disk_hnsw` takes 4-7x fewer page reads
+  and runs 3.3-4.2x faster at 16-64 MiB of an index that needs 111 MB: each
+  hop is one record read, where stock reads a neighbour list and then the
+  vectors of its neighbours.
+- **When it fits**, stock float HNSW is 2-4x faster (100 us against 372 us at
+  128 MiB), and `disk_hnsw` costs 2.3x the disk. It is not a default: use
+  `hnsw` while the vectors fit in memory, `disk_hnsw` when they do not.
+- Recall is a little lower at the same `ef` (0.9967 against 0.9997): the
+  walk ranks neighbours on 1-bit codes. `ef` 200 closes the gap at 4-5x
+  the CPU of `ef` 100; the quantizer parameter (`erq4`, ...) trades the same
+  way.
+- A search with parents (nested k-NN), a deadline, patience or exploration
+  slack, a filter passing at most `perLeafTopK` documents (or priced below a
+  walk) and a walk that finds too few hits use the stock graph on the raw
+  vectors, so their results do not change.
