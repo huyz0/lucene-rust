@@ -5,7 +5,7 @@
 //! Text is UTF-16, as Java's `StringBuilder` indexes it, so the offsets of
 //! the term vector address it directly.
 
-use lucene_codecs::stored_fields::FieldValue;
+use lucene_codecs::stored_fields::{DocumentVisitor, FieldValue};
 
 use super::super::unified::break_iterators::BreakIterator;
 use super::super::{DefaultEncoder, Encoder, Error, Result};
@@ -420,19 +420,25 @@ impl FragmentsBuilder {
             .iter()
             .find(|s| s.doc_base <= doc && doc - s.doc_base < s.max_doc)
             .ok_or_else(|| Error::IllegalArgument(format!("doc {doc} is in no segment")))?;
-        let stored = segment
-            .stored_document(doc - segment.doc_base)
-            .map_err(|e| Error::Io(e.to_string()))?;
         let mut values = Vec::new();
-        let Some(stored) = stored else {
+        // Java's visitor answers YES for this field and NO for every other,
+        // so the rest of the document (a large `_source`) is never decoded.
+        let Some(number) = segment
+            .field_infos()
+            .field_by_name(field)
+            .map(|fi| fi.number)
+        else {
             return Ok(values);
         };
-        for f in &stored.fields {
-            let named = segment
-                .field_infos()
-                .field_by_number(f.field_number)
-                .is_some_and(|fi| fi.name == field);
-            if let (true, FieldValue::String(text)) = (named, &f.value) {
+        let mut visitor = DocumentVisitor::for_fields(&[number]);
+        let stored = segment
+            .visit_stored_document(doc - segment.doc_base, &mut visitor)
+            .map_err(|e| Error::Io(e.to_string()))?;
+        if !stored {
+            return Ok(values);
+        }
+        for f in &visitor.into_document().fields {
+            if let FieldValue::String(text) = &f.value {
                 values.push(text.encode_utf16().collect());
             }
         }

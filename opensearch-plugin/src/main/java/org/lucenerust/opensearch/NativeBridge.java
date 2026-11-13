@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code jvm_reader.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 170;
+    public static final int EXPECTED_ABI_VERSION = 171;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -248,6 +248,10 @@ public final class NativeBridge {
             "ffi_jvm_reader_stored_source_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
         );
+        static final MethodHandle STORED_VALUE = bind(
+            "ffi_jvm_reader_stored_value_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS)
+        );
         static final MethodHandle PREFETCH_DOCUMENTS = bind(
             "ffi_jvm_reader_prefetch_documents",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
@@ -408,6 +412,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_FORCE_MERGE = bind(
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle WRITER_UPGRADE = bind(
+            "ffi_engine_writer_upgrade",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, ADDRESS, ADDRESS)
         );
         static final MethodHandle WRITER_SET_PLUGGABLE_MERGE_POLICY = bind(
             "ffi_engine_writer_set_pluggable_merge_policy",
@@ -1666,6 +1674,30 @@ public final class NativeBridge {
      */
     public static int storedSource(long handle, int segment, int doc, Borrowed use) throws IOException {
         return lendOwned(H.STORED_SOURCE, handle, segment, doc, use);
+    }
+
+    /**
+     * The value of the field at position {@code ordinal} of segment {@code segment}'s document {@code
+     * doc}, as raw bytes (UTF-8 for a string), lent to {@code use}: the value a {@code DEFERRED} field
+     * of {@link #document} leaves out.
+     */
+    public static int storedValue(long handle, int segment, int doc, int ordinal, Borrowed use) throws IOException {
+        if (use == null) {
+            return nullArgument("use");
+        }
+        MemorySegment bytes;
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.STORED_VALUE.invokeExact(handle, segment, doc, ordinal, ptrOf(result), lenOf(result));
+            if (rc != OK) {
+                return rc;
+            }
+            bytes = owned(result);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+        lend(bytes, use);
+        return OK;
     }
 
     /**
@@ -3050,6 +3082,29 @@ public final class NativeBridge {
                 s.bytes(names),
                 (long) names.length
             );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code ffi_engine_writer_upgrade}: rewrites every committed segment an older Lucene than
+     * {@code major.minor} wrote (an older major only, when {@code onlyAncient}), each on its own.
+     * {@code out[0]} is the newest commit's generation, {@code out[1]} the segments rewritten.
+     */
+    public static int writerUpgrade(long handle, int major, int minor, boolean onlyAncient, long[] out) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment generation = s.alloc(Long.BYTES);
+            MemorySegment upgraded = s.alloc(Integer.BYTES);
+            int rc = (int) H.WRITER_UPGRADE.invokeExact(handle, major, minor, (byte) (onlyAncient ? 1 : 0), generation, upgraded);
+            if (rc == OK) {
+                if (out == null || out.length < 2) {
+                    return fail(INVALID_ARGUMENT, "out holds fewer than two slots");
+                }
+                out[0] = generation.get(JAVA_LONG, 0);
+                out[1] = upgraded.get(JAVA_INT, 0);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
