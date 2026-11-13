@@ -21,7 +21,9 @@ script serves over HTTP, and the answers are compared:
   asymmetric query/passage prefixes, missing content types, result filters
   torchscript TorchScript models: sentence-transformers and Hugging Face text
              embedding (every pooling mode), sparse encoding, cross-encoder
-  lifecycle  delete while deployed, undeploy, delete, get after delete, tasks
+  modelops   model update, register_meta + upload_chunk, profile and stats
+  pretrained models registered by name (needs network: --proxy-truststore; not in the default run)
+  tasks      delete while deployed, undeploy, delete, get after delete, tasks
 
 A stock node needs libtorch for DJL, which it downloads from publish.djl.ai
 unless --libtorch names a local libtorch directory (DJL's
@@ -30,7 +32,7 @@ finds or downloads its own the same way, unless --our-libtorch names one
 (scripts/fetch-libtorch.sh fetches it), given as PYTORCH_LIBRARY_PATH.
 
   scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--our-libtorch DIR]
-                             [--keep] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks]
+                             [--keep] [--proxy-truststore P12] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks,remote,pretrained,modelops]
 
 Needs Docker and the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
@@ -50,6 +52,15 @@ RUN = str(int(time.time()))
 spec = importlib.util.spec_from_file_location("golden", os.path.join(ROOT, "scripts", "ml-golden.py"))
 golden = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(golden)
+spec = importlib.util.spec_from_file_location("remote_check", os.path.join(ROOT, "scripts", "ml-remote-check.py"))
+remote_check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(remote_check)
+spec = importlib.util.spec_from_file_location("modelops_check", os.path.join(ROOT, "scripts", "ml-modelops-check.py"))
+modelops_check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(modelops_check)
+spec = importlib.util.spec_from_file_location("pretrained_check", os.path.join(ROOT, "scripts", "ml-pretrained-check.py"))
+pretrained_check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pretrained_check)
 
 SETTINGS = {"persistent": {
     "plugins.ml_commons.only_run_on_ml_node": False,
@@ -84,7 +95,7 @@ class Node:
         return r
 
     def task(self, task_id):
-        for _ in range(600):
+        for _ in range(3000):
             t = self.ok("GET", f"/_plugins/_ml/tasks/{task_id}")
             if t["state"] in ("COMPLETED", "FAILED", "COMPLETED_WITH_ERROR"):
                 return t
@@ -92,16 +103,20 @@ class Node:
         raise RuntimeError(f"task {task_id} did not finish")
 
 
+# JVM flags and a mount that send both nodes' downloads through the HTTPS proxy (--proxy-truststore).
+JAVA_EXTRA, MOUNT_EXTRA = "", ()
+
+
 def start(name, port, image, env=(), mounts=()):
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     args = ["docker", "run", "-d", "--name", name, "--network", "host",
             "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-            "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
+            "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g" + JAVA_EXTRA,
             "-e", f"http.port={port}", "-e", f"transport.port={port + 100}",
             "-e", "cluster.routing.allocation.disk.threshold_enabled=false"]
     for e in env:
         args += ["-e", e]
-    for m in mounts:
+    for m in tuple(mounts) + MOUNT_EXTRA:
         args += ["-v", m]
     subprocess.run(args + [image], check=True, capture_output=True)
 
@@ -472,7 +487,15 @@ def main():
     ap.add_argument("--our-libtorch")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--only", help="comma-separated sections to run (default: all)")
+    ap.add_argument("--proxy-truststore", help="PKCS12 truststore (password changeit) holding the HTTPS proxy's CA: "
+                    "both nodes then download through $HTTPS_PROXY, which the pretrained section needs")
     a = ap.parse_args()
+    if a.proxy_truststore:
+        global JAVA_EXTRA, MOUNT_EXTRA
+        host, port = os.environ["HTTPS_PROXY"].rsplit("//", 1)[1].rsplit("@", 1)[-1].rsplit(":", 1)
+        JAVA_EXTRA = (f" -Xms3g -Xmx3g -Dhttps.proxyHost={host} -Dhttps.proxyPort={port} -Djavax.net.ssl.trustStore=/proxy-ts.p12"
+                      " -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12")
+        MOUNT_EXTRA = (f"{os.path.abspath(a.proxy_truststore)}:/proxy-ts.p12:ro",)
     zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips_dir:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
@@ -521,14 +544,17 @@ def main():
             "torchscript": lambda: torchscript(c, ours, stock, zips),
             "models": lambda: models(c, ours, stock, zips),
             "tasks": lambda: tasks(c, ours, stock),
+            "remote": lambda: remote_check.remote(c, ours, stock, RUN),
+            "modelops": lambda: modelops_check.modelops(c, ours, stock, zips, register, RUN),
+            "pretrained": lambda: pretrained_check.pretrained(c, ours, stock, close),
         }
-        for name in (a.only.split(",") if a.only else sections):
+        for name in (a.only.split(",") if a.only else [k for k in sections if k != "pretrained"]):
             sections[name]()
     finally:
+        for f in c.failed:
+            print("MISMATCH", f)
         if not a.keep:
             subprocess.run(["docker", "rm", "-f", OURS[0]] + ([] if a.stock else [STOCK[0]]), capture_output=True)
-    for f in c.failed:
-        print("MISMATCH", f)
     print(f"check-ml-plugin: {c.rows - len(c.failed)}/{c.rows} rows match stock")
     sys.exit(1 if c.failed else 0)
 

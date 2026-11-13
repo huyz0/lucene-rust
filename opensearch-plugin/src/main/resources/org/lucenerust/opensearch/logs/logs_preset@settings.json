@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "_meta": {
+    "managed_by": "lucene-rust",
+    "description": "Index settings for log indices: accelerated engine, newest first, zstd stored fields and term blocks, adaptive doc values. Opt in by naming this template in an index template's composed_of."
+  },
+  "template": {
+    "settings": {
+      "index": {
+        "engine.accelerated": true,
+        "sort.field": "@timestamp",
+        "sort.order": "desc",
+        "codec.stored_fields.page_aligned": true,
+        "codec.terms_compression": "zstd",
+        "codec.adaptive_doc_values": true
+      }
+    }
+  }
+}

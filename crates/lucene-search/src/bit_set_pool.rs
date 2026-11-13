@@ -17,7 +17,7 @@
 //! dropped (`exec::cache::CachedSet`), including the sets of point ranges no
 //! later query ever takes, and with a byte limit alone a run of queries over
 //! small segments piled up hundreds of thousands of tiny sets that every
-//! call then scanned -- `m7_fixture`'s point queries went from 1.39x of
+//! call then scanned -- `extended_fixture`'s point queries went from 1.39x of
 //! Lucene to 0.04x that way (`docs/benchmarks/m7-2026-10.md`).
 
 use std::cell::RefCell;

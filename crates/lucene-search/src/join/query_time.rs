@@ -1394,7 +1394,9 @@ pub fn ordinal_map(searcher: &IndexSearcher<'_, '_>, field: &str) -> Result<Arc<
         .iter()
         .map(leaf_reader)
         .collect::<Result<_>>()?;
-    Ok(Arc::new(crate::terms_agg::ordinal_map_of(&readers, field)?))
+    Ok(Arc::new(crate::global_ords::ordinal_map_of(
+        &readers, field,
+    )?))
 }
 
 /// Segment cores (name and id) to their position among a searcher's

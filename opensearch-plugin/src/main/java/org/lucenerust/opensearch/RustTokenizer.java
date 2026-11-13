@@ -27,13 +27,13 @@ import java.util.Map;
  * are, so the chain around it runs natively too.
  */
 public final class RustTokenizer extends Tokenizer {
-    /** The plugin's name for it ({@code rust_thai}), for errors. */
+    /** The plugin's name for it ({@code thai_dictionary}), for errors. */
     final String name;
     /** The Rust factory's SPI name ({@code thai}). */
     final String spi;
     /** The Rust factory's arguments. */
     final Map<String, String> args;
-    /** A spec of this tokenizer alone ({@code jvm_analysis::build}'s layout). */
+    /** A spec of this tokenizer alone ({@code analysis::build}'s layout). */
     private final byte[] spec;
 
     private final CharTermAttribute term = addAttribute(CharTermAttribute.class);
@@ -67,7 +67,7 @@ public final class RustTokenizer extends Tokenizer {
         String text = wellFormed(sb);
         AnalyzerSpec.Tokens got = AnalyzerSpec.rust(spec, "", text);
         if (got == null) {
-            throw new IllegalStateException(name + ": Rust analysis failed: " + NativeBridge.lastError());
+            throw new IllegalStateException(name + ": accelerated analysis failed: " + NativeBridge.lastError());
         }
         tokens = got.tokens();
         finalOffset = correctOffset(got.endOffset());

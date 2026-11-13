@@ -27,9 +27,6 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.WeakHashMap;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.lucenerust.opensearch.NativeAggregationTree.get;
 import static org.lucenerust.opensearch.NativeAggregationTree.writeString;
@@ -69,8 +66,6 @@ final class NativeSignificantTerms {
     private static final String TEXT_SOURCE = TERMS + "SignificantTextAggregatorFactory$SignificantTextCollectorSource";
     /** The most source fields the native side reads (its {@code MAX_SOURCE_FIELDS}). */
     private static final int MAX_SOURCE_FIELDS = 1024;
-    /** Each index analyzer's described chain, by field (described once: the probes run Rust). */
-    private static final Map<Analyzer, Map<String, AnalyzerSpec.Spec>> SPECS = new WeakHashMap<>();
     private static final Field BUCKET_ORD = bucketField("bucketOrd");
     private static final Field BUCKET_AGGS = bucketField("aggregations");
 
@@ -150,11 +145,7 @@ final class NativeSignificantTerms {
         }
         boolean dedup = get(source, "dupSequenceSpotters") != null;
         Analyzer analyzer = type.indexAnalyzer();
-        Map<String, AnalyzerSpec.Spec> byField;
-        synchronized (SPECS) {
-            byField = SPECS.computeIfAbsent(analyzer, a -> new ConcurrentHashMap<>());
-        }
-        AnalyzerSpec.Spec spec = byField.computeIfAbsent(type.name(), name -> AnalyzerSpec.describe(analyzer, name));
+        AnalyzerSpec.Spec spec = AnalyzerSpec.cached(analyzer, type.name());
         if (spec.ok() == false) {
             return null;
         }

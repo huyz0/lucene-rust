@@ -130,7 +130,7 @@ impl GeoError {
 
 /// `Math.min(double, double)`: NaN wins, and `-0.0` is less than `0.0`.
 #[inline]
-pub(crate) fn java_min(a: f64, b: f64) -> f64 {
+pub fn java_min(a: f64, b: f64) -> f64 {
     if a.is_nan() {
         return a;
     }
@@ -146,7 +146,7 @@ pub(crate) fn java_min(a: f64, b: f64) -> f64 {
 
 /// `Math.max(double, double)`: NaN wins, and `0.0` is greater than `-0.0`.
 #[inline]
-pub(crate) fn java_max(a: f64, b: f64) -> f64 {
+pub fn java_max(a: f64, b: f64) -> f64 {
     if a.is_nan() {
         return a;
     }
@@ -162,7 +162,7 @@ pub(crate) fn java_max(a: f64, b: f64) -> f64 {
 
 /// `Math.min(float, float)`.
 #[inline]
-pub(crate) fn java_min_f32(a: f32, b: f32) -> f32 {
+pub fn java_min_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
@@ -178,7 +178,7 @@ pub(crate) fn java_min_f32(a: f32, b: f32) -> f32 {
 
 /// `Math.max(float, float)`.
 #[inline]
-pub(crate) fn java_max_f32(a: f32, b: f32) -> f32 {
+pub fn java_max_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }

@@ -5,9 +5,10 @@
 # search threads open and search near-real-time readers; seeds alternate a
 # fresh NRT reader per search with a shared reader reopened when changed).
 # Every run must pass the test's own checks and the port's CheckIndex. The
-# multiplier sizes each run (10 x it iterations a thread); at 2 the writer
-# rarely commits enough segments to merge, so the default is 5 (seen: over
-# --seeds 0..3 --multiplier 2 the merge check below fails).
+# multiplier sizes each run (10 x it iterations a thread); the merges the
+# threads cause depend on how their flushes and commits interleave, so each
+# run also merges what the writer holds once the threads stop and checks that
+# merged segment (merged and warmed evidence below no longer rests on timing).
 #
 # Usage: scripts/test-framework-stress.sh [--seeds A..B] [--multiplier M]
 set -euo pipefail

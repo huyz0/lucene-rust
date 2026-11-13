@@ -1,8 +1,8 @@
 //! Searches over SimpleText segments, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenSimpleTextSearch.java`.
 //!
-//! `GenM7Queries`' three-segment, index-sorted index with deletions, written
-//! by `SimpleTextCodec`, searched with every `GenM7Queries` query (synonyms,
+//! `GenExtendedQueries`' three-segment, index-sorted index with deletions, written
+//! by `SimpleTextCodec`, searched with every `GenExtendedQueries` query (synonyms,
 //! combined fields, phrases, multi-phrases, fuzzy, the multi-term rewrite
 //! methods, blended terms, Indri, log-odds fusion, Bayesian calibration,
 //! doc-values and index-sort ranges, points, `IndexOrDocValuesQuery`, vector
@@ -13,10 +13,11 @@
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
 #![allow(clippy::arithmetic_side_effects)]
 
-mod m7grammar;
+mod extended_grammar;
 
 use std::collections::HashMap;
 
+use extended_grammar::{knn_clause_from, query, sim, Ctx, KnnSource, QVEC};
 use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
@@ -31,7 +32,6 @@ use lucene_search::top_field::{FieldDoc, Selector, SortField, SortType};
 use lucene_search::vector_query::{KnnSegment, VectorsInput};
 use lucene_store::FsDirectory;
 use lucene_util::fixed_bit_set::FixedBitSet;
-use m7grammar::{knn_clause_from, query, sim, Ctx, KnnSource, QVEC};
 
 fn data() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/simpletext_search")
@@ -95,7 +95,7 @@ fn norms(reader: &DirectoryReader) -> Vec<HashMap<String, FieldNorms<'_>>> {
 }
 
 #[test]
-fn m7_queries_over_simpletext_segments_match_lucene_bit_for_bit() {
+fn extended_queries_over_simpletext_segments_match_lucene_bit_for_bit() {
     let text = std::fs::read_to_string(data().join("searches.tsv"))
         .expect("run scripts/gen-fixtures.sh --only GenSimpleTextSearch");
     let reader = open();

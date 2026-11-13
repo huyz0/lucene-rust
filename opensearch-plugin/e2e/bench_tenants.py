@@ -7,7 +7,7 @@ Usage:
 MODE is one of
   per_tenant   an index per tenant (`t-<k>`), one shard each
   shared       one index `shared` with a `tenant` keyword; searches filter on it
-  partitioned  `shared` with `index.lucene_rust.partition_field: tenant` (plugin node only)
+  partitioned  `shared` with `index.segment_partition.field: tenant` (plugin node only)
 
 Tenant sizes follow a Zipf law (s = 1), so a few tenants are large and most
 are small; documents arrive interleaved across tenants. Every mode sees the
@@ -209,7 +209,7 @@ def run(base, container, mode, label, out, tenants, ndocs, rounds):
     idle = memory(container)
     settings = {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}
     if mode == "partitioned":
-        settings["lucene_rust.partition_field"] = "tenant"
+        settings["segment_partition.field"] = "tenant"
     t = time.perf_counter()
     names = ["t-%d" % k for k in range(tenants)] if mode == "per_tenant" else ["shared"]
 

@@ -67,7 +67,7 @@ import java.util.Random;
 import java.util.function.BiConsumer;
 
 /**
- * The analysis bridge ({@link AnalyzerSpec}, {@code jvm_analysis.rs}): Lucene's built-in analyzers
+ * The analysis bridge ({@link AnalyzerSpec}, {@code analysis.rs}): Lucene's built-in analyzers
  * and custom chains over every mapped component, described from their objects and run in Rust;
  * every token's every attribute must match Lucene's, on the probes and on random text.
  */
@@ -144,8 +144,8 @@ final class NativeSelfTestAnalysis {
     static Map<String, Analyzer> analyzers() throws Exception {
         Map<String, Analyzer> m = new LinkedHashMap<>();
         m.put("standard", new StandardAnalyzer());
-        m.put("rust_thai", new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet()));
-        m.put("rust_thai, html strip, no stop words", new Analyzer() {
+        m.put("thai_dictionary", new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet()));
+        m.put("thai_dictionary, html strip, no stop words", new Analyzer() {
             @Override
             protected TokenStreamComponents createComponents(String fieldName) {
                 return new TokenStreamComponents(RustAnalysis.THAI.tokenizer());
@@ -393,7 +393,7 @@ final class NativeSelfTestAnalysis {
         return sb.toString();
     }
 
-    /** Thai sentences, for how often rust_thai's words are Lucene's (the JDK dictionary's). */
+    /** Thai sentences, for how often thai_dictionary's words are Lucene's (the JDK dictionary's). */
     static final String[] THAI = {
         "การที่ได้ต้องแสดงว่างานดี",
         "ภาษาไทยง่ายนิดเดียว",
@@ -419,14 +419,14 @@ final class NativeSelfTestAnalysis {
         }
         try {
             RustAnalysis.JAPANESE.check();
-            check.accept(false, "rust_japanese is refused without its data pack");
+            check.accept(false, "japanese is refused without its data pack");
         } catch (IllegalArgumentException e) {
-            check.accept(e.getMessage().contains("data pack kuromoji"), "rust_japanese names its missing pack: " + e.getMessage());
+            check.accept(e.getMessage().contains("data pack kuromoji"), "japanese names its missing pack: " + e.getMessage());
         }
-        check.accept(!RustAnalysis.tokenizers().containsKey("rust_japanese"), "rust_japanese is not registered without its data pack");
-        check.accept(RustAnalysis.tokenizers().containsKey("rust_thai"), "rust_thai is registered without any data pack");
+        check.accept(!RustAnalysis.tokenizers().containsKey("japanese"), "japanese is not registered without its data pack");
+        check.accept(RustAnalysis.tokenizers().containsKey("thai_dictionary"), "thai_dictionary is registered without any data pack");
         check.accept(NativeBridge.addDataPackDir(dir) == 0, "the data pack directory is added");
-        check.accept(RustAnalysis.tokenizers().keySet().containsAll(List.of("rust_japanese", "rust_korean", "rust_chinese")), "the data-pack tokenizers are registered once their packs are there");
+        check.accept(RustAnalysis.tokenizers().keySet().containsAll(List.of("japanese", "korean", "chinese")), "the data-pack tokenizers are registered once their packs are there");
         // The tokenizers alone (no part-of-speech stop filter), as Lucene's split these texts.
         Map<RustAnalysis.Entry, Map.Entry<String, List<String>>> want = new LinkedHashMap<>();
         want.put(RustAnalysis.JAPANESE, Map.entry("東京都に住む", List.of("東京", "都", "に", "住む")));
@@ -542,13 +542,13 @@ final class NativeSelfTestAnalysis {
         check.accept("analysis_japanese_user_dictionary".equals(spec.reason()), "an unwritable user dictionary stays in Java (" + spec.reason() + ")");
     }
 
-    /** Lucene's ThaiAnalyzer and rust_thai side by side: Lucene's test words, and the agreement. */
+    /** Lucene's ThaiAnalyzer and thai_dictionary side by side: Lucene's test words, and the agreement. */
     static void thai(BiConsumer<Boolean, String> check) throws Exception {
         Analyzer rust = new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet());
         // TestThaiAnalyzer.testOffsets and testStopWords: the JDK's and ICU's words agree here.
         List<String> want = List.of("แสดง", "งาน", "ดี");
         List<String> got = AnalyzerSpec.java(rust, "body", THAI[0]).tokens().stream().map(t -> t.term().utf8ToString()).toList();
-        check.accept(want.equals(got), "rust_thai splits Lucene's test sentence as Lucene does: " + got);
+        check.accept(want.equals(got), "thai_dictionary splits Lucene's test sentence as Lucene does: " + got);
         // The tokenizers alone: the same text kept (stop words aside, which drop different words
         // when the splits differ), split the same way or not.
         Analyzer luceneWords = new Analyzer() {
@@ -568,11 +568,11 @@ final class NativeSelfTestAnalysis {
         for (String text : THAI) {
             List<String> j = AnalyzerSpec.java(luceneWords, "body", text).tokens().stream().map(t -> t.term().utf8ToString()).toList();
             List<String> r = AnalyzerSpec.java(rustWords, "body", text).tokens().stream().map(t -> t.term().utf8ToString()).toList();
-            check.accept(String.join("", j).equals(String.join("", r)), "rust_thai keeps the text Lucene keeps: " + j + " vs " + r);
+            check.accept(String.join("", j).equals(String.join("", r)), "thai_dictionary keeps the text Lucene keeps: " + j + " vs " + r);
             total++;
             if (j.equals(r)) same++;
         }
-        System.out.printf("NativeSelfTest: rust_thai splits %d of %d Thai sentences as Lucene's ThaiAnalyzer does%n", same, total);
+        System.out.printf("NativeSelfTest: thai_dictionary splits %d of %d Thai sentences as Lucene's ThaiAnalyzer does%n", same, total);
         check.accept("ab\ufffdc".equals(RustTokenizer.wellFormed("ab\ud800c")), "a lone surrogate becomes U+FFFD");
         check.accept("a😀b".equals(RustTokenizer.wellFormed("a😀b")), "a surrogate pair stays");
     }

@@ -2046,7 +2046,20 @@ pub fn prefetch<T>(slice: &[T], i: usize) {
             );
         }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    if let Some(r) = slice.get(i) {
+        // SAFETY: `PRFM PLDL1KEEP` is a hint that never faults, writes no
+        // register or flag and reads nothing into the program; the address
+        // is an element of `slice` anyway.
+        unsafe {
+            core::arch::asm!(
+                "prfm pldl1keep, [{0}]",
+                in(reg) (r as *const T),
+                options(nostack, readonly, preserves_flags)
+            );
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let _ = (slice, i);
 }
 

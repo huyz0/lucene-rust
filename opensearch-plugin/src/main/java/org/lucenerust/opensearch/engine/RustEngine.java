@@ -39,7 +39,6 @@ package org.lucenerust.opensearch.engine;
 import org.opensearch.index.engine.*;
 
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexCommit;
@@ -1827,6 +1826,12 @@ public class RustEngine extends Engine {
                     refresh("force merge");
                 }
 
+                if (upgrade) {
+                    // OpenSearchMergePolicy's upgrade pass: each old segment rewritten alone before
+                    // the forced merge the request asks for.
+                    int upgraded = ((RustIndexWriter) documentIndexWriter).upgradeSegments(upgradeOnlyAncientSegments);
+                    logger.debug("rewrote {} segments for the upgrade", upgraded);
+                }
                 if (onlyExpungeDeletes) {
                     assert upgrade == false;
                     documentIndexWriter.forceMergeDeletes(true /* blocks and waits for merges*/);
@@ -1837,6 +1842,9 @@ public class RustEngine extends Engine {
                     documentIndexWriter.forceMerge(maxNumSegments, true /* blocks and waits for merges*/);
                     this.forceMergeUUID = forceMergeUUID;
                 }
+                // The writer commits what a forced merge or upgrade publishes, so the flush below finds
+                // nothing to commit: the committed segment list the segments API reports is read here.
+                refreshLastCommittedSegmentInfos();
                 if (flush) {
                     flush(false, true);
                 }
@@ -2720,7 +2728,7 @@ public class RustEngine extends Engine {
         final IndexSearcher searcher = new IndexSearcher(directoryReader);
         searcher.setQueryCache(null);
         final Query query = new BooleanQuery.Builder().add(
-            LongPoint.newRangeQuery(SeqNoFieldMapper.NAME, getPersistedLocalCheckpoint() + 1, Long.MAX_VALUE),
+            SeqNoQueries.range(directoryReader, getPersistedLocalCheckpoint() + 1, Long.MAX_VALUE),
             BooleanClause.Occur.MUST
         )
             // exclude non-root nested documents

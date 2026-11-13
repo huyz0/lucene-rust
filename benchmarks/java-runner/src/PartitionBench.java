@@ -20,6 +20,9 @@ import java.util.*;
  * hits  &lt;dir&gt; &lt;queries.tsv&gt;                              each query's top hits: id and score
  * </pre>
  *
+ * {@code RANGE=iodv} sends each time range as OpenSearch builds one on a field with doc values, an
+ * {@code IndexOrDocValuesQuery}.
+ *
  * Every document has a tenant (a keyword: indexed term and SORTED_SET doc values), a time
  * {@code ts} (a long: points and SORTED_NUMERIC doc values) and a text {@code body}.
  * {@code composite} sorts the index by tenant then time, newest first; {@code blocks} does too, each
@@ -204,7 +207,12 @@ public final class PartitionBench {
             b.add(new TermQuery(new Term("tenant", f[3])), BooleanClause.Occur.FILTER);
             long lo = Long.parseLong(f[4]), hi = Long.parseLong(f[5]);
             if (lo >= 0) {
-                b.add(LongPoint.newRangeQuery("ts", lo, hi), BooleanClause.Occur.FILTER);
+                Query range = LongPoint.newRangeQuery("ts", lo, hi);
+                if ("iodv".equals(System.getenv("RANGE"))) {
+                    // As OpenSearch sends a range on a field with doc values.
+                    range = new IndexOrDocValuesQuery(range, SortedNumericDocValuesField.newSlowRangeQuery("ts", lo, hi));
+                }
+                b.add(range, BooleanClause.Occur.FILTER);
             }
             if (blocks) {
                 // OpenSearch's non-nested filter on an index with nested fields.

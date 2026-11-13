@@ -115,7 +115,7 @@ public final class RustIndexerFactory extends EngineBackedIndexerFactory {
                 INDEX_MODULE_FACTORY.set(module, new RustIndexerFactory(f.getEngineFactory()));
             }
         } catch (IllegalAccessException e) {
-            throw new IllegalStateException("cannot install the Rust engine's indexer", e);
+            throw new IllegalStateException("cannot install the accelerated engine's indexer", e);
         }
     }
 

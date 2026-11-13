@@ -17,20 +17,20 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.settings.SecureString;
 
 /**
- * A key-encryption key held in the node's keystore ({@code lucene_rust.store.local_key}), for tests
+ * A key-encryption key held in the node's keystore ({@code indices.store.encrypted.local_key}), for tests
  * and for clusters without a KMS: AES-256-GCM key wrapping, the key id as associated data. A real
  * deployment uses a KMS through {@link MasterKeySource}, so the key-encryption key never sits on the
  * node.
  */
 public final class LocalKeySource implements KeySource {
     /** The key provider type that selects this source. */
-    public static final String TYPE = "lucene_rust_local";
+    public static final String TYPE = "local_keystore";
     /** The node keystore entry holding the key-encryption key, base64 of 32 bytes. */
-    public static final String KEY_SETTING = "lucene_rust.store.local_key";
+    public static final String KEY_SETTING = "indices.store.encrypted.local_key";
     public static final Setting<SecureString> KEY = SecureSetting.secureString(KEY_SETTING, null);
     /** The id written into each file's header for that key; change it when the key changes. */
     public static final Setting<String> KEY_ID = Setting.simpleString(
-        "lucene_rust.store.local_key_id",
+        "indices.store.encrypted.local_key_id",
         "local-v1",
         Setting.Property.NodeScope
     );

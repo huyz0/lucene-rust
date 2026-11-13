@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 lucene-util = { path = "../lucene-util" }
+lucene-spatial4j = { path = "../lucene-spatial4j" }
 lucene-store = { path = "../lucene-store" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
