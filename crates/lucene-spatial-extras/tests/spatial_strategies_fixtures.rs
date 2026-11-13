@@ -29,13 +29,13 @@ use lucene_search::document::{self as dq};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::values_source::{DoubleValuesSource, ValuesContext};
+use lucene_spatial4j::spatial_extras::prefix_tree::UnitNRShape;
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
 use lucene_spatial_extras::bbox::BBoxOverlapRatioValueSource;
 use lucene_spatial_extras::make_recip_distance_value_source;
 use lucene_spatial_extras::util::{CachingDoubleValueSource, ShapeAreaValueSource};
 use lucene_store::FsDirectory;
 use lucene_util::fixed_bit_set::FixedBitSet;
-use lucene_util::spatial_extras::prefix_tree::UnitNRShape;
-use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
 use lucene_util::test_support::TempDir;
 
 fn root() -> std::path::PathBuf {
@@ -393,7 +393,7 @@ fn answer(c: &Corpus, ix: &Index<'_>, a: &[&str]) -> lucene_search::Result<Strin
 /// A `POINT(x y)` spec's point, made as the WKT reader makes it (`pointXY`
 /// of the text's numbers: a Geo3D point keeps its own coordinates, which a
 /// round trip through `getX()`/`getY()` would not).
-fn point_of(c: &Corpus, spec: &str) -> Arc<dyn lucene_util::spatial4j::Point> {
+fn point_of(c: &Corpus, spec: &str) -> Arc<dyn lucene_spatial4j::spatial4j::Point> {
     let (family, text) = spec.split_once(':').unwrap();
     let inner = text
         .strip_prefix("POINT(")

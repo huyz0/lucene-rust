@@ -17,14 +17,14 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
+use lucene_spatial3d::{GeoPoint, PlanetModel};
 use lucene_util::geo::java_double_string;
 use lucene_util::geo::GeoUtils;
-use lucene_util::spatial3d::{GeoPoint, PlanetModel};
 
 use super::numeric::{int_to_sortable_bytes, sortable_bytes_to_int};
 use super::{illegal, DocValuesType, FieldTokens, FieldType, IndexableField, Number, Result};
 
-fn s3d(e: lucene_util::spatial3d::Error) -> super::Error {
+fn s3d(e: lucene_spatial3d::Error) -> super::Error {
     illegal(e.to_string())
 }
 
