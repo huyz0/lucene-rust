@@ -9,7 +9,7 @@ import org.apache.lucene.util.BytesRef;
 import java.nio.charset.StandardCharsets;
 
 /**
- * A growable little-endian byte buffer: the wire format {@code engine_writer.rs} decodes with its
+ * A growable little-endian byte buffer: the wire format {@code writer_blob.rs} decodes with its
  * {@code Cursor}. Not thread-safe; each operation builds its own.
  */
 final class Blob {

@@ -79,11 +79,11 @@ pub use writer::{FieldClusters, FieldVectors, IvfFiles, IvfParams, IvfWriter};
 pub use lucene_vector_quant::Similarity;
 
 /// Codec name of the `.ivm` header.
-pub const META_CODEC: &str = "LuceneRustIvfMeta";
+pub const META_CODEC: &str = "IvfMeta";
 /// Codec name of the `.ivp` header.
-pub const POSTINGS_CODEC: &str = "LuceneRustIvfPostings";
+pub const POSTINGS_CODEC: &str = "IvfPostings";
 /// Codec name of the `.ivv` header.
-pub const VECTORS_CODEC: &str = "LuceneRustIvfVectors";
+pub const VECTORS_CODEC: &str = "IvfVectors";
 /// The meta file's extension.
 pub const META_EXTENSION: &str = "ivm";
 /// The postings file's extension.

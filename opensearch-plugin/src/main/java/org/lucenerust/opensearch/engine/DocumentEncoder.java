@@ -35,14 +35,14 @@ import org.apache.lucene.util.RecyclingByteBlockAllocator;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Turns OpenSearch's Lucene documents into the operation blobs {@code engine_writer.rs} decodes.
+ * Turns OpenSearch's Lucene documents into the operation blobs {@code writer_blob.rs} decodes.
  *
  * <p>Everything that decides <em>what</em> gets indexed happens here, in the JVM, with the shard's
  * own analyzer and similarity, exactly as Lucene's {@code IndexingChain} would: the per-document
@@ -75,12 +75,17 @@ final class DocumentEncoder {
     private final FormatCheck formats;
     /** Per field: its analyzer registered in Rust, or {@link #JAVA}; null when analysis stays in Java. */
     private final ConcurrentHashMap<String, NativeField> nativeFields;
+    /**
+     * {@link SeqNoSettings#DOC_VALUES_ONLY}: {@code _seq_no} goes in without its points and with a
+     * doc-values skip index. Set before the first document.
+     */
+    private volatile boolean seqNoDocValuesOnly;
 
     /**
-     * {@code lucene_rust.native_analysis=false} keeps every field's analysis in the JVM (the Rust
+     * {@code accelerated.analysis=false} keeps every field's analysis in the JVM (the Rust
      * side then only lays out what Java inverted, as before).
      */
-    static final boolean NATIVE_ANALYSIS = Boolean.parseBoolean(System.getProperty("lucene_rust.native_analysis", "true"));
+    static final boolean NATIVE_ANALYSIS = Boolean.parseBoolean(System.getProperty("accelerated.analysis", "true"));
 
     /** Field instances analyzed in Rust, and in Java, since startup (the plugin's stats). */
     static final AtomicLong ANALYZED_NATIVELY = new AtomicLong();
@@ -106,6 +111,17 @@ final class DocumentEncoder {
         this.softDeletesField = softDeletesField;
         this.formats = formats;
         this.nativeFields = NATIVE_ANALYSIS && analyzer != null ? new ConcurrentHashMap<>() : null;
+    }
+
+    void setSeqNoDocValuesOnly(boolean docValuesOnly) {
+        this.seqNoDocValuesOnly = docValuesOnly;
+    }
+
+    /** Whether {@code field} is {@code _seq_no}'s point, which a doc-values-only layout leaves out. */
+    private boolean droppedSeqNoPoint(IndexableField field) {
+        return seqNoDocValuesOnly
+            && field.fieldType().pointDimensionCount() != 0
+            && field.name().equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME);
     }
 
     /**
@@ -227,7 +243,7 @@ final class DocumentEncoder {
             }
         }
         if (vectors != null) {
-            // engine_writer.rs's decode_op: each document's KNN vectors, after the documents.
+            // writer_blob.rs's decode_op: each document's KNN vectors, after the documents.
             while (vectors.size() < docs.size()) {
                 vectors.add(List.of());
             }
@@ -241,7 +257,7 @@ final class DocumentEncoder {
         return b;
     }
 
-    /** One {@code KnnFloatVectorField} or {@code KnnByteVectorField}: engine_writer.rs's document_vector. */
+    /** One {@code KnnFloatVectorField} or {@code KnnByteVectorField}: writer_blob.rs's document_vector. */
     private static void vector(Blob b, IndexableField field) {
         b.string(field.name());
         if (field instanceof KnnFloatVectorField f) {
@@ -263,17 +279,28 @@ final class DocumentEncoder {
 
     /** One field name's state within one document. */
     private static final class PerField {
-        final FieldSchema schema;
+        final FieldSchema schema = new FieldSchema(null);
         int number;
         final List<IndexableField> instances = new ArrayList<>(1);
         Inverted inverted;
         /** Set when Rust analyzes every instance; then {@link #texts} holds them, in order. */
         NativeField nativeField;
         IndexOptions nativeOptions;
-        List<String> texts;
+        final List<String> texts = new ArrayList<>(1);
 
-        PerField(String name) {
-            schema = new FieldSchema(name);
+        void reset(String name) {
+            schema.reset(name);
+            number = 0;
+            inverted = null;
+            nativeField = null;
+            nativeOptions = null;
+        }
+
+        /** Drops the document's fields and values, so the reused state keeps none of them alive. */
+        void clear() {
+            instances.clear();
+            texts.clear();
+            inverted = null;
         }
     }
 
@@ -288,6 +315,28 @@ final class DocumentEncoder {
         final RecyclingByteBlockAllocator blocks = new RecyclingByteBlockAllocator(32);
         final List<Inverted> pool = new ArrayList<>();
         int used;
+        /** The document's fields by name, and in the order each name first appears. */
+        final Map<String, PerField> fields = new HashMap<>();
+        final List<PerField> order = new ArrayList<>();
+        final List<PerField> perFields = new ArrayList<>();
+        final List<long[]> numericDv = new ArrayList<>();
+        final List<Object[]> binaryDv = new ArrayList<>();
+        final List<Object[]> points = new ArrayList<>();
+
+        /** The document's state for field {@code name}, taken on its first instance. */
+        PerField perField(String name) {
+            PerField pf = fields.get(name);
+            if (pf == null) {
+                if (order.size() == perFields.size()) {
+                    perFields.add(new PerField());
+                }
+                pf = perFields.get(order.size());
+                pf.reset(name);
+                fields.put(name, pf);
+                order.add(pf);
+            }
+            return pf;
+        }
 
         Inverted inverted(String name, IndexOptions options) {
             if (used == pool.size()) {
@@ -304,6 +353,14 @@ final class DocumentEncoder {
                 pool.get(i).terms.clear(true);
             }
             used = 0;
+            for (PerField pf : order) {
+                pf.clear();
+            }
+            fields.clear();
+            order.clear();
+            numericDv.clear();
+            binaryDv.clear();
+            points.clear();
         }
     }
 
@@ -322,15 +379,23 @@ final class DocumentEncoder {
     private List<IndexableField> document(Blob b, Iterable<? extends IndexableField> doc, Workspace ws) throws IOException {
         // Pass 1: the document's schema per field name, checked against (or registered as) the
         // shard's -- IndexingChain.processDocument's first loop.
-        Map<String, PerField> fields = new LinkedHashMap<>();
+        Map<String, PerField> fields = ws.fields;
         for (IndexableField field : doc) {
-            PerField pf = fields.computeIfAbsent(field.name(), PerField::new);
+            if (droppedSeqNoPoint(field)) {
+                continue;
+            }
+            PerField pf = ws.perField(field.name());
             pf.schema.absorb(field.fieldType());
             pf.instances.add(field);
         }
-        for (PerField pf : fields.values()) {
+        for (PerField pf : ws.order) {
             if (pf.schema.name.equals(softDeletesField)) {
                 pf.schema.softDeletes = true;
+            }
+            if (seqNoDocValuesOnly
+                && pf.schema.docValuesType == DocValuesType.NUMERIC
+                && pf.schema.name.equals(org.opensearch.index.mapper.SeqNoFieldMapper.NAME)) {
+                pf.schema.skipIndex = org.apache.lucene.index.DocValuesSkipIndexType.RANGE;
             }
             String unsupported = formats == null ? null : formats.unsupported(pf.schema.name, pf.schema);
             if (unsupported != null) {
@@ -348,7 +413,6 @@ final class DocumentEncoder {
                     if (nf != JAVA) {
                         pf.nativeField = nf;
                         pf.nativeOptions = options;
-                        pf.texts = new ArrayList<>(pf.instances.size());
                     }
                 }
             }
@@ -357,11 +421,14 @@ final class DocumentEncoder {
         // Pass 2, in document order: stored values, inversion, doc values, points.
         int storedAt = b.reserveI32();
         int stored = 0;
-        List<long[]> numericDv = new ArrayList<>();
-        List<Object[]> binaryDv = new ArrayList<>();
-        List<Object[]> points = new ArrayList<>();
+        List<long[]> numericDv = ws.numericDv;
+        List<Object[]> binaryDv = ws.binaryDv;
+        List<Object[]> points = ws.points;
         List<IndexableField> vectors = null;
         for (IndexableField field : doc) {
+            if (droppedSeqNoPoint(field)) {
+                continue;
+            }
             PerField pf = fields.get(field.name());
             IndexableFieldType type = field.fieldType();
             if (type.vectorDimension() != 0) {
@@ -409,15 +476,15 @@ final class DocumentEncoder {
         b.patchI32(storedAt, stored);
 
         int invertedCount = 0;
-        for (PerField pf : fields.values()) {
+        for (PerField pf : ws.order) {
             if (pf.inverted != null || pf.nativeField != null) {
                 invertedCount++;
             }
         }
         b.i32(invertedCount);
-        for (PerField pf : fields.values()) {
+        for (PerField pf : ws.order) {
             if (pf.nativeField != null) {
-                // engine_writer.rs's analyzed_field: Rust analyzes and inverts these values.
+                // writer_blob.rs's analyzed_field: Rust analyzes and inverts these values.
                 int norm = pf.schema.omitNorms ? 0 : pf.nativeField.discountOverlaps() ? 1 : 2;
                 b.i32(pf.number).u8(2).i32(pf.nativeField.id()).u8(pf.nativeOptions.ordinal()).u8(norm).string(pf.schema.name);
                 b.i32(pf.texts.size());

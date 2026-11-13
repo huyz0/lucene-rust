@@ -32,7 +32,7 @@ import org.locationtech.spatial4j.shape.Shape;
 /**
  * Lucene's spatial prefix trees -- geohash, quad, packed quad, S2, and the number-range / date
  * range tree -- and the query arguments, called directly on seeded random inputs for {@code
- * crates/lucene-util/tests/spatial_prefix_tree_fixtures.rs}.
+ * crates/lucene-spatial4j/tests/spatial_prefix_tree_fixtures.rs}.
  *
  * <p>Each line is {@code op TAB inputs TAB => TAB result}. A tree is an index into {@link #TREES}
  * (built by {@code SpatialPrefixTreeFactory.makeSPT} over a context of {@link #CTX_ARGS}); shapes

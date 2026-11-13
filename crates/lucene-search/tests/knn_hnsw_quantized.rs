@@ -1,4 +1,4 @@
-//! Float vectors in `LuceneRustHnswQuantizedVectorsFormat`: flushed and
+//! Float vectors in `HnswQuantizedVectorsFormat`: flushed and
 //! merged segments carry quantized codes (`.vqm`/`.vqd`) beside the plain
 //! HNSW files, the graph is the one `Lucene99HnswVectorsFormat` builds, and
 //! KNN searches walk it on the codes and return exact scores, with filters,
@@ -263,8 +263,7 @@ fn every_quantizer_writes_codes_and_returns_exact_scores() {
                 .find(|f| f.name == "v")
                 .unwrap();
             assert!(field.attributes.iter().any(|(k, v)| {
-                k == "PerFieldKnnVectorsFormat.format"
-                    && v == "LuceneRustHnswQuantizedVectorsFormat"
+                k == "PerFieldKnnVectorsFormat.format" && v == "HnswQuantizedVectorsFormat"
             }));
             let codes = seg
                 .hnsw_codes_for(field.number)
@@ -302,7 +301,7 @@ fn the_graph_is_the_plain_hnsw_graph() {
     for (p, q) in plain_vex.iter().zip(&quant_vex) {
         assert_eq!(
             body(p, "Lucene99HnswVectorsFormat_0"),
-            body(q, "LuceneRustHnswQuantizedVectorsFormat_0")
+            body(q, "HnswQuantizedVectorsFormat_0")
         );
     }
     assert_eq!(files_with(&quant_tmp, "vqd").len(), SEGMENTS);

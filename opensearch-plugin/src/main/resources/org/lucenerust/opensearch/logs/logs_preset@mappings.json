@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "_meta": {
+    "managed_by": "lucene-rust",
+    "description": "Mappings for log indices: the timestamp with a skip index beside its points, the small fields as doc values only (numbers with a skip index), message as text without norms, trace and span ids as hex_id. Opt in by naming this template in an index template's composed_of."
+  },
+  "template": {
+    "mappings": {
+      "dynamic_templates": [
+        { "logs_preset_longs": { "match_mapping_type": "long", "mapping": { "type": "long", "index": false, "skip_list": true } } },
+        { "logs_preset_doubles": { "match_mapping_type": "double", "mapping": { "type": "double", "index": false, "skip_list": true } } },
+        { "logs_preset_strings": { "match_mapping_type": "string", "mapping": { "type": "keyword", "ignore_above": 1024 } } }
+      ],
+      "properties": {
+        "@timestamp": { "type": "date", "skip_list": true },
+        "message": { "type": "text", "norms": false },
+        "host": { "properties": { "name": { "type": "keyword", "index": false } } },
+        "service": { "properties": { "name": { "type": "keyword", "index": false } } },
+        "log": { "properties": { "level": { "type": "keyword", "index": false } } },
+        "http": { "properties": { "response": { "properties": { "status_code": { "type": "integer", "index": false, "skip_list": true } } } } },
+        "event": { "properties": { "duration": { "type": "long", "index": false, "skip_list": true } } },
+        "trace": { "properties": { "id": { "type": "hex_id" } } },
+        "span": { "properties": { "id": { "type": "hex_id" } } }
+      }
+    }
+  }
+}

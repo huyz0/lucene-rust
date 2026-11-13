@@ -98,6 +98,9 @@ pub use lucene_codecs::codecs::SegmentInfoFormat;
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
+use lucene_util::numeric_utils::{
+    double_to_sortable_long, float_to_sortable_int, sortable_int_to_float, sortable_long_to_double,
+};
 
 const CODEC_NAME: &str = "Lucene90SegmentInfo";
 const VERSION_START: i32 = 0;
@@ -799,54 +802,6 @@ pub fn parse_with_format(
         attributes,
         index_sort,
     })
-}
-
-/// `NumericUtils.floatToSortableInt` -- Java writes a FLOAT missing value in
-/// this sortable form, so a round trip has to go through the same space.
-///
-/// `Float.floatToIntBits` (which is what `NumericUtils` uses, not
-/// `floatToRawIntBits`) collapses every NaN to the canonical `0x7fc00000`,
-/// so this does too: without it a signalling NaN would write bytes Java
-/// never writes, and `write` would not be `parse`'s inverse for the value
-/// `parse` produced.
-fn float_to_sortable_int(v: f32) -> i32 {
-    let bits = if v.is_nan() {
-        0x7fc0_0000u32 as i32
-    } else {
-        v.to_bits() as i32
-    };
-    sortable_float_bits(bits)
-}
-
-/// `NumericUtils.sortableFloatBits` -- its own inverse.
-fn sortable_float_bits(bits: i32) -> i32 {
-    bits ^ ((bits >> 31) & 0x7fff_ffff)
-}
-
-/// `NumericUtils.sortableIntToFloat`.
-fn sortable_int_to_float(encoded: i32) -> f32 {
-    f32::from_bits(sortable_float_bits(encoded) as u32)
-}
-
-/// `NumericUtils.doubleToSortableLong`, with `Double.doubleToLongBits`'
-/// NaN canonicalization for the same reason as [`float_to_sortable_int`].
-fn double_to_sortable_long(v: f64) -> i64 {
-    let bits = if v.is_nan() {
-        0x7ff8_0000_0000_0000u64 as i64
-    } else {
-        v.to_bits() as i64
-    };
-    sortable_double_bits(bits)
-}
-
-/// `NumericUtils.sortableDoubleBits` -- its own inverse.
-fn sortable_double_bits(bits: i64) -> i64 {
-    bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
-}
-
-/// `NumericUtils.sortableLongToDouble`.
-fn sortable_long_to_double(encoded: i64) -> f64 {
-    f64::from_bits(sortable_double_bits(encoded) as u64)
 }
 
 fn unsupported<T>(field: &str, reason: impl Into<String>) -> Result<T> {

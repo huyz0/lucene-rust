@@ -17,7 +17,7 @@ import org.opensearch.script.TermsSetQueryScript;
 
 /**
  * The Lucene queries OpenSearch builds over doc values, as the nodes {@code
- * crates/lucene-ffi/src/jvm_queries.rs} reads:
+ * crates/lucene-engine/src/queries.rs} reads:
  *
  * <ul>
  *   <li>the doc-values-only queries of a field that is not indexed: {@code

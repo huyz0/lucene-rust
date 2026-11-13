@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `lucene-replicator` (Lucene 10.5.0's `replicator` module), ported class by
 //! class. The inventory is `docs/inventory/lucene-replicator.tsv`.
 //!

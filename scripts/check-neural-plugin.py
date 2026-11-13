@@ -211,7 +211,7 @@ def neural_index(n, name, mid, rust):
     n.ok("PUT", f"/_ingest/pipeline/{name}-p", {"processors": [{"text_embedding": {"model_id": mid, "field_map": {"text": "emb"}}}]})
     settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "default_pipeline": f"{name}-p"}
     if rust:
-        settings["index.lucene_rust.engine"] = True
+        settings["index.engine.accelerated"] = True
     n.ok("PUT", f"/{name}", {"settings": settings, "mappings": {"properties": {
         "text": {"type": "text"}, "tag": {"type": "keyword"}, "n": {"type": "integer"},
         "emb": {"type": "knn_vector", "dimension": 32, "space_type": "l2"}}}})
@@ -287,7 +287,7 @@ def neural(c, ours, stock, z):
         b = hits(stock.call("POST", "/nq/_search?search_pipeline=norm", hy(mids[1])))
         compare(c, f"hybrid with neural {idx}", a, b)
     after = rust_stats(ours)
-    ran = after.get("native_queries", 0) - before.get("native_queries", 0)
+    ran = after.get("accelerated_queries", 0) - before.get("accelerated_queries", 0)
     falls = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
              if v != before.get("fallbacks", {}).get(k, 0)}
     c.true("neural searches ran natively", ran > 0 and not falls, f"native {ran}, fallbacks {falls}")
@@ -323,7 +323,7 @@ def seismic_index(n, name, mid, rust):
     n.ok("PUT", f"/_ingest/pipeline/{name}-p", {"processors": [{"sparse_encoding": {"model_id": mid, "field_map": {"text": "emb"}}}]})
     settings = {"index.sparse": True, "number_of_shards": 1, "number_of_replicas": 0, "default_pipeline": f"{name}-p"}
     if rust:
-        settings["index.lucene_rust.engine"] = True
+        settings["index.engine.accelerated"] = True
     n.ok("PUT", f"/{name}", {"settings": settings, "mappings": {"properties": {
         "text": {"type": "text"}, "tag": {"type": "keyword"}, "n": {"type": "integer"},
         "emb": {"type": "sparse_vector", "method": {"name": "seismic", "parameters": EXACT}}}}})
@@ -391,7 +391,7 @@ def sparse(c, ours, stock, z):
         b = hits(stock.call("POST", "/sqs/_search", sb))
         compare(c, f"neural_sparse seismic {label} rust engine", hits(ours.call("POST", "/sqsr/_search", ob)), b)
     after = rust_stats(ours)
-    ran = after.get("native_queries", 0) - before.get("native_queries", 0)
+    ran = after.get("accelerated_queries", 0) - before.get("accelerated_queries", 0)
     falls = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
              if v != before.get("fallbacks", {}).get(k, 0)}
     c.true("neural_sparse searches ran natively", ran > 0 and not falls, f"native {ran}, fallbacks {falls}")
@@ -525,7 +525,7 @@ def semantic(c, ours, stock, z, zs):
     after = rust_stats(ours)
     falls = {k: v - before.get("fallbacks", {}).get(k, 0) for k, v in after.get("fallbacks", {}).items()
              if v != before.get("fallbacks", {}).get(k, 0)}
-    c.true("semantic searches ran natively", after.get("native_queries", 0) > before.get("native_queries", 0) and not falls,
+    c.true("semantic searches ran natively", after.get("accelerated_queries", 0) > before.get("accelerated_queries", 0) and not falls,
            f"fallbacks {falls}")
     # Adding a semantic field to an existing index through the put mapping API.
     outs = []
@@ -664,13 +664,13 @@ def mmr(c, ours, stock, z):
 # ---------------------------------------------------------------- ivf
 
 IVF_FIELD = {"type": "knn_vector", "dimension": 32, "space_type": "l2",
-             "method": {"name": "ivf", "engine": "lucene_rust", "parameters": {"target_cluster_size": 16, "rerank_encoding": "float"}}}
+             "method": {"name": "ivf", "engine": "extended", "parameters": {"target_cluster_size": 16, "rerank_encoding": "float"}}}
 # Every cluster: the IVF search is then the exhaustive one, which stock's HNSW over 36 documents is too.
 ALL_PROBES = {"nprobes": 1024}
 
 
 def ivf(c, ours, stock, z):
-    """The plugin's IVF fields (lucene_rust engine) through the stock k-NN and neural-search surface:
+    """The plugin's IVF fields (extended engine) through the stock k-NN and neural-search surface:
     the same documents, hits, scores and errors as stock's lucene HNSW field over the same documents."""
     mids = [text_model(n, z) for n in (ours, stock)]
     sem = [semantic_dense_model(n, z) for n in (ours, stock)]
@@ -681,7 +681,7 @@ def ivf(c, ours, stock, z):
         field = IVF_FIELD if n is ours else hnsw
         settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "default_pipeline": "ivf-p"}
         if n is ours:
-            settings["index.lucene_rust.engine"] = True
+            settings["index.engine.accelerated"] = True
         n.ok("PUT", "/_ingest/pipeline/ivf-p", {"processors": [{"text_embedding": {"model_id": mid, "field_map": {"text": "emb"}}},
                                                                {"copy": {"source_field": "emb", "target_field": "cos"}},
                                                                {"copy": {"source_field": "emb", "target_field": "ip"}}]})
@@ -899,6 +899,9 @@ def warmup(c, ours, stock):
 
 
 PREFIXES = ("knn.", "plugins.neural_search.", "index.knn.", "index.neural_search.", "seismic_thread_pool.")
+# The plugin's own k-NN index settings, which stock has no counterpart for.
+EXTENSIONS = ("index.knn.target_recall", "index.knn.target_recall_sample_rate", "index.knn.target_recall_check_budget",
+              "index.knn.ivf.partition_min_vectors")
 
 
 def settings(c, ours, stock):
@@ -915,7 +918,8 @@ def settings(c, ours, stock):
         n.call("DELETE", "/sset")
         n.ok("PUT", "/sset", {"settings": {"index.knn": True}})
         r = n.ok("GET", "/sset/_settings?include_defaults=true&flat_settings=true")["sset"]
-        return {k: v for part in ("settings", "defaults") for k, v in r.get(part, {}).items() if k.startswith(PREFIXES)}
+        return {k: v for part in ("settings", "defaults") for k, v in r.get(part, {}).items()
+                if k.startswith(PREFIXES) and k not in EXTENSIONS}
     a, b = index_flat(ours), index_flat(stock)
     for k in sorted(set(a) | set(b)):
         compare(c, f"index setting {k}", a.get(k, "<missing>"), b.get(k, "<missing>"))

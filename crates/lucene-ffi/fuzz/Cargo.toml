@@ -17,6 +17,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 lucene-ffi = { path = ".." }
 lucene-util = { path = "../../lucene-util" }
+lucene-spatial3d = { path = "../../lucene-spatial3d" }
 
 [workspace]
 members = ["."]

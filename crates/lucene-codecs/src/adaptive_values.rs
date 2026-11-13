@@ -1,4 +1,4 @@
-//! The value blocks of the `RustAdaptive` doc-values format: a NUMERIC or
+//! The value blocks of the `Adaptive90` doc-values format: a NUMERIC or
 //! SORTED_NUMERIC value array cut into blocks of [`BLOCK_SIZE`] values, each
 //! block encoded with whichever chain of transforms makes it smallest.
 //!
@@ -43,6 +43,7 @@
 //! load 16 bytes at a packed value's first byte.
 
 use lucene_store::Error;
+use lucene_util::numeric_utils::sortable_double_bits as flip;
 
 /// log2 of [`BLOCK_SIZE`].
 pub const BLOCK_SHIFT: u32 = 7;
@@ -68,12 +69,6 @@ const POW10: [f64; 23] = [
 
 fn eof() -> Error {
     Error::Eof { offset: 0 }
-}
-
-/// `NumericUtils.sortableDoubleBits`, which is its own inverse.
-#[inline]
-fn flip(bits: i64) -> i64 {
-    bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
 }
 
 /// `NumericUtils.doubleToSortableLong(i / 10^e)`: the decimal transform's

@@ -68,6 +68,17 @@ public final class SearchStats {
         }
     }
 
+    private final LongAdder sourcesWithoutVectors = new LongAdder();
+
+    /** A derived {@code _source} read without its vectors, for a fetch whose filter drops them. */
+    public void sourceWithoutVectors() {
+        sourcesWithoutVectors.increment();
+    }
+
+    public long sourcesWithoutVectorsCount() {
+        return sourcesWithoutVectors.sum();
+    }
+
     private final LongAdder nativeDocValues = new LongAdder();
 
     /** A document's doc values read natively ({@link NativeDocValues}). */
@@ -77,6 +88,17 @@ public final class SearchStats {
 
     public long docValuesCount() {
         return nativeDocValues.sum();
+    }
+
+    private final LongAdder nativeHighlights = new LongAdder();
+
+    /** A field of a search highlighted natively ({@code NativeUnifiedHighlighter}), counted once per search. */
+    public void nativeHighlight() {
+        nativeHighlights.increment();
+    }
+
+    public long highlightCount() {
+        return nativeHighlights.sum();
     }
 
     public long sequentialFetchCount() {
@@ -134,6 +156,22 @@ public final class SearchStats {
      */
     public void nativeTime(long nanos) {
         nativeNanos.add(nanos);
+    }
+
+    private final java.util.concurrent.atomic.LongAccumulator requestPeak = new java.util.concurrent.atomic.LongAccumulator(Math::max, 0);
+    private final LongAdder requestBytes = new LongAdder();
+    private final LongAdder requestScopes = new LongAdder();
+
+    /** The most a native query phase held ({@link NativeMemory.Scope#peak}). */
+    public void nativeMemory(long peak) {
+        requestPeak.accumulate(peak);
+        requestBytes.add(Math.max(0, peak));
+        requestScopes.increment();
+    }
+
+    /** {most one request held, sum of requests' peaks, requests measured}. */
+    public long[] requestMemory() {
+        return new long[] { requestPeak.get(), requestBytes.sum(), requestScopes.sum() };
     }
 
     public void luceneTime(long nanos) {

@@ -9,12 +9,12 @@ use std::sync::Arc;
 use lucene_index::document::{Document, FieldType, IndexableField};
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
-use lucene_store::FsDirectory;
-use lucene_util::spatial4j::{Point, Shape, SpatialContext, SpatialContextFactory};
-use lucene_util::spatial_extras::prefix_tree::{
+use lucene_spatial4j::spatial4j::{Point, Shape, SpatialContext, SpatialContextFactory};
+use lucene_spatial4j::spatial_extras::prefix_tree::{
     Calendar, DateRangePrefixTree, QuadPrefixTree, SpatialPrefixTree,
 };
-use lucene_util::spatial_extras::query::{SpatialArgs, SpatialOperation};
+use lucene_spatial4j::spatial_extras::query::{SpatialArgs, SpatialOperation};
+use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
 use super::bbox::{BBoxOverlapRatioValueSource, BBoxStrategy};

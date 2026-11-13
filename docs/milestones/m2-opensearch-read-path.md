@@ -260,7 +260,7 @@ everything else, and OpenSearch's own REST suites cannot tell the difference.
 | force merge releases files | two force-merge rounds; afterwards no index file that was deleted from disk may still be mapped in the node's address space (`/proc/<pid>/maps`) and the open-native-reader count may not grow. Planting a leak (never closing native readers) fails both checks |
 | consistent with M1 | [`benchmarks/m2-opensearch-e2e.md`](../benchmarks/m2-opensearch-e2e.md): the shapes M1 measured are 1.00–1.48× over REST and 1.08–3.3× in process, the same direction as M1.6's 1.03–46× |
 | FFI < 1 µs | one JNI crossing costs 7.4–9.4 ns; a search makes one |
-| published table | [`opensearch-native-queries.md`](../opensearch-native-queries.md) |
+| published table | [`accelerated-queries.md`](../accelerated-queries.md) |
 | CI, both architectures | `.github/workflows/ci.yml` jobs `opensearch (x64)`, `opensearch (arm64)` and `fuzz`. Locally, x86_64 ran everything above; the aarch64 library was cross-built (`aarch64-linux-gnu-gcc`) and checked for its JNI entry points and glibc floor, but not executed in this session — its first run is the arm64 CI job |
 
 ### How it differs from the plan above, and why
@@ -292,7 +292,7 @@ everything else, and OpenSearch's own REST suites cannot tell the difference.
   close listener closes its native reader.
 - **The supported matrix is routed by measurement.** Every encodable shape is
   answered correctly natively (the e2e runs its matrix with
-  `native_shapes: all` too), but mixed booleans, `must_not`,
+  `accelerated_shapes: all` too), but mixed booleans, `must_not`,
   `minimum_should_match` ≥ 2, boosts and `constant_score` measured 4–8× slower
   than Lucene through REST, so by default they go to Lucene (`slower_shape`).
   AGENTS.md invariant #3 calls a native path slower than Java a bug; routing
@@ -364,6 +364,6 @@ re-verified before the milestone was closed.
 | JVM-side differential self test | `opensearch-plugin/src/test/java/org/lucenerust/opensearch/NativeSelfTest.java` |
 | end-to-end harness | `scripts/verify-opensearch.sh`, `opensearch-plugin/e2e/verify_opensearch.py` |
 | fuzz targets | `crates/lucene-ffi/fuzz/` |
-| support table | `docs/opensearch-native-queries.md` |
+| support table | `docs/accelerated-queries.md` |
 | benchmark | `docs/benchmarks/m2-opensearch-e2e.md` |
 

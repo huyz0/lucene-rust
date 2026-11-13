@@ -187,6 +187,37 @@ mod tests {
         assert_eq!(s.args, [long.as_str()]);
     }
 
+    /// The bytes the plugin's Java `PatternTextFormat` must write too
+    /// (`NativeSelfTestPatternText.GOLDEN`): per message, the template's
+    /// UTF-8 and the stored variables, in hex.
+    const GOLDEN: [(&str, &str, &str); 4] = [
+        (
+            "081109 203518 143 INFO dfs.DataNode$DataXceiver: Receiving block blk_-16 src: /10.250.19.102:54106",
+            "022002200220494e464f206466732e446174614e6f64652444617461586365697665723a20526563656976696e6720626c6f636b2002207372633a2002",
+            "06303831313039063230333531380331343307626c6b5f2d3136142f31302e3235302e31392e3130323a3534313036",
+        ),
+        ("  two  spaces ", "202074776f202073706163657320", ""),
+        (
+            "unicode \u{fc}n\u{ef}c\u{f8}d\u{e9} 3ms \u{2} x",
+            "756e69636f646520c3bc6ec3af63c3b864c3a9200220022078",
+            "03336d730102",
+        ),
+        ("", "", ""),
+    ];
+
+    #[test]
+    fn writes_the_golden_bytes() {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        for (m, template, args) in GOLDEN {
+            let s = split(m);
+            assert_eq!(hex(s.template.as_bytes()), template, "{m:?}");
+            assert_eq!(hex(&encode_args(&s.args)), args, "{m:?}");
+        }
+        let long = "9".repeat(300);
+        let m = format!("id {long} done");
+        assert_eq!(hex(&encode_args(&split(&m).args)[..4]), "ac023939");
+    }
+
     #[test]
     fn corrupt_values_are_refused() {
         assert!(join("\u{2} \u{2}", &["a"]).is_err());

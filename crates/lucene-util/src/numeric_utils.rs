@@ -5,7 +5,6 @@
 //! Java's `floatToIntBits`/`doubleToLongBits` canonicalise every NaN to one
 //! bit pattern before the transform; Rust's `to_bits` does not, so the
 //! `*_to_sortable_*` functions canonicalise explicitly.
-//! (Some crates still carry private copies of the double/long half.)
 
 /// `NumericUtils.sortableFloatBits`.
 #[inline]

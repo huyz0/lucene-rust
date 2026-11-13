@@ -27,9 +27,13 @@ import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.FieldMapper;
+import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.ParseContext;
 import org.opensearch.index.mapper.SourceFieldMapper;
 import org.opensearch.index.shard.IndexingOperationListener;
+import org.opensearch.search.fetch.subphase.FetchSourceContext;
+import org.opensearch.search.internal.SearchContext;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -57,8 +61,8 @@ import java.util.function.Function;
  * reads JSON only: a {@code _source} in another content type is stored whole there.
  */
 public final class DerivedSource {
-    /** The field attribute the Rust writer lists a field for ({@code engine_writer.rs}). */
-    public static final String FIELD_ATTRIBUTE = "lucene_rust.derived_source";
+    /** The field attribute the Rust writer lists a field for ({@code writer_blob.rs}). */
+    public static final String FIELD_ATTRIBUTE = "accelerated.derived_source";
     /** {@code KNN10010DerivedSourceStoredFieldsWriter.MASK}. */
     static final Byte MASK = 0x1;
 
@@ -113,6 +117,92 @@ public final class DerivedSource {
             }
         }
         return false;
+    }
+
+    /** Per mapping, its {@code knn_vector} fields' paths ({@link #vectorPaths}). */
+    private static final Map<DocumentMapper, String[]> VECTOR_PATHS = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /**
+     * Whether a fetch phase's output never shows a k-NN vector from {@code _source}: it returns
+     * {@code _source} through a filter that drops each {@code knn_vector} field of the mapping,
+     * whatever its value, and nothing else it does reads {@code _source} (highlighting, script
+     * fields, {@code fields}, inner hits). A derived {@code _source} then reads the same without its
+     * vectors put back: they differ only in the values the filter drops.
+     */
+    public static boolean vectorsDropped(SearchContext context) {
+        if (context.sourceRequested() == false
+            || context.hasFetchSourceContext() == false
+            || context.highlight() != null
+            || context.hasScriptFields()
+            || context.fetchFieldsContext() != null
+            || (context.innerHits() != null && context.innerHits().getInnerHits().isEmpty() == false)) {
+            return false;
+        }
+        FetchSourceContext source = context.fetchSourceContext();
+        if (source == null || source.fetchSource() == false || source.excludes().length == 0 && source.includes().length == 0) {
+            return false;
+        }
+        String[] paths = vectorPaths(context.mapperService());
+        return paths.length > 0 && dropped(source.getFilter(), paths);
+    }
+
+    /** Whether {@code filter} drops each of {@code paths}, holding a number or an array, under objects or arrays of them. */
+    public static boolean dropped(Function<Map<String, ?>, Map<String, Object>> filter, String[] paths) {
+        for (String path : paths) {
+            String[] keys = path.split("\\.");
+            for (Object value : new Object[] { 1, List.of(1.5, -2) }) {
+                for (boolean arrays : new boolean[] { false, true }) {
+                    if (holds(filter.apply(nest(keys, value, arrays)), keys, 0)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /** {@code value} at {@code keys}, each object level inside a one-element array when {@code arrays}. */
+    private static Map<String, Object> nest(String[] keys, Object value, boolean arrays) {
+        Object at = value;
+        for (int i = keys.length - 1; i >= 0; i--) {
+            Map<String, Object> m = new HashMap<>();
+            m.put(keys[i], at);
+            at = arrays && i > 0 ? List.of(m) : m;
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> root = (Map<String, Object>) at;
+        return root;
+    }
+
+    /** Whether {@code node} still holds something at {@code keys} from {@code from} on. */
+    private static boolean holds(Object node, String[] keys, int from) {
+        if (from == keys.length) {
+            return true;
+        }
+        if (node instanceof Map<?, ?> m) {
+            return m.containsKey(keys[from]) && holds(m.get(keys[from]), keys, from + 1);
+        }
+        if (node instanceof List<?> l) {
+            return l.stream().anyMatch(e -> holds(e, keys, from));
+        }
+        return false;
+    }
+
+    /** The paths of the mapping's {@code knn_vector} fields, this plugin's or stock k-NN's. */
+    private static String[] vectorPaths(MapperService mapperService) {
+        DocumentMapper mapper = mapperService.documentMapper();
+        if (mapper == null) {
+            return new String[0];
+        }
+        return VECTOR_PATHS.computeIfAbsent(mapper, m -> {
+            List<String> out = new ArrayList<>();
+            for (MappedFieldType ft : mapperService.fieldTypes()) {
+                if (KnnVectorFieldMapper.CONTENT_TYPE.equals(ft.typeName())) {
+                    out.add(ft.name());
+                }
+            }
+            return out.toArray(String[]::new);
+        });
     }
 
     /** A byte vector as the signed ints its {@code _source} holds. */

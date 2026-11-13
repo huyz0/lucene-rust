@@ -56,6 +56,11 @@ import org.opensearch.index.fielddata.IndexNumericFieldData;
 import org.opensearch.index.search.OpenSearchToParentBlockJoinQuery;
 import org.opensearch.search.MultiValueMode;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.lucenerust.opensearch.patterntext.PatternPhraseQuery;
+import org.lucenerust.opensearch.substring.RustWildcardQuery;
+import org.apache.lucene.search.MultiPhraseQuery;
+import org.apache.lucene.search.PhraseQuery;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -67,7 +72,7 @@ import java.util.function.Predicate;
 
 /**
  * The extension of {@link QueryEncoder} for the OpenSearch shapes {@code lucene-join} and
- * {@code lucene-queries} back natively, as the nodes {@code crates/lucene-ffi/src/jvm_nodes.rs}
+ * {@code lucene-queries} back natively, as the nodes {@code crates/lucene-engine/src/nodes.rs}
  * reads.
  *
  * <ul>
@@ -86,7 +91,8 @@ import java.util.function.Predicate;
  *       (node 24);
  *   <li>{@code script_score} running k-NN's {@code knn_score} over a {@code knn_vector} space:
  *       OpenSearch's {@link ScriptScoreQuery} without {@code min_score} (node 42);
- *   <li>{@code max_sim} over a {@code multi_vector} field: {@link MaxSimQuery} (node 44).
+ *   <li>{@code max_sim} over a {@code multi_vector} field: {@link MaxSimQuery} (node 44);
+ *   <li>an exact phrase over a {@code pattern_text} field: {@link PatternPhraseQuery} (node 47).
  * </ul>
  *
  * <p>The classes are read through their getters, or through {@link Reflect} where Lucene and
@@ -112,6 +118,14 @@ final class ExtendedEncoder {
     static final byte NODE_MAX_SIM = 44;
     static final byte NODE_PAINLESS_FILTER = 45;
     static final byte NODE_JOIN = 46;
+    static final byte NODE_PATTERN_PHRASE = 47;
+    static final byte NODE_SUBSTRING = 49;
+    static final byte SUBSTRING_WILDCARD = 0;
+    static final byte SUBSTRING_REGEXP = 1;
+    static final byte SUBSTRING_CONTAINS = 2;
+    static final byte SUBSTRING_EXACT = 3;
+    /** {@code pattern_phrase.rs}'s {@code MAX_TERMS}. */
+    static final int MAX_PATTERN_TERMS = 1024;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -137,6 +151,12 @@ final class ExtendedEncoder {
             }
             if (q instanceof MaxSimQuery ms) {
                 return maxSim(ms, out, child);
+            }
+            if (q instanceof PatternPhraseQuery pp) {
+                return patternPhrase(pp, out);
+            }
+            if (q instanceof RustWildcardQuery rw) {
+                return substring(rw, out);
             }
             if (q instanceof OpenSearchToParentBlockJoinQuery os) {
                 Field f = Reflect.declared(OpenSearchToParentBlockJoinQuery.class, "query");
@@ -521,7 +541,7 @@ final class ExtendedEncoder {
     private static final int MAX_AUTOMATON_STATES = 1 << 16;
 
     /**
-     * Writes {@code c} as {@code decode_compiled_automaton} in {@code jvm_nodes.rs} reads it: its
+     * Writes {@code c} as {@code decode_compiled_automaton} in {@code nodes.rs} reads it: its
      * type, then the term (single) or the byte automaton (normal). Returns {@code tooLarge} for an
      * automaton of more states than the native side accepts, or null.
      */
@@ -592,7 +612,7 @@ final class ExtendedEncoder {
 
     /**
      * {@link MaxSimQuery}: the sub-query's documents, each scored by its {@code MaxSim} against the
-     * query's tokens (0 without a value), as {@code crates/lucene-ffi/src/jvm_max_sim.rs} reads it.
+     * query's tokens (0 without a value), as {@code crates/lucene-engine/src/max_sim_query.rs} reads it.
      */
     private static String maxSim(MaxSimQuery q, ByteArrayOutputStream out, Child child) {
         out.write(NODE_MAX_SIM);
@@ -607,6 +627,74 @@ final class ExtendedEncoder {
         for (float[] t : tokens) {
             for (float v : t) {
                 writeInt(out, Float.floatToIntBits(v));
+            }
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // compact_wildcard
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link RustWildcardQuery}: its field, kind, case flag and pattern, as {@code NODE_SUBSTRING} in
+     * {@code crates/lucene-engine/src/queries.rs} reads them. A regexp with other than {@code
+     * RegExp.ALL} syntax runs in Java.
+     */
+    private static String substring(RustWildcardQuery q, ByteArrayOutputStream out) {
+        if (q.nativePattern() == false) {
+            return "substring_regexp_flags";
+        }
+        out.write(NODE_SUBSTRING);
+        writeString(out, q.field());
+        out.write(switch (q.kind()) {
+            case WILDCARD -> SUBSTRING_WILDCARD;
+            case REGEXP -> SUBSTRING_REGEXP;
+            case CONTAINS -> SUBSTRING_CONTAINS;
+            case EXACT -> SUBSTRING_EXACT;
+        });
+        out.write(q.caseInsensitive() ? 1 : 0);
+        writeBytes(out, new BytesRef(q.pattern()));
+        return null;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // pattern_text phrase
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * {@link PatternPhraseQuery}, an exact phrase: its field, its index analyzer's spec, whether a
+     * template's static text may decide it, and its terms by position, as {@code
+     * crates/lucene-engine/src/pattern_phrase.rs} reads them. A phrase with slop or a prefix, or an
+     * analyzer {@link AnalyzerSpec} cannot describe, runs in Java.
+     */
+    private static String patternPhrase(PatternPhraseQuery q, ByteArrayOutputStream out) {
+        if (q.positions() == null) {
+            return q.positional() instanceof PhraseQuery || q.positional() instanceof MultiPhraseQuery ? "pattern_phrase_slop" : "pattern_phrase_prefix";
+        }
+        int count = 0;
+        for (BytesRef[] t : q.terms()) {
+            count += t.length;
+        }
+        if (count > MAX_PATTERN_TERMS) {
+            return "pattern_phrase_terms";
+        }
+        AnalyzerSpec.Spec spec = AnalyzerSpec.cached(q.analyzer(), q.field());
+        if (spec.ok() == false) {
+            return "pattern_phrase_" + spec.reason();
+        }
+        out.write(NODE_PATTERN_PHRASE);
+        writeString(out, q.field());
+        writeBytes(out, spec.blob());
+        out.write(q.templateParts() ? 1 : 0);
+        int[] positions = q.positions();
+        BytesRef[][] terms = q.terms();
+        writeInt(out, positions.length);
+        for (int i = 0; i < positions.length; i++) {
+            writeInt(out, positions[i]);
+            writeInt(out, terms[i].length);
+            for (BytesRef t : terms[i]) {
+                writeBytes(out, t);
             }
         }
         return null;
@@ -895,7 +983,7 @@ final class ExtendedEncoder {
 
     /**
      * OpenSearch's scripted similarity as the native runtime scores with it (similarity kind 9
-     * of {@code jvm_similarity.rs}, after the kind), or null when it stays in Java: a script that
+     * of {@code similarity.rs}, after the kind), or null when it stays in Java: a script that
      * is not inline Painless compiled with no options or params of its own, or one the static
      * check refuses. {@code similarity} is the scripted similarity, or the {@code
      * NonNegativeScoresSimilarity} around it.
@@ -1029,7 +1117,7 @@ final class ExtendedEncoder {
         return refused != null ? reason + "_painless" : p;
     }
 
-    /** A painless node's script, after any sub-query, as {@code jvm_painless_score.rs} reads it. */
+    /** A painless node's script, after any sub-query, as {@code painless_score.rs} reads it. */
     private static void painlessSpec(ByteArrayOutputStream out, Painless p, String index, int shard, int run) {
         out.write(p.context());
         writeBytes(out, p.compiled().ir());

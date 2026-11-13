@@ -1,12 +1,14 @@
 //! Build time, size, recall and latency of one KNN field through the real
 //! index path (IndexWriter, segment reader, `knn_top_hits`) per vectors
-//! format: HNSW, scalar-quantized HNSW and `LuceneRustIvfVectorsFormat`.
+//! format: HNSW, scalar-quantized HNSW and `IvfVectorsFormat`.
 //!
 //! ```text
 //! cargo run --release -p lucene-search --example knn_formats -- <prefix> <l2|cosine> [options]
 //!   --formats L   comma list of hnsw, hnsw-int7, hnsw-sq1/sq2/sq4 (Lucene104
 //!                 scalar quantized HNSW), hnsw-<quantizer> (the graph walked on
-//!                 any `IVF_QUANTIZERS` codes: hnsw-erq2, hnsw-rabitq, ...), ivf,
+//!                 any `IVF_QUANTIZERS` codes: hnsw-erq2, hnsw-rabitq, ...),
+//!                 disk-<quantizer> (the disk HNSW layout ranking on those
+//!                 codes: disk-bbq, disk-erq4, ...), ivf,
 //!                 ivf-f16 and ivf-<quantizer> (f16 rerank, ivf-erq4, ivf-osq2, ...)
 //!                 (default hnsw, hnsw-int7, ivf, ivf-f16)
 //!   --queries N   measured queries (default 1000), after 200 warm-up ones
@@ -14,8 +16,22 @@
 //!   --nprobes L   IVF probes per segment, 0 = calibrated (default 0)
 //!   --ef L        HNSW candidate counts to sweep (default 100)
 //!   --dir D       where the indexes are written (default a temporary directory)
+//!   --paged-mb N  search through `PagedFsDirectory` (vector files through
+//!                 the demand pager) holding at most N MiB of them
+//!                 resident, and print page faults a query; needs
+//!                 userfaultfd
+//!   --mmap        search through `MmapDirectory` (read advice applies;
+//!                 `READ_ADVICE` sets `lucene_store::read_advice`) instead
+//!                 of files read whole
 //!   --reuse       keep each format's index under D and search it again on
 //!                 later runs with the same data and build options
+//!   --targets L   recall targets: each format searched recall-targeted
+//!                 (`knn_recall`), after --tune-queries tuning queries, then
+//!                 again at the tuned effort without sampling (the monitor's
+//!                 cost is the difference)
+//!   --sample-rate R  the targeted searches' sample rate (default 0.01)
+//!   --budget B    the targeted searches' check budget (default 0.05)
+//!   --tune-queries N queries run before measuring a target (default 3000)
 //! ```
 //!
 //! `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
@@ -32,6 +48,9 @@ use lucene_index::concurrent_writer::ConcurrentIndexWriter;
 use lucene_index::index_writer::{DocumentVector, ExplicitDocument, IndexWriter};
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::knn_recall::{
+    knn_top_hits_at_effort, knn_top_hits_exact, knn_top_hits_tuned, RecallTarget, RecallTuner,
+};
 use lucene_search::knn_search::{knn_top_hits_with, KnnTarget};
 use lucene_store::FsDirectory;
 use lucene_util::quantization::ScalarEncoding;
@@ -76,6 +95,13 @@ fn format(name: &str) -> KnnVectorsFormat {
                 .unwrap_or_else(|| panic!("unknown format {other}"));
             KnnVectorsFormat::hnsw_quantized(quantizer as u8, 16, 100).unwrap()
         }
+        other if other.starts_with("disk-") => {
+            let quantizer = IVF_QUANTIZERS
+                .iter()
+                .position(|&n| Some(n) == other.strip_prefix("disk-"))
+                .unwrap_or_else(|| panic!("unknown format {other}"));
+            KnnVectorsFormat::hnsw_disk(quantizer as u8, 16, 100).unwrap()
+        }
         other => {
             // `ivf-<quantizer>`: f16 rerank vectors, the named cluster codes.
             let quantizer = other
@@ -111,6 +137,11 @@ fn main() {
     let formats = opt("--formats").unwrap_or_else(|| "hnsw,hnsw-int7,ivf,ivf-f16".into());
     let segments: usize = opt("--segments").map_or(1, |s| s.parse().unwrap());
     let merge = args.iter().any(|a| a == "--merge");
+    let mmap = args.iter().any(|a| a == "--mmap");
+    let paged_mb: Option<u64> = opt("--paged-mb").map(|s| s.parse().unwrap());
+    if let Ok(spec) = std::env::var("READ_ADVICE") {
+        lucene_store::read_advice::set(&spec).unwrap();
+    }
     let nprobes: Vec<usize> = opt("--nprobes")
         .unwrap_or_else(|| "0".into())
         .split(',')
@@ -128,9 +159,15 @@ fn main() {
         .map_or(1000, |s| s.parse().unwrap())
         .min(nq_all.saturating_sub(200));
     let reuse = args.iter().any(|a| a == "--reuse");
+    let targets: Vec<f32> = opt("--targets").map_or_else(Vec::new, |s| {
+        s.split(',').map(|s| s.parse().unwrap()).collect()
+    });
+    let sample_rate: f32 = opt("--sample-rate").map_or(0.01, |s| s.parse().unwrap());
+    let budget: f32 = opt("--budget").map_or(0.05, |s| s.parse().unwrap());
+    let tune_queries: usize = opt("--tune-queries").map_or(3000, |s| s.parse().unwrap());
     let root = opt("--dir").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     eprintln!("{prefix}: {n} x {dim}, {nq} queries, {segments} segments, merge {merge}");
-    println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us");
+    println!("format,setting,segments,build_s,index_mb,recall@{K},mean_us,p99_us,faults_per_query");
     for name in formats.split(',') {
         let path = if reuse {
             root.join(format!("knn-formats-{name}"))
@@ -208,7 +245,25 @@ fn main() {
         }
         let build = t.elapsed().as_secs_f64();
         let size = dir_size(&path) as f64 / 1e6;
-        let reader = DirectoryReader::open(&dir).unwrap();
+        let mapped = lucene_store::MmapDirectory::open(&path);
+        let paged = paged_mb.map(|mb| {
+            let d = lucene_store::PagedFsDirectory::with_config(
+                &path,
+                lucene_store::PagedFsConfig::vectors_only(),
+            );
+            assert!(d.is_paged(), "userfaultfd is unavailable");
+            lucene_store::paged_input::Pager::global()
+                .unwrap()
+                .set_budget(mb << 20);
+            d
+        });
+        let reader = if let Some(paged) = &paged {
+            DirectoryReader::open(paged).unwrap()
+        } else if mmap {
+            DirectoryReader::open(&mapped).unwrap()
+        } else {
+            DirectoryReader::open(&dir).unwrap()
+        };
         let opened = reader.open_segments().unwrap();
         let segs = opened.as_open_segments();
         // A merge may reorder documents: hits map back to base ordinals
@@ -229,6 +284,115 @@ fn main() {
         } else {
             efs.iter().map(|&ef| (0, ef)).collect()
         };
+        let pool = |q: usize| KnnTarget::Float(queries[q * dim..(q + 1) * dim].to_vec());
+        let recall_of = |q: usize, hits: &[lucene_search::ScoreDoc]| {
+            let truth = &gt[q * gt_k..q * gt_k + K];
+            hits.iter()
+                .filter(|h| truth.contains(&ids[h.doc_id as usize]))
+                .count()
+        };
+        if !targets.is_empty() {
+            // The exact search the recall checks compare with.
+            let mut found = 0usize;
+            let t = Instant::now();
+            for q in 0..200.min(nq) {
+                let hits = knn_top_hits_exact(&segs, "v", &pool(q), K, None, None).unwrap();
+                found += recall_of(q, &hits);
+            }
+            println!(
+                "{name},exact,{},{build:.1},{size:.1},{:.4},{:.0},",
+                reader.segment_readers().len(),
+                found as f64 / (200.min(nq) * K) as f64,
+                t.elapsed().as_secs_f64() * 1e6 / 200.min(nq) as f64
+            );
+        }
+        // Recall-targeted rows: tuned (sampling) and fixed at the tuned effort.
+        for &target in &targets {
+            let candidates = if name.starts_with("ivf") { K } else { efs[0] };
+            let tuner = RecallTuner::new(
+                RecallTarget::new(target, sample_rate)
+                    .unwrap()
+                    .with_budget(budget)
+                    .unwrap(),
+            );
+            let tuned = |q: usize| {
+                knn_top_hits_tuned(
+                    &segs,
+                    "v",
+                    &pool(q),
+                    K,
+                    candidates,
+                    None,
+                    None,
+                    0,
+                    &[],
+                    &tuner,
+                )
+                .unwrap()
+            };
+            // Tuning queries come from past the measured ones, cycling.
+            let spare = nq_all - nq;
+            let t0 = Instant::now();
+            for i in 0..tune_queries {
+                tuned(nq + i % spare);
+            }
+            let tune_s = t0.elapsed().as_secs_f64();
+            let before = tuner.stats();
+            let mut runs: Vec<(String, Vec<f64>, usize)> = Vec::new();
+            // `fixed-tuneset`: the tuned effort over the tuning queries.
+            for mode in ["tuned", "fixed", "fixed-tuneset"] {
+                let effort = tuner.stats().effort;
+                let mut times = Vec::with_capacity(nq);
+                let mut found = 0usize;
+                for i in 0..nq {
+                    let q = if mode == "fixed-tuneset" {
+                        nq + i % spare
+                    } else {
+                        i
+                    };
+                    let t = Instant::now();
+                    let hits = if mode == "tuned" {
+                        tuned(q)
+                    } else {
+                        knn_top_hits_at_effort(
+                            &segs,
+                            "v",
+                            &pool(q),
+                            K,
+                            candidates,
+                            None,
+                            None,
+                            0,
+                            &[],
+                            None,
+                            effort,
+                        )
+                        .unwrap()
+                    };
+                    times.push(t.elapsed().as_secs_f64() * 1e6);
+                    found += recall_of(q, &hits);
+                }
+                runs.push((mode.to_string(), times, found));
+            }
+            let after = tuner.stats();
+            for (mode, mut times, found) in runs {
+                times.sort_by(f64::total_cmp);
+                let mean = times.iter().sum::<f64>() / nq as f64;
+                let p50 = times[nq / 2];
+                let p99 = times[(nq * 99 / 100).min(nq - 1)];
+                println!(
+                    "{name},target={target}/{mode}/effort={:.3}->{:.3}/est={:.4}/lb={:.4}/samples={}/check_share={:.3}/tune_s={tune_s:.1},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0},p50={p50:.0}",
+                    before.effort,
+                    after.effort,
+                    after.recall.unwrap_or(f64::NAN),
+                    after.recall_lower_bound.unwrap_or(f64::NAN),
+                    after.samples,
+                    after.check_nanos as f64 / after.search_nanos.max(1) as f64,
+                    reader.segment_readers().len(),
+                    found as f64 / (nq * K) as f64
+                );
+            }
+        }
         for &(nprobe, candidates) in &settings {
             let search = |q: usize| {
                 knn_top_hits_with(
@@ -245,6 +409,15 @@ fn main() {
             for q in nq..(nq + 200).min(nq_all) {
                 search(q);
             }
+            let faults = || {
+                lucene_store::paged_input::Pager::global()
+                    .filter(|_| paged.is_some())
+                    .map_or(0, |p| {
+                        let st = p.stats();
+                        st.faults + st.refaults
+                    })
+            };
+            let faults_before = faults();
             let mut times = Vec::with_capacity(nq);
             let mut found = 0usize;
             for q in 0..nq {
@@ -266,9 +439,21 @@ fn main() {
                 format!("ef={candidates}")
             };
             println!(
-                "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0}",
+                "{name},{setting},{},{build:.1},{size:.1},{:.4},{mean:.0},{p99:.0},{:.1}",
                 reader.segment_readers().len(),
-                found as f64 / (nq * K) as f64
+                found as f64 / (nq * K) as f64,
+                (faults() - faults_before) as f64 / nq as f64
+            );
+        }
+        if let Some(p) = lucene_store::paged_input::Pager::global().filter(|_| paged.is_some()) {
+            let st = p.stats();
+            eprintln!(
+                "{name}: pager faults {} refaults {} evictions {} fault_ms {} resident_mb {}",
+                st.faults,
+                st.refaults,
+                st.evictions,
+                st.fault_nanos / 1_000_000,
+                p.resident_bytes() >> 20
             );
         }
         drop(opened);

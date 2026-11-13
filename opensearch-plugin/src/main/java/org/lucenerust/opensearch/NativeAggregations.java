@@ -51,6 +51,70 @@ import java.util.Map;
  * those aggregators build ({@code InternalMin} and the rest) from the native state.
  */
 public final class NativeAggregations {
+
+    /**
+     * Counts {@code aggs}' buckets into the request's {@code search.max_buckets} consumer, as
+     * OpenSearch's aggregators do while they build their shard results ({@code
+     * consumeBucketsAndMaybeBreak}): too many is the same {@code too_many_buckets_exception}.
+     */
+    public static void consumeBuckets(SearchContext ctx, InternalAggregations aggs) {
+        if (aggs == null || ctx.aggregations() == null || ctx.aggregations().multiBucketConsumer() == null) {
+            return;
+        }
+        long n = countBuckets(aggs);
+        if (n > 0) {
+            ctx.aggregations().multiBucketConsumer().accept((int) Math.min(Integer.MAX_VALUE, n));
+        }
+    }
+
+    /**
+     * The buckets {@code ctx}'s request may still make ({@code search.max_buckets} less those already
+     * counted), for the native pass to stop at; -1 when nothing counts them.
+     */
+    public static int bucketLimit(SearchContext ctx) {
+        if (ctx.aggregations() == null || ctx.aggregations().multiBucketConsumer() == null) {
+            return -1;
+        }
+        org.opensearch.search.aggregations.MultiBucketConsumerService.MultiBucketConsumer c = ctx.aggregations().multiBucketConsumer();
+        return Math.max(0, c.getLimit() - c.getCount());
+    }
+
+    /**
+     * For a native pass that stopped with {@link NativeBridge#TOO_MANY_BUCKETS}: counts the buckets
+     * it made, which throws OpenSearch's own {@code too_many_buckets_exception}. Returns for any
+     * other status.
+     */
+    public static void checkBuckets(SearchContext ctx, int rc) {
+        if (rc != NativeBridge.TOO_MANY_BUCKETS || ctx.aggregations() == null || ctx.aggregations().multiBucketConsumer() == null) {
+            return;
+        }
+        long made;
+        try {
+            made = Long.parseLong(NativeBridge.lastError().trim());
+        } catch (NumberFormatException e) {
+            made = Integer.MAX_VALUE;
+        }
+        ctx.aggregations().multiBucketConsumer().accept((int) Math.min(Integer.MAX_VALUE, made));
+    }
+
+    /** Every bucket in {@code aggs}, their sub-aggregations' too. */
+    static long countBuckets(InternalAggregations aggs) {
+        long n = 0;
+        for (org.opensearch.search.aggregations.Aggregation a : aggs) {
+            if (a instanceof org.opensearch.search.aggregations.InternalMultiBucketAggregation<?, ?> m) {
+                for (Object b : m.getBuckets()) {
+                    n++;
+                    if (b instanceof org.opensearch.search.aggregations.InternalMultiBucketAggregation.InternalBucket ib
+                        && ib.getAggregations() instanceof InternalAggregations sub) {
+                        n += countBuckets(sub);
+                    }
+                }
+            } else if (a instanceof org.opensearch.search.aggregations.bucket.InternalSingleBucketAggregation sb) {
+                n += countBuckets(sb.getAggregations());
+            }
+        }
+        return n;
+    }
     static final byte LONG = 0;
     static final byte DOUBLE = 1;
     static final byte FLOAT = 2;

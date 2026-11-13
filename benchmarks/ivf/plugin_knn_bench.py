@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """knn_vector through the lucene-rust plugin on one OpenSearch node: HNSW
-(`lucene` engine) against IVF (`lucene_rust` engine, `method: ivf`).
+(`lucene` engine) against IVF (`extended` engine, `method: ivf`).
 
 For each mapping the base vectors are bulk-loaded (refresh off, one shard),
 refreshed, optionally force-merged to one segment, and then searched one
@@ -41,7 +41,7 @@ def mapping(name, dim, space):
         method = {"name": "hnsw", "engine": "lucene", "space_type": space,
                   "parameters": {"m": 16, "ef_construction": 100}}
     else:
-        method = {"name": "ivf", "engine": "lucene_rust", "space_type": space,
+        method = {"name": "ivf", "engine": "extended", "space_type": space,
                   "parameters": {"target_cluster_size": 384,
                                  "rerank_encoding": "float" if name == "ivf-f32" else "half_float"}}
     return {"type": "knn_vector", "dimension": dim, "method": method}
@@ -93,7 +93,7 @@ def main():
         for name in names:
             index = f"bench-{name}"
             ck.req(port, "PUT", f"/{index}", {
-                "settings": {"index.knn": True, "index.lucene_rust.engine": True, "number_of_shards": 1,
+                "settings": {"index.knn": True, "index.engine.accelerated": True, "number_of_shards": 1,
                              "number_of_replicas": 0, "refresh_interval": -1},
                 "mappings": {"properties": {"v": mapping(name, dim, space)}}})
             t = time.perf_counter()

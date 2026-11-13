@@ -444,12 +444,12 @@ fn numeric_doc_values_read_as_a_singleton_and_other_types_are_refused() {
 #[test]
 fn geo3d_query_schema_and_comparator_sources() {
     use crate::top_field::{LeafCtx, SortValue};
-    use lucene_util::spatial3d::PlanetModel;
+    use lucene_spatial3d::PlanetModel;
     let pm = PlanetModel::wgs84();
     let tmp = TempDir::new("geo3d-schema");
     let g3 = |lat: f64, lon: f64| -> Vec<Box<dyn IndexableField>> {
         let p = d::geo3d::from_degrees;
-        let point = lucene_util::spatial3d::GeoPoint::from_lat_lon(&pm, p(lat), p(lon)).unwrap();
+        let point = lucene_spatial3d::GeoPoint::from_lat_lon(&pm, p(lat), p(lon)).unwrap();
         vec![
             Box::new(d::Geo3DPoint::new("p", lat, lon).unwrap()),
             Box::new(d::Geo3DDocValuesField::new("p", &point, &pm).unwrap()),
