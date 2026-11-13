@@ -593,6 +593,30 @@ pub unsafe extern "C" fn ffi_jvm_reader_stored_source_alloc(
     })
 }
 
+/// [`crate::jvm_fetch::stored_value`]: the value a document blob left out as `DEFERRED`, as an
+/// owned buffer.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must be valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_jvm_reader_stored_value_alloc(
+    handle: u64,
+    segment: i32,
+    doc: i32,
+    ordinal: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        let encoded = crate::jvm_fetch::stored_value(handle, segment, doc, ordinal)?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`crate::jvm_analysis::register`]: an analyzer for indexing, its id into
 /// `*out_id`.
 ///
