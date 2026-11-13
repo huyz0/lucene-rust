@@ -120,13 +120,18 @@ pub fn avx512_popcount() -> bool {
 /// and refuses to serve with a named reason instead. This is best effort
 /// from inside the same binary: the check itself is built for the baseline.
 /// A deployment that must never crash can also test `/proc/cpuinfo` before
-/// exec. aarch64 (NEON is architectural) and other targets require nothing.
+/// exec. Wiring this into a node's startup is up to the embedder; nothing in
+/// this crate calls it. aarch64 (NEON is architectural) and other targets require nothing.
 pub fn missing_baseline() -> &'static [&'static str] {
     static MISSING: OnceLock<Vec<&'static str>> = OnceLock::new();
     MISSING.get_or_init(|| {
         #[cfg(target_arch = "x86_64")]
         {
-            missing_from(&required_x86(), detect_x86)
+            {
+                let req = required_x86();
+                let names: Vec<&'static str> = req.iter().map(|r| r.0).collect();
+                missing_from(&names, |f| req.iter().any(|r| r.0 == f && (r.1)()))
+            }
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -175,32 +180,21 @@ fn missing_from(required: &[&'static str], has: impl Fn(&str) -> bool) -> Vec<&'
     required.iter().copied().filter(|f| !has(f)).collect()
 }
 
-/// The x86-64-v3 features this build was compiled with: only those the
-/// compiler was told to assume.
+/// The v3 features the code relies on, each with its run-time probe, in one
+/// table so a name and its probe cannot drift apart.
 #[cfg(target_arch = "x86_64")]
-fn required_x86() -> Vec<&'static str> {
-    let mut r = Vec::new();
+type Probe = (&'static str, fn() -> bool);
+
+#[cfg(target_arch = "x86_64")]
+fn required_x86() -> Vec<Probe> {
+    let mut r: Vec<Probe> = Vec::new();
     macro_rules! need {
-        ($($f:literal),*) => { $( if cfg!(target_feature = $f) { r.push($f); } )* };
+        ($($f:tt),*) => { $( if cfg!(target_feature = $f) {
+            r.push(($f, || std::arch::is_x86_feature_detected!($f)));
+        } )* };
     }
     need!("avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "lzcnt", "movbe", "popcnt");
     r
-}
-
-#[cfg(target_arch = "x86_64")]
-fn detect_x86(f: &str) -> bool {
-    match f {
-        "avx" => std::arch::is_x86_feature_detected!("avx"),
-        "avx2" => std::arch::is_x86_feature_detected!("avx2"),
-        "bmi1" => std::arch::is_x86_feature_detected!("bmi1"),
-        "bmi2" => std::arch::is_x86_feature_detected!("bmi2"),
-        "f16c" => std::arch::is_x86_feature_detected!("f16c"),
-        "fma" => std::arch::is_x86_feature_detected!("fma"),
-        "lzcnt" => std::arch::is_x86_feature_detected!("lzcnt"),
-        "movbe" => std::arch::is_x86_feature_detected!("movbe"),
-        "popcnt" => std::arch::is_x86_feature_detected!("popcnt"),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -248,6 +242,15 @@ mod tests {
         // The test binary runs here, so it was built for a CPU like this one.
         assert!(missing_baseline().is_empty(), "{:?}", missing_baseline());
         assert_eq!(check_baseline(), Ok(()));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn every_listed_feature_has_a_probe_that_agrees_on_this_host() {
+        // Probes are real: a host that runs this build has each feature.
+        for (name, probe) in required_x86() {
+            assert!(probe(), "{name}");
+        }
     }
 
     #[test]
