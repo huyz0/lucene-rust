@@ -132,6 +132,7 @@ public final class NativeSelfTest {
         check(NativeBridge.abiVersion() == NativeBridge.EXPECTED_ABI_VERSION, "ABI handshake");
 
         realtimePrimary();
+        ccrFollower();
         sparseCodec();
 
         // The analysis bridge first: quick, and SELFTEST_ONLY=analysis runs it alone.
@@ -301,6 +302,44 @@ public final class NativeSelfTest {
                 .settings(settings)
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
+        }
+    }
+
+    /**
+     * A cross-cluster replication follower keeps its leader's settings, the accelerated engine's
+     * included, and is served by replication's own engine: this plugin offers it none, masks no
+     * derived source and routes no search for it, whatever the inherited settings ask.
+     */
+    private static void ccrFollower() {
+        String follower = "index.plugins.replication.follower.leader_index";
+        record Case(Boolean engine, boolean realtime, boolean follows, boolean rust) {}
+        Case[] cases = {
+            new Case(true, false, false, true),
+            new Case(null, true, false, true),
+            new Case(true, false, true, false),
+            new Case(true, true, true, false),
+            new Case(null, false, true, false),
+            new Case(false, false, false, false) };
+        for (Case c : cases) {
+            org.opensearch.common.settings.Settings.Builder b = org.opensearch.common.settings.Settings.builder()
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 1)
+                .put(org.opensearch.cluster.metadata.IndexMetadata.SETTING_REPLICATION_TYPE, "SEGMENT")
+                .put(org.lucenerust.opensearch.engine.RustEngineSupport.REALTIME_SEARCH.getKey(), c.realtime());
+            if (c.engine() != null) {
+                b.put(org.lucenerust.opensearch.engine.RustEngineSupport.ENGINE_ENABLED.getKey(), c.engine());
+            }
+            if (c.follows()) {
+                b.put(follower, "leader-cluster:docs");
+            }
+            org.opensearch.common.settings.Settings settings = b.build();
+            check(org.lucenerust.opensearch.engine.RustEngineSupport.openSearchEngine(settings) != c.rust(), "ccr follower: engine offered: " + c);
+            check(org.lucenerust.opensearch.engine.RustEngineSupport.servedByRust(settings) == c.rust(), "ccr follower: served by Rust: " + c);
+            org.opensearch.cluster.metadata.IndexMetadata index = org.opensearch.cluster.metadata.IndexMetadata.builder("f")
+                .settings(settings)
+                .build();
+            check(RealtimePrimaryFilter.segmentCopies(index) == (c.realtime() && c.rust()), "ccr follower: realtime primary routing: " + c);
         }
     }
 
