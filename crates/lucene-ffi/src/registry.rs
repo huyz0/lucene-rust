@@ -80,9 +80,8 @@ pub struct JvmReaderHandle {
     pub cacheable: usize,
     /// Each segment's identity in the aggregation segment cache, found on
     /// first use: `None` past [`Self::cacheable`].
-    pub agg_identities: std::sync::OnceLock<
-        Vec<Option<lucene_search::bucket_aggs::segment_cache::SegmentIdentity>>,
-    >,
+    pub agg_identities:
+        std::sync::OnceLock<Vec<Option<lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity>>>,
     /// The shard path the reader's files are under, noted for each call
     /// that reads them ([`crate::error::note_shard`]).
     pub path: std::sync::Arc<str>,
@@ -92,7 +91,7 @@ impl JvmReaderHandle {
     /// [`Self::agg_identities`], found now when no search has yet.
     pub fn agg_identities(
         &self,
-    ) -> &[Option<lucene_search::bucket_aggs::segment_cache::SegmentIdentity>] {
+    ) -> &[Option<lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity>] {
         self.agg_identities.get_or_init(|| {
             self.reader
                 .segment_readers()
@@ -101,7 +100,7 @@ impl JvmReaderHandle {
                 .enumerate()
                 .map(|(i, (r, live))| {
                     (i < self.cacheable).then(|| {
-                        lucene_search::bucket_aggs::segment_cache::SegmentIdentity::of(
+                        lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity::of(
                             r,
                             live.as_ref(),
                         )

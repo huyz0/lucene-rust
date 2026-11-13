@@ -39,7 +39,7 @@ import java.util.stream.Stream;
 
 /**
  * OpenSearch's {@code terms} aggregation on keyword fields, as a shard computes it, recorded for
- * crates/lucene-search/tests/terms_aggs_fixtures.rs.
+ * crates/lucene-aggs/tests/terms_aggs_fixtures.rs.
  *
  * <p>This generator runs on Lucene's jars alone, so the shard's steps are reproduced here: every
  * live match of the query counted once per distinct term it holds ({@code

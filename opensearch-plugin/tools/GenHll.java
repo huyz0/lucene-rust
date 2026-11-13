@@ -3,7 +3,7 @@
  */
 
 /**
- * The vectors in {@code crates/lucene-search/src/cardinality_sketch.rs}'s tests, from OpenSearch
+ * The vectors in {@code crates/lucene-aggs/src/cardinality_sketch.rs}'s tests, from OpenSearch
  * 3.8.0's own {@code MurmurHash3}, {@code BitMixer} and {@code HyperLogLogPlusPlus}: hashes of a few
  * terms and longs, then sketches of {@code n} longs at several precisions, across the
  * linear-counting threshold, as {@code writeTo} writes them (length, CRC-32, and the bytes when

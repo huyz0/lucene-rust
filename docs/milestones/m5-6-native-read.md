@@ -454,7 +454,7 @@ aggregations. The aggregators OpenSearch built are never fed and are released
 with the context, as they are after any search. A failure anywhere re-runs the
 whole request on Lucene.
 
-What is computed (`lucene-search/src/aggs.rs`): one pass over the live matches
+What is computed (`lucene-aggs/src/metric_aggs.rs`): one pass over the live matches
 keeps, per field, the value count, the `CompensatedSum` value and delta, the
 minimum and maximum over every value and over each document's first and last
 (`MultiValueMode.MIN`/`MAX`), with Java's `Math.min`/`Math.max`. A `min`/`max`
@@ -506,7 +506,7 @@ searched out of doc-base order).
 
 `terms` runs natively on a keyword field with the default order (`_count`
 desc, `_key` asc), `min_doc_count` of 1 or more, `shard_min_doc_count` 0 and no
-`include`/`exclude` or `_doc_count` field (`lucene-search/src/terms_agg.rs`).
+`include`/`exclude` or `_doc_count` field (`lucene-aggs/src/terms_agg.rs`).
 It is `GlobalOrdinalsStringTermsAggregator`: a keyword field's global
 ordinals (`GlobalOrds`, Lucene's `OrdinalMap`: the segments' dictionaries
 merged once per reader and cached on the `DirectoryReader`), every live match
@@ -527,7 +527,7 @@ one; the self test compares 18,018 results through JNI.
 ### Bucket aggregations and sub-aggregations
 
 Everything else runs as a tree (ABI 24, `ffi_jvm_reader_aggregate_tree`,
-`lucene-search/src/bucket_aggs.rs`): `histogram`, `date_histogram`, `range`
+`lucene-aggs/src/bucket_aggs.rs`): `histogram`, `date_histogram`, `range`
 and `date_range`, `filter`, `filters`, `global`, keyword `terms` and
 `cardinality`, with the metrics above, nested in any combination. The flat
 path above stays for the requests it takes (its column streaming and

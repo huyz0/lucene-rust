@@ -22,13 +22,13 @@
 
 use std::os::raw::c_char;
 
-use lucene_search::aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
+use lucene_aggs::metric_aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
+use lucene_aggs::terms_agg::TermsSpec;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
-use lucene_search::terms_agg::TermsSpec;
 use lucene_search::top_field::{
     CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector, SortField,
     SortType,
@@ -1350,7 +1350,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_rescore(
 const METRIC_LONG: u8 = 0;
 const METRIC_DOUBLE: u8 = 1;
 const METRIC_FLOAT: u8 = 2;
-/// Sources in a metrics blob ([`lucene_search::aggs::Source`]).
+/// Sources in a metrics blob ([`lucene_aggs::metric_aggs::Source`]).
 const METRIC_DOC_VALUES: u8 = 0;
 const METRIC_POINTS_MIN: u8 = 1;
 const METRIC_POINTS_MAX: u8 = 2;
@@ -1365,7 +1365,7 @@ pub const METRIC_VALUES: usize = 6;
 /// Decodes a metrics blob: `count: u8`, then per field `kind: u8`
 /// ([`METRIC_LONG`], [`METRIC_DOUBLE`], [`METRIC_FLOAT`]), `source: u8`
 /// ([`METRIC_DOC_VALUES`], [`METRIC_POINTS_MIN`], [`METRIC_POINTS_MAX`]),
-/// `needs: u8` (the parts read back, [`lucene_search::aggs::NEED_ALL`]'s bits,
+/// `needs: u8` (the parts read back, [`lucene_aggs::metric_aggs::NEED_ALL`]'s bits,
 /// at least one) and the field (`len: i32`, UTF-8); then `count: u8` `terms`
 /// aggregations, each its field (`len: i32`, UTF-8) and `shard_size: i32` (at
 /// least 1) -- at least one aggregation in all; then the concurrent-search
@@ -1450,7 +1450,7 @@ pub(crate) type DecodedAggs = (Vec<MetricSpec>, Vec<TermsSpec>, Vec<Vec<usize>>)
 /// its value count into `out_counts` and [`METRIC_VALUES`] doubles into
 /// `out_values` -- the compensated sum and its delta, the minimum and maximum
 /// over every value, and the minimum of each document's first value and the
-/// maximum of each document's last (see [`lucene_search::aggs`]); and the
+/// maximum of each document's last (see [`lucene_aggs::metric_aggs`]); and the
 /// `terms` results, encoded ([`encode_terms_results`]; slice by slice, each
 /// slice's aggregations in blob order), into `out_terms`, their length into
 /// `out_terms_len` either way (a too-small `out_terms` is
@@ -1517,7 +1517,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
 /// `buckets: i32`, and per bucket, by term ascending, `doc_count: i64` and the
 /// term (`len: i32`, bytes).
 pub(crate) fn encode_terms_results(
-    results: &[lucene_search::terms_agg::TermsResult],
+    results: &[lucene_aggs::terms_agg::TermsResult],
 ) -> Result<Vec<u8>, FfiStatus> {
     let too_big = || {
         set_last_error("terms result: a term or bucket count past i32".to_string());
@@ -1681,8 +1681,8 @@ pub(crate) fn aggregate_counting_blobs_seen(
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
-    let sliced = lucene_search::aggs::aggregate_sliced_counting(
+    let min = min_score.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
+    let sliced = lucene_aggs::metric_aggs::aggregate_sliced_counting(
         &segments,
         readers,
         &q,
@@ -1822,7 +1822,7 @@ pub(crate) fn count_terminates_blobs(
         .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
-    let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
+    let min = min_score.map(|min| lucene_search::segment_match::MinScore { min, norms: &norms });
     let counted = lucene_search::terminate::count_terminates(
         &segments,
         &q,
@@ -4257,7 +4257,7 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(slices, vec![vec![1, 0]]);
-        let enc = encode_terms_results(&[lucene_search::terms_agg::TermsResult {
+        let enc = encode_terms_results(&[lucene_aggs::terms_agg::TermsResult {
             buckets: vec![(b"ab".to_vec(), 2)],
             other_doc_count: 5,
         }])

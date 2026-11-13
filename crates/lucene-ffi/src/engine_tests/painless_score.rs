@@ -718,7 +718,7 @@ pub(crate) mod tests {
     /// `ScriptDoubleValues` reads it.
     #[test]
     fn aggregation_scripts_read_what_opensearch_reads() {
-        use lucene_search::bucket_aggs::ScriptValuesSource;
+        use lucene_aggs::bucket_aggs::ScriptValuesSource;
         use lucene_util::numeric_utils::double_to_sortable_long;
         let tmp = TempDir::new("painless-score-agg");
         for e in std::fs::read_dir(fixture("index")).unwrap() {

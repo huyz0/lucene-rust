@@ -9,6 +9,7 @@ lucene-util = { path = "../lucene-util" }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-pattern-text = { path = "../lucene-pattern-text" }
 lucene-search = { path = "../lucene-search" }
+lucene-aggs = { path = "../lucene-aggs" }
 lucene-index = { path = "../lucene-index" }
 lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-facet = { path = "../lucene-facet" }

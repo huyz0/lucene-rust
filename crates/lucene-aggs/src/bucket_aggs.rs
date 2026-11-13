@@ -2,7 +2,7 @@
 //! computes them before any reduce: `histogram`,
 //! `date_histogram`, `range` (and `date_range`), `filter`, `filters`,
 //! `global`, keyword `terms` with sub-aggregations, `cardinality`, and the
-//! metrics of [`crate::aggs`] at any depth.
+//! metrics of [`crate::metric_aggs`] at any depth.
 //!
 //! The shape is OpenSearch's `BucketsAggregator` tree, collected document by
 //! document: every aggregator receives `collect(doc, owningBucketOrd)`, and a
@@ -42,7 +42,7 @@
 //!   `Double.doubleToLongBits` -- which the caller hashes into
 //!   `HyperLogLogPlusPlus` (a set of hashes, so the order is immaterial).
 //! * the metrics: [`MetricState`] per owning bucket, and at the top level the
-//!   `min`/`max` points shortcut of [`crate::aggs`].
+//!   `min`/`max` points shortcut of [`crate::metric_aggs`].
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -51,13 +51,14 @@ use std::sync::Arc;
 
 use lucene_codecs::terms_dict::TermsDict;
 
-use crate::aggs::{self, MetricState, Source, ValueKind, Values};
-use crate::directory_reader::SegmentReader;
-use crate::exec;
-use crate::multi_segment::OpenSegment;
-use crate::query::BooleanQuery;
-use crate::terms_agg::{GlobalOrds, Ords};
-use crate::Result;
+use crate::metric_aggs::{self, MetricState, Source, ValueKind, Values};
+use lucene_search::directory_reader::SegmentReader;
+
+use lucene_search::global_ords::{GlobalOrds, Ords};
+use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::BooleanQuery;
+use lucene_search::Result;
+use lucene_search::{java_math, segment_match};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 pub mod segment_cache;
@@ -418,7 +419,7 @@ pub trait ScriptValues {
 /// One aggregation of a request, with its sub-aggregations.
 #[derive(Debug, Clone)]
 pub enum AggNode {
-    /// A metric of [`crate::aggs`]; `source` other than
+    /// A metric of [`crate::metric_aggs`]; `source` other than
     /// [`Source::DocValues`] only at the top level.
     Metric {
         field: String,
@@ -427,7 +428,7 @@ pub enum AggNode {
         missing: Option<i64>,
         kind: ValueKind,
         source: Source,
-        /// The parts of [`MetricState`] the caller reads (`aggs::NEED_*`).
+        /// The parts of [`MetricState`] the caller reads (`metric_aggs::NEED_*`).
         needs: u8,
         /// A script's values in place of `field`'s (`ValuesSource.Numeric.Script`),
         /// in `kind`'s encoding.
@@ -501,7 +502,7 @@ pub enum AggNode {
     /// `MaxScoreCollector`.
     SortedTopHits {
         top_n: usize,
-        sort: Arc<Vec<crate::top_field::SortField>>,
+        sort: Arc<Vec<lucene_search::top_field::SortField>>,
         track_scores: bool,
     },
     Cardinality {
@@ -717,8 +718,9 @@ impl CompositeSource {
             CompositeValues::Long => v,
             CompositeValues::Double(kind) => numeric_terms_key(*kind, v),
             CompositeValues::Histogram { kind, interval } => {
-                let bits =
-                    java_double_bits((aggs::to_double(*kind, v) / interval).floor() * interval);
+                let bits = java_double_bits(
+                    (metric_aggs::to_double(*kind, v) / interval).floor() * interval,
+                );
                 bits ^ ((bits >> 63) & i64::MAX)
             }
             CompositeValues::Date(rounding) => rounding.round(v),
@@ -790,7 +792,7 @@ impl AggNode {
                 *track_scores
                     || sort
                         .iter()
-                        .any(|k| k.ty == crate::top_field::SortType::Score)
+                        .any(|k| k.ty == lucene_search::top_field::SortType::Score)
             }
             _ => false,
         };
@@ -849,9 +851,9 @@ impl AggNode {
             || matches!(self, AggNode::SortedTopHits { sort, .. } if sort.iter().any(|k| {
                 !matches!(
                     k.ty,
-                    crate::top_field::SortType::Score
-                        | crate::top_field::SortType::Doc
-                        | crate::top_field::SortType::String
+                    lucene_search::top_field::SortType::Score
+                        | lucene_search::top_field::SortType::Doc
+                        | lucene_search::top_field::SortType::String
                 )
             }))
             || self.subs().iter().any(AggNode::reads_points)
@@ -870,8 +872,8 @@ pub enum CardinalityValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SortedHits {
     /// The sort the hits were collected by.
-    pub sort: Arc<Vec<crate::top_field::SortField>>,
-    pub top: crate::top_field::TopFieldDocs,
+    pub sort: Arc<Vec<lucene_search::top_field::SortField>>,
+    pub top: lucene_search::top_field::TopFieldDocs,
     pub scores: Vec<f32>,
     pub max_score: f32,
 }
@@ -915,7 +917,7 @@ pub enum AggResult {
     Refused(String),
     /// Per owning bucket, `None` when it collected nothing, else its hit
     /// count and top hits by score (`TopDocs`), global documents.
-    TopHits(Vec<Option<(u64, Vec<crate::collector::ScoreDoc>)>>),
+    TopHits(Vec<Option<(u64, Vec<lucene_search::collector::ScoreDoc>)>>),
     /// Per owning bucket, `None` when it collected nothing, else its sorted
     /// hits (global documents, their sort values) and, with `track_scores`,
     /// each hit's score and the bucket's max score (`NaN` otherwise).
@@ -1014,7 +1016,7 @@ pub struct Globals<'g> {
     missing: HashMap<(String, Vec<u8>), MissingTerm>,
     /// The most buckets the request may still make (`search.max_buckets`
     /// less what it made already): a pass whose buckets pass it stops with
-    /// [`crate::Error::TooManyBuckets`] instead of building them all.
+    /// [`lucene_search::Error::TooManyBuckets`] instead of building them all.
     bucket_limit: usize,
 }
 
@@ -1048,7 +1050,9 @@ impl<'g> Globals<'g> {
         self.missing
             .get(&(field.to_string(), term.to_vec()))
             .copied()
-            .ok_or_else(|| crate::Error::TermsAggType(format!("{field}: missing term unresolved")))
+            .ok_or_else(|| {
+                lucene_search::Error::TermsAggType(format!("{field}: missing term unresolved"))
+            })
     }
 
     /// A keyword `terms`' inserted `missing` term: where among the
@@ -1086,7 +1090,7 @@ impl<'g> Globals<'g> {
         let count = u64::try_from(self.get(field)?.value_count()).unwrap_or(u64::MAX)
             + u64::from(inserted.is_some());
         if a.count != count {
-            return Err(crate::Error::TermsAggType(format!(
+            return Err(lucene_search::Error::TermsAggType(format!(
                 "{field}: include/exclude over {} ordinals, not {count}",
                 a.count
             )));
@@ -1125,10 +1129,9 @@ impl<'g> Globals<'g> {
     }
 
     fn get(&self, field: &str) -> Result<&'g GlobalOrds> {
-        self.ords
-            .get(field)
-            .map(|g| &**g)
-            .ok_or_else(|| crate::Error::TermsAggType(format!("{field}: no global ordinals")))
+        self.ords.get(field).map(|g| &**g).ok_or_else(|| {
+            lucene_search::Error::TermsAggType(format!("{field}: no global ordinals"))
+        })
     }
 }
 
@@ -1136,20 +1139,20 @@ impl<'g> Globals<'g> {
 /// max score and every collected document's score (what `populateScores`
 /// reads back for the kept hits).
 struct SortedState {
-    top: crate::top_field::FedTopField,
+    top: lucene_search::top_field::FedTopField,
     max_score: Option<f32>,
     scores: FastMap<i32, f32>,
 }
 
 /// [`State::Metric`]: each owning bucket's metric, as only the parts its
-/// node reads ([`aggs::MetricSlot`]): an `avg` keeps 24 bytes a bucket, a
+/// node reads ([`metric_aggs::MetricSlot`]): an `avg` keeps 24 bytes a bucket, a
 /// `min` or `max` 8, a `stats` all 56.
 enum MetricCol {
     All(Vec<MetricState>),
-    CountSum(Vec<aggs::CountSum>),
-    Count(Vec<aggs::Count>),
-    Min(Vec<aggs::MinOf>),
-    Max(Vec<aggs::MaxOf>),
+    CountSum(Vec<metric_aggs::CountSum>),
+    Count(Vec<metric_aggs::Count>),
+    Min(Vec<metric_aggs::MinOf>),
+    Max(Vec<metric_aggs::MaxOf>),
 }
 
 /// `$body` with `$v` bound to the [`MetricCol`]'s vector, whatever its form.
@@ -1169,7 +1172,7 @@ impl MetricCol {
     /// The form keeping the parts `needs` names, as `collect_needs` reads
     /// them: a mix it does not single out keeps every part.
     fn for_needs(needs: u8) -> Self {
-        use aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
+        use metric_aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
         match needs {
             NEED_MIN => Self::Min(Vec::new()),
             NEED_MAX => Self::Max(Vec::new()),
@@ -1181,7 +1184,7 @@ impl MetricCol {
 
     /// The parts kept.
     fn needs(&self) -> u8 {
-        fn of<S: aggs::MetricSlot>(_: &[S]) -> u8 {
+        fn of<S: metric_aggs::MetricSlot>(_: &[S]) -> u8 {
             S::NEEDS
         }
         with_metric_col!(self, v => of(v))
@@ -1190,7 +1193,7 @@ impl MetricCol {
     /// `owner`'s state, the default when it collected nothing.
     fn get(&self, owner: usize) -> MetricState {
         // FBS: `v` is a slot slice, not a bitset; `get` is bounds-checked.
-        with_metric_col!(self, v => v.get(owner).map(aggs::MetricSlot::state).unwrap_or_default())
+        with_metric_col!(self, v => v.get(owner).map(metric_aggs::MetricSlot::state).unwrap_or_default())
     }
 
     /// The owners held.
@@ -1270,7 +1273,7 @@ enum State {
     },
     /// Each owning bucket's top hits, made when it collects its first
     /// document (`TopHitsAggregator.collect`).
-    TopHits(Vec<Option<Box<crate::collector::TopDocsCollector>>>),
+    TopHits(Vec<Option<Box<lucene_search::collector::TopDocsCollector>>>),
     /// A sorted `top_hits`' collector per owning bucket, with its max score
     /// so far (`MaxScoreCollector`, `None` before the first document).
     SortedHits(Vec<Option<Box<SortedState>>>),
@@ -1661,7 +1664,7 @@ fn flush_nested(
 struct FedSegment<'a> {
     reader: &'a SegmentReader,
     seg: &'a OpenSegment<'a>,
-    leaves: Vec<Option<crate::top_field::FedLeaf<'a>>>,
+    leaves: Vec<Option<lucene_search::top_field::FedLeaf<'a>>>,
 }
 
 /// A `composite` over one segment.
@@ -1773,7 +1776,7 @@ impl Leaf<'_> {
                 self.pre_vals.resize(len, 0);
                 self.pre_bits.resize(len.div_ceil(64), 0);
                 r.fill_window(base, &mut self.pre_vals, &mut self.pre_bits)
-                    .map_err(crate::Error::from)?;
+                    .map_err(lucene_search::Error::from)?;
                 if let Some(m) = self.missing {
                     // Every document of the window has a value: its own or `missing`.
                     for (i, v) in self.pre_vals.iter_mut().enumerate() {
@@ -1793,7 +1796,7 @@ impl Leaf<'_> {
                 // A column that cannot be read a window at a time is read
                 // document by document, for the matching ones only.
                 if r.fill_window(base, len, &mut self.pre_offsets, &mut self.pre_vals)
-                    .map_err(crate::Error::from)?
+                    .map_err(lucene_search::Error::from)?
                 {
                     self.pre_multi = true;
                     self.pre_base = base;
@@ -1930,21 +1933,21 @@ fn open_leaf<'a>(
             // The points shortcut (a top-level `min`/`max` over a match-all)
             // answers the segment without visiting a document.
             let bound = if view.top && *source != Source::DocValues && node.missing().is_none() {
-                let spec = aggs::MetricSpec {
+                let spec = metric_aggs::MetricSpec {
                     field: field.clone(),
                     kind: *kind,
                     source: *source,
-                    needs: aggs::NEED_ALL,
+                    needs: metric_aggs::NEED_ALL,
                 };
-                aggs::leaf_point_bound(view.seg, &spec)?
+                metric_aggs::leaf_point_bound(view.seg, &spec)?
             } else {
                 None
             };
             if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
                 let is_min = *source == Source::PointsMin;
-                with_metric_col!(states, st => aggs::MetricSlot::bound(slot(st, 0), is_min, v));
+                with_metric_col!(states, st => metric_aggs::MetricSlot::bound(slot(st, 0), is_min, v));
             }
-            Col::Values(aggs::open_values(reader, field)?, bound.is_some())
+            Col::Values(metric_aggs::open_values(reader, field)?, bound.is_some())
         }
         AggNode::SignificantTerms { text: Some(_), .. } => Col::None,
         AggNode::Cardinality {
@@ -1959,7 +1962,7 @@ fn open_leaf<'a>(
             ..
         } => {
             let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
-            Col::Ords(crate::terms_agg::open_ords(reader, field)?.0, map)
+            Col::Ords(lucene_search::global_ords::open_ords(reader, field)?.0, map)
         }
         AggNode::Cardinality { field, .. }
         | AggNode::Percentiles { field, .. }
@@ -1967,7 +1970,9 @@ fn open_leaf<'a>(
         | AggNode::NumericTerms { field, .. }
         | AggNode::Histogram { field, .. }
         | AggNode::DateHistogram { field, .. }
-        | AggNode::Range { field, .. } => Col::Values(aggs::open_values(reader, field)?, false),
+        | AggNode::Range { field, .. } => {
+            Col::Values(metric_aggs::open_values(reader, field)?, false)
+        }
         AggNode::Filters { filters, .. } => {
             let mut bits = Vec::with_capacity(filters.len());
             for f in filters {
@@ -1982,7 +1987,7 @@ fn open_leaf<'a>(
         AggNode::TopHits { .. } => match view.scores {
             Some(chunk) => Col::Scores(chunk, view.doc_base),
             None => {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "top_hits without scores".to_string(),
                 ))
             }
@@ -2035,7 +2040,7 @@ fn open_leaf<'a>(
         text: match node {
             AggNode::SignificantTerms { text: Some(_), .. } => Some(Box::new(TextLeaf {
                 reader: view.reader,
-                source: crate::reader::LeafReader::field_infos(view.reader)
+                source: lucene_search::reader::LeafReader::field_infos(view.reader)
                     .field_by_name(crate::significant_text::SOURCE_FIELD)
                     .map(|fi| fi.number),
             })),
@@ -2093,9 +2098,9 @@ fn nested_leaf(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Box<Neste
         _ => return Ok(None),
     };
     Ok(Some(Box::new(NestedLeaf {
-        parents: crate::top_field::nested_docs(seg, parents)?,
+        parents: lucene_search::top_field::nested_docs(seg, parents)?,
         children: match children {
-            Some(c) => crate::top_field::nested_docs(seg, c)?,
+            Some(c) => lucene_search::top_field::nested_docs(seg, c)?,
             None => Vec::new(),
         },
         pos: None,
@@ -2177,14 +2182,15 @@ fn composite_leaf<'a>(
 /// asks the weight for every document; only live ones are collected), as
 /// bits; `None` when it matches every document.
 fn filter_bits(seg: &OpenSegment<'_>, filter: &BooleanQuery) -> Result<Option<Vec<u64>>> {
-    let rewritten = crate::multi_segment::rewrite_points_ranges(filter, std::slice::from_ref(seg));
+    let rewritten =
+        lucene_search::multi_segment::rewrite_points_ranges(filter, std::slice::from_ref(seg));
     let filter = rewritten.as_ref().unwrap_or(filter);
-    let clause = aggs::lone_clause(filter);
-    let ctx = aggs::plain_context(seg);
+    let clause = segment_match::lone_clause(filter);
+    let ctx = segment_match::plain_context(seg);
     let max_doc = seg.max_doc.unwrap_or(0);
     let max = usize::try_from(max_doc).unwrap_or(0);
     let mut words = Vec::new();
-    match aggs::segment_match_bits(&ctx, filter, &clause, None, max_doc, &mut words)? {
+    match segment_match::segment_match_bits(&ctx, filter, &clause, None, max_doc, &mut words)? {
         None => words = vec![0; max.div_ceil(64)],
         Some(false) => return Ok(None),
         Some(true) => {}
@@ -2432,7 +2438,7 @@ impl KeyOrds {
 fn numeric_hash(kind: ValueKind, v: i64) -> i64 {
     crate::cardinality_sketch::mix64(match kind {
         ValueKind::Long => v,
-        k => java_double_bits(aggs::to_double(k, v)),
+        k => java_double_bits(metric_aggs::to_double(k, v)),
     })
 }
 
@@ -2449,7 +2455,7 @@ fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
     match kind {
         ValueKind::Long => v,
         k => {
-            let bits = java_double_bits(aggs::to_double(k, v));
+            let bits = java_double_bits(metric_aggs::to_double(k, v));
             bits ^ ((bits >> 63) & i64::MAX)
         }
     }
@@ -2461,10 +2467,9 @@ fn sketch_for(
     p: u32,
 ) -> Result<&mut crate::cardinality_sketch::Sketch> {
     if s.is_none() {
-        *s = Some(
-            crate::cardinality_sketch::Sketch::new(p)
-                .ok_or_else(|| crate::Error::TermsAggType(format!("cardinality precision {p}")))?,
-        );
+        *s = Some(crate::cardinality_sketch::Sketch::new(p).ok_or_else(|| {
+            lucene_search::Error::TermsAggType(format!("cardinality precision {p}"))
+        })?);
     }
     Ok(s.as_mut().expect("just set"))
 }
@@ -2491,7 +2496,7 @@ fn collect_window(
         (AggNode::Metric { kind, needs, .. }, State::Metric(states)) if prefetched => {
             // `collect_needs`'s dispatch, once for the window: the state
             // keeps only the parts `needs` names (`MetricCol`).
-            use aggs::{MetricSlot, NEED_MAX, NEED_MIN};
+            use metric_aggs::{MetricSlot, NEED_MAX, NEED_MIN};
             fn run<S: MetricSlot>(
                 states: &mut Vec<S>,
                 leaf: &Leaf<'_>,
@@ -2524,13 +2529,13 @@ fn collect_window(
                 }
                 match kind {
                     ValueKind::Long => go(states, leaf, docs, owners, |v| {
-                        aggs::to_double(ValueKind::Long, v)
+                        metric_aggs::to_double(ValueKind::Long, v)
                     }),
                     ValueKind::Double => go(states, leaf, docs, owners, |v| {
-                        aggs::to_double(ValueKind::Double, v)
+                        metric_aggs::to_double(ValueKind::Double, v)
                     }),
                     ValueKind::Float => go(states, leaf, docs, owners, |v| {
-                        aggs::to_double(ValueKind::Float, v)
+                        metric_aggs::to_double(ValueKind::Float, v)
                     }),
                 }
             }
@@ -2597,7 +2602,7 @@ fn collect_window(
                     continue;
                 };
                 let Ok(g) = usize::try_from(global_ord(map, o)?) else {
-                    return Err(crate::Error::TermsAggType(format!(
+                    return Err(lucene_search::Error::TermsAggType(format!(
                         "negative global ordinal for segment ordinal {o}"
                     )));
                 };
@@ -2717,7 +2722,7 @@ fn collect_window(
                 let Some(Some(v)) = leaf.prefetched(doc) else {
                     continue;
                 };
-                let value = aggs::to_double(*kind, v);
+                let value = metric_aggs::to_double(*kind, v);
                 if disjoint {
                     let starts = ranges.partition_point(|r| value >= r.0);
                     if let Some(i) = starts.checked_sub(1) {
@@ -2918,7 +2923,7 @@ fn collect_window(
                 };
                 // As `collect`'s case for one value: its `previous` starts at
                 // negative infinity, so a key of negative infinity is skipped.
-                let key = ((aggs::to_double(*kind, v) - offset) / interval).floor();
+                let key = ((metric_aggs::to_double(*kind, v) - offset) / interval).floor();
                 if key == f64::NEG_INFINITY {
                     continue;
                 }
@@ -3139,7 +3144,7 @@ fn collect_composite_sorted(
     let Some(terms) = seg.fields.field(&first.field) else {
         return Ok(false);
     };
-    let Some(mut dict) = crate::terms_agg::open_ords(reader, &first.field)?.1 else {
+    let Some(mut dict) = lucene_search::global_ords::open_ords(reader, &first.field)?.1 else {
         return Ok(false);
     };
     // `seekCeil(after)`: the first term at or past `after`'s.
@@ -3154,7 +3159,7 @@ fn collect_composite_sorted(
     for ord in from..map.len() {
         let term = dict
             .seek_ord(ord as i64)
-            .map_err(|e| crate::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
+            .map_err(|e| lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
         let docs = terms
             .postings_with_flags(
                 term,
@@ -3296,7 +3301,7 @@ fn collect(
             State::Composite(st),
         ) => {
             let Some(c) = leaf.composite.as_deref_mut() else {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "composite without its sources".to_string(),
                 ));
             };
@@ -3308,7 +3313,7 @@ fn collect(
             }
             debug_assert_eq!(states.needs(), MetricCol::for_needs(*needs).needs());
             with_metric_col!(states, st => {
-                aggs::MetricSlot::many(slot(st, owning as usize), *kind, &leaf.buf)
+                metric_aggs::MetricSlot::many(slot(st, owning as usize), *kind, &leaf.buf)
             });
         }
         (AggNode::Percentiles { kind, .. }, State::Recorded(values)) => {
@@ -3316,7 +3321,7 @@ fn collect(
             if !leaf.read(doc)? {
                 return Ok(());
             }
-            bucket.extend(leaf.buf.iter().map(|&v| aggs::to_double(*kind, v)));
+            bucket.extend(leaf.buf.iter().map(|&v| metric_aggs::to_double(*kind, v)));
         }
         (
             AggNode::Percentiles { kind, .. },
@@ -3333,7 +3338,7 @@ fn collect(
                 return Ok(());
             }
             for &v in &leaf.buf {
-                if digest.add(aggs::to_double(*kind, v)).is_err() {
+                if digest.add(metric_aggs::to_double(*kind, v)).is_err() {
                     *nan = true;
                 }
             }
@@ -3356,7 +3361,7 @@ fn collect(
                 return Ok(());
             }
             let Some(tl) = leaf.text.as_deref() else {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "significant_text without its segment".to_string(),
                 ));
             };
@@ -3468,14 +3473,16 @@ fn collect(
         ) => {
             let score = match leaf.col {
                 Col::Scores(chunk, _) => chunk.borrow().score(doc).ok_or_else(|| {
-                    crate::Error::TermsAggType(format!("top_hits: document {doc} was not scored"))
+                    lucene_search::Error::TermsAggType(format!(
+                        "top_hits: document {doc} was not scored"
+                    ))
                 })?,
                 _ => f32::NAN,
             };
             let entry = slot(states, owning as usize);
             if entry.is_none() {
                 *entry = Some(Box::new(SortedState {
-                    top: crate::top_field::FedTopField::new(sort, *top_n)?,
+                    top: lucene_search::top_field::FedTopField::new(sort, *top_n)?,
                     max_score: None,
                     scores: FastMap::default(),
                 }));
@@ -3492,7 +3499,7 @@ fn collect(
                 });
             }
             let Some(fed) = leaf.fed.as_deref_mut() else {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "top_hits without its segment".to_string(),
                 ));
             };
@@ -3519,22 +3526,22 @@ fn collect(
             }
         }
         (AggNode::TopHits { top_n }, State::TopHits(collectors)) => {
-            use crate::collector::ScoringCollector;
+            use lucene_search::collector::ScoringCollector;
             let Col::Scores(chunk, base) = leaf.col else {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "top_hits without scores".to_string(),
                 ));
             };
             let (Some(score), Some(global)) = (chunk.borrow().score(doc), base.checked_add(doc))
             else {
-                return Err(crate::Error::TermsAggType(format!(
+                return Err(lucene_search::Error::TermsAggType(format!(
                     "top_hits: document {doc} was not scored"
                 )));
             };
             slot(collectors, owning as usize)
                 .get_or_insert_with(|| {
                     Box::new(
-                        crate::collector::TopDocsCollector::with_total_hits_threshold(
+                        lucene_search::collector::TopDocsCollector::with_total_hits_threshold(
                             *top_n,
                             u64::MAX,
                         ),
@@ -3547,7 +3554,7 @@ fn collect(
                 return Ok(());
             }
             let Col::Ords(_, map) = &leaf.col else {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "keyword cardinality without an ordinal column".to_string(),
                 ));
             };
@@ -3556,7 +3563,7 @@ fn collect(
                 // A global ordinal is below the reader's term count; a
                 // negative one never reaches the bit set.
                 let Ok(g) = usize::try_from(global_ord(map, o)?) else {
-                    return Err(crate::Error::TermsAggType(format!(
+                    return Err(lucene_search::Error::TermsAggType(format!(
                         "negative global ordinal for segment ordinal {o}"
                     )));
                 };
@@ -3568,7 +3575,7 @@ fn collect(
                 return Ok(());
             }
             let CardinalityKind::Numeric(k) = kind else {
-                return Err(crate::Error::TermsAggType(
+                return Err(lucene_search::Error::TermsAggType(
                     "a keyword cardinality has no direct sketch".to_string(),
                 ));
             };
@@ -3588,11 +3595,11 @@ fn collect(
                 CardinalityKind::Numeric(ValueKind::Long) => set.extend(leaf.buf.iter().copied()),
                 CardinalityKind::Numeric(k) => {
                     for &v in &leaf.buf {
-                        set.insert(java_double_bits(aggs::to_double(*k, v)));
+                        set.insert(java_double_bits(metric_aggs::to_double(*k, v)));
                     }
                 }
                 CardinalityKind::Keyword => {
-                    return Err(crate::Error::TermsAggType(
+                    return Err(lucene_search::Error::TermsAggType(
                         "keyword cardinality counted as values".to_string(),
                     ))
                 }
@@ -3696,7 +3703,7 @@ fn collect(
             let mut previous = f64::NEG_INFINITY;
             let mut out = Ok(());
             for &v in &values {
-                let key = ((aggs::to_double(*kind, v) - offset) / interval).floor();
+                let key = ((metric_aggs::to_double(*kind, v) - offset) / interval).floor();
                 if key == previous {
                     continue;
                 }
@@ -3795,7 +3802,7 @@ fn collect(
             let mut lo = 0usize;
             let mut out = Ok(());
             'values: for &v in &values {
-                let value = aggs::to_double(*kind, v);
+                let value = metric_aggs::to_double(*kind, v);
                 let (start, end) = matched_range(ranges, lo, value, &leaf.max_to);
                 for (i, &(from, to)) in ranges.iter().enumerate().take(end).skip(start) {
                     if value >= from && value < to {
@@ -3876,7 +3883,7 @@ fn collect(
             collect_bucket(node, docs, subs, &mut leaf.subs, parent, owning)?;
         }
         _ => {
-            return Err(crate::Error::TermsAggType(
+            return Err(lucene_search::Error::TermsAggType(
                 "aggregation state does not match its node".to_string(),
             ))
         }
@@ -3887,7 +3894,7 @@ fn collect(
 /// `Double.doubleToLongBits`: every `NaN` is the canonical one.
 fn java_double_bits(d: f64) -> i64 {
     if d.is_nan() {
-        crate::aggs::JAVA_NAN.to_bits() as i64
+        lucene_search::java_math::JAVA_NAN.to_bits() as i64
     } else {
         d.to_bits() as i64
     }
@@ -3899,7 +3906,7 @@ fn global_ord(map: &[i64], ord: i64) -> Result<i64> {
         .and_then(|o| map.get(o))
         .copied()
         .ok_or_else(|| {
-            crate::Error::from(lucene_codecs::doc_values::Error::from(
+            lucene_search::Error::from(lucene_codecs::doc_values::Error::from(
                 lucene_store::Error::Corrupted(format!(
                     "ordinal {ord} outside the segment's dictionary"
                 )),
@@ -3913,7 +3920,7 @@ fn max_to(ranges: &[(f64, f64)]) -> Vec<f64> {
     for (i, &(_, to)) in ranges.iter().enumerate() {
         out.push(match i {
             0 => to,
-            _ => aggs::java_max(to, out[i - 1]),
+            _ => java_math::java_max(to, out[i - 1]),
         });
     }
     out
@@ -4282,7 +4289,7 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
             let mut out = Vec::with_capacity(ranges.len());
             for &(from, to) in ranges {
                 out.push(count(&|v: i64| {
-                    let d = aggs::to_double(kind, v);
+                    let d = metric_aggs::to_double(kind, v);
                     if d.is_nan() {
                         std::cmp::Ordering::Greater
                     } else if d < from {
@@ -4339,7 +4346,7 @@ enum Matches<'b> {
 
 /// The documents a pass collects: `min_score` behind the query, or none.
 pub struct PassScoring<'a, 'n> {
-    pub min_score: &'a aggs::MinScore<'a, 'n>,
+    pub min_score: &'a segment_match::MinScore<'a, 'n>,
 }
 
 /// One pass of aggregations: `nodes` over `query`'s live matches in the
@@ -4357,7 +4364,7 @@ pub fn aggregate_tree(
     nodes: &[AggNode],
     globals: &Globals<'_>,
     slices: &[Vec<usize>],
-    min_score: Option<&aggs::MinScore<'_, '_>>,
+    min_score: Option<&segment_match::MinScore<'_, '_>>,
 ) -> Result<Vec<Vec<AggResult>>> {
     aggregate_tree_cached(
         segments, readers, query, nodes, globals, slices, min_score, None,
@@ -4379,7 +4386,7 @@ pub fn aggregate_tree_cached(
     nodes: &[AggNode],
     globals: &Globals<'_>,
     slices: &[Vec<usize>],
-    min_score: Option<&aggs::MinScore<'_, '_>>,
+    min_score: Option<&segment_match::MinScore<'_, '_>>,
     cache: Option<&segment_cache::CacheRequest<'_>>,
 ) -> Result<Vec<Vec<AggResult>>> {
     let nodes_asked = nodes;
@@ -4406,19 +4413,20 @@ pub fn aggregate_tree_cached(
     };
     let asked = nodes_asked;
     let original = query;
-    let rewritten = crate::multi_segment::rewrite_points_ranges(query, segments);
+    let rewritten = lucene_search::multi_segment::rewrite_points_ranges(query, segments);
     let query = rewritten.as_ref().unwrap_or(query);
-    let clause = aggs::lone_clause(query);
+    let clause = segment_match::lone_clause(query);
     // Scoring, for `min_score`: the reader's statistics, once; without it,
     // the function queries' reader-wide preparation alone.
-    let global = crate::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
+    let global =
+        lucene_search::multi_segment::leaf_stats(segments, query, min_score.is_some(), None)?;
     let scoring = min_score.zip(global.as_ref());
     // A `top_hits` reads each match's score: the pass scores the query,
     // behind `min_score` or none (`-inf`), the caller's norms with it.
     let needs_scores = nodes.iter().any(AggNode::needs_scores);
     let scored_whole = nodes.iter().any(AggNode::has_nested);
     if needs_scores && scoring.is_none() {
-        return Err(crate::Error::TermsAggType(
+        return Err(lucene_search::Error::TermsAggType(
             "top_hits without scoring".to_string(),
         ));
     }
@@ -4440,10 +4448,7 @@ pub fn aggregate_tree_cached(
                        window_docs: &mut Vec<i32>,
                        scored_chunk: &RefCell<ScoredChunk>|
      -> Result<()> {
-        let ctx = exec::LeafContext {
-            global: global.as_ref(),
-            ..aggs::plain_context(seg)
-        };
+        let ctx = segment_match::plain_context(seg).with_global(global.as_ref());
         let live: Option<&FixedBitSet> = seg.live_docs;
         let view = SegmentView {
             seg,
@@ -4456,18 +4461,15 @@ pub fn aggregate_tree_cached(
         let matched = match scoring {
             Some(_) if needs_scores => Matches::Scored,
             Some((m, g)) => {
-                let scored = exec::LeafContext {
-                    norms: m.norms.get(i).copied().flatten(),
-                    global: Some(g),
-                    ..ctx
-                };
-                match aggs::segment_matches_scoring(&scored, query, live, m.min, docs_buf)? {
+                let scored = ctx.with_scoring(m.norms.get(i).copied().flatten(), g);
+                match segment_match::segment_matches_scoring(&scored, query, live, m.min, docs_buf)?
+                {
                     None => Matches::None,
                     Some(None) => Matches::All,
                     Some(Some(docs)) => Matches::List(docs),
                 }
             }
-            None => match aggs::segment_match_bits(
+            None => match segment_match::segment_match_bits(
                 &ctx,
                 query,
                 &clause,
@@ -4490,7 +4492,10 @@ pub fn aggregate_tree_cached(
                 if globals.bucket_limit != usize::MAX {
                     let made = buckets_made(nodes, states);
                     if made > globals.bucket_limit {
-                        return Err(crate::Error::TooManyBuckets(made, globals.bucket_limit));
+                        return Err(lucene_search::Error::TooManyBuckets(
+                            made,
+                            globals.bucket_limit,
+                        ));
                     }
                 }
                 for ((n, s), l) in nodes.iter().zip(states).zip(leaves) {
@@ -4519,7 +4524,7 @@ pub fn aggregate_tree_cached(
                     l.drop_prefetch();
                 }
             }
-            Ok::<(), crate::Error>(())
+            Ok::<(), lucene_search::Error>(())
         };
         let max_doc = reader.max_doc;
         // Windows aligned as the whole-segment ones are, so a column's
@@ -4629,19 +4634,16 @@ pub fn aggregate_tree_cached(
                     // `reverse_nested`, which hand their sub-aggregations
                     // documents outside the range being collected.
                     let width = if scored_whole {
-                        exec::NO_MORE_DOCS
+                        lucene_codecs::postings::NO_MORE_DOCS
                     } else {
                         scored_range()
                     };
                     let Some((m, g)) = scoring else {
                         continue;
                     };
-                    let ctx = exec::LeafContext {
-                        norms: m.norms.get(i).copied().flatten(),
-                        global: Some(g),
-                        ..ctx
-                    };
-                    let mut ranges = aggs::ScoredRanges::open(&ctx, query, live, m.min, lo)?;
+                    let ctx = ctx.with_scoring(m.norms.get(i).copied().flatten(), g);
+                    let mut ranges =
+                        segment_match::ScoredRanges::open(&ctx, query, live, m.min, lo)?;
                     while !lucene_util::memory::past_deadline() {
                         let more = {
                             let mut c = scored_chunk.borrow_mut();
@@ -4680,7 +4682,7 @@ pub fn aggregate_tree_cached(
     // `Err(Inexact)` when a cached part cannot be added in exactly as
     // collecting its segment would have (a sum past 2^53): the pass then
     // runs again without the cache.
-    let matches = crate::slices::estimated_matches(segments, query);
+    let matches = lucene_search::slices::estimated_matches(segments, query);
     let all_docs: u64 = segments
         .iter()
         .map(|s| u64::try_from(s.max_doc.unwrap_or(0)).unwrap_or(0))
@@ -4708,7 +4710,7 @@ pub fn aggregate_tree_cached(
             let scored_chunk = RefCell::new(ScoredChunk::default());
             for &i in slice {
                 let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
-                    return Err(crate::Error::SliceOutOfRange {
+                    return Err(lucene_search::Error::SliceOutOfRange {
                         segment: i,
                         segments: segments.len().min(readers.len()),
                     });
@@ -4777,7 +4779,10 @@ pub fn aggregate_tree_cached(
             // result is built.
             let made = buckets_made(nodes, &states);
             if made > globals.bucket_limit {
-                return Err(crate::Error::TooManyBuckets(made, globals.bucket_limit));
+                return Err(lucene_search::Error::TooManyBuckets(
+                    made,
+                    globals.bucket_limit,
+                ));
             }
             let mut terms = TermLookup::new(readers);
             let mut results = nodes
@@ -4796,20 +4801,22 @@ pub fn aggregate_tree_cached(
     // slices to other threads for. `countable_points` is the static test; a
     // segment `count_from_points` still declines at run time (more buckets
     // than `MAX_POINT_BUCKETS`) is then scanned on this thread.
-    let parallel = if scoring.is_none() && matches!(clause, crate::query::Clause::MatchAllDocs(_)) {
-        let scanned: u64 = segments
-            .iter()
-            .filter(|s| {
-                s.live_docs.is_some() || nodes.iter().any(|n| countable_points(n, s).is_none())
-            })
-            .map(|s| u64::try_from(s.max_doc.unwrap_or(i32::MAX)).unwrap_or(0))
-            .fold(0, u64::saturating_add);
-        scanned >= crate::slices::SEQUENTIAL_BELOW
-    } else {
-        crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW
-    };
+    let parallel =
+        if scoring.is_none() && matches!(clause, lucene_search::query::Clause::MatchAllDocs(_)) {
+            let scanned: u64 = segments
+                .iter()
+                .filter(|s| {
+                    s.live_docs.is_some() || nodes.iter().any(|n| countable_points(n, s).is_none())
+                })
+                .map(|s| u64::try_from(s.max_doc.unwrap_or(i32::MAX)).unwrap_or(0))
+                .fold(0, u64::saturating_add);
+            scanned >= lucene_search::slices::SEQUENTIAL_BELOW
+        } else {
+            lucene_search::slices::estimated_matches(segments, query)
+                >= lucene_search::slices::SEQUENTIAL_BELOW
+        };
     let mut out = Vec::with_capacity(slices.len());
-    for r in crate::slices::run_slices_if(parallel, slices, one) {
+    for r in lucene_search::slices::run_slices_if(parallel, slices, one) {
         match r? {
             Ok(results) => out.push(results),
             Err(segment_cache::Inexact) => {
@@ -4869,7 +4876,7 @@ impl<'r> TermLookup<'r> {
         f: impl FnOnce(&[u8]) -> T,
     ) -> Result<T> {
         let (Some(seg), Some(ord)) = (global.first_segment(g), global.first_segment_ord(g)) else {
-            return Err(crate::Error::TermsAggType(format!(
+            return Err(lucene_search::Error::TermsAggType(format!(
                 "{field}: global ordinal {g} has no segment"
             )));
         };
@@ -4884,17 +4891,17 @@ impl<'r> TermLookup<'r> {
         let slot = &mut per_segment[seg];
         if slot.is_none() {
             *slot = Some(match readers.get(seg) {
-                Some(r) => crate::terms_agg::open_ords(r, field)?.1,
+                Some(r) => lucene_search::global_ords::open_ords(r, field)?.1,
                 None => None,
             });
         }
         let Some(Some(dict)) = slot.as_mut() else {
-            return Err(crate::Error::TermsAggType(format!(
+            return Err(lucene_search::Error::TermsAggType(format!(
                 "{field}: segment {seg} has no dictionary"
             )));
         };
         Ok(f(dict.seek_ord(ord).map_err(|e| {
-            crate::Error::from(lucene_codecs::doc_values::Error::from(e))
+            lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e))
         })?))
     }
 }
@@ -5188,7 +5195,9 @@ fn finish(
                         }
                         let mut sketch =
                             crate::cardinality_sketch::Sketch::new(*p).ok_or_else(|| {
-                                crate::Error::TermsAggType(format!("cardinality precision {p}"))
+                                lucene_search::Error::TermsAggType(format!(
+                                    "cardinality precision {p}"
+                                ))
                             })?;
                         for &v in &values {
                             let hash = terms.with_term(g, field, v, |t| {
@@ -5495,7 +5504,7 @@ fn finish(
                 subs,
             })
         }
-        _ => Err(crate::Error::TermsAggType(
+        _ => Err(lucene_search::Error::TermsAggType(
             "aggregation state does not match its node".to_string(),
         )),
     }
@@ -5798,7 +5807,7 @@ mod tests {
         for (node, mut state, want) in cases {
             let mut leaf = windowed(vec![3], None);
             match collect(node, &mut state, &mut leaf, 0, 0) {
-                Err(crate::Error::TermsAggType(m)) => assert!(m.contains(want), "{m}"),
+                Err(lucene_search::Error::TermsAggType(m)) => assert!(m.contains(want), "{m}"),
                 other => panic!("{want}: {other:?}"),
             }
         }
@@ -5817,7 +5826,7 @@ mod tests {
             field: "n".into(),
             kind: ValueKind::Long,
             source,
-            needs: aggs::NEED_MIN,
+            needs: metric_aggs::NEED_MIN,
         };
         assert!(metric(Source::PointsMin).reads_points());
         assert!(!metric(Source::DocValues).reads_points());
@@ -5857,9 +5866,9 @@ mod tests {
             MILLIS_PER_DAY
         );
     }
-    use crate::aggs::{MetricSpec, NEED_ALL};
-    use crate::directory_reader::DirectoryReader;
-    use crate::query::{Clause, MatchAllDocsQuery, PointsRangeQuery, TermQuery};
+    use crate::metric_aggs::{MetricSpec, NEED_ALL};
+    use lucene_search::directory_reader::DirectoryReader;
+    use lucene_search::query::{Clause, MatchAllDocsQuery, PointsRangeQuery, TermQuery};
     use lucene_store::FsDirectory;
 
     const DAY: i64 = MILLIS_PER_DAY;
@@ -6128,9 +6137,9 @@ mod tests {
         let mut out = Vec::new();
         let mut buf = Vec::new();
         for (i, (seg, r)) in segments.iter().zip(reader.segment_readers()).enumerate() {
-            let clause = aggs::lone_clause(query);
-            let docs: Vec<i32> = match aggs::segment_matches(
-                &aggs::plain_context(seg),
+            let clause = segment_match::lone_clause(query);
+            let docs: Vec<i32> = match segment_match::segment_matches(
+                &segment_match::plain_context(seg),
                 query,
                 &clause,
                 seg.live_docs,
@@ -6144,7 +6153,7 @@ mod tests {
                     .filter(|&d| seg.live_docs.is_none_or(|l| l.get_doc(d)))
                     .collect(),
             };
-            let mut values = aggs::open_values(r, field).unwrap();
+            let mut values = metric_aggs::open_values(r, field).unwrap();
             for doc in docs {
                 let mut v = Vec::new();
                 match &mut values {
@@ -6400,8 +6409,9 @@ mod tests {
                 needs: NEED_ALL,
             })
             .collect();
-            let want = crate::aggs::metric_states(&segments, reader.segment_readers(), &q, &specs)
-                .unwrap();
+            let want =
+                crate::metric_aggs::metric_states(&segments, reader.segment_readers(), &q, &specs)
+                    .unwrap();
             let subs: Vec<AggNode> = specs.iter().map(|s| metric(&s.field, s.kind)).collect();
             let nodes = vec![
                 AggNode::Filters {
@@ -6499,7 +6509,7 @@ mod tests {
             assert_eq!(at, full, "a limit the buckets reach is not passed");
             let over = run_limited(&reader, &all(), nodes, &whole(&reader), made - 1);
             assert!(
-                matches!(over, Err(crate::Error::TooManyBuckets(n, l)) if n > l && l == made - 1),
+                matches!(over, Err(lucene_search::Error::TooManyBuckets(n, l)) if n > l && l == made - 1),
                 "{over:?}"
             );
         }
@@ -6547,7 +6557,7 @@ mod tests {
                     // and moves on past out-of-bounds keys too -- is skipped.
                     let mut previous = f64::NEG_INFINITY;
                     for &v in values {
-                        let k = ((aggs::to_double(kind, v) - offset) / interval).floor();
+                        let k = ((metric_aggs::to_double(kind, v) - offset) / interval).floor();
                         if k == previous {
                             continue;
                         }
@@ -6562,7 +6572,7 @@ mod tests {
                         for &v in values {
                             set.insert(match kind {
                                 ValueKind::Long => v,
-                                _ => java_double_bits(aggs::to_double(kind, v)),
+                                _ => java_double_bits(metric_aggs::to_double(kind, v)),
                             });
                         }
                     }
@@ -6628,7 +6638,7 @@ mod tests {
                 for (_, _, values) in &rows {
                     for (i, &(from, to)) in ranges.iter().enumerate() {
                         if values.iter().any(|&v| {
-                            let d = aggs::to_double(kind, v);
+                            let d = metric_aggs::to_double(kind, v);
                             d >= from && d < to
                         }) {
                             want[i] += 1;
@@ -6923,11 +6933,14 @@ mod tests {
             metric("f", ValueKind::Float),
             // A lone `min` or `max` of longs: folded as integers when the
             // window has one owner (top level), per document under buckets.
-            only("l", aggs::NEED_MIN),
-            only("i", aggs::NEED_MAX),
+            only("l", metric_aggs::NEED_MIN),
+            only("i", metric_aggs::NEED_MAX),
             date(
                 "l",
-                vec![only("i", aggs::NEED_MIN), only("l", aggs::NEED_MAX)],
+                vec![
+                    only("i", metric_aggs::NEED_MIN),
+                    only("l", metric_aggs::NEED_MAX),
+                ],
             ),
             AggNode::Global {
                 subs: vec![
@@ -7020,12 +7033,12 @@ mod tests {
             for r in reader.segment_readers() {
                 let open = || -> Option<Box<lucene_codecs::doc_values::SortedNumericReader<'_>>> {
                     if keyword {
-                        match crate::terms_agg::open_ords(r, field).unwrap().0 {
+                        match lucene_search::global_ords::open_ords(r, field).unwrap().0 {
                             Ords::Multi(m) => Some(m),
                             _ => None,
                         }
                     } else {
-                        match aggs::open_values(r, field).unwrap() {
+                        match metric_aggs::open_values(r, field).unwrap() {
                             Values::Multi(m) => Some(m),
                             _ => None,
                         }
@@ -7284,9 +7297,10 @@ mod tests {
         opened.open_points().unwrap();
         let segments = opened.as_open_segments();
         for field in ["kw", "mkw"] {
-            let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), field)
-                .unwrap()
-                .value_count();
+            let terms_count =
+                lucene_search::global_ords::GlobalOrds::build(reader.segment_readers(), field)
+                    .unwrap()
+                    .value_count();
             let q = BooleanQuery {
                 must: vec![Clause::PointsRange(PointsRangeQuery::new("r", 0, 2))],
                 ..Default::default()
@@ -7396,9 +7410,10 @@ mod tests {
         assert_eq!(got, inserted);
         // `min_doc_count: 0`: the inserted term is one of the empty buckets'.
         let every = list(node(Some(&after), TermsOrder::KeyAsc, true));
-        let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), "mkw")
-            .unwrap()
-            .value_count();
+        let terms_count =
+            lucene_search::global_ords::GlobalOrds::build(reader.segment_readers(), "mkw")
+                .unwrap()
+                .value_count();
         assert_eq!(every.len(), terms_count + 1);
         assert!(every.contains(&(after, absent)));
         assert!(every.windows(2).all(|w| w[0].0 < w[1].0));
@@ -7760,9 +7775,10 @@ mod tests {
     #[test]
     fn keyword_terms_keep_the_accepted_terms() {
         let reader = fixture("terms_aggs_index");
-        let terms_count = crate::terms_agg::GlobalOrds::build(reader.segment_readers(), "mkw")
-            .unwrap()
-            .value_count();
+        let terms_count =
+            lucene_search::global_ords::GlobalOrds::build(reader.segment_readers(), "mkw")
+                .unwrap()
+                .value_count();
         let every_third = |count: usize| {
             let mut bits = vec![0u64; count.div_ceil(64)];
             for o in (0..count).step_by(3) {
@@ -8103,7 +8119,7 @@ mod tests {
                     source,
                     needs: NEED_ALL,
                 };
-                let want = crate::aggs::metric_states(
+                let want = crate::metric_aggs::metric_states(
                     &segments,
                     reader.segment_readers(),
                     &all(),
@@ -8129,10 +8145,10 @@ mod tests {
         }
 
         let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
-        let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
+        let norms: Vec<Option<&HashMap<String, lucene_search::field_norms::FieldNorms<'_>>>> =
             owned.iter().map(Some).collect();
         let behind = |q: &BooleanQuery, min: f32| {
-            let m = crate::aggs::MinScore { min, norms: &norms };
+            let m = lucene_search::segment_match::MinScore { min, norms: &norms };
             aggregate_tree(
                 &segments,
                 reader.segment_readers(),
@@ -8179,9 +8195,10 @@ mod tests {
         opened.open_points().unwrap();
         let segments = opened.as_open_segments();
         let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
-        let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
+        let norms: Vec<Option<&HashMap<String, lucene_search::field_norms::FieldNorms<'_>>>> =
             owned.iter().map(Some).collect();
-        let searcher = crate::index_searcher::IndexSearcher::new(&segments, &norms).unwrap();
+        let searcher =
+            lucene_search::index_searcher::IndexSearcher::new(&segments, &norms).unwrap();
         let readers = reader.segment_readers();
         assert!(readers.len() > 1, "a multi-segment fixture");
         let bases: Vec<i32> = readers
@@ -8193,7 +8210,7 @@ mod tests {
             })
             .collect();
         let run_scored = |q: &BooleanQuery, nodes: &[AggNode], slices: &[Vec<usize>], min: f32| {
-            let m = crate::aggs::MinScore { min, norms: &norms };
+            let m = lucene_search::segment_match::MinScore { min, norms: &norms };
             aggregate_tree(
                 &segments,
                 readers,
@@ -8305,8 +8322,8 @@ mod tests {
         ] {
             let reader = fixture(index);
             let readers = reader.segment_readers();
-            let globals =
-                (!numeric).then(|| crate::terms_agg::GlobalOrds::build(readers, field).unwrap());
+            let globals = (!numeric)
+                .then(|| lucene_search::global_ords::GlobalOrds::build(readers, field).unwrap());
             for q in [all(), body("w1")] {
                 let mut opened = reader.open_segments().unwrap();
                 opened.open_points().unwrap();
@@ -8316,9 +8333,9 @@ mod tests {
                     let mut buf = Vec::new();
                     for &i in slice {
                         let (seg, r) = (&segments[i], &readers[i]);
-                        let clause = aggs::lone_clause(&q);
-                        let docs: Vec<i32> = match aggs::segment_matches(
-                            &aggs::plain_context(seg),
+                        let clause = segment_match::lone_clause(&q);
+                        let docs: Vec<i32> = match segment_match::segment_matches(
+                            &segment_match::plain_context(seg),
                             &q,
                             &clause,
                             seg.live_docs,
@@ -8337,7 +8354,10 @@ mod tests {
                             let mut v = Vec::new();
                             if let Some(g) = &globals {
                                 let map = g.segment_map(i).unwrap_or(&[]);
-                                match &mut crate::terms_agg::open_ords(r, field).unwrap().0 {
+                                match &mut lucene_search::global_ords::open_ords(r, field)
+                                    .unwrap()
+                                    .0
+                                {
                                     Ords::Absent => {}
                                     Ords::Single(c) => v.extend(c.value(doc).unwrap()),
                                     Ords::Multi(c) => c.values(doc, &mut v).unwrap(),
@@ -8346,7 +8366,7 @@ mod tests {
                                     *o = map[*o as usize];
                                 }
                             } else {
-                                match &mut aggs::open_values(r, field).unwrap() {
+                                match &mut metric_aggs::open_values(r, field).unwrap() {
                                     Values::Absent => {}
                                     Values::Single(c) => v.extend(c.value(doc).unwrap()),
                                     Values::Multi(c) => c.values(doc, &mut v).unwrap(),
@@ -8412,7 +8432,7 @@ mod tests {
     /// under `global`; with `track_scores`, each kept hit's score and the max.
     #[test]
     fn sorted_top_hits_are_the_sorted_searchs_hits() {
-        use crate::top_field::{SortField, SortType};
+        use lucene_search::top_field::{SortField, SortType};
         for (index, q, sort, track) in [
             (
                 "metric_aggs_index",
@@ -8457,11 +8477,11 @@ mod tests {
             opened.open_points().unwrap();
             let segments = opened.as_open_segments();
             let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
-            let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
+            let norms: Vec<Option<&HashMap<String, lucene_search::field_norms::FieldNorms<'_>>>> =
                 owned.iter().map(Some).collect();
             let sort = Arc::new(sort);
             for top_n in [1, 4, 50] {
-                let want = crate::top_field::search_sorted(
+                let want = lucene_search::top_field::search_sorted(
                     &segments,
                     readers,
                     &q,
@@ -8477,7 +8497,7 @@ mod tests {
                     sort: Arc::clone(&sort),
                     track_scores: track,
                 };
-                let m = crate::aggs::MinScore {
+                let m = lucene_search::segment_match::MinScore {
                     min: f32::NEG_INFINITY,
                     norms: &norms,
                 };
@@ -8530,10 +8550,10 @@ mod tests {
     /// Every match's score, by global document, from the searcher.
     fn searcher_scores(
         segments: &[OpenSegment<'_>],
-        norms: &[Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>],
+        norms: &[Option<&HashMap<String, lucene_search::field_norms::FieldNorms<'_>>>],
         q: &BooleanQuery,
     ) -> HashMap<i32, f32> {
-        let searcher = crate::index_searcher::IndexSearcher::new(segments, norms).unwrap();
+        let searcher = lucene_search::index_searcher::IndexSearcher::new(segments, norms).unwrap();
         searcher
             .search(q, 1_000_000)
             .unwrap()
@@ -8555,7 +8575,7 @@ mod tests {
         // Parents: the documents with `w1`; children: those with `w2`.
         let (parents, children) = (body("w1"), body("w2"));
         let matches = |seg: &OpenSegment<'_>, q: &BooleanQuery| {
-            crate::top_field::nested_docs(seg, q).unwrap()
+            lucene_search::top_field::nested_docs(seg, q).unwrap()
         };
         let nested = |subs| AggNode::Nested {
             parents: parents.clone(),
