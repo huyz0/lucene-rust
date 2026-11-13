@@ -414,12 +414,13 @@ pub(crate) fn compile(root: &Node) -> Option<Program> {
     })
 }
 
-/// The registers of an evaluation, reused from batch to batch.
+/// The registers of an evaluation, reused from batch to batch: one vector
+/// of `n` values per register.
 #[derive(Default)]
 pub(crate) struct Scratch {
-    f: Vec<f64>,
-    l: Vec<i64>,
-    i: Vec<i32>,
+    f: Vec<Vec<f64>>,
+    l: Vec<Vec<i64>>,
+    i: Vec<Vec<i32>>,
 }
 
 /// One operand over a batch: a slice of `n`, or a constant.
@@ -428,77 +429,61 @@ enum Arg<'a, T> {
     C(T),
 }
 
-/// Raw views of the registers: an operation's destination is never one of
-/// its operands, so writing one while reading the others is sound.
+/// The registers of one run. An operation's destination is taken out of its
+/// pool while the operation reads its operands, and put back after, so a
+/// destination is never also an operand (the compiler gives every operation
+/// a fresh register).
 struct Regs<'a> {
-    f: *mut f64,
-    l: *mut i64,
-    i: *mut i32,
+    s: &'a mut Scratch,
     cols: &'a [f64],
     n: usize,
 }
 
 impl Regs<'_> {
     fn f(&self, s: Src) -> Arg<'_, f64> {
-        // SAFETY: registers `r` lie at `r * n` within their scratch vector
-        unsafe {
-            match s {
-                Src::F(r) => Arg::S(std::slice::from_raw_parts(
-                    self.f.add(r as usize * self.n),
-                    self.n,
-                )),
-                Src::Col(c) => Arg::S(&self.cols[c as usize * self.n..][..self.n]),
-                Src::Fc(v) => Arg::C(v),
-                _ => unreachable!("a double operand"),
-            }
+        match s {
+            Src::F(r) => Arg::S(self.reg(&self.s.f[r as usize])),
+            Src::Col(c) => Arg::S(&self.cols[c as usize * self.n..][..self.n]),
+            Src::Fc(v) => Arg::C(v),
+            _ => unreachable!("a double operand"),
         }
     }
 
     fn l(&self, s: Src) -> Arg<'_, i64> {
-        // SAFETY: as `f`
-        unsafe {
-            match s {
-                Src::L(r) => Arg::S(std::slice::from_raw_parts(
-                    self.l.add(r as usize * self.n),
-                    self.n,
-                )),
-                Src::Lc(v) => Arg::C(v),
-                _ => unreachable!("a long operand"),
-            }
+        match s {
+            Src::L(r) => Arg::S(self.reg(&self.s.l[r as usize])),
+            Src::Lc(v) => Arg::C(v),
+            _ => unreachable!("a long operand"),
         }
     }
 
     fn i(&self, s: Src) -> Arg<'_, i32> {
-        // SAFETY: as `f`
-        unsafe {
-            match s {
-                Src::I(r) => Arg::S(std::slice::from_raw_parts(
-                    self.i.add(r as usize * self.n),
-                    self.n,
-                )),
-                Src::Ic(v) => Arg::C(v),
-                _ => unreachable!("an int operand"),
-            }
+        match s {
+            Src::I(r) => Arg::S(self.reg(&self.s.i[r as usize])),
+            Src::Ic(v) => Arg::C(v),
+            _ => unreachable!("an int operand"),
         }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    fn df(&self, r: u32) -> &mut [f64] {
-        // SAFETY: as `f`; the destination aliases no operand
-        unsafe { std::slice::from_raw_parts_mut(self.f.add(r as usize * self.n), self.n) }
+    fn reg<'v, T>(&self, v: &'v [T]) -> &'v [T] {
+        debug_assert_eq!(
+            v.len(),
+            self.n,
+            "an operand register is its own destination"
+        );
+        v
     }
+}
 
-    #[allow(clippy::mut_from_ref)]
-    fn dl(&self, r: u32) -> &mut [i64] {
-        // SAFETY: as `df`
-        unsafe { std::slice::from_raw_parts_mut(self.l.add(r as usize * self.n), self.n) }
-    }
-
-    #[allow(clippy::mut_from_ref)]
-    fn di(&self, r: u32) -> &mut [i32] {
-        // SAFETY: as `df`
-        unsafe { std::slice::from_raw_parts_mut(self.i.add(r as usize * self.n), self.n) }
-    }
+/// Runs `$body` with register `$d` of pool `$pool` taken out as `$dest`, then
+/// puts it back.
+macro_rules! with_dest {
+    ($r:ident, $pool:ident, $d:expr, |$dest:ident| $body:expr) => {{
+        let slot = $d as usize;
+        let mut $dest = std::mem::take(&mut $r.s.$pool[slot]);
+        $body;
+        $r.s.$pool[slot] = $dest;
+    }};
 }
 
 #[inline(always)]
@@ -570,116 +555,123 @@ fn at<T: Copy>(a: &Arg<'_, T>, j: usize) -> T {
     }
 }
 
+/// `count` registers of `n` values each.
+fn resize_pool<T: Copy>(pool: &mut Vec<Vec<T>>, count: usize, n: usize, zero: T) {
+    pool.resize_with(count, Vec::new);
+    for reg in pool.iter_mut() {
+        reg.resize(n, zero);
+    }
+}
+
 impl Program {
     /// The values over a batch of `out.len()`: `cols[i * n + j]` variable `i`
     /// at the `j`th.
     pub(crate) fn run(&self, cols: &[f64], out: &mut [f64], scratch: &mut Scratch) {
         let n = out.len();
-        scratch.f.resize(self.regs[0] as usize * n, 0.0);
-        scratch.l.resize(self.regs[1] as usize * n, 0);
-        scratch.i.resize(self.regs[2] as usize * n, 0);
+        resize_pool(&mut scratch.f, self.regs[0] as usize, n, 0.0);
+        resize_pool(&mut scratch.l, self.regs[1] as usize, n, 0);
+        resize_pool(&mut scratch.i, self.regs[2] as usize, n, 0);
         let r = Regs {
-            f: scratch.f.as_mut_ptr(),
-            l: scratch.l.as_mut_ptr(),
-            i: scratch.i.as_mut_ptr(),
+            s: scratch,
             cols,
             n,
         };
         for op in &self.ops {
             match *op {
-                Op::Arith(op, d, a, b) => {
-                    let (d, a, b) = (r.df(d), r.f(a), r.f(b));
+                Op::Arith(op, d, a, b) => with_dest!(r, f, d, |d| {
+                    let (a, b) = (r.f(a), r.f(b));
                     match op {
-                        Bin::Mul => map2(d, a, b, |x, y| x * y),
-                        Bin::Div => map2(d, a, b, |x, y| x / y),
-                        Bin::Rem => map2(d, a, b, |x, y| x % y),
-                        Bin::Add => map2(d, a, b, |x, y| x + y),
-                        _ => map2(d, a, b, |x, y| x - y),
+                        Bin::Mul => map2(&mut d, a, b, |x, y| x * y),
+                        Bin::Div => map2(&mut d, a, b, |x, y| x / y),
+                        Bin::Rem => map2(&mut d, a, b, |x, y| x % y),
+                        Bin::Add => map2(&mut d, a, b, |x, y| x + y),
+                        _ => map2(&mut d, a, b, |x, y| x - y),
                     }
-                }
-                Op::Compare(op, d, a, b) => {
-                    let (d, a, b) = (r.di(d), r.f(a), r.f(b));
+                }),
+                Op::Compare(op, d, a, b) => with_dest!(r, i, d, |d| {
+                    let (a, b) = (r.f(a), r.f(b));
                     match op {
-                        Bin::Lt => map2(d, a, b, |x, y| i32::from(x < y)),
-                        Bin::Lte => map2(d, a, b, |x, y| i32::from(x <= y)),
-                        Bin::Gt => map2(d, a, b, |x, y| i32::from(x > y)),
-                        Bin::Gte => map2(d, a, b, |x, y| i32::from(x >= y)),
-                        Bin::Eq => map2(d, a, b, |x, y| i32::from(x == y)),
-                        _ => map2(d, a, b, |x, y| i32::from(x != y)),
+                        Bin::Lt => map2(&mut d, a, b, |x, y| i32::from(x < y)),
+                        Bin::Lte => map2(&mut d, a, b, |x, y| i32::from(x <= y)),
+                        Bin::Gt => map2(&mut d, a, b, |x, y| i32::from(x > y)),
+                        Bin::Gte => map2(&mut d, a, b, |x, y| i32::from(x >= y)),
+                        Bin::Eq => map2(&mut d, a, b, |x, y| i32::from(x == y)),
+                        _ => map2(&mut d, a, b, |x, y| i32::from(x != y)),
                     }
-                }
-                Op::Shift(op, d, a, b) => {
-                    let (d, a, b) = (r.dl(d), r.l(a), r.i(b));
+                }),
+                Op::Shift(op, d, a, b) => with_dest!(r, l, d, |d| {
+                    let (a, b) = (r.l(a), r.i(b));
                     match op {
-                        Bin::Lsh => map2(d, a, b, |x, n| x.wrapping_shl((n & 63) as u32)),
-                        Bin::Rsh => map2(d, a, b, |x, n| x >> (n & 63)),
-                        _ => map2(d, a, b, |x, n| ((x as u64) >> (n & 63)) as i64),
+                        Bin::Lsh => map2(&mut d, a, b, |x, n| x.wrapping_shl((n & 63) as u32)),
+                        Bin::Rsh => map2(&mut d, a, b, |x, n| x >> (n & 63)),
+                        _ => map2(&mut d, a, b, |x, n| ((x as u64) >> (n & 63)) as i64),
                     }
-                }
-                Op::Bitwise(op, d, a, b) => {
-                    let (d, a, b) = (r.dl(d), r.l(a), r.l(b));
+                }),
+                Op::Bitwise(op, d, a, b) => with_dest!(r, l, d, |d| {
+                    let (a, b) = (r.l(a), r.l(b));
                     match op {
-                        Bin::BwAnd => map2(d, a, b, |x, y| x & y),
-                        Bin::BwXor => map2(d, a, b, |x, y| x ^ y),
-                        _ => map2(d, a, b, |x, y| x | y),
+                        Bin::BwAnd => map2(&mut d, a, b, |x, y| x & y),
+                        Bin::BwXor => map2(&mut d, a, b, |x, y| x ^ y),
+                        _ => map2(&mut d, a, b, |x, y| x | y),
                     }
-                }
-                Op::Logic(and, d, a, b) => {
-                    let (d, a, b) = (r.di(d), r.i(a), r.i(b));
+                }),
+                Op::Logic(and, d, a, b) => with_dest!(r, i, d, |d| {
+                    let (a, b) = (r.i(a), r.i(b));
                     if and {
-                        map2(d, a, b, |x, y| i32::from((x != 0) & (y != 0)));
+                        map2(&mut d, a, b, |x, y| i32::from((x != 0) & (y != 0)));
                     } else {
-                        map2(d, a, b, |x, y| i32::from((x != 0) | (y != 0)));
+                        map2(&mut d, a, b, |x, y| i32::from((x != 0) | (y != 0)));
                     }
+                }),
+                Op::Not(d, a) => {
+                    with_dest!(r, i, d, |d| map1(&mut d, r.i(a), |x| i32::from(x == 0)))
                 }
-                Op::Not(d, a) => map1(r.di(d), r.i(a), |x| i32::from(x == 0)),
-                Op::BwNot(d, a) => map1(r.dl(d), r.l(a), |x| !x),
-                Op::Neg(d, a) => map1(r.df(d), r.f(a), |x| -x),
-                Op::Abs(d, a) => map1(r.df(d), r.f(a), f64::abs),
-                Op::Sqrt(d, a) => map1(r.df(d), r.f(a), f64::sqrt),
-                Op::Floor(d, a) => map1(r.df(d), r.f(a), f64::floor),
-                Op::Ceil(d, a) => map1(r.df(d), r.f(a), f64::ceil),
+                Op::BwNot(d, a) => with_dest!(r, l, d, |d| map1(&mut d, r.l(a), |x| !x)),
+                Op::Neg(d, a) => with_dest!(r, f, d, |d| map1(&mut d, r.f(a), |x| -x)),
+                Op::Abs(d, a) => with_dest!(r, f, d, |d| map1(&mut d, r.f(a), f64::abs)),
+                Op::Sqrt(d, a) => with_dest!(r, f, d, |d| map1(&mut d, r.f(a), f64::sqrt)),
+                Op::Floor(d, a) => with_dest!(r, f, d, |d| map1(&mut d, r.f(a), f64::floor)),
+                Op::Ceil(d, a) => with_dest!(r, f, d, |d| map1(&mut d, r.f(a), f64::ceil)),
                 Op::Conv(c, d, a) => match c {
-                    Conv::D2L => map1(r.dl(d), r.f(a), |x| x as i64),
-                    Conv::D2I => map1(r.di(d), r.f(a), |x| x as i32),
-                    Conv::L2D => map1(r.df(d), r.l(a), |x| x as f64),
-                    Conv::I2D => map1(r.df(d), r.i(a), f64::from),
-                    Conv::L2I => map1(r.di(d), r.l(a), |x| x as i32),
-                    Conv::I2L => map1(r.dl(d), r.i(a), i64::from),
+                    Conv::D2L => with_dest!(r, l, d, |d| map1(&mut d, r.f(a), |x| x as i64)),
+                    Conv::D2I => with_dest!(r, i, d, |d| map1(&mut d, r.f(a), |x| x as i32)),
+                    Conv::L2D => with_dest!(r, f, d, |d| map1(&mut d, r.l(a), |x| x as f64)),
+                    Conv::I2D => with_dest!(r, f, d, |d| map1(&mut d, r.i(a), f64::from)),
+                    Conv::L2I => with_dest!(r, i, d, |d| map1(&mut d, r.l(a), |x| x as i32)),
+                    Conv::I2L => with_dest!(r, l, d, |d| map1(&mut d, r.i(a), i64::from)),
                 },
-                Op::Select(d, c, a, b) => {
-                    let c = r.i(c);
-                    match a {
-                        Src::F(_) | Src::Col(_) | Src::Fc(_) => select(r.df(d), c, r.f(a), r.f(b)),
-                        Src::L(_) | Src::Lc(_) => select(r.dl(d), c, r.l(a), r.l(b)),
-                        Src::I(_) | Src::Ic(_) => select(r.di(d), c, r.i(a), r.i(b)),
+                Op::Select(d, c, a, b) => match a {
+                    Src::F(_) | Src::Col(_) | Src::Fc(_) => {
+                        with_dest!(r, f, d, |d| select(&mut d, r.i(c), r.f(a), r.f(b)))
                     }
-                }
-                Op::F1(f, d, a) => map1(r.df(d), r.f(a), f),
-                Op::Slice(f, d, a) => {
-                    let d = r.df(d);
-                    match r.f(a) {
-                        Arg::S(a) => f(a, d),
-                        Arg::C(x) => {
-                            let mut v = [0.0];
-                            f(&[x], &mut v);
-                            d.fill(v[0]);
-                        }
+                    Src::L(_) | Src::Lc(_) => {
+                        with_dest!(r, l, d, |d| select(&mut d, r.i(c), r.l(a), r.l(b)))
                     }
-                }
-                Op::F2(f, d, a, b) => {
-                    let (d, a, b) = (r.df(d), r.f(a), r.f(b));
-                    map2(d, a, b, f);
-                }
-                Op::Max(d, a, b) => map2(r.df(d), r.f(a), r.f(b), java_max),
-                Op::Min(d, a, b) => map2(r.df(d), r.f(a), r.f(b), java_min),
-                Op::F4(f, d, xs) => {
-                    let d = r.df(d);
+                    Src::I(_) | Src::Ic(_) => {
+                        with_dest!(r, i, d, |d| select(&mut d, r.i(c), r.i(a), r.i(b)))
+                    }
+                },
+                Op::F1(f, d, a) => with_dest!(r, f, d, |d| map1(&mut d, r.f(a), f)),
+                Op::Slice(f, d, a) => with_dest!(r, f, d, |d| match r.f(a) {
+                    Arg::S(a) => f(a, &mut d),
+                    Arg::C(x) => {
+                        let mut v = [0.0];
+                        f(&[x], &mut v);
+                        d.fill(v[0]);
+                    }
+                }),
+                Op::F2(f, d, a, b) => with_dest!(r, f, d, |d| {
+                    let (a, b) = (r.f(a), r.f(b));
+                    map2(&mut d, a, b, f);
+                }),
+                Op::Max(d, a, b) => with_dest!(r, f, d, |d| map2(&mut d, r.f(a), r.f(b), java_max)),
+                Op::Min(d, a, b) => with_dest!(r, f, d, |d| map2(&mut d, r.f(a), r.f(b), java_min)),
+                Op::F4(f, d, xs) => with_dest!(r, f, d, |d| {
                     let [a, b, c, e] = xs.map(|s| r.f(s));
                     for (j, o) in d.iter_mut().enumerate() {
                         *o = f(at(&a, j), at(&b, j), at(&c, j), at(&e, j));
                     }
-                }
+                }),
             }
         }
         match r.f(self.result) {

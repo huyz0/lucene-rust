@@ -94,7 +94,7 @@ RENAMES = {
     ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("jvm_reader.rs", "MAX_HYBRID_QUERIES"),
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("analysis.rs", "SPEC_VERSION"),
-    ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("jvm_reader.rs", "JVM_ABI_VERSION"),
+    ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("abi.rs", "JVM_ABI_VERSION"),
     # format.rs re-exports these from backend.rs.
     ("Lrse.java", "NONCE_LEN"): ("backend.rs", "NONCE_LEN"),
     ("Lrse.java", "TAG_LEN"): ("backend.rs", "TAG_LEN"),

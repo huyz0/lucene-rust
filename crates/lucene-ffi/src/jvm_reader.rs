@@ -51,21 +51,6 @@ use lucene_engine::query_blob::{
 };
 use std::sync::Arc;
 
-/// The version of the contract between this library and the Java classes in
-/// `opensearch-plugin/`: the entry points in this module, `engine_writer.rs`
-/// and `ffm_bridge.rs`, their argument order, and the query blob layout. The plugin refuses to
-/// start against a library reporting any other number -- a jar carrying a
-/// stale `.so` must not get as far as reading an index.
-///
-/// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 171;
-
-/// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
-#[no_mangle]
-pub extern "C" fn ffi_jvm_abi_version() -> u32 {
-    JVM_ABI_VERSION
-}
-
 /// Opens a reader over the segments listed in `infos` (a whole `segments_N`
 /// file's bytes, as `SegmentInfos.write(IndexOutput)` writes them, at
 /// generation `generation`) under the directory at `path`, checks that
@@ -4659,11 +4644,6 @@ pub(crate) mod tests {
             Err(FfiStatus::InvalidArgument.code())
         );
         ffi_close_jvm_reader(h);
-    }
-
-    #[test]
-    fn abi_version_is_the_constant() {
-        assert_eq!(ffi_jvm_abi_version(), JVM_ABI_VERSION);
     }
 
     /// Hits and scores are Lucene's own, bit for bit, from the fixture's
