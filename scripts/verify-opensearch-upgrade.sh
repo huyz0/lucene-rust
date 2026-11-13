@@ -14,7 +14,11 @@
 #      (verify_opensearch.py's, plus aggregations and vector requests) as the
 #      stock node does, natively where the plugin says it runs; the same over
 #      the 2.x snapshot restored into both nodes; and after a force merge has
-#      rewritten every segment as Lucene 10.5.x.
+#      rewritten every segment as Lucene 10.5.x. The 2.x-created indices are
+#      on the accelerated engine by the node default.
+#   4. The plugin node stops and a stock 3.9.0 node (no plugin) opens its data
+#      directory: every index green with the same documents
+#      (verify_upgrade.py removed).
 #
 # Both 3.9.0 nodes keep the bundled k-NN plugin (the knn_vector mapping needs
 # it) and drop the rest, as the 2.19 node does; see opensearch-plugin/docker/.
@@ -48,7 +52,7 @@ STOCK_IMAGE="lucene-rust-upgrade-stock:${VERSION}"
 VOL_OLD="${PREFIX}-data"
 VOL_STOCK="${PREFIX}-data-stock"
 VOL_SNAP="${PREFIX}-snap"
-CONTAINERS=("${PREFIX}-old" "${PREFIX}-plugin" "${PREFIX}-stock")
+CONTAINERS=("${PREFIX}-old" "${PREFIX}-plugin" "${PREFIX}-stock" "${PREFIX}-removed")
 
 cleanup() {
     docker rm -f "${CONTAINERS[@]}" >/dev/null 2>&1 || true
@@ -116,7 +120,8 @@ wait_http "$PORT"
 wait_http "$((PORT + 2))"
 
 status=0
-python3 opensearch-plugin/e2e/verify_upgrade.py verify "http://localhost:$PORT" "http://localhost:$((PORT + 2))" || status=$?
+RECORD="$(mktemp)"
+UPGRADE_RECORD="$RECORD" python3 opensearch-plugin/e2e/verify_upgrade.py verify "http://localhost:$PORT" "http://localhost:$((PORT + 2))" || status=$?
 if docker logs "${PREFIX}-plugin" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
     echo "verify-opensearch-upgrade: the plugin node's JVM crashed" >&2
     status=1
@@ -127,4 +132,14 @@ if docker logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open f
     docker logs "${PREFIX}-plugin" 2>&1 | grep "lucene-rust: native reader open failed" | grep -v "KNN[0-9]*Codec" | head -5 >&2
     status=1
 fi
+
+# The plugin removed: a stock node opens the plugin node's data directory as it is.
+echo "== OpenSearch ${VERSION} without the plugin, on the plugin node's data"
+docker stop -t 60 "${PREFIX}-plugin" >/dev/null
+if [[ $KEEP == 1 ]]; then docker logs "${PREFIX}-plugin" > "${PREFIX}-plugin.log" 2>&1 || true; fi
+docker rm "${PREFIX}-plugin" >/dev/null
+start_node "${PREFIX}-removed" "$PORT" "$STOCK_IMAGE" "$VOL_OLD"
+wait_http "$PORT"
+python3 opensearch-plugin/e2e/verify_upgrade.py removed "http://localhost:$PORT" "$RECORD" || status=$?
+rm -f "$RECORD"
 exit $status

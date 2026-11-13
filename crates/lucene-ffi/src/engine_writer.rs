@@ -2790,6 +2790,53 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
     })
 }
 
+/// OpenSearch's segment upgrade (`IndexShard.upgrade`): rewrites, each on
+/// its own, every committed segment written by a Lucene older than
+/// `major.minor` (OpenSearch's `Version.CURRENT.luceneVersion`) -- by an older
+/// major only when `only_ancient != 0` -- as `OpenSearchMergePolicy` does
+/// while an upgrade is in progress, and commits when any was. Writes the
+/// newest commit's generation and how many segments were rewritten.
+///
+/// # Safety
+/// `out_generation` and `out_upgraded` valid for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_engine_writer_upgrade(
+    handle: u64,
+    major: i32,
+    minor: i32,
+    only_ancient: u8,
+    out_generation: *mut i64,
+    out_upgraded: *mut i32,
+) -> i32 {
+    guard(|| {
+        if out_generation.is_null() || out_upgraded.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let current = lucene_index::segment_info::LuceneVersion {
+            major,
+            minor,
+            bugfix: 0,
+        };
+        let (generation, upgraded) = with_writer(handle, |w| {
+            let _maintenance = w.maintenance();
+            let upgraded = w
+                .writer()
+                .with_writer_merges_aborted(|iw| iw.upgrade_segments(current, only_ancient != 0))
+                .map_err(writer_error)?;
+            if upgraded > 0 {
+                w.writer().commit().map_err(writer_error)?;
+            }
+            Ok((w.generation(), upgraded))
+        })?;
+        // SAFETY: caller contract.
+        unsafe {
+            *out_generation = generation;
+            *out_upgraded = i32::try_from(upgraded).unwrap_or(i32::MAX);
+        }
+        Ok(())
+    })
+}
+
 /// Writes `min(n, STAT_COUNT)` counters into `out`: RAM bytes buffered, the
 /// part of them in buffers being flushed, buffered documents, whether anything is uncommitted (0/1), the last
 /// commit generation written or attempted (a failed or only prepared commit

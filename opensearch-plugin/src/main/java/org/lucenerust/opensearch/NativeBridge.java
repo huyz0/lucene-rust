@@ -413,6 +413,10 @@ public final class NativeBridge {
             "ffi_engine_writer_force_merge",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_BYTE, ADDRESS)
         );
+        static final MethodHandle WRITER_UPGRADE = bind(
+            "ffi_engine_writer_upgrade",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, ADDRESS, ADDRESS)
+        );
         static final MethodHandle WRITER_SET_PLUGGABLE_MERGE_POLICY = bind(
             "ffi_engine_writer_set_pluggable_merge_policy",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_DOUBLE, JAVA_LONG)
@@ -3078,6 +3082,29 @@ public final class NativeBridge {
                 s.bytes(names),
                 (long) names.length
             );
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code ffi_engine_writer_upgrade}: rewrites every committed segment an older Lucene than
+     * {@code major.minor} wrote (an older major only, when {@code onlyAncient}), each on its own.
+     * {@code out[0]} is the newest commit's generation, {@code out[1]} the segments rewritten.
+     */
+    public static int writerUpgrade(long handle, int major, int minor, boolean onlyAncient, long[] out) {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment generation = s.alloc(Long.BYTES);
+            MemorySegment upgraded = s.alloc(Integer.BYTES);
+            int rc = (int) H.WRITER_UPGRADE.invokeExact(handle, major, minor, (byte) (onlyAncient ? 1 : 0), generation, upgraded);
+            if (rc == OK) {
+                if (out == null || out.length < 2) {
+                    return fail(INVALID_ARGUMENT, "out holds fewer than two slots");
+                }
+                out[0] = generation.get(JAVA_LONG, 0);
+                out[1] = upgraded.get(JAVA_INT, 0);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
