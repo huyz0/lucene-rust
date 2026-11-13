@@ -456,12 +456,7 @@ pub(crate) fn canonical_score(score: f32) -> f32 {
 /// The score goes in the high half so it dominates the comparison, and the doc
 /// id is stored *complemented* so that a smaller doc id makes a larger code.
 mod doc_score_encoder {
-    /// `NumericUtils.sortableFloatBits`: flips the sign bit for a positive
-    /// float and every bit but the sign for a negative one, turning IEEE-754's
-    /// sign-magnitude order into two's-complement order. Its own inverse.
-    fn sortable_float_bits(bits: i32) -> i32 {
-        bits ^ ((bits >> 31) & 0x7fff_ffff)
-    }
+    use lucene_util::numeric_utils::sortable_float_bits;
 
     pub(super) fn encode(doc_id: i32, score: f32) -> i64 {
         // `Float.floatToIntBits`, not `floatToRawIntBits`: every NaN is the

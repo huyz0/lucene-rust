@@ -81,6 +81,8 @@ use lucene_codecs::field_infos::IndexOptions;
 use lucene_codecs::points::{IntersectVisitor, PointsReader, PointsScratch, Relation};
 use lucene_codecs::postings::{DocInput, LazyDocsCursor, PostingsFlags};
 use lucene_util::fixed_bit_set::FixedBitSet;
+pub(crate) use lucene_util::numeric_utils::float_to_sortable_int;
+use lucene_util::numeric_utils::{self, double_to_sortable_long, sortable_long_to_double};
 
 use crate::collector::{ScoreMode, ScoringCollector, TotalHits, TotalHitsRelation};
 use crate::directory_reader::SegmentReader;
@@ -527,22 +529,6 @@ fn java_round(x: f64) -> i64 {
     r as i64
 }
 
-/// `NumericUtils.sortableLongToDouble`.
-fn sortable_long_to_double(v: i64) -> f64 {
-    f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
-}
-
-/// `NumericUtils.doubleToSortableLong`, over `Double.doubleToLongBits` (one
-/// NaN).
-fn double_to_sortable_long(d: f64) -> i64 {
-    let v = if d.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        d.to_bits() as i64
-    };
-    v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)
-}
-
 /// OpenSearch's nested sort (`XFieldComparatorSource.Nested`): a root
 /// document's value is picked, by the key's [`Selector`], from the values of
 /// the child documents just before it -- those between the previous root and
@@ -766,16 +752,6 @@ pub enum SortError {
     /// A [`SortType::Custom`] key naming no registered source.
     #[error("no comparator source is registered as {0}")]
     UnknownComparatorSource(u32),
-}
-
-/// `NumericUtils.floatToSortableInt`, over `Float.floatToIntBits` (one NaN).
-pub(crate) fn float_to_sortable_int(f: f32) -> i32 {
-    let bits = if f.is_nan() {
-        0x7fc0_0000
-    } else {
-        f.to_bits() as i32
-    };
-    bits ^ ((bits >> 31) & 0x7fff_ffff)
 }
 
 /// A score as the relevance comparator's value (see the module doc).
@@ -1379,8 +1355,7 @@ impl FedTopField {
 
 /// `NumericUtils.sortableIntToFloat`, from a relevance value's negation.
 fn sortable_int_to_float(v: i64) -> f32 {
-    let i = v as i32;
-    f32::from_bits((i ^ ((i >> 31) & 0x7fff_ffff)) as u32)
+    numeric_utils::sortable_int_to_float(v as i32)
 }
 
 /// A numeric doc-values column as `NumericDocValues`: a `NUMERIC` column

@@ -924,14 +924,7 @@ struct DoubleAsLongValues<'c> {
 
 /// `NumericUtils.doubleToSortableLong` (over `Double.doubleToLongBits`: one
 /// NaN).
-pub fn double_to_sortable_long(d: f64) -> i64 {
-    let bits = if d.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        d.to_bits() as i64
-    };
-    bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
-}
+pub use lucene_util::numeric_utils::double_to_sortable_long;
 
 impl LongValues for DoubleAsLongValues<'_> {
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
