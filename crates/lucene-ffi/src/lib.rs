@@ -77,6 +77,7 @@ unsafe impl<A: std::alloc::GlobalAlloc> std::alloc::GlobalAlloc for Accounting<A
     }
 }
 
+mod abi;
 mod analysis_modules;
 mod clauses;
 pub(crate) mod engine_writer;

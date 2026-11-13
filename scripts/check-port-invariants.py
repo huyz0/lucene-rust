@@ -1072,7 +1072,7 @@ def rule_bench_not_asserting(_files, problems, stats):
 # `unsafe` is gone, and the rule fails when a listed crate no longer needs it.
 
 UNSAFE_CRATES = {"lucene-util", "lucene-store", "lucene-ffi"}
-UNSAFE_BURNDOWN = {"lucene-expressions"}
+UNSAFE_BURNDOWN: set[str] = set()
 FORBID_UNSAFE = re.compile(r"^\s*#!\[forbid\(unsafe_code\)\]", re.M)
 UNSAFE_USE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")
 
