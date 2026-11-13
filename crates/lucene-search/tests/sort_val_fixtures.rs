@@ -17,12 +17,12 @@ mod extended_support;
 
 use std::collections::HashMap;
 
+use extended_support::{fixture, Grammar, Manifest};
 use lucene_search::collector::TotalHitsRelation;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::top_field::{search_sorted, FieldDoc, Selector, SortField, SortType};
 use lucene_store::FsDirectory;
-use extended_support::{fixture, Grammar, Manifest};
 
 const GRAMMAR: Grammar = Grammar {
     text: "body",

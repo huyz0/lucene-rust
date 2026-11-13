@@ -15,6 +15,7 @@ mod extended_support;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use extended_support::{fixture, Grammar};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::{IndexSearcher, StatisticsSource};
@@ -25,7 +26,6 @@ use lucene_search::similarities::{
 use lucene_search::top_field::SortField;
 use lucene_search::Result;
 use lucene_store::FsDirectory;
-use extended_support::{fixture, Grammar};
 
 /// Every term's and field's statistics as the whole reader has them.
 struct Global {

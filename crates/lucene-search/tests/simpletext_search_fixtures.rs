@@ -17,6 +17,7 @@ mod extended_grammar;
 
 use std::collections::HashMap;
 
+use extended_grammar::{knn_clause_from, query, sim, Ctx, KnnSource, QVEC};
 use lucene_codecs::vectors::FlatVectorsReader;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
@@ -31,7 +32,6 @@ use lucene_search::top_field::{FieldDoc, Selector, SortField, SortType};
 use lucene_search::vector_query::{KnnSegment, VectorsInput};
 use lucene_store::FsDirectory;
 use lucene_util::fixed_bit_set::FixedBitSet;
-use extended_grammar::{knn_clause_from, query, sim, Ctx, KnnSource, QVEC};
 
 fn data() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/simpletext_search")

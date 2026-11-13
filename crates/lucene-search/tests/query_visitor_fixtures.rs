@@ -18,12 +18,12 @@ mod extended_support;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use extended_support::{fixture, Grammar, Manifest};
 use lucene_search::query::SpanQuery;
 use lucene_search::query_visitor::{
     extract_terms, visit, Occur, QueryVisitor, SubVisitor, Term, TermMatcher,
 };
 use lucene_search::Clause;
-use extended_support::{fixture, Grammar, Manifest};
 
 const GRAMMAR: Grammar = Grammar {
     text: "body",
