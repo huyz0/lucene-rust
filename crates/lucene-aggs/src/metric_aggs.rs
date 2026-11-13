@@ -906,8 +906,91 @@ fn slice_states(
 }
 
 /// Documents per [`fold_windows`] window: a multiple of 64, so each window's
-/// presence words line up with the segment's bit sets.
+/// presence words line up with the segment's bit sets, and one
+/// [`lucene_codecs::adaptive_zones`] zone, so a whole accepted window can be
+/// folded from its statistics ([`fold_zone`]).
 const FOLD_WINDOW: usize = 1024;
+const _: () = assert!(FOLD_WINDOW == lucene_codecs::adaptive_zones::ZONE_SIZE);
+
+/// `2^53`: every integer up to this magnitude is exact as an `f64`, and so is
+/// every sum of such integers that stays within it.
+const EXACT_INTEGERS: u64 = 1 << 53;
+
+/// Whether every one of documents `64 base..64 base + len` is accepted.
+// ARITH: `len <= FOLD_WINDOW`, so `base + w` and the shift stay small.
+#[allow(clippy::arithmetic_side_effects)]
+fn all_accepted(accept: &Accept<'_>, base: usize, len: usize) -> bool {
+    let full = len / 64;
+    if !(0..full).all(|w| accept.word(base + w) == u64::MAX) {
+        return false;
+    }
+    let tail = len % 64;
+    tail == 0 || {
+        let mask = (1u64 << tail) - 1;
+        accept.word(base + full) & mask == mask
+    }
+}
+
+/// Folds a whole window of `count` single-valued documents from its zone
+/// statistics into `state`, when that gives exactly what folding its values
+/// one by one would: the count; the extremes, unless one is a NaN (a stored
+/// value's conversion to `double` is monotonic, and a window holding a NaN
+/// holds it at one of its extremes); and, for `long`s, while the running sum
+/// is an exact integer that stays within [`EXACT_INTEGERS`] whatever the
+/// window's values, the compensated sum, whose every step is then exact with
+/// a zero correction. `None` when the window must be read.
+// ARITH: `bound` is at most `2^63 * 1024` in `u128`; `EXACT_INTEGERS -
+// current` is taken only when `current <= EXACT_INTEGERS`.
+#[allow(clippy::arithmetic_side_effects)]
+fn fold_zone<const N: u8>(
+    mut state: MetricState,
+    stats: lucene_codecs::adaptive_zones::ZoneStats,
+    count: usize,
+    kind: ValueKind,
+) -> Option<MetricState> {
+    // A `float` column's sortable ints, sign-extended: anything else would
+    // not convert as the values do.
+    if kind == ValueKind::Float
+        && (i32::try_from(stats.min).is_err() || i32::try_from(stats.max).is_err())
+    {
+        return None;
+    }
+    let (lo, hi) = (to_double(kind, stats.min), to_double(kind, stats.max));
+    if N & (NEED_MIN_MAX | NEED_MIN | NEED_MAX) != 0 && (lo.is_nan() || hi.is_nan()) {
+        return None;
+    }
+    if N & NEED_SUM != 0 {
+        let sum = stats.sum.filter(|_| kind == ValueKind::Long)?;
+        let exact = state.delta == 0.0 && state.sum.is_finite() && state.sum.fract() == 0.0;
+        if !exact {
+            return None;
+        }
+        let current = state.sum.abs() as u64;
+        if current > EXACT_INTEGERS {
+            return None;
+        }
+        let largest = stats.min.unsigned_abs().max(stats.max.unsigned_abs());
+        let bound = u128::from(largest) * count as u128;
+        if bound > u128::from(EXACT_INTEGERS - current) {
+            return None;
+        }
+        state.sum += sum as f64;
+    }
+    if N & NEED_COUNT != 0 {
+        state.count += count as u64;
+    }
+    if N & NEED_MIN_MAX != 0 {
+        state.min = java_min(state.min, lo);
+        state.max = java_max(state.max, hi);
+    }
+    if N & NEED_MIN != 0 {
+        state.min_of_mins = java_min(state.min_of_mins, lo);
+    }
+    if N & NEED_MAX != 0 {
+        state.max_of_maxes = java_max(state.max_of_maxes, hi);
+    }
+    Some(state)
+}
 
 /// A single-valued column streamed into `state` a window at a time
 /// ([`NumericReader::fill_window`]: a sparse column's `IndexedDISI` walked
@@ -925,10 +1008,10 @@ fn fold_windows<const N: u8>(
     max_doc: i32,
     values: &mut Vec<i64>,
 ) -> Result<()> {
-    let integer_extreme = kind == ValueKind::Long && (N == NEED_MIN || N == NEED_MAX);
     values.resize(FOLD_WINDOW, 0);
     let mut present = [0u64; FOLD_WINDOW / 64];
     let mut start = 0i32;
+    let zoned = r.has_window_stats();
     while start < max_doc {
         // ARITH: `start < max_doc`, so the difference is positive; `start`
         // stays a multiple of `FOLD_WINDOW` below `max_doc + FOLD_WINDOW`,
@@ -936,32 +1019,107 @@ fn fold_windows<const N: u8>(
         #[allow(clippy::arithmetic_side_effects)]
         {
             let len = ((max_doc - start) as usize).min(FOLD_WINDOW);
-            r.fill_window(start, &mut values[..len], &mut present)?;
             let base = start as usize >> 6;
-            let mut best = if N == NEED_MIN { i64::MAX } else { i64::MIN };
-            let mut any = false;
-            for (w, &have) in present[..len.div_ceil(64)].iter().enumerate() {
-                let mut bits = have & accept.word(base + w);
-                while bits != 0 {
-                    let v = values[w * 64 + bits.trailing_zeros() as usize];
-                    bits &= bits - 1;
-                    if integer_extreme {
-                        any = true;
-                        best = if N == NEED_MIN {
-                            best.min(v)
-                        } else {
-                            best.max(v)
-                        };
-                    } else {
-                        state.one::<N>(to_double(kind, v));
+            if zoned && all_accepted(accept, base, len) {
+                if let Some((stats, count)) = r.window_stats(start)? {
+                    if let Some(next) = (count == len)
+                        .then(|| fold_zone::<N>(*state, stats, len, kind))
+                        .flatten()
+                    {
+                        *state = next;
+                        start += len as i32;
+                        continue;
                     }
                 }
             }
-            if any {
-                state.one::<N>(best as f64);
-            }
+            r.fill_window(start, &mut values[..len], &mut present)?;
+            fold_window_values::<N>(&values[..len], &present, accept, base, state, kind);
             start += len as i32;
         }
+    }
+    Ok(())
+}
+
+/// One window's `values` (documents `64 base..`) that are `present` and
+/// `accept`ed into `state`, in ascending order. Kept out of line: inlined
+/// into [`fold_windows`], the compensated sum's running value went through
+/// the stack on every add.
+// ARITH: `w < 16` and `bits != 0`, so `w * 64 + tz < values.len()` and
+// `bits - 1` does not wrap.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline(never)]
+fn fold_window_values<const N: u8>(
+    values: &[i64],
+    present: &[u64],
+    accept: &Accept<'_>,
+    base: usize,
+    state: &mut MetricState,
+    kind: ValueKind,
+) {
+    let integer_extreme = kind == ValueKind::Long && (N == NEED_MIN || N == NEED_MAX);
+    let mut best = if N == NEED_MIN { i64::MAX } else { i64::MIN };
+    let mut any = false;
+    for (w, &have) in present[..values.len().div_ceil(64)].iter().enumerate() {
+        let mut bits = have & accept.word(base + w);
+        while bits != 0 {
+            let v = values[w * 64 + bits.trailing_zeros() as usize];
+            bits &= bits - 1;
+            if integer_extreme {
+                any = true;
+                best = if N == NEED_MIN {
+                    best.min(v)
+                } else {
+                    best.max(v)
+                };
+            } else {
+                state.one::<N>(to_double(kind, v));
+            }
+        }
+    }
+    if any {
+        state.one::<N>(best as f64);
+    }
+}
+
+/// A single-valued column at the matches `docs` (ascending, distinct) into
+/// `state`, one value at a time, except that a run of matches covering a
+/// whole zone is folded from its statistics
+/// ([`fold_zone`]).
+// ARITH: `i < docs.len()`; `doc + len - 1` is checked against `max_doc`
+// before use, and `len <= FOLD_WINDOW`.
+#[allow(clippy::arithmetic_side_effects)]
+fn fold_seek<const N: u8>(
+    r: &mut NumericReader<'_>,
+    docs: &[i32],
+    state: &mut MetricState,
+    kind: ValueKind,
+    max_doc: i32,
+) -> Result<()> {
+    let mut i = 0;
+    let zoned = r.has_window_stats();
+    while let Some(&doc) = docs.get(i) {
+        if zoned && (doc as usize).is_multiple_of(FOLD_WINDOW) && doc < max_doc {
+            let len = ((max_doc - doc) as usize).min(FOLD_WINDOW);
+            // Distinct ascending matches: the run is whole when its last is
+            // `len - 1` past its first.
+            let whole = docs.get(i + len - 1) == Some(&(doc + len as i32 - 1));
+            if whole {
+                if let Some((stats, count)) = r.window_stats(doc)? {
+                    if let Some(next) = (count == len)
+                        .then(|| fold_zone::<N>(*state, stats, len, kind))
+                        .flatten()
+                    {
+                        *state = next;
+                        i += len;
+                        continue;
+                    }
+                }
+            }
+        }
+        if let Some(v) = r.value(doc)? {
+            state.one::<N>(to_double(kind, v));
+        }
+        i += 1;
     }
     Ok(())
 }
@@ -981,11 +1139,7 @@ fn fold<const N: u8>(
             fold_windows::<N>(&mut r, accept, state, kind, max_doc, raw)?
         }
         (Values::Single(mut r), ColumnRead::Seek(docs)) => {
-            for &doc in *docs {
-                if let Some(v) = r.value(doc)? {
-                    state.one::<N>(to_double(kind, v));
-                }
-            }
+            fold_seek::<N>(&mut r, docs, state, kind, max_doc)?
         }
         (Values::Multi(mut r), ColumnRead::Stream(accept)) => r.for_each_accepted(
             0,
@@ -1087,6 +1241,139 @@ mod tests {
         assert!(s.max_of_maxes.is_nan());
         assert!(s.min.is_nan());
         assert_eq!(s.count, 4);
+    }
+
+    /// A window folded from its statistics against the same values one by
+    /// one: equal bit for bit when it folds, untouched when it must not.
+    fn zone_vs_values<const N: u8>(start: MetricState, kind: ValueKind, values: &[i64]) -> bool {
+        use lucene_codecs::adaptive_zones::ZoneStats;
+        let stats = ZoneStats {
+            min: *values.iter().min().unwrap(),
+            max: *values.iter().max().unwrap(),
+            sum: values.iter().try_fold(0i64, |a, &v| a.checked_add(v)),
+        };
+        let mut one = start;
+        for &v in values {
+            one.one::<N>(to_double(kind, v));
+        }
+        match fold_zone::<N>(start, stats, values.len(), kind) {
+            Some(zone) => {
+                assert_eq!(format!("{zone:?}"), format!("{one:?}"));
+                assert_eq!(zone.sum.to_bits(), one.sum.to_bits());
+                assert_eq!(zone.min.to_bits(), one.min.to_bits());
+                assert_eq!(zone.min_of_mins.to_bits(), one.min_of_mins.to_bits());
+                assert_eq!(zone.max_of_maxes.to_bits(), one.max_of_maxes.to_bits());
+                true
+            }
+            None => false,
+        }
+    }
+
+    #[test]
+    fn a_window_folds_from_its_statistics_exactly_or_not_at_all() {
+        let longs: Vec<i64> = (0..1024).map(|i| i * 3 - 700).collect();
+        assert!(zone_vs_values::<NEED_ALL>(
+            MetricState::default(),
+            ValueKind::Long,
+            &longs
+        ));
+        // The exact-integer bound, at the edge and one past it.
+        let big = vec![1i64 << 40; 1024];
+        let edge = MetricState {
+            sum: ((1u64 << 53) - (1u64 << 50)) as f64,
+            ..MetricState::default()
+        };
+        assert!(zone_vs_values::<NEED_SUM>(edge, ValueKind::Long, &big));
+        let past = MetricState {
+            sum: edge.sum + 1.0,
+            ..edge
+        };
+        assert!(!zone_vs_values::<NEED_SUM>(past, ValueKind::Long, &big));
+        // ...but its count and extremes still fold.
+        assert!(zone_vs_values::<{ NEED_COUNT | NEED_MIN_MAX }>(
+            past,
+            ValueKind::Long,
+            &big
+        ));
+        // A sum already carrying a correction, or not an integer.
+        let carried = MetricState {
+            delta: 1e-17,
+            ..MetricState::default()
+        };
+        assert!(!zone_vs_values::<NEED_SUM>(
+            carried,
+            ValueKind::Long,
+            &longs
+        ));
+        let half = MetricState {
+            sum: 0.5,
+            ..MetricState::default()
+        };
+        assert!(!zone_vs_values::<NEED_SUM>(half, ValueKind::Long, &longs));
+
+        // Doubles: count and extremes, both zeros on either side, never a
+        // sum, and no NaN of either sign.
+        let doubles = |ds: &[f64]| ds.iter().map(|&d| enc(d)).collect::<Vec<i64>>();
+        for ds in [
+            [-0.0, 0.0, 1.5, 2.0],
+            [0.0, -0.0, -1.5, -2.0],
+            [0.0, -0.0, 0.0, -0.0],
+        ] {
+            let v = doubles(&ds);
+            assert!(zone_vs_values::<
+                { NEED_COUNT | NEED_MIN_MAX | NEED_MIN | NEED_MAX },
+            >(MetricState::default(), ValueKind::Double, &v));
+            assert!(!zone_vs_values::<NEED_SUM>(
+                MetricState::default(),
+                ValueKind::Double,
+                &v
+            ));
+        }
+        let negative_nan = f64::from_bits(0xfff8_0000_0000_0001);
+        for nan in [f64::NAN, negative_nan] {
+            let v = doubles(&[1.0, nan, -3.0]);
+            assert!(!zone_vs_values::<NEED_MIN>(
+                MetricState::default(),
+                ValueKind::Double,
+                &v
+            ));
+            assert!(!zone_vs_values::<NEED_MAX>(
+                MetricState::default(),
+                ValueKind::Double,
+                &v
+            ));
+            // A count alone needs neither extreme.
+            assert!(zone_vs_values::<NEED_COUNT>(
+                MetricState::default(),
+                ValueKind::Double,
+                &v
+            ));
+        }
+
+        // Floats: sign-extended sortable ints fold; anything wider does not.
+        let float = |f: f32| {
+            let bits = f.to_bits() as i32;
+            i64::from(bits ^ ((bits >> 31) & 0x7fff_ffff))
+        };
+        let v: Vec<i64> = [-2.5f32, -0.0, 0.0, 7.25]
+            .iter()
+            .map(|&f| float(f))
+            .collect();
+        assert!(!zone_vs_values::<NEED_ALL>(
+            MetricState::default(),
+            ValueKind::Float,
+            &v
+        ));
+        assert!(zone_vs_values::<{ NEED_MIN | NEED_MAX }>(
+            MetricState::default(),
+            ValueKind::Float,
+            &v
+        ));
+        assert!(!zone_vs_values::<NEED_MIN>(
+            MetricState::default(),
+            ValueKind::Float,
+            &[1, i64::from(u32::MAX)]
+        ));
     }
 
     #[test]

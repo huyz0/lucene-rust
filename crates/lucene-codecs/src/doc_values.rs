@@ -81,6 +81,10 @@ const META_CODEC: &str = "Lucene90DocValuesMetadata";
 /// format's name in the field's `PerFieldDocValuesFormat.format` attribute is
 /// what keeps a stock reader from opening the field.
 const ADAPTIVE_TABLE_SIZE: i32 = -1000;
+/// The `tableSize` of an [`ADAPTIVE_TABLE_SIZE`] value array whose
+/// descriptor is followed by [`crate::adaptive_zones`] statistics: written
+/// for a value array whose values are the documents in order.
+const ADAPTIVE_ZONES_TABLE_SIZE: i32 = -1001;
 /// `DirectMonotonicWriter` block shift of an adaptive value array's block
 /// addresses.
 const ADAPTIVE_ADDRESS_BLOCK_SHIFT: u32 = 16;
@@ -216,6 +220,9 @@ pub struct NumericEntry {
 pub struct AdaptiveEntry {
     /// Offset in `.dvd` of the block-address descriptor.
     pub descriptor_offset: i64,
+    /// Whether [`crate::adaptive_zones`] statistics follow the descriptor
+    /// (an [`ADAPTIVE_ZONES_TABLE_SIZE`] entry).
+    pub zones: bool,
     addresses: std::sync::OnceLock<AdaptiveAddresses>,
 }
 
@@ -225,6 +232,8 @@ pub struct AdaptiveAddresses {
     pub offset: i64,
     pub length: i64,
     pub meta: direct_monotonic::Meta,
+    /// The per-window statistics, when the entry has them.
+    pub zones: Option<crate::adaptive_zones::Zones>,
 }
 
 impl AdaptiveEntry {
@@ -232,6 +241,7 @@ impl AdaptiveEntry {
     pub fn new(descriptor_offset: i64) -> Self {
         AdaptiveEntry {
             descriptor_offset,
+            zones: false,
             addresses: std::sync::OnceLock::new(),
         }
     }
@@ -261,10 +271,20 @@ impl AdaptiveEntry {
         )?;
         let offset = input.read_i64()?;
         let length = input.read_i64()?;
+        let zones = if self.zones {
+            Some(crate::adaptive_zones::Zones::parse(
+                data,
+                input.position(),
+                num_values,
+            )?)
+        } else {
+            None
+        };
         Ok(self.addresses.get_or_init(|| AdaptiveAddresses {
             offset,
             length,
             meta,
+            zones,
         }))
     }
 }
@@ -724,7 +744,7 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
     if table_size > 256 {
         return Err(Error::InvalidTableSize(table_size));
     }
-    if table_size == ADAPTIVE_TABLE_SIZE {
+    if table_size == ADAPTIVE_TABLE_SIZE || table_size == ADAPTIVE_ZONES_TABLE_SIZE {
         return read_adaptive_numeric_entry(
             input,
             field_number,
@@ -733,6 +753,7 @@ fn read_numeric_entry(input: &mut SliceInput, field_number: i32) -> Result<Numer
             jump_table_entry_count,
             dense_rank_power,
             num_values,
+            table_size == ADAPTIVE_ZONES_TABLE_SIZE,
         );
     }
     // `tableSize < -1` means this field's values are split into varying-
@@ -806,6 +827,7 @@ fn read_adaptive_numeric_entry(
     jump_table_entry_count: i16,
     dense_rank_power: u8,
     num_values: i64,
+    zones: bool,
 ) -> Result<NumericEntry> {
     let bits_per_value = input.read_byte()?;
     let min_value = input.read_i64()?;
@@ -828,7 +850,10 @@ fn read_adaptive_numeric_entry(
         values_length,
         block_shift: None,
         value_jump_table_offset: descriptor_offset,
-        adaptive: Some(Box::new(AdaptiveEntry::new(descriptor_offset))),
+        adaptive: Some(Box::new(AdaptiveEntry {
+            zones,
+            ..AdaptiveEntry::new(descriptor_offset)
+        })),
     })
 }
 
@@ -1533,6 +1558,47 @@ impl<'a> NumericReader<'a> {
                 FastDense::values(data, entry)
             },
         }
+    }
+
+    /// The [`crate::adaptive_zones`] statistics of documents
+    /// `start..start + ZONE_SIZE` (fewer in the last zone), and how many
+    /// documents that zone holds: `Some` only for a dense field written with
+    /// zones and a `start` on a zone boundary.
+    ///
+    /// # Errors
+    ///
+    /// A block-address descriptor or zone section that runs past `.dvd`.
+    pub fn window_stats(
+        &self,
+        start: i32,
+    ) -> Result<Option<(crate::adaptive_zones::ZoneStats, usize)>> {
+        use crate::adaptive_zones::ZONE_SHIFT;
+        let Some(adaptive) = &self.entry.adaptive else {
+            return Ok(None);
+        };
+        if !adaptive.zones || !self.entry.is_dense() {
+            return Ok(None);
+        }
+        let Ok(start) = usize::try_from(start) else {
+            return Ok(None);
+        };
+        if start.trailing_zeros() < ZONE_SHIFT && start != 0 {
+            return Ok(None);
+        }
+        let addresses = adaptive.addresses(self.data, self.entry.num_values)?;
+        let Some(zones) = &addresses.zones else {
+            return Ok(None);
+        };
+        let zone = start >> ZONE_SHIFT;
+        Ok(zones
+            .get(self.data, zone)
+            .map(|stats| (stats, zones.count(zone))))
+    }
+
+    /// Whether [`Self::window_stats`] can answer: a dense field written with
+    /// [`crate::adaptive_zones`] statistics.
+    pub fn has_window_stats(&self) -> bool {
+        self.entry.is_dense() && self.entry.adaptive.as_ref().is_some_and(|a| a.zones)
     }
 
     /// Whether [`Self::dense_value`] answers every in-range document.
@@ -3907,7 +3973,7 @@ fn write_field_entry(
         match field {
             DenseField::Numeric(_, values) => {
                 meta.push(DOC_VALUES_TYPE_NUMERIC);
-                write_dense_numeric_entry_body_with(meta, data, values, adaptive);
+                write_dense_numeric_entry_body_with(meta, data, values, adaptive, true);
             }
             DenseField::SparseNumeric(_, pairs) => {
                 let mut sorted: Vec<(i32, i64)> = pairs.to_vec();
@@ -4331,7 +4397,8 @@ fn write_numeric_entry_body(
 }
 
 /// [`write_numeric_entry_body`], its values as adaptive blocks when
-/// `adaptive` and that is smaller.
+/// `adaptive` and that is smaller, with [`crate::adaptive_zones`] statistics
+/// when every document has exactly one value.
 fn write_numeric_entry_body_with(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
@@ -4341,23 +4408,27 @@ fn write_numeric_entry_body_with(
     adaptive: bool,
 ) {
     write_docs_with_field(meta, data, doc_ids, max_doc);
-    write_numeric_values_body_with(meta, data, values, adaptive);
+    // Dense with one value per document: value `i` is document `i`'s.
+    let per_doc = doc_ids.len() == max_doc as usize && values.len() == doc_ids.len();
+    write_numeric_values_body_with(meta, data, values, adaptive, per_doc);
 }
 
 /// [`write_dense_numeric_entry_body`], its values as adaptive blocks when
-/// `adaptive` and that is smaller.
+/// `adaptive` and that is smaller, with [`crate::adaptive_zones`] statistics
+/// when `per_doc` (value `i` is document `i`'s only value).
 fn write_dense_numeric_entry_body_with(
     meta: &mut Vec<u8>,
     data: &mut Vec<u8>,
     values: &[i64],
     adaptive: bool,
+    per_doc: bool,
 ) {
     if adaptive {
         meta.write_i64(DOCS_WITH_FIELD_DENSE);
         meta.write_i64(0);
         meta.write_i16(-1); // jumpTableEntryCount
         meta.push(0xFF); // denseRankPower (-1 as u8)
-        write_numeric_values_body_with(meta, data, values, true);
+        write_numeric_values_body_with(meta, data, values, true, per_doc);
     } else {
         write_dense_numeric_entry_body(meta, data, values);
     }
@@ -4367,7 +4438,9 @@ fn write_dense_numeric_entry_body_with(
 /// same values as [`crate::adaptive_values`] blocks behind an
 /// [`ADAPTIVE_TABLE_SIZE`] entry. Both are written and the larger dropped:
 /// Lucene90's table and constant encodings still win on columns with few
-/// distinct values.
+/// distinct values. With `zones` (the values are the documents in order),
+/// the adaptive entry also carries [`crate::adaptive_zones`] statistics, as
+/// an [`ADAPTIVE_ZONES_TABLE_SIZE`] entry.
 // ARITH: lengths and offsets of in-memory, append-only buffers.
 #[allow(clippy::arithmetic_side_effects)]
 fn write_numeric_values_body_with(
@@ -4375,6 +4448,7 @@ fn write_numeric_values_body_with(
     data: &mut Vec<u8>,
     values: &[i64],
     adaptive: bool,
+    zones: bool,
 ) {
     let (meta_start, data_start) = (meta.len(), data.len());
     write_numeric_values_body(meta, data, values);
@@ -4386,13 +4460,24 @@ fn write_numeric_values_body_with(
     let (addr_meta, addr_data) = direct_monotonic::write(&addresses, ADAPTIVE_ADDRESS_BLOCK_SHIFT);
     // numValues, tableSize, bpv, min, gcd, offsets and lengths, block shift.
     let fixed = 8 + 4 + 1 + 8 * 5 + 5 + 16;
-    if fixed + addr_meta.len() + blocks.len() + addr_data.len() >= lucene90 {
+    let adaptive_len = fixed + addr_meta.len() + blocks.len() + addr_data.len();
+    if adaptive_len >= lucene90 {
         return;
     }
+    // The statistics only where adaptive blocks still win with them.
+    let zone_bytes = if zones {
+        crate::adaptive_zones::encode(values).filter(|z| adaptive_len + z.len() < lucene90)
+    } else {
+        None
+    };
     meta.truncate(meta_start);
     data.truncate(data_start);
     meta.write_i64(values.len() as i64);
-    meta.write_i32(ADAPTIVE_TABLE_SIZE);
+    meta.write_i32(if zone_bytes.is_some() {
+        ADAPTIVE_ZONES_TABLE_SIZE
+    } else {
+        ADAPTIVE_TABLE_SIZE
+    });
     meta.push(0xFF); // bitsPerValue: per block
     meta.write_i64(values.iter().copied().min().unwrap_or(0));
     meta.write_i64(1); // gcd: per block
@@ -4410,6 +4495,9 @@ fn write_numeric_values_body_with(
     data.extend_from_slice(&addr_meta);
     data.write_i64(addresses_offset);
     data.write_i64(addresses_length);
+    if let Some(z) = zone_bytes {
+        data.extend_from_slice(&z);
+    }
 }
 
 /// A BINARY entry body in the `Substring90` layout: Lucene90's prefix
@@ -4722,7 +4810,8 @@ fn write_dense_sorted_numeric_entry_body(
     let num_docs_with_field = values.len() as i32;
     let flat: Vec<i64> = values.iter().flatten().copied().collect();
 
-    write_dense_numeric_entry_body_with(meta, data, &flat, adaptive);
+    let per_doc = flat.len() == values.len();
+    write_dense_numeric_entry_body_with(meta, data, &flat, adaptive, per_doc);
 
     meta.write_i32(num_docs_with_field);
     if num_docs_with_field as i64 != flat.len() as i64 {
