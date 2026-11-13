@@ -106,13 +106,43 @@ public final class MlRestHandlers {
                 MlActions.SEARCH_TASKS,
                 Set.of(),
                 List.of(new Route(POST, BASE + "/tasks/_search"), new Route(GET, BASE + "/tasks/_search"))
+            ),
+            new Handler(
+                "ml_create_connector_action",
+                MlActions.CREATE_CONNECTOR,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/connectors/_create"))
+            ),
+            new Handler(
+                "ml_get_connector_action",
+                MlActions.GET_CONNECTOR,
+                Set.of(),
+                List.of(new Route(GET, BASE + "/connectors/{connector_id}"))
+            ),
+            new Handler(
+                "ml_update_connector_action",
+                MlActions.UPDATE_CONNECTOR,
+                Set.of(),
+                List.of(new Route(PUT, BASE + "/connectors/{connector_id}"))
+            ),
+            new Handler(
+                "ml_delete_connector_action",
+                MlActions.DELETE_CONNECTOR,
+                Set.of(),
+                List.of(new Route(DELETE, BASE + "/connectors/{connector_id}"))
+            ),
+            new Handler(
+                "ml_search_connector_action",
+                MlActions.SEARCH_CONNECTORS,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/connectors/_search"), new Route(GET, BASE + "/connectors/_search"))
             )
         );
     }
 
     /** Hands the call's path parameters, the {@code query} parameters it reads, and its body to {@code action}. */
     static final class Handler extends BaseRestHandler {
-        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id");
+        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id");
 
         private final String name;
         private final MlActions.Type action;

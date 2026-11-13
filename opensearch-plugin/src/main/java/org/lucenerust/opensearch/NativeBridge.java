@@ -513,6 +513,19 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        static final MethodHandle ML_MASTER_KEY = bind("ffi_ml_master_key_alloc", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        static final MethodHandle ML_CREDENTIAL_ENCRYPT = bind(
+            "ffi_ml_credential_encrypt_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_REMOTE_OPEN = bind(
+            "ffi_ml_remote_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS)
+        );
+        static final MethodHandle ML_REMOTE_CALL = bind(
+            "ffi_ml_remote_call_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ML_TORCH_INIT = bind(
             "ffi_ml_torch_init",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT)
@@ -2548,6 +2561,72 @@ public final class NativeBridge {
             MemorySegment slot = ownedSlot(s);
             int rc = (int) H.ML_TORCH_TEXT_EMBEDDING.invokeExact(handle, s.bytes(texts), (long) texts.length, ptrOf(slot), lenOf(slot));
             return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** A new ml-commons master key (base64), or {@code null} with the reason in {@link #lastError}. */
+    public static String mlMasterKey() {
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_MASTER_KEY.invokeExact(ptrOf(slot), lenOf(slot));
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Credential value {@code plain} encrypted under the base64 master key {@code key}, as
+     * ml-commons stores it; {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static String mlCredentialEncrypt(String key, String plain) {
+        byte[] k = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] p = plain.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_CREDENTIAL_ENCRYPT.invokeExact(s.bytes(k), (long) k.length, s.bytes(p), (long) p.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Opens connector document {@code connectorJson} (credentials as stored, decrypted under the
+     * base64 master key {@code key}) as a remote model; its handle goes to {@code outHandle[0]}.
+     */
+    public static int mlRemoteOpen(String connectorJson, String key, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] d = connectorJson.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] k = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_REMOTE_OPEN.invokeExact(s.bytes(d), (long) d.length, s.bytes(k), (long) k.length, handle);
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * One step of a call to remote model {@code handle}: the JSON request and answer that
+     * {@code ml_remote.rs} documents. {@code null} on failure, with the status in {@code status[0]}
+     * and the reason in {@link #lastError}.
+     */
+    public static String mlRemoteCall(long handle, String request, int[] status) {
+        byte[] r = request.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_REMOTE_CALL.invokeExact(handle, s.bytes(r), (long) r.length, ptrOf(slot), lenOf(slot));
+            status[0] = rc;
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
         } catch (Throwable t) {
             throw rethrow(t);
         }
