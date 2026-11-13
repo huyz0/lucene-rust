@@ -306,7 +306,7 @@ public record KnnFieldConfig(
             if ("16x".equals(level)) {
                 throw new MapperParsingException("Compression level [16x] for [data_type] [half_float] is not supported by this node");
             }
-            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level, 0, 0, 0);
+            return new KnnFieldConfig(dimension, encodingType, false, true, spaceType, engine, m, efConstruction, -1, resolvedMode, level, 0, 0, 0, false);
         }
 
         if (level != null) {
