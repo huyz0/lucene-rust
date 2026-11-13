@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror.workspace = true
 # An indexing thread's scheduling priority (`yield_to_searches`).
 libc.workspace = true
 # Started before an indexing thread lowers its priority, which threads it
