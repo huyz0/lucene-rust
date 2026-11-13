@@ -8,7 +8,7 @@ description: "WHAT: Crate layout and the strict downward dependency graph. USE W
 lucene-rust is a workspace of crates mirroring Lucene's own module DAG, with a
 **strictly downward dependency graph**: `util ← store ← codecs ← index ←
 search ← the modules over search (facet, grouping, highlighter, queryparser,
-suggest, ...) ← ffi`. There is no `lucene-core` crate: Lucene's core is
+suggest, ...) ← engine ← ffi`. There is no `lucene-core` crate: Lucene's core is
 `util` to `search`. `analysis` sits beside `store` (`util ← analysis ←
 index`), and the language modules hang off it: `util, analysis ←
 analysis-<m>` (`phonetic`, `stempel`, `morfologik`, `kuromoji`, `nori`, ...).
@@ -19,8 +19,13 @@ other.
 ## Rules
 
 - **Dependency direction is downward only.** `lucene-util` depends on nothing
-  in the workspace. `lucene-ffi` is the only crate allowed to depend on
-  everything (it is the boundary). See PLAN.md §1 for the full table.
+  in the workspace. `lucene-engine` is safe Rust (`forbid(unsafe_code)`) over
+  the search crates: it decides what a request means (query-blob decoding,
+  analyzers from specs) and knows nothing of handles or pointers.
+  `lucene-ffi` is the only crate allowed to depend on everything (it is the
+  boundary: handles, the panic guard, raw reads and the `extern "C"` shims),
+  and nothing in `lucene-engine` may depend on it. Code that needs no pointer
+  and no handle belongs in the engine. See PLAN.md §1 for the full table.
 - **Nothing depends on a `lucene-analysis-<m>` crate** (PLAN.md §1): each
   language module depends on `lucene-util` and `lucene-analysis`, and is a
   leaf -- not another module, not `lucene-search` or above (the

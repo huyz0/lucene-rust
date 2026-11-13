@@ -67,7 +67,7 @@ import java.util.Random;
 import java.util.function.BiConsumer;
 
 /**
- * The analysis bridge ({@link AnalyzerSpec}, {@code jvm_analysis.rs}): Lucene's built-in analyzers
+ * The analysis bridge ({@link AnalyzerSpec}, {@code analysis.rs}): Lucene's built-in analyzers
  * and custom chains over every mapped component, described from their objects and run in Rust;
  * every token's every attribute must match Lucene's, on the probes and on random text.
  */

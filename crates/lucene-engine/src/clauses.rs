@@ -1,71 +1,69 @@
 //! The occur-tagged boolean clause arrays the query-tree decoder
-//! (`jvm_reader`) builds, decoded into a [`BooleanQuery`], plus the clause
+//! (the query-blob decoder) builds, decoded into a [`BooleanQuery`], plus the clause
 //! limits and error mapping shared by the JVM entry points.
 
 use lucene_search::{BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, PhraseQuery, TermQuery};
 
-use std::os::raw::c_char;
+use crate::alloc::try_with_capacity;
+use crate::status::{set_last_error, Status};
 
-use crate::error::{set_last_error, FfiStatus};
-use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
-
-/// Maps a search error to [`FfiStatus::Search`], recording its message.
-pub(crate) fn map_search_error(e: lucene_search::Error) -> FfiStatus {
+/// Maps a search error to [`Status::Search`], recording its message.
+pub fn map_search_error(e: lucene_search::Error) -> Status {
     if let lucene_search::Error::Memory(m) = &e {
         return crate::memory::exceeded(m);
     }
     if let lucene_search::Error::TooManyBuckets(count, _) = e {
         set_last_error(count.to_string());
-        return FfiStatus::TooManyBuckets;
+        return Status::TooManyBuckets;
     }
     set_last_error(format!("search failed: {e}"));
-    FfiStatus::Search
+    Status::Search
 }
 
 /// Lucene's default `IndexSearcher.getMaxClauseCount()`. `BooleanQuery` here
 /// has no builder to enforce it, so the boundary refuses larger clause arrays.
-pub(crate) const MAX_CLAUSE_COUNT: usize = 1024;
+pub const MAX_CLAUSE_COUNT: usize = 1024;
 
 /// Rejects a query with more than [`MAX_CLAUSE_COUNT`] clauses, counted over
 /// the whole tree. Java counts per nesting level; one total is the bound a
 /// denial-of-service guard needs.
-pub(crate) fn check_clause_count(clause_count: usize) -> Result<(), FfiStatus> {
+pub fn check_clause_count(clause_count: usize) -> Result<(), Status> {
     if clause_count > MAX_CLAUSE_COUNT {
         set_last_error(format!(
             "maxClauseCount is set to {MAX_CLAUSE_COUNT}, but this query has {clause_count} clauses"
         ));
-        return Err(FfiStatus::InvalidArgument);
+        return Err(Status::InvalidArgument);
     }
     Ok(())
 }
 
 /// `BooleanClause.Occur` ordinals, in Java's declaration order, so the plugin
 /// sends `occur.ordinal()` as is.
-pub(crate) const OCCUR_MUST: u8 = 0;
+pub const OCCUR_MUST: u8 = 0;
 /// `BooleanClause.Occur.FILTER` -- "like `MUST` except that these clauses do
 /// not participate in scoring".
-pub(crate) const OCCUR_FILTER: u8 = 1;
+pub const OCCUR_FILTER: u8 = 1;
 /// `BooleanClause.Occur.SHOULD`.
-pub(crate) const OCCUR_SHOULD: u8 = 2;
+pub const OCCUR_SHOULD: u8 = 2;
 /// `BooleanClause.Occur.MUST_NOT`.
-pub(crate) const OCCUR_MUST_NOT: u8 = 3;
+pub const OCCUR_MUST_NOT: u8 = 3;
 
 /// A leaf `TermQuery` clause: `clause_fields[i]`/`clause_terms[i]` are its
 /// field and its raw, already-analyzed term bytes.
-pub(crate) const CLAUSE_KIND_TERM: u8 = 0;
+pub const CLAUSE_KIND_TERM: u8 = 0;
 /// A nested `BooleanQuery` clause: carries no field/term of its own (both may
 /// be null), and every clause naming index `i` in `clause_parents` is one of
 /// its children. `clause_params[i]` is its own `minimumNumberShouldMatch`.
-pub(crate) const CLAUSE_KIND_BOOLEAN: u8 = 1;
+pub const CLAUSE_KIND_BOOLEAN: u8 = 1;
 /// A `ConstantScoreQuery` wrapping exactly one child clause, whose occur must
 /// be `MUST`. `clause_params[i]` is the constant score as `f32::to_bits` --
 /// finite and non-negative. OpenSearch builds one for every `term` query on a
 /// `keyword` field.
-pub(crate) const CLAUSE_KIND_CONSTANT_SCORE: u8 = 2;
+pub const CLAUSE_KIND_CONSTANT_SCORE: u8 = 2;
 /// A `BoostQuery` wrapping exactly one child clause, whose occur must be
 /// `MUST`. `clause_params[i]` is the boost as `f32::to_bits` -- finite and
 /// non-negative (Lucene's `BoostQuery` rejects a negative boost).
-pub(crate) const CLAUSE_KIND_BOOST: u8 = 3;
+pub const CLAUSE_KIND_BOOST: u8 = 3;
 
 /// True for the clause kinds that contain other clauses.
 fn is_container(kind: u8) -> bool {
@@ -77,7 +75,7 @@ fn is_wrapper(kind: u8) -> bool {
     kind == CLAUSE_KIND_CONSTANT_SCORE || kind == CLAUSE_KIND_BOOST
 }
 
-/// A container clause under construction in [`read_boolean_query`]'s
+/// A container clause under construction in [`read_boolean_clauses`]'s
 /// reverse pass.
 enum Node {
     Boolean(BooleanQuery),
@@ -91,7 +89,7 @@ enum Node {
 /// The deepest `clause_parents` chain accepted. Not a Lucene limit: nested
 /// clauses are evaluated and dropped recursively, so depth is stack depth, and
 /// a stack overflow aborts past `catch_unwind`.
-pub(crate) const MAX_CLAUSE_DEPTH: usize = 32;
+pub const MAX_CLAUSE_DEPTH: usize = 32;
 
 /// One decoded clause, before it is attached to its parent.
 struct PendingClause<'a> {
@@ -114,7 +112,7 @@ fn push_clause(parent: &mut BooleanQuery, occur: u8, clause: Clause) {
 }
 
 /// Decodes a `BooleanQuery` from occur-tagged parallel clause arrays (what
-/// `jvm_reader`'s boolean node expands into).
+/// the query-blob decoder's boolean node expands into).
 ///
 /// # Wire format
 ///
@@ -142,58 +140,33 @@ fn push_clause(parent: &mut BooleanQuery, occur: u8, clause: Clause) {
 /// value; a clause needing more attributes (a phrase's term list and slop)
 /// does not fit this format.
 ///
-/// # Safety
-/// Every array must be valid for reads of `clause_count` elements (or null
-/// where the table above allows it, and when `clause_count == 0`); each
-/// `clause_fields[i]`/`clause_terms[i]` must be valid for its paired length.
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe fn read_boolean_query(
-    clause_occurs: *const u8,
-    clause_kinds: *const u8,
-    clause_fields: *const *const c_char,
-    clause_field_lens: *const usize,
-    clause_terms: *const *const u8,
-    clause_term_lens: *const usize,
-    clause_parents: *const i32,
-    clause_params: *const i32,
-    clause_count: usize,
+/// `term_at(i)` is the field and term bytes of clause `i`, read only for a
+/// `TERM` clause: the boundary that owns the caller's raw arrays supplies
+/// them.
+///
+/// `occurs`, `kinds`, `parents` and `params` have one element per clause;
+/// `parents` and `params` are `None` for the flat, all-top-level,
+/// all-default query that is by far the common case.
+pub fn read_boolean_clauses<'a>(
+    occurs: &[u8],
+    kinds: &[u8],
+    parents: Option<&[i32]>,
+    params: Option<&[i32]>,
+    term_at: &dyn Fn(usize) -> Result<(&'a str, &'a [u8]), Status>,
     minimum_should_match: i32,
-) -> Result<BooleanQuery, FfiStatus> {
+) -> Result<BooleanQuery, Status> {
     if minimum_should_match < 0 {
         set_last_error(format!(
             "minimumNumberShouldMatch {minimum_should_match} is negative"
         ));
-        return Err(FfiStatus::InvalidArgument);
+        return Err(Status::InvalidArgument);
     }
     let mut root = BooleanQuery::new().with_minimum_should_match(minimum_should_match as usize);
+    let clause_count = occurs.len();
     if clause_count == 0 {
         return Ok(root);
     }
-    if clause_occurs.is_null() || clause_kinds.is_null() {
-        return Err(FfiStatus::NullPointer);
-    }
-    // SAFETY: caller contract guarantees both arrays are valid for
-    // `clause_count` elements.
-    let (occurs, kinds) = unsafe {
-        (
-            std::slice::from_raw_parts(clause_occurs, clause_count),
-            std::slice::from_raw_parts(clause_kinds, clause_count),
-        )
-    };
-    // `clause_parents`/`clause_params` are optional: null means the flat,
-    // all-top-level, all-default query that is by far the common case.
-    let parents: Option<&[i32]> = if clause_parents.is_null() {
-        None
-    } else {
-        // SAFETY: caller contract guarantees validity for `clause_count`.
-        Some(unsafe { std::slice::from_raw_parts(clause_parents, clause_count) })
-    };
-    let params: Option<&[i32]> = if clause_params.is_null() {
-        None
-    } else {
-        // SAFETY: caller contract guarantees validity for `clause_count`.
-        Some(unsafe { std::slice::from_raw_parts(clause_params, clause_count) })
-    };
+    debug_assert_eq!(kinds.len(), clause_count);
 
     let mut pending: Vec<PendingClause<'_>> = try_with_capacity(clause_count)?;
     let mut depth: Vec<usize> = try_with_capacity(clause_count)?;
@@ -207,7 +180,7 @@ pub(crate) unsafe fn read_boolean_query(
                 "clause {i}: unknown Occur tag {occur} (expected 0=MUST, 1=FILTER, 2=SHOULD, \
                  3=MUST_NOT)"
             ));
-            return Err(FfiStatus::InvalidArgument);
+            return Err(Status::InvalidArgument);
         }
         let kind = kinds[i];
         if kind > CLAUSE_KIND_BOOST {
@@ -215,7 +188,7 @@ pub(crate) unsafe fn read_boolean_query(
                 "clause {i}: unknown clause kind {kind} (expected 0=TERM, 1=BOOLEAN, \
                  2=CONSTANT_SCORE, 3=BOOST)"
             ));
-            return Err(FfiStatus::InvalidArgument);
+            return Err(Status::InvalidArgument);
         }
         let parent = parents.map_or(-1, |p| p[i]);
         // A parent must already have been seen, which both rules out a cycle
@@ -226,14 +199,14 @@ pub(crate) unsafe fn read_boolean_query(
                 "clause {i}: parent index {parent} must be -1 (top level) or an earlier clause's \
                  index"
             ));
-            return Err(FfiStatus::InvalidArgument);
+            return Err(Status::InvalidArgument);
         }
         if parent >= 0 && !is_container(kinds[parent as usize]) {
             set_last_error(format!(
                 "clause {i}: parent clause {parent} is not a BOOLEAN clause, so it cannot contain \
                  other clauses"
             ));
-            return Err(FfiStatus::InvalidArgument);
+            return Err(Status::InvalidArgument);
         }
         if parent >= 0 && is_wrapper(kinds[parent as usize]) {
             if occur != OCCUR_MUST {
@@ -241,13 +214,13 @@ pub(crate) unsafe fn read_boolean_query(
                     "clause {i}: the child of wrapper clause {parent} must have occur MUST, got \
                      {occur}"
                 ));
-                return Err(FfiStatus::InvalidArgument);
+                return Err(Status::InvalidArgument);
             }
             if wrapped[parent as usize] {
                 set_last_error(format!(
                     "clause {i}: wrapper clause {parent} already has a child"
                 ));
-                return Err(FfiStatus::InvalidArgument);
+                return Err(Status::InvalidArgument);
             }
             wrapped[parent as usize] = true;
         }
@@ -261,7 +234,7 @@ pub(crate) unsafe fn read_boolean_query(
                 "clause {i}: nesting depth {} exceeds the maximum of {MAX_CLAUSE_DEPTH}",
                 my_depth + 1
             ));
-            return Err(FfiStatus::InvalidArgument);
+            return Err(Status::InvalidArgument);
         }
         depth.push(my_depth);
 
@@ -273,35 +246,16 @@ pub(crate) unsafe fn read_boolean_query(
                         "clause {i}: clause_params must be 0 for a TERM clause (it is a BOOLEAN \
                          clause's minimumNumberShouldMatch), got {param}"
                     ));
-                    return Err(FfiStatus::InvalidArgument);
+                    return Err(Status::InvalidArgument);
                 }
-                if clause_fields.is_null()
-                    || clause_field_lens.is_null()
-                    || clause_terms.is_null()
-                    || clause_term_lens.is_null()
-                {
-                    return Err(FfiStatus::NullPointer);
-                }
-                // SAFETY: caller contract guarantees each array is valid for
-                // `clause_count` elements, and each element pair is valid for
-                // its paired length.
-                unsafe {
-                    let field_ptr = *clause_fields.add(i);
-                    let field_len = *clause_field_lens.add(i);
-                    let term_ptr = *clause_terms.add(i);
-                    let term_len = *clause_term_lens.add(i);
-                    (
-                        str_from_raw(field_ptr, field_len)?,
-                        bytes_from_raw(term_ptr, term_len)?,
-                    )
-                }
+                term_at(i)?
             }
             CLAUSE_KIND_BOOLEAN => {
                 if param < 0 {
                     set_last_error(format!(
                         "clause {i}: minimumNumberShouldMatch {param} is negative"
                     ));
-                    return Err(FfiStatus::InvalidArgument);
+                    return Err(Status::InvalidArgument);
                 }
                 ("", &[][..])
             }
@@ -312,7 +266,7 @@ pub(crate) unsafe fn read_boolean_query(
                         "clause {i}: a CONSTANT_SCORE/BOOST value must be finite and \
                          non-negative, got {value}"
                     ));
-                    return Err(FfiStatus::InvalidArgument);
+                    return Err(Status::InvalidArgument);
                 }
                 ("", &[][..])
             }
@@ -328,7 +282,7 @@ pub(crate) unsafe fn read_boolean_query(
 
     if let Some(i) = (0..clause_count).find(|&i| is_wrapper(kinds[i]) && !wrapped[i]) {
         set_last_error(format!("clause {i}: wrapper clause has no child"));
-        return Err(FfiStatus::InvalidArgument);
+        return Err(Status::InvalidArgument);
     }
 
     // Every container clause, pre-created -- a `BOOLEAN` with its own
@@ -399,7 +353,7 @@ pub(crate) unsafe fn read_boolean_query(
 /// A `FILTER` or `MUST_NOT` clause and a constant-score query's inner query
 /// never score, so their fields are left out: building norms nobody reads
 /// was most of a small query's setup.
-pub(crate) fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
+pub fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
     // An explicit stack: the nesting depth is caller-controlled.
     let mut out: Vec<&str> = Vec::new();
     let mut stack: Vec<&Clause> = Vec::new();

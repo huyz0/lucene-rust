@@ -16,8 +16,8 @@ use std::sync::{Arc, LazyLock, RwLock};
 use lucene_analysis::factory::{CustomAnalyzer, FactoryError, JavaArgs, ResourceLoader};
 use lucene_analysis::TokenStream;
 
-use crate::error::{set_last_error, FfiStatus};
-use crate::jvm_reader::Cursor;
+use crate::query_blob::Cursor;
+use crate::status::{set_last_error, Status};
 
 /// The spec layout's version byte.
 pub const SPEC_VERSION: u8 = 1;
@@ -48,18 +48,18 @@ impl ResourceLoader for InlineLoader {
     }
 }
 
-fn invalid(message: String) -> FfiStatus {
+fn invalid(message: String) -> Status {
     set_last_error(message);
-    FfiStatus::InvalidArgument
+    Status::InvalidArgument
 }
 
-fn utf8<'a>(b: &'a [u8], what: &str) -> Result<&'a str, FfiStatus> {
+fn utf8<'a>(b: &'a [u8], what: &str) -> Result<&'a str, Status> {
     std::str::from_utf8(b).map_err(|_| invalid(format!("analysis spec: {what} is not UTF-8")))
 }
 
-fn component(c: &mut Cursor<'_>) -> Result<Component, FfiStatus> {
+fn component(c: &mut Cursor<'_>) -> Result<Component, Status> {
     let name = utf8(c.bytes()?, "a component name")?.to_string();
-    let n = c.len()?;
+    let n = c.length()?;
     let mut args = JavaArgs::new();
     for _ in 0..n {
         let k = utf8(c.bytes()?, "an argument name")?;
@@ -82,7 +82,7 @@ fn component(c: &mut Cursor<'_>) -> Result<Component, FfiStatus> {
 ///
 /// A component is `name: bytes`, `n: i32`, then `n` of `key: bytes`,
 /// `value: bytes`. Trailing bytes are an error.
-fn build(spec: &[u8]) -> Result<CustomAnalyzer, FfiStatus> {
+fn build(spec: &[u8]) -> Result<CustomAnalyzer, Status> {
     // The analysis modules' factories, and the `thai` tokenizer's word
     // iterator (ICU's Thai dictionary).
     crate::analysis_modules::register();
@@ -96,16 +96,16 @@ fn build(spec: &[u8]) -> Result<CustomAnalyzer, FfiStatus> {
     let pos_gap = c.i32()?;
     let offset_gap = c.i32()?;
     let mut char_filters = Vec::new();
-    for _ in 0..c.len()? {
+    for _ in 0..c.length()? {
         char_filters.push(component(&mut c)?);
     }
     let tokenizer = component(&mut c)?;
     let mut filters = Vec::new();
-    for _ in 0..c.len()? {
+    for _ in 0..c.length()? {
         filters.push(component(&mut c)?);
     }
     let mut resources = HashMap::new();
-    for _ in 0..c.len()? {
+    for _ in 0..c.length()? {
         let name = utf8(c.bytes()?, "a resource name")?.to_string();
         resources.insert(name, c.bytes()?.to_vec());
     }
@@ -134,7 +134,7 @@ fn build(spec: &[u8]) -> Result<CustomAnalyzer, FfiStatus> {
 }
 
 /// The analyzer for `spec`, built on its first use.
-pub(crate) fn analyzer(spec: &[u8]) -> Result<Arc<CustomAnalyzer>, FfiStatus> {
+pub fn analyzer(spec: &[u8]) -> Result<Arc<CustomAnalyzer>, Status> {
     if let Some(a) = ANALYZERS
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -152,9 +152,9 @@ pub(crate) fn analyzer(spec: &[u8]) -> Result<Arc<CustomAnalyzer>, FfiStatus> {
 
 /// An analyzer registered for indexing: its spec's analyzer, and the
 /// similarity's `toString()` for the one error that names it.
-pub(crate) struct Registered {
-    pub(crate) analyzer: Arc<CustomAnalyzer>,
-    pub(crate) similarity: String,
+pub struct Registered {
+    pub analyzer: Arc<CustomAnalyzer>,
+    pub similarity: String,
 }
 
 /// At most this many registrations are kept, for the life of the process (a
@@ -172,7 +172,7 @@ static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(Default::default);
 
 /// Registers `spec: bytes, similarity: bytes` (UTF-8), once per distinct
 /// pair, and answers its id for [`registered`].
-pub(crate) fn register(blob: &[u8]) -> Result<u32, FfiStatus> {
+pub fn register(blob: &[u8]) -> Result<u32, Status> {
     if let Some(&id) = REGISTRY
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -197,7 +197,7 @@ pub(crate) fn register(blob: &[u8]) -> Result<u32, FfiStatus> {
             "analysis registration: more than {MAX_REGISTERED} analyzers"
         )));
     }
-    let id = u32::try_from(r.entries.len()).map_err(|_| FfiStatus::InvalidArgument)?;
+    let id = u32::try_from(r.entries.len()).map_err(|_| Status::InvalidArgument)?;
     r.entries.push(Arc::new(Registered {
         analyzer,
         similarity,
@@ -207,7 +207,7 @@ pub(crate) fn register(blob: &[u8]) -> Result<u32, FfiStatus> {
 }
 
 /// The registration `id` names.
-pub(crate) fn registered(id: i32) -> Result<Arc<Registered>, FfiStatus> {
+pub fn registered(id: i32) -> Result<Arc<Registered>, Status> {
     let r = REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     usize::try_from(id)
         .ok()
@@ -218,7 +218,7 @@ pub(crate) fn registered(id: i32) -> Result<Arc<Registered>, FfiStatus> {
 
 /// How many distinct specs are built and kept.
 #[cfg(test)]
-pub(crate) fn cached_specs() -> usize {
+pub fn cached_specs() -> usize {
     ANALYZERS.read().unwrap_or_else(|e| e.into_inner()).len()
 }
 
@@ -242,7 +242,7 @@ fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
 /// `term_frequency: i32`, `payload: i32` length (-1 for none) and its bytes;
 /// then what `end()` left: `end_offset: i32`, `position_increment: i32`.
 /// Offsets count UTF-16 units, as Java's do.
-pub(crate) fn analyze(spec: &[u8], field: &str, text: &str) -> Result<Vec<u8>, FfiStatus> {
+pub fn analyze(spec: &[u8], field: &str, text: &str) -> Result<Vec<u8>, Status> {
     let analyzer = analyzer(spec)?;
     let failed = |e: lucene_analysis::AnalysisError| invalid(format!("analysis: {e}"));
     let mut stream = analyzer
@@ -279,12 +279,14 @@ pub(crate) fn analyze(spec: &[u8], field: &str, text: &str) -> Result<Vec<u8>, F
     Ok(out)
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+/// Encoders for the layouts [`build`] reads, for tests that drive the entry
+/// points.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
     use super::*;
 
     /// A spec in [`build`]'s layout.
-    pub(crate) fn spec(
+    pub fn spec(
         char_filters: &[(&str, &[(&str, &str)])],
         tokenizer: (&str, &[(&str, &str)]),
         filters: &[(&str, &[(&str, &str)])],
@@ -317,11 +319,17 @@ pub(crate) mod tests {
         }
         out
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::spec;
+    use super::*;
 
     /// The terms, increments and offsets of an [`analyze`] result.
     fn tokens(blob: &[u8]) -> (Vec<(String, i32, i32, i32)>, i32) {
         let mut c = Cursor::new(blob);
-        let n = c.len().unwrap();
+        let n = c.length().unwrap();
         let mut out = Vec::new();
         for _ in 0..n {
             let term = String::from_utf8(c.bytes().unwrap().to_vec()).unwrap();
@@ -388,9 +396,9 @@ pub(crate) mod tests {
         if pack::RESOURCES.iter().all(|r| r.embedded.is_none()) {
             assert_eq!(
                 analyze(&s, "body", "x").unwrap_err(),
-                FfiStatus::InvalidArgument
+                Status::InvalidArgument
             );
-            let message = crate::error::last_error();
+            let message = crate::status::last_error();
             assert!(message.contains("data pack kuromoji"), "{message}");
         }
         let dir = lucene_util::test_support::TempDir::new("ffi-data-pack");
@@ -401,11 +409,7 @@ pub(crate) mod tests {
             std::fs::copy(src.join(r.file), dir.path().join(pack::NAME).join(r.file)).unwrap();
         }
         let path = dir.path().to_str().unwrap().as_bytes();
-        // SAFETY: `path` is valid for its length.
-        assert_eq!(
-            unsafe { crate::analysis_modules::ffi_add_data_pack_dir(path.as_ptr(), path.len()) },
-            0
-        );
+        lucene_analysis::data_pack::add_pack_dir(std::str::from_utf8(path).unwrap());
         let (t, _) = tokens(&analyze(&s, "body", "東京都に住む").unwrap());
         let terms: Vec<_> = t.into_iter().map(|t| t.0).collect();
         assert_eq!(terms, ["東京", "都", "に", "住む"]);
@@ -414,25 +418,16 @@ pub(crate) mod tests {
     #[test]
     fn a_bad_spec_is_an_invalid_argument() {
         let s = spec(&[], ("nope", &[]), &[], &[]);
-        assert_eq!(
-            analyze(&s, "f", "x").unwrap_err(),
-            FfiStatus::InvalidArgument
-        );
+        assert_eq!(analyze(&s, "f", "x").unwrap_err(), Status::InvalidArgument);
         let mut s = spec(&[], ("whitespace", &[]), &[], &[]);
         s.push(0);
-        assert_eq!(
-            analyze(&s, "f", "x").unwrap_err(),
-            FfiStatus::InvalidArgument
-        );
+        assert_eq!(analyze(&s, "f", "x").unwrap_err(), Status::InvalidArgument);
         let s = spec(
             &[],
             ("whitespace", &[]),
             &[("stop", &[("words", "missing.txt")])],
             &[],
         );
-        assert_eq!(
-            analyze(&s, "f", "x").unwrap_err(),
-            FfiStatus::InvalidArgument
-        );
+        assert_eq!(analyze(&s, "f", "x").unwrap_err(), Status::InvalidArgument);
     }
 }

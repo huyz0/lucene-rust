@@ -196,10 +196,10 @@ public final class QueryEncoder {
         }
     }
 
-    /** {@code NODE_FUZZY} in {@code jvm_queries.rs}: a fuzzy query, for the {@code plain} highlighter. */
+    /** {@code NODE_FUZZY} in {@code queries.rs}: a fuzzy query, for the {@code plain} highlighter. */
     private static final byte NODE_FUZZY = 53;
 
-    /** {@code NODE_VISIT_ONLY} in {@code jvm_queries.rs}: a function_score as the unified highlighter reads it. */
+    /** {@code NODE_VISIT_ONLY} in {@code queries.rs}: a function_score as the unified highlighter reads it. */
     private static final byte NODE_VISIT_ONLY = 54;
 
     /** The exact classes {@link #encodeForHighlight} writes; besides these, any point range or set. */
@@ -238,11 +238,11 @@ public final class QueryEncoder {
         org.opensearch.common.lucene.search.MultiPhrasePrefixQuery.class
     );
 
-    /** {@code NODE_PHRASE_POSITIONS} in {@code jvm_queries.rs}: a phrase with its own positions, for the highlighter. */
+    /** {@code NODE_PHRASE_POSITIONS} in {@code queries.rs}: a phrase with its own positions, for the highlighter. */
     private static final byte NODE_PHRASE_POSITIONS = 50;
-    /** {@code NODE_MULTI_PHRASE} in {@code jvm_queries.rs}, for the highlighter. */
+    /** {@code NODE_MULTI_PHRASE} in {@code queries.rs}, for the highlighter. */
     private static final byte NODE_MULTI_PHRASE = 51;
-    /** {@code NODE_MULTI_PHRASE_PREFIX} in {@code jvm_queries.rs}: {@code match_phrase_prefix}, for the highlighter. */
+    /** {@code NODE_MULTI_PHRASE_PREFIX} in {@code queries.rs}: {@code match_phrase_prefix}, for the highlighter. */
     private static final byte NODE_MULTI_PHRASE_PREFIX = 52;
 
     /** Whether {@code q} holds a phrase or span query: their positions are what the highlighter's phrase helper reads. */
@@ -344,7 +344,7 @@ public final class QueryEncoder {
         return "";
     }
 
-    /** {@code NODE_VISITED} in {@code jvm_queries.rs}: what a query's visit does, for the unified highlighter. */
+    /** {@code NODE_VISITED} in {@code queries.rs}: what a query's visit does, for the unified highlighter. */
     private static final byte NODE_VISITED = 55;
     private static final byte VISIT_TERMS = 0;
     private static final byte VISIT_LEAF = 1;
@@ -739,7 +739,7 @@ public final class QueryEncoder {
     /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
     private static final byte NODE_TERM_RANGE = 25;
     private static final byte NODE_POINT_SET = 26;
-    /** {@code NODE_POINT_RANGE_OR_DV} in {@code jvm_queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
+    /** {@code NODE_POINT_RANGE_OR_DV} in {@code queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
     private static final byte NODE_POINT_RANGE_OR_DV = 48;
 
     /**
@@ -1039,7 +1039,7 @@ public final class QueryEncoder {
         return (depth == 0 ? "query_" : "clause_") + name(q);
     }
 
-    /** {@code NODE_SYNONYM} in {@code jvm_queries.rs}. */
+    /** {@code NODE_SYNONYM} in {@code queries.rs}. */
     private static final byte NODE_SYNONYM = 36;
 
     /**
@@ -1146,12 +1146,12 @@ public final class QueryEncoder {
         return inner[0];
     }
 
-    /** The multi-term node's rewrite methods ({@code jvm_queries.rs}). */
+    /** The multi-term node's rewrite methods ({@code queries.rs}). */
     private static final byte REWRITE_CONSTANT_SCORE_BLENDED = 0;
     private static final byte REWRITE_CONSTANT_SCORE = 1;
     private static final byte REWRITE_DOC_VALUES = 2;
 
-    /** {@code NODE_MULTI_TERM} and {@code NODE_DV_TERM_SET} in {@code jvm_queries.rs}. */
+    /** {@code NODE_MULTI_TERM} and {@code NODE_DV_TERM_SET} in {@code queries.rs}. */
     private static final byte NODE_MULTI_TERM = 27;
     private static final byte NODE_DV_TERM_SET = 28;
 

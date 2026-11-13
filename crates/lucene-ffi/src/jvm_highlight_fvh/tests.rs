@@ -170,7 +170,7 @@ fn run(h: u64, req: &Req, values: &[&str]) -> (u8, Vec<String>) {
 }
 
 fn term_query(field: &str, term: &str) -> Vec<u8> {
-    let mut q = vec![jvm_reader::QUERY_TERM];
+    let mut q = vec![lucene_engine::query_blob::QUERY_TERM];
     put_bytes(&mut q, field.as_bytes());
     put_bytes(&mut q, term.as_bytes());
     q

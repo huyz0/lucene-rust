@@ -1,77 +1,20 @@
-//! The plugin's `max_sim` query over a `multi_vector` field, as node `44` of
-//! the query tree ([`crate::jvm_queries`]).
-//!
-//! The sub-query's documents are scored by the `MaxSim` of the query's token
-//! vectors against the field's stored multi-vector
-//! ([`lucene_tensor::MaxSimValuesSource`], any of its encodings), through the
-//! ported Lucene [`FunctionScoreQuery`]: a document without a value, or with a
-//! negative `MaxSim`, scores 0. The plugin's Java `MaxSimQuery` scores the
-//! same way.
-//!
-//! The node, after its kind byte:
-//!
-//! | field | layout |
-//! |---|---|
-//! | sub-query | a node |
-//! | `field` | string |
-//! | `dim` | `i32`, at least 1 |
-//! | tokens | `i32` count, at least 1, then `count * dim` `f32` |
-
-use std::sync::Arc;
-
-use lucene_search::extended_query::ExtendedQuery;
-use lucene_search::function::FunctionScoreQuery;
-use lucene_search::query::Clause;
-use lucene_tensor::{MaxSimQuery, MaxSimValuesSource};
-
-use crate::error::FfiStatus;
-use crate::jvm_nodes::invalid;
-use crate::jvm_reader::Cursor;
-
-pub(crate) const NODE_MAX_SIM: u8 = 44;
-
-pub(crate) fn decode(
-    c: &mut Cursor<'_>,
-    depth: usize,
-    nodes: &mut usize,
-) -> std::result::Result<Clause, FfiStatus> {
-    let sub = crate::jvm_reader::decode_node(c, depth + 1, nodes)?;
-    let field = std::str::from_utf8(c.bytes()?)
-        .map_err(|_| FfiStatus::InvalidUtf8)?
-        .to_string();
-    let dim = c.len()?;
-    let count = c.len()?;
-    if dim == 0 || count == 0 {
-        return Err(invalid("query tree: max_sim without tokens"));
-    }
-    let floats = dim
-        .checked_mul(count)
-        .filter(|&n| n <= c.remaining() / 4)
-        .ok_or_else(|| invalid("query tree: max_sim tokens past the blob"))?;
-    let mut tokens = Vec::with_capacity(count); // alloc-ok: bounded by the blob
-    let mut token = Vec::with_capacity(dim); // alloc-ok: bounded by the blob
-    for _ in 0..floats {
-        token.push(f32::from_bits(c.i32()? as u32));
-        if token.len() == dim {
-            tokens.push(std::mem::take(&mut token));
-        }
-    }
-    let query = MaxSimQuery::new(&tokens).map_err(|e| invalid(format!("query tree: {e}")))?;
-    let source = MaxSimValuesSource::new(&field, query);
-    Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
-        FunctionScoreQuery::new(sub, Arc::new(source)),
-    ))))
-}
+//! The `max_sim` tests that run through the exported entry points.
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::jvm_nodes::tests::Blob;
+pub(crate) mod tests {
+    use crate::engine_tests::nodes::tests::Blob;
+    use lucene_engine::max_sim_query::*;
 
-    fn decoded(blob: &Blob) -> std::result::Result<Clause, FfiStatus> {
+    use lucene_engine::query_blob::Cursor;
+    use lucene_engine::status::Status;
+
+    use lucene_search::query::Clause;
+    use lucene_tensor::MaxSimQuery;
+
+    fn decoded(blob: &Blob) -> std::result::Result<Clause, Status> {
         let mut c = Cursor::new(&blob.0);
         let mut nodes = 0;
-        crate::jvm_reader::decode_node(&mut c, 0, &mut nodes)
+        lucene_engine::query_blob::decode_node(&mut c, 0, &mut nodes)
     }
 
     fn node(dim: i32, count: i32, floats: &[f32]) -> Blob {
@@ -89,7 +32,7 @@ mod tests {
 
     #[test]
     fn scores_every_encoding_as_max_sim_and_missing_values_as_zero() {
-        use crate::jvm_nodes::tests::{open, search};
+        use crate::engine_tests::nodes::tests::{open, search};
         use crate::jvm_reader::ffi_close_jvm_reader;
         use lucene_index::document::{BinaryDocValuesField, Document, Store, StringField};
         use lucene_index::index_writer::IndexWriter;
@@ -190,7 +133,7 @@ mod tests {
                 &mut docs,
                 &mut scores,
             )
-            .unwrap_or_else(|rc| panic!("{rc:?}: {}", crate::error::last_error()));
+            .unwrap_or_else(|rc| panic!("{rc:?}: {}", lucene_engine::status::last_error()));
             assert_eq!(n, 30);
             for (d, s) in docs.iter().zip(&scores) {
                 let want = values[*d as usize][e]
@@ -208,7 +151,7 @@ mod tests {
             .i32(1)
             .f32(1.0)
             .f32(0.0);
-        let (_, msg) = crate::jvm_nodes::tests::fails(h, &blob);
+        let (_, msg) = crate::engine_tests::nodes::tests::fails(h, &blob);
         assert!(msg.contains("same dimension"), "{msg}");
         ffi_close_jvm_reader(h);
     }

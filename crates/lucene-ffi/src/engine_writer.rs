@@ -494,12 +494,12 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, FfiStatus> {
 }
 
 /// An inverted field the JVM left to Rust to analyze ([`crate::jvm_invert`]):
-/// `i32 analyzer` (a [`crate::jvm_analysis::register`] id), `u8 index
+/// `i32 analyzer` (a [`lucene_engine::analysis::register`] id), `u8 index
 /// options` (ordinal), `u8 norm` ([`crate::jvm_invert::Norm`]), `i32 len,
 /// name`, `i32 instances`, then each instance's text (`i32 len`, UTF-8).
 fn analyzed_field(c: &mut Cursor<'_>, field_number: i32) -> Result<InvertedField, FfiStatus> {
     use crate::jvm_invert::{invert, Norm, Options};
-    let registered = crate::jvm_analysis::registered(c.i32("analyzer")?)?;
+    let registered = lucene_engine::analysis::registered(c.i32("analyzer")?)?;
     let options = Options::from_ordinal(c.u8("index options")?)
         .ok_or_else(|| decode_error("index options"))?;
     let norm = Norm::from_byte(c.u8("norm mode")?).ok_or_else(|| decode_error("norm mode"))?;
@@ -5688,7 +5688,7 @@ mod tests {
         // SAFETY: the buffer the call gave, freed once.
         unsafe { crate::ffm_bridge::ffi_jvm_free_bytes(ptr, len) };
         let tree = |node: u8, tail: &[i64], count: Option<i32>| {
-            let mut b = vec![crate::jvm_reader::QUERY_TREE, node];
+            let mut b = vec![lucene_engine::query_blob::QUERY_TREE, node];
             b.extend_from_slice(&("_seq_no".len() as i32).to_le_bytes());
             b.extend_from_slice(b"_seq_no");
             if let Some(n) = count {
@@ -5699,10 +5699,15 @@ mod tests {
             }
             b
         };
-        let range =
-            |lo: i64, hi: i64| tree(crate::jvm_queries::NODE_DV_NUMERIC_RANGE, &[lo, hi], None);
+        let range = |lo: i64, hi: i64| {
+            tree(
+                lucene_engine::queries::NODE_DV_NUMERIC_RANGE,
+                &[lo, hi],
+                None,
+            )
+        };
         let set = tree(
-            crate::jvm_queries::NODE_DV_NUMERIC_SET,
+            lucene_engine::queries::NODE_DV_NUMERIC_SET,
             &[3, 50, 69, 100],
             Some(4),
         );
@@ -8753,7 +8758,7 @@ mod tests {
         let target = vecf(7);
         let mut request = Blob::default()
             .bytes(b"v")
-            .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+            .u8(lucene_engine::queries::KNN_TARGET_FLOAT)
             .i32(dim as i32);
         for &x in &target {
             request = request.f32(x);
@@ -8913,7 +8918,7 @@ mod tests {
         let knn = |target: &[f32], k: i32, filter: Option<&str>| -> Vec<(i32, f32)> {
             let mut request = Blob::default()
                 .bytes(b"v")
-                .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+                .u8(lucene_engine::queries::KNN_TARGET_FLOAT)
                 .i32(4);
             for &x in target {
                 request = request.f32(x);
@@ -9231,7 +9236,7 @@ mod tests {
         let search = |reader: u64, view: u64, target: &[f32], k: i32, filter: Option<&str>| {
             let mut request = Blob::default()
                 .bytes(b"v")
-                .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+                .u8(lucene_engine::queries::KNN_TARGET_FLOAT)
                 .i32(64);
             for &x in target {
                 request = request.f32(x);
@@ -9410,7 +9415,7 @@ mod tests {
 
         let mut request = Blob::default()
             .bytes(b"v")
-            .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+            .u8(lucene_engine::queries::KNN_TARGET_FLOAT)
             .i32(4);
         for x in target {
             request = request.f32(x);
@@ -9521,16 +9526,16 @@ mod tests {
         );
 
         let mut tree = Blob::default()
-            .u8(crate::jvm_reader::QUERY_TREE)
-            .u8(crate::jvm_queries::NODE_KNN)
+            .u8(lucene_engine::query_blob::QUERY_TREE)
+            .u8(lucene_engine::queries::NODE_KNN)
             .bytes(b"v")
-            .u8(crate::jvm_queries::KNN_TARGET_FLOAT)
+            .u8(lucene_engine::queries::KNN_TARGET_FLOAT)
             .i32(4);
         for x in target {
             tree = tree.f32(x);
         }
         let tree = tree
-            .u8(crate::jvm_queries::KNN_TOP_K)
+            .u8(lucene_engine::queries::KNN_TOP_K)
             .i32(3)
             .i32(20)
             .u8(0)
