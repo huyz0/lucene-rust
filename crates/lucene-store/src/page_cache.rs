@@ -122,8 +122,8 @@ pub struct PageCacheConfig {
     pub demand_paging: bool,
     /// The smallest undecoded file, in bytes, that is *not* read whole into
     /// the heap when it is opened without demand paging (no `userfaultfd`,
-    /// a page size that is not a multiple of 4 KiB, or a file read whole
-    /// because its extension is pinned). It is streamed in chunks of at most
+    /// a page size that is not a multiple of 4 KiB). Pinned files stay in
+    /// the heap, as before. It is streamed in chunks of at most
     /// [`SPILL_CHUNK_BYTES`] into an unlinked file under
     /// [`Self::disk_dir`] and mapped read-only: the heap holds one chunk,
     /// and the file's bytes are page cache the kernel may reclaim. `None`
@@ -132,7 +132,8 @@ pub struct PageCacheConfig {
     /// is never written to disk).
     pub spill_min_bytes: Option<u64>,
     /// The most bytes of such mapped files that may be open at once: a file
-    /// that would exceed it fails to open rather than fill the disk.
+    /// that would exceed it fails to open rather than fill the disk (an I/O error; a caller may retry once other
+    /// files close).
     pub spill_budget: u64,
 }
 
@@ -650,6 +651,11 @@ impl PageCache {
         }
     }
 
+    /// Counts a spill file that opened.
+    pub(crate) fn note_spill_open(&self) {
+        self.counters.spill_opens.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Reserves `bytes` of the spill budget until the guard drops, or
     /// fails when that would pass [`PageCacheConfig::spill_budget`].
     pub(crate) fn reserve_spill(&self, bytes: u64) -> Result<SpillReservation> {
@@ -663,7 +669,6 @@ impl PageCache {
                     "spill budget exhausted: {open} bytes open, {bytes} more asked, budget {budget}"
                 )))
             })?;
-        self.counters.spill_opens.fetch_add(1, Ordering::Relaxed);
         Ok(SpillReservation {
             open: Arc::clone(&self.spill_open),
             bytes,

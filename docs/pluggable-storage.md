@@ -56,7 +56,9 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
 - Every page's key carries `BlobStore::version(name)` when the store has one
   (an ETag, a version id, the manifest generation naming the file), so two
   contents of one name and length never share pages; a version that changes
-  between opens drops the cached length. The default (`None`) keeps the key
+  between opens drops the cached length (`file_length` answers from the
+  cache until then). The store must report the version and length of one
+  object together. The default (`None`) keeps the key
   of name and length. The store must read the version it names (pin ranged
   reads to it); the cache cannot know a read returned a newer object.
 - The disk tier keeps pages in slots of a few large slab files, evicted by
@@ -77,7 +79,7 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
   (`lucene_store::paged_input::Pager::set_budget`). Where that is not
   available (no `userfaultfd`, `PageCacheConfig::demand_paging` off, or a
   page size that is not a multiple of 4 KiB), a file of at least
-  `spill_min_bytes` (default 1 MiB) is streamed, at most 16 MiB at a time,
+  `spill_min_bytes` (default 1 MiB; pinned files stay in memory) is streamed, at most 16 MiB at a time,
   into an unlinked file under `disk_dir` and mapped read-only: the heap
   never holds it whole and its bytes are page cache the kernel can reclaim.
   `spill_budget` bounds the bytes of such files open at once (a file past it
@@ -90,13 +92,20 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
   production host): reading whole grew the heap (`VmData`) by 1,175 MiB (the
   file plus its pages, 2.3x) and peaked at 1,539 MiB; the spill grew it by
   36 MiB and peaked at 1,059 MiB (resident pages grew 540 MiB either way:
-  file-backed, so reclaimable, rather than heap). Open took 760 ms against
+  file-backed, so reclaimable, rather than heap; the 512 MiB in-memory
+  source store is part of both peaks). Open took 760 ms against
   530-630 ms; 2M random byte reads took 78-117 ms against 81-87 ms; a 4 KiB
   stride scan took 3-4 ms against 6-30 ms, the first touch of each page
   paying a minor fault. Costs: the whole file is still downloaded at open
   (the fallback has no way to know which pages a query will touch), it also
   writes it once to local disk, and the spilled bytes are outside
-  `disk_budget`.
+  `disk_budget`. Pages stream through the disk tier on the way (so a large
+  file can evict others and is written twice); a budget refusal fails the
+  open, never falls back to the heap. Concurrent first opens of one file each
+  spill it (as each read it whole before). Window and version, 20 runs and
+  500k opens: the tuned window fetched 6-36 MiB for one cold shard open and a
+  `StoreProfile` 24 MiB every time; a version costs 154 ns per shared open
+  against 116 ns.
 - Readers announce their reads, as Lucene's `IndexInput.prefetch` does, so
   a cold query waits for few round trips: a segment open fetches every file
   it reads at once (`Directory::prefetch_files`), a search the terms
