@@ -1540,6 +1540,10 @@ struct Leaf<'a> {
     term_buckets: Vec<(u32, u32)>,
     /// [`keyed_ord_cached`]'s recently placed `(owning bucket, key)`s.
     key_cache: KeyCache,
+    /// A `date_histogram`'s buckets of owner 0 by position on the rounding's
+    /// grid ([`DateGrid`]); `grid_tried` once one was attempted.
+    date_grid: Option<Box<DateGrid>>,
+    grid_tried: bool,
     /// [`zone_window`]'s buckets for the current window, kept for reuse.
     zone_ords: Vec<u32>,
     /// Windows [`zone_window`] answered in this segment, added to
@@ -1876,6 +1880,23 @@ impl Leaf<'_> {
     /// straight after, with no exit in between.
     #[inline(always)]
     fn each_prefetched(&self, docs: &[i32], mut f: impl FnMut(usize, i64)) {
+        if let Some(vals) = self.whole_window(docs) {
+            for (i, &v) in vals.iter().enumerate() {
+                f(i, v);
+            }
+            return;
+        }
+        for (i, &doc) in docs.iter().enumerate() {
+            if let Some(Some(v)) = self.prefetched(doc) {
+                f(i, v);
+            }
+        }
+    }
+
+    /// The window's values when `docs` is the whole window read ahead and
+    /// every document of it has one: `docs[i]`'s value is `vals[i]`.
+    #[inline(always)]
+    fn whole_window(&self, docs: &[i32]) -> Option<&[i64]> {
         let len = self.pre_len;
         let whole = !self.pre_multi
             && docs.len() == len
@@ -1893,15 +1914,9 @@ impl Leaf<'_> {
                     .get(len >> 6)
                     .is_some_and(|&w| w | (u64::MAX << (len & 63)) == u64::MAX));
         if whole {
-            for (i, &v) in self.pre_vals[..len].iter().enumerate() {
-                f(i, v);
-            }
-            return;
-        }
-        for (i, &doc) in docs.iter().enumerate() {
-            if let Some(Some(v)) = self.prefetched(doc) {
-                f(i, v);
-            }
+            self.pre_vals.get(..len)
+        } else {
+            None
         }
     }
 
@@ -2100,6 +2115,8 @@ fn open_leaf<'a>(
         win_ords: Vec::new(),
         term_buckets: Vec::new(),
         key_cache: KeyCache::default(),
+        date_grid: None,
+        grid_tried: false,
         zone_ords: Vec::new(),
         folded: 0,
         missing: node.missing(),
@@ -2290,6 +2307,94 @@ fn collect_bucket(
         collect(n, s, l, doc, ord)?;
     }
     Ok(())
+}
+
+/// The bucket of each date of a rounding whose buckets all have one width
+/// (a fixed interval, or a second, minute, hour, day or week in a fixed
+/// zone), found without rounding it: the date's position on the grid is one
+/// multiplication by the width's reciprocal, and a direct-mapped table of
+/// recent positions gives the bucket. Dates in any order cost the same,
+/// where [`DateRounding::bucket`] and the key map cost a division and a
+/// probe for each date outside the last one's bucket.
+struct DateGrid {
+    /// A bucket start well before the first date seen: positions count from here.
+    anchor: i64,
+    width: i64,
+    /// `ceil(2^128 / width)`: `d / width` is the top 64 bits of the 192-bit
+    /// product `d * recip`, for every `d`.
+    recip: u128,
+    /// The position held by each slot (`u64::MAX`: none) and its bucket.
+    tags: Vec<u64>,
+    ords: Vec<u32>,
+}
+
+/// Grid positions below the first date's, so earlier dates still have one.
+const GRID_HEADROOM: i64 = 1 << 20;
+const GRID_SLOTS: usize = 4096;
+
+impl DateGrid {
+    /// The grid of `rounding`, through the bucket of `v`; `None` for a
+    /// rounding whose buckets differ in width.
+    fn new(rounding: &DateRounding, v: i64) -> Option<Box<Self>> {
+        match rounding.kind {
+            RoundingKind::Interval(_)
+            | RoundingKind::Unit(
+                DateUnit::Week
+                | DateUnit::Day
+                | DateUnit::Hour
+                | DateUnit::Minute
+                | DateUnit::Second,
+            ) => {}
+            RoundingKind::Unit(_) => return None,
+        }
+        let (from, to) = rounding.bucket(v)?;
+        let width = to.checked_sub(from)?;
+        if width < 2 {
+            return None;
+        }
+        let anchor = from.checked_sub(width.checked_mul(GRID_HEADROOM)?)?;
+        let recip = u128::MAX / u128::from(width as u64) + 1;
+        Some(Box::new(DateGrid {
+            anchor,
+            width,
+            recip,
+            tags: vec![u64::MAX; GRID_SLOTS],
+            ords: vec![0; GRID_SLOTS],
+        }))
+    }
+
+    /// The position of `v`, `None` for a date before the grid's anchor.
+    #[inline(always)]
+    fn position(&self, v: i64) -> Option<u64> {
+        if v < self.anchor {
+            return None;
+        }
+        let d = u128::from(v.wrapping_sub(self.anchor) as u64);
+        let (hi, lo) = ((self.recip >> 64), self.recip & u128::from(u64::MAX));
+        Some(((d * hi + ((d * lo) >> 64)) >> 64) as u64)
+    }
+
+    /// The first value of position `p`'s bucket.
+    #[inline(always)]
+    fn start(&self, p: u64) -> i64 {
+        self.anchor
+            .wrapping_add((p as i64).wrapping_mul(self.width))
+    }
+
+    #[inline(always)]
+    fn find(&self, p: u64) -> Option<u32> {
+        let at = p as usize & (GRID_SLOTS - 1);
+        (self.tags.get(at) == Some(&p)).then(|| self.ords.get(at).copied().unwrap_or(0))
+    }
+
+    #[inline(always)]
+    fn put(&mut self, p: u64, ord: u32) {
+        let at = p as usize & (GRID_SLOTS - 1);
+        if let (Some(t), Some(o)) = (self.tags.get_mut(at), self.ords.get_mut(at)) {
+            *t = p;
+            *o = ord;
+        }
+    }
 }
 
 /// A direct-mapped cache in front of [`keyed_ord`]'s map: the bucket of
@@ -2950,51 +3055,136 @@ fn collect_window(
             // has the same ordinal and is inside the hard bounds or not
             // alike (`NOT_KEPT`). As `collect`'s single-valued case.
             const NOT_KEPT: u32 = u32::MAX;
-            let mut cur: Option<(i64, i64, u32, u32)> = None;
             let mut cache = std::mem::take(&mut leaf.key_cache);
-            leaf.each_prefetched(
-                docs,
-                #[inline(always)]
-                |i, v| {
-                    let (doc, owning) = (
-                        docs.get(i).copied().unwrap_or(0),
-                        owners.get(i).copied().unwrap_or(0),
-                    );
-                    let ord = match cur {
-                        Some((from, to, ord, owner)) if v >= from && v < to && owner == owning => {
-                            ord
-                        }
-                        _ => {
-                            let bucket = rounding.bucket(v);
-                            let rounded = bucket.map_or_else(|| rounding.round(v), |b| b.0);
-                            let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
-                                && !hard_bounds.0.is_some_and(|min| rounded < min);
-                            let ord = if contained {
-                                let o = keyed_ord_cached(&mut cache, ords, keys, owning, rounded);
-                                slot(counts, o as usize);
+            let mut grid = leaf.date_grid.take();
+            let mut grid_tried = leaf.grid_tried;
+            // Dates the grid places, in any order: its table answers, and only
+            // a bucket not yet seen is made the long way.
+            let top_level = owners.iter().all(|&o| o == 0);
+            let fast = match (grid.as_deref_mut(), leaf.whole_window(docs)) {
+                (Some(g), Some(vals)) if top_level => {
+                    for (&v, &doc) in vals.iter().zip(docs) {
+                        let position = g.position(v);
+                        let ord = match position.and_then(|p| g.find(p)) {
+                            Some(o) => o,
+                            None => {
+                                let rounded = rounding.round(v);
+                                let o = if hard_bounds.1.is_some_and(|max| rounded >= max)
+                                    || hard_bounds.0.is_some_and(|min| rounded < min)
+                                {
+                                    NOT_KEPT
+                                } else {
+                                    let o = keyed_ord_cached(&mut cache, ords, keys, 0, rounded);
+                                    slot(counts, o as usize);
+                                    o
+                                };
+                                if let Some(p) = position {
+                                    if g.start(p) == rounded {
+                                        g.put(p, o);
+                                    }
+                                }
                                 o
-                            } else {
-                                NOT_KEPT
-                            };
-                            cur = bucket.map(|(from, to)| (from, to, ord, owning));
-                            ord
+                            }
+                        };
+                        // `NOT_KEPT` is past every bucket: nothing to count.
+                        if let Some(c) = counts.get_mut(ord as usize) {
+                            *c += 1;
                         }
-                    };
-                    if ord == NOT_KEPT {
-                        return;
+                        // `kept` stays below the window's length.
+                        if let (Some(d), Some(o)) = (win_docs.get_mut(kept), win_ords.get_mut(kept))
+                        {
+                            *d = doc;
+                            *o = ord;
+                        }
+                        kept += usize::from(ord != NOT_KEPT);
                     }
-                    if let Some(c) = counts.get_mut(ord as usize) {
-                        *c += 1;
-                    }
-                    // `kept` counts documents of this window, so it stays below
-                    // its length.
-                    if let (Some(d), Some(o)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
-                        *d = doc;
-                        *o = ord;
-                        kept += 1;
-                    }
-                },
-            );
+                    true
+                }
+                _ => false,
+            };
+            let mut cur: Option<(i64, i64, u32, u32)> = None;
+            if !fast {
+                leaf.each_prefetched(
+                    docs,
+                    #[inline(always)]
+                    |i, v| {
+                        let (doc, owning) = (
+                            docs.get(i).copied().unwrap_or(0),
+                            owners.get(i).copied().unwrap_or(0),
+                        );
+                        let ord = match cur {
+                            Some((from, to, ord, owner))
+                                if v >= from && v < to && owner == owning =>
+                            {
+                                ord
+                            }
+                            _ => {
+                                let position = if owning == 0 {
+                                    grid.as_deref().and_then(|g| g.position(v))
+                                } else {
+                                    None
+                                };
+                                let found = match (position, grid.as_deref()) {
+                                    (Some(p), Some(g)) => {
+                                        g.find(p).map(|o| (g.start(p), g.width, o))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((from, width, o)) = found {
+                                    cur = Some((from, from.wrapping_add(width), o, 0));
+                                    o
+                                } else {
+                                    let bucket = rounding.bucket(v);
+                                    let rounded = bucket.map_or_else(|| rounding.round(v), |b| b.0);
+                                    let contained =
+                                        !hard_bounds.1.is_some_and(|max| rounded >= max)
+                                            && !hard_bounds.0.is_some_and(|min| rounded < min);
+                                    let ord = if contained {
+                                        let o = keyed_ord_cached(
+                                            &mut cache, ords, keys, owning, rounded,
+                                        );
+                                        slot(counts, o as usize);
+                                        o
+                                    } else {
+                                        NOT_KEPT
+                                    };
+                                    cur = bucket.map(|(from, to)| (from, to, ord, owning));
+                                    if owning == 0 {
+                                        if !grid_tried {
+                                            grid_tried = true;
+                                            grid = DateGrid::new(rounding, v);
+                                        }
+                                        if let Some(g) = grid.as_deref_mut() {
+                                            if let Some(p) = g.position(v) {
+                                                if g.start(p) == rounded {
+                                                    g.put(p, ord);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ord
+                                }
+                            }
+                        };
+                        if ord == NOT_KEPT {
+                            return;
+                        }
+                        if let Some(c) = counts.get_mut(ord as usize) {
+                            *c += 1;
+                        }
+                        // `kept` counts documents of this window, so it stays below
+                        // its length.
+                        if let (Some(d), Some(o)) = (win_docs.get_mut(kept), win_ords.get_mut(kept))
+                        {
+                            *d = doc;
+                            *o = ord;
+                            kept += 1;
+                        }
+                    },
+                );
+            }
+            leaf.date_grid = grid;
+            leaf.grid_tried = grid_tried;
             leaf.key_cache = cache;
             win_docs.truncate(kept);
             win_ords.truncate(kept);
@@ -6133,6 +6323,66 @@ fn group(keys: &[(u32, i64)], owners: &[u32]) -> FastMap<u32, Vec<u32>> {
 mod tests {
     use super::*;
 
+    /// The grid places every date in the bucket `DateRounding::bucket` gives
+    /// it, for each uniform rounding, zone offset and date (negative, huge, on
+    /// and next to a boundary), and is absent for a calendar month.
+    #[test]
+    fn date_grid_matches_rounding() {
+        let zone = [0, 19_800_000, -25_200_000];
+        let kinds = [
+            RoundingKind::Interval(86_400_000),
+            RoundingKind::Interval(7),
+            RoundingKind::Interval(1_000_000_007),
+            RoundingKind::Interval(1 << 20),
+            RoundingKind::Unit(DateUnit::Day),
+            RoundingKind::Unit(DateUnit::Hour),
+            RoundingKind::Unit(DateUnit::Week),
+            RoundingKind::Unit(DateUnit::Second),
+        ];
+        let mut x = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for kind in kinds {
+            for zone_ms in zone {
+                for offset in [0, 3_600_000] {
+                    let r = DateRounding {
+                        kind,
+                        zone_ms,
+                        offset,
+                    };
+                    let first = 1_735_700_000_000_i64;
+                    let grid = DateGrid::new(&r, first).expect("uniform");
+                    let mut values = vec![i64::MIN, i64::MAX, 0, -1, first, first - 1];
+                    for _ in 0..4000 {
+                        let spread =
+                            [1_000_i64, 1_000_000_000, 100_000_000_000_000][(next() % 3) as usize];
+                        values.push(first + (next() % (2 * spread as u64)) as i64 - spread);
+                    }
+                    for v in values {
+                        let Some(p) = grid.position(v) else { continue };
+                        let from = grid.start(p);
+                        let Some((f, t)) = r.bucket(v) else { continue };
+                        assert_eq!(
+                            (from, from + grid.width),
+                            (f, t),
+                            "{kind:?} {zone_ms} {offset} {v}"
+                        );
+                    }
+                }
+            }
+        }
+        let month = DateRounding {
+            kind: RoundingKind::Unit(DateUnit::Month),
+            zone_ms: 0,
+            offset: 0,
+        };
+        assert!(DateGrid::new(&month, 1_735_700_000_000).is_none());
+    }
+
     /// The ordinal table hands out what a map of `(owning, key)` to the next
     /// ordinal would, across its growth.
     #[test]
@@ -6270,6 +6520,8 @@ mod tests {
             win_ords: Vec::new(),
             term_buckets: Vec::new(),
             key_cache: KeyCache::default(),
+            date_grid: None,
+            grid_tried: false,
             zone_ords: Vec::new(),
             folded: 0,
             missing: None,
