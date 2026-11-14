@@ -13,7 +13,7 @@
 //!
 //! Every exported function runs inside [`error::guard`], so a panic becomes
 //! [`FfiStatus::Panic`] and never unwinds into the JVM. Native objects cross
-//! the boundary as generation-tagged `u64` handles ([`handle::SlotMap`]),
+//! the boundary as generation-tagged `u64` handles ([`lucene_engine::handle::SlotMap`]),
 //! validated on every call; failures return a status code and leave a
 //! thread-local message.
 
@@ -86,7 +86,6 @@ mod engine_tests;
 pub(crate) mod engine_writer;
 mod error;
 mod ffm_bridge;
-mod handle;
 mod jvm_aggs;
 mod jvm_fetch;
 mod jvm_highlight;

@@ -5,23 +5,10 @@
 //! exclusively; entries are `Arc`s, so a search clones its handle out and runs
 //! with no lock held.
 
-use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{OnceLock, RwLock};
 
-use crate::handle::{RegistryTag, SlotMap};
-
-/// Takes `lock`'s exclusive guard, recovering the value if an earlier
-/// holder panicked. Sound because [`SlotMap`]'s `insert` and `remove` never
-/// panic mid-mutation, so a poisoned registry is never half-written; handle
-/// validation is unchanged, and one panicking call cannot wedge every later
-/// call on the registry.
-pub(crate) fn lock_recovering<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Takes `lock`'s shared guard, recovering from poison as [`lock_recovering`] does.
-pub(crate) fn read_recovering<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(PoisonError::into_inner)
-}
+use lucene_engine::handle::{RegistryTag, SlotMap};
+pub(crate) use lucene_engine::registry::{jvm_readers, lock_recovering, read_recovering};
 
 /// A `ConcurrentIndexWriter` together with the directory it borrows and the
 /// merge scheduler whose threads merge for it.
@@ -57,12 +44,6 @@ unsafe impl Send for WriterHandle {}
 unsafe impl Sync for WriterHandle {}
 
 pub use lucene_engine::reader_handle::JvmReaderHandle;
-
-/// Handles are `Arc`s so a search clones one out and runs with no lock held.
-pub fn jvm_readers() -> &'static RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>> {
-    static REGISTRY: OnceLock<RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::JvmReader)))
-}
 
 /// The OpenSearch engine's writers (`engine_writer.rs`): one per shard. The
 /// registry lock is held only to clone the `Arc`.
