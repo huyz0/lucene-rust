@@ -2826,6 +2826,13 @@ pub(crate) fn segment_match_bits(
     global: Option<&crate::GlobalStats>,
 ) -> Result<lucene_util::fixed_bit_set::FixedBitSet> {
     use lucene_util::fixed_bit_set::FixedBitSet;
+    if let (Clause::Extended(e), Some(reader)) = (clause, seg.reader) {
+        if let crate::extended_query::ExtendedQuery::NumericDocValuesRange(q) = &**e {
+            if let Some(bits) = super::ranges::dense_range_bits(reader, q)? {
+                return Ok(bits);
+            }
+        }
+    }
     struct Bits(FixedBitSet);
     impl crate::collector::ScoringCollector for Bits {
         fn collect(&mut self, doc_id: i32, _score: f32) {

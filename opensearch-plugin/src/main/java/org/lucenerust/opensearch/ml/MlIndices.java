@@ -33,6 +33,7 @@ public final class MlIndices {
     public static final String TASK = ".plugins-ml-task";
     public static final String CONFIG = ".plugins-ml-config";
     public static final String CONNECTOR = ".plugins-ml-connector";
+    public static final String AGENT = ".plugins-ml-agent";
 
     private final Client client;
     private final ClusterService clusterService;
@@ -49,7 +50,8 @@ public final class MlIndices {
             new SystemIndexDescriptor(MODEL, "ML Commons Model System Index"),
             new SystemIndexDescriptor(TASK, "ML Commons Task System Index"),
             new SystemIndexDescriptor(CONFIG, "ML Commons Configuration System Index"),
-            new SystemIndexDescriptor(CONNECTOR, "ML Commons Connector System Index")
+            new SystemIndexDescriptor(CONNECTOR, "ML Commons Connector System Index"),
+            new SystemIndexDescriptor(AGENT, "ML Commons Agent System Index")
         );
     }
 
