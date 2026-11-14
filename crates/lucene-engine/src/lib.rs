@@ -30,6 +30,7 @@ pub mod join;
 pub mod knn;
 pub mod knn_painless;
 pub mod knn_score;
+pub mod live;
 pub mod max_sim_query;
 pub mod memory;
 pub mod nodes;
@@ -42,6 +43,7 @@ pub mod reader_search;
 pub mod registry;
 pub mod similarity;
 pub mod status;
+pub mod writer;
 pub mod writer_blob;
 pub mod writer_error;
 

@@ -137,3 +137,38 @@ mod tests {
         }
     }
 }
+
+thread_local! {
+    /// The shard paths the running call read through ([`note_shard`]).
+    static CALL_SHARDS: std::cell::RefCell<Vec<std::sync::Arc<str>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Notes that the running call reads the shard at `path`: if a page of a
+/// file under it fails to decode (an encrypted chunk that fails
+/// authentication) or cannot be read from disk while the call runs, the
+/// boundary's panic guard fails the call with that error.
+///
+/// Noting a shard makes the call checked
+/// ([`lucene_store::read_failures::set_checked`]) until it ends: only then
+/// may a page that cannot be read be handed to it as zeros, since only then
+/// does the failure fail the call.
+pub fn note_shard(path: &std::sync::Arc<str>) {
+    lucene_store::read_failures::set_checked(true);
+    CALL_SHARDS.with(|c| {
+        let mut shards = c.borrow_mut();
+        if !shards.iter().any(|s| std::sync::Arc::ptr_eq(s, path)) {
+            shards.push(std::sync::Arc::clone(path));
+        }
+    });
+}
+
+/// Runs `f` over the shards the running call has noted.
+pub fn call_shards<R>(f: impl FnOnce(&[std::sync::Arc<str>]) -> R) -> R {
+    CALL_SHARDS.with(|c| f(&c.borrow()))
+}
+
+/// Forgets the noted shards, as a call begins.
+pub fn clear_call_shards() {
+    CALL_SHARDS.with(|c| c.borrow_mut().clear());
+}
