@@ -59,6 +59,14 @@ schedules it: run `ci` by hand from the Actions tab to check `main`, or a
 pull request, on arm64 before a change that touches SIMD, atomics
 or unsafe code; a manual run gets its own concurrency group.
 
+## Main runs are not cancelled
+
+Pull request runs are cancelled by a newer push to the same branch, and so are
+manual runs by nothing. A push to `main` is not cancelled by the next merge:
+with merges every 6 to 15 minutes and a 40 minute gate, nearly every `main` run
+was cancelled and the coverage bar never reported. GitHub keeps one running and
+one pending run per group, so at most one older merge is skipped between them.
+
 ## Coverage runs on main, not on pull requests
 
 Instrumentation took ~15 of `gate (x64)`'s 39 minutes (the llvm-cov build and
