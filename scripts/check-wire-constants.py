@@ -120,6 +120,7 @@ JAVA_ONLY = {
     ("MlMemory.java", "DEFAULT_MAX"): "stock's default page size of the memory listings, Java only",
     ("MlChatRunner.java", "DEFAULT_MAX_ITERATIONS"): "stock's default max_iteration of a conversational agent, Java only",
     ("MlChatRunner.java", "DEFAULT_HISTORY"): "stock's default message_history_limit of a conversational agent, Java only",
+    ("MlPlanRunner.java", "DEFAULT_MAX_STEPS"): "stock's default max_steps of a plan_execute_and_reflect agent, Java only",
     ("MlStats.java", "RING"): "how many recent prediction timings the stats ring keeps for percentiles, in Java only",
     ("NativeMemory.java", "CANCEL_POLL_MILLIS"): "how often the Java watcher polls tasks for a cancel; Rust only sees the cancel call",
     ("KnnHitsMemo.java", "PER_CONTEXT"): "how many queries' k-NN hits a reader context keeps in Java between phases",
