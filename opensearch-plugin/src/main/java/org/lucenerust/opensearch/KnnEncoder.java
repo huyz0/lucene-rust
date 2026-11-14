@@ -20,7 +20,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * The KNN nodes of the query tree ({@code queries.rs}) and the whole-reader KNN request
- * ({@code jvm_knn.rs}):
+ * ({@code knn.rs}):
  *
  * <ul>
  *   <li>{@link KnnLeafVectorQuery}, node 39: the field, the target, the kind ({@link #KNN_TOP_K}
