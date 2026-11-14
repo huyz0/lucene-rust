@@ -1897,7 +1897,9 @@ impl<'a> NumericReader<'a> {
                 set_first_bits(present, have);
                 return Ok(());
             } else if let (true, Some(cursor)) = (
-                self.sparse_fast.is_some() || self.entry.block_shift.is_some(),
+                self.sparse_fast.is_some()
+                    || self.entry.block_shift.is_some()
+                    || self.entry.adaptive.is_some(),
                 self.docs.as_mut(),
             ) {
                 let sparse = self.sparse_fast;
@@ -1942,7 +1944,17 @@ impl<'a> NumericReader<'a> {
                     // The values, packed at the front, then moved to their
                     // documents from the last down (each moves up or stays).
                     let mut n = 0;
-                    if let (None, Some(shift)) = (sparse, self.entry.block_shift) {
+                    if let Some(adaptive) = &self.entry.adaptive {
+                        adaptive_run(
+                            self.data,
+                            self.entry,
+                            adaptive,
+                            first as i64,
+                            &mut values[..count],
+                            &mut self.adaptive_block,
+                        )?;
+                        n = count;
+                    } else if let (None, Some(shift)) = (sparse, self.entry.block_shift) {
                         self.decode_varying_run(shift, first as i64, &mut values[..count])?;
                         n = count;
                     }
