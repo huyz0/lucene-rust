@@ -7,10 +7,12 @@ license.workspace = true
 [dependencies]
 lucene-util = { path = "../lucene-util" }
 lucene-codecs = { path = "../lucene-codecs" }
+lucene-store = { path = "../lucene-store" }
 lucene-pattern-text = { path = "../lucene-pattern-text" }
 lucene-search = { path = "../lucene-search" }
 lucene-aggs = { path = "../lucene-aggs" }
 lucene-index = { path = "../lucene-index" }
+lucene-misc = { path = "../lucene-misc" }
 lucene-sandbox = { path = "../lucene-sandbox" }
 lucene-facet = { path = "../lucene-facet" }
 lucene-tensor = { path = "../lucene-tensor" }
@@ -64,4 +66,3 @@ embedded-data = [
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
-lucene-store = { path = "../lucene-store" }

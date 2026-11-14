@@ -17,14 +17,20 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agg_tree;
 pub mod alloc;
 pub mod analysis;
 pub mod analysis_modules;
 pub mod clauses;
+pub mod fetch;
 pub mod function_score;
+pub mod handle;
 pub mod invert;
+pub mod join;
+pub mod knn;
 pub mod knn_painless;
 pub mod knn_score;
+pub mod live;
 pub mod max_sim_query;
 pub mod memory;
 pub mod nodes;
@@ -32,9 +38,14 @@ pub mod painless_score;
 pub mod pattern_phrase;
 pub mod queries;
 pub mod query_blob;
+pub mod reader_handle;
+pub mod reader_search;
+pub mod registry;
 pub mod similarity;
 pub mod status;
+pub mod writer;
 pub mod writer_blob;
 pub mod writer_error;
+pub mod writer_ops;
 
 pub use status::Status;

@@ -318,7 +318,12 @@ jobs:
         run: |
           echo "LUCENE_ML_LIBTORCH=$(scripts/fetch-libtorch.sh "$RUNNER_TEMP/libtorch")" >> "$GITHUB_ENV"
           echo "LUCENE_ML_TORCH_SHIMS=$(scripts/build-torch-shim.sh "$RUNNER_TEMP/torch-shim" | paste -sd:)" >> "$GITHUB_ENV"
+      # Pull requests run the suite plain (below); the instrumented run, the
+      # 95% line-coverage bar and its report run on a push to main and in a
+      # manual run. Instrumentation costs ~15 of this job's 39 minutes
+      # (docs/ci.md).
       - name: Tests + coverage gate
+        if: github.event_name != 'pull_request'
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'
@@ -333,7 +338,7 @@ jobs:
       # per-file view so the difference stays visible rather than silent. This
       # step is deliberately non-blocking.
       - name: Per-file coverage report (non-blocking)
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         run: |
           # Column 10 is Line coverage. Column 4 is Region coverage -- a
           # different, always-lower metric. `--fail-under-lines` uses lines, and
@@ -346,6 +351,26 @@ jobs:
           else
             echo "All files at or above 95% line coverage." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # Every test, uninstrumented, on a pull request. A push to main and a
+      # manual run get the same tests through the coverage step above.
+      - name: Tests (plain)
+        if: github.event_name == 'pull_request'
+        run: cargo nextest run --workspace
+
+      # Neither llvm-cov nor nextest runs doctests; they build plain, which
+      # also warms the cache a pull request's plain build restores.
+      - name: Doctests
+        run: cargo test --workspace --doc
+
+      # The shipped way too: language modules reading their dictionaries from
+      # data packs. See docs/mechanical-gates.md#data-packs.
+      - name: Language modules read their dictionaries from data packs
+        run: |
+          scripts/make-data-packs.sh target/data-packs
+          LUCENE_RUST_PACKS="$PWD/target/data-packs" cargo nextest run --no-default-features \
+            -p lucene-analysis-kuromoji -p lucene-analysis-nori -p lucene-analysis-smartcn \
+            -p lucene-analysis-morfologik -p lucene-analysis-stempel
 
       - name: Slowest tests (non-blocking)
         if: always()
@@ -644,6 +669,34 @@ jobs:
         run: ./scripts/test-framework-stress.sh
 
   # ---------------------------------------------------------------------------
+  # liblucene_ffi, built once for the OpenSearch jobs. Each of the four x64
+  # ones used to compile the same release library (3.4 to 5.3 minutes apiece
+  # on 2026-11-14); they download this one. The FIPS variant is a different
+  # build and the arm64 plugin job builds its own.
+  # ---------------------------------------------------------------------------
+  ffi-lib:
+    name: liblucene_ffi (x64, for the OpenSearch jobs)
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: false
+      # What opensearch-plugin/build.gradle's cargoBuild runs.
+      - name: Build liblucene_ffi
+        run: cargo build --profile release -p lucene-ffi --features mimalloc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffi-lib-x64
+          path: target/release/liblucene_ffi.so
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # The OpenSearch plugin, on the architectures it ships for. Builds the
   # plugin against the pinned OpenSearch image's own jars, runs the JVM-side
   # differential self test, installs it into a real 3.9.0 node, and runs the
@@ -652,7 +705,7 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch:
     name: opensearch plugin (${{ matrix.arch }})
-    needs: changes
+    needs: [changes, ffi-lib]
     if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
@@ -679,6 +732,16 @@ jobs:
         with:
           shared-key: release
           save-if: false
+      # The library the ffi-lib job built, instead of compiling it again here
+      # (docs/ci.md). Gradle's cargoBuild is skipped when nativeLib is set.
+      - uses: actions/download-artifact@v4
+        if: matrix.arch == 'x64'
+        with:
+          name: ffi-lib-x64
+          path: target/release
+      - name: Use the prebuilt library
+        if: matrix.arch == 'x64'
+        run: echo "ORG_GRADLE_PROJECT_nativeLib=$PWD/target/release/liblucene_ffi.so" >> "$GITHUB_ENV"
       - name: Verify the plugin on a real OpenSearch node
         run: ./scripts/verify-opensearch.sh --docs 20000 --yaml
 
@@ -689,7 +752,7 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch-engine:
     name: opensearch engine
-    needs: changes
+    needs: [changes, ffi-lib]
     if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -710,6 +773,14 @@ jobs:
         with:
           shared-key: release
           save-if: false
+      # The library the ffi-lib job built, instead of compiling it again here
+      # (docs/ci.md). Gradle's cargoBuild is skipped when nativeLib is set.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffi-lib-x64
+          path: target/release
+      - name: Use the prebuilt library
+        run: echo "ORG_GRADLE_PROJECT_nativeLib=$PWD/target/release/liblucene_ffi.so" >> "$GITHUB_ENV"
       # The derived tests must be exactly derive_engine_tests.py's output from
       # OpenSearch 3.9.0's own sources (pinned by SHA-256): no hand edits, no
       # script change left un-run.
@@ -762,7 +833,7 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch-upgrade:
     name: opensearch 2.x upgrade
-    needs: changes
+    needs: [changes, ffi-lib]
     if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -783,6 +854,14 @@ jobs:
         with:
           shared-key: release
           save-if: false
+      # The library the ffi-lib job built, instead of compiling it again here
+      # (docs/ci.md). Gradle's cargoBuild is skipped when nativeLib is set.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffi-lib-x64
+          path: target/release
+      - name: Use the prebuilt library
+        run: echo "ORG_GRADLE_PROJECT_nativeLib=$PWD/target/release/liblucene_ffi.so" >> "$GITHUB_ENV"
       - name: An OpenSearch 2.19 index upgraded in place to 3.9.0, served natively
         run: ./scripts/verify-opensearch-upgrade.sh
 
@@ -793,7 +872,7 @@ jobs:
   # ---------------------------------------------------------------------------
   opensearch-knn:
     name: opensearch k-NN compatibility
-    needs: changes
+    needs: [changes, ffi-lib]
     if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -814,6 +893,14 @@ jobs:
         with:
           shared-key: release
           save-if: false
+      # The library the ffi-lib job built, instead of compiling it again here
+      # (docs/ci.md). Gradle's cargoBuild is skipped when nativeLib is set.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffi-lib-x64
+          path: target/release
+      - name: Use the prebuilt library
+        run: echo "ORG_GRADLE_PROJECT_nativeLib=$PWD/target/release/liblucene_ffi.so" >> "$GITHUB_ENV"
       - name: The plugin zip
         run: |
           scripts/opensearch-dist.sh
@@ -912,6 +999,7 @@ jobs:
       - opensearch-knn
       - opensearch-upgrade
       - fuzz
+      - ffi-lib
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

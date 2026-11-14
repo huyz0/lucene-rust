@@ -22,7 +22,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * The native surface of {@code liblucene_ffi}, reached through the Foreign Function & Memory API:
- * each method is a downcall to one of the library's C-ABI functions ({@code jvm_reader.rs}, {@code
+ * each method is a downcall to one of the library's C-ABI functions ({@code reader_search.rs}, {@code
  * engine_writer.rs}, and {@code ffm_bridge.rs} for what those do not offer).
  *
  * <p>Every call returns a status code ({@link #OK} on success) and never throws: results come
@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 179;
+    public static final int EXPECTED_ABI_VERSION = 180;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -562,6 +562,14 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_LUCENE = bind(
             "ffi_live_view_lucene",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle WRITER_SET_ADAPTIVE_AUTO = bind(
+            "ffi_engine_writer_set_adaptive_auto",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_ADAPTIVE_CHOICE = bind(
+            "ffi_engine_writer_adaptive_choice",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle WRITER_SET_LIVE_STALENESS = bind(
             "ffi_engine_writer_set_live_staleness",
@@ -1122,7 +1130,7 @@ public final class NativeBridge {
     }
 
     /**
-     * The reader's top hits for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * The reader's top hits for a KNN request ({@code knn.rs}): global doc ids into {@code
      * outDocs}, scores into {@code outScores}, best first, at most {@code room} of them; returns the
      * status, the hit count in {@code outCount[0]}. An expanded nested search can find more than
      * {@code room}: the status is then {@link #BUFFER_TOO_SMALL} and {@code outCount[0]} the room it
@@ -1472,7 +1480,7 @@ public final class NativeBridge {
     /**
      * Runs a query blob's matches through an aggregation tree blob ({@link
      * NativeAggregationTree.Tree#blob}): the encoded shard results in {@code out[0]} (the layout
-     * {@code jvm_aggs.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
+     * {@code agg_tree.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
      */
     public static int aggregateTree(long handle, byte[] query, byte[] tree, byte[][] out) {
         return aggregateTree(handle, query, tree, false, out);
@@ -1520,7 +1528,7 @@ public final class NativeBridge {
 
     /**
      * Runs a hybrid query's shard phase ({@link NativeHybrid}): the encoded slices' answers
-     * ({@code search_hybrid_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     * ({@code search_hybrid_blobs} in {@code reader_search.rs}) in {@code out[0]}.
      */
     public static int searchHybrid(long handle, byte[] blob, byte[][] out) {
         if (blob == null) {
@@ -1548,7 +1556,7 @@ public final class NativeBridge {
     /**
      * Runs a query blob collapsed ({@link NativeCollapse}): the sort blob's keys ({@link
      * SortEncoder}) on the collapse blob's field, {@code topN} groups per slice; the encoded
-     * groups ({@code search_collapsed_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     * groups ({@code search_collapsed_blobs} in {@code reader_search.rs}) in {@code out[0]}.
      */
     public static int searchCollapsed(long handle, byte[] query, byte[] sort, byte[] collapse, int topN, byte[][] out) {
         if (query == null) {
@@ -1597,7 +1605,7 @@ public final class NativeBridge {
      * Rescores {@code docs}/{@code scores} (a search's hits, best first, global ids) in place as
      * OpenSearch's {@code QueryRescorer} does: the query blob's query over the top {@code window},
      * {@code mode} the {@code QueryRescoreMode} ordinal ({@code rescore_hits} in {@code
-     * jvm_reader.rs}).
+     * reader_search.rs}).
      */
     public static int rescore(
         long handle,
@@ -1645,7 +1653,7 @@ public final class NativeBridge {
 
     /**
      * Segment {@code segment}'s document {@code doc} (segment-local): its stored fields, in stored
-     * order, encoded as {@code jvm_fetch.rs} documents ({@link NativeStoredFieldsReader} reads them),
+     * order, encoded as {@code fetch.rs} documents ({@link NativeStoredFieldsReader} reads them),
      * lent to {@code use} in native memory and freed when it returns.
      */
     public static int document(long handle, int segment, int doc, Borrowed use) throws IOException {
@@ -1655,7 +1663,7 @@ public final class NativeBridge {
 
     /**
      * Segment {@code segment}'s document {@code doc} (segment-local): its values of the fields
-     * numbered {@code fields}, encoded as {@code jvm_fetch.rs}'s doc-values blob, in {@code out[0]}
+     * numbered {@code fields}, encoded as {@code fetch.rs}'s doc-values blob, in {@code out[0]}
      * ({@link NativeDocValues} reads them).
      */
     public static int docValues(long handle, int segment, int doc, int[] fields, byte[][] out) {
@@ -1883,7 +1891,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The counters {@link #aggCacheStats} reads. */
+    /** The counters {@link #aggCacheStats} reads ({@code AGG_CACHE_STATS} in {@code jvm_aggs.rs}). */
     public static final int AGG_CACHE_STATS = 6;
 
     /**
@@ -2185,7 +2193,7 @@ public final class NativeBridge {
         }
     }
 
-    // ---- The engine writer (engine_writer.rs). ----
+    // ---- The engine writer (writer.rs). ----
 
     /** Indices into {@link #writerStats}' output. */
     public static final int STAT_RAM_BYTES = 0;
@@ -2966,7 +2974,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The commit-data upcall's statuses ({@code COMMIT_DATA_*} in {@code engine_writer.rs}). */
+    /** The commit-data upcall's statuses ({@code COMMIT_DATA_*} in {@code writer.rs}). */
     public static final int COMMIT_DATA_OK = 0;
     public static final int COMMIT_DATA_BUFFER_TOO_SMALL = 1;
     public static final int COMMIT_DATA_FAILED = 2;
@@ -3291,7 +3299,7 @@ public final class NativeBridge {
         }
     }
 
-    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code engine_writer.rs}). */
+    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code writer.rs}). */
     public static final int MERGE_POLICY_TIERED = 0;
     public static final int MERGE_POLICY_LOG_BYTE_SIZE = 1;
     public static final int MERGE_POLICY_NONE = 2;
@@ -3330,7 +3338,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The warm upcall's answers: {@code WARM_OK} in {@code engine_writer.rs}, and any other value fails the merge. */
+    /** The warm upcall's answers: {@code WARM_OK} in {@code writer.rs}, and any other value fails the merge. */
     public static final int WARM_OK = 0;
     public static final int WARM_FAILED = 1;
 
@@ -3458,7 +3466,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code engine_writer.rs}). */
+    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code writer.rs}). */
     public static final int MERGE_EVENT_BEFORE = 0;
     public static final int MERGE_EVENT_AFTER = 1;
     public static final int MERGE_OK = 0;
@@ -3635,6 +3643,35 @@ public final class NativeBridge {
     public static int liveViewClose(long view) {
         try {
             return (int) H.LIVE_VIEW_CLOSE.invokeExact(view);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code index.codec.adaptive_doc_values: auto}: the writer chooses its doc-values format from
+     * its first documents, or keeps the choice its commit holds. Call before the first document.
+     */
+    public static int writerSetAdaptiveAuto(long writer) {
+        try {
+            return (int) H.WRITER_SET_ADAPTIVE_AUTO.invokeExact(writer);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@code auto}'s choice into {@code out[0]}: 1 adaptive, 0 stock, -1 not made yet. */
+    public static int writerAdaptiveChoice(long writer, int[] out) {
+        if (out == null || out.length < 1) {
+            return nullArgument("out");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = s.alloc(Integer.BYTES);
+            int rc = (int) H.WRITER_ADAPTIVE_CHOICE.invokeExact(writer, slot);
+            if (rc == OK) {
+                out[0] = slot.get(JAVA_INT, 0);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }

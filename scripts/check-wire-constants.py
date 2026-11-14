@@ -14,7 +14,7 @@ This check pairs every integer `static final` in the plugin's main sources
 with its Rust counterpart and fails when the values differ:
 
   * The Rust candidates are the `const`s of the `lucene-ffi` files the Java
-    file names (`jvm_aggs.rs`, ...) plus those `EXTRA_FILES` adds. A Rust
+    file names (`agg_tree.rs`, ...) plus those `EXTRA_FILES` adds. A Rust
     constant pairs when its name is the Java name, or the Java name behind
     the Java file's `PREFIXES` entry (`AGG_TERMS` for `NativeAggregationTree`'s
     `TERMS`); `RENAMES` covers the rest. The exact name wins over a prefixed
@@ -58,10 +58,10 @@ MAX_SIM_RS = os.path.join(ROOT, "crates", "lucene-util", "src", "max_sim.rs")
 
 # Rust files a Java file encodes for without naming them.
 EXTRA_FILES = {
-    "NativeCollapse.java": ["jvm_reader.rs"],
-    "NativeStoredFieldsReader.java": ["jvm_fetch.rs"],
-    "NativeTopHits.java": ["jvm_aggs.rs"],
-    "NativeSignificantTerms.java": ["jvm_aggs.rs"],
+    "NativeCollapse.java": ["reader_search.rs"],
+    "NativeStoredFieldsReader.java": ["fetch.rs"],
+    "NativeTopHits.java": ["agg_tree.rs"],
+    "NativeSignificantTerms.java": ["agg_tree.rs"],
     "QueryEncoder.java": ["nodes.rs", "query_blob.rs"],
     "MultiVectorEncoding.java": ["max_sim.rs"],
 }
@@ -85,14 +85,14 @@ RENAMES = {
     ("ExtendedEncoder.java", "MAX_PATTERN_TERMS"): ("pattern_phrase.rs", "MAX_TERMS"),
     ("QueryEncoder.java", "MAX_DEPTH"): ("clauses.rs", "MAX_CLAUSE_DEPTH"),
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
-    ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
-    ("SortEncoder.java", "NESTED_KEY"): ("jvm_reader.rs", "SORT_NESTED"),
-    ("NativeDocValues.java", "NONE"): ("jvm_fetch.rs", "DV_NONE"),
-    ("NativeDocValues.java", "SORTED_NUMERIC"): ("jvm_fetch.rs", "DV_SORTED_NUMERIC"),
-    ("NativeDocValues.java", "SORTED_SET"): ("jvm_fetch.rs", "DV_SORTED_SET"),
-    ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),
-    ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("jvm_reader.rs", "MAX_HYBRID_QUERIES"),
-    ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
+    ("GeoEncoder.java", "MAX_ORIGINS"): ("reader_search.rs", "MAX_GEO_ORIGINS"),
+    ("SortEncoder.java", "NESTED_KEY"): ("reader_search.rs", "SORT_NESTED"),
+    ("NativeDocValues.java", "NONE"): ("fetch.rs", "DV_NONE"),
+    ("NativeDocValues.java", "SORTED_NUMERIC"): ("fetch.rs", "DV_SORTED_NUMERIC"),
+    ("NativeDocValues.java", "SORTED_SET"): ("fetch.rs", "DV_SORTED_SET"),
+    ("SortEncoder.java", "MAX_KEYS"): ("reader_search.rs", "MAX_SORT_KEYS"),
+    ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("reader_search.rs", "MAX_HYBRID_QUERIES"),
+    ("SortEncoder.java", "GEO"): ("reader_search.rs", "SORT_GEO_DISTANCE"),
     ("AnalyzerSpec.java", "VERSION"): ("analysis.rs", "SPEC_VERSION"),
     ("NativeBridge.java", "EXPECTED_ABI_VERSION"): ("abi.rs", "JVM_ABI_VERSION"),
     # format.rs re-exports these from backend.rs.

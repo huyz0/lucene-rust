@@ -55,9 +55,9 @@ use crate::ml_torch;
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::ffm_bridge::{clear_out, give};
-use crate::handle::{RegistryTag, SlotMap};
 use crate::raw::{bytes_from_raw, str_from_raw};
 use crate::registry::{lock_recovering, read_recovering};
+use lucene_engine::handle::{RegistryTag, SlotMap};
 
 /// A deployed model behind a handle.
 pub(crate) enum Model {

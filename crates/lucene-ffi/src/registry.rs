@@ -1,29 +1,11 @@
 //! Process-wide handle registries. Native objects never cross the boundary
-//! as pointers: each lives in a global [`SlotMap`] behind a `u64` handle the
+//! as pointers: each lives in a global `SlotMap` behind a `u64` handle the
 //! caller carries between calls. Each registry is an `RwLock`, so lookups from
 //! many JVM threads share the lock and only open and close take it
 //! exclusively; entries are `Arc`s, so a search clones its handle out and runs
 //! with no lock held.
 
-use std::sync::{OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-use lucene_util::fixed_bit_set::FixedBitSet;
-
-use crate::handle::{RegistryTag, SlotMap};
-
-/// Takes `lock`'s exclusive guard, recovering the value if an earlier
-/// holder panicked. Sound because [`SlotMap`]'s `insert` and `remove` never
-/// panic mid-mutation, so a poisoned registry is never half-written; handle
-/// validation is unchanged, and one panicking call cannot wedge every later
-/// call on the registry.
-pub(crate) fn lock_recovering<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Takes `lock`'s shared guard, recovering from poison as [`lock_recovering`] does.
-pub(crate) fn read_recovering<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(PoisonError::into_inner)
-}
+pub(crate) use lucene_engine::registry::{jvm_readers, lock_recovering, read_recovering};
 
 /// A `ConcurrentIndexWriter` together with the directory it borrows and the
 /// merge scheduler whose threads merge for it.
@@ -58,77 +40,14 @@ unsafe impl Send for WriterHandle {}
 // SAFETY: as for `Send` above.
 unsafe impl Sync for WriterHandle {}
 
-/// A `DirectoryReader` opened over a JVM reader's segments, plus that JVM
-/// reader's live docs (`jvm_reader.rs`). `live_docs[i]` is segment `i`'s
-/// mask, `None` meaning no deletions; it **replaces** whatever the segment
-/// reader decoded from `.liv`, because an NRT reader's deletions live in the
-/// JVM's memory, not on disk.
-pub struct JvmReaderHandle {
-    pub reader: lucene_search::directory_reader::DirectoryReader,
-    pub live_docs: Vec<Option<FixedBitSet>>,
-    /// Deleted documents per segment (`maxDoc - live_docs.cardinality()`),
-    /// kept alongside the mask so total-hits lower bounds need not recount it
-    /// per query.
-    pub deleted: Vec<i64>,
-    /// `live_docs` with the deletes issued since the reader's commit
-    /// applied, as far as the last live search read them
-    /// ([`crate::live::CommitLive`]).
-    pub commit_live: std::sync::Mutex<Option<crate::live::CommitLive>>,
-    /// How many of the reader's segments, from the first, the aggregation
-    /// segment cache may keep parts of: the committed ones. A realtime view's
-    /// buffers, appended after them, change with every view.
-    pub cacheable: usize,
-    /// Each segment's identity in the aggregation segment cache, found on
-    /// first use: `None` past [`Self::cacheable`].
-    pub agg_identities:
-        std::sync::OnceLock<Vec<Option<lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity>>>,
-    /// The shard path the reader's files are under, noted for each call
-    /// that reads them ([`crate::error::note_shard`]).
-    pub path: std::sync::Arc<str>,
-}
+pub use lucene_engine::reader_handle::JvmReaderHandle;
 
-impl JvmReaderHandle {
-    /// [`Self::agg_identities`], found now when no search has yet.
-    pub fn agg_identities(
-        &self,
-    ) -> &[Option<lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity>] {
-        self.agg_identities.get_or_init(|| {
-            self.reader
-                .segment_readers()
-                .iter()
-                .zip(&self.live_docs)
-                .enumerate()
-                .map(|(i, (r, live))| {
-                    (i < self.cacheable).then(|| {
-                        lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity::of(
-                            r,
-                            live.as_ref(),
-                        )
-                    })
-                })
-                .collect()
-        })
-    }
-}
-
-/// Handles are `Arc`s so a search clones one out and runs with no lock held.
-pub fn jvm_readers() -> &'static RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>> {
-    static REGISTRY: OnceLock<RwLock<SlotMap<std::sync::Arc<JvmReaderHandle>>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::JvmReader)))
-}
-
-/// The OpenSearch engine's writers (`engine_writer.rs`): one per shard. The
-/// registry lock is held only to clone the `Arc`.
-pub fn engine_writers(
-) -> &'static RwLock<SlotMap<std::sync::Arc<crate::engine_writer::EngineWriter>>> {
-    static REGISTRY: OnceLock<RwLock<SlotMap<std::sync::Arc<crate::engine_writer::EngineWriter>>>> =
-        OnceLock::new();
-    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::EngineWriter)))
-}
+pub(crate) use lucene_engine::registry::engine_writers;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{OnceLock, RwLock};
 
     /// [`lock_recovering`] must hand back the inner value after a writer
     /// panicked holding it, rather than propagating the poison as a second

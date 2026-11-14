@@ -9,6 +9,7 @@
 // a `#[allow(clippy::arithmetic_side_effects)] // TODO(arith-audit)` on its
 // `mod` declaration, and `scripts/check-arith-allows.py` cross-checks the
 // count against that table.
+pub mod adaptive_auto;
 pub mod buffered_updates;
 pub mod check_index;
 pub mod checksum_verify;

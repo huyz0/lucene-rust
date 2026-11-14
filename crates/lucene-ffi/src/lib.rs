@@ -7,13 +7,17 @@
 //!   analyzers built from specs) is in [`lucene_engine`], which has no
 //!   pointers or handles; this crate reads the caller's memory and hands the
 //!   engine slices.
-//! - [`engine_writer`] is the shard's index writer, fed operation blobs.
+//! - [`engine_writer`] is the shard's index writer, fed operation blobs; its
+//!   settings, merge policies, commit points and counters are
+//!   [`lucene_engine::writer_ops`], the writer itself [`lucene_engine::writer`],
+//!   and the live search of its buffers [`lucene_engine::live`]. This crate
+//!   keeps the owned writer handle, the JVM upcalls and the entry points.
 //! - [`store`] binds encrypted shard directories to their key upcall.
 //! - [`ffm_bridge`] holds the allocation and error helpers only FFM needs.
 //!
 //! Every exported function runs inside [`error::guard`], so a panic becomes
 //! [`FfiStatus::Panic`] and never unwinds into the JVM. Native objects cross
-//! the boundary as generation-tagged `u64` handles ([`handle::SlotMap`]),
+//! the boundary as generation-tagged `u64` handles ([`lucene_engine::handle::SlotMap`]),
 //! validated on every call; failures return a status code and leave a
 //! thread-local message.
 
@@ -86,13 +90,11 @@ mod engine_tests;
 pub(crate) mod engine_writer;
 mod error;
 mod ffm_bridge;
-mod handle;
 mod jvm_aggs;
 mod jvm_fetch;
 mod jvm_highlight;
 mod jvm_highlight_fvh;
 mod jvm_highlight_plain;
-mod jvm_join;
 mod jvm_knn;
 mod jvm_reader;
 mod live;
