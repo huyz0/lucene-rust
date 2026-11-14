@@ -5,23 +5,9 @@
 
 use std::sync::atomic::Ordering;
 
-use lucene_codecs::stored_fields::FieldValue;
-use lucene_search::live_segment::live_request;
-use lucene_search::multi_segment::OpenSegment;
-use lucene_search::query::Clause;
-use lucene_search::similarities::Similarity;
-use lucene_search::{
-    search_boolean_query_multi_segment_maxscore_counting, search_term_query_multi_segment_counting,
-    TotalHitsRelation,
-};
-
-use crate::engine_writer::{self, EngineWriter};
+use crate::engine_writer;
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::jvm_fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
-use crate::jvm_reader::lookup;
 use crate::raw::bytes_from_raw;
-use lucene_engine::clauses::map_search_error;
-use lucene_engine::query_blob::{boolean_of, decode_request, JvmQuery};
 
 pub(crate) use lucene_engine::live::*;
 
@@ -152,7 +138,7 @@ pub extern "C" fn ffi_live_view_close(view: u64) -> i32 {
 /// the buffers' own, are its deleted documents. The handle belongs to the
 /// view: closing the view closes it, and the caller must not.
 ///
-/// With a request (`query` as [`decode_request`] reads it, `tree` an
+/// With a request (`query` as `decode_request` reads it, `tree` an
 /// aggregation tree or empty, and `extra` more queries the search runs, a
 /// rescore's, each an `i32` length then the blob, or empty), the buffers
 /// are written without their postings and the handle holds only the terms
@@ -233,50 +219,7 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(request, request_len)? };
-        let knn = lucene_engine::knn::decode(blob)?;
-        if buf_len < knn.k {
-            return Err(FfiStatus::BufferTooSmall);
-        }
-        let v = view(view_id)?;
-        let (request, key) = if knn.whole_segments() {
-            (None, None)
-        } else {
-            let all = Clause::MatchAllDocs(lucene_search::query::MatchAllDocsQuery::new(0));
-            let clause = knn.filter.as_ref().unwrap_or(&all);
-            let refs = [clause];
-            match lucene_search::live_segment::whole_request(&refs) {
-                Some(r) => {
-                    let points = lucene_search::live_segment::reads_points(&refs);
-                    // Keyed by the filter's own encoding, which names a
-                    // filter exactly. The view's request budget is shared
-                    // with the query phase: a view searched with many
-                    // distinct filters leaves later requests the reader of
-                    // every term.
-                    let mut key = b"knn-filter:".to_vec();
-                    key.extend_from_slice(&blob[knn.filter_bytes.clone()]);
-                    (Some((r, points)), Some(key))
-                }
-                None => (None, None),
-            }
-        };
-        let id =
-            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnReader, || {
-                view_reader(handle, &v, request, key)
-            })?;
-        let h = lookup(id, "ffi_live_view_knn: the view's reader closed")?;
-        let base = lookup(handle, "ffi_live_view_knn: unknown or closed reader")?
-            .reader
-            .segment_readers()
-            .len();
-        let buffers = if knn.whole_segments() {
-            Vec::new()
-        } else {
-            buffer_graphs(&v, &h, base, &knn.field)
-        };
-        let hits =
-            lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnSearch, || {
-                lucene_engine::knn::search(&h, &knn, &buffers)
-            })?;
+        let hits = live_knn(handle, view_id, blob, buf_len)?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
     })
@@ -313,103 +256,7 @@ pub unsafe extern "C" fn ffi_live_view_lucene(
     guard(|| {
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
-        let v = view(view_id)?;
-        let h = lookup(handle, "ffi_live_view_lucene: unknown or closed reader")?;
-        let w: &EngineWriter = &v.writer;
-        let wait = std::time::Duration::from_millis(u64::try_from(wait_ms).unwrap_or(0));
-        let deadline = std::time::Instant::now()
-            .checked_add(wait)
-            .unwrap_or_else(std::time::Instant::now);
-        let mut leaves: Vec<(ChunkFiles, i32)> = Vec::new();
-        for (b, plan) in v.view.buffers.iter().zip(&v.plans) {
-            match buffer_segment_files(w, b, plan, true, false, None) {
-                Ok(parts) => leaves.extend(parts.into_iter().map(|(_, _, files)| (files, 0))),
-                Err(lucene_index::index_writer::Error::LiveSearch(_)) => {
-                    // Taken for a flush since the view opened: its documents
-                    // are read from the segment it is flushed as.
-                    let sci = loop {
-                        if let Some(sci) = w.writer().live_published_segment(b.id) {
-                            break sci;
-                        }
-                        if std::time::Instant::now() >= deadline {
-                            set_last_error(format!(
-                                "live view: buffer {} is still being flushed",
-                                b.id
-                            ));
-                            return Err(FfiStatus::InvalidArgument);
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    };
-                    leaves.extend(
-                        plan.iter()
-                            .map(|p| (ChunkFiles::Published(sci.clone()), p.start)),
-                    );
-                }
-                Err(e) => return Err(live_error(e)),
-            }
-        }
-        let masks = if v.view.commit_deletes.is_empty() {
-            None
-        } else {
-            let opened = h.reader.open_segments().map_err(|e| {
-                set_last_error(format!("opening segment postings: {e}"));
-                FfiStatus::Decode
-            })?;
-            let segments = opened.as_open_segments();
-            commit_masks(&v.view.commit_deletes, &h, &segments)?
-        };
-        let mut out = Vec::new();
-        let segments = h.reader.segment_readers().len();
-        put_len(&mut out, segments)?;
-        for i in 0..segments {
-            match masks
-                .as_ref()
-                .and_then(|m| m.get(i))
-                .and_then(Option::as_ref)
-            {
-                Some(mask) => {
-                    put_len(&mut out, mask.words().len())?;
-                    mask.words()
-                        .iter()
-                        .for_each(|w| out.extend_from_slice(&w.to_le_bytes()));
-                }
-                None => out.extend_from_slice(&(-1i32).to_le_bytes()),
-            }
-        }
-        put_len(&mut out, leaves.len())?;
-        for (files, offset) in &leaves {
-            let (kind, sci, dir) = match files {
-                ChunkFiles::Memory(dir, sci) => (0u8, sci, Some(dir)),
-                ChunkFiles::Published(sci) => (1u8, sci, None),
-                ChunkFiles::None => {
-                    set_last_error("live view: a buffered chunk without postings");
-                    return Err(FfiStatus::Decode);
-                }
-            };
-            out.push(kind);
-            put_bytes(&mut out, sci.segment_name.as_bytes())?;
-            out.extend_from_slice(&sci.segment_id);
-            put_bytes(&mut out, sci.codec_name.as_bytes())?;
-            out.extend_from_slice(&offset.to_le_bytes());
-            if let Some(dir) = dir {
-                let names = lucene_store::Directory::list_all(&**dir).map_err(|e| {
-                    set_last_error(format!("live view: listing a chunk's files: {e}"));
-                    FfiStatus::Decode
-                })?;
-                put_len(&mut out, names.len())?;
-                for name in names {
-                    let input = lucene_store::Directory::open(&**dir, &name).map_err(|e| {
-                        set_last_error(format!("live view: reading {name}: {e}"));
-                        FfiStatus::Decode
-                    })?;
-                    put_bytes(&mut out, name.as_bytes())?;
-                    out.extend_from_slice(
-                        &u64::try_from(input.len()).unwrap_or(u64::MAX).to_le_bytes(),
-                    );
-                    out.extend_from_slice(&input);
-                }
-            }
-        }
+        let out = view_lucene(handle, view_id, wait_ms)?;
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
         Ok(())
@@ -447,19 +294,7 @@ pub unsafe extern "C" fn ffi_live_view_point_bounds_alloc(
     guard(|| {
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
-        let h = view(view_id)?;
-        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
-        let bounds = h
-            .writer
-            .writer()
-            .live_point_bounds(&h.view, buffer, field)
-            .map_err(live_error)?;
-        let mut out = Vec::new();
-        if let Some(b) = bounds {
-            out.extend_from_slice(&b.count.to_le_bytes());
-            out.extend_from_slice(&b.min);
-            out.extend_from_slice(&b.max);
-        }
+        let out = live_point_bounds_blob(view_id, buffer, field)?;
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
         Ok(())
@@ -482,48 +317,7 @@ pub unsafe extern "C" fn ffi_live_view_document_alloc(
     guard(|| {
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::clear_out(out_ptr, out_len)? };
-        let h = view(view_id)?;
-        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
-        let mut fields = h
-            .writer
-            .writer()
-            .live_document(&h.view, buffer, doc)
-            .map_err(live_error)?;
-        if let Some(derived) = h.writer.live_derived() {
-            derived.inject(&h.writer, &h.view, buffer, doc, &mut fields)?;
-        }
-        let mut out = len_i32(fields.len())?.to_le_bytes().to_vec();
-        for f in &fields {
-            out.extend_from_slice(&f.field_number.to_le_bytes());
-            match &f.value {
-                FieldValue::String(s) => {
-                    out.push(STRING);
-                    out.extend_from_slice(&len_i32(s.len())?.to_le_bytes());
-                    out.extend_from_slice(s.as_bytes());
-                }
-                FieldValue::Binary(b) => {
-                    out.push(BINARY);
-                    out.extend_from_slice(&len_i32(b.len())?.to_le_bytes());
-                    out.extend_from_slice(b);
-                }
-                FieldValue::Int(v) => {
-                    out.push(INT);
-                    out.extend_from_slice(&v.to_le_bytes());
-                }
-                FieldValue::Long(v) => {
-                    out.push(LONG);
-                    out.extend_from_slice(&v.to_le_bytes());
-                }
-                FieldValue::Float(v) => {
-                    out.push(FLOAT);
-                    out.extend_from_slice(&v.to_bits().to_le_bytes());
-                }
-                FieldValue::Double(v) => {
-                    out.push(DOUBLE);
-                    out.extend_from_slice(&v.to_bits().to_le_bytes());
-                }
-            }
-        }
+        let out = live_document_blob(view_id, buffer, doc)?;
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
         Ok(())
@@ -561,14 +355,7 @@ pub unsafe extern "C" fn ffi_live_view_doc_values_alloc(
             // SAFETY: caller contract, non-null checked above.
             unsafe { std::slice::from_raw_parts(fields, count) }
         };
-        let h = view(view_id)?;
-        let buffer = usize::try_from(buffer).map_err(|_| FfiStatus::IndexOutOfBounds)?;
-        let values = h
-            .writer
-            .writer()
-            .live_doc_values(&h.view, buffer, doc, fields)
-            .map_err(live_error)?;
-        let out = encode_live_doc_values(fields, &values)?;
+        let out = live_doc_values_blob(view_id, buffer, doc, fields)?;
         // SAFETY: caller contract.
         unsafe { crate::ffm_bridge::give(out, out_ptr, out_len) };
         Ok(())
@@ -580,7 +367,7 @@ pub unsafe extern "C" fn ffi_live_view_doc_values_alloc(
 /// numbered after the reader's `maxDoc`, the buffers in the view's order.
 /// Every field's average length is over both. `*out_supported` is false,
 /// and nothing else is written, when the query reads something the buffers
-/// cannot answer (see [`live_request`]) or carries a `min_score`; the
+/// cannot answer (see `live_request`) or carries a `min_score`; the
 /// caller then makes the buffers part of a reader first.
 ///
 /// # Safety
@@ -621,178 +408,12 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_live(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(query, query_len)? };
-        let (query, min_score, sim) = decode_request(blob)?;
-        let q = boolean_of(&query);
-        let clause = Clause::Boolean(Box::new(q.clone()));
-        let request = match (min_score, live_request(&clause)) {
-            (None, Some(r)) => r,
-            _ => {
-                // SAFETY: caller contract.
-                unsafe { *out_supported = false };
-                return Ok(());
-            }
-        };
-        let h = lookup(
-            handle,
-            "ffi_jvm_reader_search_live: unknown or closed reader",
-        )?;
-        let v = view(view_id)?;
-        searched_lean(&v.writer);
-        let mut laps = lucene_index::live_timing::Laps::start();
-        // Each buffer is read as the chunks its view's plan starts with,
-        // with this request's terms (their overlays kept on the chunks),
-        // then a segment of the documents after them.
-        let key = {
-            let mut k = vec![PLAIN_KEY];
-            k.extend(request_key(blob, None, None));
-            k
-        };
-        if v.writer.live_warmer().max_staleness().is_some() {
-            v.writer.live_warmer().note_plain(blob);
-        }
-        let prepared = prepare_plain(&v, &request, &key)?;
-        let Prepared {
-            chunk_readers,
-            chunk_masks,
-            chunk_docs,
-            live,
-            prefix_lens,
-        } = &*prepared;
-        laps.lap(lucene_index::live_timing::Phase::PlainPrepare);
-        let inputs = live
-            .iter()
-            .map(|l| l.inputs())
-            .collect::<lucene_search::Result<Vec<_>>>()
-            .map_err(map_search_error)?;
-
-        let chunked;
-        let reader = if chunk_readers.is_empty() {
-            &h.reader
-        } else {
-            chunked = h
-                .reader
-                .with_readers_appended(chunk_readers.clone())
-                .map_err(|e| {
-                    set_last_error(format!("opening the buffered documents: {e}"));
-                    FfiStatus::Decode
-                })?;
-            &chunked
-        };
-        let opened = reader.open_segments().map_err(|e| {
-            set_last_error(format!("opening segment postings: {e}"));
-            FfiStatus::Decode
-        })?;
-        laps.lap(lucene_index::live_timing::Phase::PlainOpen);
-        let sim = sim.as_ref();
-        let committed = h.live_docs.len();
-        let mut opened_segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
-        let masks = commit_masks(
-            &v.view.commit_deletes,
-            &h,
-            opened_segments.get(..committed).unwrap_or_default(),
-        )?;
-        for (i, s) in opened_segments.iter_mut().enumerate() {
-            s.live_docs = match i.checked_sub(committed) {
-                Some(c) => chunk_masks.get(c).and_then(Option::as_ref),
-                None => match &masks {
-                    Some(m) => m.get(i).and_then(Option::as_deref),
-                    None => h.live_docs.get(i).and_then(Option::as_ref),
-                },
-            };
-            s.similarity = sim.map(|p| p as &dyn Similarity);
-        }
-
-        let fields: Vec<String> = lucene_engine::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let extra = |field: &str| {
-            let mut found = None;
-            for l in live {
-                if let Some([_, ttf, _, dc]) = l.field_stats(field) {
-                    let (t, d) = found.unwrap_or((0i64, 0i64));
-                    found = Some((t.saturating_add(ttf), d.saturating_add(dc)));
-                }
-            }
-            found
-        };
-        let (reader_norms, averages) = reader
-            .field_norms_by_field_with(&fields, &extra)
-            .map_err(|e| map_search_error(e.into()))?;
-        let live_norms: Vec<_> = live
-            .iter()
-            .map(|l| l.norms_with_average(&|f| averages.get(f).copied()))
-            .collect();
-        laps.lap(lucene_index::live_timing::Phase::PlainNorms);
-        // In document order: the committed segments, then each buffer's
-        // chunks and the segment after them.
-        let mut segments: Vec<OpenSegment<'_>> = Vec::new();
-        let mut norms = Vec::new();
-        let mut opened_iter = opened_segments.into_iter().zip(reader_norms.iter());
-        for _ in 0..committed {
-            if let Some((s, n)) = opened_iter.next() {
-                segments.push(s);
-                norms.push(n);
-            }
-        }
-        let mut doc_base = h.reader.max_doc();
-        let mut chunk_docs = chunk_docs.iter().copied();
-        for (((&n, l), i), ln) in prefix_lens.iter().zip(live).zip(&inputs).zip(&live_norms) {
-            for _ in 0..n {
-                if let (Some((mut s, n)), Some(docs)) = (opened_iter.next(), chunk_docs.next()) {
-                    s.doc_base = doc_base;
-                    doc_base = doc_base.saturating_add(docs);
-                    segments.push(s);
-                    norms.push(n);
-                }
-            }
-            let mut s = l.segment(i, doc_base);
-            s.similarity = sim.map(|p| p as &dyn Similarity);
-            segments.push(s);
-            norms.push(ln);
-            doc_base = doc_base.saturating_add(l.max_doc());
-        }
-        let norms: Vec<_> = norms
-            .into_iter()
-            .map(|m| (!m.is_empty()).then_some(m))
-            .collect();
-        let threshold = u64::try_from(count_limit).unwrap_or(0);
-        // A lone term is scored as the plain reader scores it, with the term
-        // scorer: Lucene rewrites a one-clause boolean to that clause, so the
-        // hits are the same, without a boolean scorer per leaf.
-        let searched = match &query {
-            JvmQuery::Term(t) => {
-                let term_norms: Vec<_> = norms
-                    .iter()
-                    .map(|m| m.and_then(|m| m.get(&t.field)))
-                    .collect();
-                search_term_query_multi_segment_counting(
-                    &segments,
-                    t,
-                    &term_norms,
-                    top_n.max(1),
-                    threshold,
-                )
-            }
-            JvmQuery::Boolean(_) => search_boolean_query_multi_segment_maxscore_counting(
-                &segments,
-                &q,
-                &norms,
-                top_n.max(1),
-                threshold,
-            ),
-        }
-        .map_err(map_search_error);
-        let (hits, total) = lucene_engine::query_blob::similarity_checked(sim, searched)?;
-        laps.lap(lucene_index::live_timing::Phase::PlainQuery);
-        let hits = if top_n == 0 { Vec::new() } else { hits };
-        let (total, lower_bound) = if count_limit <= 0 {
-            (-1, false)
-        } else {
-            (
-                i64::try_from(total.value).unwrap_or(i64::MAX),
-                total.relation == TotalHitsRelation::GreaterThanOrEqualTo,
-            )
+        let Some((hits, total, lower_bound)) =
+            search_live(handle, view_id, blob, top_n, count_limit)?
+        else {
+            // SAFETY: caller contract.
+            unsafe { *out_supported = false };
+            return Ok(());
         };
         // SAFETY: caller contract; `hits.len() <= top_n <= buf_len`.
         unsafe {
