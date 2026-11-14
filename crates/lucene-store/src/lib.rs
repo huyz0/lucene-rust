@@ -43,7 +43,7 @@ pub use lock::{Lock, LockFactory, NoLockFactory, SingleInstanceLockFactory, Veri
 pub use lock_wrappers::{LockValidatingDirectoryWrapper, SleepingLockWrapper};
 pub use nrt_caching_directory::NrtCachingDirectory;
 pub use page_cache::{
-    PageCache, PageCacheConfig, PageCacheStats, PageCodec, PageDecoder, UnitLayout,
+    PageCache, PageCacheConfig, PageCacheStats, PageCodec, PageDecoder, StoreProfile, UnitLayout,
 };
 pub use paged_fs_directory::{whole_file_bytes, PagedFsConfig, PagedFsDirectory};
 pub use rate_limiter::{RateLimitedIndexOutput, RateLimiter, SimpleRateLimiter};
