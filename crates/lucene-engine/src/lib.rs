@@ -24,6 +24,7 @@ pub mod clauses;
 pub mod fetch;
 pub mod function_score;
 pub mod invert;
+pub mod knn;
 pub mod knn_painless;
 pub mod knn_score;
 pub mod max_sim_query;
