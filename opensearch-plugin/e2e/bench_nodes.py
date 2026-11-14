@@ -3,7 +3,7 @@ memory, and REST latency per request shape.
 
 Usage:
   bench_nodes.py gen DIR DOCS          writes the corpus as bulk bodies (DIR/bulk-*.ndjson)
-  bench_nodes.py run BASE CONTAINER DIR LABEL OUT [--rounds N] [--java-too]
+  bench_nodes.py run BASE CONTAINER|native DIR LABEL OUT [--rounds N] [--java-too]
   bench_nodes.py visibility BASE CONTAINER DIR LABEL OUT SETTINGS_JSON
 
 `run` creates index `bench` (one shard, no replica), sends the bulk bodies
@@ -145,6 +145,10 @@ def shapes():
 
 
 def docker_mem(container):
+    if container == "native":  # a node started by benchmarks/native-node/native-node.sh: no container
+        pid = subprocess.run(["pgrep", "-f", "org.opensearch.bootstrap.OpenSearch"], capture_output=True, text=True).stdout.split()[0]
+        kb = int(subprocess.run(["ps", "-o", "rss=", "-p", pid], capture_output=True, text=True).stdout)
+        return f"{kb / 2**10:.1f}MiB"
     out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", container],
                          capture_output=True, text=True).stdout.strip()
     return out.split("/")[0].strip()
