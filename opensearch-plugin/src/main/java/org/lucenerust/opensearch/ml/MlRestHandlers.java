@@ -170,13 +170,25 @@ public final class MlRestHandlers {
                 MlActions.SEARCH_CONNECTORS,
                 Set.of(),
                 List.of(new Route(POST, BASE + "/connectors/_search"), new Route(GET, BASE + "/connectors/_search"))
-            )
+            ),
+            new Handler("ml_register_agent_action", MlActions.REGISTER_AGENT, Set.of(), List.of(new Route(POST, BASE + "/agents/_register"))),
+            new Handler("ml_get_agent_action", MlActions.GET_AGENT, Set.of(), List.of(new Route(GET, BASE + "/agents/{agent_id}"))),
+            new Handler("ml_update_agent_action", MlActions.UPDATE_AGENT, Set.of(), List.of(new Route(PUT, BASE + "/agents/{agent_id}"))),
+            new Handler("ml_delete_agent_action", MlActions.DELETE_AGENT, Set.of(), List.of(new Route(DELETE, BASE + "/agents/{agent_id}"))),
+            new Handler(
+                "ml_search_agent_action",
+                MlActions.SEARCH_AGENTS,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/agents/_search"), new Route(GET, BASE + "/agents/_search"))
+            ),
+            new Handler("ml_list_tools_action", MlActions.LIST_TOOLS, Set.of(), List.of(new Route(GET, BASE + "/tools"))),
+            new Handler("ml_get_tool_action", MlActions.GET_TOOL, Set.of(), List.of(new Route(GET, BASE + "/tools/{tool_name}")))
         );
     }
 
     /** Hands the call's path parameters, the {@code query} parameters it reads, and its body to {@code action}. */
     static final class Handler extends BaseRestHandler {
-        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat");
+        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat", "agent_id", "tool_name");
 
         private final String name;
         private final MlActions.Type action;

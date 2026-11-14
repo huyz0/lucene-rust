@@ -86,7 +86,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 13 |
 | [facet.md](parity/facet.md) | `lucene-facet`'s taxonomy index (T13.4a), counting (T13.4b), drill-down (T13.4c), value, range and facet-set counting (T13.4d1), and sorted-set counts, sampling and taxonomy utilities (T13.4d2) | 40 |
 | [neural-sparse.md](parity/neural-sparse.md) | `lucene-sparse`: OpenSearch neural-search's Seismic sparse index (reader, writer and approximate query), its hybrid search, stats API, `neural` query, `query_text`, ingest processors, rerank, two-phase and the semantic field | 11 |
-| [ml-commons.md](parity/ml-commons.md) | `lucene-ml`: ml-commons' local model inference (text embedding, sparse encoding, sparse tokenize, cross-encoder; ONNX and TorchScript) and remote connectors for the lucene-rust plugin, and its Hugging Face analyzers | 14 |
+| [ml-commons.md](parity/ml-commons.md) | `lucene-ml`: ml-commons' local model inference (text embedding, sparse encoding, sparse tokenize, cross-encoder; ONNX and TorchScript) and remote connectors for the lucene-rust plugin, and its Hugging Face analyzers | 15 |
 | [knn-vector.md](parity/knn-vector.md) | the k-NN plugin's `knn_vector` field and `knn` query, its `_plugins/_knn` REST endpoints and MMR, served by the lucene-rust plugin | 8 |
 | [vector-ivf.md](parity/vector-ivf.md) | `lucene-vector-quant`, `lucene-ivf`: the IVF vector index and its pluggable quantizers (this port's own format) | 14 |
 | [tensor.md](parity/tensor.md) | `lucene-tensor`: opt-in multi-vector (late-interaction) fields in binary doc values and `MaxSim` rescoring (this port's own encodings beside Lucene's) | 6 |
