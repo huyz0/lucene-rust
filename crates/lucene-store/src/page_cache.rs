@@ -107,7 +107,69 @@ pub struct PageCacheConfig {
     /// Extensions of files whose pages are pinned and that are read whole
     /// on open.
     pub pinned_extensions: Vec<String>,
+    /// A measured profile of the store, used to size the download window
+    /// when [`Self::download_window`] is `None`. With it the window is
+    /// `latency * throughput` of the profile, a power of two between a page
+    /// and `max_request`, and the same on every run: the live tuner (which
+    /// follows request timings, so the window differs run to run) is not
+    /// consulted. `None` (the default) keeps the live tuner.
+    pub store_profile: Option<StoreProfile>,
+    /// Whether a file may be demand-filled through `userfaultfd` where the
+    /// platform supports it. `false` forces the read-through fallback of
+    /// [`Self::spill_min_bytes`]: how a deployment where the faulting
+    /// mapping is unwanted runs, and how the fallback is tested and
+    /// benchmarked on a machine that has `userfaultfd`.
+    pub demand_paging: bool,
+    /// The smallest undecoded file, in bytes, that is *not* read whole into
+    /// the heap when it is opened without demand paging (no `userfaultfd`,
+    /// a page size that is not a multiple of 4 KiB, or a file read whole
+    /// because its extension is pinned). It is streamed in chunks of at most
+    /// [`SPILL_CHUNK_BYTES`] into an unlinked file under
+    /// [`Self::disk_dir`] and mapped read-only: the heap holds one chunk,
+    /// and the file's bytes are page cache the kernel may reclaim. `None`
+    /// reads every such file whole into the heap, as before; so does a cache
+    /// without a disk tier, and a file read through a decoder (its plaintext
+    /// is never written to disk).
+    pub spill_min_bytes: Option<u64>,
+    /// The most bytes of such mapped files that may be open at once: a file
+    /// that would exceed it fails to open rather than fill the disk.
+    pub spill_budget: u64,
 }
+
+/// What a store costs per request and per byte, measured once and given to
+/// [`PageCacheConfig::store_profile`] so the read-ahead window does not
+/// depend on this run's timings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StoreProfile {
+    /// First-byte latency of one ranged read.
+    pub latency: std::time::Duration,
+    /// Streaming throughput of one ranged read, in bytes per second.
+    pub bytes_per_sec: f64,
+}
+
+impl StoreProfile {
+    /// The bytes one request streams in its own first-byte wait, as a power
+    /// of two between `page` and `max` (the tuner's formula, on fixed
+    /// inputs).
+    pub fn window(&self, page: usize, max: usize) -> usize {
+        let lo = page.max(1);
+        let hi = max.max(lo);
+        let ideal = self.latency.as_secs_f64() * self.bytes_per_sec;
+        if !ideal.is_finite() {
+            return if ideal > 0.0 { hi } else { lo };
+        }
+        (ideal.clamp(lo as f64, hi as f64) as usize)
+            .next_power_of_two()
+            .clamp(lo, hi)
+    }
+}
+
+/// The heap a file opened through the spill fallback may use at once while
+/// it is being filled: pages are fetched and written in chunks of at most
+/// this many bytes (fewer when `max_request * concurrency` is smaller).
+pub const SPILL_CHUNK_BYTES: usize = 16 << 20;
+/// The default [`PageCacheConfig::spill_min_bytes`]: 1 MiB.
+pub const DEFAULT_SPILL_MIN_BYTES: u64 = 1 << 20;
 
 impl Default for PageCacheConfig {
     fn default() -> Self {
@@ -122,6 +184,10 @@ impl Default for PageCacheConfig {
                 .iter()
                 .map(|e| (*e).to_string())
                 .collect(),
+            store_profile: None,
+            demand_paging: true,
+            spill_min_bytes: Some(DEFAULT_SPILL_MIN_BYTES),
+            spill_budget: u64::MAX,
         }
     }
 }
@@ -148,6 +214,10 @@ pub struct PageCacheStats {
     /// Disk the tier's slots take (each page in the smallest slot size that
     /// holds it), which [`PageCacheConfig::disk_budget`] bounds.
     pub disk_footprint_bytes: u64,
+    /// Bytes of mapped spill files open now ([`PageCacheConfig::spill_min_bytes`]).
+    pub spill_open_bytes: u64,
+    /// Files opened through the spill fallback since the cache was created.
+    pub spill_opens: u64,
 }
 
 #[derive(Default)]
@@ -158,6 +228,7 @@ struct Counters {
     fetched_bytes: AtomicU64,
     shared_fetches: AtomicU64,
     read_ahead_pages: AtomicU64,
+    spill_opens: AtomicU64,
 }
 
 /// One file's pages in stored bytes, from its [`UnitLayout`].
@@ -320,6 +391,25 @@ pub struct PageCache {
     inflight: Mutex<HashMap<PageKey, Arc<Slot>>>,
     counters: Counters,
     tuner: Tuner,
+    /// Bytes of spill-mapped files open now.
+    spill_open: Arc<AtomicU64>,
+}
+
+/// Holds `bytes` of [`PageCacheConfig::spill_budget`] while a mapped spill
+/// file is open; dropping it returns them.
+pub(crate) struct SpillReservation {
+    open: Arc<AtomicU64>,
+    bytes: u64,
+}
+
+impl Drop for SpillReservation {
+    fn drop(&mut self) {
+        let _ = self
+            .open
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |open| {
+                Some(open.saturating_sub(self.bytes))
+            });
+    }
 }
 
 /// Measures ranged requests to size the download window: request time is
@@ -411,6 +501,7 @@ impl PageCache {
             inflight: Mutex::new(HashMap::new()),
             counters: Counters::default(),
             tuner: Tuner::default(),
+            spill_open: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -432,6 +523,8 @@ impl PageCache {
             download_window: self.download_window() as u64,
             disk_metadata_bytes: self.disk.as_ref().map_or(0, |d| d.metadata_bytes() as u64),
             disk_footprint_bytes: self.disk.as_ref().map_or(0, DiskTier::footprint),
+            spill_open_bytes: self.spill_open.load(Ordering::Relaxed),
+            spill_opens: c.spill_opens.load(Ordering::Relaxed),
         }
     }
 
@@ -548,12 +641,33 @@ impl PageCache {
     /// The download window now, in bytes: the configured one, or the
     /// tuned one.
     pub fn download_window(&self) -> usize {
-        match self.config.download_window {
-            Some(w) => w,
-            None => self
+        match (self.config.download_window, self.config.store_profile) {
+            (Some(w), _) => w,
+            (None, Some(profile)) => profile.window(self.config.page_size, self.config.max_request),
+            (None, None) => self
                 .tuner
                 .window(self.config.page_size, self.config.max_request),
         }
+    }
+
+    /// Reserves `bytes` of the spill budget until the guard drops, or
+    /// fails when that would pass [`PageCacheConfig::spill_budget`].
+    pub(crate) fn reserve_spill(&self, bytes: u64) -> Result<SpillReservation> {
+        let budget = self.config.spill_budget;
+        self.spill_open
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |open| {
+                open.checked_add(bytes).filter(|total| *total <= budget)
+            })
+            .map_err(|open| {
+                Error::Io(std::io::Error::other(format!(
+                    "spill budget exhausted: {open} bytes open, {bytes} more asked, budget {budget}"
+                )))
+            })?;
+        self.counters.spill_opens.fetch_add(1, Ordering::Relaxed);
+        Ok(SpillReservation {
+            open: Arc::clone(&self.spill_open),
+            bytes,
+        })
     }
 
     /// Adds to `mine` (kept sorted by page) the missing, unclaimed pages of
@@ -1018,5 +1132,87 @@ mod tests {
         t.record(page, ms(0.001), page as u64);
         t.record(8 * page, ms(100.0), page as u64);
         assert_eq!(t.window(page, max), page);
+    }
+
+    #[test]
+    fn a_store_profile_fixes_the_window_whatever_the_requests_take() {
+        let ms = std::time::Duration::from_millis;
+        // 30 ms at 100 MB/s is 3 MB: 4 MiB, between a page and 8 MiB.
+        let slow = StoreProfile {
+            latency: ms(30),
+            bytes_per_sec: 100e6,
+        };
+        assert_eq!(slow.window(256 << 10, 8 << 20), 4 << 20);
+        // Clamped to the page and to the largest request, and to the ends
+        // for values that are not numbers.
+        let local = StoreProfile {
+            latency: ms(0),
+            bytes_per_sec: 1e9,
+        };
+        assert_eq!(local.window(256 << 10, 8 << 20), 256 << 10);
+        let far = StoreProfile {
+            latency: ms(500),
+            bytes_per_sec: 1e12,
+        };
+        assert_eq!(far.window(256 << 10, 8 << 20), 8 << 20);
+        let inf = StoreProfile {
+            latency: ms(5),
+            bytes_per_sec: f64::INFINITY,
+        };
+        assert_eq!(inf.window(256 << 10, 8 << 20), 8 << 20);
+        let nan = StoreProfile {
+            latency: ms(0),
+            bytes_per_sec: f64::INFINITY,
+        };
+        assert_eq!(nan.window(256 << 10, 8 << 20), 256 << 10);
+
+        let tmp = lucene_util::test_support::TempDir::new("page-cache-profile");
+        let config = |store_profile, download_window| PageCacheConfig {
+            page_size: 100,
+            max_request: 1 << 20,
+            download_window,
+            store_profile,
+            disk_dir: Some(tmp.path().join("cache")),
+            ..PageCacheConfig::default()
+        };
+        let profile = StoreProfile {
+            latency: ms(1),
+            bytes_per_sec: 400_000.0,
+        };
+        let cache = PageCache::new(config(Some(profile), None)).unwrap();
+        assert_eq!(cache.download_window(), 512);
+        // Requests that take wildly different times (which would move the
+        // live tuner) leave it alone.
+        let data = bytes(100_000);
+        let g = Geometry::plain(Arc::from("f"), 100_000, 100);
+        for (i, nap) in [0u64, 20, 0, 40, 5].into_iter().enumerate() {
+            let slow_fetch = |off: u64, len: usize| {
+                std::thread::sleep(std::time::Duration::from_millis(nap));
+                let a = off as usize;
+                Ok(data[a..a + len].to_vec())
+            };
+            cache
+                .stored_pages(
+                    &g,
+                    &[
+                        (i as u64) * 200,
+                        (i as u64) * 200 + 1,
+                        (i as u64) * 200 + 2,
+                        (i as u64) * 200 + 3,
+                        (i as u64) * 200 + 4,
+                        (i as u64) * 200 + 5,
+                    ],
+                    &slow_fetch,
+                )
+                .unwrap();
+            assert_eq!(cache.download_window(), 512);
+        }
+        // An explicit window wins over a profile.
+        assert_eq!(
+            PageCache::new(config(Some(profile), Some(300)))
+                .unwrap()
+                .download_window(),
+            300
+        );
     }
 }

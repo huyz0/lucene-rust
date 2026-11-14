@@ -17,8 +17,15 @@
 //! - An encrypting wrapper above ([`Directory::open_decoded`]) gets pages of
 //!   whole authenticated units: the disk tier keeps ciphertext and only the
 //!   mapping in memory holds plaintext, decrypted once per page brought in.
-//! - Without `userfaultfd` (not Linux, or blocked), files are read whole,
-//!   still page by page through the cache.
+//! - Without `userfaultfd` (not Linux, blocked, or [`PageCacheConfig::demand_paging`]
+//!   off), or with a page size that is not a multiple of 4 KiB, a file of at
+//!   least [`PageCacheConfig::spill_min_bytes`] is streamed in bounded chunks
+//!   into an unlinked file under the disk tier's directory and mapped
+//!   read-only, so the heap never holds it whole; smaller files, files
+//!   through a decoder and caches without a disk tier are read whole.
+//! - Every page's cache key carries [`BlobStore::version`] when the store
+//!   has one, so a name rewritten with other content of the same length
+//!   cannot be served the old pages.
 //!
 //! The only part a backend supplies is the [`BlobStore`]: listing, whole and
 //! ranged reads, uploads, deletes.
@@ -32,7 +39,9 @@ use crate::directory::{Directory, Input};
 use crate::error::{Error, Result};
 use crate::index_output::FsIndexOutput;
 use crate::lock::{lock_ignoring_poison, Lock, LockFactory, SingleInstanceLockFactory};
-use crate::page_cache::{Geometry, PageCache, PageCodec, PageDecoder};
+#[cfg(unix)]
+use crate::page_cache::SpillReservation;
+use crate::page_cache::{Geometry, PageCache, PageCacheConfig, PageCodec, PageDecoder};
 #[cfg(target_os = "linux")]
 use crate::paged_input::PageFiller;
 
@@ -51,6 +60,9 @@ pub struct CachedBlobDirectory<S: BlobStore + 'static> {
     /// are written once, so a length holds until the name is deleted or
     /// written again.
     sizes: Mutex<HashMap<String, u64>>,
+    /// The [`BlobStore::version`] each name had when last opened: a change
+    /// drops the cached length and codec, which described the old content.
+    versions: Mutex<HashMap<String, Option<Arc<str>>>>,
     /// Codecs built by a prefetch, with the stored length they were built
     /// for, taken by the open that follows so a decoder (an encrypted
     /// file's header and data key) runs once per file.
@@ -66,6 +78,7 @@ type Built = (u64, Arc<dyn PageCodec>);
 /// A file open now: shared by later opens of the same bytes.
 struct Opened {
     stored_len: u64,
+    version: Option<Arc<str>>,
     decoded: bool,
     input: Weak<Input>,
 }
@@ -105,6 +118,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             open: Mutex::new(HashMap::new()),
             pending: Mutex::new(BTreeSet::new()),
             sizes: Mutex::new(HashMap::new()),
+            versions: Mutex::new(HashMap::new()),
             codecs: Mutex::new(HashMap::new()),
             forgets: AtomicU64::new(0),
         }
@@ -131,6 +145,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         self.forgets.fetch_add(1, Ordering::AcqRel);
         lock_ignoring_poison(&self.open).remove(name);
         lock_ignoring_poison(&self.sizes).remove(name);
+        lock_ignoring_poison(&self.versions).remove(name);
         lock_ignoring_poison(&self.codecs).remove(name);
         self.cache.forget_prefix(&self.key_prefix(name));
     }
@@ -143,6 +158,29 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         let len = self.store.size(name)?;
         lock_ignoring_poison(&self.sizes).insert(name.to_string(), len);
         Ok(len)
+    }
+
+    /// `name`'s [`BlobStore::version`] now. A version that differs from the
+    /// one last seen means the object was replaced: what was cached of its
+    /// length and codec is dropped (its pages sit under the old version's
+    /// key and age out).
+    fn current_version(&self, name: &str) -> Result<Option<Arc<str>>> {
+        let version: Option<Arc<str>> = self.store.version(name)?.map(Arc::from);
+        let mut seen = lock_ignoring_poison(&self.versions);
+        match seen.get(name) {
+            Some(old) if *old == version => {}
+            Some(_) => {
+                // Bumped before the length goes, as `forget` does.
+                self.forgets.fetch_add(1, Ordering::AcqRel);
+                lock_ignoring_poison(&self.sizes).remove(name);
+                lock_ignoring_poison(&self.codecs).remove(name);
+                seen.insert(name.to_string(), version.clone());
+            }
+            None => {
+                seen.insert(name.to_string(), version.clone());
+            }
+        }
+        Ok(version)
     }
 
     /// Whether an input over `name` is open now.
@@ -193,10 +231,11 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         codec: Option<&dyn Fn(u64) -> Result<Arc<dyn PageCodec>>>,
     ) -> Result<Input> {
         self.refuse_pending(name)?;
+        let version = self.current_version(name)?;
         let stored_len = self.stored_len(name)?;
         let decoded = codec.is_some();
         if let Some(o) = lock_ignoring_poison(&self.open).get(name) {
-            if o.stored_len == stored_len && o.decoded == decoded {
+            if o.stored_len == stored_len && o.decoded == decoded && o.version == version {
                 if let Some(shared) = o.input.upgrade() {
                     return Input::slice_of(&shared, 0, shared.len());
                 }
@@ -209,11 +248,13 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             },
             None => None,
         };
-        let (file, pinned) = self.cached_file(name, stored_len, codec)?;
+        let (file, pinned) = self.cached_file(name, stored_len, codec, version.as_deref())?;
         let len = usize::try_from(file.geom.plain_len)
             .map_err(|_| Error::Corrupted(format!("{name}: too large to open")))?;
-        let input = if pinned || file.geom.pages <= 1 {
+        let input = if file.geom.pages <= 1 {
             Input::Owned(file.read_whole()?)
+        } else if pinned {
+            file.read_through(len)?
         } else {
             self.demand_filled(file, len)?
         };
@@ -224,6 +265,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             name.to_string(),
             Opened {
                 stored_len,
+                version,
                 decoded,
                 input: Arc::downgrade(&shared),
             },
@@ -239,9 +281,16 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         name: &str,
         stored_len: u64,
         codec: Option<Arc<dyn PageCodec>>,
+        version: Option<&str>,
     ) -> Result<(Arc<CachedFile<S>>, bool)> {
         let tag = if codec.is_some() { 'd' } else { 'p' };
-        let key: Arc<str> = Arc::from(format!("{}{stored_len}\u{0}{tag}", self.key_prefix(name)));
+        let prefix = self.key_prefix(name);
+        // The version is length-prefixed so no version text can run into
+        // the tag; a store without versions keeps the key it always had.
+        let key: Arc<str> = Arc::from(match version {
+            None => format!("{prefix}{stored_len}\u{0}{tag}"),
+            Some(v) => format!("{prefix}{stored_len}\u{0}{tag}\u{0}v{}:{v}", v.len()),
+        });
         let page_size = self.cache.config().page_size;
         let geom = match &codec {
             None => Geometry::plain(Arc::clone(&key), stored_len, page_size),
@@ -268,6 +317,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         if self.is_pending(name) || self.is_open(name) {
             return Ok(());
         }
+        let version = self.current_version(name)?;
         let stored_len = self.stored_len(name)?;
         let codec = match decoder {
             Some(d) => {
@@ -278,7 +328,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
             }
             None => None,
         };
-        let (file, pinned) = self.cached_file(name, stored_len, codec)?;
+        let (file, pinned) = self.cached_file(name, stored_len, codec, version.as_deref())?;
         let pages: Vec<u64> = if pinned || file.geom.pages <= 2 {
             (0..file.geom.pages).collect()
         } else {
@@ -322,7 +372,9 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
     #[cfg(target_os = "linux")]
     fn demand_filled(&self, file: Arc<CachedFile<S>>, len: usize) -> Result<Input> {
         let page = usize::try_from(file.geom.plain_page).unwrap_or(usize::MAX);
-        match crate::paged_input::Pager::global().filter(|p| p.supports(page)) {
+        let pager = crate::paged_input::Pager::global()
+            .filter(|p| self.cache.config().demand_paging && p.supports(page));
+        match pager {
             Some(pager) => {
                 let name = file.name.clone();
                 let filler: Arc<dyn PageFiller> = file;
@@ -338,14 +390,13 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
                 ]);
                 Ok(Input::external_bytes(paged))
             }
-            None => Ok(Input::Owned(file.read_whole()?)),
+            None => file.read_through(len),
         }
     }
 
     #[cfg(not(target_os = "linux"))]
     fn demand_filled(&self, file: Arc<CachedFile<S>>, len: usize) -> Result<Input> {
-        let _ = len;
-        Ok(Input::Owned(file.read_whole()?))
+        file.read_through(len)
     }
 }
 
@@ -387,6 +438,77 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             .collect()
     }
 
+    /// The file as an input where it cannot be demand-filled: streamed into
+    /// a mapped spill file when the cache is configured for it and the file
+    /// is large enough ([`PageCacheConfig::spill_min_bytes`]), else read
+    /// whole into the heap.
+    fn read_through(&self, len: usize) -> Result<Input> {
+        let config: &PageCacheConfig = self.cache.config();
+        #[cfg(unix)]
+        if let (Some(min), Some(dir), None) = (
+            config.spill_min_bytes,
+            config.disk_dir.as_deref(),
+            &self.codec,
+        ) {
+            if len as u64 >= min {
+                return self.spill(dir, len);
+            }
+        }
+        let _ = (config, len);
+        Ok(Input::Owned(self.read_whole()?))
+    }
+
+    /// Streams the file, a bounded chunk of pages at a time, into an unlinked
+    /// file under `dir` and maps it read-only: heap use is one chunk, not
+    /// the file, and the bytes live in kernel page cache. The space returns
+    /// when the input drops.
+    #[cfg(unix)]
+    fn spill(&self, dir: &std::path::Path, len: usize) -> Result<Input> {
+        use std::os::unix::fs::FileExt;
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let reservation = self.cache.reserve_spill(len as u64)?;
+        let path = dir.join(format!(
+            "spill-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        // Unlinked at once: a crash leaves nothing behind, and the space is
+        // the mapping's until it drops.
+        std::fs::remove_file(&path)?;
+        file.set_len(len as u64)?;
+        let config = self.cache.config();
+        let chunk_bytes = config
+            .max_request
+            .saturating_mul(config.concurrency.max(1))
+            .min(crate::page_cache::SPILL_CHUNK_BYTES);
+        let per_chunk = (chunk_bytes as u64)
+            .checked_div(self.geom.plain_page)
+            .unwrap_or(1)
+            .max(1);
+        let mut page = 0u64;
+        while page < self.geom.pages {
+            let end = page.saturating_add(per_chunk).min(self.geom.pages);
+            let ids: Vec<u64> = (page..end).collect();
+            for (&id, bytes) in ids.iter().zip(self.pages(&ids)?) {
+                file.write_all_at(&bytes, id.saturating_mul(self.geom.plain_page))?;
+            }
+            page = end;
+        }
+        // SAFETY: the file was created by this call, is unlinked, and is
+        // never written after this mapping is made, so nothing can truncate
+        // or change it underneath the mapping.
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        Ok(Input::external_bytes(SpillBytes {
+            mmap,
+            _reservation: reservation,
+        }))
+    }
+
     /// Every decoded byte.
     fn read_whole(&self) -> Result<Vec<u8>> {
         let all: Vec<u64> = (0..self.geom.pages).collect();
@@ -404,6 +526,20 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             )));
         }
         Ok(out)
+    }
+}
+
+/// A spill file's read-only mapping, holding its share of the spill budget.
+#[cfg(unix)]
+struct SpillBytes {
+    mmap: memmap2::Mmap,
+    _reservation: SpillReservation,
+}
+
+#[cfg(unix)]
+impl crate::directory::ExternalBytes for SpillBytes {
+    fn bytes(&self) -> &[u8] {
+        &self.mmap
     }
 }
 
@@ -848,5 +984,243 @@ mod tests {
         assert!(d.open_decoded("missing", &XorDecoder).unwrap().is_err());
         // A plain open of the same file gets the stored bytes.
         assert_eq!(&d.open("_0.fdt").unwrap()[..7], b"header!");
+    }
+
+    /// A store whose objects each have a settable version, over a shared
+    /// in-memory map so two directories can see different contents.
+    #[derive(Clone, Default)]
+    struct Versioned {
+        inner: InMemoryBlobStore,
+        versions: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    impl Versioned {
+        fn set(&self, name: &str, bytes: Vec<u8>, version: &str) {
+            self.inner.put(name, bytes).unwrap();
+            lock_ignoring_poison(&self.versions).insert(name.to_string(), version.to_string());
+        }
+    }
+
+    impl BlobStore for Versioned {
+        fn list(&self) -> Result<Vec<String>> {
+            self.inner.list()
+        }
+        fn get(&self, name: &str) -> Result<Input> {
+            self.inner.get(name)
+        }
+        fn get_range(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
+            self.inner.get_range(name, offset, len)
+        }
+        fn size(&self, name: &str) -> Result<u64> {
+            self.inner.size(name)
+        }
+        fn version(&self, name: &str) -> Result<Option<String>> {
+            Ok(lock_ignoring_poison(&self.versions).get(name).cloned())
+        }
+        fn put(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
+            self.inner.put(name, bytes)
+        }
+        fn delete(&self, name: &str) -> Result<()> {
+            self.inner.delete(name)
+        }
+    }
+
+    fn cache_in(
+        tmp: &lucene_util::test_support::TempDir,
+        config: PageCacheConfig,
+    ) -> Arc<PageCache> {
+        Arc::new(
+            PageCache::new(PageCacheConfig {
+                disk_dir: Some(tmp.path().join("cache")),
+                ..config
+            })
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_store_version_keeps_same_length_contents_of_one_name_apart() {
+        let tmp = lucene_util::test_support::TempDir::new("cached-blob-version");
+        let cache = cache_in(
+            &tmp,
+            PageCacheConfig {
+                page_size: 64 * 1024,
+                ..PageCacheConfig::default()
+            },
+        );
+        let (old, new) = (data(300_000, 1), data(300_000, 2));
+        // Two directories share the cache and a namespace, over stores whose
+        // `_0.doc` differs in content only (the same name and length).
+        let (a, b) = (Versioned::default(), Versioned::default());
+        a.set("_0.doc", old.clone(), "gen-1");
+        b.set("_0.doc", new.clone(), "gen-2");
+        let da = CachedBlobDirectory::new(a.clone(), Arc::clone(&cache), "idx");
+        let db = CachedBlobDirectory::new(b, Arc::clone(&cache), "idx");
+        assert!(da.open("_0.doc").unwrap()[..] == old[..]);
+        assert!(
+            db.open("_0.doc").unwrap()[..] == new[..],
+            "no pages of gen-1"
+        );
+        // The object replaced under the same name and length, behind the
+        // directory's back: the new version is seen on the next open.
+        a.set("_0.doc", new.clone(), "gen-2");
+        assert!(da.open("_0.doc").unwrap()[..] == new[..]);
+        // Unversioned stores keep the key they always had (one namespace,
+        // name and length is one file), which is the poisoning a version
+        // exists to prevent.
+        let (c, d) = (Versioned::default(), Versioned::default());
+        c.inner.put("_1.doc", old.clone()).unwrap();
+        d.inner.put("_1.doc", new.clone()).unwrap();
+        let dc = CachedBlobDirectory::new(c, Arc::clone(&cache), "plain");
+        let dd = CachedBlobDirectory::new(d, Arc::clone(&cache), "plain");
+        assert!(dc.open("_1.doc").unwrap()[..] == old[..]);
+        assert!(dd.open("_1.doc").unwrap()[..] == old[..], "shared key");
+    }
+
+    #[test]
+    fn a_version_change_drops_the_cached_length_and_a_text_cannot_alias_the_key() {
+        let tmp = lucene_util::test_support::TempDir::new("cached-blob-version-len");
+        let cache = cache_in(&tmp, PageCacheConfig::default());
+        let store = Versioned::default();
+        store.set("f.bin", data(100, 1), "v1");
+        let dir = CachedBlobDirectory::new(store.clone(), cache, "idx");
+        assert_eq!(dir.open("f.bin").unwrap().len(), 100);
+        store.set("f.bin", data(150, 1), "v2");
+        assert_eq!(dir.open("f.bin").unwrap().len(), 150);
+        assert_eq!(dir.file_length("f.bin").unwrap(), 150);
+        let key = |v: Option<&str>| {
+            dir.cached_file("f.bin", 5, None, v)
+                .unwrap()
+                .0
+                .geom
+                .key
+                .clone()
+        };
+        assert_ne!(key(None), key(Some("")));
+        assert_ne!(key(Some("a\u{0}pv1:b")), key(Some("a")));
+        assert_eq!(key(Some("x")), key(Some("x")));
+    }
+
+    fn spill_dir(
+        tag: &str,
+        config: PageCacheConfig,
+    ) -> (
+        CachedBlobDirectory<Counting>,
+        Counting,
+        lucene_util::test_support::TempDir,
+    ) {
+        let tmp = lucene_util::test_support::TempDir::new(tag);
+        let cache = cache_in(&tmp, config);
+        let store = Counting::default();
+        (
+            CachedBlobDirectory::new(store.clone(), cache, "idx"),
+            store,
+            tmp,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_demand_paging_large_files_are_mapped_from_a_spill_file_not_held_whole() {
+        let config = PageCacheConfig {
+            page_size: 64 * 1024,
+            demand_paging: false,
+            spill_min_bytes: Some(200_000),
+            ..PageCacheConfig::default()
+        };
+        let (d, store, tmp) = spill_dir("cached-blob-spill", config);
+        let big = data(1_000_003, 3);
+        put(&d, "_0.doc", &big);
+        put(&d, "_0.nvd", &data(400_000, 4)); // pinned, over the minimum
+        put(&d, "_0.si", &data(100_000, 5)); // pinned, under it
+        put(&d, "_1.doc", &data(150_000, 6)); // under it
+        let doc = d.open("_0.doc").unwrap();
+        assert!(doc[..] == big[..]);
+        let stats = d.cache().stats();
+        assert_eq!(
+            (stats.spill_opens, stats.spill_open_bytes),
+            (1, big.len() as u64)
+        );
+        assert_eq!(d.open("_0.nvd").unwrap()[..], data(400_000, 4)[..]);
+        assert_eq!(d.cache().stats().spill_opens, 2);
+        assert_eq!(d.open("_0.si").unwrap()[..], data(100_000, 5)[..]);
+        assert_eq!(d.open("_1.doc").unwrap()[..], data(150_000, 6)[..]);
+        assert_eq!(
+            d.cache().stats().spill_opens,
+            2,
+            "small files stay in the heap"
+        );
+        // A second open shares the mapping; dropping every input returns
+        // the budget, and nothing is left on disk but the tier's slabs.
+        let again = d.open("_0.doc").unwrap();
+        assert_eq!(d.cache().stats().spill_opens, 2);
+        drop((doc, again));
+        assert_eq!(d.cache().stats().spill_open_bytes, 0);
+        let leftovers = std::fs::read_dir(tmp.path().join("cache"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("spill-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        assert_eq!(store.wholes.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_spill_budget_refuses_a_file_that_would_pass_it_and_the_heap_is_the_other_choice() {
+        let config = PageCacheConfig {
+            page_size: 64 * 1024,
+            demand_paging: false,
+            spill_min_bytes: Some(1),
+            spill_budget: 600_000,
+            ..PageCacheConfig::default()
+        };
+        let (d, _store, _tmp) = spill_dir("cached-blob-spill-budget", config);
+        put(&d, "_0.doc", &data(500_000, 1));
+        put(&d, "_1.doc", &data(500_000, 2));
+        let first = d.open("_0.doc").unwrap();
+        let err = d.open("_1.doc").unwrap_err();
+        assert!(err.to_string().contains("spill budget"), "{err}");
+        drop(first);
+        assert_eq!(d.open("_1.doc").unwrap().len(), 500_000, "budget returned");
+        // `None`, or no disk tier: read whole, as before.
+        let tmp = lucene_util::test_support::TempDir::new("cached-blob-heap");
+        for (disk, min) in [(true, None), (false, Some(1))] {
+            let cache = Arc::new(
+                PageCache::new(PageCacheConfig {
+                    demand_paging: false,
+                    disk_dir: disk.then(|| tmp.path().join("heap")),
+                    spill_min_bytes: min,
+                    ..PageCacheConfig::default()
+                })
+                .unwrap(),
+            );
+            let dir = CachedBlobDirectory::new(Counting::default(), cache, "idx");
+            put(&dir, "_0.doc", &data(2_000_000, 1));
+            assert_eq!(dir.open("_0.doc").unwrap().len(), 2_000_000);
+            assert_eq!(dir.cache().stats().spill_opens, 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_decoded_file_is_never_spilled_as_plaintext() {
+        let config = PageCacheConfig {
+            page_size: 16 * 1024,
+            demand_paging: false,
+            spill_min_bytes: Some(1),
+            ..PageCacheConfig::default()
+        };
+        let (d, _store, _tmp) = spill_dir("cached-blob-spill-decoded", config);
+        let plain = data(150_000, 9);
+        put(&d, "_0.fdt", &encode(&plain));
+        let input = d.open_decoded("_0.fdt", &XorDecoder).unwrap().unwrap();
+        assert!(input[..] == plain[..]);
+        assert_eq!(d.cache().stats().spill_opens, 0);
     }
 }

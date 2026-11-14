@@ -48,7 +48,17 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
 - A miss also fetches the other missing pages of its aligned download
   window, each kept and evicted as its own page. The window is sized from
   measured latency times throughput (a power of two between one page and
-  `max_request`), or fixed with `PageCacheConfig::download_window`.
+  `max_request`), or fixed with `PageCacheConfig::download_window`. The
+  measured window follows request timings, so it differs run to run; give
+  `PageCacheConfig::store_profile` (a `StoreProfile` of first-byte latency
+  and per-request throughput) and the same formula runs on those numbers,
+  the same on every run. `download_window` wins over a profile.
+- Every page's key carries `BlobStore::version(name)` when the store has one
+  (an ETag, a version id, the manifest generation naming the file), so two
+  contents of one name and length never share pages; a version that changes
+  between opens drops the cached length. The default (`None`) keeps the key
+  of name and length. The store must read the version it names (pin ranged
+  reads to it); the cache cannot know a read returned a newer object.
 - The disk tier keeps pages in slots of a few large slab files, evicted by
   CLOCK. Slots come in size classes from 4 KiB doubling up to a full page,
   so a small file or a file's short last page takes the smallest class that
@@ -64,8 +74,29 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
   the stored-fields and points indexes, live docs) are pinned on disk and
   held in memory. Other files are mapped and filled on first touch (Linux
   `userfaultfd`), within a process-wide memory budget
-  (`lucene_store::paged_input::Pager::set_budget`); elsewhere they are read
-  whole.
+  (`lucene_store::paged_input::Pager::set_budget`). Where that is not
+  available (no `userfaultfd`, `PageCacheConfig::demand_paging` off, or a
+  page size that is not a multiple of 4 KiB), a file of at least
+  `spill_min_bytes` (default 1 MiB) is streamed, at most 16 MiB at a time,
+  into an unlinked file under `disk_dir` and mapped read-only: the heap
+  never holds it whole and its bytes are page cache the kernel can reclaim.
+  `spill_budget` bounds the bytes of such files open at once (a file past it
+  fails to open); smaller files, files read through a decoder (their
+  plaintext is never written to disk) and caches without a disk tier are
+  read whole into the heap.
+
+  Measured here (4 cores, 512 MiB file from an in-memory store,
+  `examples/remote_cache_bench.rs`, three runs each; provisional, not a
+  production host): reading whole grew the heap (`VmData`) by 1,175 MiB (the
+  file plus its pages, 2.3x) and peaked at 1,539 MiB; the spill grew it by
+  36 MiB and peaked at 1,059 MiB (resident pages grew 540 MiB either way:
+  file-backed, so reclaimable, rather than heap). Open took 760 ms against
+  530-630 ms; 2M random byte reads took 78-117 ms against 81-87 ms; a 4 KiB
+  stride scan took 3-4 ms against 6-30 ms, the first touch of each page
+  paying a minor fault. Costs: the whole file is still downloaded at open
+  (the fallback has no way to know which pages a query will touch), it also
+  writes it once to local disk, and the spilled bytes are outside
+  `disk_budget`.
 - Readers announce their reads, as Lucene's `IndexInput.prefetch` does, so
   a cold query waits for few round trips: a segment open fetches every file
   it reads at once (`Directory::prefetch_files`), a search the terms
