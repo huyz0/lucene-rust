@@ -3314,6 +3314,11 @@ fn window_stats_of(
             .window_stats(base)
             .map_err(lucene_search::Error::from)?
             .and_then(|(stats, count)| (count == len).then_some(stats))),
+        // A keyword's segment ordinals are the same column shapes.
+        Col::Ords(Ords::Single(r), _) => Ok(r
+            .window_stats(base)
+            .map_err(lucene_search::Error::from)?
+            .and_then(|(stats, count)| (count == len).then_some(stats))),
         _ => Ok(None),
     }
 }
@@ -3342,7 +3347,7 @@ fn window_doubles(
 /// live -- answered from the columns' block statistics
 /// (`NumericReader::window_stats`) when the window's keys put every
 /// document in the same buckets: a `date_histogram` or `histogram` whose
-/// values all round to one key, a numeric `terms` whose values are all one,
+/// values all round to one key, a numeric or keyword `terms` whose values are all one,
 /// a `range` whose values each range holds all or none of. Each such bucket
 /// counts `len` documents and each metric folds its window's statistics
 /// ([`metric_aggs::fold_zone_needs`]), exactly as collecting each document
@@ -3451,6 +3456,25 @@ fn zone_window(
                 None
             }
         }
+        (
+            AggNode::Terms { subs, .. },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs: states,
+            },
+        ) => match &leaf.col {
+            // Every document of the window has the one term: its bucket is
+            // the one collecting each of them makes. `include`/`exclude`
+            // and `missing` are collected as usual.
+            Col::Ords(_, map) if stats.min == stats.max && leaf.filter.is_none() => {
+                let g = global_ord(map, stats.min)?;
+                targets.push(keyed_ord(ords, keys, 0, g));
+                Some((subs, docs, states))
+            }
+            _ => None,
+        },
         (
             AggNode::Range {
                 kind, ranges, subs, ..
