@@ -1511,6 +1511,11 @@ struct Leaf<'a> {
     term_buckets: Vec<(u32, u32)>,
     /// [`keyed_ord_cached`]'s recently placed `(owning bucket, key)`s.
     key_cache: KeyCache,
+    /// [`zone_window`]'s buckets for the current window, kept for reuse.
+    zone_ords: Vec<u32>,
+    /// Windows [`zone_window`] answered in this segment, added to
+    /// [`zone_windows_folded`] once at its end.
+    folded: u64,
     /// The node's `missing`: what a document without a value reads.
     missing: Option<i64>,
     /// A keyword `terms`' `missing` term: the global key its documents
@@ -2029,6 +2034,8 @@ fn open_leaf<'a>(
         win_ords: Vec::new(),
         term_buckets: Vec::new(),
         key_cache: KeyCache::default(),
+        zone_ords: Vec::new(),
+        folded: 0,
         missing: node.missing(),
         missing_key: globals.missing_key(node)?,
         filter: globals.leaf_filter(node)?,
@@ -3295,14 +3302,52 @@ pub fn zone_windows_folded() -> u64 {
     ZONE_WINDOWS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A top-level `date_histogram` whose sub-aggregations are all metrics
+/// A window's block statistics in `col`: `None` unless every document of
+/// `base..base + len` has exactly one value there.
+fn window_stats_of(
+    col: &Col<'_>,
+    base: i32,
+    len: usize,
+) -> Result<Option<lucene_codecs::adaptive_zones::ZoneStats>> {
+    match col {
+        Col::Values(Values::Single(r), false) => Ok(r
+            .window_stats(base)
+            .map_err(lucene_search::Error::from)?
+            .and_then(|(stats, count)| (count == len).then_some(stats))),
+        _ => Ok(None),
+    }
+}
+
+/// The ends of a window's values as doubles, when neither is NaN: the
+/// column's order is the doubles' order, so every value of the window then
+/// lies between them (a NaN sorts past an infinity).
+fn window_doubles(
+    kind: ValueKind,
+    stats: lucene_codecs::adaptive_zones::ZoneStats,
+) -> Option<(f64, f64)> {
+    if kind == ValueKind::Float
+        && (i32::try_from(stats.min).is_err() || i32::try_from(stats.max).is_err())
+    {
+        return None;
+    }
+    let (lo, hi) = (
+        metric_aggs::to_double(kind, stats.min),
+        metric_aggs::to_double(kind, stats.max),
+    );
+    (!lo.is_nan() && !hi.is_nan()).then_some((lo, hi))
+}
+
+/// A top-level bucket aggregation whose sub-aggregations are all metrics,
 /// over the whole window `base..base + len` -- every document matching and
 /// live -- answered from the columns' block statistics
-/// (`NumericReader::window_stats`) when the window's dates all fall in one
-/// bucket: the bucket counts `len` documents and each metric folds its
-/// window's statistics ([`metric_aggs::fold_zone_needs`]), exactly as
-/// collecting each document would. False, with nothing changed, when any
-/// part cannot: the window is then collected as usual.
+/// (`NumericReader::window_stats`) when the window's keys put every
+/// document in the same buckets: a `date_histogram` or `histogram` whose
+/// values all round to one key, a numeric `terms` whose values are all one,
+/// a `range` whose values each range holds all or none of. Each such bucket
+/// counts `len` documents and each metric folds its window's statistics
+/// ([`metric_aggs::fold_zone_needs`]), exactly as collecting each document
+/// would. False, with nothing changed, when any part cannot: the window is
+/// then collected as usual.
 fn zone_window(
     node: &AggNode,
     state: &mut State,
@@ -3310,58 +3355,157 @@ fn zone_window(
     base: i32,
     len: usize,
 ) -> Result<bool> {
-    let (
-        AggNode::DateHistogram {
-            rounding,
-            hard_bounds,
-            subs: sub_nodes,
-            ..
-        },
-        State::Keyed {
-            ords,
-            keys,
-            docs: counts,
-            subs: sub_states,
-        },
-    ) = (node, &mut *state)
-    else {
-        return Ok(false);
-    };
     if leaf.done || leaf.nested.is_some() {
         return Ok(false);
     }
-    let stats_of = |l: &Leaf<'_>| -> Result<Option<lucene_codecs::adaptive_zones::ZoneStats>> {
-        match &l.col {
-            Col::Values(Values::Single(r), false) => Ok(r
-                .window_stats(base)
-                .map_err(lucene_search::Error::from)?
-                .and_then(|(stats, count)| (count == len).then_some(stats))),
-            _ => Ok(None),
+    let Some(stats) = window_stats_of(&leaf.col, base, len)? else {
+        return Ok(false);
+    };
+    // The window's buckets. A keyed bucket is made here, before the
+    // sub-aggregations are checked: its key is one collecting the window's
+    // first document would make (inside any hard bounds), so making it now
+    // changes nothing should the window be collected after all.
+    let mut targets = std::mem::take(&mut leaf.zone_ords);
+    targets.clear();
+    let found = match (node, &mut *state) {
+        (
+            AggNode::DateHistogram {
+                rounding,
+                hard_bounds,
+                subs,
+                ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs: states,
+            },
+        ) => {
+            // Every date in one bucket: `bucket` gives the range of values
+            // rounding to its start.
+            match rounding.bucket(stats.min) {
+                Some((from, to))
+                    if stats.min >= from
+                        && stats.max < to
+                        && !hard_bounds.1.is_some_and(|max| from >= max)
+                        && !hard_bounds.0.is_some_and(|min| from < min) =>
+                {
+                    targets.push(keyed_ord_cached(&mut leaf.key_cache, ords, keys, 0, from));
+                    Some((subs, docs, states))
+                }
+                _ => None,
+            }
         }
+        (
+            AggNode::Histogram {
+                kind,
+                interval,
+                offset,
+                hard_bounds,
+                subs,
+                ..
+            },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs: states,
+            },
+        ) => {
+            // The key is monotonic in the value, so both ends' keys equal
+            // (to the bit: `-0.0` is its own bucket) are every value's. A
+            // key of negative infinity is never collected.
+            let key = |v: f64| ((v - offset) / interval).floor();
+            match window_doubles(*kind, stats) {
+                Some((lo, hi))
+                    if key(lo) != f64::NEG_INFINITY
+                        && java_double_bits(key(lo)) == java_double_bits(key(hi))
+                        && !hard_bounds.1.is_some_and(|max| key(lo) * interval > max)
+                        && !hard_bounds.0.is_some_and(|min| key(lo) * interval < min) =>
+                {
+                    targets.push(keyed_ord(ords, keys, 0, java_double_bits(key(lo))));
+                    Some((subs, docs, states))
+                }
+                _ => None,
+            }
+        }
+        (
+            AggNode::NumericTerms { kind, subs, .. },
+            State::Keyed {
+                ords,
+                keys,
+                docs,
+                subs: states,
+            },
+        ) => {
+            if stats.min == stats.max {
+                targets.push(keyed_ord(
+                    ords,
+                    keys,
+                    0,
+                    numeric_terms_key(*kind, stats.min),
+                ));
+                Some((subs, docs, states))
+            } else {
+                None
+            }
+        }
+        (
+            AggNode::Range {
+                kind, ranges, subs, ..
+            },
+            State::Fixed {
+                docs, subs: states, ..
+            },
+        ) => match window_doubles(*kind, stats) {
+            Some((lo, hi)) => {
+                // Each range holds every value of the window or none.
+                let mut whole = true;
+                for (i, &(from, to)) in ranges.iter().enumerate() {
+                    if lo >= from && hi < to {
+                        targets.push(i as u32);
+                    } else if !(hi < from || lo >= to) {
+                        whole = false;
+                        break;
+                    }
+                }
+                whole.then_some((subs, docs, states))
+            }
+            None => None,
+        },
+        _ => None,
     };
-    let Some(dates) = stats_of(leaf)? else {
-        return Ok(false);
+    let done = match found {
+        Some((sub_nodes, counts, sub_states)) => fold_targets(
+            sub_nodes, counts, sub_states, &leaf.subs, &targets, base, len,
+        )?,
+        None => false,
     };
-    // Every date of the window in one bucket: `bucket` gives the range of
-    // values rounding to its start.
-    let Some((from, to)) = rounding.bucket(dates.min) else {
-        return Ok(false);
-    };
-    if dates.min < from || dates.max >= to {
-        return Ok(false);
+    leaf.zone_ords = targets;
+    // ARITH: windows of one segment.
+    #[allow(clippy::arithmetic_side_effects)]
+    if done {
+        leaf.folded += 1;
     }
-    let contained = !hard_bounds.1.is_some_and(|max| from >= max)
-        && !hard_bounds.0.is_some_and(|min| from < min);
-    if !contained {
-        return Ok(false);
-    }
-    // The bucket: its key is inside the hard bounds (checked above), so
-    // collecting the window would make it at its first document, and making
-    // it now changes nothing should the window be collected after all. Then
-    // each sub-aggregation's folded state, before anything else is changed.
-    let ord = keyed_ord_cached(&mut leaf.key_cache, ords, keys, 0, from);
-    let mut folded = Vec::with_capacity(sub_nodes.len());
-    for ((n, s), l) in sub_nodes.iter().zip(sub_states.iter()).zip(&leaf.subs) {
+    Ok(done)
+}
+
+/// Adds the window `base..base + len` to each bucket of `targets`: its
+/// count, and each metric sub-aggregation folding its column's block
+/// statistics. False, with nothing changed, when a sub-aggregation is not a
+/// plain metric or cannot fold.
+fn fold_targets(
+    sub_nodes: &[AggNode],
+    counts: &mut Vec<u64>,
+    sub_states: &mut [State],
+    sub_leaves: &[Leaf<'_>],
+    targets: &[u32],
+    base: i32,
+    len: usize,
+) -> Result<bool> {
+    let mut folded = Vec::with_capacity(sub_nodes.len() * targets.len());
+    for ((n, s), l) in sub_nodes.iter().zip(sub_states.iter()).zip(sub_leaves) {
         let (
             AggNode::Metric {
                 kind, script: None, ..
@@ -3371,27 +3515,46 @@ fn zone_window(
         else {
             return Ok(false);
         };
-        let Some(stats) = stats_of(l)? else {
+        if targets.is_empty() {
+            continue;
+        }
+        let Some(stats) = window_stats_of(&l.col, base, len)? else {
             return Ok(false);
         };
-        let current = col.get(ord as usize);
-        let Some(next) = metric_aggs::fold_zone_needs(col.needs(), current, stats, len, *kind)
-        else {
-            return Ok(false);
-        };
-        folded.push(next);
-    }
-    // ARITH: `len` documents of one window.
-    #[allow(clippy::arithmetic_side_effects)]
-    {
-        *slot(counts, ord as usize) += len as u64;
-    }
-    for (s, next) in sub_states.iter_mut().zip(folded) {
-        if let State::Metric(col) = s {
-            with_metric_col!(col, v => metric_aggs::MetricSlot::set(slot(v, ord as usize), next));
+        for &ord in targets {
+            let current = col.get(ord as usize);
+            let Some(next) = metric_aggs::fold_zone_needs(col.needs(), current, stats, len, *kind)
+            else {
+                return Ok(false);
+            };
+            folded.push(next);
         }
     }
-    ZONE_WINDOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    for &ord in targets {
+        // ARITH: `len` documents of one window.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            *slot(counts, ord as usize) += len as u64;
+        }
+    }
+    debug_assert_eq!(
+        folded.len(),
+        targets.len()
+            * sub_states
+                .iter()
+                .filter(|s| matches!(s, State::Metric(_)))
+                .count()
+    );
+    let mut next = folded.into_iter();
+    for s in sub_states.iter_mut() {
+        if let State::Metric(col) = s {
+            for &ord in targets {
+                if let Some(n) = next.next() {
+                    with_metric_col!(col, v => metric_aggs::MetricSlot::set(slot(v, ord as usize), n));
+                }
+            }
+        }
+    }
     Ok(true)
 }
 
@@ -4805,6 +4968,9 @@ pub fn aggregate_tree_cached(
             }
             for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
                 end_segment(n, s, l)?;
+                if l.folded > 0 {
+                    ZONE_WINDOWS.fetch_add(l.folded, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         Ok(())
@@ -5877,6 +6043,8 @@ mod tests {
             win_ords: Vec::new(),
             term_buckets: Vec::new(),
             key_cache: KeyCache::default(),
+            zone_ords: Vec::new(),
+            folded: 0,
             missing: None,
             missing_key: None,
             filter: None,
