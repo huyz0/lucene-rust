@@ -110,6 +110,7 @@ public final class MlCommons {
     private final ThreadPool threadPool;
     private final MlIndices indices;
     private final MlAgents agents = new MlAgents(this);
+    private final MlMemory memory = new MlMemory(this);
     private final LocalModels local;
     private final RemoteModels remote;
     private final Path cacheDir;
@@ -201,6 +202,10 @@ public final class MlCommons {
 
     LocalModels local() {
         return local;
+    }
+
+    MlMemory memory() {
+        return memory;
     }
 
     MlAgents agents() {

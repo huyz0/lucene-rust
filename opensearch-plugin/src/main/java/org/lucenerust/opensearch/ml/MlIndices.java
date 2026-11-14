@@ -34,6 +34,8 @@ public final class MlIndices {
     public static final String CONFIG = ".plugins-ml-config";
     public static final String CONNECTOR = ".plugins-ml-connector";
     public static final String AGENT = ".plugins-ml-agent";
+    public static final String MEMORY_META = ".plugins-ml-memory-meta";
+    public static final String MEMORY_MESSAGE = ".plugins-ml-memory-message";
 
     private final Client client;
     private final ClusterService clusterService;
@@ -51,7 +53,9 @@ public final class MlIndices {
             new SystemIndexDescriptor(TASK, "ML Commons Task System Index"),
             new SystemIndexDescriptor(CONFIG, "ML Commons Configuration System Index"),
             new SystemIndexDescriptor(CONNECTOR, "ML Commons Connector System Index"),
-            new SystemIndexDescriptor(AGENT, "ML Commons Agent System Index")
+            new SystemIndexDescriptor(AGENT, "ML Commons Agent System Index"),
+            new SystemIndexDescriptor(MEMORY_META, "ML Commons Memory Meta System Index"),
+            new SystemIndexDescriptor(MEMORY_MESSAGE, "ML Commons Memory Message System Index")
         );
     }
 
