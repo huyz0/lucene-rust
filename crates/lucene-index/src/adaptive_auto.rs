@@ -11,7 +11,8 @@
 //! The writer asks it of its first [`SAMPLE_DOCS`] documents. Until then it
 //! writes stock doc values; from the flush that reaches that many it writes
 //! the chosen format, and so do its merges. The answer is recorded in the
-//! commit's user data under [`COMMIT_KEY`], so a reopened writer keeps it.
+//! commit's user data under [`COMMIT_KEY`], so a reopened writer keeps it;
+//! until then each commit records [`PENDING`] there.
 //!
 //! A column's clustering is the median, over its full windows, of the
 //! window's value range divided by the column's whole range across the
@@ -35,6 +36,9 @@ pub const CLUSTERED: f64 = 0.25;
 pub const MIN_WINDOWS: usize = 16;
 /// The commit user-data key holding the choice (`true` or `false`).
 pub const COMMIT_KEY: &str = "adaptive_doc_values";
+
+/// [`COMMIT_KEY`]'s value while the shard is still sampling.
+pub const PENDING: &str = "auto";
 
 /// One column's windows so far.
 #[derive(Default)]
@@ -301,6 +305,11 @@ mod tests {
         assert_eq!(AdaptiveAuto::recorded(&[]), None);
         assert_eq!(
             AdaptiveAuto::recorded(&[(COMMIT_KEY.to_string(), "maybe".to_string())]),
+            None
+        );
+        // Still sampling when the commit was written: sample again.
+        assert_eq!(
+            AdaptiveAuto::recorded(&[(COMMIT_KEY.to_string(), PENDING.to_string())]),
             None
         );
     }

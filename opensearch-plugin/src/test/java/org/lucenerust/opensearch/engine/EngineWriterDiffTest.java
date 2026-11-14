@@ -133,6 +133,7 @@ public final class EngineWriterDiffTest {
         refusals();
         partitions();
         adaptiveAuto();
+        adaptiveDefault();
         mappingFallback();
         System.out.printf("EngineWriterDiffTest: %d checks, %d failures%n", checks, failures);
         if (failures > 0) {
@@ -1029,6 +1030,48 @@ public final class EngineWriterDiffTest {
             try (Stream<Path> s = Files.walk(root)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
             }
+        }
+    }
+
+    /**
+     * indices.codec.adaptive_doc_values.default: auto and false add no index setting, so an index's
+     * settings read as on stock OpenSearch; a shard without the setting follows its last commit,
+     * then the cluster default when it has no documents yet.
+     */
+    private static void adaptiveDefault() {
+        org.opensearch.common.settings.Settings none = org.opensearch.common.settings.Settings.EMPTY;
+        org.opensearch.common.settings.Settings asked = org.opensearch.common.settings.Settings.builder()
+            .put("index.engine.accelerated", true)
+            .build();
+        for (String clusterDefault : new String[] { "auto", "false" }) {
+            check(
+                org.lucenerust.opensearch.RustSearchPlugin.adaptiveDocValuesDefault(none, asked, clusterDefault, true) == null,
+                clusterDefault + " is not written into a new index's settings"
+            );
+        }
+        check(
+            "true".equals(org.lucenerust.opensearch.RustSearchPlugin.adaptiveDocValuesDefault(none, asked, "true", true)),
+            "true is written into a new accelerated index"
+        );
+        check(
+            org.lucenerust.opensearch.RustSearchPlugin.adaptiveDocValuesDefault(none, asked, "true", false) == null,
+            "nothing on a node serving accelerated indices with OpenSearch's engine"
+        );
+        org.opensearch.common.settings.Settings stock = org.opensearch.common.settings.Settings.builder()
+            .put("index.engine.accelerated", false)
+            .build();
+        check(
+            org.lucenerust.opensearch.RustSearchPlugin.adaptiveDocValuesDefault(none, stock, "true", true) == null,
+            "nothing on an index on OpenSearch's engine"
+        );
+        check("auto".equals(RustEngineSupport.adaptiveDocValues(Map.of(), 0, "auto")), "a new shard takes the cluster default");
+        check("false".equals(RustEngineSupport.adaptiveDocValues(Map.of(), 0, "false")), "a new shard takes the cluster default");
+        check("false".equals(RustEngineSupport.adaptiveDocValues(Map.of(), 500, "auto")), "a shard written before keeps stock");
+        for (String recorded : new String[] { "auto", "true", "false" }) {
+            check(
+                "auto".equals(RustEngineSupport.adaptiveDocValues(Map.of("adaptive_doc_values", recorded), 70_000, "false")),
+                "a shard whose commit recorded auto's state (" + recorded + ") stays auto"
+            );
         }
     }
 

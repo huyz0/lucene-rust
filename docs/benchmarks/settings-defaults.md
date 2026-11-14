@@ -31,7 +31,7 @@ remapped to one of them.
 | `index.search.accelerated_shapes` | `fast` | `fast` and `all` behave the same today. |
 | `index.search.aggregation_segment_cache.enabled` | `false` | Opt-in feature. |
 | `index.search.realtime.enabled`, `max_staleness` | `false`, `20ms` | Opt-in feature. |
-| `index.codec.adaptive_doc_values` | `indices.codec.adaptive_doc_values.default` (`auto`) | Own format (`Adaptive90`): stock cannot read it. `auto` writes it only for a shard whose first 64K documents have a column clustered in document order (aggregations 0.54-0.61x of stock end to end, store 27-38% smaller) and keeps stock doc values otherwise, where `true` makes filtered metrics up to 1.5x slower. The cluster setting `false` keeps new indices stock-readable. |
+| `index.codec.adaptive_doc_values` | `indices.codec.adaptive_doc_values.default` (`auto`, not written into the index's settings) | Own format (`Adaptive90`): stock cannot read it. `auto` writes it only for a shard whose first 64K documents have a column clustered in document order (aggregations 0.54-0.61x of stock end to end, store 27-38% smaller) and keeps stock doc values otherwise, where `true` makes filtered metrics up to 1.5x slower. The cluster setting `false` keeps new indices stock-readable. |
 | `index.codec.terms_compression: zstd` | `false` | Own format: stock cannot read it. Wildcard walks up to 2x slower, merges 2x slower. |
 | `index.codec.stored_fields.page_aligned` | `false` | Own format: stock cannot read it. |
 | `index.store.read_mode` | `mmap` | Stock's IO. `page_cache` wins only under memory pressure and costs 5-30% on cold first touch. |

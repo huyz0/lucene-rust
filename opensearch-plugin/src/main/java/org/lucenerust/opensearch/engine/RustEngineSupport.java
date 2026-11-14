@@ -99,8 +99,8 @@ public final class RustEngineSupport {
      * timestamp in arrival order, an index-sort key), stock otherwise. Until then the shard writes
      * stock segments; the choice is kept in the shard's commit, and merges write it. Only nodes
      * with this plugin read {@code Adaptive90} segments; to go back, close the index, set this to
-     * false, reopen it and force-merge, which rewrites every segment stock-readable. A new index
-     * that does not set this gets {@link #ADAPTIVE_DOC_VALUES_DEFAULT}.
+     * false, reopen it and force-merge, which rewrites every segment stock-readable. An index
+     * that does not set this follows {@link #ADAPTIVE_DOC_VALUES_DEFAULT} without storing it.
      */
     public static final Setting<String> ADAPTIVE_DOC_VALUES = new Setting<>(
         "index.codec.adaptive_doc_values",
@@ -111,13 +111,16 @@ public final class RustEngineSupport {
 
     /**
      * What {@link #ADAPTIVE_DOC_VALUES} a new accelerated-engine index gets when its request and
-     * templates do not set it: {@code auto} (the default), {@code true} or {@code false}. Dynamic;
-     * an index keeps the value it was created with, so changing this affects only indices created
-     * after. {@code auto} by default: on 1M-document indices end to end it chose {@code Adaptive90}
-     * for time-ordered logs and taxi trips in file order (aggregations 0.54x and 0.61x of stock
-     * OpenSearch's time, stores 27% and 38% smaller) and stock doc values for the same trips
-     * shuffled, where {@code true} makes filtered metrics up to 1.5x slower; no response differed.
-     * {@code false} keeps every new index stock-readable.
+     * templates do not set it: {@code auto} (the default), {@code true} or {@code false}. Dynamic.
+     * {@code true} is written into the new index's settings; {@code auto} and {@code false} are
+     * not, so the index's settings read as on stock OpenSearch, and its shards keep what their
+     * first writer took ({@link #adaptiveDocValues(org.opensearch.common.settings.Settings, Store)}):
+     * changing this affects only indices created after. {@code auto} by default: on 1M-document
+     * indices end to end it chose {@code Adaptive90} for time-ordered logs and taxi trips in file
+     * order (aggregations 0.54x and 0.61x of stock OpenSearch's time, stores 27% and 38% smaller)
+     * and stock doc values for the same trips shuffled, where {@code true} makes filtered metrics
+     * up to 1.5x slower; no response differed. {@code false} keeps every new index
+     * stock-readable.
      */
     public static final Setting<String> ADAPTIVE_DOC_VALUES_DEFAULT = new Setting<>(
         "indices.codec.adaptive_doc_values.default",
@@ -649,6 +652,49 @@ public final class RustEngineSupport {
         return config.getIndexSort() != null ? org.opensearch.common.lucene.Lucene.PARENT_FIELD : null;
     }
 
+    /** The node's {@link #ADAPTIVE_DOC_VALUES_DEFAULT}, kept current by the plugin. */
+    private static volatile String adaptiveDocValuesDefault = ADAPTIVE_AUTO;
+
+    public static void setAdaptiveDocValuesDefault(String value) {
+        adaptiveDocValuesDefault = value;
+    }
+
+    /**
+     * The {@link #ADAPTIVE_DOC_VALUES} a shard's writer runs with. An index that sets it gets its
+     * value. One that does not stores nothing in its settings, as on stock OpenSearch, and is
+     * judged by its last commit: {@code auto} when that commit recorded an {@code auto} choice or
+     * sampling ({@code adaptive_doc_values} in its user data), the cluster default for a shard
+     * with no documents yet, and {@code false} for one written before -- so an index created
+     * before the default changed keeps writing as it did.
+     */
+    static String adaptiveDocValues(org.opensearch.common.settings.Settings settings, Store store) throws IOException {
+        if (ADAPTIVE_DOC_VALUES.exists(settings)) {
+            return ADAPTIVE_DOC_VALUES.get(settings);
+        }
+        org.apache.lucene.index.SegmentInfos last;
+        try {
+            last = store.readLastCommittedSegmentsInfo();
+        } catch (org.apache.lucene.index.IndexNotFoundException e) {
+            last = null;
+        }
+        return adaptiveDocValues(
+            last == null ? Map.of() : last.getUserData(),
+            last == null ? 0 : last.totalMaxDoc(),
+            adaptiveDocValuesDefault
+        );
+    }
+
+    /** {@link #adaptiveDocValues(org.opensearch.common.settings.Settings, Store)} for an index that does not set it. */
+    static String adaptiveDocValues(Map<String, String> commitData, long committedDocs, String clusterDefault) {
+        if (commitData.containsKey(ADAPTIVE_COMMIT_KEY)) {
+            return ADAPTIVE_AUTO;
+        }
+        return committedDocs == 0 ? clusterDefault : "false";
+    }
+
+    /** The commit user data key under which {@code auto} records its choice ({@code adaptive_auto.rs}). */
+    static final String ADAPTIVE_COMMIT_KEY = "adaptive_doc_values";
+
     static RustIndexWriter openWriter(
         EngineConfig config,
         Store store,
@@ -659,6 +705,7 @@ public final class RustEngineSupport {
     ) throws IOException {
         Codec codec = config.getCodec();
         bindStoreMode(config, store);
+        String adaptive = adaptiveDocValues(config.getIndexSettings().getSettings(), store);
         RustIndexWriter writer = RustIndexWriter.open(
             store.directory(),
             indexPath(store),
@@ -666,7 +713,7 @@ public final class RustEngineSupport {
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
-            "true".equals(ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings())),
+            "true".equals(adaptive),
             ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
             MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
@@ -692,7 +739,7 @@ public final class RustEngineSupport {
         boolean success = false;
         try {
             writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
-            if (ADAPTIVE_AUTO.equals(ADAPTIVE_DOC_VALUES.get(indexSettings.getSettings()))) {
+            if (ADAPTIVE_AUTO.equals(adaptive)) {
                 writer.setAdaptiveDocValuesAuto();
             }
             writer.setSeqNoLayout(
