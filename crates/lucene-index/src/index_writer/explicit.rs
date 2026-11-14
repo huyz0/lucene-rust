@@ -1106,6 +1106,7 @@ impl IndexingConfig {
                             &dv_configs,
                             &names,
                             &segment_id,
+                            true,
                         )
                     });
                     let (groups, phase) = match prebuilt {

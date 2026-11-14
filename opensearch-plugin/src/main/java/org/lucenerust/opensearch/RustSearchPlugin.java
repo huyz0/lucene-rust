@@ -414,28 +414,46 @@ public class RustSearchPlugin extends Plugin implements
     }
 
     /**
-     * k-NN's settings for a new knn index ({@code KNNPlugin.getAdditionalIndexSettingProviders}):
-     * derived source on, and gentler merges (vector merges are CPU heavy). The request's own
-     * settings still win.
+     * Settings a new index gets unless its request or templates set them: under the accelerated
+     * engine, {@code index.codec.adaptive_doc_values} from {@code
+     * indices.codec.adaptive_doc_values.default}; and k-NN's for a knn index ({@code
+     * KNNPlugin.getAdditionalIndexSettingProviders}): derived source on, and gentler merges (vector
+     * merges are CPU heavy).
      */
     @Override
     public Collection<IndexSettingProvider> getAdditionalIndexSettingProviders() {
-        if (stockKnn) {
-            return List.of();
-        }
         return List.of(new IndexSettingProvider() {
             @Override
             public Settings getAdditionalIndexSettings(String indexName, boolean isDataStreamIndex, Settings templateAndRequestSettings) {
-                if (templateAndRequestSettings.getAsBoolean(KnnSettings.KNN_INDEX.getKey(), false) == false) {
-                    return Settings.EMPTY;
+                Settings.Builder added = Settings.builder();
+                String adaptive = adaptiveDocValuesDefault(templateAndRequestSettings);
+                if (adaptive != null) {
+                    added.put(RustEngineSupport.ADAPTIVE_DOC_VALUES.getKey(), adaptive);
                 }
-                return Settings.builder()
-                    .put(KnnSettings.DERIVED_SOURCE.getKey(), true)
-                    .put(TieredMergePolicyProvider.INDEX_MERGE_POLICY_MAX_MERGE_AT_ONCE_SETTING.getKey(), 10)
-                    .put(TieredMergePolicyProvider.INDEX_MERGE_POLICY_FLOOR_SEGMENT_SETTING.getKey(), new ByteSizeValue(2, ByteSizeUnit.MB))
-                    .build();
+                if (stockKnn == false && templateAndRequestSettings.getAsBoolean(KnnSettings.KNN_INDEX.getKey(), false)) {
+                    added.put(KnnSettings.DERIVED_SOURCE.getKey(), true)
+                        .put(TieredMergePolicyProvider.INDEX_MERGE_POLICY_MAX_MERGE_AT_ONCE_SETTING.getKey(), 10)
+                        .put(TieredMergePolicyProvider.INDEX_MERGE_POLICY_FLOOR_SEGMENT_SETTING.getKey(), new ByteSizeValue(2, ByteSizeUnit.MB));
+                }
+                return added.build();
             }
         });
+    }
+
+    /**
+     * The cluster's {@code indices.codec.adaptive_doc_values.default} for a new index that does not
+     * set {@code index.codec.adaptive_doc_values} and is served by the accelerated engine, or
+     * {@code null} to add nothing (the default, {@code false}, stores no setting).
+     */
+    private String adaptiveDocValuesDefault(Settings templateAndRequestSettings) {
+        org.opensearch.cluster.service.ClusterService cluster = clusterService.get();
+        if (cluster == null
+            || RustEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)
+            || RustEngineSupport.servedByRust(templateAndRequestSettings) == false) {
+            return null;
+        }
+        String value = cluster.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT);
+        return "false".equals(value) ? null : value;
     }
 
     /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
@@ -718,6 +736,7 @@ public class RustSearchPlugin extends Plugin implements
             RustEngineSupport.REALTIME_SEARCH,
             RustEngineSupport.REALTIME_MAX_STALENESS,
             RustEngineSupport.ADAPTIVE_DOC_VALUES,
+            RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT,
             RustEngineSupport.ZSTD_TERMS,
             RustEngineSupport.MERGE_LZ4_HIGH_COMPRESSION,
             RustEngineSupport.PAGED_ZSTD_STORED_FIELDS,

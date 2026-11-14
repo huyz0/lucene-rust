@@ -132,6 +132,7 @@ public final class EngineWriterDiffTest {
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
         partitions();
+        adaptiveAuto();
         mappingFallback();
         System.out.printf("EngineWriterDiffTest: %d checks, %d failures%n", checks, failures);
         if (failures > 0) {
@@ -945,6 +946,92 @@ public final class EngineWriterDiffTest {
      * attribute, documents without a value share the default partition, and a forced merge leaves one
      * segment per partition that Lucene reads.
      */
+    private static RustIndexWriter openPlain(FSDirectory dir, Path root) throws IOException {
+        return RustIndexWriter.open(
+            dir,
+            root,
+            16,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            null, false,
+            null,
+            null,
+            IndexWriter.MAX_DOCS,
+            org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+            3,
+            new TestAnalyzer(),
+            new BM25Similarity(),
+            10,
+            SOFT,
+            null,
+            new KeepOnlyLastCommitDeletionPolicy(),
+            null,
+            null,
+            null
+        );
+    }
+
+    /**
+     * index.codec.adaptive_doc_values: auto: stock segments until 65,536 documents are seen, then
+     * Adaptive90 for a timestamp in arrival order (_seq_no, also in order, does not count); the
+     * choice is kept in the commit and by a reopened writer.
+     */
+    private static void adaptiveAuto() throws Exception {
+        Path root = Files.createTempDirectory("engine-writer-adaptive-auto");
+        try (FSDirectory dir = FSDirectory.open(root)) {
+            try (IndexWriter empty = new IndexWriter(dir, new IndexWriterConfig())) {
+                empty.commit();
+            }
+            RustIndexWriter w = openPlain(dir, root);
+            w.setAdaptiveDocValuesAuto();
+            w.setLiveCommitData(Map.<String, String>of().entrySet());
+            check(w.adaptiveDocValuesChoice() == null, "no choice before any document");
+            int perCommit = 8_192;
+            for (int c = 0; c < 9; c++) {
+                for (int i = c * perCommit; i < (c + 1) * perCommit; i++) {
+                    ParseContext.Document d = new ParseContext.Document();
+                    d.add(new StringField("id", Integer.toString(i), Field.Store.YES));
+                    d.add(new SortedNumericDocValuesField("@timestamp", 1_700_000_000_000L + i * 37L));
+                    d.add(new SortedNumericDocValuesField("fare", (i * 2_654_435_761L) % 1_000_003));
+                    w.addDocument(d, null);
+                }
+                w.commit();
+                check(
+                    (w.adaptiveDocValuesChoice() != null) == (c >= 7),
+                    "the choice is made at 65,536 documents: " + c + " " + w.adaptiveDocValuesChoice()
+                );
+            }
+            check(Boolean.TRUE.equals(w.adaptiveDocValuesChoice()), "a timestamp in order makes the index adaptive");
+            w.close();
+            check("true".equals(org.apache.lucene.index.SegmentInfos.readLatestCommit(dir).getUserData().get("adaptive_doc_values")), "the choice is in the commit");
+            RustIndexWriter reopened = openPlain(dir, root);
+            reopened.setAdaptiveDocValuesAuto();
+            check(Boolean.TRUE.equals(reopened.adaptiveDocValuesChoice()), "a reopened writer keeps the choice");
+            reopened.close();
+            List<String> formats = new ArrayList<>();
+            try (DirectoryReader reader = DirectoryReader.open(dir)) {
+                for (LeafReaderContext leaf : reader.leaves()) {
+                    formats.add(leaf.reader().getFieldInfos().fieldInfo("@timestamp").getAttribute("PerFieldDocValuesFormat.format"));
+                    // Read back through the format's producer.
+                    SortedNumericDocValues ts = leaf.reader().getSortedNumericDocValues("@timestamp");
+                    check(ts.nextDoc() == 0 && ts.docValueCount() == 1, "every document has its timestamp");
+                }
+            }
+            List<String> expected = new ArrayList<>(java.util.Collections.nCopies(7, "Lucene90"));
+            expected.addAll(List.of("Adaptive90", "Adaptive90"));
+            check(formats.equals(expected), "stock until the choice, adaptive after: " + formats);
+            checkIndex("adaptive-auto", dir);
+        } finally {
+            try (Stream<Path> s = Files.walk(root)) {
+                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            }
+        }
+    }
+
     private static void partitions() throws Exception {
         Path root = Files.createTempDirectory("engine-writer-partitions");
         try (FSDirectory dir = FSDirectory.open(root)) {

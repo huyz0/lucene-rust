@@ -86,18 +86,49 @@ public final class RustEngineSupport {
     );
 
     /**
-     * Whether the Rust engine writes doc values in the {@code Adaptive90} format: numeric and
-     * date columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values), several
-     * times smaller for timestamps and decimal doubles. Off by default, which writes stock
-     * Lucene90 doc values. Only nodes with this plugin read {@code Adaptive90} segments; to go
-     * back, close the index, set this to false, reopen it and force-merge, which rewrites every
-     * segment stock-readable.
+     * The doc-values format the accelerated engine writes. {@code false} (the default) writes stock
+     * Lucene90 doc values. {@code true} writes the {@code Adaptive90} format: numeric and date
+     * columns as adaptive blocks (delta, GCD, decimal and bit-packing per 128 values) with
+     * per-1024-document statistics, several times smaller for timestamps and decimal doubles, and
+     * aggregations fold whole windows from those statistics where a column is clustered in
+     * document order. {@code auto} makes one choice for the shard from its first 65,536 documents:
+     * {@code Adaptive90} when any single-valued numeric column is clustered in document order (a
+     * timestamp in arrival order, an index-sort key), stock otherwise. Until then the shard writes
+     * stock segments; the choice is kept in the shard's commit, and merges write it. Only nodes
+     * with this plugin read {@code Adaptive90} segments; to go back, close the index, set this to
+     * false, reopen it and force-merge, which rewrites every segment stock-readable. A new index
+     * that does not set this gets {@link #ADAPTIVE_DOC_VALUES_DEFAULT}.
      */
-    public static final Setting<Boolean> ADAPTIVE_DOC_VALUES = Setting.boolSetting(
+    public static final Setting<String> ADAPTIVE_DOC_VALUES = new Setting<>(
         "index.codec.adaptive_doc_values",
-        false,
+        "false",
+        v -> adaptiveDocValues("index.codec.adaptive_doc_values", v),
         Setting.Property.IndexScope
     );
+
+    /**
+     * What {@link #ADAPTIVE_DOC_VALUES} a new accelerated-engine index gets when its request and
+     * templates do not set it: {@code false} (the default), {@code true} or {@code auto}. Dynamic;
+     * an index keeps the value it was created with, so changing this affects only indices created
+     * after.
+     */
+    public static final Setting<String> ADAPTIVE_DOC_VALUES_DEFAULT = new Setting<>(
+        "indices.codec.adaptive_doc_values.default",
+        "false",
+        v -> adaptiveDocValues("indices.codec.adaptive_doc_values.default", v),
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /** {@code auto}'s value of {@link #ADAPTIVE_DOC_VALUES}. */
+    public static final String ADAPTIVE_AUTO = "auto";
+
+    private static String adaptiveDocValues(String key, String v) {
+        return switch (v) {
+            case "false", "true", ADAPTIVE_AUTO -> v;
+            default -> throw new IllegalArgumentException("[" + key + "] must be [false], [true] or [auto], got [" + v + "]");
+        };
+    }
 
     /**
      * {@code zstd} writes terms dictionaries in the {@code ZstdTerms104} postings format:
@@ -631,7 +662,7 @@ public final class RustEngineSupport {
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
-            ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings()),
+            "true".equals(ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings())),
             ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
             MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
             partitionField(config.getIndexSettings().getSettings()),
@@ -657,6 +688,9 @@ public final class RustEngineSupport {
         boolean success = false;
         try {
             writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
+            if (ADAPTIVE_AUTO.equals(ADAPTIVE_DOC_VALUES.get(indexSettings.getSettings()))) {
+                writer.setAdaptiveDocValuesAuto();
+            }
             writer.setSeqNoLayout(
                 SeqNoSettings.docValuesOnly(indexSettings.getSettings()),
                 SeqNoSettings.sentinels(indexSettings.getSettings())
