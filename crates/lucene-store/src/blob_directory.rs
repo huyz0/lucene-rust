@@ -84,6 +84,23 @@ pub trait BlobStore: Send + Sync {
         Ok(self.get(name)?.len() as u64)
     }
 
+    /// The identity of object `name`'s current content: an ETag, a version
+    /// id, the id of the manifest generation that names it. [`crate::CachedBlobDirectory`]
+    /// keeps it in the key of every page it caches, so two contents under
+    /// one name (and one length) never share pages, and an open file is not
+    /// shared with a later open of different content. It is asked on every
+    /// open, so a store answers from what it already holds (a listing, a
+    /// manifest) rather than with a request. `None`, the default, when the
+    /// store has none: the key is then the name and length alone.
+    ///
+    /// The store must read the same content it names here: a ranged read
+    /// of `name` that may return a newer object defeats the identity
+    /// (pin it to the version, as S3 `versionId` does).
+    fn version(&self, name: &str) -> Result<Option<String>> {
+        let _ = name;
+        Ok(None)
+    }
+
     /// Whether an object exists, as [`BlobStore::size`] answers.
     fn exists(&self, name: &str) -> Result<bool> {
         match self.size(name) {
