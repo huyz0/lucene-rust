@@ -22,7 +22,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * The native surface of {@code liblucene_ffi}, reached through the Foreign Function & Memory API:
- * each method is a downcall to one of the library's C-ABI functions ({@code jvm_reader.rs}, {@code
+ * each method is a downcall to one of the library's C-ABI functions ({@code reader_search.rs}, {@code
  * engine_writer.rs}, and {@code ffm_bridge.rs} for what those do not offer).
  *
  * <p>Every call returns a status code ({@link #OK} on success) and never throws: results come
@@ -1528,7 +1528,7 @@ public final class NativeBridge {
 
     /**
      * Runs a hybrid query's shard phase ({@link NativeHybrid}): the encoded slices' answers
-     * ({@code search_hybrid_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     * ({@code search_hybrid_blobs} in {@code reader_search.rs}) in {@code out[0]}.
      */
     public static int searchHybrid(long handle, byte[] blob, byte[][] out) {
         if (blob == null) {
@@ -1556,7 +1556,7 @@ public final class NativeBridge {
     /**
      * Runs a query blob collapsed ({@link NativeCollapse}): the sort blob's keys ({@link
      * SortEncoder}) on the collapse blob's field, {@code topN} groups per slice; the encoded
-     * groups ({@code search_collapsed_blobs} in {@code jvm_reader.rs}) in {@code out[0]}.
+     * groups ({@code search_collapsed_blobs} in {@code reader_search.rs}) in {@code out[0]}.
      */
     public static int searchCollapsed(long handle, byte[] query, byte[] sort, byte[] collapse, int topN, byte[][] out) {
         if (query == null) {
@@ -1605,7 +1605,7 @@ public final class NativeBridge {
      * Rescores {@code docs}/{@code scores} (a search's hits, best first, global ids) in place as
      * OpenSearch's {@code QueryRescorer} does: the query blob's query over the top {@code window},
      * {@code mode} the {@code QueryRescoreMode} ordinal ({@code rescore_hits} in {@code
-     * jvm_reader.rs}).
+     * reader_search.rs}).
      */
     public static int rescore(
         long handle,

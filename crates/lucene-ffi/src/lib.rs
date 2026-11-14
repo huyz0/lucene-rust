@@ -92,7 +92,6 @@ mod jvm_fetch;
 mod jvm_highlight;
 mod jvm_highlight_fvh;
 mod jvm_highlight_plain;
-mod jvm_join;
 mod jvm_knn;
 mod jvm_reader;
 mod live;

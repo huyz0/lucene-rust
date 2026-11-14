@@ -1086,7 +1086,7 @@ pub(crate) fn aggregate_tree_blobs_cached(
     )?;
     let query = lucene_engine::query_blob::similarity_checked(
         sim,
-        crate::jvm_join::resolve(&h, query, sim),
+        lucene_engine::join::resolve(&h, query, sim),
     )?;
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
