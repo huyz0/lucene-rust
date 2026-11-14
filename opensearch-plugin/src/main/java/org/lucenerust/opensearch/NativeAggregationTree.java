@@ -67,7 +67,7 @@ import java.util.function.Predicate;
  * <p>{@link #plan} walks OpenSearch's own aggregator factories beside the aggregators its
  * collector manager built from them (so every parameter is the one OpenSearch resolved: the
  * sorted ranges, the rounding, the bounds, the {@code shard_size}), {@link Tree#blob} is the tree
- * blob {@code jvm_aggs.rs} decodes, and {@link Tree#build} makes the shard results those
+ * blob {@code agg_tree.rs} decodes, and {@link Tree#build} makes the shard results those
  * aggregators would build -- through their own empty results and factories wherever OpenSearch
  * exposes them.
  */
@@ -89,7 +89,7 @@ public final class NativeAggregationTree {
     static final byte REVERSE_NESTED = 16;
     /** A metric over a Painless script's values ({@link ScriptMetricNode}). */
     static final byte SCRIPT_METRIC = 18;
-    /** {@code date_histogram} unit codes, in the order {@code jvm_aggs.rs} lists them. */
+    /** {@code date_histogram} unit codes, in the order {@code agg_tree.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
         Rounding.DateTimeUnit.YEAR_OF_CENTURY,
@@ -838,7 +838,7 @@ public final class NativeAggregationTree {
      * {@code global} over every document (one pass), in the request's order within each.
      */
     public record Tree(List<Node> main, List<Node> global, byte[] globalQuery) {
-        /** The tree blob ({@code decode_tree} in {@code jvm_aggs.rs}), without a bucket limit. */
+        /** The tree blob ({@code decode_tree} in {@code agg_tree.rs}), without a bucket limit. */
         byte[] blob(int[][] slices) {
             return blob(slices, -1);
         }

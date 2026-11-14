@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agg_tree;
 pub mod alloc;
 pub mod analysis;
 pub mod analysis_modules;
