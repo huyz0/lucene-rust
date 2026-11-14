@@ -103,4 +103,5 @@ def main():
         bn.req("PUT", "/bench/_settings", {"index.search.accelerated": sys.argv[3] == "on"})
 
 
-main()
+if __name__ == "__main__":
+    main()
