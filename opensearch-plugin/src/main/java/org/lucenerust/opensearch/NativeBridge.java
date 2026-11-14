@@ -1480,7 +1480,7 @@ public final class NativeBridge {
     /**
      * Runs a query blob's matches through an aggregation tree blob ({@link
      * NativeAggregationTree.Tree#blob}): the encoded shard results in {@code out[0]} (the layout
-     * {@code jvm_aggs.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
+     * {@code agg_tree.rs} documents), which {@link NativeAggregationTree.Tree#build} reads.
      */
     public static int aggregateTree(long handle, byte[] query, byte[] tree, byte[][] out) {
         return aggregateTree(handle, query, tree, false, out);
@@ -1891,7 +1891,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The counters {@link #aggCacheStats} reads. */
+    /** The counters {@link #aggCacheStats} reads ({@code AGG_CACHE_STATS} in {@code jvm_aggs.rs}). */
     public static final int AGG_CACHE_STATS = 6;
 
     /**

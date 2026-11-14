@@ -37,7 +37,7 @@ final class NativePercentiles {
 
     static final byte PERCENTILES = 11;
     static final byte HDR_PERCENTILES = 14;
-    /** {@code MAX_COMPRESSION} in {@code jvm_aggs.rs}. */
+    /** {@code MAX_COMPRESSION} in {@code agg_tree.rs}. */
     private static final double MAX_COMPRESSION = 10_000;
 
     private static final String METRICS = "org.opensearch.search.aggregations.metrics.";
