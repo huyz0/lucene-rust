@@ -12,7 +12,8 @@
 //! Only `Adaptive90` writes them, behind the
 //! [`ADAPTIVE_ZONES_TABLE_SIZE`](crate::doc_values) marker, and only for a
 //! value array whose values are documents in order (a dense NUMERIC field,
-//! or a dense SORTED_NUMERIC field with one value per document).
+//! a dense SORTED_NUMERIC field with one value per document, or the ordinals of
+//! a dense SORTED or single-valued SORTED_SET field, which carry no sums).
 //!
 //! # Layout
 //!
@@ -57,6 +58,14 @@ pub struct ZoneStats {
 // widened to `i128` and checked before narrowing.
 #[allow(clippy::arithmetic_side_effects)]
 pub fn encode(values: &[i64]) -> Option<Vec<u8>> {
+    encode_with(values, true)
+}
+
+/// [`encode`], with the sum array only when `sums` (ordinals have no use
+/// for sums).
+// ARITH: see `encode`.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn encode_with(values: &[i64], sums: bool) -> Option<Vec<u8>> {
     if values.len() < ZONE_SIZE {
         return None;
     }
@@ -64,7 +73,7 @@ pub fn encode(values: &[i64]) -> Option<Vec<u8>> {
     let (mut mins, mut maxs, mut sums) = (
         Vec::with_capacity(zones),
         Vec::with_capacity(zones),
-        Some(Vec::with_capacity(zones)),
+        sums.then(|| Vec::with_capacity(zones)),
     );
     for chunk in values.chunks(ZONE_SIZE) {
         let (mut lo, mut hi, mut sum) = (i64::MAX, i64::MIN, 0i128);

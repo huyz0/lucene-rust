@@ -220,6 +220,34 @@ fn sparse_and_multi_valued_fields_read_back() {
             assert_eq!(values[i], ts[d]);
         }
     }
+    // Windows of a sparse adaptive field decode their values as a run: every
+    // alignment and length (whole words or not), across value blocks, past
+    // the last document, and backwards (the cursor rewinds).
+    let mut r = NumericReader::new(&data, entry);
+    for (start, len) in [
+        (0, 1024),
+        (1024, 1024),
+        (64, 128),
+        (5, 77),
+        (2900, 128),
+        (2950, 64),
+        (128, 2048),
+        (0, 64),
+        (1500, 1),
+    ] {
+        let mut values = vec![-7i64; len];
+        let mut present = vec![u64::MAX; len.div_ceil(64)];
+        r.fill_window(start as i32, &mut values, &mut present)
+            .unwrap();
+        for i in 0..len {
+            let d = start + i;
+            let has = d < n as usize && d % 3 != 0;
+            assert_eq!(present[i / 64] >> (i % 64) & 1 == 1, has, "doc {d}");
+            if has {
+                assert_eq!(values[i], ts[d], "doc {d}");
+            }
+        }
+    }
 
     for (field, want) in [
         (
@@ -434,4 +462,77 @@ fn per_document_value_arrays_carry_window_statistics() {
     assert!(zentry.adaptive.as_ref().unwrap().zones);
     let cut = &zdata[..zdata.len() - 16 - 20];
     assert!(NumericReader::new(cut, zentry).window_stats(0).is_err());
+}
+
+/// Keyword ordinals: clustered ones become adaptive blocks with statistics,
+/// uniformly random ones stay Lucene90's, and both read back exactly.
+#[test]
+fn sorted_ordinals_are_adaptive_only_where_they_pay() {
+    use lucene_codecs::adaptive_zones::ZONE_SIZE;
+    let n = ZONE_SIZE * 6 + 100;
+    let fis = infos(&[DocValuesType::Sorted, DocValuesType::Sorted], false);
+    let words: Vec<Vec<u8>> = (0..5).map(|i| format!("level-{i}").into_bytes()).collect();
+    let mut r = Rng(9);
+    // Runs of about 300 documents with one value each.
+    let mut clustered = Vec::with_capacity(n);
+    while clustered.len() < n {
+        let w = (r.next() % 5) as usize;
+        let len = 200 + (r.next() % 200) as usize;
+        for _ in 0..len.min(n - clustered.len()) {
+            clustered.push(words[w].clone());
+        }
+    }
+    let random: Vec<Vec<u8>> = (0..n)
+        .map(|_| words[(r.next() % 4) as usize].clone())
+        .collect();
+    let fields = [
+        DenseField::Sorted(0, &clustered),
+        DenseField::Sorted(1, &random),
+    ];
+    let format = Lucene90DocValuesFormat::rust_adaptive();
+    let (meta, data) = write(&fields, n as i32, format, &[]);
+    let parsed = parse(&meta, &data, format, &fis);
+    let (lmeta, ldata) = write(&fields, n as i32, Lucene90DocValuesFormat::default(), &[]);
+    let lparsed = parse(&lmeta, &ldata, Lucene90DocValuesFormat::default(), &fis);
+    let clustered_entry = parsed.sorted_entry(0).unwrap();
+    let a = clustered_entry
+        .ords
+        .adaptive
+        .as_ref()
+        .expect("clustered ordinals are adaptive");
+    assert!(a.zones);
+    assert!(parsed.sorted_entry(1).unwrap().ords.adaptive.is_none());
+    assert!(data.len() < ldata.len());
+    // Same ordinals as stock's file, document by document, and zone bounds
+    // that hold every ordinal of their window.
+    for f in 0..2 {
+        let mut r1 = NumericReader::new(&data, &parsed.sorted_entry(f).unwrap().ords);
+        let mut r2 = NumericReader::new(&ldata, &lparsed.sorted_entry(f).unwrap().ords);
+        for d in 0..n as i32 {
+            assert_eq!(
+                r1.value(d).unwrap(),
+                r2.value(d).unwrap(),
+                "field {f} doc {d}"
+            );
+        }
+    }
+    let r1 = NumericReader::new(&data, &clustered_entry.ords);
+    let mut r2 = NumericReader::new(&ldata, &lparsed.sorted_entry(0).unwrap().ords);
+    for w in 0..n.div_ceil(ZONE_SIZE) {
+        let (stats, len) = r1
+            .window_stats((w * ZONE_SIZE) as i32)
+            .unwrap()
+            .expect("zone");
+        let (mut lo, mut hi) = (i64::MAX, i64::MIN);
+        for d in w * ZONE_SIZE..w * ZONE_SIZE + len {
+            let v = r2.value(d as i32).unwrap().unwrap();
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        assert_eq!(
+            (stats.min, stats.max, stats.sum),
+            (lo, hi, None),
+            "window {w}"
+        );
+    }
 }
