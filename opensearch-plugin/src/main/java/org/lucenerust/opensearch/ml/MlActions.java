@@ -75,6 +75,16 @@ public final class MlActions {
     public static final Type UPDATE_AGENT = new Type(ML + "agents/update");
     public static final Type DELETE_AGENT = new Type(ML + "agents/delete");
     public static final Type SEARCH_AGENTS = new Type(ML + "agents/search");
+    public static final Type CREATE_CONTAINER = new Type(ML + "memory_containers/create");
+    public static final Type GET_CONTAINER = new Type(ML + "memory_containers/get");
+    public static final Type UPDATE_CONTAINER = new Type(ML + "memory_containers/update");
+    public static final Type DELETE_CONTAINER = new Type(ML + "memory_containers/delete");
+    public static final Type SEARCH_CONTAINERS = new Type(ML + "memory_containers/search");
+    public static final Type ADD_AM_MEMORY = new Type(ML + "memory_containers/memories/add");
+    public static final Type GET_AM_MEMORY = new Type(ML + "memory_containers/memories/get");
+    public static final Type UPDATE_AM_MEMORY = new Type(ML + "memory_containers/memories/update");
+    public static final Type DELETE_AM_MEMORY = new Type(ML + "memory_containers/memories/delete");
+    public static final Type SEARCH_AM_MEMORIES = new Type(ML + "memory_containers/memories/search");
     public static final Type LIST_TOOLS = new Type(ML + "tools/list");
     public static final Type GET_TOOL = new Type(ML + "tools/get");
     public static final Type EXECUTE_AGENT = new Type(ML + "agents/execute");
@@ -125,6 +135,16 @@ public final class MlActions {
             new ActionHandler<>(UPDATE_AGENT, UpdateAgent.class),
             new ActionHandler<>(DELETE_AGENT, DeleteAgent.class),
             new ActionHandler<>(SEARCH_AGENTS, SearchAgents.class),
+            new ActionHandler<>(CREATE_CONTAINER, CreateContainer.class),
+            new ActionHandler<>(GET_CONTAINER, GetContainer.class),
+            new ActionHandler<>(UPDATE_CONTAINER, UpdateContainer.class),
+            new ActionHandler<>(DELETE_CONTAINER, DeleteContainer.class),
+            new ActionHandler<>(SEARCH_CONTAINERS, SearchContainers.class),
+            new ActionHandler<>(ADD_AM_MEMORY, AddAmMemory.class),
+            new ActionHandler<>(GET_AM_MEMORY, GetAmMemory.class),
+            new ActionHandler<>(UPDATE_AM_MEMORY, UpdateAmMemory.class),
+            new ActionHandler<>(DELETE_AM_MEMORY, DeleteAmMemory.class),
+            new ActionHandler<>(SEARCH_AM_MEMORIES, SearchAmMemories.class),
             new ActionHandler<>(LIST_TOOLS, ListTools.class),
             new ActionHandler<>(GET_TOOL, GetTool.class),
             new ActionHandler<>(EXECUTE_AGENT, ExecuteAgent.class),
@@ -671,6 +691,132 @@ public final class MlActions {
         @Inject
         public SearchAgents(TransportService t, ActionFilters f, NamedXContentRegistry x) {
             super(SEARCH_AGENTS, MlIndices.AGENT, t, f, x);
+        }
+    }
+
+    public static final class CreateContainer extends Base {
+        @Inject
+        public CreateContainer(TransportService t, ActionFilters f) {
+            super(CREATE_CONTAINER, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().create(r.json(), map(l));
+        }
+    }
+
+    public static final class GetContainer extends Base {
+        @Inject
+        public GetContainer(TransportService t, ActionFilters f) {
+            super(GET_CONTAINER, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().get(r.param("memory_container_id"), map(l));
+        }
+    }
+
+    public static final class UpdateContainer extends Base {
+        @Inject
+        public UpdateContainer(TransportService t, ActionFilters f) {
+            super(UPDATE_CONTAINER, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().update(r.param("memory_container_id"), r.json(), written(l));
+        }
+    }
+
+    public static final class DeleteContainer extends Base {
+        @Inject
+        public DeleteContainer(TransportService t, ActionFilters f) {
+            super(DELETE_CONTAINER, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().delete(r.param("memory_container_id"), written(l));
+        }
+    }
+
+    public static final class SearchContainers extends Base {
+        private final NamedXContentRegistry registry;
+
+        @Inject
+        public SearchContainers(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(SEARCH_CONTAINERS, t, f);
+            this.registry = x;
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().search(r.body, Search.parseSource(registry, r.body), ActionListener.wrap(s -> l.onResponse(Response.of((ToXContent) s)), l::onFailure));
+        }
+    }
+
+    public static final class AddAmMemory extends Base {
+        @Inject
+        public AddAmMemory(TransportService t, ActionFilters f) {
+            super(ADD_AM_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().add(r.param("memory_container_id"), r.body, map(l));
+        }
+    }
+
+    public static final class GetAmMemory extends Base {
+        @Inject
+        public GetAmMemory(TransportService t, ActionFilters f) {
+            super(GET_AM_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().getMemory(r.param("memory_container_id"), r.param("memory_type"), r.param("memory_id"), map(l));
+        }
+    }
+
+    public static final class UpdateAmMemory extends Base {
+        @Inject
+        public UpdateAmMemory(TransportService t, ActionFilters f) {
+            super(UPDATE_AM_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().updateMemory(r.param("memory_container_id"), r.param("memory_type"), r.param("memory_id"), r.json(), written(l));
+        }
+    }
+
+    public static final class DeleteAmMemory extends Base {
+        @Inject
+        public DeleteAmMemory(TransportService t, ActionFilters f) {
+            super(DELETE_AM_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().deleteMemory(r.param("memory_container_id"), r.param("memory_type"), r.param("memory_id"), written(l));
+        }
+    }
+
+    public static final class SearchAmMemories extends Base {
+        private final NamedXContentRegistry registry;
+
+        @Inject
+        public SearchAmMemories(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(SEARCH_AM_MEMORIES, t, f);
+            this.registry = x;
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws Exception {
+            ml.containers().searchMemories(r.param("memory_container_id"), r.param("memory_type"), r.body, Search.parseSource(registry, r.body), ActionListener.wrap(s -> l.onResponse(Response.of((ToXContent) s)), l::onFailure));
         }
     }
 

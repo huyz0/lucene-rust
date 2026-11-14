@@ -187,6 +187,44 @@ public final class MlRestHandlers {
                 Set.of(),
                 List.of(new Route(POST, BASE + "/agents/_search"), new Route(GET, BASE + "/agents/_search"))
             ),
+            new Handler("ml_create_memory_container_action", MlActions.CREATE_CONTAINER, Set.of(), List.of(new Route(POST, BASE + "/memory_containers/_create"))),
+            new Handler("ml_get_memory_container_action", MlActions.GET_CONTAINER, Set.of(), List.of(new Route(GET, BASE + "/memory_containers/{memory_container_id}"))),
+            new Handler("ml_update_memory_container_action", MlActions.UPDATE_CONTAINER, Set.of(), List.of(new Route(PUT, BASE + "/memory_containers/{memory_container_id}"))),
+            new Handler("ml_delete_memory_container_action", MlActions.DELETE_CONTAINER, Set.of(), List.of(new Route(DELETE, BASE + "/memory_containers/{memory_container_id}"))),
+            new Handler(
+                "ml_search_memory_container_action",
+                MlActions.SEARCH_CONTAINERS,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/memory_containers/_search"), new Route(GET, BASE + "/memory_containers/_search"))
+            ),
+            new Handler("ml_add_memory_action", MlActions.ADD_AM_MEMORY, Set.of(), List.of(new Route(POST, BASE + "/memory_containers/{memory_container_id}/memories"))),
+            new Handler(
+                "ml_get_memory_action_agentic",
+                MlActions.GET_AM_MEMORY,
+                Set.of(),
+                List.of(new Route(GET, BASE + "/memory_containers/{memory_container_id}/memories/{memory_type}/{memory_id}"))
+            ),
+            new Handler(
+                "ml_update_memory_action_agentic",
+                MlActions.UPDATE_AM_MEMORY,
+                Set.of(),
+                List.of(new Route(PUT, BASE + "/memory_containers/{memory_container_id}/memories/{memory_type}/{memory_id}"))
+            ),
+            new Handler(
+                "ml_delete_memory_action_agentic",
+                MlActions.DELETE_AM_MEMORY,
+                Set.of(),
+                List.of(new Route(DELETE, BASE + "/memory_containers/{memory_container_id}/memories/{memory_type}/{memory_id}"))
+            ),
+            new Handler(
+                "ml_search_memories_action_agentic",
+                MlActions.SEARCH_AM_MEMORIES,
+                Set.of(),
+                List.of(
+                    new Route(POST, BASE + "/memory_containers/{memory_container_id}/memories/{memory_type}/_search"),
+                    new Route(GET, BASE + "/memory_containers/{memory_container_id}/memories/{memory_type}/_search")
+                )
+            ),
             new Handler("ml_list_tools_action", MlActions.LIST_TOOLS, Set.of(), List.of(new Route(GET, BASE + "/tools"))),
             new Handler("ml_get_tool_action", MlActions.GET_TOOL, Set.of(), List.of(new Route(GET, BASE + "/tools/{tool_name}"))),
             new Handler("ml_create_memory_action", MlActions.CREATE_MEMORY, Set.of(), List.of(new Route(POST, BASE + "/memory"))),
@@ -227,7 +265,7 @@ public final class MlRestHandlers {
 
     /** Hands the call's path parameters, the {@code query} parameters it reads, and its body to {@code action}. */
     static final class Handler extends BaseRestHandler {
-        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat", "agent_id", "tool_name", "memory_id", "message_id");
+        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat", "agent_id", "tool_name", "memory_id", "message_id", "memory_container_id", "memory_type");
 
         private final String name;
         private final MlActions.Type action;
