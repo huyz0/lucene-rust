@@ -7,12 +7,9 @@
 use std::os::raw::c_char;
 
 use lucene_aggs::metric_aggs::MetricState;
-use lucene_search::directory_reader::DirectoryReader;
-use lucene_store::Directory;
-use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
+use crate::raw::{bytes_from_raw, str_from_raw};
 use crate::registry::{jvm_readers, lock_recovering, JvmReaderHandle};
 use lucene_engine::query_blob::{decode_request, similarity_checked};
 use std::sync::Arc;
@@ -102,10 +99,6 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             unsafe { std::slice::from_raw_parts(live_words, total_words) }
         };
 
-        let segment_infos = lucene_index::segment_infos::parse(infos, generation).map_err(|e| {
-            set_last_error(format!("parsing the JVM reader's SegmentInfos: {e}"));
-            FfiStatus::Decode
-        })?;
         // Mapped, not copied: a shard's postings are gigabytes, and Lucene's own
         // `MMapDirectory` -- what OpenSearch searches with -- maps them too. The
         // mapping lives as long as the segment reader, which is why closing the
@@ -116,52 +109,27 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
             set_last_error(format!("opening the shard directory [{path}]: {e}"));
             FfiStatus::Io
         })?;
-        let dir: &dyn Directory = &*dir;
-        let reader = if previous == 0 {
-            DirectoryReader::open_at(dir, segment_infos)
-        } else {
-            // Cloned out under a short read lock: the reopen reads files and
-            // must not hold up every other search and close on the node.
-            let prev = lookup(
-                previous,
-                "ffi_open_jvm_reader: unknown or already-closed previous handle",
-            )?;
-            prev.reader.reopen_at(dir, segment_infos)
-        }
-        .map_err(|e| {
-            set_last_error(format!("opening the JVM reader's segments: {e}"));
-            FfiStatus::Decode
-        })?;
-
-        let opened: Vec<i32> = reader.segment_readers().iter().map(|s| s.max_doc).collect();
-        if opened != expected {
-            set_last_error(format!(
-                "segment maxDocs {opened:?} do not match the JVM reader's {expected:?}"
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        }
-        let mut live_docs = try_with_capacity(opened.len())?;
-        let mut deleted = try_with_capacity(opened.len())?;
-        let mut at = 0usize;
-        for (segment, &max_doc) in opened.iter().enumerate() {
-            let n = counts.map_or(0, |c| c[segment]);
-            let live = live_from_words(segment, max_doc, &words[at..at + n])?;
-            at += n;
-            deleted.push(live.as_ref().map_or(0, |l| {
-                (usize::try_from(max_doc).unwrap_or(0) - l.cardinality()) as i64
-            }));
-            live_docs.push(live);
-        }
-        let cacheable = live_docs.len();
-        let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(JvmReaderHandle {
-            reader,
-            live_docs,
-            deleted,
-            commit_live: std::sync::Mutex::new(None),
-            cacheable,
-            agg_identities: std::sync::OnceLock::new(),
-            path: std::sync::Arc::from(path),
-        }))?;
+        // Cloned out under a short read lock: the reopen reads files and
+        // must not hold up every other search and close on the node.
+        let prev = (previous != 0)
+            .then(|| {
+                lookup(
+                    previous,
+                    "ffi_open_jvm_reader: unknown or already-closed previous handle",
+                )
+            })
+            .transpose()?;
+        let opened = lucene_engine::reader_handle::open_reader(
+            path,
+            &*dir,
+            infos,
+            generation,
+            prev.as_deref(),
+            expected,
+            counts,
+            words,
+        )?;
+        let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(opened))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
@@ -172,38 +140,6 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
     lucene_engine::registry::lookup_jvm_reader(handle, missing)
-}
-
-/// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
-/// contract): `None` for no words, else exactly `bits2words(max_doc)` words
-/// with no bit past `max_doc`.
-fn live_from_words(
-    segment: usize,
-    max_doc: i32,
-    words: &[u64],
-) -> Result<Option<FixedBitSet>, FfiStatus> {
-    if words.is_empty() {
-        return Ok(None);
-    }
-    let max_doc = usize::try_from(max_doc).unwrap_or(0);
-    if words.len() != bits2words(max_doc) {
-        set_last_error(format!(
-            "segment {segment}: {} live-docs words for maxDoc {max_doc}, expected {}",
-            words.len(),
-            bits2words(max_doc)
-        ));
-        return Err(FfiStatus::InvalidArgument);
-    }
-    let tail_bits = max_doc % 64;
-    if tail_bits != 0 && words[words.len() - 1] >> tail_bits != 0 {
-        set_last_error(format!(
-            "segment {segment}: live-docs bits set past maxDoc {max_doc}"
-        ));
-        return Err(FfiStatus::InvalidArgument);
-    }
-    let mut owned = try_with_capacity::<u64>(words.len())?;
-    owned.extend_from_slice(words);
-    Ok(Some(FixedBitSet::from_words(owned, max_doc)))
 }
 
 /// Runs the query in the `query_len`-byte blob `query` ([`lucene_engine::query_blob::decode_query`])
@@ -695,7 +631,7 @@ pub(crate) mod tests {
     use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
     use crate::error::{set_last_error, FfiStatus};
-    use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
+    use crate::raw::{bytes_from_raw, str_from_raw};
     use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
     use lucene_engine::clauses::map_search_error;
     use lucene_engine::query_blob::{
