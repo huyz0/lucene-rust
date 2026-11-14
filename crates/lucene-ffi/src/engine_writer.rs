@@ -1554,6 +1554,42 @@ pub extern "C" fn ffi_engine_writer_set_retention(
     })
 }
 
+/// `index.codec.adaptive_doc_values: auto`: the writer writes stock doc
+/// values until it has seen its first documents, then stock or
+/// `Adaptive90` for every field that would get the default format, one
+/// choice made from whether any numeric column is clustered in document
+/// order and kept in the commit's user data
+/// ([`lucene_index::adaptive_auto`]). A writer opened on a commit that holds
+/// the choice keeps it. Call it in place of [`OPEN_ADAPTIVE_DOC_VALUES`],
+/// before the first document.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_adaptive_auto(handle: u64) -> i32 {
+    guard(|| {
+        with_writer(handle, |w| {
+            w.writer()
+                .with_writer(|iw| iw.set_adaptive_doc_values_auto());
+            Ok(())
+        })
+    })
+}
+
+/// `auto`'s choice ([`ffi_engine_writer_set_adaptive_auto`]): 1 adaptive, 0
+/// stock, -1 not made yet (or `auto` not set).
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_adaptive_choice(handle: u64, out: *mut i32) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        with_writer(handle, |w| {
+            let choice = w.writer().with_writer(|iw| iw.adaptive_doc_values_choice());
+            // SAFETY: `out` is non-null and writable (caller contract).
+            unsafe { *out = choice.map_or(-1, i32::from) };
+            Ok(())
+        })
+    })
+}
+
 /// `index.merge.policy.*` as OpenSearch's `TieredMergePolicyProvider` sets
 /// them on its `TieredMergePolicy`: merges at once, segments per tier, the
 /// largest merged segment and the floor size in bytes, the deletes

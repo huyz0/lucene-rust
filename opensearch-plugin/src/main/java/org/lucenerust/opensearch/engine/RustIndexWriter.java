@@ -1001,6 +1001,27 @@ final class RustIndexWriter implements DocumentIndexWriter {
         return liveStalenessNanos;
     }
 
+    /**
+     * {@code index.codec.adaptive_doc_values: auto}: the writer chooses the doc-values format from
+     * its first documents, or keeps the choice its commit holds. Called before the first document.
+     */
+    void setAdaptiveDocValuesAuto() throws IOException {
+        synchronized (lock) {
+            ensureOpen();
+            check(NativeBridge.writerSetAdaptiveAuto(handle), "setting adaptive doc values to auto");
+        }
+    }
+
+    /** {@code auto}'s choice: true adaptive, false stock, null not made yet (or not {@code auto}). */
+    Boolean adaptiveDocValuesChoice() throws IOException {
+        int[] out = new int[1];
+        synchronized (lock) {
+            ensureOpen();
+            check(NativeBridge.writerAdaptiveChoice(handle, out), "reading the adaptive doc values choice");
+        }
+        return out[0] < 0 ? null : out[0] == 1;
+    }
+
     /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeBridge#writerSetLiveStaleness}). */
     void setLiveStaleness(org.opensearch.common.unit.TimeValue max) throws IOException {
         if (liveSearch == false || max.millis() == 0) {
