@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use lucene_aggs::bucket_aggs::segment_cache::{AggSegmentCache, CacheRequest, SegmentIdentity};
 use lucene_aggs::bucket_aggs::{
     aggregate_tree, aggregate_tree_cached, zone_windows_folded, AggNode, AggResult, DateRounding,
-    DateUnit, Globals, RoundingKind,
+    DateUnit, Globals, RoundingKind, TermsOrder,
 };
 use lucene_aggs::metric_aggs::{
     metric_states, MetricSpec, MetricState, Source, ValueKind, NEED_ALL, NEED_COUNT, NEED_MAX,
@@ -59,6 +59,12 @@ const MULTI: i32 = 4;
 const DBL: i32 = 5;
 const ID: i32 = 6;
 const BODY: i32 = 7;
+/// A level in runs of 3,000 documents: most windows hold one value.
+const LEVEL: i32 = 8;
+/// A `double` whose first two windows alternate `-0.0` and `0.5` (two
+/// histogram buckets of key zero, told apart by sign), the third all
+/// negative infinity (no histogram bucket), then tenths.
+const SIGNED: i32 = 9;
 
 /// `NumericUtils.doubleToSortableLong`.
 fn sortable(d: f64) -> i64 {
@@ -102,6 +108,14 @@ fn doc(i: usize) -> ExplicitDocument {
         _ => (i64i % 4000) as f64 / 100.0 - 20.0,
     };
     doc_values.push(long(DBL, sortable(d)));
+    doc_values.push(long(LEVEL, (i64i / 3000) % 4));
+    let signed = match i {
+        0..2048 if i.is_multiple_of(2) => -0.0,
+        0..2048 => 0.5,
+        2048..3072 => f64::NEG_INFINITY,
+        _ => (i % 50) as f64 / 10.0,
+    };
+    doc_values.push(long(SIGNED, sortable(signed)));
     doc_values.push(long(MULTI, i64i));
     if i.is_multiple_of(5) {
         doc_values.push(long(MULTI, i64i + 3));
@@ -154,6 +168,10 @@ fn writer(dir: &FsDirectory, format: Lucene90DocValuesFormat) -> IndexWriter<'_>
         )
         .unwrap();
     }
+    w.register_field(dv("level", LEVEL, DocValuesType::SortedNumeric))
+        .unwrap();
+    w.register_field(dv("signed", SIGNED, DocValuesType::Numeric))
+        .unwrap();
     w
 }
 
@@ -273,7 +291,7 @@ fn check(pair: &Pair) -> usize {
     }
     let mut with_zones = 0;
     for r in readers[1].segment_readers() {
-        for number in [TS, SMALL, WIDE, SPARSE, MULTI, DBL] {
+        for number in [TS, SMALL, WIDE, SPARSE, MULTI, DBL, LEVEL, SIGNED] {
             let (meta, _) = r.doc_values_for_field(number).unwrap();
             let entry = meta
                 .numeric_entry(number)
@@ -281,7 +299,7 @@ fn check(pair: &Pair) -> usize {
                 .unwrap();
             let zones = entry.adaptive.as_ref().is_some_and(|a| a.zones);
             assert!(
-                !zones || matches!(number, TS | SMALL | WIDE | DBL),
+                !zones || matches!(number, TS | SMALL | WIDE | DBL | LEVEL | SIGNED),
                 "field {number}"
             );
             with_zones += usize::from(zones);
@@ -290,10 +308,12 @@ fn check(pair: &Pair) -> usize {
     with_zones
 }
 
-/// `date_histogram`s with metric sub-aggregations, over every query and
-/// slicing: the adaptive copy (whose whole windows inside one bucket are
-/// folded from block statistics) answers as the stock one, bit for bit.
-fn check_histograms(pair: &Pair) {
+/// Top-level bucket aggregations (`date_histogram`, `histogram`, numeric
+/// `terms`, `range`) with metric sub-aggregations, over every query and
+/// slicing: the adaptive copy (whose whole windows that put every document
+/// in the same buckets are folded from block statistics) answers as the
+/// stock one, bit for bit.
+fn check_buckets(pair: &Pair) {
     let readers = [
         DirectoryReader::open(&pair.dirs[0]).unwrap(),
         DirectoryReader::open(&pair.dirs[1]).unwrap(),
@@ -307,7 +327,7 @@ fn check_histograms(pair: &Pair) {
     let metric = |field: &str, needs: u8| AggNode::Metric {
         field: field.to_string(),
         missing: None,
-        kind: if field == "dbl" {
+        kind: if field == "dbl" || field == "signed" {
             ValueKind::Double
         } else {
             ValueKind::Long
@@ -345,6 +365,31 @@ fn check_histograms(pair: &Pair) {
             offset,
         },
         hard_bounds,
+        subs,
+    };
+    let numeric_histogram =
+        |field: &str, kind, interval, offset, hard_bounds, subs| AggNode::Histogram {
+            field: field.to_string(),
+            missing: None,
+            kind,
+            interval,
+            offset,
+            hard_bounds,
+            subs,
+        };
+    let numeric_terms = |field: &str, kind, subs| AggNode::NumericTerms {
+        field: field.to_string(),
+        missing: None,
+        kind,
+        shard_size: 100,
+        order: TermsOrder::CountDesc,
+        subs,
+    };
+    let range = |field: &str, kind, ranges, subs| AggNode::Range {
+        field: field.to_string(),
+        missing: None,
+        kind,
+        ranges,
         subs,
     };
     let t0 = 1_700_000_000_000i64;
@@ -444,6 +489,77 @@ fn check_histograms(pair: &Pair) {
                 every_metric(),
             )],
         )],
+        // 9: a `histogram` whose keys hold whole windows.
+        vec![numeric_histogram(
+            "small",
+            ValueKind::Long,
+            50.0,
+            0.0,
+            (None, None),
+            every_metric(),
+        )],
+        // 10: with an offset and hard bounds cutting the range.
+        vec![numeric_histogram(
+            "small",
+            ValueKind::Long,
+            25.0,
+            3.0,
+            (Some(-260.0), Some(-230.0)),
+            every_metric(),
+        )],
+        // 11: `-0.0` and `0.0` round to two buckets; a window of negative
+        // infinity makes none; a NaN window.
+        vec![
+            numeric_histogram(
+                "signed",
+                ValueKind::Double,
+                10.0,
+                0.0,
+                (None, None),
+                vec![metric("small", NEED_ALL)],
+            ),
+            numeric_histogram(
+                "dbl",
+                ValueKind::Double,
+                50.0,
+                0.0,
+                (None, None),
+                vec![metric("small", NEED_ALL)],
+            ),
+        ],
+        // 12: numeric `terms` on runs of one value, long and double.
+        vec![
+            numeric_terms("level", ValueKind::Long, every_metric()),
+            numeric_terms("signed", ValueKind::Double, Vec::new()),
+        ],
+        // 13: overlapping `range`s, open at either end.
+        vec![range(
+            "small",
+            ValueKind::Long,
+            vec![
+                (f64::NEG_INFINITY, -250.0),
+                (-260.0, -230.0),
+                (-240.0, f64::INFINITY),
+            ],
+            every_metric(),
+        )],
+        // 14: a `double` range around both zeros and a NaN; a level range
+        // whose windows fall wholly in a range or outside all of them (level
+        // 1, in no range).
+        vec![
+            range(
+                "dbl",
+                ValueKind::Double,
+                vec![(f64::NEG_INFINITY, 0.0), (0.0, 10.0), (5.0, f64::INFINITY)],
+                vec![metric("small", NEED_ALL)],
+            ),
+            range(
+                "level",
+                ValueKind::Long,
+                vec![(0.0, 1.0), (2.0, 3.0)],
+                every_metric(),
+            ),
+        ],
     ];
     let ords = HashMap::new();
     let globals = Globals::new(&ords);
@@ -475,8 +591,9 @@ fn check_histograms(pair: &Pair) {
                 );
             }
         }
-        // Minute buckets (with or without hard bounds) hold whole windows.
-        if matches!(t, 0 | 1 | 4) {
+        // Trees whose buckets hold whole windows: minute date buckets (with
+        // or without hard bounds), and every other kind's tree.
+        if matches!(t, 0 | 1 | 4 | 9..=14) {
             assert!(zone_windows_folded() > folded, "tree {t} folded no window");
         }
     }
@@ -567,9 +684,10 @@ fn zone_folds_answer_bit_for_bit_as_the_values() {
         }
         w.commit().unwrap();
     }
-    // Two segments, each field with statistics in both.
-    assert_eq!(check(&pair), 8);
-    check_histograms(&pair);
+    // Two segments, each field with statistics in both, but `level`, one
+    // value throughout the second segment (Lucene90's constant wins there).
+    assert_eq!(check(&pair), 11);
+    check_buckets(&pair);
 
     // Deletions: the windows holding them are read value by value.
     for w in &mut w {
@@ -581,13 +699,13 @@ fn zone_folds_answer_bit_for_bit_as_the_values() {
         w.commit().unwrap();
     }
     check(&pair);
-    check_histograms(&pair);
+    check_buckets(&pair);
 
     // Merged: the statistics are rewritten for the merged values.
     for w in &mut w {
         w.force_merge(1).unwrap();
         w.commit().unwrap();
     }
-    assert_eq!(check(&pair), 4);
-    check_histograms(&pair);
+    assert_eq!(check(&pair), 6);
+    check_buckets(&pair);
 }

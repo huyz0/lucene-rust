@@ -18,6 +18,8 @@
 //!   weighs a text's tokens without a network.
 //! - [`text_similarity`] (`TEXT_SIMILARITY`) scores a query against a
 //!   document with a cross-encoder.
+//! - [`question_answering`] (`QUESTION_ANSWERING`) is the sentence
+//!   highlighting model: the sentences of a context that answer a question.
 //! - [`hf_analyzer`] is ml-commons' `bert-uncased` analyzer: a tokenizer
 //!   read as a token stream with idf weights.
 //! - [`onnx`] is the session the model functions share; [`torchscript`] is
@@ -25,6 +27,7 @@
 
 pub mod hf_analyzer;
 pub mod onnx;
+pub mod question_answering;
 pub mod remote;
 pub mod runtime;
 pub mod sparse_encoding;
