@@ -165,14 +165,14 @@ impl SeismicQuery {
 /// `java.util.PriorityQueue<Pair<doc, score>>` ordered by score: the order
 /// equal scores leave the heap in decides which of them survive, so this is
 /// Java's binary heap, not `BinaryHeap`.
-struct ScoreHeap {
+pub(crate) struct ScoreHeap {
     heap: Vec<(i32, i32)>,
     k: usize,
     threshold: f32,
 }
 
 impl ScoreHeap {
-    fn new(k: usize) -> Self {
+    pub(crate) fn new(k: usize) -> Self {
         ScoreHeap {
             heap: Vec::new(),
             k,
@@ -180,16 +180,16 @@ impl ScoreHeap {
         }
     }
 
-    fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.heap.len() == self.k
     }
 
-    fn min_score(&self) -> Option<i32> {
+    pub(crate) fn min_score(&self) -> Option<i32> {
         self.heap.first().map(|&(_, s)| s)
     }
 
     /// `HeapWrapper.add`.
-    fn add(&mut self, doc: i32, score: i32) {
+    pub(crate) fn add(&mut self, doc: i32, score: i32) {
         if (score as f32) <= self.threshold {
             return;
         }
@@ -242,7 +242,7 @@ impl ScoreHeap {
     }
 
     /// `toOrderedList`: the survivors by doc id.
-    fn into_sorted_by_doc(mut self) -> Vec<(i32, i32)> {
+    pub(crate) fn into_sorted_by_doc(mut self) -> Vec<(i32, i32)> {
         self.heap.sort_by_key(|&(d, _)| d);
         self.heap
     }
@@ -262,6 +262,41 @@ pub struct ForwardVectors {
 }
 
 impl ForwardVectors {
+    /// Builds the store from vectors held in memory (prototype benches).
+    pub fn from_vectors(vectors: &[Option<SparseVector>]) -> Self {
+        let mut out = ForwardVectors {
+            starts: Vec::with_capacity(vectors.len().saturating_add(1)),
+            present: FixedBitSet::new(vectors.len()),
+            tokens: Vec::new(),
+            weights: Vec::new(),
+        };
+        for (d, v) in vectors.iter().enumerate() {
+            out.starts.push(out.tokens.len());
+            if let Some(v) = v {
+                out.present.set(d);
+                out.tokens.extend_from_slice(v.tokens());
+                out.weights.extend_from_slice(v.weights());
+            }
+        }
+        out.starts.push(out.tokens.len());
+        out
+    }
+
+    /// The tokens and weights between two element positions.
+    pub fn vector(&self, a: usize, b: usize) -> (&[u16], &[u8]) {
+        (&self.tokens[a..b], &self.weights[a..b])
+    }
+
+    /// Heap bytes held.
+    pub fn heap_bytes(&self) -> usize {
+        self.starts.len() * 8 + self.tokens.len() * 2 + self.weights.len()
+    }
+
+    /// Where `doc`'s vector starts and ends in the token array.
+    pub fn span(&self, doc: usize) -> (usize, usize) {
+        (self.starts[doc], self.starts[doc + 1])
+    }
+
     /// Reads every document's vector from the field's BINARY doc values
     /// (`data` and `entry`), quantized at `ceiling`.
     pub fn read(
@@ -342,7 +377,7 @@ impl ForwardVectors {
 
     /// `SparseVector.dotProduct` of `doc`'s vector with the dense query,
     /// `None` when the document has no vector.
-    fn dot(&self, doc: usize, dense: &[u8]) -> Option<i32> {
+    pub fn dot(&self, doc: usize, dense: &[u8]) -> Option<i32> {
         if doc >= self.present.len() || !self.present.get(doc) {
             return None;
         }

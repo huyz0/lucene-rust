@@ -23,6 +23,7 @@
 //! each flushed and merged segment's postings ([`writer`]).
 
 pub mod postings;
+pub mod proto;
 pub mod query;
 pub mod search;
 pub mod vector;
