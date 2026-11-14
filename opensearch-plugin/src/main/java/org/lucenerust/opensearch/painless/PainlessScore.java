@@ -405,6 +405,25 @@ public final class PainlessScore {
     /** What an aggregation's {@code AggregationExecutionException} starts with ({@code AGGREGATION_ERROR}). */
     private static final String AGGREGATION_ERROR = "\u0001aggregation-error\u0001";
 
+    /**
+     * What a JavaScript script's failure starts with ({@code JS_ERROR} of {@code
+     * jvm_painless_score/js.rs}): its run, the exception's name, its message, line and column.
+     */
+    private static final String JS_ERROR = "\u0001js-script-error\u0001";
+
+    /** A JavaScript script the request sends: its source, for its errors. */
+    private record JsRun(String source) implements Run {
+        @Override
+        public Object script(LeafReaderContext leaf) {
+            throw new UnsupportedOperationException("a js script runs only natively");
+        }
+
+        @Override
+        public ScriptException rethrown(Object script, int doc, float score) {
+            return null;
+        }
+    }
+
     private PainlessScore() {}
 
     /** Takes the node's Painless engine from {@code scripts}; without it every script runs in Java. */
@@ -638,6 +657,11 @@ public final class PainlessScore {
         return run(new IntervalRun(script));
     }
 
+    /** Registers a JavaScript script of {@code source} as this request's next run: its number. */
+    public static int runJs(String source) {
+        return run(new JsRun(source));
+    }
+
     /** The number in this request, for its errors, of a scripted similarity's script or ({@code weight}) its weight script. */
     public static int runSimilarity(ScriptedSimilarity similarity, boolean weight) {
         return run(new SimilarityRun(similarity, weight));
@@ -652,7 +676,7 @@ public final class PainlessScore {
     /** Whether {@code error} is a script's own exception or invalid score, not an internal failure. */
     public static boolean scriptFailed(String error) {
         return error != null && (error.contains(SCRIPT_ERROR) || error.contains(SCORE_ERROR) || error.contains(OPENSEARCH_ERROR)
-            || error.contains(AGGREGATION_ERROR));
+            || error.contains(AGGREGATION_ERROR) || error.contains(JS_ERROR));
     }
 
     /** Whether this request sent a script to the native runtime. */
@@ -680,6 +704,10 @@ public final class PainlessScore {
         int aggregation = error == null ? -1 : error.indexOf(AGGREGATION_ERROR);
         if (aggregation >= 0) {
             return new AggregationExecutionException(error.substring(aggregation + AGGREGATION_ERROR.length()));
+        }
+        int js = error == null ? -1 : error.indexOf(JS_ERROR);
+        if (js >= 0) {
+            return jsFailure(error.substring(js + JS_ERROR.length()));
         }
         int at = error == null ? -1 : error.indexOf(SCRIPT_ERROR);
         if (at < 0) {
@@ -725,6 +753,49 @@ public final class PainlessScore {
         } catch (IOException | RuntimeException e) {
             return new IllegalStateException("native script_score search failed: " + error, e);
         }
+    }
+
+    /**
+     * The {@code ScriptException} of lang {@code js} for a JavaScript script's failure: run, line
+     * and column (1-based line, 0-based column, -1 for none), exception name and message.
+     */
+    private static RuntimeException jsFailure(String failure) {
+        String[] parts = failure.split("\u0001", 5);
+        if (parts.length < 5) {
+            return new IllegalStateException("native js script failed: " + failure);
+        }
+        String source = "";
+        try {
+            if (RUNS.get().get(Integer.parseInt(parts[0])) instanceof JsRun run) {
+                source = run.source();
+            }
+        } catch (RuntimeException e) {
+            // The script's source stays out of the error.
+        }
+        int line;
+        int column;
+        try {
+            line = Integer.parseInt(parts[1]);
+            column = Integer.parseInt(parts[2]);
+        } catch (NumberFormatException e) {
+            line = -1;
+            column = -1;
+        }
+        List<String> stack = new ArrayList<>();
+        String[] lines = source.split("\n", -1);
+        if (line >= 1 && line <= lines.length) {
+            stack.add(lines[line - 1]);
+            if (column >= 0) {
+                stack.add(" ".repeat(Math.min(column, lines[line - 1].length())) + "^---- HERE");
+            }
+        }
+        return new ScriptException(
+            "runtime error",
+            new IllegalArgumentException(parts[3] + ": " + parts[4]),
+            stack,
+            source,
+            org.lucenerust.opensearch.js.JsScripts.NAME
+        );
     }
 
     /** Painless's {@code ScriptException} around an exception of class {@code name} at source {@code offset}. */
