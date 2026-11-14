@@ -23,10 +23,16 @@ on:
     branches: [main]
   pull_request:
   # A full run on demand, every job regardless of what changed.
+  # The whole suite, both architectures, every night: the pull request and
+  # merge runs below leave out what the nightly run covers (docs/ci.md).
+  schedule:
+    - cron: '30 5 * * *'
   workflow_dispatch:
 
+# A newer push to the same pull request or to main replaces the run in flight.
+# A nightly or manual run has a group of its own, so a merge never cancels it.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'schedule' && 'nightly' || (github.event_name == 'workflow_dispatch' && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -56,11 +62,32 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
-      plugin: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.plugin == 'true' }}
-      fixtures: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.fixtures == 'true' }}
-      snowball: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.snowball == 'true' }}
+      rust: ${{ steps.mode.outputs.full == 'true' || steps.filter.outputs.rust == 'true' }}
+      plugin: ${{ steps.mode.outputs.full == 'true' || steps.filter.outputs.plugin == 'true' }}
+      fixtures: ${{ steps.mode.outputs.full == 'true' || steps.filter.outputs.fixtures == 'true' }}
+      snowball: ${{ steps.mode.outputs.full == 'true' || steps.filter.outputs.snowball == 'true' }}
+      # false on a push to main: the merge run is the x64 gate and release
+      # tests, the rest runs on the pull request and nightly.
+      heavy: ${{ steps.mode.outputs.heavy }}
+      # The architectures the matrix jobs run on. arm64 only in a nightly or
+      # manual run.
+      arches: ${{ steps.mode.outputs.arches }}
     steps:
+      - id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          full=false; heavy=true
+          arches='[{"arch":"x64","runner":"ubuntu-24.04"}]'
+          case "$EVENT" in
+            schedule|workflow_dispatch)
+              full=true
+              arches='[{"arch":"x64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' ;;
+            push) heavy=false ;;
+          esac
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
+          echo "arches=$arches" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
         id: filter
@@ -331,7 +358,7 @@ jobs:
   gate-arm64:
     name: gate (arm64)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.arches, 'arm64')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
     steps:
@@ -401,11 +428,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJSON(needs.changes.outputs.arches) }}
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
@@ -451,7 +474,7 @@ jobs:
   fixtures:
     name: fixtures are Java-produced
     needs: changes
-    if: needs.changes.outputs.fixtures == 'true'
+    if: needs.changes.outputs.fixtures == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -508,7 +531,7 @@ jobs:
   snowball:
     name: snowball vocabularies
     needs: changes
-    if: needs.changes.outputs.snowball == 'true'
+    if: needs.changes.outputs.snowball == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -533,7 +556,7 @@ jobs:
   write-path:
     name: Lucene reads Rust-written bytes
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -596,17 +619,13 @@ jobs:
   opensearch:
     name: opensearch plugin (${{ matrix.arch }})
     needs: changes
-    if: needs.changes.outputs.plugin == 'true'
+    if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJSON(needs.changes.outputs.arches) }}
     steps:
       - uses: actions/checkout@v5
       # JDK 25 for the plugin (the Foreign Function & Memory API, and the
@@ -637,7 +656,7 @@ jobs:
   opensearch-engine:
     name: opensearch engine
     needs: changes
-    if: needs.changes.outputs.plugin == 'true'
+    if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -678,7 +697,7 @@ jobs:
   opensearch-fips:
     name: opensearch plugin, FIPS variant
     needs: changes
-    if: needs.changes.outputs.plugin == 'true'
+    if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -710,7 +729,7 @@ jobs:
   opensearch-upgrade:
     name: opensearch 2.x upgrade
     needs: changes
-    if: needs.changes.outputs.plugin == 'true'
+    if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -741,7 +760,7 @@ jobs:
   opensearch-knn:
     name: opensearch k-NN compatibility
     needs: changes
-    if: needs.changes.outputs.plugin == 'true'
+    if: needs.changes.outputs.plugin == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -783,7 +802,7 @@ jobs:
   fuzz:
     name: ffi fuzzing (60s per target)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
