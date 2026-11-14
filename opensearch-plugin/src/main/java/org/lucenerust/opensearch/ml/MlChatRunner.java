@@ -333,6 +333,22 @@ final class MlChatRunner {
         return out;
     }
 
+    /** The words in a model's answer on the given interface style; used by agents that ask for plain answers. */
+    static String answer(String style, Map<String, Object> data) {
+        Run run = new Run();
+        run.style = style;
+        return parse(run, data).text();
+    }
+
+    static String style(String interfaceName) {
+        return switch (interfaceName == null ? "" : interfaceName) {
+            case OPENAI -> "openai";
+            case BEDROCK -> "bedrock";
+            case GEMINI -> "gemini";
+            default -> null;
+        };
+    }
+
     private static String answerText(Object content) {
         if (content == null) {
             throw new NullPointerException("Cannot invoke \"Object.toString()\" because \"response\" is null");
