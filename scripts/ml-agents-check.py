@@ -104,6 +104,7 @@ def agents(c, ours, stock):
     memory(c, ours, stock)
     containers(c, ours, stock)
     chat(c, ours, stock)
+    agui(c, ours, stock)
 
 
 def registry(c, ours, stock):
@@ -743,6 +744,81 @@ def containers(c, ours, stock):
     reset()
 
 
+def agui(c, ours, stock):
+    """The agent framework switch, AG-UI run inputs and the streaming endpoint."""
+    side = (("ours", ours), ("stock", stock))
+    ids = {"ours": [], "stock": []}
+    A = "/_plugins/_ml/agents"
+    agent = {}
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.ag_ui_enabled": True, "plugins.ml_commons.stream_enabled": True}})
+        agent[name] = n.ok("POST", A + "/_register", {"name": "agui", "type": "ag_ui", "llm": {"model_id": "m"}, "tools": [{"type": "ListIndexTool"}]})["agent_id"]
+        agent[name + "c"] = n.ok("POST", A + "/_register", {"name": "conv", "type": "conversational", "llm": {"model_id": "m"}, "tools": [{"type": "ListIndexTool"}]})["agent_id"]
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.trusted_connector_endpoints_regex": [".*"], "plugins.ml_commons.connector.private_ip_enabled": True}})
+        con = {"name": "llm", "description": "d", "version": "1", "protocol": "http", "parameters": {"endpoint": "x"}, "credential": {"k": "v"},
+               "actions": [{"action_type": "predict", "method": "POST", "url": "http://127.0.0.1:1/x", "headers": {"a": "b"}, "request_body": "{}"}]}
+        model = n.ok("POST", "/_plugins/_ml/models/_register", {"name": "m", "function_name": "remote", "connector": con})["model_id"]
+        agent[name + "r"] = n.ok("POST", A + "/_register", {"name": "real", "type": "ag_ui", "llm": {"model_id": model}, "tools": [{"type": "ListIndexTool"}]})["agent_id"]
+        ids[name] += [agent[name], agent[name + "c"], agent[name + "r"], model]
+
+    def both(label, method, path, body=None, conv=False, real=False):
+        got = {}
+        for name, n in side:
+            p = path.replace("{a}", agent[name + ("c" if conv else "r" if real else "")])
+            s, o = n.call(method, p, body)
+            if isinstance(o, dict) and "error" in o and isinstance(o["error"], dict):
+                o = {"type": o["error"].get("type"), "reason": o["error"].get("reason"), "details": o["error"].get("details"), "status": o.get("status")}
+            elif s == 200:
+                o = "ok" if "tools" in p else o
+            got[name] = {"status": s, "body": mask(o, ids[name])}
+        c.same(f"agents agui {label}", got["ours"], got["stock"])
+
+    full = {"threadId": "t1", "runId": "r1", "messages": [{"id": "m1", "role": "user", "content": "hi"}], "tools": [], "context": [], "state": {}, "forwardedProps": {}}
+    both("input", "POST", A + "/{a}/_execute", full)
+    both("input conversational agent", "POST", A + "/{a}/_execute", full, conv=True)
+    both("input unknown agent", "POST", A + "/nope/_execute", full)
+    both("input with parameters", "POST", A + "/{a}/_execute", dict(full, parameters={"question": "q"}))
+    both("input nulls", "POST", A + "/{a}/_execute", dict(full, threadId=None, messages=[1]))
+    for k in full:
+        both(f"input without {k}", "POST", A + "/{a}/_execute", {x: v for x, v in full.items() if x != k})
+    both("stream", "POST", A + "/{a}/_execute/stream", full)
+    both("stream existing model", "POST", A + "/{a}/_execute/stream", full, real=True)
+    both("stream existing model no body", "POST", A + "/{a}/_execute/stream", real=True)
+    both("stream conversational agent", "POST", A + "/{a}/_execute/stream", full, conv=True)
+    both("stream parameters", "POST", A + "/{a}/_execute/stream", {"parameters": {"question": "hi"}})
+    both("stream no body", "POST", A + "/{a}/_execute/stream")
+    both("stream unknown agent", "POST", A + "/nope/_execute/stream", full)
+    both("stream get", "GET", A + "/{a}/_execute/stream")
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.ag_ui_enabled": False}})
+    both("input disabled", "POST", A + "/{a}/_execute", full)
+    both("input disabled unknown agent", "POST", A + "/nope/_execute", full)
+    both("input disabled conversational agent", "POST", A + "/{a}/_execute", full, conv=True)
+    both("stream with input disabled", "POST", A + "/{a}/_execute/stream", full)
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.stream_enabled": False}})
+    both("stream disabled", "POST", A + "/{a}/_execute/stream", full)
+    both("stream disabled existing model", "POST", A + "/{a}/_execute/stream", full, real=True)
+    both("stream disabled unknown agent", "POST", A + "/nope/_execute/stream", full)
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.stream_enabled": True, "plugins.ml_commons.agent_framework_enabled": False}})
+    both("framework off register", "POST", A + "/_register", {"name": "x", "type": "flow", "tools": [{"type": "ListIndexTool"}]})
+    both("framework off get", "GET", A + "/{a}")
+    both("framework off update", "PUT", A + "/{a}", {"name": "z"})
+    both("framework off delete", "DELETE", A + "/nope")
+    both("framework off search", "POST", A + "/_search", {"query": {"match_all": {}}})
+    both("framework off execute", "POST", A + "/{a}/_execute", {"parameters": {"question": "x"}})
+    both("framework off execute no parameters", "POST", A + "/{a}/_execute", {})
+    both("framework off execute unknown agent", "POST", A + "/nope/_execute", {"parameters": {"question": "x"}})
+    both("framework off input", "POST", A + "/{a}/_execute", full)
+    both("framework off stream", "POST", A + "/{a}/_execute/stream", full)
+    both("framework off tools", "GET", "/_plugins/_ml/tools")
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.agent_framework_enabled": None, "plugins.ml_commons.ag_ui_enabled": None, "plugins.ml_commons.stream_enabled": None}})
+        for a in (agent[name], agent[name + "c"], agent[name + "r"]):
+            n.call("DELETE", f"{A}/{a}")
+
+
 def final(text):
     return ("final", text)
 
@@ -965,7 +1041,7 @@ def chat(c, ours, stock):
         n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.trusted_connector_endpoints_regex": [".*"],
                                                           "plugins.ml_commons.connector.private_ip_enabled": True}})
         con = {"name": "llm", "description": "d", "version": "1", "protocol": "http", "parameters": {"endpoint": "x", "model": "gpt-x"}, "credential": {"k": "v"},
-               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{style}/{name}/{run}", "headers": {"a": "b"}, "request_body": BODIES[style].replace("parameters.question", "parameters.prompt") if atype != "conversational" else BODIES[style]}]}
+               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{style}/{name}/{run}", "headers": {"a": "b"}, "request_body": BODIES[style].replace("parameters.question", "parameters.prompt") if atype not in ("conversational", "ag_ui") else BODIES[style]}]}
         model = n.ok("POST", "/_plugins/_ml/models/_register?deploy=true", {"name": "m", "function_name": "remote", "connector": con})["model_id"]
         time.sleep(2)
         agent = {"name": f"chat{run}", "type": atype, "llm": {"model_id": model, "parameters": {"max_iteration": "3", "system_prompt": "You are X"}},
@@ -1017,7 +1093,7 @@ def chat(c, ours, stock):
                     s3, msgs = n.call("GET", f"/_plugins/_ml/memory/{mem}/messages")
                     if s3 == 200:
                         ids[name] += [m["message_id"] for m in msgs["messages"]]
-                    result["messages"] = run_mask(msgs, ids[name]) if s3 == 200 else s3
+                    result["messages"] = deep(run_mask(msgs, ids[name]), ids[name]) if s3 == 200 else s3
                     s4, meta = n.call("GET", f"/_plugins/_ml/memory/{mem}")
                     result["memory"] = run_mask(meta, ids[name]) if s4 == 200 else s4
             else:
@@ -1030,6 +1106,12 @@ def chat(c, ours, stock):
 
     q = lambda t, **p: {"parameters": dict({"question": t}, **p)}
     case("plain", "plain", q("hi"))
+    case("ag ui plain", "plain", q("hi"), atype="ag_ui")
+    case("ag ui tool", "tool", q("which index?"), atype="ag_ui")
+    case("ag ui loop", "loop", q("loop"), atype="ag_ui")
+    case("ag ui history", "quoted", q("first \"turn\""), again=q("second"), atype="ag_ui")
+    case("ag ui unknown tool", "unknown", q("unk"), atype="ag_ui")
+    case("ag ui tool error", "toolerr", q("err"), tools=[{"type": "ListIndexTool"}, {"type": "SearchIndexTool"}], atype="ag_ui")
     case("quoted question", "plain", q("say \"x\"\nnow \\ y"))
     case("quoted answer", "quoted", q("hi"))
     case("tool", "tool", q("which index?"))
