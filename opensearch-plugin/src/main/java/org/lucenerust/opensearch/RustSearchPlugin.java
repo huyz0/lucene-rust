@@ -443,13 +443,19 @@ public class RustSearchPlugin extends Plugin implements
     /**
      * The cluster's {@code indices.codec.adaptive_doc_values.default} for a new index that does not
      * set {@code index.codec.adaptive_doc_values} and is served by the accelerated engine, or
-     * {@code null} to add nothing (the default, {@code false}, stores no setting).
+     * {@code null} to add nothing: {@code false} stores no setting, and neither does an index on
+     * OpenSearch's engine (asked for, the node default, or a node serving accelerated indices with
+     * OpenSearch's engine), so a node without the plugin opens it unchanged.
      */
     private String adaptiveDocValuesDefault(Settings templateAndRequestSettings) {
         org.opensearch.cluster.service.ClusterService cluster = clusterService.get();
-        if (cluster == null
-            || RustEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)
-            || RustEngineSupport.servedByRust(templateAndRequestSettings) == false) {
+        if (cluster == null || nodeEngineEnabled == false || RustEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)) {
+            return null;
+        }
+        // As IndexSettings sees them: the node's settings (indices.engine.accelerated.default)
+        // under the index's own.
+        Settings effective = Settings.builder().put(cluster.getSettings()).put(templateAndRequestSettings).build();
+        if (RustEngineSupport.servedByRust(effective) == false) {
             return null;
         }
         String value = cluster.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT);
