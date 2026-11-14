@@ -582,7 +582,7 @@ impl IndexingConfig {
         for s in &doc.stored {
             self.explicit_field(s.field_number)?;
         }
-        let mut seen = BTreeSet::new();
+        let mut seen = InlineFieldNumbers::default();
         let mut sorted: Vec<u64> = Vec::new();
         for inv in &doc.fields.inverted {
             let f = self.explicit_field(inv.field_number)?;
@@ -682,7 +682,7 @@ impl IndexingConfig {
                 }
             }
         }
-        let mut seen = BTreeSet::new();
+        let mut seen = InlineFieldNumbers::default();
         for tv in &doc.fields.term_vectors {
             let f = self.explicit_field(tv.field_number)?;
             if !f.store_term_vectors {
@@ -745,7 +745,7 @@ impl IndexingConfig {
         // inverts into terms; a caller that sends none would write empty ones.
         for inv in &doc.fields.inverted {
             if !inv.terms.is_empty()
-                && !seen.contains(&inv.field_number)
+                && !seen.contains(inv.field_number)
                 && self.explicit_field(inv.field_number)?.store_term_vectors
             {
                 return Err(explicit_error(format!(
@@ -754,7 +754,7 @@ impl IndexingConfig {
                 )));
             }
         }
-        let mut single = BTreeSet::new();
+        let mut single = InlineFieldNumbers::default();
         for dv in &doc.fields.doc_values {
             let f = self.explicit_field(dv.field_number)?;
             let ok = matches!(
@@ -820,7 +820,7 @@ impl IndexingConfig {
         }
 
         // The fields this segment carries, in any role.
-        let mut present = FieldNumberSet::default();
+        let mut present = DocFieldNumbers::default();
         for doc_vectors in buf.vectors {
             for v in doc_vectors {
                 present.insert(self.explicit_vector_field(&v.field_name)?.number);
@@ -837,7 +837,7 @@ impl IndexingConfig {
         let mut has_vectors = false;
         let decoding = std::time::Instant::now();
         let columns = buf.limit.and_then(|l| l.columns.as_ref());
-        let decode = |present: &mut FieldNumberSet,
+        let decode = |present: &mut DocFieldNumbers,
                       norm_values: &mut BTreeMap<i32, Vec<Option<i64>>>,
                       has_vectors: &mut bool| {
             explicit.for_each_with_roles(|i, fields| {
@@ -1480,7 +1480,7 @@ impl IndexingConfig {
         partition: Option<&str>,
         segment_id: [u8; ID_LENGTH],
     ) -> Result<LeanParts> {
-        let mut present = FieldNumberSet::default();
+        let mut present = DocFieldNumbers::default();
         columns.present.iter().for_each(|&n| present.insert(n));
         let docs = usize::try_from(max_doc).map_err(|_| explicit_error("a negative run"))?;
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> =
@@ -2195,9 +2195,9 @@ impl<'d> IndexWriter<'d> {
 /// field numbers (dense from 0) make cheaper than an ordered set that every
 /// field of every buffered document is inserted into.
 #[derive(Default)]
-struct FieldNumberSet(Vec<bool>);
+struct DocFieldNumbers(Vec<bool>);
 
-impl FieldNumberSet {
+impl DocFieldNumbers {
     fn insert(&mut self, number: i32) {
         // field numbers are never negative
         if let Ok(i) = usize::try_from(number) {
@@ -2210,6 +2210,41 @@ impl FieldNumberSet {
 
     fn contains(&self, number: &i32) -> bool {
         usize::try_from(*number).is_ok_and(|i| self.0.get(i).copied().unwrap_or(false))
+    }
+}
+
+/// The field numbers one document has used so far: a few kept inline (a
+/// document rarely has more than a dozen fields of a role), the rest in a
+/// tree, so checking a document allocates nothing in the usual case.
+#[derive(Default)]
+struct InlineFieldNumbers {
+    inline: [i32; Self::INLINE],
+    len: usize,
+    spill: BTreeSet<i32>,
+}
+
+impl InlineFieldNumbers {
+    const INLINE: usize = 16;
+
+    fn contains(&self, n: i32) -> bool {
+        self.inline.get(..self.len).is_some_and(|v| v.contains(&n)) || self.spill.contains(&n)
+    }
+
+    /// Adds `n`; false when it was there already.
+    fn insert(&mut self, n: i32) -> bool {
+        if self.contains(n) {
+            return false;
+        }
+        match self.inline.get_mut(self.len) {
+            Some(slot) => {
+                *slot = n;
+                self.len = self.len.saturating_add(1);
+            }
+            None => {
+                self.spill.insert(n);
+            }
+        }
+        true
     }
 }
 
