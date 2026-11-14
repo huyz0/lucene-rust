@@ -1155,6 +1155,27 @@ enum MetricCol {
     Max(Vec<metric_aggs::MaxOf>),
 }
 
+/// `$body` with `$f` converting a stored long of `$kind` to its double:
+/// the kind settled once, each a loop of its own.
+macro_rules! with_to_double {
+    ($kind:expr, $f:ident => $body:expr) => {
+        match $kind {
+            ValueKind::Long => {
+                let $f = |v: i64| metric_aggs::to_double(ValueKind::Long, v);
+                $body
+            }
+            ValueKind::Double => {
+                let $f = |v: i64| metric_aggs::to_double(ValueKind::Double, v);
+                $body
+            }
+            ValueKind::Float => {
+                let $f = |v: i64| metric_aggs::to_double(ValueKind::Float, v);
+                $body
+            }
+        }
+    };
+}
+
 /// `$body` with `$v` bound to the [`MetricCol`]'s vector, whatever its form.
 macro_rules! with_metric_col {
     ($col:expr, $v:ident => $body:expr) => {
@@ -1445,11 +1466,19 @@ fn direct_slot(sources: &[CompositeSource], key: &[KeyPart]) -> Option<usize> {
 }
 
 /// A slot of `v`, grown to hold it.
+#[inline(always)]
 fn slot<T: Default>(v: &mut Vec<T>, i: usize) -> &mut T {
     if v.len() <= i {
-        v.resize_with(i + 1, T::default);
+        grow_to(v, i);
     }
     &mut v[i]
+}
+
+/// [`slot`]'s growth, out of its callers' loops.
+#[cold]
+#[inline(never)]
+fn grow_to<T: Default>(v: &mut Vec<T>, i: usize) {
+    v.resize_with(i + 1, T::default);
 }
 
 /// The documents an aggregation reads its columns ahead for at a time.
@@ -1837,6 +1866,43 @@ impl Leaf<'_> {
             .get(i >> 6)
             .is_some_and(|w| w >> (i & 63) & 1 == 1);
         Some(has.then(|| self.pre_vals[i]))
+    }
+
+    /// Calls `f(i, value)` for each `docs[i]` with a value in the window
+    /// read ahead, in order: as [`Self::prefetched`] for each, but straight
+    /// over the values when `docs` is the whole window and every document of
+    /// it has one (no test per document). A caller whose `f` changes a field
+    /// of this leaf takes the field out around the call and puts it back
+    /// straight after, with no exit in between.
+    #[inline(always)]
+    fn each_prefetched(&self, docs: &[i32], mut f: impl FnMut(usize, i64)) {
+        let len = self.pre_len;
+        let whole = !self.pre_multi
+            && docs.len() == len
+            && self.pre_vals.len() >= len
+            && docs.iter().enumerate().fold(0u32, |off, (i, &doc)| {
+                off | (doc.wrapping_sub(self.pre_base) as u32 ^ i as u32)
+            }) == 0
+            && self
+                .pre_bits
+                .get(..len >> 6)
+                .is_some_and(|w| w.iter().all(|&w| w == u64::MAX))
+            && (len & 63 == 0
+                || self
+                    .pre_bits
+                    .get(len >> 6)
+                    .is_some_and(|&w| w | (u64::MAX << (len & 63)) == u64::MAX));
+        if whole {
+            for (i, &v) in self.pre_vals[..len].iter().enumerate() {
+                f(i, v);
+            }
+            return;
+        }
+        for (i, &doc) in docs.iter().enumerate() {
+            if let Some(Some(v)) = self.prefetched(doc) {
+                f(i, v);
+            }
+        }
     }
 
     /// Forgets the window read ahead, here and in the sub-aggregations.
@@ -2237,6 +2303,69 @@ struct KeyCache {
     lookups: u32,
     misses: u32,
     off: bool,
+    /// Owner 0's bucket of each small key, by its index below
+    /// [`SMALL_KEYS`] (`u32::MAX` until placed): [`small_key_ord`]'s table,
+    /// allocated at its first use (16 KB, as `slots`).
+    small: Vec<u32>,
+}
+
+/// Small keys [`small_key_ord`] places without hashing: a code, a count,
+/// a status, a few thousand histogram buckets.
+const SMALL_KEYS: usize = 4096;
+/// The bits of `SMALL_KEYS as f64`.
+#[allow(clippy::cast_precision_loss)]
+const SMALL_KEYS_F64_BITS: u64 = (SMALL_KEYS as f64).to_bits();
+
+/// The bucket of `key` under `owning`: a key of owner 0 whose `index` is
+/// below [`SMALL_KEYS`] is found by that index in a table, with neither a
+/// hash nor a compare; any other through [`keyed_ord_cached`] when `CACHED`,
+/// else [`keyed_ord`]. `index` is a function of the key, the same for the
+/// same key and different for different ones.
+#[inline(always)]
+fn small_key_ord<const CACHED: bool>(
+    cache: &mut KeyCache,
+    ords: &mut KeyOrds,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    index: u64,
+    key: i64,
+) -> u32 {
+    if owning == 0 && index < SMALL_KEYS as u64 {
+        if let Some(&s) = cache.small.get(index as usize) {
+            if s != u32::MAX {
+                return s;
+            }
+        }
+    }
+    small_key_miss::<CACHED>(cache, ords, keys, owning, index, key)
+}
+
+/// [`small_key_ord`] for a key not in its table yet: placed in the map, and
+/// in the table when small (allocated at its first use).
+#[cold]
+#[inline(never)]
+fn small_key_miss<const CACHED: bool>(
+    cache: &mut KeyCache,
+    ords: &mut KeyOrds,
+    keys: &mut Vec<(u32, i64)>,
+    owning: u32,
+    index: u64,
+    key: i64,
+) -> u32 {
+    if owning == 0 && index < SMALL_KEYS as u64 {
+        if cache.small.is_empty() {
+            cache.small = vec![u32::MAX; SMALL_KEYS];
+        }
+        if let Some(s) = cache.small.get_mut(index as usize) {
+            *s = keyed_ord(ords, keys, 0, key);
+            return *s;
+        }
+    }
+    if CACHED {
+        keyed_ord_cached(cache, ords, keys, owning, key)
+    } else {
+        keyed_ord(ords, keys, owning, key)
+    }
 }
 
 const KEY_CACHE_SLOTS: usize = 1024;
@@ -2462,6 +2591,7 @@ fn sortable_double(k: i64) -> f64 {
     f64::from_bits((k ^ ((k >> 63) & i64::MAX)) as u64)
 }
 
+#[inline(always)]
 fn numeric_terms_key(kind: ValueKind, v: i64) -> i64 {
     match kind {
         ValueKind::Long => v,
@@ -2530,13 +2660,16 @@ fn collect_window(
                     owners: &[u32],
                     to_double: impl Fn(i64) -> f64,
                 ) {
-                    for (&doc, &owner) in docs.iter().zip(owners) {
-                        if let (Some(Some(v)), Some(state)) =
-                            (leaf.prefetched(doc), states.get_mut(owner as usize))
-                        {
-                            state.one(to_double(v));
-                        }
-                    }
+                    leaf.each_prefetched(
+                        docs,
+                        #[inline(always)]
+                        |i, v| {
+                            let owner = owners.get(i).copied().unwrap_or(0);
+                            if let Some(state) = states.get_mut(owner as usize) {
+                                state.one(to_double(v));
+                            }
+                        },
+                    );
                 }
                 match kind {
                     ValueKind::Long => go(states, leaf, docs, owners, |v| {
@@ -2562,12 +2695,14 @@ fn collect_window(
             ) {
                 let mut best = if MIN { i64::MAX } else { i64::MIN };
                 let mut any = false;
-                for &doc in docs {
-                    if let Some(Some(v)) = leaf.prefetched(doc) {
+                leaf.each_prefetched(
+                    docs,
+                    #[inline(always)]
+                    |_, v| {
                         any = true;
                         best = if MIN { best.min(v) } else { best.max(v) };
-                    }
-                }
+                    },
+                );
                 if any {
                     slot(states, owner as usize).many(ValueKind::Long, &[best]);
                 }
@@ -2658,45 +2793,55 @@ fn collect_window(
             win_ords.resize(docs.len(), 0);
             let mut kept = 0usize;
             let mut out = Ok(());
-            for (&doc, &owning) in docs.iter().zip(owners) {
-                let Some(Some(o)) = leaf.prefetched(doc) else {
-                    continue;
-                };
-                let cached = usize::try_from(o)
-                    .ok()
-                    .and_then(|i| leaf.term_buckets.get(i))
-                    .filter(|&&(owner, b)| owner == owning && b != NO_BUCKET)
-                    .map(|&(_, b)| b);
-                let ord = match cached {
-                    Some(b) => b,
-                    None => {
-                        let g = match global_ord(map, o) {
-                            Ok(g) => g,
-                            Err(e) => {
-                                out = Err(e);
-                                break;
-                            }
-                        };
-                        let b = keyed_ord(ords, keys, owning, g);
-                        slot(counts, b as usize);
-                        if let Some(c) = usize::try_from(o)
-                            .ok()
-                            .and_then(|i| leaf.term_buckets.get_mut(i))
-                        {
-                            *c = (owning, b);
-                        }
-                        b
+            let mut term_buckets = std::mem::take(&mut leaf.term_buckets);
+            leaf.each_prefetched(
+                docs,
+                #[inline(always)]
+                |i, o| {
+                    if out.is_err() {
+                        return;
                     }
-                };
-                if let Some(c) = counts.get_mut(ord as usize) {
-                    *c += 1;
-                }
-                if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
-                    *d = doc;
-                    *w = ord;
-                    kept += 1;
-                }
-            }
+                    let (doc, owning) = (
+                        docs.get(i).copied().unwrap_or(0),
+                        owners.get(i).copied().unwrap_or(0),
+                    );
+                    let cached = usize::try_from(o)
+                        .ok()
+                        .and_then(|i| term_buckets.get(i))
+                        .filter(|&&(owner, b)| owner == owning && b != NO_BUCKET)
+                        .map(|&(_, b)| b);
+                    let ord = match cached {
+                        Some(b) => b,
+                        None => {
+                            let g = match global_ord(map, o) {
+                                Ok(g) => g,
+                                Err(e) => {
+                                    out = Err(e);
+                                    return;
+                                }
+                            };
+                            let b = keyed_ord(ords, keys, owning, g);
+                            slot(counts, b as usize);
+                            if let Some(c) = usize::try_from(o)
+                                .ok()
+                                .and_then(|i| term_buckets.get_mut(i))
+                            {
+                                *c = (owning, b);
+                            }
+                            b
+                        }
+                    };
+                    if let Some(c) = counts.get_mut(ord as usize) {
+                        *c += 1;
+                    }
+                    if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
+                        *d = doc;
+                        *w = ord;
+                        kept += 1;
+                    }
+                },
+            );
+            leaf.term_buckets = term_buckets;
             win_docs.truncate(kept);
             win_ords.truncate(kept);
             let subs =
@@ -2729,33 +2874,48 @@ fn collect_window(
             let disjoint = ranges
                 .windows(2)
                 .all(|w| w[0].0 <= w[1].0 && w[0].1 <= w[1].0);
-            for (&doc, &owning) in docs.iter().zip(owners) {
-                let Some(Some(v)) = leaf.prefetched(doc) else {
-                    continue;
-                };
-                let value = metric_aggs::to_double(*kind, v);
+            let subs = !node.subs().is_empty();
+            let max_to = std::mem::take(&mut leaf.max_to);
+            with_to_double!(*kind, to_double => leaf.each_prefetched(docs, #[inline(always)] |i, v| {
+                let (doc, owning) = (
+                    docs.get(i).copied().unwrap_or(0),
+                    owners.get(i).copied().unwrap_or(0),
+                );
+                let value = to_double(v);
                 if disjoint {
-                    let starts = ranges.partition_point(|r| value >= r.0);
+                    // The ranges starting at or below the value: a few counted
+                    // without a branch per range (unordered values mispredict
+                    // a search's), more searched.
+                    let starts: usize = if ranges.len() <= FEW_RANGES {
+                        ranges.iter().map(|r| usize::from(value >= r.0)).sum()
+                    } else {
+                        ranges.partition_point(|r| value >= r.0)
+                    };
                     if let Some(i) = starts.checked_sub(1) {
-                        if value < ranges[i].1 {
+                        if ranges.get(i).is_some_and(|r| value < r.1) {
                             let ord = (owning as usize * *width + i) as u32;
                             *slot(counts, ord as usize) += 1;
-                            win_docs.push(doc);
-                            win_ords.push(ord);
+                            if subs {
+                                win_docs.push(doc);
+                                win_ords.push(ord);
+                            }
                         }
                     }
-                    continue;
+                    return;
                 }
-                let (start, end) = matched_range(ranges, 0, value, &leaf.max_to);
+                let (start, end) = matched_range(ranges, 0, value, &max_to);
                 for (i, &(from, to)) in ranges.iter().enumerate().take(end).skip(start) {
                     if value >= from && value < to {
                         let ord = (owning as usize * *width + i) as u32;
                         *slot(counts, ord as usize) += 1;
-                        win_docs.push(doc);
-                        win_ords.push(ord);
+                        if subs {
+                            win_docs.push(doc);
+                            win_ords.push(ord);
+                        }
                     }
                 }
-            }
+            }));
+            leaf.max_to = max_to;
             let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
             leaf.win_docs = win_docs;
             leaf.win_ords = win_ords;
@@ -2791,43 +2951,51 @@ fn collect_window(
             // alike (`NOT_KEPT`). As `collect`'s single-valued case.
             const NOT_KEPT: u32 = u32::MAX;
             let mut cur: Option<(i64, i64, u32, u32)> = None;
-            for (&doc, &owning) in docs.iter().zip(owners) {
-                let Some(Some(v)) = leaf.prefetched(doc) else {
-                    continue;
-                };
-                let ord = match cur {
-                    Some((from, to, ord, owner)) if v >= from && v < to && owner == owning => ord,
-                    _ => {
-                        let bucket = rounding.bucket(v);
-                        let rounded = bucket.map_or_else(|| rounding.round(v), |b| b.0);
-                        let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
-                            && !hard_bounds.0.is_some_and(|min| rounded < min);
-                        let ord = if contained {
-                            let o =
-                                keyed_ord_cached(&mut leaf.key_cache, ords, keys, owning, rounded);
-                            slot(counts, o as usize);
-                            o
-                        } else {
-                            NOT_KEPT
-                        };
-                        cur = bucket.map(|(from, to)| (from, to, ord, owning));
-                        ord
+            let mut cache = std::mem::take(&mut leaf.key_cache);
+            leaf.each_prefetched(
+                docs,
+                #[inline(always)]
+                |i, v| {
+                    let (doc, owning) = (
+                        docs.get(i).copied().unwrap_or(0),
+                        owners.get(i).copied().unwrap_or(0),
+                    );
+                    let ord = match cur {
+                        Some((from, to, ord, owner)) if v >= from && v < to && owner == owning => {
+                            ord
+                        }
+                        _ => {
+                            let bucket = rounding.bucket(v);
+                            let rounded = bucket.map_or_else(|| rounding.round(v), |b| b.0);
+                            let contained = !hard_bounds.1.is_some_and(|max| rounded >= max)
+                                && !hard_bounds.0.is_some_and(|min| rounded < min);
+                            let ord = if contained {
+                                let o = keyed_ord_cached(&mut cache, ords, keys, owning, rounded);
+                                slot(counts, o as usize);
+                                o
+                            } else {
+                                NOT_KEPT
+                            };
+                            cur = bucket.map(|(from, to)| (from, to, ord, owning));
+                            ord
+                        }
+                    };
+                    if ord == NOT_KEPT {
+                        return;
                     }
-                };
-                if ord == NOT_KEPT {
-                    continue;
-                }
-                if let Some(c) = counts.get_mut(ord as usize) {
-                    *c += 1;
-                }
-                // `kept` counts documents of this window, so it stays below
-                // its length.
-                if let (Some(d), Some(o)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
-                    *d = doc;
-                    *o = ord;
-                    kept += 1;
-                }
-            }
+                    if let Some(c) = counts.get_mut(ord as usize) {
+                        *c += 1;
+                    }
+                    // `kept` counts documents of this window, so it stays below
+                    // its length.
+                    if let (Some(d), Some(o)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
+                        *d = doc;
+                        *o = ord;
+                        kept += 1;
+                    }
+                },
+            );
+            leaf.key_cache = cache;
             win_docs.truncate(kept);
             win_ords.truncate(kept);
             let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
@@ -2886,22 +3054,42 @@ fn collect_window(
                 ..
             },
         ) if prefetched => {
-            // As `collect`'s case for one value.
+            // As `collect`'s case for one value. A long key is its own small
+            // index; a double's sortable bits are not.
             let (mut win_docs, mut win_ords) = (
                 std::mem::take(&mut leaf.win_docs),
                 std::mem::take(&mut leaf.win_ords),
             );
-            win_docs.clear();
-            win_ords.clear();
-            for (&doc, &owning) in docs.iter().zip(owners) {
-                let Some(Some(v)) = leaf.prefetched(doc) else {
-                    continue;
-                };
-                let ord = keyed_ord(ords, keys, owning, numeric_terms_key(*kind, v));
-                *slot(counts, ord as usize) += 1;
-                win_docs.push(doc);
-                win_ords.push(ord);
+            let mut cache = std::mem::take(&mut leaf.key_cache);
+            let subs = !node.subs().is_empty();
+            let mut kept = 0usize;
+            if subs {
+                win_docs.resize(docs.len(), 0);
+                win_ords.resize(docs.len(), 0);
             }
+            leaf.each_prefetched(
+                docs,
+                #[inline(always)]
+                |i, v| {
+                    let owning = owners.get(i).copied().unwrap_or(0);
+                    let key = numeric_terms_key(*kind, v);
+                    let index = if *kind == ValueKind::Long {
+                        key as u64
+                    } else {
+                        u64::MAX
+                    };
+                    let ord = small_key_ord::<false>(&mut cache, ords, keys, owning, index, key);
+                    *slot(counts, ord as usize) += 1;
+                    if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
+                        *d = docs.get(i).copied().unwrap_or(0);
+                        *w = ord;
+                        kept += 1;
+                    }
+                },
+            );
+            leaf.key_cache = cache;
+            win_docs.truncate(kept);
+            win_ords.truncate(kept);
             let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
             leaf.win_docs = win_docs;
             leaf.win_ords = win_ords;
@@ -2926,34 +3114,45 @@ fn collect_window(
                 std::mem::take(&mut leaf.win_docs),
                 std::mem::take(&mut leaf.win_ords),
             );
-            win_docs.clear();
-            win_ords.clear();
-            for (&doc, &owning) in docs.iter().zip(owners) {
-                let Some(Some(v)) = leaf.prefetched(doc) else {
-                    continue;
-                };
+            let mut cache = std::mem::take(&mut leaf.key_cache);
+            let mut kept = 0usize;
+            if !node.subs().is_empty() {
+                win_docs.resize(docs.len(), 0);
+                win_ords.resize(docs.len(), 0);
+            }
+            with_to_double!(*kind, to_double => leaf.each_prefetched(docs, #[inline(always)] |i, v| {
                 // As `collect`'s case for one value: its `previous` starts at
                 // negative infinity, so a key of negative infinity is skipped.
-                let key = ((metric_aggs::to_double(*kind, v) - offset) / interval).floor();
+                let key = ((to_double(v) - offset) / interval).floor();
                 if key == f64::NEG_INFINITY {
-                    continue;
+                    return;
                 }
                 let bound = key * interval;
                 let contained = !hard_bounds.1.is_some_and(|max| bound > max)
                     && !hard_bounds.0.is_some_and(|min| bound < min);
                 if contained {
-                    let ord = keyed_ord_cached(
-                        &mut leaf.key_cache,
-                        ords,
-                        keys,
-                        owning,
-                        java_double_bits(key),
-                    );
+                    // A whole key from +0.0 up is its own small index (the bits
+                    // of a non-negative double order as its value; -0.0 and
+                    // NaN have larger ones).
+                    let index = if key.to_bits() < SMALL_KEYS_F64_BITS {
+                        key as u64
+                    } else {
+                        u64::MAX
+                    };
+                    let owning = owners.get(i).copied().unwrap_or(0);
+                    let ord =
+                        small_key_ord::<true>(&mut cache, ords, keys, owning, index, java_double_bits(key));
                     *slot(counts, ord as usize) += 1;
-                    win_docs.push(doc);
-                    win_ords.push(ord);
+                    if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
+                        *d = docs.get(i).copied().unwrap_or(0);
+                        *w = ord;
+                        kept += 1;
+                    }
                 }
-            }
+            }));
+            leaf.key_cache = cache;
+            win_docs.truncate(kept);
+            win_ords.truncate(kept);
             let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
             leaf.win_docs = win_docs;
             leaf.win_ords = win_ords;
@@ -4168,6 +4367,7 @@ fn collect(
 }
 
 /// `Double.doubleToLongBits`: every `NaN` is the canonical one.
+#[inline]
 fn java_double_bits(d: f64) -> i64 {
     if d.is_nan() {
         lucene_search::java_math::JAVA_NAN.to_bits() as i64
@@ -4201,6 +4401,9 @@ fn max_to(ranges: &[(f64, f64)]) -> Vec<f64> {
     }
     out
 }
+
+/// Ranges [`collect_window`] places a value among by comparing it with each.
+const FEW_RANGES: usize = 16;
 
 /// `RangeAggregator.MatchedRange`: the ranges `[start, end)` that may hold
 /// `value`, searching from `low`.
@@ -6070,6 +6273,191 @@ mod tests {
         let single = windowed(vec![7, 8], None);
         assert_eq!(single.prefetched(1), Some(Some(8)));
         assert_eq!(single.prefetched(2), None, "past the window");
+    }
+
+    /// The documents of a window [`Leaf::each_prefetched`] visits: straight
+    /// over the values only for the whole window with a value everywhere,
+    /// otherwise each document's own (a gap, a subset, a repeat, the bits
+    /// past the window's end ignored).
+    #[test]
+    fn each_prefetched_visits_the_documents_with_values() {
+        let seen = |leaf: &Leaf<'_>, docs: &[i32]| {
+            let mut out = Vec::new();
+            leaf.each_prefetched(docs, |i, v| out.push((i, v)));
+            out
+        };
+        let vals: Vec<i64> = (0..70).map(|v| v * 10).collect();
+        let all: Vec<i32> = (0..70).collect();
+        let mut leaf = windowed(vals.clone(), None);
+        // The last word's bits past the window are unset, as a column leaves them.
+        leaf.pre_bits[1] = (1 << 6) - 1;
+        let want: Vec<(usize, i64)> = vals.iter().copied().enumerate().collect();
+        assert_eq!(seen(&leaf, &all), want);
+        leaf.pre_bits[0] &= !(1 << 3);
+        let gap: Vec<(usize, i64)> = want.iter().copied().filter(|&(i, _)| i != 3).collect();
+        assert_eq!(seen(&leaf, &all), gap, "a document without a value");
+        leaf.pre_bits[0] |= 1 << 3;
+        let mut repeat = all.clone();
+        repeat[1] = 0;
+        let mut want_repeat = want.clone();
+        want_repeat[1] = (1, 0);
+        assert_eq!(
+            seen(&leaf, &repeat),
+            want_repeat,
+            "a repeat, as long as the window"
+        );
+        assert_eq!(seen(&leaf, &[2, 69, 70]), [(0, 20), (1, 690)], "a subset");
+        leaf.pre_base = 100;
+        let shifted: Vec<i32> = (100..170).collect();
+        assert_eq!(seen(&leaf, &shifted), want, "a window from its base");
+    }
+
+    /// Each bucket arm's window collection places what `collect` places
+    /// document by document: the same keys in the same order, the same
+    /// counts and the same metric states, for owner 0's small keys (looked
+    /// up by index, again in a second window), large and negative ones,
+    /// `-0.0` beside `0.0`, NaN, owners past 0, with and without
+    /// sub-aggregations, over a whole window and one with a gap.
+    #[test]
+    fn window_collection_matches_collecting_each_document() {
+        use metric_aggs::MetricSlot;
+        let dbl = |v: f64| lucene_util::numeric_utils::double_to_sortable_long(v);
+        let sub = AggNode::Metric {
+            script: None,
+            missing: None,
+            field: "m".into(),
+            kind: ValueKind::Long,
+            source: Source::DocValues,
+            needs: metric_aggs::NEED_COUNT | metric_aggs::NEED_SUM,
+        };
+        let terms = |kind, subs: &Vec<AggNode>| AggNode::NumericTerms {
+            field: "f".into(),
+            missing: None,
+            kind,
+            shard_size: 10,
+            order: TermsOrder::CountDesc,
+            subs: subs.clone(),
+        };
+        let histogram = |kind, interval, hard_bounds, subs: &Vec<AggNode>| AggNode::Histogram {
+            field: "f".into(),
+            missing: None,
+            kind,
+            interval,
+            offset: 0.0,
+            hard_bounds,
+            subs: subs.clone(),
+        };
+        let range = |kind, ranges: Vec<(f64, f64)>, subs: &Vec<AggNode>| AggNode::Range {
+            field: "f".into(),
+            missing: None,
+            kind,
+            ranges,
+            subs: subs.clone(),
+        };
+        let longs = vec![-1, 0, 5, 4095, 4096, i64::MAX, 5, 0, i64::MIN, 3];
+        let doubles: Vec<i64> = [
+            -0.0,
+            0.0,
+            0.5,
+            4095.5,
+            4096.0,
+            -3.0,
+            f64::NAN,
+            -0.0,
+            7.25,
+            f64::NEG_INFINITY,
+        ]
+        .into_iter()
+        .map(dbl)
+        .collect();
+        let many: Vec<(f64, f64)> = (0..20)
+            .map(|i| (f64::from(i), f64::from(i) + 0.5))
+            .collect();
+        let disjoint = vec![(f64::NEG_INFINITY, 0.0), (0.0, 10.0), (10.0, 5000.0)];
+        let overlapping = vec![(-5.0, 1.0), (0.0, 8.0), (4000.0, f64::INFINITY)];
+        let (long, double) = (ValueKind::Long, ValueKind::Double);
+        let docs: Vec<i32> = (0..10).collect();
+        let owners_sets = [vec![0u32; 10], vec![0, 0, 1, 0, 2, 0, 1, 0, 0, 1]];
+        let summary = |state: &State| -> (Vec<(u32, i64)>, Vec<u64>, String) {
+            let (keys, counts, subs) = match state {
+                State::Keyed {
+                    keys, docs, subs, ..
+                } => (keys.clone(), docs.clone(), subs),
+                State::Fixed { docs, subs, .. } => (Vec::new(), docs.clone(), subs),
+                _ => panic!("a bucket state"),
+            };
+            let metrics: Vec<MetricState> = match subs.first() {
+                Some(State::Metric(col)) => {
+                    with_metric_col!(col, v => v.iter().map(|s| s.state()).collect())
+                }
+                _ => Vec::new(),
+            };
+            (keys, counts, format!("{metrics:?}"))
+        };
+        for subs in [vec![sub.clone()], Vec::new()] {
+            let cases: Vec<(AggNode, &Vec<i64>)> = vec![
+                (terms(long, &subs), &longs),
+                (terms(double, &subs), &doubles),
+                (histogram(double, 1.0, (None, None), &subs), &doubles),
+                (
+                    histogram(double, 0.25, (Some(-2.0), Some(4095.0)), &subs),
+                    &doubles,
+                ),
+                (histogram(long, 2.0, (None, None), &subs), &longs),
+                (range(double, disjoint.clone(), &subs), &doubles),
+                (range(double, overlapping.clone(), &subs), &doubles),
+                (range(double, many.clone(), &subs), &doubles),
+                (range(long, disjoint.clone(), &subs), &longs),
+            ];
+            for (node, vals) in &cases {
+                for owners in &owners_sets {
+                    for gap in [false, true] {
+                        let leaf_for = || {
+                            let mut leaf = windowed(vals.to_vec(), None);
+                            if gap {
+                                leaf.pre_bits[0] &= !(1 << 8);
+                            }
+                            leaf.max_to = match node {
+                                AggNode::Range { ranges, .. } => {
+                                    let mut max = f64::NEG_INFINITY;
+                                    ranges
+                                        .iter()
+                                        .map(|r| {
+                                            max = max.max(r.1);
+                                            max
+                                        })
+                                        .collect()
+                                }
+                                _ => Vec::new(),
+                            };
+                            if !subs.is_empty() {
+                                leaf.subs = vec![windowed((0..10).map(|v| v * 3).collect(), None)];
+                            }
+                            leaf
+                        };
+                        let (mut window, mut each) = (State::new(node), State::new(node));
+                        // Two windows into one state: the second finds the
+                        // first's buckets.
+                        let mut leaf = leaf_for();
+                        for _ in 0..2 {
+                            collect_window(node, &mut window, &mut leaf, &docs, owners).unwrap();
+                        }
+                        let mut leaf = leaf_for();
+                        for _ in 0..2 {
+                            for (&doc, &owner) in docs.iter().zip(owners) {
+                                collect(node, &mut each, &mut leaf, doc, owner).unwrap();
+                            }
+                        }
+                        let (w, e) = (summary(&window), summary(&each));
+                        assert_eq!(w, e, "{owners:?} gap {gap} subs {}", subs.len());
+                    }
+                }
+            }
+        }
+        assert!((-0.0f64).to_bits() >= SMALL_KEYS_F64_BITS);
+        assert!(f64::NAN.to_bits() >= SMALL_KEYS_F64_BITS);
+        assert!(4095.0f64.to_bits() < SMALL_KEYS_F64_BITS);
+        assert!(4096.0f64.to_bits() >= SMALL_KEYS_F64_BITS);
     }
 
     /// A cardinality node whose state or column disagrees with its kind is
