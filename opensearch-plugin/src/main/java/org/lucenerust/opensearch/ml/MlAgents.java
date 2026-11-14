@@ -84,6 +84,67 @@ final class MlAgents {
         }, listener::onFailure)), listener::onFailure));
     }
 
+    /** Refuses the agent endpoints while the agent framework is off. */
+    void framework() {
+        if (ml.setting(MlSettings.ML_COMMONS_AGENT_FRAMEWORK_ENABLED) == false) {
+            throw new IllegalStateException("Agent Framework is currently disabled. To enable it, update the setting \"plugins.ml_commons.agent_framework_enabled\" to true.");
+        }
+    }
+
+    private static final List<String> AGUI_FIELDS = List.of("threadId", "runId", "messages", "tools", "context", "state", "forwardedProps");
+
+    /** An AG-UI run input is answered on the streaming endpoint only. */
+    void aguiInput(String id, Map<String, Object> body) {
+        if (body.keySet().containsAll(AGUI_FIELDS) == false) {
+            return;
+        }
+        if (ml.setting(MlSettings.ML_COMMONS_AG_UI_ENABLED) == false) {
+            throw new IllegalStateException(MlSettings.ML_COMMONS_AG_UI_DISABLED_MESSAGE);
+        }
+        throw new IllegalArgumentException(AGUI_STREAMING + id + "/_execute/stream");
+    }
+
+    private static final List<String> REFUSALS = List.of("Agent Framework is currently disabled", "The AG-UI agent feature is not enabled", "Streaming is currently disabled");
+
+    /** Whether {@code e} is one of the feature-switch refusals, which stock answers in the plain error shape. */
+    static boolean refusal(Throwable e) {
+        String m = e.getMessage();
+        return m != null && (m.startsWith(AGUI_STREAMING) || REFUSALS.stream().anyMatch(m::startsWith));
+    }
+
+    static final String AGUI_STREAMING = "AG-UI agents require streaming execution. Please use the streaming endpoint: POST /_plugins/_ml/agents/";
+
+    /**
+     * {@code POST agents/<id>/_execute/stream}. Streaming answers need the streaming transport, which
+     * OpenSearch has only with its experimental stream transport on; without it the request is refused
+     * as stock refuses it.
+     */
+    void streaming(String id, ActionListener<MlActions.Response> listener) {
+        if (ml.setting(MlSettings.ML_COMMONS_STREAM_ENABLED) == false) {
+            throw new IllegalStateException("Streaming is currently disabled. To enable it, update the setting \"plugins.ml_commons.stream_enabled\" to true.");
+        }
+        load(id, Map.of("parameters", Map.of()), ActionListener.wrap(agent -> {
+            Object llm = agent.get("llm") instanceof Map<?, ?> m ? m.get("model_id") : null;
+            if (llm == null) {
+                throw new OpenSearchStatusException("Failed to find model", RestStatus.NOT_FOUND);
+            }
+            ml.getDoc(MlIndices.MODEL, String.valueOf(llm), ActionListener.wrap(model -> {
+                if (model.isExists() == false) {
+                    throw new OpenSearchStatusException("Failed to find model", RestStatus.NOT_FOUND);
+                }
+                refuseStreaming();
+            }, e -> listener.onFailure(MlCommons.missingIndex(e, "Failed to find model"))));
+        }, listener::onFailure));
+    }
+
+    private static void refuseStreaming() {
+        {
+            org.opensearch.action.ActionRequestValidationException refused = new org.opensearch.action.ActionRequestValidationException();
+            refused.addValidationError("Unable to initiate request / response streaming over non-streaming channel");
+            throw refused;
+        }
+    }
+
     /** An agent's document by id, as {@code _execute} finds it. */
     void agent(String id, ActionListener<Map<String, Object>> listener) {
         load(id, Map.of("parameters", Map.of()), listener);

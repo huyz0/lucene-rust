@@ -87,6 +87,7 @@ public final class MlActions {
     public static final Type SEARCH_AM_MEMORIES = new Type(ML + "memory_containers/memories/search");
     public static final Type LIST_TOOLS = new Type(ML + "tools/list");
     public static final Type GET_TOOL = new Type(ML + "tools/get");
+    public static final Type EXECUTE_STREAM = new Type(ML + "agents/execute/stream");
     public static final Type EXECUTE_AGENT = new Type(ML + "agents/execute");
     public static final Type CREATE_MEMORY = new Type(ML + "memory/create");
     public static final Type LIST_MEMORIES = new Type(ML + "memory/list");
@@ -148,6 +149,7 @@ public final class MlActions {
             new ActionHandler<>(LIST_TOOLS, ListTools.class),
             new ActionHandler<>(GET_TOOL, GetTool.class),
             new ActionHandler<>(EXECUTE_AGENT, ExecuteAgent.class),
+            new ActionHandler<>(EXECUTE_STREAM, ExecuteStream.class),
             new ActionHandler<>(CREATE_MEMORY, CreateMemory.class),
             new ActionHandler<>(LIST_MEMORIES, ListMemories.class),
             new ActionHandler<>(GET_MEMORY, GetMemory.class),
@@ -647,6 +649,7 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().framework();
             ml.agents().register(r.json(), new String(r.body, StandardCharsets.UTF_8), ActionListener.wrap(id -> l.onResponse(Response.of(Map.of("agent_id", id))), l::onFailure));
         }
     }
@@ -659,6 +662,7 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().framework();
             ml.agents().get(r.param("agent_id"), map(l));
         }
     }
@@ -671,6 +675,7 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().framework();
             ml.agents().update(r.param("agent_id"), r.json(), written(l));
         }
     }
@@ -683,6 +688,7 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().framework();
             ml.agents().delete(r.param("agent_id"), written(l));
         }
     }
@@ -691,6 +697,12 @@ public final class MlActions {
         @Inject
         public SearchAgents(TransportService t, ActionFilters f, NamedXContentRegistry x) {
             super(SEARCH_AGENTS, MlIndices.AGENT, t, f, x);
+        }
+
+        @Override
+        void run(MlCommons ml, Request request, ActionListener<Response> listener) throws IOException {
+            ml.agents().framework();
+            super.run(ml, request, listener);
         }
     }
 
@@ -855,15 +867,29 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().framework();
             if (r.body.length == 0) {
                 throw new org.opensearch.OpenSearchParseException("request body is required");
             }
             ml.agents().registry(registry);
+            ml.agents().aguiInput(r.param("agent_id"), r.json());
             if (Boolean.parseBoolean(r.param("async"))) {
                 ml.agents().executeAsync(r.param("agent_id"), r.json(), map(l));
             } else {
                 ml.agents().execute(r.param("agent_id"), r.json(), map(l));
             }
+        }
+    }
+
+    public static final class ExecuteStream extends Base {
+        @Inject
+        public ExecuteStream(TransportService t, ActionFilters f) {
+            super(EXECUTE_STREAM, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().streaming(r.param("agent_id"), l);
         }
     }
 
