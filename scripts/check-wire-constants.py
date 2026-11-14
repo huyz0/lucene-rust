@@ -59,7 +59,7 @@ MAX_SIM_RS = os.path.join(ROOT, "crates", "lucene-util", "src", "max_sim.rs")
 # Rust files a Java file encodes for without naming them.
 EXTRA_FILES = {
     "NativeCollapse.java": ["jvm_reader.rs"],
-    "NativeStoredFieldsReader.java": ["jvm_fetch.rs"],
+    "NativeStoredFieldsReader.java": ["fetch.rs"],
     "NativeTopHits.java": ["jvm_aggs.rs"],
     "NativeSignificantTerms.java": ["jvm_aggs.rs"],
     "QueryEncoder.java": ["nodes.rs", "query_blob.rs"],
@@ -87,9 +87,9 @@ RENAMES = {
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
     ("GeoEncoder.java", "MAX_ORIGINS"): ("jvm_reader.rs", "MAX_GEO_ORIGINS"),
     ("SortEncoder.java", "NESTED_KEY"): ("jvm_reader.rs", "SORT_NESTED"),
-    ("NativeDocValues.java", "NONE"): ("jvm_fetch.rs", "DV_NONE"),
-    ("NativeDocValues.java", "SORTED_NUMERIC"): ("jvm_fetch.rs", "DV_SORTED_NUMERIC"),
-    ("NativeDocValues.java", "SORTED_SET"): ("jvm_fetch.rs", "DV_SORTED_SET"),
+    ("NativeDocValues.java", "NONE"): ("fetch.rs", "DV_NONE"),
+    ("NativeDocValues.java", "SORTED_NUMERIC"): ("fetch.rs", "DV_SORTED_NUMERIC"),
+    ("NativeDocValues.java", "SORTED_SET"): ("fetch.rs", "DV_SORTED_SET"),
     ("SortEncoder.java", "MAX_KEYS"): ("jvm_reader.rs", "MAX_SORT_KEYS"),
     ("NativeHybrid.java", "MAX_SUB_QUERIES"): ("jvm_reader.rs", "MAX_HYBRID_QUERIES"),
     ("SortEncoder.java", "GEO"): ("jvm_reader.rs", "SORT_GEO_DISTANCE"),
