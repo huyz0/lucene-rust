@@ -93,3 +93,30 @@ this run compares stock derived with plugin derived and does not measure fidelit
 document. Text fields need `store: true` or a keyword subfield (the stored copy stays).
 Recommendation: keep it opt-in and leave the preset as is, since it changes what `_source` returns;
 document it as the lever for storage-bound deployments.
+
+## Filtered k-NN: block statistics for the filter (2026-11-14)
+
+`cargo run --release -p lucene-search --example knn_filter_stats -- DIR 500000 32 clustered|shuffled [skip]`
+(in-process, one segment, 500k x 32-d HNSW, `ts` dense `Adaptive90` with zones, k=10, 30 rounds, one
+run each). The harness above needs Docker, which the build container lacks, so this is the library
+path of the plugin's filtered search: `filter_bitsets` (materialise the range filter) + the search.
+
+The planner already receives the exact filter cardinality, so a statistics *estimate* cannot improve
+its choice; the cost is the materialisation, 80-95% of a filtered query on main (7-14 ms of 7-14 ms
+total). The statistics now make the exact set cheap instead (`dense_range_bits`: whole windows in
+range set as a run, windows outside skipped, the rest decoded a window at a time).
+
+Filter ms, main -> branch (total query ms in `perf/knn-filter-stats/ab-main-vs-branch.txt`):
+
+| layout | 0.05% | 0.5% | 2% | 10% | 30% | 60% | 90% |
+|---|---|---|---|---|---|---|---|
+| clustered, no skip index | 6.9 -> 0.02 | 6.7 -> 0.01 | 6.6 -> 0.02 | 6.5 -> 0.02 | 7.0 -> 0.01 | 7.0 -> 0.02 | 7.1 -> 0.01 |
+| clustered, skip index | 0.11 -> 0.02 | 0.14 -> 0.02 | 0.21 -> 0.02 | 0.46 -> 0.02 | 1.1 -> 0.02 | 2.1 -> 0.01 | 2.5 -> 0.01 |
+| shuffled, no skip index | 9.2 -> 3.1 | 8.8 -> 2.8 | 7.8 -> 1.9 | 11.5 -> 2.1 | 11.5 -> 2.7 | 9.8 -> 1.9 | 8.6 -> 1.7 |
+
+Downsides: shuffled (unclustered) data gets no pruning (every window spans the value range, so
+min/max say nothing), only the direct decode, 3-5x; a field without zones (sparse, multi-valued,
+not `Adaptive90`) takes the old path unchanged; a skip-indexed field without zones also keeps the old
+path. No indexing cost beyond the zones already written (+1-1.5% `.dvd`). Not measured: the full
+OpenSearch request path, stock OpenSearch, recall (the filter set is bit-identical, tested against
+the values on 4 formats x 2 layouts).
