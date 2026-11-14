@@ -87,7 +87,7 @@ pub const NODE_FIRST: u8 = NODE_MULTI_TERM;
 /// OpenSearch's `has_child`/`has_parent` (`HasChildQueryBuilder.LateParsingQuery`):
 /// `join_field`, `score_mode: u8` (as the to-parent node's), `min: i32`,
 /// `max: i32`, the to query (a node), the from query (a node). Searched once
-/// `lucene-ffi`'s `jvm_join::resolve` has run its from side.
+/// `join::resolve` has run its from side.
 pub const NODE_JOIN: u8 = 46;
 /// OpenSearch's range on a long, date or double field with doc values
 /// (`IndexOrDocValuesQuery` of `LongPoint.newRangeQuery` and

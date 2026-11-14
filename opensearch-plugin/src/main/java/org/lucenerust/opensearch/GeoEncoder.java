@@ -248,7 +248,7 @@ final class GeoEncoder {
      */
     record Sort(boolean lucene, String field, double[] lats, double[] lons, double unitMeters, MultiValueMode mode) {}
 
-    /** At most this many origins ({@code MAX_GEO_ORIGINS} in {@code jvm_reader.rs}). */
+    /** At most this many origins ({@code MAX_GEO_ORIGINS} in {@code reader_search.rs}). */
     static final int MAX_ORIGINS = 1024;
 
     /**

@@ -1437,7 +1437,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      * documents stops at the next segment, one that iterates a segment ({@code iterate}, where
      * {@code Weight.count} gave -1) stops at its {@code n + 1}th document, and a segment the count
      * answers from {@code Weight.count} reaches it with nothing. {@code
-     * the_aggregations_counts_replay_the_count_collector} in {@code jvm_reader.rs} holds the two
+     * the_aggregations_counts_replay_the_count_collector} in {@code reader_search.rs} holds the two
      * to the same answer.
      */
     static boolean replayCountTerminated(

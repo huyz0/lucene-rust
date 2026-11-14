@@ -53,7 +53,7 @@ import java.util.function.Predicate;
 
 /**
  * Translates a rewritten Lucene {@link Query} into the query blob {@code decode_query} in {@code
- * crates/lucene-ffi/src/jvm_reader.rs} reads, or says why it cannot.
+ * crates/lucene-engine/src/reader_search.rs} reads, or says why it cannot.
  *
  * <p>This is the <em>supported matrix</em> of the native path, and it is deliberately exact rather
  * than generous: a query is encoded only when every node of it is one the Rust engine answers with
@@ -736,7 +736,7 @@ public final class QueryEncoder {
     private static final byte NODE_REGEXP = 12;
     private static final byte NODE_EXISTS = 13;
     private static final byte NODE_TERM_STATS = 14;
-    /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
+    /** After the geo (15-19) and join/span/interval (20-24) kinds: {@code NODE_TERM_RANGE} in {@code reader_search.rs}. */
     private static final byte NODE_TERM_RANGE = 25;
     private static final byte NODE_POINT_SET = 26;
     /** {@code NODE_POINT_RANGE_OR_DV} in {@code queries.rs}: after {@code NODE_PATTERN_PHRASE} (47). */
