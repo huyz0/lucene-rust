@@ -31,6 +31,8 @@ lucene-analysis-smartcn = { path = "../lucene-analysis-smartcn", optional = true
 lucene-analysis-stempel = { path = "../lucene-analysis-stempel", optional = true, default-features = false }
 lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik", optional = true, default-features = false }
 lucene-analysis-phonetic = { path = "../lucene-analysis-phonetic", optional = true }
+# `lang: "js"` scripts on V8 (`painless_score/js.rs`), behind feature `js`.
+lucene-script-js = { path = "../lucene-script-js", optional = true }
 
 [features]
 # `analysis::test_support`, for tests that drive the entry points.
@@ -51,6 +53,7 @@ analysis-smartcn = ["dep:lucene-analysis-smartcn"]
 analysis-stempel = ["dep:lucene-analysis-stempel"]
 analysis-morfologik = ["dep:lucene-analysis-morfologik"]
 analysis-phonetic = ["dep:lucene-analysis-phonetic"]
+js = ["dep:lucene-script-js"]
 embedded-data = [
     "lucene-analysis-kuromoji?/embedded-data",
     "lucene-analysis-nori?/embedded-data",
@@ -61,3 +64,4 @@ embedded-data = [
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
+lucene-store = { path = "../lucene-store" }
