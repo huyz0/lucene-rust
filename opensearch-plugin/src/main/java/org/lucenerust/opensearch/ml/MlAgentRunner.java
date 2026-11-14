@@ -54,6 +54,8 @@ final class MlAgentRunner {
     private final MlCommons ml;
     volatile NamedXContentRegistry registry = NamedXContentRegistry.EMPTY;
 
+    private static final String LAST = "\u0000last";
+    private static final String LAST_OUTPUT = "\u0000last.output";
     private final MlChatRunner chat;
 
     MlAgentRunner(MlCommons ml) {
@@ -92,6 +94,22 @@ final class MlAgentRunner {
         Map<String, String> shared = new LinkedHashMap<>();
         boolean named = type.equals("conversational_flow") || tools.size() > 1;
         List<Map<String, Object>> outputs = new ArrayList<>();
+        if (type.equals("conversational_flow") && agent.get("memory") instanceof Map<?, ?>) {
+            String question = given.get("question");
+            if (question == null) {
+                throw new NullPointerException();
+            }
+            String memoryId = given.get("memory_id");
+            if (memoryId != null) {
+                ml.memory().get(memoryId, ActionListener.wrap(found -> step(tools, 0, shared, given, named, outputs, chain, ActionListener.wrap(answer -> {
+                    Map<String, Object> message = new LinkedHashMap<>();
+                    message.put("input", question);
+                    message.put("additional_info", Map.of(shared.get(LAST) + ".output", shared.get(LAST_OUTPUT)));
+                    ml.memory().addMessage(memoryId, message, ActionListener.wrap(id -> listener.onResponse(answer), listener::onFailure));
+                }, listener::onFailure)), listener::onFailure));
+                return;
+            }
+        }
         step(tools, 0, shared, given, named, outputs, chain, listener);
     }
 
@@ -110,6 +128,8 @@ final class MlAgentRunner {
         String type = String.valueOf(tool.get("type"));
         String name = tool.get("name") == null ? type : String.valueOf(tool.get("name"));
         Map<String, String> params = new LinkedHashMap<>(shared);
+        params.remove(LAST);
+        params.remove(LAST_OUTPUT);
         if (tool.get("parameters") instanceof Map<?, ?> p) {
             p.forEach((k, v) -> params.put(String.valueOf(k), String.valueOf(v)));
         }
@@ -137,6 +157,8 @@ final class MlAgentRunner {
                 }
             }
             if (last) {
+                shared.put(LAST, name);
+                shared.put(LAST_OUTPUT, answer.text() != null ? answer.text() : MlCommons.json(answer.tensors()));
                 listener.onResponse(Map.of("inference_results", List.of(Map.of("output", outputs))));
                 return;
             }

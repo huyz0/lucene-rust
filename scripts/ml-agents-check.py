@@ -762,3 +762,43 @@ def chat(c, ours, stock):
                                        ("all tools", "plain", [{"type": "ListIndexTool"}, {"type": "SearchIndexTool"}, {"type": "IndexMappingTool"}])]:
             case(label, scenario, q("which?"), style=style, tools=tools)
         case("history", "quoted", q("first \"turn\""), again=q("second"), style=style)
+    flow_memory(c, ours, stock)
+
+
+def flow_memory(c, ours, stock):
+    """conversational_flow agents: what they write to a memory named by `memory_id`."""
+    side = (("ours", ours), ("stock", stock))
+    ids = {"ours": [], "stock": []}
+    tools = {"one": [{"type": "ListIndexTool", "parameters": {"indices": ["ag1"]}}],
+             "two": [{"type": "ListIndexTool", "parameters": {"indices": ["ag1"]}}, {"type": "ListIndexTool", "name": "second", "parameters": {"indices": ["ag2"]}}]}
+    for label, kind, memory, request in [
+        ("one tool", "one", True, {"question": "what?"}),
+        ("two tools", "two", True, {"question": "what?"}),
+        ("no memory id", "one", False, {"question": "what?"}),
+        ("no question", "one", True, {}),
+        ("unknown memory", "one", True, {"question": "q", "memory_id": "nope"}),
+        ("two runs", "one", True, {"question": "again"}),
+    ]:
+        got = {}
+        for name, n in side:
+            s, o = n.call("POST", "/_plugins/_ml/agents/_register", {"name": f"cf-{label}", "type": "conversational_flow", "memory": {"type": "conversation_index"}, "tools": tools[kind]})
+            agent = o["agent_id"]
+            ids[name].append(agent)
+            req = dict(request)
+            mem = None
+            if memory and label != "unknown memory":
+                s, o = n.call("POST", "/_plugins/_ml/memory", {"name": "m1"})
+                mem = o["memory_id"]
+                ids[name].append(mem)
+                req["memory_id"] = mem
+            runs = 2 if label == "two runs" else 1
+            for _ in range(runs):
+                s, o = n.call("POST", f"/_plugins/_ml/agents/{agent}/_execute", {"parameters": req})
+            result = {"status": s, "body": run_mask(o, ids[name])}
+            if mem:
+                s2, msgs = n.call("GET", f"/_plugins/_ml/memory/{mem}/messages")
+                if s2 == 200:
+                    ids[name] += [m["message_id"] for m in msgs["messages"]]
+                    result["messages"] = [{k: v for k, v in m.items() if k not in ("create_time", "updated_time")} for m in deep(run_mask(msgs, ids[name]), ids[name])["messages"]]
+            got[name] = result
+        c.same(f"agents flow memory {label}", got["ours"], got["stock"])
