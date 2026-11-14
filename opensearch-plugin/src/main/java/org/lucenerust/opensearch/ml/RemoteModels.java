@@ -242,6 +242,9 @@ final class RemoteModels {
         if (google && setting(MlSettings.ML_COMMONS_VERTEXAI_CONNECTOR_ENABLED) == false) {
             throw new OpenSearchStatusException(MlSettings.ML_COMMONS_VERTEXAI_CONNECTOR_DISABLED_MESSAGE, RestStatus.FORBIDDEN);
         }
+        if (String.valueOf(protocol).startsWith("mcp_")) {
+            return mcpDoc(body);
+        }
         List<Map<String, Object>> actions = new ArrayList<>();
         if (body.get("actions") instanceof List<?> list) {
             for (Object a : list) {
@@ -332,6 +335,56 @@ final class RemoteModels {
         return out;
     }
 
+    /** The document of an MCP connector: a url, headers and parameters, no actions. */
+    private Map<String, Object> mcpDoc(Map<String, Object> body) {
+        if (body.get("name") == null) {
+            throw new IllegalArgumentException("Connector name is null");
+        }
+        if (body.get("version") == null) {
+            throw new IllegalArgumentException("Connector version is null");
+        }
+        String url = body.get("url") == null ? null : String.valueOf(body.get("url"));
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("MCP Connector url is null or blank");
+        }
+        if (setting(MlSettings.ML_COMMONS_TRUSTED_CONNECTOR_ENDPOINTS_REGEX).stream().noneMatch(r -> Pattern.compile(r).matcher(url).matches())) {
+            throw new IllegalArgumentException("Connector URL is not matching the trusted connector endpoint regex");
+        }
+        Map<String, Object> doc = new LinkedHashMap<>();
+        for (String f : List.of("name", "version", "description", "protocol")) {
+            if (body.get(f) != null) {
+                doc.put(f, String.valueOf(body.get(f)));
+            }
+        }
+        if (body.get("credential") instanceof Map<?, ?> c && c.isEmpty() == false) {
+            doc.put("credential", strings(c));
+        }
+        if (body.get("client_config") instanceof Map<?, ?> given) {
+            Map<String, Object> config = new LinkedHashMap<>();
+            config.put("max_connection", 30);
+            config.put("connection_timeout", 30);
+            config.put("read_timeout", 30);
+            config.put("retry_backoff_millis", 200);
+            config.put("retry_timeout_seconds", 30);
+            config.put("max_retry_times", 0);
+            config.put("retry_backoff_policy", "constant");
+            config.put("skip_ssl_verification", false);
+            config.put("mutual_tls_enabled", false);
+            for (Map.Entry<?, ?> e : given.entrySet()) {
+                if (config.containsKey(String.valueOf(e.getKey())) && e.getValue() != null) {
+                    config.put(String.valueOf(e.getKey()), e.getValue());
+                }
+            }
+            doc.put("client_config", config);
+        }
+        doc.put("url", url);
+        if (body.get("headers") instanceof Map<?, ?> h) {
+            doc.put("headers", strings(h));
+        }
+        doc.put("parameters", strings(body.get("parameters")));
+        return doc;
+    }
+
     /** {@code ${parameters.x}} in {@code url} filled from {@code parameters}. */
     private static String fill(String url, Map<String, String> parameters) {
         String out = url;
@@ -403,6 +456,50 @@ final class RemoteModels {
             }
             listener.onResponse(r);
         }, e -> listener.onFailure(e instanceof org.opensearch.index.IndexNotFoundException ? missing(id) : e)));
+    }
+
+    /** Whether MCP connectors may be used. */
+    boolean mcpEnabled() {
+        return setting(MlSettings.ML_COMMONS_MCP_CONNECTOR_ENABLED);
+    }
+
+    /**
+     * MCP connector {@code id} ready to connect to: its protocol, url, headers with the
+     * credentials filled in, and parameters.
+     */
+    @SuppressWarnings("unchecked")
+    void mcpConnector(String id, ActionListener<Map<String, Object>> listener) {
+        stored(id, ActionListener.wrap(r -> masterKey(ActionListener.wrap(key -> {
+            Map<String, Object> doc = r.getSourceAsMap();
+            Map<String, String> clear = new LinkedHashMap<>();
+            if (doc.get("credential") instanceof Map<?, ?> c) {
+                for (Map.Entry<?, ?> e : c.entrySet()) {
+                    String v = NativeBridge.mlCredentialDecrypt(key, String.valueOf(e.getValue()));
+                    if (v == null) {
+                        throw new IllegalStateException("cannot decrypt a credential: " + NativeBridge.lastError());
+                    }
+                    clear.put(String.valueOf(e.getKey()), v);
+                }
+            }
+            Map<String, String> parameters = doc.get("parameters") instanceof Map<?, ?> p ? (Map<String, String>) p : Map.of();
+            Map<String, String> headers = new LinkedHashMap<>();
+            if (doc.get("headers") instanceof Map<?, ?> h) {
+                for (Map.Entry<?, ?> e : h.entrySet()) {
+                    String v = String.valueOf(e.getValue());
+                    for (Map.Entry<String, String> c : clear.entrySet()) {
+                        v = v.replace("${credential." + c.getKey() + "}", c.getValue());
+                    }
+                    headers.put(String.valueOf(e.getKey()), fill(v, parameters));
+                }
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("protocol", doc.get("protocol"));
+            out.put("url", doc.get("url"));
+            out.put("headers", headers);
+            out.put("parameters", parameters);
+            out.put("client_config", doc.get("client_config"));
+            listener.onResponse(out);
+        }, listener::onFailure)), listener::onFailure));
     }
 
     /** {@code GET _plugins/_ml/connectors/<id>}: the connector without its credentials. */

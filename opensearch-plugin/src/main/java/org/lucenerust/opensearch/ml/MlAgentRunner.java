@@ -75,8 +75,25 @@ final class MlAgentRunner {
     // ---- Agents -------------------------------------------------------------------------------
 
     /** The answer of {@code agent} to {@code request}: the {@code inference_results} document. */
-    @SuppressWarnings("unchecked")
     void run(Map<String, Object> agent, Map<String, Object> request, List<String> chain, ActionListener<Map<String, Object>> listener) {
+        MlMcp.resolve(ml, agent, ActionListener.wrap(mcp -> {
+            Map<String, Object> with = new LinkedHashMap<>(agent);
+            with.put(MCP, mcp);
+            run(with, request, chain, mcp, ActionListener.runAfter(listener, mcp::close));
+        }, listener::onFailure));
+    }
+
+    /** The agent key under which the tools of its MCP connectors travel with a run. */
+    static final String MCP = "\u0000mcp";
+
+    @SuppressWarnings("unchecked")
+    private void run(
+        Map<String, Object> agent,
+        Map<String, Object> request,
+        List<String> chain,
+        MlMcp.Tools mcp,
+        ActionListener<Map<String, Object>> listener
+    ) {
         String type = String.valueOf(agent.get("type"));
         if (type.equals("conversational")) {
             chat.run(agent, request, chain, listener);
@@ -93,6 +110,7 @@ final class MlAgentRunner {
         if (tools.isEmpty()) {
             throw new IllegalArgumentException("no tool configured");
         }
+        checkMcp(tools, mcp);
         Map<String, String> given = new LinkedHashMap<>();
         if (request.get("parameters") instanceof Map<?, ?> p) {
             p.forEach((k, v) -> given.put(String.valueOf(k), text(v)));
@@ -107,7 +125,7 @@ final class MlAgentRunner {
             }
             String memoryId = given.get("memory_id");
             if (memoryId != null) {
-                ml.memory().get(memoryId, ActionListener.wrap(found -> step(tools, 0, shared, given, named, outputs, chain, ActionListener.wrap(answer -> {
+                ml.memory().get(memoryId, ActionListener.wrap(found -> step(tools, 0, shared, given, named, outputs, chain, mcp, ActionListener.wrap(answer -> {
                     Map<String, Object> message = new LinkedHashMap<>();
                     message.put("input", question);
                     message.put("additional_info", Map.of(shared.get(LAST) + ".output", shared.get(LAST_OUTPUT)));
@@ -116,7 +134,7 @@ final class MlAgentRunner {
                 return;
             }
         }
-        step(tools, 0, shared, given, named, outputs, chain, listener);
+        step(tools, 0, shared, given, named, outputs, chain, mcp, listener);
     }
 
     @SuppressWarnings("unchecked")
@@ -128,6 +146,7 @@ final class MlAgentRunner {
         boolean named,
         List<Map<String, Object>> outputs,
         List<String> chain,
+        MlMcp.Tools mcp,
         ActionListener<Map<String, Object>> listener
     ) {
         Map<String, Object> tool = tools.get(at);
@@ -170,13 +189,52 @@ final class MlAgentRunner {
             }
             String out = answer.text() != null ? answer.text() : MlCommons.json(answer.tensors());
             shared.put(name + ".output", escape(out));
-            step(tools, at + 1, shared, given, named, outputs, chain, listener);
+            step(tools, at + 1, shared, given, named, outputs, chain, mcp, listener);
         }, listener::onFailure);
         try {
-            tool(type, params, chain, next);
+            if (MlMcp.isTool(type)) {
+                mcp(mcp.get(name), params, next);
+            } else {
+                tool(type, params, chain, next);
+            }
         } catch (RuntimeException e) {
             listener.onFailure(e);
         }
+    }
+
+    /** Refuses an agent that names an MCP tool none of its connectors offers. */
+    static void checkMcp(List<Map<String, Object>> tools, MlMcp.Tools mcp) {
+        for (Map<String, Object> spec : tools) {
+            String type = String.valueOf(spec.get("type"));
+            String name = spec.get("name") == null ? type : String.valueOf(spec.get("name"));
+            if (MlMcp.isTool(type) && mcp.get(name) == null) {
+                throw new IllegalArgumentException(
+                    "MCP tool [" + name + "] configured in agent is not available in the MCP connector(s). Check connector configuration or MCP server logs."
+                );
+            }
+        }
+    }
+
+    /** Runs MCP {@code tool} with the arguments in {@code params}' {@code input}. */
+    void mcp(MlMcp.Tool tool, Map<String, String> params, ActionListener<Answer> listener) {
+        String input = params.get("input");
+        if (input == null) {
+            throw new IllegalArgumentException("JSON string cannot be null");
+        }
+        callMcp(tool, MlMcp.arguments(input), listener);
+    }
+
+    /** Runs MCP {@code tool} with {@code arguments}. */
+    void callMcp(MlMcp.Tool tool, Map<String, Object> arguments, ActionListener<Answer> listener) {
+        ml.remoteWork(() -> {
+            try {
+                listener.onResponse(Answer.of(tool.call(arguments)));
+            } catch (RuntimeException e) {
+                listener.onFailure(e);
+            } catch (Exception e) {
+                listener.onFailure(new MLException(e.getMessage() == null ? e.toString() : e.getMessage(), e));
+            }
+        });
     }
 
     // ---- Tools --------------------------------------------------------------------------------
@@ -412,7 +470,7 @@ final class MlAgentRunner {
 
     /** The JSON in {@code text}, or a bare word as the string it is (as gson reads leniently). */
     @SuppressWarnings("unchecked")
-    private static Object json(String text) {
+    static Object json(String text) {
         String t = text.strip();
         try {
             Map<String, Object> wrapped = MlCommons.parse(("{\"v\":" + t + "}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
