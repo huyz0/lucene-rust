@@ -14,6 +14,7 @@ CORPUS=/data/corpus BUILDS="main=/p/main.so,new=/p/new.so" benchmarks/native-nod
 
 `ab.sh` loads one force-merged index per side, then alternates stock and each build for
 `ROUNDS_AB` rounds (restarting the node each time) and prints the best median per shape.
+`MODE=knn` times `lucene`-engine HNSW k-NN instead (`NVEC` clustered random vectors of `DIM`, `DATA_DIR` apart from the search one).
 `MEM_LIMIT=2G` puts the node in a memory cgroup (cgroup v1, needs root): the page cache counts
 against it, so it is real memory pressure. `NODE_CPUS`, `HEAP`, `PORT`, `NODE_ARGS`, `SHAPES`
 (substrings), `ROUNDS`/`WARMUP` (requests per shape) are also read.
@@ -27,3 +28,5 @@ library inside the zip must be named `liblucene_ffi.so` (`NATIVE_LIB` copies it 
 
 Run-to-run spread on the cloud box is under 10% between rounds (three alternating rounds agree),
 against the 2-3x of the shared Windows host.
+
+Node memory needs: stock 3.9.0 uses about 1.1 GB of anonymous memory with a 512 MB heap and about 1.6 GB with 1 GB, so a cgroup below that gets the JVM OOM-killed; the page cache gets whatever is left.
