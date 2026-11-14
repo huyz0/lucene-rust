@@ -76,6 +76,7 @@ public final class MlActions {
     public static final Type SEARCH_AGENTS = new Type(ML + "agents/search");
     public static final Type LIST_TOOLS = new Type(ML + "tools/list");
     public static final Type GET_TOOL = new Type(ML + "tools/get");
+    public static final Type EXECUTE_AGENT = new Type(ML + "agents/execute");
 
     /** The action handlers to register, with the node-to-node actions. */
     public static List<ActionHandler<?, ?>> handlers() {
@@ -112,6 +113,7 @@ public final class MlActions {
             new ActionHandler<>(SEARCH_AGENTS, SearchAgents.class),
             new ActionHandler<>(LIST_TOOLS, ListTools.class),
             new ActionHandler<>(GET_TOOL, GetTool.class),
+            new ActionHandler<>(EXECUTE_AGENT, ExecuteAgent.class),
             new ActionHandler<>(MlNodes.Action.INSTANCE, MlNodes.TransportAction.class),
             new ActionHandler<>(MlNodes.PredictAction.INSTANCE, MlNodes.PredictTransportAction.class),
             new ActionHandler<>(MlNodes.RemotePredictAction.INSTANCE, MlNodes.RemotePredictTransportAction.class)
@@ -656,6 +658,29 @@ public final class MlActions {
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
             l.onResponse(Response.of(MlAgents.tool(r.param("tool_name"))));
+        }
+    }
+
+    public static final class ExecuteAgent extends Base {
+        private final NamedXContentRegistry registry;
+
+        @Inject
+        public ExecuteAgent(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(EXECUTE_AGENT, t, f);
+            this.registry = x;
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            if (r.body.length == 0) {
+                throw new org.opensearch.OpenSearchParseException("request body is required");
+            }
+            ml.agents().registry(registry);
+            if (Boolean.parseBoolean(r.param("async"))) {
+                ml.agents().executeAsync(r.param("agent_id"), r.json(), map(l));
+            } else {
+                ml.agents().execute(r.param("agent_id"), r.json(), map(l));
+            }
         }
     }
 }
