@@ -47,7 +47,7 @@ import java.util.Map;
  * field, without {@code missing}, scripts or sub-aggregations. {@link #plan} reads OpenSearch's own
  * aggregator factories -- so the name, metadata and resolved {@link DocValueFormat} are the ones its
  * aggregators would have used -- {@link Plan#blob} is the metrics blob {@code decode_metrics} in
- * {@code crates/lucene-ffi/src/jvm_reader.rs} reads, and {@link Plan#build} makes the shard results
+ * {@code crates/lucene-engine/src/reader_search.rs} reads, and {@link Plan#build} makes the shard results
  * those aggregators build ({@code InternalMin} and the rest) from the native state.
  */
 public final class NativeAggregations {

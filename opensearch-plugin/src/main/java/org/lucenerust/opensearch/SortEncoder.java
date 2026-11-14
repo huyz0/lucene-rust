@@ -27,7 +27,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Translates a search's {@link Sort} (and its {@code search_after} {@link FieldDoc}) into the sort
- * blob {@code decode_sort} in {@code crates/lucene-ffi/src/jvm_reader.rs} reads, or says why it
+ * blob {@code decode_sort} in {@code crates/lucene-engine/src/reader_search.rs} reads, or says why it
  * cannot -- and turns the native search's per-hit values back into the {@link FieldDoc#fields}
  * Lucene's {@code TopFieldCollector} would have produced.
  *
@@ -87,7 +87,7 @@ public final class SortEncoder {
     static final byte COUNT_SEGMENTS = 4;
     /** Blob options: per-segment index-sort prefix flags follow the slices. */
     static final byte INDEX_SORTED = 8;
-    /** {@code MAX_SORT_KEYS} in {@code jvm_reader.rs}. */
+    /** {@code MAX_SORT_KEYS} in {@code reader_search.rs}. */
     static final int MAX_KEYS = 16;
 
     /** An encoded sort, or the reason there is none (exactly one is non-null). */
