@@ -48,8 +48,8 @@ runner minutes, 60 of them arm64. So the runs are tiered:
 
 | run | what runs |
 |---|---|
-| pull request | everything the change touches, **x64 only** |
-| push to `main` | `checks`, `gate (x64)`, `lucene-search in release (x64)`, `fips` |
+| pull request | everything the change touches, **x64 only**, tests plain (no coverage) |
+| push to `main` | `checks`, `gate (x64)` **with the coverage gate**, `lucene-search in release (x64)`, `fips` |
 | `workflow_dispatch` (manual) | every job, x64 and arm64, regardless of what changed |
 
 What only a manual run covers: the arm64 jobs (gate, release tests,
@@ -58,6 +58,16 @@ OpenSearch jobs, which a pull request has already run on its own head. Nothing
 schedules it: run `ci` by hand from the Actions tab to check `main`, or a
 pull request, on arm64 before a change that touches SIMD, atomics
 or unsafe code; a manual run gets its own concurrency group.
+
+## Coverage runs on main, not on pull requests
+
+Instrumentation took ~15 of `gate (x64)`'s 39 minutes (the llvm-cov build and
+the 4.5 minute report merging 513 test binaries) and made the heaviest tests
+5 to 9 times slower. A pull request now runs every test plain, plus the
+doctests and the data-pack tests; the `--fail-under-lines 95` coverage gate,
+and the per-file report, run on every push to `main` and in a manual run. A
+change that drops the workspace below 95% lines is therefore caught after the
+merge, not before it, and the fix is a follow-up to main.
 
 ## One build of liblucene_ffi for the OpenSearch jobs
 
