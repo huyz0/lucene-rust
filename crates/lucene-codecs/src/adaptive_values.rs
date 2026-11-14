@@ -447,8 +447,12 @@ pub fn decode_block(block: &[u8], out: &mut [i64]) -> Result<(), Error> {
         }
     } else {
         unpack_into(packed, h.bpv, out)?;
-        for v in out.iter_mut() {
-            *v = h.min.wrapping_add(v.wrapping_mul(h.gcd));
+        // Ordinals and most integer columns are stored as they are: no
+        // second pass over the block.
+        if h.min != 0 || h.gcd != 1 {
+            for v in out.iter_mut() {
+                *v = h.min.wrapping_add(v.wrapping_mul(h.gcd));
+            }
         }
     }
     if h.token & DECIMAL != 0 {
