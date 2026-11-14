@@ -1182,18 +1182,7 @@ fn range_counts(p: &Planned) -> HashMap<i32, i32> {
 
 /// Per segment, the documents live once the deletes since the commit are
 /// applied; `None` when every document is.
-type Masks = Vec<Option<Arc<FixedBitSet>>>;
-
-/// A reader's [`Masks`] after the first `applied` of the delete terms its
-/// views list ([`LiveView::commit_deletes`]): every view of one commit
-/// lists the same terms first, so the next search applies only the new
-/// ones. `last` is the last of them, to tell a list that does not extend
-/// these.
-pub(crate) struct CommitLive {
-    applied: usize,
-    last: Term,
-    masks: Arc<Masks>,
-}
+use lucene_engine::reader_handle::{CommitLive, Masks};
 
 /// The open views by handle, each with how many opens of it are not closed
 /// yet ([`ffi_live_view_close`]).

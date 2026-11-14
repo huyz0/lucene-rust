@@ -1653,7 +1653,7 @@ public final class NativeBridge {
 
     /**
      * Segment {@code segment}'s document {@code doc} (segment-local): its stored fields, in stored
-     * order, encoded as {@code jvm_fetch.rs} documents ({@link NativeStoredFieldsReader} reads them),
+     * order, encoded as {@code fetch.rs} documents ({@link NativeStoredFieldsReader} reads them),
      * lent to {@code use} in native memory and freed when it returns.
      */
     public static int document(long handle, int segment, int doc, Borrowed use) throws IOException {
@@ -1663,7 +1663,7 @@ public final class NativeBridge {
 
     /**
      * Segment {@code segment}'s document {@code doc} (segment-local): its values of the fields
-     * numbered {@code fields}, encoded as {@code jvm_fetch.rs}'s doc-values blob, in {@code out[0]}
+     * numbered {@code fields}, encoded as {@code fetch.rs}'s doc-values blob, in {@code out[0]}
      * ({@link NativeDocValues} reads them).
      */
     public static int docValues(long handle, int segment, int doc, int[] fields, byte[][] out) {
