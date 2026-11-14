@@ -77,6 +77,7 @@ final class MlChatRunner {
         final StringBuilder interactions = new StringBuilder();
         List<String> chain;
         boolean memory;
+        boolean agui;
         String style;
     }
 
@@ -86,6 +87,7 @@ final class MlChatRunner {
     @SuppressWarnings("unchecked")
     void run(Map<String, Object> agent, Map<String, Object> request, List<String> chain, ActionListener<Map<String, Object>> listener) {
         Run run = new Run();
+        run.agui = "ag_ui".equals(agent.get("type"));
         run.chain = chain;
         run.params = new LinkedHashMap<>();
         if (agent.get("parameters") instanceof Map<?, ?> p) {
@@ -169,8 +171,10 @@ final class MlChatRunner {
     }
 
     private void begin(Run run, String history, ActionListener<Map<String, Object>> listener) {
-        run.params.put("_chat_history", history);
-        if (run.memory == false) {
+        if (run.agui == false) {
+            run.params.put("_chat_history", history);
+        }
+        if (run.memory == false || run.agui) {
             iterate(run, 1, listener);
             return;
         }
@@ -228,11 +232,15 @@ final class MlChatRunner {
             Reply reply = parse(run, data);
             if (reply.text() != null) {
                 String text = reply.text();
-                trace(run, run.question, text, "LLM", ActionListener.wrap(v -> finish(run, text, listener), listener::onFailure));
+                if (run.agui) {
+                    finish(run, text, listener);
+                } else {
+                    trace(run, run.question, text, "LLM", ActionListener.wrap(v -> finish(run, text, listener), listener::onFailure));
+                }
                 return;
             }
             String name = reply.name();
-            trace(run, run.question, raw, "LLM", ActionListener.wrap(v -> {
+            ActionListener<Void> traced = ActionListener.wrap(v -> {
                 if (run.specs.containsKey(name) == false) {
                     finish(run, raw, listener);
                 } else if (round >= run.max - 1) {
@@ -240,7 +248,12 @@ final class MlChatRunner {
                 } else {
                     runTool(run, name, reply.id(), reply.arguments(), reply.message(), round, listener);
                 }
-            }, listener::onFailure));
+            }, listener::onFailure);
+            if (run.agui && run.specs.containsKey(name) == false) {
+                traced.onResponse(null);
+            } else {
+                trace(run, run.question, raw, "LLM", traced);
+            }
         }
     }
 
@@ -250,7 +263,13 @@ final class MlChatRunner {
         Map<String, String> base = new LinkedHashMap<>(run.params);
         base.put("system_prompt", SUMMARY_PROMPT);
         ActionListener<String> done = ActionListener.wrap(
-            text -> trace(run, run.question, text, "LLM", ActionListener.wrap(v -> finish(run, text, listener), listener::onFailure)),
+            text -> {
+                if (run.agui) {
+                    finish(run, text, listener);
+                } else {
+                    trace(run, run.question, text, "LLM", ActionListener.wrap(v -> finish(run, text, listener), listener::onFailure));
+                }
+            },
             listener::onFailure
         );
         call(run, base, ActionListener.wrap(data -> done.onResponse(plain), e -> done.onResponse(plain)));
@@ -485,8 +504,10 @@ final class MlChatRunner {
         body.put("input", input);
         body.put("response", response);
         body.put("origin", origin);
-        body.put("parent_message_id", run.parent);
-        body.put("trace_number", ++run.trace);
+        if (run.agui == false) {
+            body.put("parent_message_id", run.parent);
+            body.put("trace_number", ++run.trace);
+        }
         ml.memory().addMessage(run.memoryId, body, ActionListener.wrap(id -> next.onResponse(null), next::onFailure));
     }
 
@@ -495,7 +516,9 @@ final class MlChatRunner {
             List<Map<String, Object>> output = new ArrayList<>();
             if (run.memory) {
                 output.add(Map.of("name", "memory_id", "result", run.memoryId));
-                output.add(Map.of("name", "parent_interaction_id", "result", run.parent));
+                if (run.agui == false) {
+                    output.add(Map.of("name", "parent_interaction_id", "result", run.parent));
+                }
             }
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("additional_info", Map.of());
@@ -508,6 +531,13 @@ final class MlChatRunner {
         };
         if (run.memory == false) {
             reply.run();
+            return;
+        }
+        if (run.agui) {
+            Map<String, Object> last = new LinkedHashMap<>();
+            last.put("input", run.question);
+            last.put("response", text);
+            ml.memory().addMessage(run.memoryId, last, ActionListener.wrap(id -> reply.run(), listener::onFailure));
             return;
         }
         Map<String, Object> update = new LinkedHashMap<>();

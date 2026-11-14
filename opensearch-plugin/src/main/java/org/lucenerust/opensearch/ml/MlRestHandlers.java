@@ -259,6 +259,7 @@ public final class MlRestHandlers {
                 Set.of("max_results", "next_token"),
                 List.of(new Route(GET, BASE + "/memory/message/{message_id}/traces"))
             ),
+            new Handler("ml_execute_stream_action", MlActions.EXECUTE_STREAM, Set.of(), List.of(new Route(POST, BASE + "/agents/{agent_id}/_execute/stream"))),
             new Handler("ml_execute_agent_action", MlActions.EXECUTE_AGENT, Set.of("async"), Map.of(), true, List.of(new Route(POST, BASE + "/agents/{agent_id}/_execute")))
         );
     }
@@ -328,8 +329,10 @@ public final class MlRestHandlers {
 
                 @Override
                 public void onFailure(Exception e) {
-                    if (envelope && e instanceof org.opensearch.OpenSearchParseException == false) {
-                        Throwable cause = e instanceof org.opensearch.transport.RemoteTransportException && e.getCause() != null ? e.getCause() : e;
+                    Throwable plain = e instanceof org.opensearch.transport.RemoteTransportException && e.getCause() != null ? e.getCause() : e;
+                    boolean standard = e instanceof org.opensearch.OpenSearchParseException || MlAgents.refusal(plain);
+                    if (envelope && standard == false) {
+                        Throwable cause = plain;
                         RestStatus status = cause instanceof IllegalArgumentException ? RestStatus.BAD_REQUEST : org.opensearch.ExceptionsHelper.status(cause);
                         Map<String, Object> error = new LinkedHashMap<>();
                         error.put("type", cause.getClass().getSimpleName());
