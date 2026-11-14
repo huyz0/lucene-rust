@@ -84,6 +84,11 @@ final class MlAgents {
         }, listener::onFailure)), listener::onFailure));
     }
 
+    /** An agent's document by id, as {@code _execute} finds it. */
+    void agent(String id, ActionListener<Map<String, Object>> listener) {
+        load(id, Map.of("parameters", Map.of()), listener);
+    }
+
     private void load(String id, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
         if (body.containsKey("parameters") == false) {
             listener.onFailure(new IllegalArgumentException("Agent input data can not be empty."));

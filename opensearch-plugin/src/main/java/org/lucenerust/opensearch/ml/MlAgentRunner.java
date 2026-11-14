@@ -57,10 +57,12 @@ final class MlAgentRunner {
     private static final String LAST = "\u0000last";
     private static final String LAST_OUTPUT = "\u0000last.output";
     private final MlChatRunner chat;
+    private final MlPlanRunner plan;
 
     MlAgentRunner(MlCommons ml) {
         this.ml = ml;
         this.chat = new MlChatRunner(ml, this);
+        this.plan = new MlPlanRunner(ml, chat);
     }
 
     /** What a tool answered: text, or the tensors of a model's answer. */
@@ -78,6 +80,10 @@ final class MlAgentRunner {
         String type = String.valueOf(agent.get("type"));
         if (type.equals("conversational")) {
             chat.run(agent, request, chain, listener);
+            return;
+        }
+        if (type.equals("plan_execute_and_reflect")) {
+            plan.run(agent, request, chain, listener);
             return;
         }
         if (type.equals("flow") == false && type.equals("conversational_flow") == false) {
