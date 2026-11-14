@@ -3873,39 +3873,116 @@ pub fn write_fields_with_format(
         }
     }
 
-    let mut meta = new_meta_output(segment_id, segment_suffix);
-    let mut data = new_data_output(segment_id, segment_suffix);
-    let mut skip_index = new_skip_index_output(segment_id, segment_suffix);
-
+    let mut writer = FieldsWriter::new(
+        skip_index_fields,
+        max_doc,
+        segment_id,
+        segment_suffix,
+        format,
+    );
     for field in fields {
+        writer.write_field(field)?;
+    }
+    writer.finish()
+}
+
+/// [`write_fields_with_format`] one field at a time, so a merge can build each
+/// field's column, write it and drop it before building the next instead of
+/// holding every column of the segment at once. Fields go to the `.dvm`,
+/// `.dvd` and `.dvs` in the order they are written; the caller writes them in
+/// ascending field number, as the slice form is given them.
+pub struct FieldsWriter<'f> {
+    meta: Vec<u8>,
+    data: Vec<u8>,
+    skip_index: Vec<u8>,
+    skip_index_fields: &'f [i32],
+    max_doc: i32,
+    format: Lucene90DocValuesFormat,
+    written: Vec<i32>,
+}
+
+impl<'f> FieldsWriter<'f> {
+    pub fn new(
+        skip_index_fields: &'f [i32],
+        max_doc: i32,
+        segment_id: &[u8; ID_LENGTH],
+        segment_suffix: &str,
+        format: Lucene90DocValuesFormat,
+    ) -> Self {
+        Self {
+            meta: new_meta_output(segment_id, segment_suffix),
+            data: new_data_output(segment_id, segment_suffix),
+            skip_index: new_skip_index_output(segment_id, segment_suffix),
+            skip_index_fields,
+            max_doc,
+            format,
+            written: Vec::new(),
+        }
+    }
+
+    /// Validates `field` as the slice writer does, then appends it.
+    // ARITH: as `write_dense_fields`.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn write_field(&mut self, field: &DenseField<'_>) -> WriteResult<()> {
+        let max_doc = self.max_doc;
         let field_number = field.field_number();
-        meta.write_i32(field_number);
-        if skip_index_fields.contains(&field_number) {
+        if self.written.contains(&field_number) {
+            return Err(WriteError::DuplicateFieldNumber(field_number));
+        }
+        if !field.is_sparse() && field.len() != max_doc as usize {
+            return Err(WriteError::NotDense {
+                values: field.len(),
+                max_doc,
+            });
+        }
+        match field {
+            DenseField::SortedNumeric(_, values) => {
+                if let Some(doc) = values.iter().position(|v| v.is_empty()) {
+                    return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
+                }
+            }
+            DenseField::SortedSet(_, values) => {
+                if let Some(doc) = values.iter().position(|v| v.is_empty()) {
+                    return Err(WriteError::EmptyMultiValuedDoc(doc as i32));
+                }
+            }
+            _ => {}
+        }
+        self.written.push(field_number);
+        self.meta.write_i32(field_number);
+        if self.skip_index_fields.contains(&field_number) {
             // The type byte, then the skip index, then the rest of the
             // entry: `addNumericField`/`doAddSortedField`/
             // `doAddSortedNumericField`'s order. The entry is written first
             // (its type byte leads it) and spliced around the skip index.
             let stream = field.skip_index_stream(max_doc)?;
             let mut entry = Vec::new();
-            write_field_entry(&mut entry, &mut data, field, max_doc, &format)?;
-            meta.push(entry[0]);
+            write_field_entry(&mut entry, &mut self.data, field, max_doc, &self.format)?;
+            self.meta.push(entry[0]);
             write_skip_index(
-                &mut meta,
-                &mut skip_index,
+                &mut self.meta,
+                &mut self.skip_index,
                 &stream,
-                format.skip_index_interval_size,
+                self.format.skip_index_interval_size,
             );
-            meta.extend_from_slice(&entry[1..]);
+            self.meta.extend_from_slice(&entry[1..]);
         } else {
-            write_field_entry(&mut meta, &mut data, field, max_doc, &format)?;
+            write_field_entry(&mut self.meta, &mut self.data, field, max_doc, &self.format)?;
         }
+        Ok(())
     }
 
-    meta.write_i32(-1); // field list terminator
-    codec_util::write_footer(&mut meta);
-    codec_util::write_footer(&mut data);
-    codec_util::write_footer(&mut skip_index);
-    Ok((meta, data, skip_index))
+    /// The finished `(dvm, dvd, dvs)`; `EmptyFieldList` when no field was written.
+    pub fn finish(mut self) -> WriteResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        if self.written.is_empty() {
+            return Err(WriteError::EmptyFieldList);
+        }
+        self.meta.write_i32(-1); // field list terminator
+        codec_util::write_footer(&mut self.meta);
+        codec_util::write_footer(&mut self.data);
+        codec_util::write_footer(&mut self.skip_index);
+        Ok((self.meta, self.data, self.skip_index))
+    }
 }
 
 fn new_skip_index_output(segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Vec<u8> {
