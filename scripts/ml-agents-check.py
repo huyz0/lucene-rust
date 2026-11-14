@@ -572,13 +572,47 @@ def memory(c, ours, stock):
 LLM_PORT = 8768
 
 
+STYLES = {
+    "openai": "openai/v1/chat/completions",
+    "bedrock": "bedrock/converse/claude",
+    "gemini": "gemini/v1beta/generatecontent",
+}
+BODIES = {
+    "openai": ('{ "model": "${parameters.model}", "messages": [{"role":"developer","content":"${parameters.system_prompt}"},${parameters._chat_history:-}'
+               '{"role":"user","content":"${parameters.question}"}${parameters._interactions:-}]${parameters.tool_configs:-} }'),
+    "bedrock": ('{"system":[{"text":"${parameters.system_prompt}"}],"messages":[${parameters._chat_history:-}'
+                '{"role":"user","content":[{"text":"${parameters.question}"}]}${parameters._interactions:-}]${parameters.tool_configs:-}}'),
+    "gemini": ('{"system_instruction":{"parts":[{"text":"${parameters.system_prompt}"}]},"contents":[${parameters._chat_history:-}'
+               '{"role":"user","parts":[{"text":"${parameters.question}"}]}${parameters._interactions:-}]${parameters.tool_configs:-}}'),
+}
+
+
 def final(text):
-    return {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7}}
+    return ("final", text)
 
 
 def calls(*specs):
-    return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
-        {"id": i, "type": "function", "function": {"name": n, "arguments": a}} for i, n, a in specs]}, "finish_reason": "tool_calls"}]}
+    return ("calls", specs)
+
+
+def shape(style, step):
+    """A scripted step as the model of that interface answers it."""
+    if isinstance(step, dict):
+        return step
+    kind, arg = step
+    if style == "openai":
+        if kind == "final":
+            return {"choices": [{"message": {"role": "assistant", "content": arg}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7}}
+        return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+            {"id": i, "type": "function", "function": {"name": n, "arguments": a}} for i, n, a in arg]}, "finish_reason": "tool_calls"}]}
+    if style == "bedrock":
+        if kind == "final":
+            return {"output": {"message": {"role": "assistant", "content": [{"text": arg}]}}, "stopReason": "end_turn", "usage": {"inputTokens": 1}}
+        return {"output": {"message": {"role": "assistant", "content": [{"toolUse": {"toolUseId": i, "name": n, "input": json.loads(a) if a.startswith("{") else {}}} for i, n, a in arg]}},
+                "stopReason": "tool_use"}
+    if kind == "final":
+        return {"candidates": [{"content": {"role": "model", "parts": [{"text": arg}]}, "finishReason": "STOP"}]}
+    return {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": n, "args": json.loads(a) if a.startswith("{") else {}}} for i, n, a in arg]}, "finishReason": "STOP"}]}
 
 
 LISTING = ("c1", "ListIndexTool", "{\"indices\":[\"ag1\"]}")
@@ -609,11 +643,11 @@ def llm_server():
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(n).decode("utf-8") if n else ""
-            scenario, node, run = self.path.strip("/").split("/")
+            scenario, style, node, run = self.path.strip("/").split("/")
             key = (scenario, node, run)
             seen.setdefault(key, []).append(body)
             steps = SCENARIOS[scenario]
-            out = steps[min(len(seen[key]) - 1, len(steps) - 1)]
+            out = shape(style, steps[min(len(seen[key]) - 1, len(steps) - 1)])
             data = json.dumps(out).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -636,19 +670,17 @@ def chat(c, ours, stock):
     seen = llm_server()
     side = (("ours", ours), ("stock", stock))
     ids = {"ours": [], "stock": []}
-    body = ('{ "model": "${parameters.model}", "messages": [{"role":"developer","content":"${parameters.system_prompt}"},${parameters._chat_history:-}'
-            '{"role":"user","content":"${parameters.question}"}${parameters._interactions:-}]${parameters.tool_configs:-} }')
     counter = [0]
 
-    def setup(name, n, scenario, run, extra=None, tools=None, memory=True, parameters=None):
+    def setup(name, n, scenario, run, extra=None, tools=None, memory=True, parameters=None, style="openai"):
         n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.trusted_connector_endpoints_regex": [".*"],
                                                           "plugins.ml_commons.connector.private_ip_enabled": True}})
         con = {"name": "llm", "description": "d", "version": "1", "protocol": "http", "parameters": {"endpoint": "x", "model": "gpt-x"}, "credential": {"k": "v"},
-               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{name}/{run}", "headers": {"a": "b"}, "request_body": body}]}
+               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{style}/{name}/{run}", "headers": {"a": "b"}, "request_body": BODIES[style]}]}
         model = n.ok("POST", "/_plugins/_ml/models/_register?deploy=true", {"name": "m", "function_name": "remote", "connector": con})["model_id"]
         time.sleep(2)
         agent = {"name": f"chat{run}", "type": "conversational", "llm": {"model_id": model, "parameters": {"max_iteration": "3", "system_prompt": "You are X"}},
-                 "app_type": "chat", "tools": tools if tools is not None else [{"type": "ListIndexTool"}], "parameters": dict({"_llm_interface": "openai/v1/chat/completions"}, **(parameters or {}))}
+                 "app_type": "chat", "tools": tools if tools is not None else [{"type": "ListIndexTool"}], "parameters": dict({"_llm_interface": STYLES[style]}, **(parameters or {}))}
         if memory:
             agent["memory"] = {"type": "conversation_index"}
         agent.update(extra or {})
@@ -664,12 +696,12 @@ def chat(c, ours, stock):
             out.append(deep(json.loads(b), ids[name]))
         return out
 
-    def case(label, scenario, request, again=None, **kw):
+    def case(label, scenario, request, again=None, style="openai", **kw):
         counter[0] += 1
         run = str(counter[0])
         got = {}
         for name, n in side:
-            agent, s, o = setup(name, n, scenario, run, **kw)
+            agent, s, o = setup(name, n, scenario, run, style=style, **kw)
             if agent is None:
                 got[name] = {"register": s, "body": run_mask(o, ids[name])}
                 continue
@@ -701,7 +733,7 @@ def chat(c, ours, stock):
                 result["body"] = run_mask(o, ids[name])
             result["llm"] = requests(name, scenario, run)
             got[name] = result
-        c.same(f"agents chat {label}", got["ours"], got["stock"])
+        c.same(f"agents chat {style} {label}" if style != "openai" else f"agents chat {label}", got["ours"], got["stock"])
 
     q = lambda t, **p: {"parameters": dict({"question": t}, **p)}
     case("plain", "plain", q("hi"))
@@ -723,3 +755,10 @@ def chat(c, ours, stock):
     case("request overrides", "plain", q("hi", system_prompt="Be brief", max_iteration="1"))
     case("history", "quoted", q("first \"turn\""), again=q("second"))
     case("unknown memory", "plain", q("hi", memory_id="nope"))
+    for style in ("bedrock", "gemini"):
+        for label, scenario, tools in [("plain", "plain", None), ("tool", "tool", None), ("loop", "loop", None), ("unknown tool", "unknown", None),
+                                       ("tool error", "toolerr", [{"type": "ListIndexTool"}, {"type": "SearchIndexTool"}]), ("two calls", "two", None),
+                                       ("weird answer", "weird", None), ("quoted answer", "quoted", None),
+                                       ("all tools", "plain", [{"type": "ListIndexTool"}, {"type": "SearchIndexTool"}, {"type": "IndexMappingTool"}])]:
+            case(label, scenario, q("which?"), style=style, tools=tools)
+        case("history", "quoted", q("first \"turn\""), again=q("second"), style=style)
