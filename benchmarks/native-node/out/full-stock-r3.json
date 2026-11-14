@@ -1,0 +1,369 @@
+{
+ "term, frequent (t0)": {
+  "median_ms": 5.454,
+  "p90_ms": 5.809,
+  "hits": 10000,
+  "took": 2
+ },
+ "term, mid (t2s)": {
+  "median_ms": 4.125,
+  "p90_ms": 4.859,
+  "hits": 10000,
+  "took": 1
+ },
+ "term, rare (t1z4)": {
+  "median_ms": 3.931,
+  "p90_ms": 4.12,
+  "hits": 1743,
+  "took": 2
+ },
+ "match OR, 2 frequent": {
+  "median_ms": 10.883,
+  "p90_ms": 12.482,
+  "hits": 10000,
+  "took": 7
+ },
+ "match OR, 4 mixed": {
+  "median_ms": 7.394,
+  "p90_ms": 8.824,
+  "hits": 10000,
+  "took": 4
+ },
+ "match AND, 2 frequent": {
+  "median_ms": 9.745,
+  "p90_ms": 11.933,
+  "hits": 10000,
+  "took": 8
+ },
+ "match AND, frequent + mid": {
+  "median_ms": 5.056,
+  "p90_ms": 6.346,
+  "hits": 10000,
+  "took": 2
+ },
+ "match_phrase, 2 frequent": {
+  "median_ms": 64.284,
+  "p90_ms": 83.891,
+  "hits": 10000,
+  "took": 59
+ },
+ "multi_match body+title": {
+  "median_ms": 7.846,
+  "p90_ms": 9.058,
+  "hits": 10000,
+  "took": 4
+ },
+ "bool match + range filter": {
+  "median_ms": 7.294,
+  "p90_ms": 7.897,
+  "hits": 10000,
+  "took": 4
+ },
+ "range on long": {
+  "median_ms": 4.404,
+  "p90_ms": 4.859,
+  "hits": 10000,
+  "took": 2
+ },
+ "term on keyword": {
+  "median_ms": 3.677,
+  "p90_ms": 4.549,
+  "hits": 10000,
+  "took": 1
+ },
+ "prefix on title": {
+  "median_ms": 6.223,
+  "p90_ms": 6.384,
+  "hits": 10000,
+  "took": 4
+ },
+ "match_all, sort by num": {
+  "median_ms": 4.106,
+  "p90_ms": 4.526,
+  "hits": 10000,
+  "took": 2
+ },
+ "match, sort by price": {
+  "median_ms": 9.233,
+  "p90_ms": 9.841,
+  "hits": 10000,
+  "took": 6
+ },
+ "count, track_total_hits": {
+  "median_ms": 3.17,
+  "p90_ms": 3.639,
+  "hits": 998534,
+  "took": 1
+ },
+ "terms agg on category": {
+  "median_ms": 3.173,
+  "p90_ms": 3.387,
+  "hits": 10000,
+  "took": 1
+ },
+ "terms agg on tag, filtered": {
+  "median_ms": 14.096,
+  "p90_ms": 15.8,
+  "hits": 10000,
+  "took": 10
+ },
+ "date_histogram by month": {
+  "median_ms": 3.603,
+  "p90_ms": 4.179,
+  "hits": 10000,
+  "took": 2
+ },
+ "stats on price": {
+  "median_ms": 13.068,
+  "p90_ms": 16.643,
+  "hits": 10000,
+  "took": 10
+ },
+ "geo_distance filter": {
+  "median_ms": 5.018,
+  "p90_ms": 6.768,
+  "hits": 1509,
+  "took": 2
+ },
+ "geo_bounding_box filter": {
+  "median_ms": 3.685,
+  "p90_ms": 4.072,
+  "hits": 3534,
+  "took": 1
+ },
+ "terms category > stats price": {
+  "median_ms": 52.337,
+  "p90_ms": 58.89,
+  "hits": 10000,
+  "took": 48
+ },
+ "terms tag > terms category": {
+  "median_ms": 52.113,
+  "p90_ms": 71.278,
+  "hits": 10000,
+  "took": 58
+ },
+ "terms tag, lone": {
+  "median_ms": 3.029,
+  "p90_ms": 3.516,
+  "hits": 10000,
+  "took": 2
+ },
+ "terms category, filtered t8": {
+  "median_ms": 11.489,
+  "p90_ms": 14.703,
+  "hits": 10000,
+  "took": 9
+ },
+ "filters 3 > stats price": {
+  "median_ms": 64.934,
+  "p90_ms": 99.279,
+  "hits": 10000,
+  "took": 60
+ },
+ "range num 4 > avg price": {
+  "median_ms": 18.288,
+  "p90_ms": 21.231,
+  "hits": 10000,
+  "took": 18
+ },
+ "percentiles price": {
+  "median_ms": 104.617,
+  "p90_ms": 108.326,
+  "hits": 10000,
+  "took": 102
+ },
+ "terms category > percentiles price": {
+  "median_ms": 93.945,
+  "p90_ms": 105.974,
+  "hits": 10000,
+  "took": 114
+ },
+ "cardinality tag": {
+  "median_ms": 8.95,
+  "p90_ms": 9.477,
+  "hits": 10000,
+  "took": 6
+ },
+ "cardinality num": {
+  "median_ms": 17.394,
+  "p90_ms": 23.571,
+  "hits": 10000,
+  "took": 14
+ },
+ "histogram price 10 > stats num": {
+  "median_ms": 46.811,
+  "p90_ms": 66.539,
+  "hits": 10000,
+  "took": 42
+ },
+ "date_histogram day > terms category": {
+  "median_ms": 96.992,
+  "p90_ms": 110.609,
+  "hits": 10000,
+  "took": 87
+ },
+ "composite category+tag 100": {
+  "median_ms": 4.381,
+  "p90_ms": 5.025,
+  "hits": 10000,
+  "took": 2
+ },
+ "composite category+tag 100 > avg price": {
+  "median_ms": 8.172,
+  "p90_ms": 9.307,
+  "hits": 10000,
+  "took": 6
+ },
+ "composite category+tag 100 after": {
+  "median_ms": 4.899,
+  "p90_ms": 5.408,
+  "hits": 10000,
+  "took": 2
+ },
+ "composite category 10": {
+  "median_ms": 7.149,
+  "p90_ms": 7.487,
+  "hits": 10000,
+  "took": 5
+ },
+ "terms num (numeric) 25": {
+  "median_ms": 255.808,
+  "p90_ms": 278.566,
+  "hits": 10000,
+  "took": 251
+ },
+ "t8, terms tag > top_hits 3": {
+  "median_ms": 34.242,
+  "p90_ms": 36.866,
+  "hits": 10000,
+  "took": 31
+ },
+ "t0, top_hits 10": {
+  "median_ms": 24.289,
+  "p90_ms": 26.557,
+  "hits": 10000,
+  "took": 23
+ },
+ "terms category > top_hits num desc tracked": {
+  "median_ms": 52.89,
+  "p90_ms": 57.158,
+  "hits": 10000,
+  "took": 56
+ },
+ "terms tag > terms num 10": {
+  "median_ms": 302.945,
+  "p90_ms": 347.21,
+  "hits": 10000,
+  "took": 312
+ },
+ "t0 sort num desc, 10": {
+  "median_ms": 7.94,
+  "p90_ms": 9.342,
+  "hits": 10000,
+  "took": 6
+ },
+ "t0 sort tag asc, 100": {
+  "median_ms": 7.774,
+  "p90_ms": 9.095,
+  "hits": 10000,
+  "took": 4
+ },
+ "t5 fetch 100 _source": {
+  "median_ms": 5.959,
+  "p90_ms": 6.214,
+  "hits": 10000,
+  "took": 4
+ },
+ "t5 fetch 100 docvalue_fields": {
+  "median_ms": 7.785,
+  "p90_ms": 8.365,
+  "hits": 10000,
+  "took": 4
+ },
+ "_stats": {
+  "_nodes": {
+   "total": 1,
+   "successful": 1,
+   "failed": 0
+  },
+  "cluster_name": "opensearch",
+  "nodes": {
+   "zt7xVzA7RvuMAJsUbU9RlA": {
+    "timestamp": 1794694474078,
+    "name": "vm",
+    "transport_address": "127.0.0.1:9300",
+    "host": "127.0.0.1",
+    "ip": "127.0.0.1:9300",
+    "roles": [
+     "cluster_manager",
+     "data",
+     "ingest",
+     "remote_cluster_client"
+    ],
+    "attributes": {
+     "shard_indexing_pressure_enabled": "true"
+    },
+    "os": {
+     "timestamp": 1794694474083,
+     "cpu": {
+      "percent": 34,
+      "load_average": {
+       "1m": 1.22,
+       "5m": 1.49,
+       "15m": 1.17
+      }
+     },
+     "mem": {
+      "total_in_bytes": 14338772992,
+      "free_in_bytes": 8635351040,
+      "used_in_bytes": 5703421952,
+      "free_percent": 60,
+      "used_percent": 40
+     },
+     "swap": {
+      "total_in_bytes": 0,
+      "free_in_bytes": 0,
+      "used_in_bytes": 0
+     },
+     "cgroup": {
+      "cpuacct": {
+       "control_group": "/",
+       "usage_nanos": 2758500188592
+      },
+      "cpu": {
+       "control_group": "/",
+       "cfs_period_micros": 100000,
+       "cfs_quota_micros": -1,
+       "stat": {
+        "number_of_elapsed_periods": 0,
+        "number_of_times_throttled": 0,
+        "time_throttled_nanos": 0
+       }
+      },
+      "memory": {
+       "control_group": "/process_api/01a1dbf9-c3f9-7208-a2aa-663be8605e3e/claude-code-bash",
+       "limit_in_bytes": "14338772992",
+       "usage_in_bytes": "5703421952"
+      }
+     }
+    },
+    "process": {
+     "timestamp": 1794694474084,
+     "open_file_descriptors": 982,
+     "max_file_descriptors": 20000,
+     "cpu": {
+      "percent": 45,
+      "total_in_millis": 152290
+     },
+     "mem": {
+      "total_virtual_in_bytes": 6319861760
+     }
+    },
+    "native_memory": {
+     "total_estimated_bytes": 179388416
+    }
+   }
+  }
+ }
+}

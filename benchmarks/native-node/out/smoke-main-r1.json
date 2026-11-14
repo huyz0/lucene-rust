@@ -1,0 +1,207 @@
+{
+ "term, frequent (t0)": {
+  "median_ms": 8.978,
+  "p90_ms": 10.035,
+  "hits": 10000,
+  "took": 5
+ },
+ "term, mid (t2s)": {
+  "median_ms": 6.37,
+  "p90_ms": 6.486,
+  "hits": 10000,
+  "took": 2
+ },
+ "term, rare (t1z4)": {
+  "median_ms": 6.539,
+  "p90_ms": 6.657,
+  "hits": 1743,
+  "took": 2
+ },
+ "match OR, 2 frequent": {
+  "median_ms": 10.054,
+  "p90_ms": 11.418,
+  "hits": 10000,
+  "took": 5
+ },
+ "match AND, 2 frequent": {
+  "median_ms": 9.363,
+  "p90_ms": 9.489,
+  "hits": 10000,
+  "took": 5
+ },
+ "match AND, frequent + mid": {
+  "median_ms": 7.222,
+  "p90_ms": 7.369,
+  "hits": 10000,
+  "took": 3
+ },
+ "match_phrase, 2 frequent": {
+  "median_ms": 45.895,
+  "p90_ms": 48.137,
+  "hits": 10000,
+  "took": 42
+ },
+ "term on keyword": {
+  "median_ms": 6.724,
+  "p90_ms": 6.998,
+  "hits": 10000,
+  "took": 2
+ },
+ "terms agg on category": {
+  "median_ms": 6.161,
+  "p90_ms": 6.561,
+  "hits": 10000,
+  "took": 3
+ },
+ "terms agg on tag, filtered": {
+  "median_ms": 10.443,
+  "p90_ms": 10.495,
+  "hits": 10000,
+  "took": 6
+ },
+ "terms category > stats price": {
+  "median_ms": 19.899,
+  "p90_ms": 24.858,
+  "hits": 10000,
+  "took": 15
+ },
+ "terms tag > terms category": {
+  "median_ms": 55.327,
+  "p90_ms": 59.645,
+  "hits": 10000,
+  "took": 40
+ },
+ "terms tag, lone": {
+  "median_ms": 7.094,
+  "p90_ms": 7.491,
+  "hits": 10000,
+  "took": 2
+ },
+ "terms category, filtered t8": {
+  "median_ms": 11.324,
+  "p90_ms": 11.519,
+  "hits": 10000,
+  "took": 7
+ },
+ "terms category > percentiles price": {
+  "median_ms": 65.686,
+  "p90_ms": 65.949,
+  "hits": 10000,
+  "took": 62
+ },
+ "date_histogram day > terms category": {
+  "median_ms": 56.748,
+  "p90_ms": 61.813,
+  "hits": 10000,
+  "took": 30
+ },
+ "terms num (numeric) 25": {
+  "median_ms": 140.248,
+  "p90_ms": 146.06,
+  "hits": 10000,
+  "took": 141
+ },
+ "t8, terms tag > top_hits 3": {
+  "median_ms": 21.733,
+  "p90_ms": 26.497,
+  "hits": 10000,
+  "took": 17
+ },
+ "terms category > top_hits num desc tracked": {
+  "median_ms": 54.836,
+  "p90_ms": 68.919,
+  "hits": 10000,
+  "took": 40
+ },
+ "terms tag > terms num 10": {
+  "median_ms": 190.951,
+  "p90_ms": 205.497,
+  "hits": 10000,
+  "took": 197
+ },
+ "_stats": {
+  "_nodes": {
+   "total": 1,
+   "successful": 1,
+   "failed": 0
+  },
+  "cluster_name": "opensearch",
+  "nodes": {
+   "icc7nWZyQQWcd1HLexQJlA": {
+    "timestamp": 1794693995842,
+    "name": "vm",
+    "transport_address": "127.0.0.1:9300",
+    "host": "127.0.0.1",
+    "ip": "127.0.0.1:9300",
+    "roles": [
+     "cluster_manager",
+     "data",
+     "ingest",
+     "remote_cluster_client"
+    ],
+    "attributes": {
+     "shard_indexing_pressure_enabled": "true"
+    },
+    "os": {
+     "timestamp": 1794693995848,
+     "cpu": {
+      "percent": 41,
+      "load_average": {
+       "1m": 2.13,
+       "5m": 1.57,
+       "15m": 0.93
+      }
+     },
+     "mem": {
+      "total_in_bytes": 14338772992,
+      "free_in_bytes": 8663486464,
+      "used_in_bytes": 5675286528,
+      "free_percent": 60,
+      "used_percent": 40
+     },
+     "swap": {
+      "total_in_bytes": 0,
+      "free_in_bytes": 0,
+      "used_in_bytes": 0
+     },
+     "cgroup": {
+      "cpuacct": {
+       "control_group": "/",
+       "usage_nanos": 2077620575435
+      },
+      "cpu": {
+       "control_group": "/",
+       "cfs_period_micros": 100000,
+       "cfs_quota_micros": -1,
+       "stat": {
+        "number_of_elapsed_periods": 0,
+        "number_of_times_throttled": 0,
+        "time_throttled_nanos": 0
+       }
+      },
+      "memory": {
+       "control_group": "/process_api/01a1dbf9-c3f9-7208-a2aa-663be8605e3e/claude-code-bash",
+       "limit_in_bytes": "14338772992",
+       "usage_in_bytes": "5675286528"
+      }
+     }
+    },
+    "process": {
+     "timestamp": 1794693995849,
+     "open_file_descriptors": 207,
+     "max_file_descriptors": 20000,
+     "cpu": {
+      "percent": 27,
+      "total_in_millis": 38660
+     },
+     "mem": {
+      "total_virtual_in_bytes": 7755366400
+     }
+    },
+    "native_memory": {
+     "total_estimated_bytes": 287518720
+    }
+   }
+  }
+ }
+}
