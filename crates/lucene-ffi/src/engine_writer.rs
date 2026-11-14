@@ -1,27 +1,20 @@
 //! The writer the OpenSearch plugin's `RustEngine` indexes through, over
-//! [`lucene_engine::writer`]: opening a shard's writer over a directory,
-//! the JVM upcalls, and the `extern "C"` entry points that drive it.
+//! [`lucene_engine::writer`]: the directory a shard's writer opens over,
+//! the JVM upcalls, and the `extern "C"` entry points, which read the
+//! caller's memory and call [`lucene_engine::writer_ops`].
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use lucene_index::concurrent_writer::ConcurrentIndexWriter;
-use lucene_index::index_file_deleter::DeletionPolicy;
 use lucene_index::index_writer::{
-    self, IndexWriter, MergeEvent, MergeListener, MergePolicyConfig, MergeTimes,
-    MergedSegmentWarmer, SegmentPartitioning, SoftDeletesRetention,
+    self, MergeEvent, MergeListener, MergeTimes, MergedSegmentWarmer,
 };
-use lucene_index::merge_policy::{CompoundFileSettings, TieredMergePolicy};
 use lucene_index::merge_scheduler::ConcurrentMergeScheduler;
-use lucene_misc::index::{BpIndexReorderer, BpReorderingMergePolicy};
 use lucene_store::directory::Directory;
 
-pub(crate) use lucene_engine::writer_blob::derived_source_list;
-use lucene_engine::writer_blob::{
-    decode_field, decode_op, decode_user_data, derived_source_attributes,
-    restore_substring_formats, restore_vectors_formats, substring_format, Op,
-};
+use lucene_engine::writer_blob::{decode_field, decode_op, decode_user_data, Op};
 use lucene_engine::writer_error::writer_error;
 
 use crate::error::{guard, set_last_error, FfiStatus};
@@ -29,6 +22,7 @@ use crate::raw::{bytes_from_raw, str_from_raw};
 use crate::registry::{engine_writers, lock_recovering, WriterHandle};
 
 pub(crate) use lucene_engine::writer::*;
+pub(crate) use lucene_engine::writer_ops::*;
 
 /// The owner of a shard's writer and the directory it borrows, erased to
 /// `'static`: it implements [`WriterParts`] for the engine crate, which holds
@@ -119,22 +113,9 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
         let path = unsafe { str_from_raw(path, path_len)? };
         // SAFETY: caller contract.
         let index_sort = unsafe { bytes_from_raw(index_sort, index_sort_len)? };
-        let index_sort = if index_sort.is_empty() {
-            None
-        } else {
-            lucene_index::segment_info::parse_index_sort(index_sort).map_err(|e| {
-                set_last_error(format!("engine writer: index sort: {e}"));
-                FfiStatus::InvalidArgument
-            })?
-        };
         // SAFETY: caller contract.
         let parent_field = unsafe { str_from_raw(parent_field, parent_field_len)? };
-        // A search of the buffers reads documents in arrival order, which a
-        // sorted flush renumbers.
-        if index_sort.is_some() && flags & OPEN_LIVE_SEARCH != 0 {
-            set_last_error("engine writer: a search of the buffers does not support an index sort");
-            return Err(FfiStatus::InvalidArgument);
-        }
+        let index_sort = parse_open_sort(index_sort, flags)?;
         // Mapped, not read onto the heap: a merge opens every source file of
         // every merged segment, and Lucene's own `MMapDirectory` -- what
         // OpenSearch writes with -- maps them too. Segment files are written
@@ -150,133 +131,27 @@ pub unsafe extern "C" fn ffi_engine_writer_open_codec(
         // SAFETY: `WriterHandle`'s own argument -- the boxed directory
         // outlives the writer that borrows it (see `writer.rs`).
         let dir_ref: &'static dyn Directory = unsafe { std::mem::transmute(dir_ref) };
-        // Merges run on the scheduler's threads, as under OpenSearch's
-        // `ConcurrentMergeScheduler`, with `index.merge.scheduler.*`'s
-        // defaults until the engine passes the shard's settings
-        // (`ffi_engine_writer_set_merge_scheduler`).
-        let merges = ConcurrentMergeScheduler::new();
-        merges.set_default_max_merges_and_threads(false);
-        merges.enable_auto_io_throttle();
-        let sparse = flags & OPEN_SPARSE != 0;
-        let stored_codec = stored_fields_codec(stored_fields, compression_level)?;
-        if sparse && stored_codec.is_some() {
-            set_last_error(
-                "an index.sparse index takes the default stored fields only".to_string(),
-            );
-            return Err(FfiStatus::InvalidArgument);
-        }
-        let knn = flags & OPEN_KNN != 0;
-        if sparse && knn {
-            set_last_error("an index.sparse index is not a k-NN index".to_string());
-            return Err(FfiStatus::InvalidArgument);
-        }
-        let open = || -> index_writer::Result<Arc<ConcurrentIndexWriter<'static>>> {
-            let codec = if sparse {
-                lucene_sparse::CODEC_NAME
-            } else if knn {
-                KNN_CODEC
-            } else {
-                "Lucene104"
-            };
-            let mut writer = IndexWriter::open(dir_ref, Vec::new(), codec, VERSION)?;
-            if sparse {
-                writer.set_codec(Some(Arc::new(lucene_sparse::SparseCodec)))?;
-            } else if knn {
-                let delegate: Arc<dyn lucene_codecs::codec::Lucene104Codec> =
-                    match stored_codec.clone() {
-                        Some(c) => c,
-                        None => Arc::new(lucene_codecs::codec::DefaultLucene104Codec),
-                    };
-                writer.set_segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE, delegate.name());
-                writer.set_codec(Some(Arc::new(
-                    lucene_codecs::codec::NamedLucene104Codec::new(KNN_CODEC, delegate),
-                )))?;
-            } else if let Some(codec) = stored_codec.clone() {
-                writer.set_codec(Some(codec))?;
-            }
-            if flags & OPEN_MERGE_LZ4_HC != 0 {
-                writer.set_merge_lz4_high_compression(true);
-            }
-            if flags & OPEN_ADAPTIVE_DOC_VALUES != 0 {
-                writer.set_default_doc_values_format(
-                    lucene_codecs::doc_values::Lucene90DocValuesFormat::rust_adaptive(),
-                );
-            }
-            if flags & OPEN_ZSTD_TERMS != 0 {
-                // A valid level, so this always builds the format.
-                if let Ok(format) =
-                    lucene_codecs::per_field_postings::Lucene104PostingsFormat::rust_zstd(
-                        ZSTD_TERMS_LEVEL,
-                    )
-                {
-                    writer.set_default_postings_format(format);
-                }
-            }
-            writer.enable_explicit_documents()?;
-            // The segments' own fields: the writer's list starts empty, and a
-            // merge before any document registers a field again must still
-            // write it in the format its mapping chose.
-            let existing = writer.segment_fields()?;
-            restore_vectors_formats(&mut writer, &existing);
-            restore_substring_formats(&mut writer, &existing);
-            if knn {
-                derived_source_attributes(&mut writer);
-            }
-            if !parent_field.is_empty() {
-                writer.set_parent_field(Some(parent_field))?;
-            }
-            if index_sort.is_some() {
-                writer.set_index_sort(index_sort.as_deref())?;
-            }
-            writer.set_deletion_policy(DeletionPolicy::KeepAll)?;
-            writer.set_merge_policy(Some(MergePolicyConfig::default()));
-            // `OpenSearchTieredMergePolicy`: forced merges have no merged-size
-            // cap; forced-deletes merges keep the policy's.
-            writer.set_forced_merge_max_segment_size(Some(u64::MAX));
-            // Merge-on-commit/refresh stays off until the engine passes
-            // the shard's `index.merge_on_flush.*` settings
-            // (`ffi_engine_writer_set_merge_on_flush`).
-            writer.set_max_full_flush_merge_wait_millis(0);
-            // Loose segment files until the engine passes the shard's
-            // `index.use_compound_file` and `index.compound_format`
-            // (`ffi_engine_writer_set_options`).
-            writer.set_use_compound_file(false);
-            writer.set_ram_buffer_size_mb(ram_buffer_mb)?;
-            // The JVM's `IndexWriter.getActualMaxDocs()`, so a test lowering
-            // Java's limit lowers this one too.
-            writer.set_max_docs(usize::try_from(max_docs).unwrap_or(0));
-            // One buffer per thread that can index at once.
-            let mut slots = std::thread::available_parallelism().map_or(1, |n| n.get());
-            if flags & OPEN_PARTITIONED != 0 {
-                writer.set_segment_partitioning(Some(SegmentPartitioning::opensearch()));
-                slots = slots.max(PARTITIONED_SLOTS);
-            }
-            ConcurrentIndexWriter::with_merge_scheduler(writer, slots, Arc::new(merges.clone()))
-        };
-        let writer = open().map_err(writer_error)?;
-        if flags & OPEN_LIVE_SEARCH != 0 {
-            writer.enable_live_search().map_err(writer_error)?;
-        }
+        let (writer, merges) = open_writer(
+            dir_ref,
+            &OpenParams {
+                ram_buffer_mb,
+                flags,
+                index_sort,
+                parent_field,
+                max_docs,
+                stored_fields,
+                compression_level,
+            },
+        )?;
         lucene_engine::writer::set_yield_hook(yield_to_searches);
-        let engine = EngineWriter {
-            handle: Box::new(OwnedWriter(WriterHandle {
+        let engine = EngineWriter::new(
+            Box::new(OwnedWriter(WriterHandle {
                 writer,
                 merges,
                 dir,
             })),
-            maintenance: Mutex::new(Holds {
-                files: HashMap::new(),
-                nrt: HashMap::new(),
-                next: 1,
-            }),
-            tragic: OnceLock::new(),
-            fault_injection: flags & OPEN_FAULT_INJECTION != 0,
-            policies: Mutex::new(MergePolicies::default()),
-            sparse: flags & OPEN_SPARSE != 0,
-            live_chunks: Mutex::default(),
-            live_warmer: crate::live::Warmer::default(),
-            live_derived: Mutex::new((0, None)),
-        };
+            flags,
+        );
         let handle = lock_recovering(engine_writers()).insert_checked(Arc::new(engine))?;
         if let Some(&upcall) = MERGE_UPCALL.get() {
             // OpenSearch's engine hears of every merge, and throttles indexing
@@ -313,34 +188,7 @@ pub unsafe extern "C" fn ffi_engine_writer_register_field(
         // SAFETY: caller contract.
         let spec = unsafe { bytes_from_raw(spec, spec_len)? };
         let (info, format) = decode_field(spec)?;
-        let number = with_writer(handle, |w| {
-            let name = info.name.clone();
-            let derived = derived_source_list(&info);
-            let substring = substring_format(&info);
-            w.writer()
-                .with_writer(|iw| {
-                    let number = iw.register_field(info)?;
-                    if let Some(format) = format {
-                        iw.set_knn_vectors_format_for_field(&name, format);
-                    }
-                    if let Some(format) = substring {
-                        iw.set_doc_values_format_for_field(&name, format);
-                    }
-                    // Only a k-NN index's codec reads the list back.
-                    if let Some(list) = derived {
-                        if iw.segment_attribute(KNN_DELEGATE_CODEC_ATTRIBUTE).is_some() {
-                            iw.add_segment_list_value(list, &name);
-                        }
-                    }
-                    Ok::<_, lucene_index::index_writer::Error>(number)
-                })
-                .map_err(|e| {
-                    // A field the writer cannot index is the mapping's problem,
-                    // not the writer's: document-level.
-                    set_last_error(e.to_string());
-                    FfiStatus::InvalidArgument
-                })
-        })?;
+        let number = with_writer(handle, |w| register_field(w, info, format))?;
         // SAFETY: caller contract.
         unsafe { *out_number = number };
         Ok(())
@@ -819,28 +667,13 @@ pub extern "C" fn ffi_engine_writer_set_merge_scheduler(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let merges = w.merges();
-            if merges.max_merge_count() != max_merge_count
-                || merges.max_thread_count() != max_thread_count
-            {
-                merges
-                    .set_max_merges_and_threads(max_merge_count, max_thread_count)
-                    .map_err(|e| {
-                        set_last_error(e.to_string());
-                        FfiStatus::InvalidArgument
-                    })?;
-            }
-            if (auto_throttle != 0) != merges.auto_io_throttle() {
-                if auto_throttle != 0 {
-                    merges.enable_auto_io_throttle();
-                } else {
-                    merges.disable_auto_io_throttle();
-                }
-            }
-            if max_force_merge_mb_per_sec != merges.force_merge_mb_per_sec() {
-                merges.set_force_merge_mb_per_sec(max_force_merge_mb_per_sec);
-            }
-            Ok(())
+            set_merge_scheduler(
+                w,
+                max_merge_count,
+                max_thread_count,
+                auto_throttle != 0,
+                max_force_merge_mb_per_sec,
+            )
         })
     })
 }
@@ -863,10 +696,7 @@ pub unsafe extern "C" fn ffi_engine_writer_commit_generations(
         if out_len.is_null() || (out.is_null() && cap != 0) {
             return Err(FfiStatus::NullPointer);
         }
-        let gens = with_writer(handle, |w| {
-            let _maintenance = w.maintenance();
-            Ok(w.writer().with_writer(|iw| iw.commit_generations()))
-        })?;
+        let gens = with_writer(handle, |w| Ok(commit_generations(w)))?;
         // SAFETY: caller contract.
         unsafe { *out_len = gens.len() };
         if gens.len() > cap {
@@ -898,12 +728,7 @@ pub unsafe extern "C" fn ffi_engine_writer_delete_commits(
             // SAFETY: caller contract.
             crate::raw::try_to_vec(unsafe { std::slice::from_raw_parts(generations, n) })?
         };
-        with_writer(handle, |w| {
-            let _maintenance = w.maintenance();
-            w.writer()
-                .with_writer(|iw| iw.delete_commits(&gens))
-                .map_err(writer_error)
-        })
+        with_writer(handle, |w| delete_commits(w, &gens))
     })
 }
 
@@ -922,21 +747,7 @@ pub unsafe extern "C" fn ffi_engine_writer_hold_commit(
         if out_hold.is_null() {
             return Err(FfiStatus::NullPointer);
         }
-        let id = with_writer(handle, |w| {
-            let mut holds = w.maintenance();
-            let files = w
-                .writer()
-                .with_writer(|iw| iw.hold_commit(generation))
-                .map_err(|e| {
-                    // No such commit is the caller's mistake, not the writer's.
-                    set_last_error(e.to_string());
-                    FfiStatus::InvalidArgument
-                })?;
-            let id = holds.next;
-            holds.next = holds.next.saturating_add(1);
-            holds.files.insert(id, files);
-            Ok(id)
-        })?;
+        let id = with_writer(handle, |w| hold_commit(w, generation))?;
         // SAFETY: caller contract.
         unsafe { *out_hold = id };
         Ok(())
@@ -967,18 +778,7 @@ pub unsafe extern "C" fn ffi_engine_writer_nrt_snapshot(
         {
             return Err(FfiStatus::NullPointer);
         }
-        let (bytes, id, generation) = with_writer(handle, |w| {
-            use lucene_index::nrt::NrtSource;
-            // Not under the maintenance lock: a forced merge holds it for
-            // its whole run, and a refresh must not wait for that.
-            let snapshot = w.writer().nrt_snapshot(true, true).map_err(writer_error)?;
-            let bytes = lucene_index::segment_infos::to_bytes(&snapshot.segment_infos);
-            let mut holds = w.maintenance();
-            let id = holds.next;
-            holds.next = holds.next.saturating_add(1);
-            holds.nrt.insert(id, snapshot.hold);
-            Ok((bytes, id, snapshot.segment_infos.generation))
-        })?;
+        let (bytes, id, generation) = with_writer(handle, nrt_snapshot)?;
         // SAFETY: caller contract.
         unsafe {
             crate::ffm_bridge::give(bytes, out_ptr, out_len);
@@ -992,32 +792,7 @@ pub unsafe extern "C" fn ffi_engine_writer_nrt_snapshot(
 /// Releases a [`ffi_engine_writer_hold_commit`] pin.
 #[no_mangle]
 pub extern "C" fn ffi_engine_writer_release_hold(handle: u64, hold: u64) -> i32 {
-    guard(|| {
-        with_writer(handle, |w| {
-            let mut holds = w.maintenance();
-            if let Some(nrt) = holds.nrt.remove(&hold) {
-                drop(holds);
-                // The last reference hands the files back to the writer;
-                // release them now, as Java's reader close does, rather than
-                // at the next flush or snapshot -- an index that goes idle
-                // after a merge would otherwise keep the merged-away segments
-                // on disk. A failed delete is not the writer's failure (Java's
-                // close listener ignores it): the file is unreferenced and the
-                // deleter's next sweep removes it.
-                if Arc::into_inner(nrt).is_some() {
-                    let _ = w.writer().with_writer(|iw| iw.release_nrt_holds());
-                }
-                return Ok(());
-            }
-            let Some(files) = holds.files.remove(&hold) else {
-                set_last_error(format!("engine writer: no hold {hold}"));
-                return Err(FfiStatus::InvalidArgument);
-            };
-            w.writer()
-                .with_writer(|iw| iw.release_files(&files))
-                .map_err(writer_error)
-        })
-    })
+    guard(|| with_writer(handle, |w| release_hold(w, hold)))
 }
 
 /// Sets the soft-deletes retention merges apply. `flags` without
@@ -1033,22 +808,7 @@ pub extern "C" fn ffi_engine_writer_set_retention(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let retention = (flags & RETENTION_ENABLED != 0).then(|| SoftDeletesRetention {
-                seq_no_field: SEQ_NO_FIELD.to_string(),
-                min_retained_seq_no,
-                prune_postings_field: Some(ID_FIELD.to_string()),
-                prune_recovery_source_field: Some(RECOVERY_SOURCE_FIELD.to_string()),
-                seq_no_sentinel: if flags & RETENTION_SEQ_NO_SENTINEL != 0 {
-                    vec![
-                        (SEQ_NO_FIELD.to_string(), UNASSIGNED_SEQ_NO),
-                        (PRIMARY_TERM_FIELD.to_string(), UNASSIGNED_PRIMARY_TERM),
-                    ]
-                } else {
-                    Vec::new()
-                },
-            });
-            w.writer()
-                .with_writer(|iw| iw.set_soft_deletes_retention(retention));
+            set_retention(w, flags, min_retained_seq_no);
             Ok(())
         })
     })
@@ -1108,44 +868,16 @@ pub extern "C" fn ffi_engine_writer_set_merge_policy(
     force_merge_deletes_pct_allowed: f64,
 ) -> i32 {
     guard(|| {
-        let invalid = |what: &str| {
-            set_last_error(format!("invalid merge policy setting: {what}"));
-            FfiStatus::InvalidArgument
-        };
-        let max_merge_at_once = usize::try_from(max_merge_at_once)
-            .ok()
-            .filter(|&n| n >= 2)
-            .ok_or_else(|| invalid("max_merge_at_once < 2"))?;
-        if segments_per_tier.is_nan() || segments_per_tier < 2.0 {
-            return Err(invalid("segments_per_tier < 2"));
-        }
-        let max_merged_segment_size = u64::try_from(max_merged_segment_bytes)
-            .map_err(|_| invalid("max_merged_segment < 0"))?;
-        let floor_segment_size =
-            u64::try_from(floor_segment_bytes).map_err(|_| invalid("floor_segment < 0"))?;
-        if !(5.0..=50.0).contains(&deletes_pct_allowed) {
-            return Err(invalid("deletes_pct_allowed outside [5, 50]"));
-        }
-        if !(0.0..=100.0).contains(&force_merge_deletes_pct_allowed) {
-            return Err(invalid("expunge_deletes_allowed outside [0, 100]"));
-        }
         with_writer(handle, |w| {
-            let policies = w.policies();
-            w.writer().with_writer(|iw| {
-                // A writer with merges off keeps them off.
-                let Some(mut config) = iw.merge_policy().cloned() else {
-                    return;
-                };
-                config.max_merge_at_once = max_merge_at_once;
-                config.segments_per_tier = segments_per_tier;
-                config.max_merged_segment_size = max_merged_segment_size;
-                config.floor_segment_size = floor_segment_size;
-                config.deletes_pct_allowed = deletes_pct_allowed;
-                config.force_merge_deletes_pct_allowed = force_merge_deletes_pct_allowed;
-                iw.set_merge_policy(Some(config));
-                install_merge_policies(iw, &policies);
-            });
-            Ok(())
+            set_merge_policy(
+                w,
+                max_merge_at_once,
+                segments_per_tier,
+                max_merged_segment_bytes,
+                floor_segment_bytes,
+                deletes_pct_allowed,
+                force_merge_deletes_pct_allowed,
+            )
         })
     })
 }
@@ -1172,52 +904,18 @@ pub extern "C" fn ffi_engine_writer_set_pluggable_merge_policy(
     max_cfs_segment_bytes: i64,
 ) -> i32 {
     guard(|| {
-        let invalid = |what: String| {
-            set_last_error(format!("invalid merge policy setting: {what}"));
-            FfiStatus::InvalidArgument
-        };
-        let policy = match kind {
-            MERGE_POLICY_TIERED => None,
-            MERGE_POLICY_NONE => Some(PluggablePolicy::NoMerges),
-            MERGE_POLICY_LOG_BYTE_SIZE => {
-                if merge_factor < 2 {
-                    return Err(invalid(format!("merge_factor {merge_factor} < 2")));
-                }
-                if min_merge_bytes < 0 || max_merge_bytes < 0 || max_forced_merge_bytes < 0 {
-                    return Err(invalid("a merge size < 0".to_string()));
-                }
-                if max_merge_docs < 0 {
-                    return Err(invalid(format!("max_merged_docs {max_merge_docs} < 0")));
-                }
-                let mut compound = CompoundFileSettings::default();
-                compound
-                    .set_no_cfs_ratio(no_cfs_ratio)
-                    .map_err(|e| invalid(e.to_string()))?;
-                if max_cfs_segment_bytes < 0 {
-                    return Err(invalid(format!(
-                        "maxCFSSegmentSize {max_cfs_segment_bytes} < 0"
-                    )));
-                }
-                compound.max_cfs_segment_size = max_cfs_segment_bytes;
-                Some(PluggablePolicy::LogByteSize {
-                    merge_factor,
-                    min_merge_bytes,
-                    max_merge_bytes,
-                    max_forced_merge_bytes,
-                    max_merge_docs,
-                    compound,
-                })
-            }
-            other => return Err(invalid(format!("unknown merge policy kind {other}"))),
-        };
+        let policy = pluggable_policy(
+            kind,
+            merge_factor,
+            min_merge_bytes,
+            max_merge_bytes,
+            max_forced_merge_bytes,
+            max_merge_docs,
+            no_cfs_ratio,
+            max_cfs_segment_bytes,
+        )?;
         with_writer(handle, |w| {
-            let mut policies = w.policies();
-            if policies.other == policy {
-                return Ok(());
-            }
-            policies.other = policy;
-            w.writer()
-                .with_writer(|iw| install_merge_policies(iw, &policies));
+            set_pluggable_policy(w, policy);
             Ok(())
         })
     })
@@ -1241,31 +939,15 @@ pub extern "C" fn ffi_engine_writer_set_options(
     shuffle_forced_merges: u8,
 ) -> i32 {
     guard(|| {
-        let mut compound = CompoundFileSettings::default();
-        compound.set_no_cfs_ratio(no_cfs_ratio).map_err(|e| {
-            set_last_error(e.to_string());
-            FfiStatus::InvalidArgument
-        })?;
-        if max_cfs_segment_bytes < 0 {
-            set_last_error(format!(
-                "maxCFSSegmentSize must be >= 0; got {max_cfs_segment_bytes}"
-            ));
-            return Err(FfiStatus::InvalidArgument);
-        }
         with_writer(handle, |w| {
-            let policies = w.policies();
-            w.writer().with_writer(|iw| {
-                iw.set_use_compound_file(use_compound_file != 0);
-                compound.max_cfs_segment_size = max_cfs_segment_bytes;
-                iw.set_merge_compound_file_settings(Some(compound));
-                iw.set_shuffle_forced_merges(shuffle_forced_merges != 0);
-                // The wrapping policies decide merged segments' compound files too.
-                install_merge_policies(iw, &policies);
-            });
-            drop(policies);
-            w.writer()
-                .set_check_pending_flush_on_update(check_pending_flush != 0);
-            Ok(())
+            set_options(
+                w,
+                use_compound_file != 0,
+                no_cfs_ratio,
+                max_cfs_segment_bytes,
+                check_pending_flush != 0,
+                shuffle_forced_merges != 0,
+            )
         })
     })
 }
@@ -1284,12 +966,7 @@ pub extern "C" fn ffi_engine_writer_set_merge_on_flush(
 ) -> i32 {
     guard(|| {
         with_writer(handle, |w| {
-            let mut policies = w.policies();
-            policies.merge_on_flush = merge_on_flush_policy != 0;
-            w.writer().with_writer(|iw| {
-                iw.set_max_full_flush_merge_wait_millis(wait_millis);
-                install_merge_policies(iw, &policies);
-            });
+            set_merge_on_flush(w, wait_millis, merge_on_flush_policy != 0);
             Ok(())
         })
     })
@@ -1306,23 +983,7 @@ pub extern "C" fn ffi_engine_writer_set_ivf_partition_clusters(
     handle: u64,
     min_vectors: i64,
 ) -> i32 {
-    guard(|| {
-        let min = match usize::try_from(min_vectors) {
-            Ok(0) => None,
-            Ok(n) => Some(n),
-            Err(_) => {
-                set_last_error(format!(
-                    "ivf_partition_clusters must be >= 0; got {min_vectors}"
-                ));
-                return Err(FfiStatus::InvalidArgument);
-            }
-        };
-        with_writer(handle, |w| {
-            w.writer()
-                .with_writer(|iw| iw.set_ivf_partition_clusters(min));
-            Ok(())
-        })
-    })
+    guard(|| with_writer(handle, |w| set_ivf_partition_clusters(w, min_vectors)))
 }
 
 /// `BPReorderingMergePolicy` around the shard's merge policy
@@ -1353,77 +1014,23 @@ pub unsafe extern "C" fn ffi_engine_writer_set_bp_reorder(
     fields_len: usize,
 ) -> i32 {
     guard(|| {
-        let invalid = |what: String| {
-            set_last_error(format!("invalid bp_reorder setting: {what}"));
-            FfiStatus::InvalidArgument
-        };
         // SAFETY: caller contract.
         let fields = unsafe { bytes_from_raw(fields, fields_len)? };
         let bp = if enabled == 0 {
             None
         } else {
-            let mut reorderer = BpIndexReorderer::new();
-            reorderer
-                .set_min_doc_freq(min_doc_freq)
-                .map_err(|e| invalid(e.to_string()))?;
-            reorderer
-                .set_max_doc_freq(max_doc_freq)
-                .map_err(|e| invalid(e.to_string()))?;
-            reorderer
-                .set_min_partition_size(min_partition_size)
-                .map_err(|e| invalid(e.to_string()))?;
-            reorderer
-                .set_max_iters(max_iters)
-                .map_err(|e| invalid(e.to_string()))?;
-            if !(ram_budget_mb.is_finite() && ram_budget_mb > 0.0) {
-                return Err(invalid(format!(
-                    "ram_budget_mb must be positive, got {ram_budget_mb}"
-                )));
-            }
-            reorderer.set_ram_budget_mb(ram_budget_mb);
-            if fields.is_empty() {
-                reorderer.set_fields(None);
-            } else {
-                let names = std::str::from_utf8(fields)
-                    .map_err(|_| invalid("fields are not UTF-8".to_string()))?
-                    .split('\0')
-                    .filter(|f| !f.is_empty())
-                    .map(str::to_string)
-                    .collect();
-                reorderer.set_fields(Some(names));
-            }
-            // OpenSearch sets no parent field on an unsorted index with nested
-            // documents, so its blocks are found by their root documents: only
-            // those have a `_primary_term` (`Queries.newNonNestedFilter`).
-            reorderer.set_block_root_field(Some("_primary_term".to_string()));
-            // The policy's own checks, before anything changes.
-            let mut probe = BpReorderingMergePolicy::new(
-                Box::new(TieredMergePolicy::default()),
-                reorderer.clone(),
-            );
-            probe
-                .set_min_natural_merge_num_docs(min_merge_docs)
-                .map_err(|e| invalid(e.to_string()))?;
-            probe
-                .set_min_natural_merge_ratio_from_biggest_segment(min_merge_ratio)
-                .map_err(|e| invalid(e.to_string()))?;
-            Some(BpSettings {
-                reorderer,
+            Some(bp_settings(&BpParams {
+                min_doc_freq,
+                max_doc_freq,
+                min_partition_size,
+                max_iters,
+                ram_budget_mb,
                 min_merge_docs,
                 min_merge_ratio,
-            })
+                fields,
+            })?)
         };
-        with_writer(handle, |w| {
-            if bp.is_some() && w.sparse {
-                set_last_error("bp_reorder is not supported on a sparse index");
-                return Err(FfiStatus::InvalidArgument);
-            }
-            let mut policies = w.policies();
-            policies.bp = bp;
-            w.writer()
-                .with_writer(|iw| install_merge_policies(iw, &policies));
-            Ok(())
-        })
+        with_writer(handle, |w| set_bp_reorder(w, bp))
     })
 }
 
@@ -1452,21 +1059,7 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
             set_last_error("max_segments must be >= 1; got 0");
             return Err(FfiStatus::InvalidArgument);
         }
-        let generation = with_writer(handle, |w| {
-            let _maintenance = w.maintenance();
-            w.writer()
-                .with_writer_merges_aborted(|iw| {
-                    if only_deletes != 0 {
-                        iw.force_merge_deletes()
-                    } else {
-                        iw.force_merge(max)
-                    }
-                })
-                .map_err(writer_error)?;
-            // The merged segments become durable with a commit.
-            w.writer().commit().map_err(writer_error)?;
-            Ok(w.generation())
-        })?;
+        let generation = with_writer(handle, |w| force_merge(w, max, only_deletes != 0))?;
         // SAFETY: caller contract.
         unsafe { *out_generation = generation };
         Ok(())
@@ -1500,17 +1093,8 @@ pub unsafe extern "C" fn ffi_engine_writer_upgrade(
             minor,
             bugfix: 0,
         };
-        let (generation, upgraded) = with_writer(handle, |w| {
-            let _maintenance = w.maintenance();
-            let upgraded = w
-                .writer()
-                .with_writer_merges_aborted(|iw| iw.upgrade_segments(current, only_ancient != 0))
-                .map_err(writer_error)?;
-            if upgraded > 0 {
-                w.writer().commit().map_err(writer_error)?;
-            }
-            Ok((w.generation(), upgraded))
-        })?;
+        let (generation, upgraded) =
+            with_writer(handle, |w| upgrade(w, current, only_ancient != 0))?;
         // SAFETY: caller contract.
         unsafe {
             *out_generation = generation;
@@ -1536,31 +1120,7 @@ pub unsafe extern "C" fn ffi_engine_writer_stats(handle: u64, out: *mut i64, n: 
             return Err(FfiStatus::NullPointer);
         }
         let k = n.min(STAT_COUNT);
-        let stats = with_writer(handle, |w| {
-            let writer = w.writer();
-            let mut s = [0i64; STAT_COUNT];
-            s[STAT_RAM_BYTES] = i64::try_from(writer.ram_bytes_used()).unwrap_or(i64::MAX);
-            if k > STAT_FLUSHING_BYTES {
-                s[STAT_FLUSHING_BYTES] = i64::try_from(writer.flushing_bytes()).unwrap_or(i64::MAX);
-            }
-            if k > STAT_PENDING_DOCS {
-                s[STAT_PENDING_DOCS] =
-                    i64::try_from(writer.pending_doc_count()).unwrap_or(i64::MAX);
-            }
-            if k > STAT_UNCOMMITTED {
-                s[STAT_UNCOMMITTED] = i64::from(writer.has_uncommitted_changes());
-            }
-            if k > STAT_GENERATION {
-                (s[STAT_GENERATION], s[STAT_SEGMENTS]) = writer.with_writer(|iw| {
-                    let infos = iw.segment_infos();
-                    (
-                        infos.generation,
-                        i64::try_from(infos.segments.len()).unwrap_or(i64::MAX),
-                    )
-                });
-            }
-            Ok(s)
-        })?;
+        let stats = with_writer(handle, |w| Ok(stats(w, k)))?;
         // SAFETY: `k <= n` and `out` is valid for `n` writes.
         unsafe { std::ptr::copy_nonoverlapping(stats.as_ptr(), out, k) };
         Ok(())
@@ -1578,13 +1138,7 @@ pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
             set_last_error("ffi_engine_writer_close: unknown or already-closed handle");
             return Err(FfiStatus::InvalidHandle);
         };
-        // Another thread may still be inside a call; the last `Arc` drops the
-        // writer. Holds die with it, as a JVM's readers' pins die with the JVM.
-        let _maintenance = shared.maintenance();
-        // The shared live view holds the writer.
-        shared.live_warmer().stop_sharing();
-        shared.writer().stop_merges();
-        shared.writer().rollback();
+        close(&shared);
         Ok(())
     })
 }
@@ -1599,6 +1153,8 @@ mod tests {
         DERIVED_SOURCE_ATTRIBUTE, OP_ADD, OP_ADD_PARTITIONED, OP_PANIC, OP_SOFT_UPDATE,
         OP_SOFT_UPDATE_PARTITIONED, SUBSTRING_ATTRIBUTE, VECTORS_FORMAT_ATTRIBUTE,
     };
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::merge_policy::CompoundFileSettings;
     use lucene_store::directory::FsDirectory;
     use lucene_util::test_support::TempDir;
 
