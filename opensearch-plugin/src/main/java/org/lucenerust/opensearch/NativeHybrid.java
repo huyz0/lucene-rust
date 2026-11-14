@@ -27,7 +27,7 @@ import java.util.List;
 /**
  * neural-search's hybrid query shard phase run natively: what {@code HybridTopScoreDocCollector}
  * collects (one per slice of a concurrent search), with {@code search_hybrid_blobs} in {@code
- * jvm_reader.rs}, handed to the same {@link HybridSearchCollectorResultUtil} that formats and merges
+ * reader_search.rs}, handed to the same {@link HybridSearchCollectorResultUtil} that formats and merges
  * the collectors' results, so the shard answers with stock's delimited top docs.
  */
 final class NativeHybrid {

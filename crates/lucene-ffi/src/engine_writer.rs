@@ -6649,7 +6649,7 @@ mod tests {
                 // counting pass. `LIVE_ENCODED=1` reads the buffered keyword
                 // runs encoded instead of in place.
                 let t = std::time::Instant::now();
-                crate::jvm_reader::tests::ENCODED_RUNS
+                lucene_engine::reader_search::test_support::ENCODED_RUNS
                     .with(|c| c.set(std::env::var("LIVE_ENCODED").is_ok_and(|v| v == "1")));
                 std::hint::black_box(
                     crate::jvm_reader::aggregate_counting_blobs(r, &term_q, &tag_counts, -1)
