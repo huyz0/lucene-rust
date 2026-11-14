@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 180;
+    public static final int EXPECTED_ABI_VERSION = 181;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -524,6 +524,10 @@ public final class NativeBridge {
         static final MethodHandle ML_MASTER_KEY = bind("ffi_ml_master_key_alloc", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle ML_CREDENTIAL_ENCRYPT = bind(
             "ffi_ml_credential_encrypt_alloc",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle ML_CREDENTIAL_DECRYPT = bind(
+            "ffi_ml_credential_decrypt_alloc",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle ML_REMOTE_OPEN = bind(
@@ -2658,6 +2662,22 @@ public final class NativeBridge {
         try (Scratch s = Scratch.open()) {
             MemorySegment slot = ownedSlot(s);
             int rc = (int) H.ML_CREDENTIAL_ENCRYPT.invokeExact(s.bytes(k), (long) k.length, s.bytes(p), (long) p.length, ptrOf(slot), lenOf(slot));
+            return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Stored credential value {@code stored} decrypted under the base64 master key {@code key};
+     * {@code null} on failure, with the reason in {@link #lastError}.
+     */
+    public static String mlCredentialDecrypt(String key, String stored) {
+        byte[] k = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] p = stored.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_CREDENTIAL_DECRYPT.invokeExact(s.bytes(k), (long) k.length, s.bytes(p), (long) p.length, ptrOf(slot), lenOf(slot));
             return rc == OK ? new String(take(slot), java.nio.charset.StandardCharsets.UTF_8) : null;
         } catch (Throwable t) {
             throw rethrow(t);

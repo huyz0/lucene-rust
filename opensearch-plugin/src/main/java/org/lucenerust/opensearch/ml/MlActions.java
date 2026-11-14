@@ -68,6 +68,7 @@ public final class MlActions {
     public static final Type GET_CONNECTOR = new Type(ML + "connectors/get");
     public static final Type UPDATE_CONNECTOR = new Type(ML + "update_connector");
     public static final Type DELETE_CONNECTOR = new Type(ML + "connectors/delete");
+    public static final Type LIST_MCP_TOOLS = new Type(ML + "mcp/connector/list_tools");
     public static final Type SEARCH_CONNECTORS = new Type(ML + "connectors/search");
     public static final Type REGISTER_AGENT = new Type(ML + "agents/register");
     public static final Type GET_AGENT = new Type(ML + "agents/get");
@@ -117,6 +118,7 @@ public final class MlActions {
             new ActionHandler<>(GET_CONNECTOR, GetConnector.class),
             new ActionHandler<>(UPDATE_CONNECTOR, UpdateConnector.class),
             new ActionHandler<>(DELETE_CONNECTOR, DeleteConnector.class),
+            new ActionHandler<>(LIST_MCP_TOOLS, ListMcpTools.class),
             new ActionHandler<>(SEARCH_CONNECTORS, SearchConnectors.class),
             new ActionHandler<>(REGISTER_AGENT, RegisterAgent.class),
             new ActionHandler<>(GET_AGENT, GetAgent.class),
@@ -571,6 +573,18 @@ public final class MlActions {
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
             ml.getConnector(r.param("connector_id"), map(l));
+        }
+    }
+
+    public static final class ListMcpTools extends Base {
+        @Inject
+        public ListMcpTools(TransportService t, ActionFilters f) {
+            super(LIST_MCP_TOOLS, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            MlMcp.listTools(ml, r.param("connector_id"), map(l));
         }
     }
 
