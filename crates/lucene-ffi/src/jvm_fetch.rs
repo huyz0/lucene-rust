@@ -5,8 +5,6 @@
 use crate::error::{set_last_error, FfiStatus};
 use crate::jvm_reader;
 
-pub(crate) use lucene_engine::fetch::{BINARY, DOUBLE, FLOAT, INT, LONG, STRING};
-
 fn handle(
     handle: u64,
     what: &str,
@@ -142,7 +140,9 @@ mod tests {
     use lucene_codecs::stored_fields::FieldValue;
     use lucene_codecs::stored_fields::{StoredFieldVisitor, VisitStatus};
     use lucene_engine::fetch::{Blob, DEFERRED, DEFER_BYTES, DERIVED_SOURCE};
-    use lucene_engine::fetch::{DV_NONE, DV_SORTED_NUMERIC, DV_SORTED_SET};
+    use lucene_engine::fetch::{
+        BINARY, DOUBLE, DV_NONE, DV_SORTED_NUMERIC, DV_SORTED_SET, FLOAT, INT, LONG, STRING,
+    };
 
     fn i32_at(b: &[u8], at: &mut usize) -> i32 {
         let v = i32::from_le_bytes(b[*at..*at + 4].try_into().unwrap());
