@@ -145,6 +145,12 @@ impl InvertedTerms {
         }
     }
 
+    /// Room for `offsets` more offset pairs and `payloads` more payloads.
+    pub fn reserve_offsets_and_payloads(&mut self, offsets: usize, payloads: usize) {
+        self.offsets.reserve_exact(offsets);
+        self.payload_ends.reserve_exact(payloads);
+    }
+
     /// Appends a term: its bytes, its frequency in the document, and its
     /// positions, offsets and payloads (each empty when the field does not
     /// index it; see [`InvertedTerm`]).
