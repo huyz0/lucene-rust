@@ -95,7 +95,7 @@ final class MlAgentRunner {
         ActionListener<Map<String, Object>> listener
     ) {
         String type = String.valueOf(agent.get("type"));
-        if (type.equals("conversational")) {
+        if (type.equals("conversational") || type.equals("ag_ui")) {
             chat.run(agent, request, chain, listener);
             return;
         }
