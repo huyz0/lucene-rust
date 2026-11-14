@@ -598,9 +598,13 @@ def realtime():
         a, b = out[rt], out[ref]
         check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"],
               f"{where}: script query through a flushed point in time: {a['hits']['total']} vs {b['hits']['total']}")
-        ha = [(h["_id"], h["sort"]) for h in a["hits"]["hits"]]
-        hb = [(h["_id"], h["sort"]) for h in b["hits"]["hits"]]
-        check(ha == hb, f"{where}: script query hits through a flushed point in time: {ha[:3]} vs {hb[:3]}")
+        ha = [(h["_id"], tuple(h["sort"])) for h in a["hits"]["hits"]]
+        hb = [(h["_id"], tuple(h["sort"])) for h in b["hits"]["hits"]]
+        first = next((i for i, (x, y) in enumerate(zip(ha, hb)) if x != y), min(len(ha), len(hb)))
+        only_a = sorted(set(ha) - set(hb))[:5]
+        only_b = sorted(set(hb) - set(ha))[:5]
+        check(ha == hb, f"{where}: script query hits through a flushed point in time: first difference at {first}: "
+                        f"{ha[first:first + 3]} vs {hb[first:first + 3]}; only realtime {only_a}, only refreshed {only_b}")
 
     def same_views(where):
         """Aggregations and sorted searches on the realtime index equal the refreshed index's."""

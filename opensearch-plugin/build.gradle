@@ -147,6 +147,9 @@ def checkDist = tasks.register('checkOpensearchDist') {
 }
 tasks.named('compileJava') { dependsOn checkDist }
 
+// -Pjs: the native library with V8, for `"lang": "js"` scripts (the node
+// still needs lucene_rust.script.js.enabled). About 29 MB larger.
+def js = findProperty('js') != null
 def cargoBuild = tasks.register('cargoBuild', Exec) {
     description = 'Builds liblucene_ffi.so (-PcargoProfile, dist by default) for this host; with -Pfips, against the FIPS module.'
     workingDir repoRoot
@@ -154,7 +157,7 @@ def cargoBuild = tasks.register('cargoBuild', Exec) {
     if (fips) {
         commandLine 'scripts/build-fips.sh', '--ffi', '--profile', cargoProfile
     } else {
-        commandLine 'cargo', 'build', '--profile', cargoProfile, '-p', 'lucene-ffi', '--features', 'mimalloc'
+        commandLine 'cargo', 'build', '--profile', cargoProfile, '-p', 'lucene-ffi', '--features', js ? 'mimalloc,js' : 'mimalloc'
     }
 }
 
