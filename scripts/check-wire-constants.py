@@ -117,6 +117,7 @@ JAVA_ONLY = {
     ("JsScripts.java", "CACHE_LIMIT"): "the plugin's cache of js check results, in Java only",
     ("MlAgents.java", "MAX_NAME"): "the longest agent name ml-commons accepts, checked in Java when an agent is registered or updated",
     ("MlAgentRunner.java", "MAX_DEPTH"): "how many agents may call one another through AgentTool, checked in Java",
+    ("MlMemory.java", "DEFAULT_MAX"): "stock's default page size of the memory listings, Java only",
     ("MlStats.java", "RING"): "how many recent prediction timings the stats ring keeps for percentiles, in Java only",
     ("NativeMemory.java", "CANCEL_POLL_MILLIS"): "how often the Java watcher polls tasks for a cancel; Rust only sees the cancel call",
     ("KnnHitsMemo.java", "PER_CONTEXT"): "how many queries' k-NN hits a reader context keeps in Java between phases",

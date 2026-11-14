@@ -77,6 +77,18 @@ public final class MlActions {
     public static final Type LIST_TOOLS = new Type(ML + "tools/list");
     public static final Type GET_TOOL = new Type(ML + "tools/get");
     public static final Type EXECUTE_AGENT = new Type(ML + "agents/execute");
+    public static final Type CREATE_MEMORY = new Type(ML + "memory/create");
+    public static final Type LIST_MEMORIES = new Type(ML + "memory/list");
+    public static final Type GET_MEMORY = new Type(ML + "memory/get");
+    public static final Type UPDATE_MEMORY = new Type(ML + "memory/update");
+    public static final Type DELETE_MEMORY = new Type(ML + "memory/delete");
+    public static final Type SEARCH_MEMORIES = new Type(ML + "memory/search");
+    public static final Type SEARCH_MESSAGES = new Type(ML + "memory/messages/search");
+    public static final Type CREATE_MESSAGE = new Type(ML + "memory/message/create");
+    public static final Type LIST_MESSAGES = new Type(ML + "memory/message/list");
+    public static final Type GET_MESSAGE = new Type(ML + "memory/message/get");
+    public static final Type UPDATE_MESSAGE = new Type(ML + "memory/message/update");
+    public static final Type GET_TRACES = new Type(ML + "memory/message/traces");
 
     /** The action handlers to register, with the node-to-node actions. */
     public static List<ActionHandler<?, ?>> handlers() {
@@ -114,6 +126,18 @@ public final class MlActions {
             new ActionHandler<>(LIST_TOOLS, ListTools.class),
             new ActionHandler<>(GET_TOOL, GetTool.class),
             new ActionHandler<>(EXECUTE_AGENT, ExecuteAgent.class),
+            new ActionHandler<>(CREATE_MEMORY, CreateMemory.class),
+            new ActionHandler<>(LIST_MEMORIES, ListMemories.class),
+            new ActionHandler<>(GET_MEMORY, GetMemory.class),
+            new ActionHandler<>(UPDATE_MEMORY, UpdateMemory.class),
+            new ActionHandler<>(DELETE_MEMORY, DeleteMemory.class),
+            new ActionHandler<>(SEARCH_MEMORIES, SearchMemories.class),
+            new ActionHandler<>(SEARCH_MESSAGES, SearchMessages.class),
+            new ActionHandler<>(CREATE_MESSAGE, CreateMessage.class),
+            new ActionHandler<>(LIST_MESSAGES, ListMessages.class),
+            new ActionHandler<>(GET_MESSAGE, GetMessage.class),
+            new ActionHandler<>(UPDATE_MESSAGE, UpdateMessage.class),
+            new ActionHandler<>(GET_TRACES, GetTraces.class),
             new ActionHandler<>(MlNodes.Action.INSTANCE, MlNodes.TransportAction.class),
             new ActionHandler<>(MlNodes.PredictAction.INSTANCE, MlNodes.PredictTransportAction.class),
             new ActionHandler<>(MlNodes.RemotePredictAction.INSTANCE, MlNodes.RemotePredictTransportAction.class)
@@ -249,18 +273,7 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request request, ActionListener<Response> listener) throws IOException {
-            SearchSourceBuilder source = new SearchSourceBuilder();
-            if (request.body.length > 0) {
-                try (
-                    XContentParser p = JsonXContent.jsonXContent.createParser(
-                        registry,
-                        DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-                        request.body
-                    )
-                ) {
-                    source = SearchSourceBuilder.fromXContent(p);
-                }
-            }
+            SearchSourceBuilder source = parseSource(registry, request.body);
             if (index.equals(MlIndices.MODEL)) {
                 // Chunks hold the model bytes; stock leaves them out of every model search.
                 source.fetchSource(source.fetchSource() == null ? null : source.fetchSource().includes(), exclude(source, "model_content", "connector.credential"));
@@ -268,6 +281,16 @@ public final class MlActions {
                 source.fetchSource(source.fetchSource() == null ? null : source.fetchSource().includes(), exclude(source, "credential"));
             }
             ml.search(index, source, ActionListener.wrap(r -> listener.onResponse(Response.of((ToXContent) r)), listener::onFailure));
+        }
+
+        static SearchSourceBuilder parseSource(NamedXContentRegistry registry, byte[] body) throws IOException {
+            SearchSourceBuilder source = new SearchSourceBuilder();
+            if (body.length > 0) {
+                try (XContentParser p = JsonXContent.jsonXContent.createParser(registry, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, body)) {
+                    source = SearchSourceBuilder.fromXContent(p);
+                }
+            }
+            return source;
         }
 
         private static String[] exclude(SearchSourceBuilder source, String... fields) {
@@ -681,6 +704,159 @@ public final class MlActions {
             } else {
                 ml.agents().execute(r.param("agent_id"), r.json(), map(l));
             }
+        }
+    }
+
+    public static final class CreateMemory extends Base {
+        @Inject
+        public CreateMemory(TransportService t, ActionFilters f) {
+            super(CREATE_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().create(r.json(), ActionListener.wrap(id -> l.onResponse(Response.of(Map.of("memory_id", id))), l::onFailure));
+        }
+    }
+
+    public static final class ListMemories extends Base {
+        @Inject
+        public ListMemories(TransportService t, ActionFilters f) {
+            super(LIST_MEMORIES, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().list(r.param("max_results"), r.param("next_token"), map(l));
+        }
+    }
+
+    public static final class GetMemory extends Base {
+        @Inject
+        public GetMemory(TransportService t, ActionFilters f) {
+            super(GET_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().get(r.param("memory_id"), map(l));
+        }
+    }
+
+    public static final class UpdateMemory extends Base {
+        @Inject
+        public UpdateMemory(TransportService t, ActionFilters f) {
+            super(UPDATE_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().update(r.param("memory_id"), r.body.length == 0 ? null : r.json(), written(l));
+        }
+    }
+
+    public static final class DeleteMemory extends Base {
+        @Inject
+        public DeleteMemory(TransportService t, ActionFilters f) {
+            super(DELETE_MEMORY, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().delete(r.param("memory_id"), map(l));
+        }
+    }
+
+    public static final class CreateMessage extends Base {
+        @Inject
+        public CreateMessage(TransportService t, ActionFilters f) {
+            super(CREATE_MESSAGE, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().addMessage(r.param("memory_id"), r.body.length == 0 ? null : r.json(), ActionListener.wrap(id -> l.onResponse(Response.of(Map.of("message_id", id))), l::onFailure));
+        }
+    }
+
+    public static final class ListMessages extends Base {
+        @Inject
+        public ListMessages(TransportService t, ActionFilters f) {
+            super(LIST_MESSAGES, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().messages(r.param("memory_id"), r.param("max_results"), r.param("next_token"), map(l));
+        }
+    }
+
+    public static final class GetMessage extends Base {
+        @Inject
+        public GetMessage(TransportService t, ActionFilters f) {
+            super(GET_MESSAGE, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().message(r.param("message_id"), map(l));
+        }
+    }
+
+    public static final class UpdateMessage extends Base {
+        @Inject
+        public UpdateMessage(TransportService t, ActionFilters f) {
+            super(UPDATE_MESSAGE, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().updateMessage(r.param("message_id"), r.body.length == 0 ? null : r.json(), written(l));
+        }
+    }
+
+    public static final class GetTraces extends Base {
+        @Inject
+        public GetTraces(TransportService t, ActionFilters f) {
+            super(GET_TRACES, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.memory().traces(r.param("message_id"), r.param("max_results"), r.param("next_token"), map(l));
+        }
+    }
+
+    public static final class SearchMemories extends Search {
+        @Inject
+        public SearchMemories(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(SEARCH_MEMORIES, MlIndices.MEMORY_META, t, f, x);
+        }
+
+        @Override
+        void run(MlCommons ml, Request request, ActionListener<Response> listener) throws IOException {
+            if (request.body.length == 0) {
+                throw new org.opensearch.OpenSearchParseException("request body or source parameter is required");
+            }
+            super.run(ml, request, listener);
+        }
+    }
+
+    public static final class SearchMessages extends Base {
+        private final NamedXContentRegistry registry;
+
+        @Inject
+        public SearchMessages(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(SEARCH_MESSAGES, t, f);
+            this.registry = x;
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) throws IOException {
+            if (r.body.length == 0) {
+                throw new org.opensearch.OpenSearchParseException("request body or source parameter is required");
+            }
+            ml.memory().searchMessages(r.param("memory_id"), Search.parseSource(registry, r.body), ActionListener.wrap(res -> l.onResponse(Response.of((ToXContent) res)), l::onFailure));
         }
     }
 }
