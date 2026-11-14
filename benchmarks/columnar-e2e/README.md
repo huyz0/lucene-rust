@@ -30,3 +30,8 @@ About 2 minutes per dataset at 1M documents, a few more at the full 7.0M (taxi) 
 
 `survey.py` is the field survey (presence and multi-valued rate of numeric fields in a corpus
 sample); `RESULTS.md` holds the stage 4-6 numbers from this harness and their downsides.
+
+`run-ab.sh` compares plugin builds (`BUILDS="a=/p/a.so,b=/p/b.so"`) against stock on one index,
+alternating the builds on the same loaded index so machine drift cancels; use it, not `run.sh`, for
+build A/Bs of read-path changes. `PLUGIN_EXTRA` adds plugin-only index settings, for example
+`{"index.codec.adaptive_doc_values":true}`, which the per-1024-document block statistics need.
