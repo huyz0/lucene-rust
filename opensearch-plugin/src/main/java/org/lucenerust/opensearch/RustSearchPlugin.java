@@ -441,38 +441,25 @@ public class RustSearchPlugin extends Plugin implements
     }
 
     /**
-     * The cluster's {@code indices.codec.adaptive_doc_values.default} to write into a new index that
-     * does not set {@code index.codec.adaptive_doc_values} and is served by the accelerated engine,
-     * or {@code null} to add nothing. Only {@code true} is written: {@code auto} and {@code false}
-     * are followed by the shard's writer without a setting (see {@code
-     * RustEngineSupport.adaptiveDocValues}), so the index's settings read as on stock OpenSearch.
-     * Nothing either on an index on OpenSearch's engine (asked for, the node default, or a node
-     * serving accelerated indices with OpenSearch's engine), so a node without the plugin opens it
-     * unchanged.
+     * The cluster's {@code indices.codec.adaptive_doc_values.default} for a new index that does not
+     * set {@code index.codec.adaptive_doc_values} and is served by the accelerated engine, or
+     * {@code null} to add nothing: {@code false} stores no setting, and neither does an index on
+     * OpenSearch's engine (asked for, the node default, or a node serving accelerated indices with
+     * OpenSearch's engine), so a node without the plugin opens it unchanged.
      */
     private String adaptiveDocValuesDefault(Settings templateAndRequestSettings) {
         org.opensearch.cluster.service.ClusterService cluster = clusterService.get();
-        if (cluster == null) {
-            return null;
-        }
-        return adaptiveDocValuesDefault(
-            cluster.getSettings(),
-            templateAndRequestSettings,
-            cluster.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT),
-            nodeEngineEnabled
-        );
-    }
-
-    public static String adaptiveDocValuesDefault(Settings node, Settings templateAndRequestSettings, String clusterDefault, boolean nodeEngineEnabled) {
-        if (nodeEngineEnabled == false
-            || "true".equals(clusterDefault) == false
-            || RustEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)) {
+        if (cluster == null || nodeEngineEnabled == false || RustEngineSupport.ADAPTIVE_DOC_VALUES.exists(templateAndRequestSettings)) {
             return null;
         }
         // As IndexSettings sees them: the node's settings (indices.engine.accelerated.default)
         // under the index's own.
-        Settings effective = Settings.builder().put(node).put(templateAndRequestSettings).build();
-        return RustEngineSupport.servedByRust(effective) ? clusterDefault : null;
+        Settings effective = Settings.builder().put(cluster.getSettings()).put(templateAndRequestSettings).build();
+        if (RustEngineSupport.servedByRust(effective) == false) {
+            return null;
+        }
+        String value = cluster.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT);
+        return "false".equals(value) ? null : value;
     }
 
     /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
@@ -989,9 +976,6 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
-        RustEngineSupport.setAdaptiveDocValuesDefault(clusterService.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT));
-        clusterService.getClusterSettings()
-            .addSettingsUpdateConsumer(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT, RustEngineSupport::setAdaptiveDocValuesDefault);
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(
                 NativeMemory.OFF_HEAP_LIMIT,

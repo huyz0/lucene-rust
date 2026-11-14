@@ -13543,16 +13543,11 @@ impl IndexWriter<'_> {
     /// [`crate::adaptive_auto::COMMIT_KEY`], so the commit carries it and a
     /// writer reopened on it keeps it.
     fn stamp_adaptive_doc_values_choice(&mut self) {
-        if self.cfg.adaptive_auto.is_none() {
+        let Some(choice) = self.adaptive_doc_values_choice() else {
             return;
-        }
-        // Before the choice, `auto` itself: the shard is still sampling, and a
-        // caller that reopens it without the setting knows to keep `auto`.
-        let value = self.adaptive_doc_values_choice().map_or_else(
-            || crate::adaptive_auto::PENDING.to_string(),
-            |c| c.to_string(),
-        );
+        };
         let key = crate::adaptive_auto::COMMIT_KEY;
+        let value = choice.to_string();
         let data = &mut self.segment_infos.user_data;
         match data.iter_mut().find(|(k, _)| k == key) {
             Some((_, v)) => *v = value,

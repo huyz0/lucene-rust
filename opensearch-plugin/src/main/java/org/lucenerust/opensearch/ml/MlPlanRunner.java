@@ -66,6 +66,7 @@ final class MlPlanRunner {
     /** One run: parameters, the steps so far and where they are written. */
     private static final class Run {
         Map<String, String> params;
+        String system;
         Map<String, Object> agent;
         Map<String, Object> executor;
         String style;
@@ -92,6 +93,7 @@ final class MlPlanRunner {
         run.params = new LinkedHashMap<>();
         if (agent.get("parameters") instanceof Map<?, ?> p) {
             p.forEach((k, v) -> run.params.put(String.valueOf(k), MlAgentRunner.text(v)));
+            run.system = p.get("system_prompt") == null ? null : MlAgentRunner.text(p.get("system_prompt"));
         }
         Map<String, Object> llm = agent.get("llm") instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
         if (llm.get("parameters") instanceof Map<?, ?> p) {
@@ -100,6 +102,9 @@ final class MlPlanRunner {
         run.modelId = llm.get("model_id") == null ? null : String.valueOf(llm.get("model_id"));
         if (request.get("parameters") instanceof Map<?, ?> p) {
             p.forEach((k, v) -> run.params.put(String.valueOf(k), MlAgentRunner.text(v)));
+            if (p.get("system_prompt") != null) {
+                run.system = MlAgentRunner.text(p.get("system_prompt"));
+            }
         }
         run.style = MlChatRunner.style(run.params.get("_llm_interface"));
         if (run.style == null) {
@@ -135,10 +140,36 @@ final class MlPlanRunner {
         }, listener::onFailure));
     }
 
+    private static boolean injectDatetime(Map<String, String> params) {
+        return Boolean.parseBoolean(params.getOrDefault("inject_datetime", "false"));
+    }
+
+    private static String datetime(Map<String, String> params) {
+        return MlChatRunner.currentDateTime(params.get("datetime_format"));
+    }
+
+    private static String set(Map<String, String> params, String key) {
+        String v = params.get(key);
+        return v == null || v.isEmpty() ? null : v;
+    }
+
+    /** The planner's system prompt: the one given, else the default, rebuilt around the prefix, result and rules parameters when any is set. */
+    private static String plannerSystemPrompt(Map<String, String> params, String given) {
+        String prompt = given == null || given.isEmpty() ? PROMPTS.get("planner_system_prompt") : given;
+        String prefix = set(params, "planner_system_prompt_prefix");
+        String result = set(params, "result_expand_and_override");
+        String rules = set(params, "important_rules_expand");
+        if (prefix == null && result == null && rules == null) {
+            return prompt;
+        }
+        return (prefix != null ? prefix : PROMPTS.get("planner_header")) + "\n" + PROMPTS.get("planner_core") + "\n" + PROMPTS.get("format_head")
+            + (result != null ? result : PROMPTS.get("format_result")) + PROMPTS.get("format_tail") + (rules != null ? rules : "") + "\n";
+    }
+
     /** Asks the planner: the first plan when nothing has run, a revision after each step. */
     private void plan(Run run, String question, ActionListener<Map<String, Object>> listener) {
         Map<String, String> params = new LinkedHashMap<>(run.params);
-        params.put("system_prompt", PROMPTS.get("planner_system_prompt"));
+        params.put("system_prompt", plannerSystemPrompt(run.params, run.system));
         params.putIfAbsent("planner_prompt", PROMPTS.get("planner_prompt"));
         params.putIfAbsent("reflect_prompt", PROMPTS.get("reflect_prompt"));
         params.put("user_prompt", question);
@@ -191,7 +222,8 @@ final class MlPlanRunner {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("question", step);
         params.put("prompt", step);
-        params.put("system_prompt", run.params.getOrDefault("executor_system_prompt", PROMPTS.get("executor_system_prompt")));
+        String executorPrompt = run.params.getOrDefault("executor_system_prompt", PROMPTS.get("executor_system_prompt"));
+        params.put("system_prompt", injectDatetime(run.params) ? executorPrompt + "\n\n" + datetime(run.params) : executorPrompt);
         params.put("max_iteration", run.params.getOrDefault("executor_max_iterations", DEFAULT_EXECUTOR_ITERATIONS));
         params.put("message_history_limit", run.params.getOrDefault("executor_message_history_limit", DEFAULT_HISTORY));
         if (run.executorMemory != null) {

@@ -183,6 +183,20 @@ final class MlChatRunner {
         }, listener::onFailure));
     }
 
+    /** {@code Current date and time: <now in UTC>}, formatted with {@code format} or ISO seconds when it is blank or not a pattern. */
+    static String currentDateTime(String format) {
+        java.time.format.DateTimeFormatter formatter;
+        try {
+            formatter = format == null || format.isBlank() ? null : java.time.format.DateTimeFormatter.ofPattern(format).withZone(java.time.ZoneOffset.UTC);
+        } catch (IllegalArgumentException e) {
+            formatter = null;
+        }
+        if (formatter == null) {
+            formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'").withZone(java.time.ZoneOffset.UTC);
+        }
+        return "Current date and time: " + formatter.format(java.time.Instant.now());
+    }
+
     @SuppressWarnings("unchecked")
     private void iterate(Run run, int round, ActionListener<Map<String, Object>> listener) {
         call(run, run.params, ActionListener.wrap(data -> handle(run, data, round, listener), listener::onFailure));
@@ -192,7 +206,12 @@ final class MlChatRunner {
     @SuppressWarnings("unchecked")
     private void call(Run run, Map<String, String> base, ActionListener<Map<String, Object>> listener) {
         Map<String, Object> call = new LinkedHashMap<>(base);
-        call.putIfAbsent("system_prompt", "You are a helpful assistant.");
+        boolean inject = Boolean.parseBoolean(String.valueOf(call.getOrDefault("inject_datetime", "false")));
+        String datetime = inject ? currentDateTime(call.get("datetime_format") == null ? null : String.valueOf(call.get("datetime_format"))) : null;
+        if (inject && call.containsKey("system_prompt")) {
+            call.put("system_prompt", call.get("system_prompt") + "\n\n" + datetime);
+        }
+        call.putIfAbsent("system_prompt", inject ? "You are a helpful assistant.\n\n" + datetime : "You are a helpful assistant.");
         call.putIfAbsent("no_escape_params", NO_ESCAPE);
         call.put("_interactions", run.interactions.toString());
         call.put("tool_configs", toolConfigs(run));
