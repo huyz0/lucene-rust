@@ -37,9 +37,64 @@ final class MlAgents {
     private static final int MAX_NAME = 128;
 
     private final MlCommons ml;
+    private final MlAgentRunner runner;
 
     MlAgents(MlCommons ml) {
         this.ml = ml;
+        this.runner = new MlAgentRunner(ml);
+    }
+
+    // ---- Execution ----------------------------------------------------------------------------
+
+    /** The registry the search tool parses queries with. */
+    void registry(org.opensearch.core.xcontent.NamedXContentRegistry registry) {
+        runner.registry = registry;
+    }
+
+    /** {@code POST _plugins/_ml/agents/<id>/_execute}: the agent's answer. */
+    void execute(String id, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
+        execute(id, body, List.of(), listener);
+    }
+
+    /** {@code chain}: the agents that called this one, to stop an agent calling itself. */
+    void execute(String id, Map<String, Object> body, List<String> chain, ActionListener<Map<String, Object>> listener) {
+        load(id, body, ActionListener.wrap(agent -> {
+            List<String> inner = new ArrayList<>(chain);
+            inner.add(id);
+            runner.run(agent, body, inner, listener);
+        }, listener::onFailure));
+    }
+
+    /** {@code ?async=true}: a task now, the answer in the task when the agent is done. */
+    void executeAsync(String id, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
+        load(id, body, ActionListener.wrap(agent -> ml.createTask("AGENT_EXECUTION", "AGENT", null, List.of(ml.localNodeId()), true, ActionListener.wrap(task -> {
+            Map<String, Object> started = new LinkedHashMap<>();
+            started.put("task_id", task);
+            started.put("status", "RUNNING");
+            ActionListener<Map<String, Object>> done = ActionListener.wrap(
+                answer -> ml.finishTask(task, "COMPLETED", Map.of("response", answer)),
+                e -> ml.finishTask(task, "FAILED", Map.of("response", Map.of("error_message", e.getMessage() == null ? "" : e.getMessage())))
+            );
+            try {
+                runner.run(agent, body, List.of(id), done);
+            } catch (RuntimeException e) {
+                done.onFailure(e);
+            }
+            listener.onResponse(started);
+        }, listener::onFailure)), listener::onFailure));
+    }
+
+    private void load(String id, Map<String, Object> body, ActionListener<Map<String, Object>> listener) {
+        if (body.containsKey("parameters") == false) {
+            listener.onFailure(new IllegalArgumentException("Agent input data can not be empty."));
+            return;
+        }
+        ml.getDoc(MlIndices.AGENT, id, ActionListener.wrap(r -> {
+            if (r.isExists() == false) {
+                throw new OpenSearchStatusException("Failed to find agent with the provided agent id: " + id, RestStatus.NOT_FOUND);
+            }
+            listener.onResponse(r.getSourceAsMap());
+        }, e -> listener.onFailure(MlCommons.missingIndex(e, "Failed to find agent with the provided agent id: " + id))));
     }
 
     // ---- Tools --------------------------------------------------------------------------------
