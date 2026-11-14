@@ -20,6 +20,7 @@ import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.action.support.WriteRequest;
 import org.opensearch.action.update.UpdateRequest;
 import org.opensearch.action.update.UpdateResponse;
+import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -206,6 +207,48 @@ public final class MlCommons {
         return agents;
     }
 
+    String localNodeId() {
+        return clusterService.localNode().getId();
+    }
+
+    /**
+     * Runs the connector action {@code action} of stored connector {@code id} with {@code
+     * parameters}, as {@code ConnectorTool} does: the tensors of its answer.
+     */
+    void executeConnector(String id, String action, Map<String, Object> parameters, ActionListener<Object> listener) {
+        if (remote.enabled() == false) {
+            listener.onFailure(new IllegalArgumentException(RemoteModels.DISABLED));
+            return;
+        }
+        remote.open(Map.of("connector_id", id), ActionListener.wrap(handle -> {
+            try {
+                threadPool.executor(REMOTE_PREDICT_THREAD_POOL).execute(() -> {
+                    try {
+                        Map<String, Object> answer = remote.predict(handle, null, action, Map.of("parameters", parameters));
+                        listener.onResponse(((Map<?, ?>) ((List<?>) answer.get("inference_results")).get(0)).get("output"));
+                    } catch (RuntimeException e) {
+                        listener.onFailure(e);
+                    } catch (Exception e) {
+                        listener.onFailure(new MLException(e.getMessage() == null ? e.toString() : e.getMessage(), e));
+                    } finally {
+                        closeConnector(handle);
+                    }
+                });
+            } catch (RuntimeException e) {
+                closeConnector(handle);
+                throw e;
+            }
+        }, listener::onFailure));
+    }
+
+    private void closeConnector(long handle) {
+        try {
+            NativeBridge.mlModelClose(handle);
+        } finally {
+            remote.closed(handle);
+        }
+    }
+
     Client client() {
         return client;
     }
@@ -256,7 +299,7 @@ public final class MlCommons {
         createTask(type, function, modelId, workers, true, listener);
     }
 
-    private void createTask(String type, String function, String modelId, List<String> workers, boolean async, ActionListener<String> listener) {
+    void createTask(String type, String function, String modelId, List<String> workers, boolean async, ActionListener<String> listener) {
         Map<String, Object> task = new LinkedHashMap<>();
         if (modelId != null) {
             task.put("model_id", modelId);
@@ -278,7 +321,7 @@ public final class MlCommons {
         }, listener::onFailure));
     }
 
-    private void finishTask(String taskId, String state, Map<String, Object> extra) {
+    void finishTask(String taskId, String state, Map<String, Object> extra) {
         activeTasks.remove(taskId);
         registering.remove(taskId);
         Map<String, Object> fields = new LinkedHashMap<>(extra);
