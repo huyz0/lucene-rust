@@ -138,7 +138,8 @@ fn a_time_ordered_index_turns_adaptive_once_sampled_and_stays_so() {
         let mut w = writer(&dirs[0], true);
         add(&mut w, 0, sampled - 1, ts);
         assert_eq!(w.adaptive_doc_values_choice(), None);
-        assert_eq!(recorded(&dirs[0]), None);
+        // Still sampling: the commit says so, for a reopen without the setting.
+        assert_eq!(recorded(&dirs[0]).as_deref(), Some("auto"));
         add(&mut w, (sampled - 1) * FLUSH, 1, ts);
         assert_eq!(w.adaptive_doc_values_choice(), Some(true));
         // The commit whose flush made the choice records it.
