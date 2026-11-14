@@ -628,6 +628,13 @@ SCENARIOS = {
     "two": [calls(LISTING, ("c2", "ListIndexTool", "{\"indices\":[\"ag2\"]}")), final("end")],
     "weird": [{"weird": 1}],
     "nullcontent": [{"choices": [{"message": {"role": "assistant", "content": None}, "finish_reason": "stop"}]}],
+    "pe_tool": [final('{"steps":["list indices","summarize"],"result":""}'), calls(LISTING), final("step done"), final('{"steps":["summarize"],"result":""}'),
+                final("sum done"), final('{"steps":[],"result":"final!"}')],
+    "pe_fenced": [final('```json\n{"steps":[],"result":"fenced ok"}\n```')],
+    "pe_invalid": [final("not json")],
+    "pe_missing": [final('{"foo":1}')],
+    "pe_max": [final('{"steps":["a"],"result":""}'), final("done a"), final('{"steps":["b"],"result":""}'), final("done b"), final('{"steps":["c"],"result":""}')],
+    "pe_empty": [final('{"steps":[],"result":""}')],
     "scratch": [calls(("c1", "WriteToScratchPadTool", "{\"notes\":\"n1\"}")), final("saved")],
 }
 
@@ -672,14 +679,14 @@ def chat(c, ours, stock):
     ids = {"ours": [], "stock": []}
     counter = [0]
 
-    def setup(name, n, scenario, run, extra=None, tools=None, memory=True, parameters=None, style="openai"):
+    def setup(name, n, scenario, run, extra=None, tools=None, memory=True, parameters=None, style="openai", atype="conversational"):
         n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.trusted_connector_endpoints_regex": [".*"],
                                                           "plugins.ml_commons.connector.private_ip_enabled": True}})
         con = {"name": "llm", "description": "d", "version": "1", "protocol": "http", "parameters": {"endpoint": "x", "model": "gpt-x"}, "credential": {"k": "v"},
-               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{style}/{name}/{run}", "headers": {"a": "b"}, "request_body": BODIES[style]}]}
+               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{style}/{name}/{run}", "headers": {"a": "b"}, "request_body": BODIES[style].replace("parameters.question", "parameters.prompt") if atype != "conversational" else BODIES[style]}]}
         model = n.ok("POST", "/_plugins/_ml/models/_register?deploy=true", {"name": "m", "function_name": "remote", "connector": con})["model_id"]
         time.sleep(2)
-        agent = {"name": f"chat{run}", "type": "conversational", "llm": {"model_id": model, "parameters": {"max_iteration": "3", "system_prompt": "You are X"}},
+        agent = {"name": f"chat{run}", "type": atype, "llm": {"model_id": model, "parameters": {"max_iteration": "3", "system_prompt": "You are X"}},
                  "app_type": "chat", "tools": tools if tools is not None else [{"type": "ListIndexTool"}], "parameters": dict({"_llm_interface": STYLES[style]}, **(parameters or {}))}
         if memory:
             agent["memory"] = {"type": "conversation_index"}
@@ -696,12 +703,12 @@ def chat(c, ours, stock):
             out.append(deep(json.loads(b), ids[name]))
         return out
 
-    def case(label, scenario, request, again=None, style="openai", **kw):
+    def case(label, scenario, request, again=None, style="openai", atype="conversational", **kw):
         counter[0] += 1
         run = str(counter[0])
         got = {}
         for name, n in side:
-            agent, s, o = setup(name, n, scenario, run, style=style, **kw)
+            agent, s, o = setup(name, n, scenario, run, style=style, atype=atype, **kw)
             if agent is None:
                 got[name] = {"register": s, "body": run_mask(o, ids[name])}
                 continue
@@ -717,6 +724,7 @@ def chat(c, ours, stock):
                 mem = next((x["result"] for x in out if x["name"] == "memory_id"), None)
                 par = next((x["result"] for x in out if x["name"] == "parent_interaction_id"), None)
                 ids[name] += [x for x in (mem, par) if x]
+                ids[name] += [str(x["result"]) for x in out if x["name"].endswith("_id") and x["name"] not in ("memory_id", "parent_interaction_id")]
                 result["body"] = run_mask(o, ids[name])
                 if mem:
                     s2, tr = n.call("GET", f"/_plugins/_ml/memory/message/{par}/traces")
@@ -763,6 +771,16 @@ def chat(c, ours, stock):
             case(label, scenario, q("which?"), style=style, tools=tools)
         case("history", "quoted", q("first \"turn\""), again=q("second"), style=style)
     flow_memory(c, ours, stock)
+    pe = dict(atype="plan_execute_and_reflect")
+    q = lambda t, **p: {"parameters": dict({"question": t}, **p)}
+    case("plan tool", "pe_tool", q("q"), **pe)
+    case("plan fenced", "pe_fenced", q("q"), **pe)
+    case("plan invalid json", "pe_invalid", q("q"), **pe)
+    case("plan missing fields", "pe_missing", q("q"), **pe)
+    case("plan max steps", "pe_max", q("q"), parameters={"max_steps": "2"}, **pe)
+    case("plan empty", "pe_empty", q("q"), **pe)
+    case("plan no question", "pe_tool", {"parameters": {}}, **pe)
+    case("plan unknown memory", "pe_tool", q("q", memory_id="nope"), **pe)
 
 
 def flow_memory(c, ours, stock):
