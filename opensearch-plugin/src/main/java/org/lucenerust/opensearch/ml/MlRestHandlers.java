@@ -170,25 +170,45 @@ public final class MlRestHandlers {
                 MlActions.SEARCH_CONNECTORS,
                 Set.of(),
                 List.of(new Route(POST, BASE + "/connectors/_search"), new Route(GET, BASE + "/connectors/_search"))
-            )
+            ),
+            new Handler("ml_register_agent_action", MlActions.REGISTER_AGENT, Set.of(), List.of(new Route(POST, BASE + "/agents/_register"))),
+            new Handler("ml_get_agent_action", MlActions.GET_AGENT, Set.of(), List.of(new Route(GET, BASE + "/agents/{agent_id}"))),
+            new Handler("ml_update_agent_action", MlActions.UPDATE_AGENT, Set.of(), List.of(new Route(PUT, BASE + "/agents/{agent_id}"))),
+            new Handler("ml_delete_agent_action", MlActions.DELETE_AGENT, Set.of(), List.of(new Route(DELETE, BASE + "/agents/{agent_id}"))),
+            new Handler(
+                "ml_search_agent_action",
+                MlActions.SEARCH_AGENTS,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/agents/_search"), new Route(GET, BASE + "/agents/_search"))
+            ),
+            new Handler("ml_list_tools_action", MlActions.LIST_TOOLS, Set.of(), List.of(new Route(GET, BASE + "/tools"))),
+            new Handler("ml_get_tool_action", MlActions.GET_TOOL, Set.of(), List.of(new Route(GET, BASE + "/tools/{tool_name}"))),
+            new Handler("ml_execute_agent_action", MlActions.EXECUTE_AGENT, Set.of("async"), Map.of(), true, List.of(new Route(POST, BASE + "/agents/{agent_id}/_execute")))
         );
     }
 
     /** Hands the call's path parameters, the {@code query} parameters it reads, and its body to {@code action}. */
     static final class Handler extends BaseRestHandler {
-        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat");
+        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat", "agent_id", "tool_name");
 
         private final String name;
         private final MlActions.Type action;
         private final Set<String> query;
         private final Map<String, String> fixed;
         private final List<Route> routes;
+        private final boolean envelope;
 
         Handler(String name, MlActions.Type action, Set<String> query, List<Route> routes) {
             this(name, action, query, Map.of(), routes);
         }
 
         Handler(String name, MlActions.Type action, Set<String> query, Map<String, String> fixed, List<Route> routes) {
+            this(name, action, query, fixed, false, routes);
+        }
+
+        /** {@code envelope}: failures are answered in the shape ml-commons' execute endpoints use. */
+        Handler(String name, MlActions.Type action, Set<String> query, Map<String, String> fixed, boolean envelope, List<Route> routes) {
+            this.envelope = envelope;
             this.name = name;
             this.action = action;
             this.query = query;
@@ -232,6 +252,19 @@ public final class MlRestHandlers {
 
                 @Override
                 public void onFailure(Exception e) {
+                    if (envelope && e instanceof org.opensearch.OpenSearchParseException == false) {
+                        Throwable cause = e instanceof org.opensearch.transport.RemoteTransportException && e.getCause() != null ? e.getCause() : e;
+                        RestStatus status = cause instanceof IllegalArgumentException ? RestStatus.BAD_REQUEST : org.opensearch.ExceptionsHelper.status(cause);
+                        Map<String, Object> error = new LinkedHashMap<>();
+                        error.put("type", cause.getClass().getSimpleName());
+                        error.put("reason", status == RestStatus.BAD_REQUEST ? "Invalid Request" : "System Error");
+                        error.put("details", cause.getMessage() == null ? "" : cause.getMessage());
+                        Map<String, Object> body = new LinkedHashMap<>();
+                        body.put("status", status.getStatus());
+                        body.put("error", error);
+                        channel.sendResponse(new BytesRestResponse(status, "application/json; charset=UTF-8", MlCommons.json(body).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                        return;
+                    }
                     try {
                         channel.sendResponse(new BytesRestResponse(channel, e));
                     } catch (IOException inner) {
