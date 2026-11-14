@@ -15,7 +15,7 @@ import java.util.List;
 /**
  * One {@code rescore} entry run natively: OpenSearch's {@link QueryRescorer} (Lucene's {@code
  * QueryRescorer} with OpenSearch's {@code QueryRescoreMode} combination), the rescore query scored
- * by {@code rescore_hits} in {@code crates/lucene-ffi/src/jvm_reader.rs}. RescoreProcessor's loop
+ * by {@code rescore_hits} in {@code crates/lucene-engine/src/reader_search.rs}. RescoreProcessor's loop
  * runs in {@code RustQueryPhaseSearcher.rescore}.
  */
 record NativeRescore(

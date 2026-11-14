@@ -1,5 +1,5 @@
 //! OpenSearch's parent-join queries (`has_child`, `has_parent`): the
-//! [`lucene_engine::queries::NODE_JOIN`] nodes of a decoded request made into
+//! [`crate::queries::NODE_JOIN`] nodes of a decoded request made into
 //! the global-ordinals joins they rewrite to, against the reader the request
 //! searches.
 //!
@@ -20,21 +20,21 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
 
-use crate::error::{set_last_error, FfiStatus};
-use crate::registry::JvmReaderHandle;
-use lucene_engine::clauses::map_search_error;
-use lucene_engine::query_blob::JvmQuery;
+use crate::clauses::map_search_error;
+use crate::query_blob::JvmQuery;
+use crate::reader_handle::JvmReaderHandle;
+use crate::status::{set_last_error, Status};
 
 /// `query` with its joins resolved against `h`'s reader; the query itself
 /// when it has none.
 ///
 /// # Errors
 /// What opening the segments or searching a from side reports.
-pub(crate) fn resolve(
+pub fn resolve(
     h: &JvmReaderHandle,
     query: JvmQuery,
     sim: Option<&PerFieldSimilarity>,
-) -> Result<JvmQuery, FfiStatus> {
+) -> Result<JvmQuery, Status> {
     let JvmQuery::Boolean(b) = &query else {
         return Ok(query);
     };
@@ -45,23 +45,23 @@ pub(crate) fn resolve(
 }
 
 /// [`resolve`] of a boolean known to hold a join.
-pub(crate) fn resolve_boolean(
+pub fn resolve_boolean(
     h: &JvmReaderHandle,
     b: &BooleanQuery,
     sim: Option<&PerFieldSimilarity>,
-) -> Result<BooleanQuery, FfiStatus> {
+) -> Result<BooleanQuery, Status> {
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
-        FfiStatus::Decode
+        Status::Decode
     })?;
     let from_sides = from_sides(b);
     if from_sides
         .iter()
-        .any(lucene_engine::query_blob::boolean_uses_points)
+        .any(crate::query_blob::boolean_uses_points)
     {
         opened.open_points().map_err(|e| {
             set_last_error(format!("opening segment points: {e}"));
-            FfiStatus::Decode
+            Status::Decode
         })?;
     }
     let segments: Vec<OpenSegment<'_>> = opened
@@ -76,7 +76,7 @@ pub(crate) fn resolve_boolean(
         .collect();
     let mut fields: Vec<String> = Vec::new();
     for side in &from_sides {
-        for f in lucene_engine::clauses::clause_field_names(side) {
+        for f in crate::clauses::clause_field_names(side) {
             if !fields.iter().any(|g| g == f) {
                 fields.push(f.to_string());
             }
