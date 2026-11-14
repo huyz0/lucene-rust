@@ -3927,9 +3927,13 @@ impl IndexingConfig {
             })
     }
 
-    pub(crate) fn doc_values_format_for(
+    /// The doc-values format field `name` is written in: its explicit
+    /// route, else the codec's, else `default`, which the caller resolves
+    /// once per segment so every field sees the same `auto` choice.
+    fn doc_values_format_with_default(
         &self,
         name: &str,
+        default: per_field_doc_values::Lucene90DocValuesFormat,
     ) -> per_field_doc_values::Lucene90DocValuesFormat {
         // A field routed explicitly keeps its format, even the default one.
         if let Some((_, format)) = self
@@ -3945,7 +3949,7 @@ impl IndexingConfig {
             .map(|c| c.doc_values_format_for_field(name))
             .unwrap_or_default();
         if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
-            self.resolved_default_doc_values_format()
+            default
         } else {
             routed
         }
@@ -4064,14 +4068,20 @@ impl IndexingConfig {
     /// instance of the format they are routed to, instances numbered in
     /// that order; each instance's fields are written, in that order, into
     /// its own `.dvm`/`.dvd`/`.dvs`.
+    ///
+    /// `observe`: the segment is a flush of the writer's own documents,
+    /// which feeds `auto`'s sample (not a search's view of buffered ones).
     fn build_doc_values_groups<D: DocValueFields>(
         &self,
         docs: &[D],
         configs: &[DocValuesFieldConfig],
         segment_fields: &[&str],
         segment_id: &[u8; ID_LENGTH],
+        observe: bool,
     ) -> Result<Vec<DocValuesGroupOutput>> {
-        self.observe_adaptive_auto_docs(docs, configs);
+        if observe {
+            self.observe_adaptive_auto_docs(docs, configs);
+        }
         self.doc_values_groups_with(
             i32::try_from(docs.len()).unwrap_or(i32::MAX),
             configs,
@@ -4091,8 +4101,9 @@ impl IndexingConfig {
 
     /// [`Self::build_doc_values_groups`] from columns already built, one
     /// per field of `configs` (by field number); `None` when one is missing
-    /// or of another type. `observe`: a whole segment's columns, which feed
-    /// `auto`'s sample (not one field's, encoded on its own).
+    /// or of another type. `observe`: a flush of the writer's own
+    /// documents, which feeds `auto`'s sample (not one field's columns
+    /// encoded on their own, nor a search's view of buffered documents).
     fn build_prebuilt_doc_values_groups(
         &self,
         columns: &[(i32, PrebuiltDocValues)],
@@ -4174,7 +4185,7 @@ impl IndexingConfig {
                 .collect::<Vec<_>>()
         };
         let decoded = self
-            .build_doc_values_groups(docs, &configs, &names, &id)
+            .build_doc_values_groups(docs, &configs, &names, &id, false)
             .unwrap();
         let max_doc = i32::try_from(docs.len()).unwrap();
         let prebuilt = self
@@ -4210,7 +4221,8 @@ impl IndexingConfig {
             .iter()
             .map(|c| (c.field_number, c.name.as_str()))
             .collect();
-        let format_for = |name: &str| self.doc_values_format_for(name);
+        let default = self.resolved_default_doc_values_format();
+        let format_for = |name: &str| self.doc_values_format_with_default(name, default);
         per_field_doc_values::group_fields(&fields, &format_for)
             .into_iter()
             .map(|group| {
@@ -4550,6 +4562,7 @@ impl IndexingConfig {
                     &self.doc_values_fields,
                     &names,
                     &segment_id,
+                    buf.limit.is_none(),
                 )?)
             })
         };
@@ -9546,7 +9559,6 @@ impl IndexWriter<'_> {
         &mut self,
         merging: &std::collections::HashSet<String>,
     ) -> Result<()> {
-        self.stamp_adaptive_doc_values_choice();
         self.write_pending_try_changes()?;
         // Real `prepareCommitInternal` refuses re-entry outright
         // (`IllegalStateException("prepareCommit was already called with no
@@ -9569,6 +9581,8 @@ impl IndexWriter<'_> {
         // (`maxFullFlushMergeWaitMillis > 0`): the commit names the merged
         // segments.
         self.merge_on_full_flush(merge_policy::MergeTrigger::Commit, merging)?;
+        // After the flush, which may be the one that makes `auto`'s choice.
+        self.stamp_adaptive_doc_values_choice();
 
         let mut new_segment_infos = self.segment_infos.clone();
         // ARITH: `segment_infos::parse` rejects any generation, version or

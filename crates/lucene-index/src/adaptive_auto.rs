@@ -17,7 +17,9 @@
 //! window's value range divided by the column's whole range across the
 //! sample: about `1 / windows` for a column in order, near 1 for one in no
 //! order. A column counts when at least [`MIN_WINDOWS`] of its windows were
-//! seen and its median is under [`CLUSTERED`].
+//! seen and its median is under [`CLUSTERED`]. Windows run across segment
+//! boundaries, so a shard flushing small segments is judged like one
+//! flushing large ones.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -41,6 +43,44 @@ struct Column {
     max: i64,
     seen: bool,
     ranges: Vec<u64>,
+    /// The values after the last full window, carried into the next
+    /// segment so small flushes still add up to windows.
+    tail: Vec<i64>,
+}
+
+impl Column {
+    fn window(&mut self, window: &[i64]) {
+        let (lo, hi) = window
+            .iter()
+            .fold((i64::MAX, i64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+        self.ranges.push(hi.abs_diff(lo));
+        if self.seen {
+            self.min = self.min.min(lo);
+            self.max = self.max.max(hi);
+        } else {
+            (self.min, self.max, self.seen) = (lo, hi, true);
+        }
+    }
+
+    /// `values` follow the tail in document order.
+    fn extend(&mut self, mut values: &[i64]) {
+        if !self.tail.is_empty() {
+            let take = WINDOW.saturating_sub(self.tail.len()).min(values.len());
+            let (head, rest) = values.split_at(take);
+            self.tail.extend_from_slice(head);
+            values = rest;
+            if self.tail.len() < WINDOW {
+                return;
+            }
+            let tail = std::mem::take(&mut self.tail);
+            self.window(&tail);
+        }
+        let mut windows = values.chunks_exact(WINDOW);
+        for w in windows.by_ref() {
+            self.window(w);
+        }
+        self.tail.extend_from_slice(windows.remainder());
+    }
 }
 
 enum State {
@@ -104,22 +144,19 @@ impl AdaptiveAuto {
         else {
             return decided(&state);
         };
+        let mut present = Vec::new();
         for (field, values) in columns {
             if values.len() != max_doc {
                 continue;
             }
-            let column = seen.entry(field).or_default();
-            for window in values.chunks_exact(WINDOW) {
-                let (lo, hi) = window
-                    .iter()
-                    .fold((i64::MAX, i64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-                column.ranges.push(hi.abs_diff(lo));
-                if column.seen {
-                    column.min = column.min.min(lo);
-                    column.max = column.max.max(hi);
-                } else {
-                    (column.min, column.max, column.seen) = (lo, hi, true);
-                }
+            seen.entry(field).or_default().extend(values);
+            present.push(field);
+        }
+        // A column missing from this segment breaks its run: its carried
+        // values no longer continue into the next segment's.
+        for (field, column) in seen.iter_mut() {
+            if !present.contains(field) {
+                column.tail.clear();
             }
         }
         *docs = docs.saturating_add(max_doc as u64);
@@ -202,12 +239,32 @@ mod tests {
     }
 
     #[test]
-    fn small_flushes_add_up_and_partial_windows_are_skipped() {
-        // Flushes of 3,000 documents: two full windows each, the rest
-        // skipped, and the documents still count towards the sample.
+    fn small_flushes_add_up_to_windows() {
+        // Flushes of 3,000 documents: windows run across them.
         let auto = AdaptiveAuto::new(None);
         feed(&auto, 22, 3_000, |i| i as i64);
         assert_eq!(auto.decided(), Some(true));
+        // Flushes far smaller than a window (a refresh every second at a
+        // few hundred documents a second) are judged the same.
+        let auto = AdaptiveAuto::new(None);
+        feed(&auto, 132, 500, |i| 1_700_000_000_000 + i as i64 * 37);
+        assert_eq!(auto.decided(), Some(true));
+        let auto = AdaptiveAuto::new(None);
+        feed(&auto, 132, 500, scramble);
+        assert_eq!(auto.decided(), Some(false));
+    }
+
+    #[test]
+    fn a_segment_without_the_column_breaks_its_run() {
+        let auto = AdaptiveAuto::new(None);
+        let a: Vec<i64> = (0..1000).collect();
+        auto.observe(1000, [(0, a.as_slice())]);
+        auto.observe(500, std::iter::empty());
+        let state = auto.state.lock().unwrap();
+        let State::Sampling { columns, .. } = &*state else {
+            panic!("still sampling");
+        };
+        assert!(columns[&0].tail.is_empty() && columns[&0].ranges.is_empty());
     }
 
     #[test]

@@ -139,8 +139,11 @@ fn a_time_ordered_index_turns_adaptive_once_sampled_and_stays_so() {
         add(&mut w, 0, sampled - 1, ts);
         assert_eq!(w.adaptive_doc_values_choice(), None);
         assert_eq!(recorded(&dirs[0]), None);
-        add(&mut w, (sampled - 1) * FLUSH, 2, ts);
+        add(&mut w, (sampled - 1) * FLUSH, 1, ts);
         assert_eq!(w.adaptive_doc_values_choice(), Some(true));
+        // The commit whose flush made the choice records it.
+        assert_eq!(recorded(&dirs[0]).as_deref(), Some("true"));
+        add(&mut w, sampled * FLUSH, 1, ts);
     }
     let mut expected = vec![false; sampled - 1];
     expected.extend([true, true]);
