@@ -30,7 +30,10 @@ on:
 # A manual run has a group of its own, so a merge never cancels it.
 concurrency:
   group: ci-${{ (github.event_name == 'workflow_dispatch' && github.run_id) || github.ref }}
-  cancel-in-progress: true
+  # Not on main: a merge every few minutes would cancel each run before its
+  # 40 minute gate (the coverage bar) ever finished. One main run goes at a
+  # time and the newest merge waits behind it, the older waiters dropped.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   CARGO_TERM_COLOR: always
