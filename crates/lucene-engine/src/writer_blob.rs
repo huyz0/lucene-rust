@@ -147,6 +147,57 @@ fn stored_value(c: &mut Cursor<'_>) -> Result<FieldValue, Status> {
     })
 }
 
+/// An [`InvertedTerms`] with room for the `n` terms that follow the cursor,
+/// found by walking them once without copying: one allocation per array
+/// instead of a doubling series. A blob the walk cannot follow gets an
+/// empty one; the decode that follows reports what is wrong with it.
+fn presized_terms(c: &Cursor<'_>, n: usize) -> InvertedTerms {
+    let mut walk = Cursor {
+        buf: c.buf,
+        pos: c.pos,
+    };
+    let (mut bytes, mut positions, mut offsets, mut payloads) = (0usize, 0usize, 0usize, 0usize);
+    for _ in 0..n {
+        let Ok(term) = walk.bytes("term") else {
+            return InvertedTerms::new();
+        };
+        let (Ok(freq), Ok(flags)) = (walk.i32("freq"), walk.u8("term flags")) else {
+            return InvertedTerms::new();
+        };
+        let Ok(occurrences) = usize::try_from(freq) else {
+            return InvertedTerms::new();
+        };
+        bytes = bytes.saturating_add(term.len());
+        let skip = |walk: &mut Cursor<'_>, per: usize| {
+            walk.take(occurrences.saturating_mul(per), "occurrences")
+                .is_ok()
+        };
+        if flags & 1 != 0 {
+            positions = positions.saturating_add(occurrences);
+            if !skip(&mut walk, 4) {
+                return InvertedTerms::new();
+            }
+        }
+        if flags & 2 != 0 {
+            offsets = offsets.saturating_add(occurrences);
+            if !skip(&mut walk, 8) {
+                return InvertedTerms::new();
+            }
+        }
+        if flags & 4 != 0 {
+            payloads = payloads.saturating_add(occurrences);
+            for _ in 0..occurrences {
+                if walk.bytes("payload").is_err() {
+                    return InvertedTerms::new();
+                }
+            }
+        }
+    }
+    let mut terms = InvertedTerms::with_capacity(n, bytes, positions);
+    terms.reserve_offsets_and_payloads(offsets, payloads);
+    terms
+}
+
 fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, Status> {
     let field_number = c.i32("inverted field number")?;
     let norm = match c.u8("norm flag")? {
@@ -157,7 +208,7 @@ fn inverted_field(c: &mut Cursor<'_>) -> Result<InvertedField, Status> {
     };
     // A term is at least its length, its freq and its flags.
     let n = c.count(9, "term count")?;
-    let mut terms = InvertedTerms::new();
+    let mut terms = presized_terms(c, n);
     for _ in 0..n {
         let term = c.bytes("term")?;
         let freq = c.i32("freq")?;

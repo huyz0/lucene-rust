@@ -9,6 +9,9 @@
 //! logs_write forcemerge <dir> <segments>
 //! ```
 //!
+//! `ADAPTIVE=on` writes adaptive doc values, `ADAPTIVE=auto` lets the writer
+//! choose from the data; unset is stock doc values.
+//!
 //! A document is what an OpenSearch log index holds: `_id` (stored and
 //! indexed), `_source` (stored JSON), six keyword fields (indexed without
 //! norms, sorted-set doc values), four longs (a point and a sorted-numeric
@@ -181,6 +184,13 @@ fn writer(dir: &dyn Directory) -> IndexWriter<'_> {
     w.set_forced_merge_max_segment_size(Some(u64::MAX));
     w.set_max_full_flush_merge_wait_millis(0);
     w.set_use_compound_file(false);
+    match std::env::var("ADAPTIVE").as_deref() {
+        Ok("on") => w.set_default_doc_values_format(
+            lucene_codecs::per_field_doc_values::Lucene90DocValuesFormat::rust_adaptive(),
+        ),
+        Ok("auto") => w.set_adaptive_doc_values_auto(),
+        _ => {}
+    }
     let ram_mb = std::env::var("RAM_MB").map_or(256.0, |v| v.parse().unwrap());
     w.set_ram_buffer_size_mb(ram_mb).unwrap();
     w
