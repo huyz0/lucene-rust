@@ -13,7 +13,7 @@ use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
-use crate::registry::{jvm_readers, lock_recovering, read_recovering, JvmReaderHandle};
+use crate::registry::{jvm_readers, lock_recovering, JvmReaderHandle};
 use lucene_engine::query_blob::{decode_request, similarity_checked};
 use std::sync::Arc;
 
@@ -171,15 +171,7 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
-    let reader = read_recovering(jvm_readers())
-        .get(handle)
-        .cloned()
-        .ok_or_else(|| {
-            set_last_error(missing);
-            FfiStatus::InvalidHandle
-        })?;
-    crate::error::note_shard(&reader.path);
-    Ok(reader)
+    lucene_engine::registry::lookup_jvm_reader(handle, missing)
 }
 
 /// Segment `segment`'s live docs from its `words` ([`ffi_open_jvm_reader`]'s
@@ -526,23 +518,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_count_terminates(
 /// until that handle closes too.
 #[no_mangle]
 pub extern "C" fn ffi_close_jvm_reader(handle: u64) -> i32 {
-    guard(|| {
-        let mut readers = lock_recovering(jvm_readers());
-        readers.remove(handle).ok_or_else(|| {
-            set_last_error("ffi_close_jvm_reader: unknown or already-closed handle");
-            FfiStatus::InvalidHandle
-        })?;
-        // The nested queries' parent bit sets of segments no open reader
-        // holds any more go with them.
-        let live = readers
-            .values()
-            .flat_map(|h| h.reader.segment_readers())
-            .map(|r| r.segment_id())
-            .collect();
-        drop(readers);
-        lucene_engine::nodes::retain_parent_sets(&live);
-        Ok(())
-    })
+    guard(|| lucene_engine::registry::close_jvm_reader(handle))
 }
 
 /// [`lucene_engine::reader_search::search_sorted_blobs`] over `handle`'s reader.

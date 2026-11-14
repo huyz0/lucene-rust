@@ -1,13 +1,10 @@
 //! Process-wide handle registries. Native objects never cross the boundary
-//! as pointers: each lives in a global [`SlotMap`] behind a `u64` handle the
+//! as pointers: each lives in a global `SlotMap` behind a `u64` handle the
 //! caller carries between calls. Each registry is an `RwLock`, so lookups from
 //! many JVM threads share the lock and only open and close take it
 //! exclusively; entries are `Arc`s, so a search clones its handle out and runs
 //! with no lock held.
 
-use std::sync::{OnceLock, RwLock};
-
-use lucene_engine::handle::{RegistryTag, SlotMap};
 pub(crate) use lucene_engine::registry::{jvm_readers, lock_recovering, read_recovering};
 
 /// A `ConcurrentIndexWriter` together with the directory it borrows and the
@@ -45,18 +42,12 @@ unsafe impl Sync for WriterHandle {}
 
 pub use lucene_engine::reader_handle::JvmReaderHandle;
 
-/// The OpenSearch engine's writers (`engine_writer.rs`): one per shard. The
-/// registry lock is held only to clone the `Arc`.
-pub fn engine_writers(
-) -> &'static RwLock<SlotMap<std::sync::Arc<crate::engine_writer::EngineWriter>>> {
-    static REGISTRY: OnceLock<RwLock<SlotMap<std::sync::Arc<crate::engine_writer::EngineWriter>>>> =
-        OnceLock::new();
-    REGISTRY.get_or_init(|| RwLock::new(SlotMap::new(RegistryTag::EngineWriter)))
-}
+pub(crate) use lucene_engine::registry::engine_writers;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{OnceLock, RwLock};
 
     /// [`lock_recovering`] must hand back the inner value after a writer
     /// panicked holding it, rather than propagating the poison as a second
