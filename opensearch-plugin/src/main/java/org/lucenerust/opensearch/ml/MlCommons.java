@@ -108,6 +108,7 @@ public final class MlCommons {
     private final ClusterService clusterService;
     private final ThreadPool threadPool;
     private final MlIndices indices;
+    private final MlAgents agents = new MlAgents(this);
     private final LocalModels local;
     private final RemoteModels remote;
     private final Path cacheDir;
@@ -201,11 +202,15 @@ public final class MlCommons {
         return local;
     }
 
+    MlAgents agents() {
+        return agents;
+    }
+
     Client client() {
         return client;
     }
 
-    private static long now() {
+    static long now() {
         return Instant.now().toEpochMilli();
     }
 
@@ -215,11 +220,11 @@ public final class MlCommons {
 
     // ---- Documents --------------------------------------------------------------------------
 
-    private void getDoc(String index, String id, ActionListener<GetResponse> listener) {
+    void getDoc(String index, String id, ActionListener<GetResponse> listener) {
         MlIndices.system(client, l -> client.get(new GetRequest(index, id), l), listener);
     }
 
-    private void indexDoc(String index, String id, Map<String, Object> source, ActionListener<IndexResponse> listener) {
+    void indexDoc(String index, String id, Map<String, Object> source, ActionListener<IndexResponse> listener) {
         IndexRequest request = new IndexRequest(index).source(source).setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
         if (id != null) {
             request.id(id);
@@ -227,12 +232,12 @@ public final class MlCommons {
         indices.ensure(index, ActionListener.wrap(v -> MlIndices.system(client, l -> client.index(request, l), listener), listener::onFailure));
     }
 
-    private void updateDoc(String index, String id, Map<String, Object> fields, ActionListener<UpdateResponse> listener) {
+    void updateDoc(String index, String id, Map<String, Object> fields, ActionListener<UpdateResponse> listener) {
         UpdateRequest request = new UpdateRequest(index, id).doc(fields).retryOnConflict(5).setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
         MlIndices.system(client, l -> client.update(request, l), listener);
     }
 
-    private void searchDocs(SearchRequest request, ActionListener<SearchResponse> listener) {
+    void searchDocs(SearchRequest request, ActionListener<SearchResponse> listener) {
         String index = request.indices()[0];
         if (clusterService.state().metadata().hasIndex(index) == false) {
             // ml-commons answers a search of a missing system index with no hits.
@@ -311,7 +316,7 @@ public final class MlCommons {
         }, listener::onFailure));
     }
 
-    private static Exception missingIndex(Exception e, String message) {
+    static Exception missingIndex(Exception e, String message) {
         if (e instanceof org.opensearch.index.IndexNotFoundException) {
             return new OpenSearchStatusException(message, RestStatus.NOT_FOUND);
         }
