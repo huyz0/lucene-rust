@@ -949,7 +949,8 @@ fn all_accepted(accept: &Accept<'_>, base: usize, len: usize) -> bool {
     }
 }
 
-/// Whether none of documents `64 base..64 base + len` is accepted.
+/// Whether none of the documents in the words covering `64 base..64 base +
+/// len` is accepted.
 // ARITH: `len <= FOLD_WINDOW`, so `base + w` stays small.
 #[allow(clippy::arithmetic_side_effects)]
 fn none_accepted(accept: &Accept<'_>, base: usize, len: usize) -> bool {
@@ -1126,7 +1127,12 @@ fn fold_window_values<const N: u8>(
 /// A window's matches are read with one [`NumericReader::fill_window`] over
 /// their span, rather than a lookup each, when at least one document in this
 /// many of the span matches: decoding the span's every value then costs less
-/// than looking each match up through the reader's layers.
+/// than looking each match up through the reader's layers. Measured on taxi
+/// (`stats` over a time window thinned to one match in 4, 8, 16 and 32): every
+/// match dense (the whole window) read this way runs about 2x faster on
+/// adaptive doc values and 1.15x on Lucene90; at one in 4 a window read is
+/// 1.15x faster than lookups; thresholds of 4, 8 and 16 come out within
+/// noise of each other.
 const SPAN_PER_MATCH: usize = 8;
 
 /// A single-valued column at the matches `docs` (ascending, distinct) into

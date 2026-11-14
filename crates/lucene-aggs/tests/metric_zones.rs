@@ -339,8 +339,10 @@ fn compensated(sum: &mut f64, delta: &mut f64, v: f64) {
 /// The single-valued fields' metrics over matches read a window at a time
 /// (whole windows from statistics, dense spans with one window read, scattered
 /// matches one by one), in both copies, against the documents' own values
-/// folded in document order. `live` says which documents are still there;
-/// documents keep their order, so the `n`-th live one is document `n`.
+/// folded in document order, for every part asked for alone or together.
+/// Each case names its matches by their original id (the `id` term or the
+/// `ts` value), and so does `live`: it drops the deleted ids. Each case
+/// matches at most a quarter of either segment, so it is read by seeking.
 fn check_seek_against_values(pair: &Pair, live: impl Fn(usize) -> bool) {
     let ids = |docs: Vec<usize>| {
         let mut q = BooleanQuery::new();
@@ -365,16 +367,23 @@ fn check_seek_against_values(pair: &Pair, live: impl Fn(usize) -> bool) {
         (q, docs)
     };
     let cases = [
-        // Whole windows and partial ones at both ends.
-        ts(1_000, 3_500),
+        // The whole window 1024..2048 (its statistics), and dense partial
+        // windows on both sides of it.
+        ts(1_000, 2_100),
         // One document in five of a few hundred: one window read with gaps.
         ids((1_000..1_400).step_by(5).collect()),
         // One in fifty: one by one.
         ids((0..3_000).step_by(50).collect()),
-        // Both kinds across the segment boundary, and the last document.
+        // Dense windows holding the deleted documents 5 and 4,100.
+        ids((0..40).chain((4_064..4_200).step_by(2)).collect()),
+        // Every document of an aligned span, first in the second segment
+        // before the merge, then in the middle of the merged one.
+        ids((6_144..6_400).collect()),
+        // Across the first segment's end, and a dense run to the last
+        // document.
         ids((6_000..6_300)
             .step_by(3)
-            .chain((6_500..8_999).step_by(97))
+            .chain((8_900..9_000).step_by(2))
             .chain([8_999])
             .collect()),
     ];
@@ -393,15 +402,43 @@ fn check_seek_against_values(pair: &Pair, live: impl Fn(usize) -> bool) {
         ("dbl", DBL, ValueKind::Double),
         ("signed", SIGNED, ValueKind::Double),
     ];
-    let specs: Vec<MetricSpec> = fields
+    let all_needs = [
+        NEED_ALL,
+        NEED_MIN,
+        NEED_MAX,
+        NEED_COUNT,
+        NEED_SUM,
+        NEED_COUNT | NEED_SUM,
+        NEED_MIN_MAX,
+    ];
+    let specs: Vec<Vec<MetricSpec>> = all_needs
         .iter()
-        .map(|&(f, _, kind)| MetricSpec {
-            field: f.to_string(),
-            kind,
-            source: Source::DocValues,
-            needs: NEED_ALL,
+        .map(|&needs| {
+            fields
+                .iter()
+                .map(|&(f, _, kind)| MetricSpec {
+                    field: f.to_string(),
+                    kind,
+                    source: Source::DocValues,
+                    needs,
+                })
+                .collect()
         })
         .collect();
+    // The parts `needs` asks for; the others may stay at their defaults.
+    let asked = |s: &MetricState, needs: u8| {
+        let b = bits(s);
+        let part = |bit: u8, v: u64| (needs & bit != 0).then_some(v);
+        [
+            part(NEED_COUNT, b[0]),
+            part(NEED_SUM, b[1]),
+            part(NEED_SUM, b[2]),
+            part(NEED_MIN_MAX, b[3]),
+            part(NEED_MIN_MAX, b[4]),
+            part(NEED_MIN, b[5]),
+            part(NEED_MAX, b[6]),
+        ]
+    };
     for (ci, (q, docs)) in cases.iter().enumerate() {
         for (fi, &(name, number, kind)) in fields.iter().enumerate() {
             let mut want = MetricState::default();
@@ -422,15 +459,17 @@ fn check_seek_against_values(pair: &Pair, live: impl Fn(usize) -> bool) {
             }
             want.min_of_mins = want.min;
             want.max_of_maxes = want.max;
-            for k in 0..2 {
-                let got =
-                    metric_states(&segments[k], readers[k].segment_readers(), q, &specs).unwrap();
-                assert_eq!(
-                    bits(&got[fi]),
-                    bits(&want),
-                    "case {ci} field {name} copy {k}:\n got  {:?}\n want {want:?}",
-                    got[fi]
-                );
+            for (specs, &needs) in specs.iter().zip(&all_needs) {
+                for k in 0..2 {
+                    let got = metric_states(&segments[k], readers[k].segment_readers(), q, specs)
+                        .unwrap();
+                    assert_eq!(
+                        asked(&got[fi], needs),
+                        asked(&want, needs),
+                        "case {ci} field {name} needs {needs} copy {k}:\n got  {:?}\n want {want:?}",
+                        got[fi]
+                    );
+                }
             }
         }
     }
