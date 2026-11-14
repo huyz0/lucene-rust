@@ -69,6 +69,13 @@ public final class MlActions {
     public static final Type UPDATE_CONNECTOR = new Type(ML + "update_connector");
     public static final Type DELETE_CONNECTOR = new Type(ML + "connectors/delete");
     public static final Type SEARCH_CONNECTORS = new Type(ML + "connectors/search");
+    public static final Type REGISTER_AGENT = new Type(ML + "agents/register");
+    public static final Type GET_AGENT = new Type(ML + "agents/get");
+    public static final Type UPDATE_AGENT = new Type(ML + "agents/update");
+    public static final Type DELETE_AGENT = new Type(ML + "agents/delete");
+    public static final Type SEARCH_AGENTS = new Type(ML + "agents/search");
+    public static final Type LIST_TOOLS = new Type(ML + "tools/list");
+    public static final Type GET_TOOL = new Type(ML + "tools/get");
 
     /** The action handlers to register, with the node-to-node actions. */
     public static List<ActionHandler<?, ?>> handlers() {
@@ -98,6 +105,13 @@ public final class MlActions {
             new ActionHandler<>(UPDATE_CONNECTOR, UpdateConnector.class),
             new ActionHandler<>(DELETE_CONNECTOR, DeleteConnector.class),
             new ActionHandler<>(SEARCH_CONNECTORS, SearchConnectors.class),
+            new ActionHandler<>(REGISTER_AGENT, RegisterAgent.class),
+            new ActionHandler<>(GET_AGENT, GetAgent.class),
+            new ActionHandler<>(UPDATE_AGENT, UpdateAgent.class),
+            new ActionHandler<>(DELETE_AGENT, DeleteAgent.class),
+            new ActionHandler<>(SEARCH_AGENTS, SearchAgents.class),
+            new ActionHandler<>(LIST_TOOLS, ListTools.class),
+            new ActionHandler<>(GET_TOOL, GetTool.class),
             new ActionHandler<>(MlNodes.Action.INSTANCE, MlNodes.TransportAction.class),
             new ActionHandler<>(MlNodes.PredictAction.INSTANCE, MlNodes.PredictTransportAction.class),
             new ActionHandler<>(MlNodes.RemotePredictAction.INSTANCE, MlNodes.RemotePredictTransportAction.class)
@@ -563,6 +577,85 @@ public final class MlActions {
         @Inject
         public SearchConnectors(TransportService t, ActionFilters f, NamedXContentRegistry x) {
             super(SEARCH_CONNECTORS, MlIndices.CONNECTOR, t, f, x);
+        }
+    }
+
+    public static final class RegisterAgent extends Base {
+        @Inject
+        public RegisterAgent(TransportService t, ActionFilters f) {
+            super(REGISTER_AGENT, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().register(r.json(), ActionListener.wrap(id -> l.onResponse(Response.of(Map.of("agent_id", id))), l::onFailure));
+        }
+    }
+
+    public static final class GetAgent extends Base {
+        @Inject
+        public GetAgent(TransportService t, ActionFilters f) {
+            super(GET_AGENT, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().get(r.param("agent_id"), map(l));
+        }
+    }
+
+    public static final class UpdateAgent extends Base {
+        @Inject
+        public UpdateAgent(TransportService t, ActionFilters f) {
+            super(UPDATE_AGENT, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().update(r.param("agent_id"), r.json(), written(l));
+        }
+    }
+
+    public static final class DeleteAgent extends Base {
+        @Inject
+        public DeleteAgent(TransportService t, ActionFilters f) {
+            super(DELETE_AGENT, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            ml.agents().delete(r.param("agent_id"), written(l));
+        }
+    }
+
+    public static final class SearchAgents extends Search {
+        @Inject
+        public SearchAgents(TransportService t, ActionFilters f, NamedXContentRegistry x) {
+            super(SEARCH_AGENTS, MlIndices.AGENT, t, f, x);
+        }
+    }
+
+    public static final class ListTools extends Base {
+        @Inject
+        public ListTools(TransportService t, ActionFilters f) {
+            super(LIST_TOOLS, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            l.onResponse(Response.of(MlAgents.tools()));
+        }
+    }
+
+    public static final class GetTool extends Base {
+        @Inject
+        public GetTool(TransportService t, ActionFilters f) {
+            super(GET_TOOL, t, f);
+        }
+
+        @Override
+        void run(MlCommons ml, Request r, ActionListener<Response> l) {
+            l.onResponse(Response.of(MlAgents.tool(r.param("tool_name"))));
         }
     }
 }

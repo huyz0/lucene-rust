@@ -1,0 +1,116 @@
+{
+ "tools": [
+  {
+   "name": "AgentTool",
+   "description": "Use this tool to run any agent.",
+   "type": "AgentTool",
+   "version": "undefined",
+   "attributes": {}
+  },
+  {
+   "name": "ConnectorTool",
+   "description": "Invokes external service. Required: 'connector_id'. Returns: service response.",
+   "type": "ConnectorTool",
+   "version": "undefined",
+   "attributes": {}
+  },
+  {
+   "name": "IndexInsightTool",
+   "description": "Use this tool to get details of one index according to different task type, including STATISTICAL_DATA: the data distribution and index mapping of the index, FIELD_DESCRIPTION: The description of each column, LOG_RELATED_INDEX_CHECK: Whether the index is related to log/trace and whether it contains trace/log fields",
+   "type": "IndexInsightTool",
+   "version": "undefined",
+   "attributes": {
+    "strict": false,
+    "input_schema": "        {\n            \"type\": \"object\",\n            \"properties\": {\n                \"index\": {\n                    \"type\": \"string\",\n                    \"description\": \"OpenSearch index name\"\n                },\n                \"question\": {\n                    \"type\": \"string\",\n                    \"description\": \"Natural language question to query data from opensearch index\"\n                }\n            }\n        },\n        \"strict\": false\n      }\n"
+   }
+  },
+  {
+   "name": "IndexMappingTool",
+   "description": "This tool returns index mappings and settings for specified indices. Required argument: 'index' - comma-delimited list of one or more indices (supports wildcards like 'my-index-*'). Optional argument: 'local' - if true, returns info from local node only instead of cluster manager (default: false). Response format: For each index, 'mappings' contains field definitions under 'properties' (each field has a 'type'), and 'settings' contains configuration as a flattened key-value map.",
+   "type": "IndexMappingTool",
+   "version": "undefined",
+   "attributes": {
+    "strict": true,
+    "input_schema": "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"array\",\"description\":\"OpenSearch index name list, separated by comma. for example: [\\\"index1\\\", \\\"index2\\\"]\",\"items\":{\"type\":\"string\"}}},\"required\":[\"index\"],\"additionalProperties\":false}"
+   }
+  },
+  {
+   "name": "ListIndexTool",
+   "description": "This tool returns information about indices in the OpenSearch cluster along with the index `health`, `status`, `index`, `uuid`, `pri`, `rep`, `docs.count`, `docs.deleted`, `store.size`, `pri.store. size `, `pri.store.size`, `pri.store`. Optional arguments: 1. `indices`, a comma-delimited list of one or more indices to get information from (default is an empty list meaning all indices). Use only valid index names. 2. `local`, whether to return information from the local node only instead of the cluster manager node (Default is false)",
+   "type": "ListIndexTool",
+   "version": "undefined",
+   "attributes": {
+    "strict": false,
+    "input_schema": "{\"type\":\"object\",\"properties\":{\"indices\":{\"type\":\"array\",\"items\": {\"type\": \"string\"},\"description\":\"OpenSearch index name list, separated by comma. for example: [\\\"index1\\\", \\\"index2\\\"], use empty array [] to list all indices in the cluster\"}},\"additionalProperties\":false}"
+   }
+  },
+  {
+   "name": "MLModelTool",
+   "description": "Use this tool to run any model.",
+   "type": "MLModelTool",
+   "version": "undefined",
+   "attributes": {}
+  },
+  {
+   "name": "McpSseTool",
+   "description": "A tool from MCP Server",
+   "type": "McpSseTool",
+   "version": "undefined",
+   "attributes": {}
+  },
+  {
+   "name": "McpStreamableHttpTool",
+   "description": "A tool from MCP Streamable HTTP Server",
+   "type": "McpStreamableHttpTool",
+   "version": "undefined",
+   "attributes": {}
+  },
+  {
+   "name": "QueryPlanningTool",
+   "description": "Use this tool to generate OpenSearch Query DSL from natural language queries.Provide a 'question' parameter containing the complete natural language query with all necessary context, requirements, filters, and constraints.The question should be self-contained with all information needed to generate the OpenSearch DSL.Provide 'index_name' to help generate more accurate queries based on the index structure.Optionally provide embedding model ID to be used for neural search The tool will return a valid OpenSearch query that can be used to search your data.",
+   "type": "QueryPlanningTool",
+   "version": "undefined",
+   "attributes": {}
+  },
+  {
+   "name": "ReadFromScratchPadTool",
+   "description": "Retrieve previous research work and notes from the persistent scratchpad.",
+   "type": "ReadFromScratchPadTool",
+   "version": "1",
+   "attributes": {
+    "strict": true,
+    "input_schema": "{\"type\":\"object\",\"properties\":{}}"
+   }
+  },
+  {
+   "name": "SearchIndexTool",
+   "description": "Use this tool to search an index by providing two parameters: 'index' for the index name, and 'query' for the OpenSearch DSL formatted query. Only use this tool when both index name and DSL query is available. Returns documents matching the query in the provided index.",
+   "type": "SearchIndexTool",
+   "version": "undefined",
+   "attributes": {
+    "strict": true,
+    "input_schema": "{\"type\":\"object\",\"properties\":{\"index\":{\"type\":\"string\",\"description\":\"OpenSearch index name. Example: index1\"},\"query\":{\"type\":\"object\",\"description\":\"OpenSearch Query DSL as a JSON object. You need to get index mapping to write correct search query. The object MUST follow OpenSearch Query DSL and MUST include a top-level 'query' field. Preferred format for reliable parsing. Example: {\\\"query\\\":{\\\"match\\\":{\\\"field\\\":\\\"value\\\"}},\\\"size\\\":10}. String format is also supported for backward compatibility, but object format is strongly recommended.\"}},\"required\":[\"index\",\"query\"],\"additionalProperties\":false}"
+   }
+  },
+  {
+   "name": "VisualizationTool",
+   "description": "Searches for saved visualizations by name. Required: 'input' (visualization name, supports partial matches). Returns: list of matching visualizations with their titles and IDs.",
+   "type": "VisualizationTool",
+   "version": "undefined",
+   "attributes": {
+    "strict": false,
+    "input_schema": "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"string\",\"description\":\"Visualization name to search for\"}},\"required\":[\"input\"],\"additionalProperties\":false}"
+   }
+  },
+  {
+   "name": "WriteToScratchPadTool",
+   "description": "Save research plans, findings, and progress updates to a persistent scratchpad.",
+   "type": "WriteToScratchPadTool",
+   "version": "1",
+   "attributes": {
+    "strict": true,
+    "input_schema": "{\"type\":\"object\",\"properties\":{\"notes\":{\"type\":\"string\",\"description\":\"The notes to be saved to the scratchpad.\"}},\"required\":[\"notes\"]}"
+   }
+  }
+ ]
+}
