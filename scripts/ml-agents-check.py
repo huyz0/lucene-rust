@@ -635,6 +635,12 @@ SCENARIOS = {
     "pe_missing": [final('{"foo":1}')],
     "pe_max": [final('{"steps":["a"],"result":""}'), final("done a"), final('{"steps":["b"],"result":""}'), final("done b"), final('{"steps":["c"],"result":""}')],
     "pe_empty": [final('{"steps":[],"result":""}')],
+    "mcp_add": [calls(("c1", "add", "{\"a\":2,\"b\":3}")), final("done")],
+    "mcp_boom": [calls(("c1", "boom", "{}")), final("done")],
+    "mcp_echo": [calls(("c1", "echo", "{\"text\":\"hi \\\"x\\\"\"}")), final("done")],
+    "mcp_bad": [calls(("c1", "echo", "not json")), final("done")],
+    "mcp_pic": [calls(("c1", "pic", "{}")), final("done")],
+    "mcp_shout": [calls(("c1", "shout", "{\"text\":\"loud\"}")), final("done")],
     "scratch": [calls(("c1", "WriteToScratchPadTool", "{\"notes\":\"n1\"}")), final("saved")],
 }
 
@@ -673,8 +679,128 @@ def llm_server():
     return seen
 
 
+MCP_PORT = 8769
+MCP_TOOLS = [
+    {"name": "add", "description": "Add two numbers", "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}},
+    {"name": "echo", "description": "Echo text", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
+    {"name": "boom", "description": "Always fails", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "shout", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
+    {"name": "pic", "description": "Answers an image and text", "inputSchema": {"type": "object", "properties": {}}},
+]
+
+
+def mcp_server():
+    """An MCP server on streamable HTTP and on SSE; `/<node>/...` keeps what each node sent it."""
+    import http.server, queue, threading
+    log = {"ours": [], "stock": []}
+    streams = {}
+
+    def respond(body):
+        """The JSON-RPC answer to `body`, with the headers it carries; None for a notification."""
+        method, i = body.get("method"), body.get("id")
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": i, "result": {"protocolVersion": body["params"]["protocolVersion"], "capabilities": {"tools": {}},
+                                                          "serverInfo": {"name": "mock", "version": "1"}}}, {"Mcp-Session-Id": "s1"}
+        if method and method.startswith("notifications/"):
+            return None, {}
+        if method == "tools/list":
+            return {"jsonrpc": "2.0", "id": i, "result": {"tools": MCP_TOOLS}}, {}
+        if method == "tools/call":
+            name, a = body["params"]["name"], body["params"].get("arguments") or {}
+            if name == "add":
+                r = {"content": [{"type": "text", "text": str(a.get("a", 0) + a.get("b", 0))}], "isError": False}
+            elif name in ("echo", "shout"):
+                r = {"content": [{"type": "text", "text": a.get("text", "")}], "isError": False}
+            elif name == "pic":
+                r = {"content": [{"type": "image", "data": "aGk=", "mimeType": "image/png"}, {"type": "text", "text": "caption"}], "isError": False}
+            else:
+                r = {"content": [{"type": "text", "text": "kaboom"}], "isError": True}
+            return {"jsonrpc": "2.0", "id": i, "result": r}, {}
+        return {"jsonrpc": "2.0", "id": i, "error": {"code": -32601, "message": "no such method"}}, {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def reply(self, code, obj=None, headers=None):
+            data = json.dumps(obj).encode() if obj is not None else b""
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path.endswith("/sse"):
+                node = self.path.strip("/").split("/")[0]
+                out = streams[node] = queue.Queue()
+                log.setdefault(node, []).append({"path": "GET /sse", "accept": self.headers.get("Accept"), "authorization": self.headers.get("Authorization")})
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                try:
+                    self.wfile.write(f"event: endpoint\ndata: /{node}/message?sessionId=sid\n\n".encode())
+                    self.wfile.flush()
+                    while True:
+                        try:
+                            item = out.get(timeout=1)
+                        except queue.Empty:
+                            self.wfile.write(b": ping\n\n")
+                            self.wfile.flush()
+                            continue
+                        self.wfile.write(f"event: message\ndata: {json.dumps(item)}\n\n".encode())
+                        self.wfile.flush()
+                except OSError:
+                    return
+                return
+            self.reply(405)
+
+        def do_DELETE(self):
+            self.reply(200)
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            node = self.path.strip("/").split("/")[0]
+            log.setdefault(node, []).append({"path": self.path.replace("/" + node, ""), "body": body, "authorization": self.headers.get("Authorization"),
+                                             "session": self.headers.get("Mcp-Session-Id")})
+            out, headers = respond(body)
+            if "/message" in self.path:
+                if out is not None:
+                    streams[node].put(out)
+                return self.reply(202)
+            if out is None:
+                return self.reply(202)
+            self.reply(200, out, headers)
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", MCP_PORT), Handler)
+    except OSError:
+        return log
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return log
+
+
+def mcp_traffic(entries):
+    """What a node sent the MCP server, with the request ids a client makes up masked."""
+    out = []
+    for e in entries:
+        text = re.sub(r"[0-9a-f]{8}-(\d+)", r"<c>-\1", json.dumps(e, sort_keys=True))
+        out.append(json.loads(text))
+    return out
+
+
 def chat(c, ours, stock):
     seen = llm_server()
+    mcp_log = mcp_server()
     side = (("ours", ours), ("stock", stock))
     ids = {"ours": [], "stock": []}
     counter = [0]
@@ -687,7 +813,7 @@ def chat(c, ours, stock):
         model = n.ok("POST", "/_plugins/_ml/models/_register?deploy=true", {"name": "m", "function_name": "remote", "connector": con})["model_id"]
         time.sleep(2)
         agent = {"name": f"chat{run}", "type": atype, "llm": {"model_id": model, "parameters": {"max_iteration": "3", "system_prompt": "You are X"}},
-                 "app_type": "chat", "tools": tools if tools is not None else [{"type": "ListIndexTool"}], "parameters": dict({"_llm_interface": STYLES[style]}, **(parameters or {}))}
+                 "app_type": "chat", "tools": tools if tools is not None else [{"type": "ListIndexTool"}], "parameters": dict({"_llm_interface": STYLES[style]}, **((parameters(name) if callable(parameters) else parameters) or {}))}
         if memory:
             agent["memory"] = {"type": "conversation_index"}
         agent.update(extra or {})
@@ -703,12 +829,13 @@ def chat(c, ours, stock):
             out.append(deep(json.loads(b), ids[name]))
         return out
 
-    def case(label, scenario, request, again=None, style="openai", atype="conversational", **kw):
+    def case(label, scenario, request, again=None, style="openai", atype="conversational", mcp=False, **kw):
         counter[0] += 1
         run = str(counter[0])
         got = {}
         for name, n in side:
             agent, s, o = setup(name, n, scenario, run, style=style, atype=atype, **kw)
+            mcp_log[name].clear()
             if agent is None:
                 got[name] = {"register": s, "body": run_mask(o, ids[name])}
                 continue
@@ -740,6 +867,8 @@ def chat(c, ours, stock):
             else:
                 result["body"] = run_mask(o, ids[name])
             result["llm"] = requests(name, scenario, run)
+            if mcp:
+                result["mcp"] = mcp_traffic(mcp_log[name])
             got[name] = result
         c.same(f"agents chat {style} {label}" if style != "openai" else f"agents chat {label}", got["ours"], got["stock"])
 
@@ -781,6 +910,126 @@ def chat(c, ours, stock):
     case("plan empty", "pe_empty", q("q"), **pe)
     case("plan no question", "pe_tool", {"parameters": {}}, **pe)
     case("plan unknown memory", "pe_tool", q("q", memory_id="nope"), **pe)
+    mcp_rows(c, ours, stock, case, ids, mcp_log)
+
+
+def mcp_rows(c, ours, stock, case, ids, mcp_log):
+    """Agents that use the tools of an MCP server."""
+    side = (("ours", ours), ("stock", stock))
+    cid = {}
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.mcp_connector_enabled": True}})
+        cid[name] = n.ok("POST", "/_plugins/_ml/connectors/_create", {
+            "name": "mcpc", "description": "d", "version": "1", "protocol": "mcp_streamable_http", "url": f"http://127.0.0.1:{MCP_PORT}",
+            "credential": {"k": "v"}, "parameters": {"x": "y", "endpoint": f"/{name}/mcp/"}, "headers": {"Authorization": "Bearer ${credential.k}"}})["connector_id"]
+        ids[name].append(cid[name])
+
+    base = {"name": "c", "description": "d", "version": "1", "protocol": "mcp_streamable_http", "url": f"http://127.0.0.1:{MCP_PORT}",
+            "credential": {"k": "v"}, "parameters": {"x": "y"}, "headers": {"A": "${credential.k}"}}
+    variants = {"plain": {}, "sse": {"protocol": "mcp_sse"}, "no url": {"url": None}, "blank url": {"url": " "}, "url number": {"url": 5},
+                "no credential": {"credential": None}, "empty credential": {"credential": {}}, "no headers": {"headers": None}, "no parameters": {"parameters": None},
+                "with actions": {"actions": [{"action_type": "predict", "method": "POST", "url": "http://127.0.0.1:1/x", "request_body": "{}"}]},
+                "client config": {"client_config": {"read_timeout": 5, "zzz": 1}}, "no name": {"name": None}, "no version": {"version": None},
+                "extra field": {"zzz": 1}, "header number": {"headers": {"A": 5}}, "access control": {"access": "public"}}
+    for label, change in variants.items():
+        got = {}
+        for name, n in side:
+            body = {k: v for k, v in dict(base, **change).items() if v is not None}
+            s, o = n.call("POST", "/_plugins/_ml/connectors/_create", body)
+            if s == 200:
+                ids[name].append(o["connector_id"])
+                s2, g = n.call("GET", f"/_plugins/_ml/connectors/{o['connector_id']}")
+                got[name] = {"status": s, "body": mask(g, ids[name])}
+                s3, u = n.call("PUT", f"/_plugins/_ml/connectors/{o['connector_id']}", {"url": f"http://127.0.0.1:{MCP_PORT}/b", "headers": {"Z": "1"}, "parameters": {"q": "1"}})
+                s4, g = n.call("GET", f"/_plugins/_ml/connectors/{o['connector_id']}")
+                got[name]["updated"] = [s3, mask(g, ids[name]) if s4 == 200 else s4]
+            else:
+                got[name] = {"status": s, "body": o["error"]["reason"] if "error" in o else o}
+        c.same(f"agents mcp connector {label}", got["ours"], got["stock"])
+
+    sse = {}
+    for name, n in side:
+        sse[name] = n.ok("POST", "/_plugins/_ml/connectors/_create", dict(base, protocol="mcp_sse", parameters={"sse_endpoint": f"/{name}/sse"}))["connector_id"]
+        ids[name].append(sse[name])
+    got = {}
+    for name, n in side:
+        mcp_log[name].clear()
+        s, o = n.call("GET", f"/_plugins/_ml/connectors/{sse[name]}/tools")
+        got[name] = {"status": s, "body": mask(o, ids[name]) if s == 200 else o["error"]["reason"], "mcp": mcp_traffic(mcp_log[name])}
+    c.same("agents mcp sse list tools", got["ours"], got["stock"])
+
+    def entries(*specs):
+        return lambda name: {"mcp_connectors": json.dumps([dict(s, mcp_connector_id=cid[name]) for s in specs])}
+
+    q = lambda t, **p: {"parameters": dict({"question": t}, **p)}
+    plain = entries({})
+    got = {}
+    for name, n in side:
+        mcp_log[name].clear()
+        s, o = n.call("GET", f"/_plugins/_ml/connectors/{cid[name]}/tools")
+        got[name] = {"status": s, "body": mask(o, ids[name]) if s == 200 else o["error"]["reason"], "mcp": mcp_traffic(mcp_log[name])}
+    c.same("agents mcp list tools", got["ours"], got["stock"])
+    got = {}
+    for name, n in side:
+        s, o = n.call("GET", "/_plugins/_ml/connectors/nope/tools")
+        got[name] = {"status": s, "body": o["error"]["reason"]}
+    c.same("agents mcp list tools unknown connector", got["ours"], got["stock"])
+    case("mcp tool", "mcp_add", q("2+3?"), parameters=plain, mcp=True)
+    case("mcp sse tool", "mcp_add", q("2+3?"), parameters=lambda name: {"mcp_connectors": json.dumps([{"mcp_connector_id": sse[name]}])}, mcp=True)
+    case("mcp sse tool error result", "mcp_boom", q("b"), parameters=lambda name: {"mcp_connectors": json.dumps([{"mcp_connector_id": sse[name]}])}, mcp=True)
+    case("mcp tool openai tools", "mcp_add", q("2+3?"), parameters=plain, tools=[], mcp=True)
+    case("mcp tool error result", "mcp_boom", q("b"), parameters=plain, mcp=True)
+    case("mcp quoted arguments", "mcp_echo", q("e"), parameters=plain, mcp=True)
+    case("mcp bad arguments", "mcp_bad", q("e"), parameters=plain, mcp=True)
+    case("mcp image result", "mcp_pic", q("p"), parameters=plain, mcp=True)
+    case("mcp tool filters", "mcp_add", q("f"), parameters=entries({"tool_filters": ["^a.*", "echo"]}), mcp=True)
+    case("mcp filters match whole name", "mcp_add", q("f"), parameters=entries({"tool_filters": ["ad"]}), mcp=True)
+    case("mcp tool descriptions", "mcp_add", q("d"), parameters=entries({"tool_descriptions": [{"add": "ADDER", "nope": "x"}, {"echo": ""}]}), mcp=True)
+    case("mcp tool description map", "mcp_add", q("d"), parameters=entries({"tool_descriptions": {"add": "ADDER"}}), mcp=True)
+    case("mcp tool without description", "mcp_shout", q("s"), parameters=plain, mcp=True)
+    case("mcp declared tool", "mcp_add", q("x"), parameters=plain, tools=[{"type": "McpStreamableHttpTool", "name": "add"}], mcp=True)
+    case("mcp declared unknown tool", "mcp_add", q("x"), parameters=plain, tools=[{"type": "McpStreamableHttpTool", "name": "nope"}], mcp=True)
+    case("mcp declared without name", "mcp_add", q("x"), parameters=plain, tools=[{"type": "McpStreamableHttpTool"}], mcp=True)
+    case("mcp no memory", "mcp_add", q("m"), parameters=plain, memory=False, mcp=True)
+    for style in ("bedrock", "gemini"):
+        case("mcp tool", "mcp_add", q("2+3?"), style=style, parameters=plain, mcp=True)
+        case("mcp tool error result", "mcp_boom", q("b"), style=style, parameters=plain, mcp=True)
+    case("mcp connector not found", "mcp_add", q("n"), parameters=lambda name: {"mcp_connectors": json.dumps([{"mcp_connector_id": "nope"}])}, mcp=True)
+    case("mcp connector without id", "mcp_add", q("n"), parameters=lambda name: {"mcp_connectors": json.dumps([{}])}, mcp=True)
+
+    def flow(label, tools, request, params=None, atype="flow"):
+        got = {}
+        for name, n in side:
+            agent = {"name": "mcp-flow", "type": atype, "tools": tools, "parameters": dict(entries({})(name), **(params or {}))}
+            s, o = n.call("POST", "/_plugins/_ml/agents/_register", agent)
+            if s != 200:
+                got[name] = {"register": s, "body": run_mask(o, ids[name])}
+                continue
+            ids[name].append(o["agent_id"])
+            mcp_log[name].clear()
+            s, o = n.call("POST", f"/_plugins/_ml/agents/{o['agent_id']}/_execute", request)
+            got[name] = {"status": s, "body": run_mask(o, ids[name]), "mcp": mcp_traffic(mcp_log[name])}
+        c.same(f"agents mcp flow {label}", got["ours"], got["stock"])
+
+    M = lambda n: {"type": "McpStreamableHttpTool", "name": n}
+    flow("add", [M("add")], {"parameters": {"input": "{\"a\":1,\"b\":2}"}})
+    flow("two tools", [M("add"), M("echo")], {"parameters": {"input": "{\"text\":\"hi\"}"}})
+    flow("fixed input", [{"type": "McpStreamableHttpTool", "name": "add", "parameters": {"input": "{\"a\":5,\"b\":6}"}}], {"parameters": {"question": "x"}})
+    flow("no input", [M("add")], {"parameters": {"a": "1"}})
+    flow("invalid input", [M("add")], {"parameters": {"input": "not json"}})
+    flow("unknown tool", [M("nope")], {"parameters": {"input": "{}"}})
+    flow("error result", [M("boom")], {"parameters": {"input": "{}"}})
+    flow("mixed with a standard tool", [{"type": "ListIndexTool", "parameters": {"indices": ["ag1"]}}, M("echo")], {"parameters": {"input": "{\"text\":\"x\"}"}})
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.mcp_connector_enabled": False}})
+    got = {}
+    for name, n in side:
+        s, o = n.call("GET", f"/_plugins/_ml/connectors/{cid[name]}/tools")
+        s2, o2 = n.call("POST", "/_plugins/_ml/agents/_register", {"name": "off", "type": "conversational", "llm": {"model_id": "x"}, "parameters": {"mcp_connectors": "[]"}})
+        got[name] = {"list": [s, o["error"]["reason"]], "register": [s2, o2["error"]["reason"] if s2 != 200 else "ok"]}
+    c.same("agents mcp disabled", got["ours"], got["stock"])
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.mcp_connector_enabled": True}})
 
 
 def flow_memory(c, ours, stock):

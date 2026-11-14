@@ -112,6 +112,38 @@ pub unsafe extern "C" fn ffi_ml_credential_encrypt_alloc(
     })
 }
 
+/// Decrypts the stored credential value `stored` under the base64 master key
+/// `key`; the clear value goes to `*out_ptr`/`*out_len`.
+///
+/// # Safety
+/// Each pointer must be valid for its length; `out_ptr` and `out_len` for
+/// one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_credential_decrypt_alloc(
+    key: *const u8,
+    key_len: usize,
+    stored: *const u8,
+    stored_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len) }?;
+        // SAFETY: caller contract, for both.
+        let (key, stored) = unsafe {
+            (
+                str_from_raw(key.cast(), key_len)?,
+                str_from_raw(stored.cast(), stored_len)?,
+            )
+        };
+        let plain = esdk::decrypt_credential(key, stored).map_err(ml_failure)?;
+        // SAFETY: caller contract.
+        unsafe { give(plain.into_bytes(), out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// Opens the connector document `doc` (its `credential` values as stored,
 /// decrypted here under the base64 master key `key`) as a remote model;
 /// writes its handle to `*out_handle`.
@@ -439,6 +471,28 @@ mod tests {
     fn remote_call(handle: u64, req: &str) -> Result<String, i32> {
         // SAFETY: valid buffers.
         alloc(|p, n| unsafe { ffi_ml_remote_call_alloc(handle, req.as_ptr(), req.len(), p, n) })
+    }
+
+    #[test]
+    fn a_credential_decrypts_to_what_was_encrypted() {
+        // SAFETY: valid buffers.
+        let stored = alloc(|p, n| unsafe {
+            ffi_ml_credential_encrypt_alloc(KEY.as_ptr(), KEY.len(), b"sk-1".as_ptr(), 4, p, n)
+        })
+        .unwrap();
+        // SAFETY: valid buffers.
+        let plain = alloc(|p, n| unsafe {
+            ffi_ml_credential_decrypt_alloc(
+                KEY.as_ptr(),
+                KEY.len(),
+                stored.as_ptr(),
+                stored.len(),
+                p,
+                n,
+            )
+        })
+        .unwrap();
+        assert_eq!(plain, "sk-1");
     }
 
     #[test]
