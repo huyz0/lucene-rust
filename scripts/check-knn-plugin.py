@@ -306,7 +306,7 @@ def grouped_check(failures):
         settings = {"index.knn": True, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1,
                     "index.merge.policy.max_merge_at_once": 100, "index.merge.policy.segments_per_tier": 100}
         if rust:
-            settings["index.lucene_rust.engine"] = True
+            settings["index.engine.accelerated"] = True
         req(port, "PUT", f"/{name}", {"settings": settings, "mappings": {"properties": {**props, "emb": emb}}})
         per = len(docs) // SEGMENTS
         for s in range(SEGMENTS):
