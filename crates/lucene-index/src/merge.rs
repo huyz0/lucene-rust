@@ -1498,7 +1498,7 @@ fn reordered_doc_order(
 }
 
 fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
-    let mut order = Vec::new();
+    let mut order = Vec::with_capacity(per_source_live_ids.iter().map(Vec::len).sum());
     for (src_idx, live_ids) in per_source_live_ids.iter().enumerate() {
         for &doc_id in live_ids {
             order.push((src_idx, doc_id));
@@ -2551,99 +2551,64 @@ fn merge_segments_mapped_inner(
     // written before a failing stage, and which error wins, are unchanged.
     let reverse_maps = invert_field_number_maps(&per_source_maps);
     let sorted_numeric_remap = options.sorted_numeric_remap.as_deref();
-    let (doc_values_results, (norms_result, points_result)) = rayon::join(
-        || {
-            let (numeric, (binary, (sorted, (sorted_numeric, sorted_set)))) = rayon::join(
-                || {
-                    merge_numeric_doc_values(
-                        sources,
-                        &per_source_maps,
-                        &reverse_maps,
-                        &per_source_live_ids,
-                        &doc_order,
-                    )
-                },
-                || {
-                    rayon::join(
-                        || {
-                            merge_binary_doc_values(
-                                sources,
-                                &per_source_maps,
-                                &reverse_maps,
-                                &per_source_live_ids,
-                                &doc_order,
-                            )
-                        },
-                        || {
-                            rayon::join(
-                                || {
-                                    merge_sorted_doc_values(
-                                        sources,
-                                        &per_source_maps,
-                                        &reverse_maps,
-                                        &per_source_live_ids,
-                                        &doc_order,
-                                    )
-                                },
-                                || {
-                                    rayon::join(
-                                        || {
-                                            merge_sorted_numeric_doc_values(
-                                                sources,
-                                                &per_source_maps,
-                                                &reverse_maps,
-                                                &per_source_live_ids,
-                                                &doc_order,
-                                                &merged_fields,
-                                                sorted_numeric_remap,
-                                            )
-                                        },
-                                        || {
-                                            merge_sorted_set_doc_values(
-                                                sources,
-                                                &per_source_maps,
-                                                &reverse_maps,
-                                                &per_source_live_ids,
-                                                &doc_order,
-                                            )
-                                        },
-                                    )
-                                },
-                            )
-                        },
-                    )
-                },
-            );
-            [numeric, binary, sorted, sorted_numeric, sorted_set]
-        },
-        || {
-            rayon::join(
-                || {
-                    merge_norms(
-                        sources,
-                        &merged_fields,
-                        &reverse_maps,
-                        &per_source_live_ids,
-                        &doc_order,
-                    )
-                },
-                || {
-                    merge_points(
-                        sources,
-                        &per_source_maps,
-                        &per_source_live_ids,
-                        &doc_id_maps,
-                        &merged_fields,
-                    )
-                },
-            )
-        },
+    let norms_result = merge_norms(
+        sources,
+        &merged_fields,
+        &reverse_maps,
+        &per_source_live_ids,
+        &doc_order,
     );
-    let mut merged_doc_values = Vec::new();
-    for result in doc_values_results {
-        merged_doc_values.extend(result?);
-    }
-    merged_doc_values.sort_by_key(|f| f.field_number());
+    // The doc-values columns are built a few fields at a time as the files
+    // are written, so a merge holds a handful of columns, not the segment's
+    // whole doc-values data.
+    let merge_doc_values_field = |field_number: i32| -> Result<Vec<MergedDocValuesField>> {
+        let only = Some(field_number);
+        let mut merged = merge_numeric_doc_values(
+            sources,
+            &per_source_maps,
+            &reverse_maps,
+            &per_source_live_ids,
+            &doc_order,
+            only,
+        )?;
+        merged.extend(merge_binary_doc_values(
+            sources,
+            &per_source_maps,
+            &reverse_maps,
+            &per_source_live_ids,
+            &doc_order,
+            only,
+        )?);
+        merged.extend(merge_sorted_doc_values(
+            sources,
+            &per_source_maps,
+            &reverse_maps,
+            &per_source_live_ids,
+            &doc_order,
+            only,
+        )?);
+        merged.extend(merge_sorted_numeric_doc_values(
+            sources,
+            &per_source_maps,
+            &reverse_maps,
+            &per_source_live_ids,
+            &doc_order,
+            &merged_fields,
+            sorted_numeric_remap,
+            only,
+        )?);
+        merged.extend(merge_sorted_set_doc_values(
+            sources,
+            &per_source_maps,
+            &reverse_maps,
+            &per_source_live_ids,
+            &doc_order,
+            only,
+        )?);
+        Ok(merged)
+    };
+    let doc_values_field_numbers =
+        merged_doc_values_field_numbers(sources, &per_source_maps, &per_source_live_ids);
 
     let mut files: Vec<String> = Vec::new();
     // A `CompressingCodec`'s stored fields and term vectors take its format's
@@ -2794,7 +2759,6 @@ fn merge_segments_mapped_inner(
         &doc_order,
         &merged_fields,
     )?;
-    let merged_points_fields = points_result?;
     // What the merged `.fnm` is allowed to claim, captured before the values
     // below are consumed by their writers (see `describe_written_files`).
     let merged_field_by_number: HashMap<i32, &FieldInfo> =
@@ -2814,9 +2778,9 @@ fn merge_segments_mapped_inner(
     // in field-number order, each field to the instance of the format it is
     // routed to now (`getInstance(fi, true)` ignores the sources' routing).
     let doc_values_groups = {
-        let mut fields: Vec<(i32, String)> = merged_doc_values
+        let mut fields: Vec<(i32, String)> = doc_values_field_numbers
             .iter()
-            .map(|f| (f.field_number(), field_name(f.field_number())))
+            .map(|&n| (n, field_name(n)))
             .collect();
         fields.sort_by_key(|(number, _)| *number);
         let fields: Vec<(i32, &str)> = fields.iter().map(|(n, s)| (*n, s.as_str())).collect();
@@ -2971,19 +2935,7 @@ fn merge_segments_mapped_inner(
     // Every doc-values field of the merged segment shares one
     // `.dvm`/`.dvd`/`.dvs` triple, which is what a real multi-field
     // `Lucene90DocValuesFormat` segment looks like.
-    // `merged_doc_values` is (stably) sorted by field number above, so the
-    // first entry at or after `n` is what a linear `find` would return.
-    let merged_doc_values_of = |n: i32| {
-        let at = merged_doc_values.partition_point(|f| f.field_number() < n);
-        merged_doc_values.get(at).filter(|f| f.field_number() == n)
-    };
     for group in &doc_values_groups {
-        let dense_fields: Vec<doc_values::DenseField<'_>> = group
-            .field_numbers
-            .iter()
-            .filter_map(|&n| merged_doc_values_of(n))
-            .map(|f| f.as_dense_field())
-            .collect();
         let in_group: HashSet<i32> = group.field_numbers.iter().copied().collect();
         // `addNumericField` & co. write a skip index for every field whose
         // merged `FieldInfo` asks for one.
@@ -3001,14 +2953,23 @@ fn merge_segments_mapped_inner(
             options.codec.as_deref(),
             group.field_numbers.len(),
             || -> Result<()> {
-                let (dvm, dvd, dvs) = doc_values::write_fields_with_format(
-                    &dense_fields,
+                let mut writer = doc_values::FieldsWriter::new(
                     &skip_indexes,
                     doc_count,
                     &merged_segment_id,
                     &codec_suffix,
                     group.format,
-                )?;
+                );
+                for window in group.field_numbers.chunks(DOC_VALUES_MERGE_WINDOW) {
+                    let columns: Vec<Vec<MergedDocValuesField>> = window
+                        .par_iter()
+                        .map(|&n| merge_doc_values_field(n))
+                        .collect::<Result<_>>()?;
+                    for column in columns.iter().flatten() {
+                        writer.write_field(&column.as_dense_field())?;
+                    }
+                }
+                let (dvm, dvd, dvs) = writer.finish()?;
                 let field_infos = field_infos::FieldInfos {
                     fields: merged_fields
                         .iter()
@@ -3086,12 +3047,34 @@ fn merge_segments_mapped_inner(
                     suffix: "",
                     max_doc: doc_count,
                 },
-                merged_points_fields,
+                merge_points(
+                    sources,
+                    &per_source_maps,
+                    &per_source_live_ids,
+                    &doc_id_maps,
+                    &merged_fields,
+                    None,
+                )?,
                 native_merge,
             )?);
         } else {
-            let (kdm, kdi, kdd) = points::write_merged_with_mode(
-                merged_points_fields,
+            // One field's points are gathered at a time, as its tree is
+            // written.
+            let fields = points_candidates(&merged_fields).into_iter().flat_map(|n| {
+                match merge_points(
+                    sources,
+                    &per_source_maps,
+                    &per_source_live_ids,
+                    &doc_id_maps,
+                    &merged_fields,
+                    Some(n),
+                ) {
+                    Ok(found) => found.into_iter().map(Ok).collect::<Vec<_>>(),
+                    Err(e) => vec![Err(e)],
+                }
+            });
+            let (kdm, kdi, kdd) = points::write_merged_streaming(
+                fields,
                 points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
                 doc_count,
                 dir,
@@ -3435,17 +3418,6 @@ enum MergedDocValuesField {
 }
 
 impl MergedDocValuesField {
-    fn field_number(&self) -> i32 {
-        match self {
-            MergedDocValuesField::Numeric(n, _)
-            | MergedDocValuesField::SparseNumeric(n, _)
-            | MergedDocValuesField::Binary(n, _)
-            | MergedDocValuesField::SortedNumeric(n, _)
-            | MergedDocValuesField::SortedOrds(n, _)
-            | MergedDocValuesField::SortedSetOrds(n, _) => *n,
-        }
-    }
-
     fn as_dense_field(&self) -> doc_values::DenseField<'_> {
         match self {
             MergedDocValuesField::Numeric(n, v) => doc_values::DenseField::Numeric(*n, v),
@@ -3549,6 +3521,7 @@ fn merge_numeric_doc_values(
     reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
+    only: Option<i32>,
 ) -> Result<Vec<MergedDocValuesField>> {
     let candidates = doc_values_candidates(
         sources,
@@ -3557,6 +3530,10 @@ fn merge_numeric_doc_values(
         |s| s.numeric_doc_values,
         |f| f.entry.field_number,
     );
+    let candidates: Vec<i32> = candidates
+        .into_iter()
+        .filter(|n| only.is_none_or(|o| o == *n))
+        .collect();
     let by_number = index_source_fields(
         sources,
         per_source_live_ids,
@@ -3673,6 +3650,56 @@ fn merge_numeric_doc_values(
     Ok(merged)
 }
 
+/// How many doc-values columns a merge builds at once.
+const DOC_VALUES_MERGE_WINDOW: usize = 4;
+
+/// Every merged field number some source has doc-values data of any kind for,
+/// ascending: what the five `merge_*_doc_values` stages would produce between
+/// them.
+fn merged_doc_values_field_numbers(
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    per_source_live_ids: &[Vec<i32>],
+) -> Vec<i32> {
+    let mut numbers = doc_values_candidates(
+        sources,
+        per_source_maps,
+        per_source_live_ids,
+        |s| s.numeric_doc_values,
+        |f| f.entry.field_number,
+    );
+    numbers.extend(doc_values_candidates(
+        sources,
+        per_source_maps,
+        per_source_live_ids,
+        |s| s.binary_doc_values,
+        |f| f.entry.field_number,
+    ));
+    numbers.extend(doc_values_candidates(
+        sources,
+        per_source_maps,
+        per_source_live_ids,
+        |s| s.sorted_doc_values,
+        |f| f.entry.field_number,
+    ));
+    numbers.extend(doc_values_candidates(
+        sources,
+        per_source_maps,
+        per_source_live_ids,
+        |s| s.sorted_numeric_doc_values,
+        |f| f.entry.field_number,
+    ));
+    numbers.extend(doc_values_candidates(
+        sources,
+        per_source_maps,
+        per_source_live_ids,
+        |s| s.sorted_set_doc_values,
+        |f| f.entry.field_number,
+    ));
+    numbers.sort_unstable();
+    numbers
+}
+
 /// Each contributing source's entry for `merged_field_number`, or `None` for
 /// a source with no live documents or no such column --
 /// `DocValuesConsumer.getMerged*DocValues`' rule that a source whose
@@ -3709,6 +3736,7 @@ fn merge_binary_doc_values(
     reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
+    only: Option<i32>,
 ) -> Result<Vec<MergedDocValuesField>> {
     let candidates = doc_values_candidates(
         sources,
@@ -3717,6 +3745,10 @@ fn merge_binary_doc_values(
         |s| s.binary_doc_values,
         |f| f.entry.field_number,
     );
+    let candidates: Vec<i32> = candidates
+        .into_iter()
+        .filter(|n| only.is_none_or(|o| o == *n))
+        .collect();
     let by_number = index_source_fields(
         sources,
         per_source_live_ids,
@@ -3871,6 +3903,7 @@ fn merge_sorted_doc_values(
     reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
+    only: Option<i32>,
 ) -> Result<Vec<MergedDocValuesField>> {
     let candidates = doc_values_candidates(
         sources,
@@ -3879,6 +3912,10 @@ fn merge_sorted_doc_values(
         |s| s.sorted_doc_values,
         |f| f.entry.field_number,
     );
+    let candidates: Vec<i32> = candidates
+        .into_iter()
+        .filter(|n| only.is_none_or(|o| o == *n))
+        .collect();
     let by_number = index_source_fields(
         sources,
         per_source_live_ids,
@@ -3919,6 +3956,8 @@ fn merge_sorted_doc_values(
             .map(|e| e.map(|e| doc_values::NumericReader::new(e.data, &e.entry.ords)))
             .collect();
         let mut column = doc_values::SortedOrdsColumn::default();
+        column.docs.reserve_exact(doc_order.len());
+        column.ords.reserve_exact(doc_order.len());
         for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
             let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
@@ -3950,6 +3989,7 @@ fn merge_sorted_doc_values(
 /// its source has no column or the column gives it no values.
 ///
 /// A field `remap` names has each document's values rewritten through it.
+#[allow(clippy::too_many_arguments)]
 fn merge_sorted_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
@@ -3958,6 +3998,7 @@ fn merge_sorted_numeric_doc_values(
     doc_order: &[(usize, i32)],
     merged_fields: &[FieldInfo],
     remap: Option<&SortedNumericRemap>,
+    only: Option<i32>,
 ) -> Result<Vec<MergedDocValuesField>> {
     let candidates = doc_values_candidates(
         sources,
@@ -3966,6 +4007,10 @@ fn merge_sorted_numeric_doc_values(
         |s| s.sorted_numeric_doc_values,
         |f| f.entry.field_number,
     );
+    let candidates: Vec<i32> = candidates
+        .into_iter()
+        .filter(|n| only.is_none_or(|o| o == *n))
+        .collect();
     let by_number = index_source_fields(
         sources,
         per_source_live_ids,
@@ -3987,6 +4032,9 @@ fn merge_sorted_numeric_doc_values(
         });
         let mut scratch: Vec<i64> = Vec::new();
         let mut column = doc_values::SortedNumericColumn::default();
+        column.docs.reserve_exact(doc_order.len());
+        column.counts.reserve_exact(doc_order.len());
+        column.values.reserve_exact(doc_order.len());
         for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
             let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
@@ -4081,6 +4129,7 @@ fn merge_sorted_set_doc_values(
     reverse_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
+    only: Option<i32>,
 ) -> Result<Vec<MergedDocValuesField>> {
     let candidates = doc_values_candidates(
         sources,
@@ -4089,6 +4138,10 @@ fn merge_sorted_set_doc_values(
         |s| s.sorted_set_doc_values,
         |f| f.entry.field_number,
     );
+    let candidates: Vec<i32> = candidates
+        .into_iter()
+        .filter(|n| only.is_none_or(|o| o == *n))
+        .collect();
     let by_number = index_source_fields(
         sources,
         per_source_live_ids,
@@ -4127,6 +4180,9 @@ fn merge_sorted_set_doc_values(
             .collect();
         let mut scratch: Vec<i64> = Vec::new();
         let mut column = doc_values::SortedSetOrdsColumn::default();
+        column.docs.reserve_exact(doc_order.len());
+        column.counts.reserve_exact(doc_order.len());
+        column.ords.reserve_exact(doc_order.len());
         for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
             let Some(reader) = readers[src_idx].as_mut() else {
                 continue;
@@ -6546,15 +6602,10 @@ pub(crate) fn merge_points(
     _per_source_live_ids: &[Vec<i32>],
     doc_id_maps: &[Vec<i32>],
     merged_fields: &[FieldInfo],
+    only: Option<i32>,
 ) -> Result<Vec<points::MergePointsField>> {
-    // Java iterates merged FieldInfos, including fields whose reader has no
-    // BKD entry because an earlier merge deleted every point.
-    let mut candidates: Vec<i32> = merged_fields
-        .iter()
-        .filter(|field| field.point_dimension_count > 0)
-        .map(|field| field.number)
-        .collect();
-    candidates.sort_unstable();
+    let mut candidates = points_candidates(merged_fields);
+    candidates.retain(|n| only.is_none_or(|o| o == *n));
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -6672,6 +6723,18 @@ pub(crate) fn merge_points(
     }
 
     Ok(result)
+}
+
+/// Java iterates merged FieldInfos, including fields whose reader has no
+/// BKD entry because an earlier merge deleted every point.
+fn points_candidates(merged_fields: &[FieldInfo]) -> Vec<i32> {
+    let mut candidates: Vec<i32> = merged_fields
+        .iter()
+        .filter(|field| field.point_dimension_count > 0)
+        .map(|field| field.number)
+        .collect();
+    candidates.sort_unstable();
+    candidates
 }
 
 #[cfg(test)]
@@ -16206,6 +16269,7 @@ mod tests {
             &[vec![0], vec![]],
             &[vec![0], vec![-1]],
             &merged_fields,
+            None,
         )
         .unwrap();
         assert_eq!(merged_points[0].max_point_count, 2);
