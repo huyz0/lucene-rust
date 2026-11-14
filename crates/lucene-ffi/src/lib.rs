@@ -7,7 +7,11 @@
 //!   analyzers built from specs) is in [`lucene_engine`], which has no
 //!   pointers or handles; this crate reads the caller's memory and hands the
 //!   engine slices.
-//! - [`engine_writer`] is the shard's index writer, fed operation blobs.
+//! - [`engine_writer`] is the shard's index writer, fed operation blobs; its
+//!   settings, merge policies, commit points and counters are
+//!   [`lucene_engine::writer_ops`], the writer itself [`lucene_engine::writer`],
+//!   and the live search of its buffers [`lucene_engine::live`]. This crate
+//!   keeps the owned writer handle, the JVM upcalls and the entry points.
 //! - [`store`] binds encrypted shard directories to their key upcall.
 //! - [`ffm_bridge`] holds the allocation and error helpers only FFM needs.
 //!
