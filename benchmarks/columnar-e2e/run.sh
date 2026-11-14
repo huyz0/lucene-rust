@@ -36,6 +36,7 @@ run() { # name image so label settings
   $S merge $U
   taskset -c 3 $S stats $U out/$TAG-$4.stats.json
   taskset -c 3 $S time $U $DATA $4 out/$TAG-$4.json
+  [ -z "$POST" ] || $POST $1 out/$TAG-$4.choice.txt
   docker rm -f $1 >/dev/null
 }
 [ -n "$SKIP_STOCK" ] || run colstock opensearchproject/opensearch:3.9.0 "" stock "$STOCK_SETTINGS"
