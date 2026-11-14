@@ -1578,6 +1578,31 @@ public final class MlCommons {
     }
 
     /**
+     * {@code QuestionAnsweringInput}: the question and context of a {@code question_answering} predict
+     * input. A value that is not text, a number or a boolean leaves stock's parser with no input at all; an absent
+     * or empty one is refused as not provided.
+     */
+    static Map.Entry<String, String> questionAnsweringInput(Map<String, Object> body) {
+        for (String key : List.of("question", "context")) {
+            if (body.containsKey(key) && (body.get(key) instanceof String || body.get(key) instanceof Number || body.get(key) instanceof Boolean) == false) {
+                throw new OpenSearchStatusException(
+                    "Cannot invoke \"org.opensearch.ml.common.input.MLInput.setAlgorithm(org.opensearch.ml.common.FunctionName)\" because \"mlInput\" is null",
+                    RestStatus.INTERNAL_SERVER_ERROR
+                );
+            }
+        }
+        String question = body.get("question") == null ? "" : String.valueOf(body.get("question"));
+        String context = body.get("context") == null ? "" : String.valueOf(body.get("context"));
+        if (question.isEmpty()) {
+            throw new IllegalArgumentException("Question is not provided");
+        }
+        if (context.isEmpty()) {
+            throw new IllegalArgumentException("Context is not provided");
+        }
+        return Map.entry(question, context);
+    }
+
+    /**
      * {@code POST _plugins/_ml/_predict/<algorithm>/<model_id>} and {@code models/<id>/_predict}: run
      * where the model is deployed, here if possible.
      */
@@ -1671,6 +1696,8 @@ public final class MlCommons {
         }
         if ("TEXT_SIMILARITY".equals(function)) {
             similarityInput(body);
+        } else if ("QUESTION_ANSWERING".equals(function)) {
+            questionAnsweringInput(body);
         } else {
             textDocs(body);
         }
@@ -1707,6 +1734,12 @@ public final class MlCommons {
             } catch (Exception e) {
                 throw new MLException(e.getMessage() == null ? e.toString() : e.getMessage(), e);
             }
+        }
+        if ("QUESTION_ANSWERING".equals(function) || "QUESTION_ANSWERING".equals(route)) {
+            if ("QUESTION_ANSWERING".equals(function) == false || (route != null && "QUESTION_ANSWERING".equals(route) == false)) {
+                throw new MLException("Failed to inference " + function + " model: " + modelId);
+            }
+            return highlight(modelId, questionAnsweringInput(body));
         }
         boolean similarity = "TEXT_SIMILARITY".equals(function);
         if (route != null && "TEXT_SIMILARITY".equals(route) != similarity) {
@@ -1981,6 +2014,32 @@ public final class MlCommons {
             results.add(Map.of("output", output));
         }
         return Map.of("inference_results", results);
+    }
+
+    /**
+     * {@code QuestionAnsweringModel} with its {@code SentenceHighlightingQATranslator}: one {@code
+     * highlights} tensor listing the relevant sentences of the context in order.
+     */
+    private Map<String, Object> highlight(String modelId, Map.Entry<String, String> input) {
+        List<LocalModels.Highlight> hits;
+        try {
+            hits = local.highlight(modelId, input.getKey(), input.getValue());
+        } catch (LocalModels.InferenceException e) {
+            throw new MLException("Failed to inference QUESTION_ANSWERING model: " + modelId, e.getCause());
+        }
+        List<Object> highlights = new ArrayList<>(hits.size());
+        for (LocalModels.Highlight h : hits) {
+            Map<String, Object> hit = new LinkedHashMap<>();
+            hit.put("text", h.text());
+            hit.put("position", h.position());
+            hit.put("start", h.start());
+            hit.put("end", h.end());
+            highlights.add(hit);
+        }
+        Map<String, Object> tensor = new LinkedHashMap<>();
+        tensor.put("name", "highlights");
+        tensor.put("dataAsMap", Map.of("highlights", highlights));
+        return Map.of("inference_results", List.of(Map.of("output", List.of(tensor))));
     }
 
     /** The embeddings of {@code texts}, for the neural query, processors and semantic field. */

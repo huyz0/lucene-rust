@@ -512,6 +512,14 @@ public final class NativeBridge {
             "ffi_ml_text_similarity_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
         );
+        static final MethodHandle ML_HIGHLIGHTER_OPEN = bind(
+            "ffi_ml_highlighter_open",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_BYTE, ADDRESS)
+        );
+        static final MethodHandle ML_HIGHLIGHT = bind(
+            "ffi_ml_highlight_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
         static final MethodHandle ML_MODEL_CLOSE = bind("ffi_ml_model_close", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         static final MethodHandle ML_MASTER_KEY = bind("ffi_ml_master_key_alloc", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
         static final MethodHandle ML_CREDENTIAL_ENCRYPT = bind(
@@ -2485,6 +2493,61 @@ public final class NativeBridge {
                 ptrOf(slot),
                 lenOf(slot)
             );
+            return rc == OK ? take(slot) : null;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@link #mlHighlighterOpen} flag: a context longer than the token limit is read past its first chunk. */
+    public static final int HIGHLIGHT_OVERFLOWING = 1;
+    /** {@link #mlHighlighterOpen} flag: each chunk is padded. */
+    public static final int HIGHLIGHT_PADDING = 2;
+
+    /**
+     * Opens the TorchScript sentence highlighting model at {@code modelPath} with the {@code
+     * tokenizer.json} bytes, cutting a context into chunks of {@code maxLength} tokens that overlap by
+     * {@code stride}, as the {@code HIGHLIGHT_*} bits of {@code flags} say. Its handle goes to {@code
+     * outHandle[0]}. {@link #mlTorchInit} must have succeeded.
+     */
+    public static int mlHighlighterOpen(String modelPath, byte[] tokenizer, int maxLength, int stride, int flags, long[] outHandle) {
+        if (outHandle == null || outHandle.length < 1) {
+            return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+        }
+        byte[] model = modelPath.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment handle = s.alloc(Long.BYTES);
+            int rc = (int) H.ML_HIGHLIGHTER_OPEN.invokeExact(
+                s.bytes(model),
+                (long) model.length,
+                s.bytes(tokenizer),
+                (long) tokenizer.length,
+                maxLength,
+                stride,
+                (byte) flags,
+                handle
+            );
+            if (rc == OK) {
+                outHandle[0] = handle.get(JAVA_LONG, 0);
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * The sentences of {@code context} that answer {@code question}, from highlighter {@code handle}: a
+     * {@code u32} count, then per sentence its {@code u32} position, start and end (UTF-16 units), the
+     * {@code u32} byte length of its text and the UTF-8 text. {@code null} on failure, with the reason
+     * in {@link #lastError}.
+     */
+    public static byte[] mlHighlight(long handle, String question, String context) {
+        byte[] q = question.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] c = context.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = ownedSlot(s);
+            int rc = (int) H.ML_HIGHLIGHT.invokeExact(handle, s.bytes(q), (long) q.length, s.bytes(c), (long) c.length, ptrOf(slot), lenOf(slot));
             return rc == OK ? take(slot) : null;
         } catch (Throwable t) {
             throw rethrow(t);
