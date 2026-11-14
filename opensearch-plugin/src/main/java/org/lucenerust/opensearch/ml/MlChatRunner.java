@@ -67,6 +67,7 @@ final class MlChatRunner {
     private static final class Run {
         Map<String, String> params;
         Map<String, Map<String, Object>> specs = new HashMap<>();
+        final Map<String, MlMcp.Tool> mcp = new HashMap<>();
         String modelId;
         String memoryId;
         String parent;
@@ -114,10 +115,26 @@ final class MlChatRunner {
         }
         run.max = Integer.parseInt(run.params.getOrDefault("max_iteration", String.valueOf(DEFAULT_MAX_ITERATIONS)));
         List<Map<String, Object>> list = agent.get("tools") instanceof List<?> l ? (List<Map<String, Object>>) l : List.of();
+        MlMcp.Tools mcp = agent.get(MlAgentRunner.MCP) instanceof MlMcp.Tools t ? t : new MlMcp.Tools();
         for (Map<String, Object> spec : list) {
             String type = String.valueOf(spec.get("type"));
             String name = spec.get("name") == null ? type : String.valueOf(spec.get("name"));
             run.specs.put(name, spec);
+        }
+        for (MlMcp.Tool t : mcp.all()) {
+            Map<String, Object> spec = new LinkedHashMap<>();
+            spec.put("type", t.type());
+            spec.put("name", t.name());
+            spec.put("description", t.description());
+            spec.put("attributes", Map.of("input_schema", t.schema()));
+            run.specs.put(t.name(), spec);
+            run.mcp.put(t.name(), t);
+        }
+        if (mcp.isEmpty() == false) {
+            // With MCP tools the agent's tools sit in a map sized for them and one more.
+            Map<String, Map<String, Object>> sized = new HashMap<>(run.specs.size() + 1);
+            sized.putAll(run.specs);
+            run.specs = sized;
         }
         run.memory = agent.get("memory") instanceof Map<?, ?>;
         String given = run.params.get("memory_id");
@@ -259,7 +276,18 @@ final class MlChatRunner {
             }, listener::onFailure));
         });
         try {
-            tools.tool(type, params, run.chain, done);
+            if (MlMcp.isTool(type)) {
+                Map<String, Object> given;
+                try {
+                    given = MlMcp.arguments(arguments);
+                } catch (IllegalArgumentException e) {
+                    done.onFailure(new IllegalArgumentException("Invalid JSON format: " + e.getMessage(), e));
+                    return;
+                }
+                tools.callMcp(run.mcp.get(name), given, done);
+            } else {
+                tools.tool(type, params, run.chain, done);
+            }
         } catch (RuntimeException e) {
             done.onFailure(e);
         }
@@ -381,7 +409,8 @@ final class MlChatRunner {
             }
             String description = MlAgentRunner.escape(spec.get("description") != null ? String.valueOf(spec.get("description")) : entry == null ? "" : String.valueOf(entry.get("description")));
             String name = MlAgentRunner.escape(e.getKey());
-            Map<?, ?> attributes = entry != null && entry.get("attributes") instanceof Map<?, ?> a ? a : Map.of();
+            Map<?, ?> attributes = spec.get("attributes") instanceof Map<?, ?> own ? own
+                : entry != null && entry.get("attributes") instanceof Map<?, ?> a ? a : Map.of();
             Object given = attributes.get("input_schema");
             switch (run.style) {
                 case "bedrock" -> entries.add(

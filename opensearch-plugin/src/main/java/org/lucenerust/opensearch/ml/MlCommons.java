@@ -246,6 +246,15 @@ public final class MlCommons {
         }, listener::onFailure));
     }
 
+    /** Runs {@code work} on the pool for calls to remote services. */
+    void remoteWork(Runnable work) {
+        threadPool.executor(REMOTE_PREDICT_THREAD_POOL).execute(work);
+    }
+
+    RemoteModels remote() {
+        return remote;
+    }
+
     private void closeConnector(long handle) {
         try {
             NativeBridge.mlModelClose(handle);

@@ -154,6 +154,12 @@ public final class MlRestHandlers {
                 List.of(new Route(GET, BASE + "/connectors/{connector_id}"))
             ),
             new Handler(
+                "ml_mcp_connector_list_tools_action",
+                MlActions.LIST_MCP_TOOLS,
+                Set.of(),
+                List.of(new Route(GET, BASE + "/connectors/{connector_id}/tools"))
+            ),
+            new Handler(
                 "ml_update_connector_action",
                 MlActions.UPDATE_CONNECTOR,
                 Set.of(),

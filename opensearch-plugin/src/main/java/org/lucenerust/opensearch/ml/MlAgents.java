@@ -151,6 +151,10 @@ final class MlAgents {
             listener.onFailure(e);
             return;
         }
+        if (agent.get("parameters") instanceof Map<?, ?> p && p.get("mcp_connectors") != null && ml.remote().mcpEnabled() == false) {
+            listener.onFailure(new org.opensearch.OpenSearchException(MlSettings.ML_COMMONS_MCP_CONNECTOR_DISABLED_MESSAGE));
+            return;
+        }
         long t = MlCommons.now();
         agent.put("created_time", t);
         agent.put("last_updated_time", t);
