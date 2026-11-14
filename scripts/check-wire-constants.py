@@ -113,6 +113,8 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",
+    ("JsScripts.java", "CACHE_LIMIT"): "the plugin's cache of js check results, in Java only",
     ("MlAgents.java", "MAX_NAME"): "the longest agent name ml-commons accepts, checked in Java when an agent is registered or updated",
     ("MlAgentRunner.java", "MAX_DEPTH"): "how many agents may call one another through AgentTool, checked in Java",
     ("MlMemory.java", "DEFAULT_MAX"): "stock's default page size of the memory listings, Java only",

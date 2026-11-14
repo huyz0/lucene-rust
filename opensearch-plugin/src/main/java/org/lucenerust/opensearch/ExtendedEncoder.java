@@ -33,6 +33,7 @@ import org.opensearch.common.lucene.search.function.CombineFunction;
 import org.opensearch.common.lucene.search.function.FieldValueFactorFunction;
 import org.opensearch.common.lucene.search.function.FunctionScoreQuery;
 import org.opensearch.common.lucene.search.function.ScriptScoreQuery;
+import org.lucenerust.opensearch.js.JsScripts;
 import org.lucenerust.opensearch.painless.PainlessIr;
 import org.lucenerust.opensearch.painless.PainlessScore;
 import org.lucenerust.opensearch.knn.script.KnnScoringScriptEngine;
@@ -772,6 +773,9 @@ final class ExtendedEncoder {
      */
     private static String painlessKnn(ScriptScoreQuery q, ByteArrayOutputStream out, Child child) throws ReflectiveOperationException {
         Script script = (Script) field(q, "script");
+        if (field(q, "scriptBuilder") instanceof JsScripts.Leaf js) {
+            return field(q, "minScore") != null ? "script_score_min_score" : jsScore(q, js, out, child);
+        }
         if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
             return "script_score_script";
         }
@@ -848,6 +852,15 @@ final class ExtendedEncoder {
      */
     private static String painlessFilter(Query q, ByteArrayOutputStream out) throws ReflectiveOperationException {
         Script script = (Script) field(q, "script");
+        if (field(q, "filterScript") instanceof JsScripts.Leaf js) {
+            Object prepared = js(js, PainlessScore.FILTER, "script_query");
+            if (prepared instanceof String reason) {
+                return reason;
+            }
+            out.write(NODE_PAINLESS_FILTER);
+            jsSpec(out, (Js) prepared, "", 0);
+            return null;
+        }
         if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
             return "script_query_script";
         }
@@ -869,6 +882,9 @@ final class ExtendedEncoder {
     static String painlessSort(NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
         if (factory.needs_score()) {
             return "sort_script_score";
+        }
+        if (factory instanceof JsScripts.Leaf js) {
+            return jsSpec(out, js, PainlessScore.SORT, "sort_script");
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
@@ -896,6 +912,9 @@ final class ExtendedEncoder {
         if (factory == null || factory.needs_score()) {
             return "aggregation_script_score";
         }
+        if (factory instanceof JsScripts.Leaf js) {
+            return jsSpec(out, js, PainlessScore.AGGREGATION, "aggregation_script");
+        }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
             return "aggregation_script";
@@ -919,6 +938,9 @@ final class ExtendedEncoder {
      * stays in Java.
      */
     static String painlessTermsSet(TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
+        if (factory instanceof JsScripts.Leaf js) {
+            return jsSpec(out, js, PainlessScore.TERMS_SET, "covering");
+        }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
             return "covering_script";
@@ -1112,6 +1134,84 @@ final class ExtendedEncoder {
         }
     }
 
+    /** A JavaScript script the native runtime runs: what {@link #jsSpec} writes, but the place and run. */
+    private record Js(byte context, String source, byte[] params, List<String> names, List<String> reads, byte[] kinds) {}
+
+    /**
+     * A {@code js} {@code script_score} query as node 43: its sub-query, then its script. A
+     * search the native runtime does not run fails before the script runs ({@link JsScripts}).
+     */
+    private static String jsScore(ScriptScoreQuery q, JsScripts.Leaf js, ByteArrayOutputStream out, Child child)
+        throws ReflectiveOperationException {
+        Object prepared = js(js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "script_score");
+        if (prepared instanceof String reason) {
+            return reason;
+        }
+        out.write(NODE_PAINLESS_SCORE);
+        String reason = child.node((Query) field(q, "subQuery"));
+        if (reason != null) {
+            return reason;
+        }
+        String index = (String) field(q, "indexName");
+        jsSpec(out, (Js) prepared, index == null ? "" : index, (int) field(q, "shardId"));
+        return null;
+    }
+
+    /** {@code js} in {@code context} written to {@code out}, or why not ({@code reason} and why). */
+    private static String jsSpec(ByteArrayOutputStream out, JsScripts.Leaf js, byte context, String reason) {
+        Object prepared = js(js, context, reason);
+        if (prepared instanceof String why) {
+            return why;
+        }
+        jsSpec(out, (Js) prepared, "", 0);
+        return null;
+    }
+
+    /**
+     * {@code js} in {@code context} as the native runtime runs it: a {@link Js} with the fields
+     * its source names that the mapping has, or why not.
+     */
+    private static Object js(JsScripts.Leaf js, byte context, String reason) {
+        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+        if (types == null) {
+            return reason + "_script";
+        }
+        byte[] params;
+        try {
+            params = PainlessIr.constant(js.params());
+        } catch (PainlessIr.Unsupported e) {
+            return reason + "_params";
+        }
+        List<String> names = JsScripts.fields(js.source(), types);
+        List<String> reads = new java.util.ArrayList<>(names.size());
+        byte[] kinds = new byte[names.size()];
+        for (int i = 0; i < kinds.length; i++) {
+            MappedFieldType ft = types.apply(names.get(i));
+            kinds[i] = jsFieldKind(ft);
+            reads.add(ft.name());
+        }
+        if (JsScripts.check(js.source(), context) != null) {
+            return reason + "_js";
+        }
+        return new Js(context, js.source(), params, names, reads, kinds);
+    }
+
+    /** How a field reads in a js script's {@code doc}: as in Painless, and a millisecond date as its epoch millis. */
+    private static byte jsFieldKind(MappedFieldType ft) {
+        if (ft instanceof org.opensearch.index.mapper.DateFieldMapper.DateFieldType d
+            && d.hasDocValues()
+            && d.resolution() == org.opensearch.index.mapper.DateFieldMapper.Resolution.MILLISECONDS) {
+            return PainlessScore.LONG;
+        }
+        return PainlessScore.fieldKind(ft);
+    }
+
+    /** A js script's node fields, after any sub-query, registered as this request's next run. */
+    private static void jsSpec(ByteArrayOutputStream out, Js js, String index, int shard) {
+        int run = PainlessScore.runJs(js.source());
+        JsScripts.writeSpec(out, js.context(), js.source(), js.params(), js.names(), js.reads(), js.kinds(), index, shard, run);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // function_score
     // ---------------------------------------------------------------------------------------------
@@ -1251,10 +1351,19 @@ final class ExtendedEncoder {
         }
         if (f.getClass() == ScriptScoreFunction.class) {
             Script script = (Script) field(f, "sScript");
+            ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(f, "script");
+            if (factory instanceof JsScripts.Leaf js) {
+                Object prepared = js(js, js.needsScore() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
+                if (prepared instanceof String) {
+                    return "function_score_script";
+                }
+                out.write(5);
+                jsSpec(out, (Js) prepared, (String) field(f, "indexName"), (int) field(f, "shardId"));
+                return null;
+            }
             if (script == null || script.getType() != ScriptType.INLINE || "painless".equals(script.getLang()) == false) {
                 return "function_score_script";
             }
-            ScoreScript.LeafFactory factory = (ScoreScript.LeafFactory) field(f, "script");
             Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
             if (prepared instanceof String) {
                 return "function_score_script";

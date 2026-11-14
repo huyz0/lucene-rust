@@ -194,6 +194,7 @@ public final class NativeSelfTest {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
         }
         check(NativeSelfTestLeaves.ENCODED.size() == NativeSelfTestLeaves.SHAPES, "leaf shapes compared: " + NativeSelfTestLeaves.ENCODED.keySet());
+        jsNames();
         NativeSelfTestSimilarity.run(new Random(29), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         check(NativeSelfTestSimilarity.COMPARED.size() == 9, "similarities compared: " + NativeSelfTestSimilarity.COMPARED.keySet());
         NativeSelfTestKnn.run(new Random(31), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -303,6 +304,26 @@ public final class NativeSelfTest {
                 .build();
             check(RealtimePrimaryFilter.segmentCopies(index) == c.primary(), "realtime primary routing: " + c);
         }
+    }
+
+    /** The names a js script may read a field by: a field a script reads is always among them. */
+    private static void jsNames() {
+        java.util.function.BiConsumer<String, List<String>> has = (source, want) -> {
+            java.util.Set<String> names = org.lucenerust.opensearch.js.JsScripts.names(source);
+            check(names.containsAll(want), "js names of " + source + ": " + names + " lack some of " + want);
+        };
+        has.accept("doc['likes'].value + _score", List.of("likes", "_score"));
+        has.accept("`${doc['likes'].value}:${doc[\"my-field\"].value}`", List.of("likes", "my-field"));
+        has.accept("/\"/.test(doc['tag'].value) ? doc['a.b'].value : 0", List.of("tag", "a.b"));
+        has.accept("// doc['x']\ndoc['y'].value", List.of("y"));
+        has.accept("doc['it\\'s'].value", List.of("it's"));
+        has.accept("doc['\\x61'].value + doc['\\u0062'].value + doc['\\u{63}'].value", List.of("a", "b", "c"));
+        StringBuilder many = new StringBuilder();
+        for (int i = 0; i < 300; i++) {
+            many.append("doc['f").append(i).append("'].value + ");
+        }
+        many.append("_score");
+        has.accept(many.toString(), List.of("f299", "_score"));
     }
 
     /**

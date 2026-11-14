@@ -305,8 +305,9 @@ pub struct SearchOutput {
 }
 
 /// How a grouped search ([`IvfReader::search_grouped`]) sorts documents into
-/// groups: the best document of each of the best `k` groups is returned, as
-/// a block-join search returns each parent's best child.
+/// groups: the best `per_group` documents of each of the best `k` groups
+/// are returned (with one per group, as a block-join search returns each
+/// parent's best child).
 pub struct Grouping<'a> {
     /// A document's group (its parent).
     pub group: &'a dyn Fn(i32) -> i32,
@@ -314,76 +315,57 @@ pub struct Grouping<'a> {
     /// of candidates is this many times the ungrouped one, so siblings that
     /// score alike do not crowd other groups out of it. At least one.
     pub spread: usize,
+    /// The documents kept of each group, best first: one for a block-join
+    /// search, more for a search grouped by a field. At least one.
+    pub per_group: usize,
 }
 
 impl std::fmt::Debug for Grouping<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Grouping")
             .field("spread", &self.spread)
+            .field("per_group", &self.per_group)
             .finish_non_exhaustive()
     }
 }
 
-/// The best `size` groups offered, each by its best candidate: a candidate
-/// replaces its group's when it scores higher, and a new group enters when
-/// it beats the worst group held, which is then dropped.
+impl lucene_util::group_top::GroupItem for Candidate {
+    fn doc(&self) -> i32 {
+        self.doc
+    }
+}
+
+/// The best `per_group` candidates of each of the best `size` groups
+/// ([`lucene_util::group_top`]).
 struct GroupTop<'a> {
-    size: usize,
     group: &'a dyn Fn(i32) -> i32,
-    /// Each held group's candidate.
-    best: std::collections::HashMap<i32, Candidate>,
-    /// The held candidates, in order.
-    ranked: std::collections::BTreeSet<Candidate>,
+    top: lucene_util::group_top::GroupTop<Candidate>,
 }
 
 impl<'a> GroupTop<'a> {
-    fn new(size: usize, group: &'a dyn Fn(i32) -> i32) -> Self {
+    fn new(size: usize, per_group: usize, group: &'a dyn Fn(i32) -> i32) -> Self {
         GroupTop {
-            size,
             group,
-            best: std::collections::HashMap::new(),
-            ranked: std::collections::BTreeSet::new(),
+            top: lucene_util::group_top::GroupTop::new(size, per_group),
         }
     }
 
-    /// The worst group's score once `size` groups are held.
+    /// Once `size` groups are held, the worst candidate any of them holds.
     fn floor(&self) -> Option<f32> {
-        if self.ranked.len() < self.size {
-            return None;
-        }
-        self.ranked.first().map(|c| c.score)
+        self.top.floor().map(|c| c.score)
     }
 
     fn len(&self) -> usize {
-        self.ranked.len()
+        self.top.len()
     }
 
     fn offer(&mut self, c: Candidate) {
-        let g = (self.group)(c.doc);
-        if let Some(held) = self.best.get_mut(&g) {
-            if c > *held {
-                self.ranked.remove(held);
-                self.ranked.insert(c);
-                *held = c;
-            }
-            return;
-        }
-        if self.ranked.len() >= self.size {
-            match self.ranked.first() {
-                Some(worst) if c > *worst => {}
-                _ => return,
-            }
-            if let Some(worst) = self.ranked.pop_first() {
-                self.best.remove(&(self.group)(worst.doc));
-            }
-        }
-        self.best.insert(g, c);
-        self.ranked.insert(c);
+        self.top.offer((self.group)(c.doc), c);
     }
 
-    /// The groups' candidates, best first.
+    /// The held candidates, best first.
     fn into_sorted(self) -> Vec<Candidate> {
-        self.ranked.into_iter().rev().collect()
+        self.top.into_sorted()
     }
 }
 
@@ -1826,13 +1808,14 @@ impl IvfReader {
         self.search_among(field, query, params, accept, Some(clusters), shared, None)
     }
 
-    /// [`IvfReader::search_with`] returning the best document of each of the
-    /// best `params.k` groups `grouping` sorts the documents into (a
-    /// block-join search's best child per parent), best first, probing only
-    /// `clusters` when given (as [`IvfReader::search_within`]). The probes
-    /// are the same; the shortlist is `grouping.spread` times longer, and the
-    /// rerank keeps one document per group, stopping once no candidate left
-    /// can beat the `k`-th group. No threshold is shared: a group's score
+    /// [`IvfReader::search_with`] returning the best `grouping.per_group`
+    /// documents of each of the best `params.k` groups `grouping` sorts the
+    /// documents into (with one, a block-join search's best child per
+    /// parent), best first, probing only `clusters` when given (as
+    /// [`IvfReader::search_within`]). The probes are the same; the shortlist
+    /// is `grouping.spread` times longer, and the rerank keeps that many per
+    /// group, stopping once no candidate left can beat the worst document
+    /// the `k` groups hold. No threshold is shared: a group's score
     /// bounds no other search's.
     ///
     /// # Errors
@@ -1902,7 +1885,7 @@ impl IvfReader {
         )?;
         let hits = match (grouping, rerank) {
             (Some(g), 0) => {
-                let mut top = GroupTop::new(params.k, g.group);
+                let mut top = GroupTop::new(params.k, g.per_group, g.group);
                 for c in candidates {
                     top.offer(c);
                 }
@@ -1988,10 +1971,12 @@ impl IvfReader {
             .collect())
     }
 
-    /// [`IvfReader::rerank`] keeping each group's best candidate: the best
-    /// `k` groups by exact score. A candidate whose optimistic score is
-    /// below the `k`-th group's exact score can neither bring in a new group
-    /// nor raise a held one past it, so the same early stop holds.
+    /// [`IvfReader::rerank`] keeping each group's best `per_group`
+    /// candidates: the best `k` groups by exact score. A candidate whose
+    /// optimistic score is below the worst exact score the `k` groups hold
+    /// brings in no group and displaces no candidate, so the same early stop
+    /// holds (giving up filling a group still short of `per_group`; with one
+    /// per group, nothing).
     // ARITH: candidate indices are below `candidates.len()`.
     #[allow(clippy::arithmetic_side_effects)]
     fn rerank_grouped(
@@ -2003,7 +1988,7 @@ impl IvfReader {
         grouping: &Grouping<'_>,
         stats: &mut SearchStats,
     ) -> Result<Vec<ScoredDoc>> {
-        let mut exact = GroupTop::new(k, grouping.group);
+        let mut exact = GroupTop::new(k, grouping.per_group, grouping.group);
         let reach = reach(candidates);
         let mut v = Vec::with_capacity(f.dimension);
         const AHEAD: usize = 8;

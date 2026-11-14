@@ -1,0 +1,15 @@
+[package]
+name = "lucene-script-js"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "JavaScript search scripts (lang \"js\") on V8, for lucene-ffi's opt-in `js` feature."
+
+# Outside the workspace (the root manifest excludes it), so `--workspace`
+# builds never fetch V8's prebuilt library; lucene-ffi's `js` feature builds
+# it. Test it with `cargo test -p lucene-script-js --features lucene-ffi/js`.
+
+[dependencies]
+# V8 through rusty_v8, with its prebuilt static library (about 29 MB in a
+# stripped plugin library).
+v8 = "130"

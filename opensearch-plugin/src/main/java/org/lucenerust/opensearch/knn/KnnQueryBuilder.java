@@ -48,6 +48,13 @@ import java.util.Objects;
  * _name}. A top-{@code k} search is the shard's top {@code k} ({@link KnnTopVectorQuery}); a radial
  * search runs segment by segment ({@link KnnLeafVectorQuery}). The vectors are searched at full precision,
  * so {@code rescore} has nothing to correct and is accepted as is.
+ *
+ * <p>{@code group_by} and {@code group_size} are this plugin's extension (stock has no such
+ * parameters and refuses them): a top-{@code k} search grouped by a single-valued keyword or numeric
+ * field with doc values, as {@code collapse} reads it, matching the best {@code group_size}
+ * (default 1) documents of each of the shard's best {@code k} groups. With {@code collapse} on the same
+ * field the response then holds up to {@code size} groups where stock's knn + collapse holds as many
+ * as the shard's top {@code k} documents happen to cover.
  */
 public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder> {
     public static final String NAME = "knn";
@@ -64,6 +71,10 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     public static final ParseField OVERSAMPLE_FIELD = new ParseField("oversample_factor");
     public static final ParseField EXPAND_NESTED_FIELD = new ParseField("expand_nested_docs");
     public static final ParseField IGNORE_UNMAPPED_FIELD = new ParseField("ignore_unmapped");
+    public static final ParseField GROUP_BY_FIELD = new ParseField("group_by");
+    public static final ParseField GROUP_SIZE_FIELD = new ParseField("group_size");
+    /** The most documents a grouped search keeps of one group. */
+    public static final int MAX_GROUP_SIZE = 100;
 
     private String fieldName;
     private float[] vector;
@@ -80,6 +91,10 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
     private Float oversample;
     private Boolean expandNested;
     private boolean ignoreUnmapped;
+    /** {@code group_by}: the field a grouped search groups by, or null. */
+    private String groupBy;
+    /** {@code group_size}: the documents kept per group, null for the default 1. */
+    private Integer groupSize;
 
     private KnnQueryBuilder() {}
 
@@ -104,6 +119,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         expandNested = in.readOptionalBoolean();
         ignoreUnmapped = in.readBoolean();
         explorationSlack = in.readOptionalFloat();
+        groupBy = in.readOptionalString();
+        groupSize = in.readOptionalInt();
     }
 
     /**
@@ -130,6 +147,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         out.writeOptionalBoolean(expandNested);
         out.writeBoolean(ignoreUnmapped);
         out.writeOptionalFloat(explorationSlack);
+        out.writeOptionalString(groupBy);
+        out.writeOptionalInt(groupSize);
     }
 
     /**
@@ -373,6 +392,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             }
         }, RESCORE_FIELD, ObjectParser.ValueType.OBJECT_OR_BOOLEAN);
         PARSER.declareBoolean((b, v) -> b.expandNested = v, EXPAND_NESTED_FIELD);
+        PARSER.declareString((b, v) -> b.groupBy = v, GROUP_BY_FIELD);
+        PARSER.declareInt((b, v) -> b.groupSize = v, GROUP_SIZE_FIELD);
         RESCORE_PARSER.declareFloat((f, v) -> f[0] = v, OVERSAMPLE_FIELD);
     }
 
@@ -463,6 +484,7 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (minScore != null && minScore <= 0) {
             throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] requires minScore to be greater than 0", NAME));
         }
+        validateGrouping();
         if (methodParameters != null) {
             org.opensearch.common.ValidationException e = KnnQueryParsers.validateMethodParameters(methodParameters);
             if (e != null) {
@@ -481,6 +503,42 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
                 throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] errors in rescore parameter [%s]", NAME, e.getMessage()));
             }
         }
+    }
+
+    /** {@code group_by} and {@code group_size}: a field name, a size in range, a top-{@code k} search. */
+    private void validateGrouping() {
+        if (groupBy == null) {
+            if (groupSize != null) {
+                throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] [%s] requires [%s]", NAME, GROUP_SIZE_FIELD.getPreferredName(), GROUP_BY_FIELD.getPreferredName()));
+            }
+            return;
+        }
+        if (groupBy.isEmpty()) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] [%s] requires a field name", NAME, GROUP_BY_FIELD.getPreferredName()));
+        }
+        if (k == null) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "[%s] [%s] requires k", NAME, GROUP_BY_FIELD.getPreferredName()));
+        }
+        if (groupSize != null && (groupSize < 1 || groupSize > MAX_GROUP_SIZE)) {
+            throw new IllegalArgumentException(
+                String.format(Locale.ROOT, "[%s] requires [%s] to be in the range [1, %d]", NAME, GROUP_SIZE_FIELD.getPreferredName(), MAX_GROUP_SIZE)
+            );
+        }
+        if ((long) k * groupSize() > MAX_K) {
+            throw new IllegalArgumentException(
+                String.format(Locale.ROOT, "[%s] requires k times [%s] to be at most %d", NAME, GROUP_SIZE_FIELD.getPreferredName(), MAX_K)
+            );
+        }
+    }
+
+    /** {@code group_by}, or null. */
+    public String groupBy() {
+        return groupBy;
+    }
+
+    /** {@code group_size}, 1 when unset. */
+    public int groupSize() {
+        return groupSize == null ? 1 : groupSize;
     }
 
     @Override
@@ -523,6 +581,12 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         if (expandNested != null) {
             builder.field(EXPAND_NESTED_FIELD.getPreferredName(), expandNested);
         }
+        if (groupBy != null) {
+            builder.field(GROUP_BY_FIELD.getPreferredName(), groupBy);
+        }
+        if (groupSize != null) {
+            builder.field(GROUP_SIZE_FIELD.getPreferredName(), groupSize);
+        }
         if (ignoreUnmapped) {
             builder.field(IGNORE_UNMAPPED_FIELD.getPreferredName(), true);
         }
@@ -560,6 +624,8 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         c.oversample = oversample;
         c.expandNested = expandNested;
         c.ignoreUnmapped = ignoreUnmapped;
+        c.groupBy = groupBy;
+        c.groupSize = groupSize;
         c.boost(boost).queryName(queryName);
         return c;
     }
@@ -635,17 +701,23 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
         }
         Query filterQuery = filterQuery(context);
         if (k != null) {
+            KnnTopVectorQuery.Grouping grouping = grouping(context, parents);
             KnnTopVectorQuery.RecallTarget recall = recallTarget(context);
+            KnnTopVectorQuery top;
             if (config.ivf()) {
                 // IVF sizes its own rerank from k; ef_search widens it only when asked for.
                 int candidates = efSearch == null ? k : Math.max(k, efSearch);
-                return new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withNprobes(
+                top = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withNprobes(
                     nprobes == null ? 0 : nprobes
                 ).withRecallTarget(recall);
+            } else {
+                int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
+                top = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
+                if (explorationSlack != null) {
+                    top = top.withExplorationSlack(explorationSlack);
+                }
             }
-            int candidates = Math.max(k, efSearch == null ? defaultEfSearch(context) : efSearch);
-            KnnTopVectorQuery q = new KnnTopVectorQuery(fieldName, target, k, candidates, filterQuery, parents, expand).withRecallTarget(recall);
-            return explorationSlack == null ? q : q.withExplorationSlack(explorationSlack);
+            return grouping == null ? top : top.withGrouping(grouping);
         }
         float threshold;
         if (maxDistance != null) {
@@ -664,6 +736,36 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             threshold = minScore;
         }
         return KnnLeafVectorQuery.radial(fieldName, target, threshold, filterQuery);
+    }
+
+    /**
+     * The search's grouping ({@code group_by}), or null: the field checked as {@code collapse} checks
+     * its field (a keyword or number with doc values), and never under a nested field.
+     */
+    private KnnTopVectorQuery.Grouping grouping(QueryShardContext context, BitSetProducer parents) {
+        if (groupBy == null) {
+            return null;
+        }
+        if (parents != null) {
+            throw new IllegalArgumentException(
+                String.format(Locale.ROOT, "[%s] [%s] is not supported on a nested field", NAME, GROUP_BY_FIELD.getPreferredName())
+            );
+        }
+        MappedFieldType type = context.fieldMapper(groupBy);
+        if (type == null) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "no mapping found for `%s` in order to group on", groupBy));
+        }
+        boolean keyword = type.unwrap() instanceof org.opensearch.index.mapper.KeywordFieldMapper.KeywordFieldType;
+        boolean number = type.unwrap() instanceof org.opensearch.index.mapper.NumberFieldMapper.NumberFieldType;
+        if (keyword == false && number == false) {
+            throw new IllegalArgumentException(
+                String.format(Locale.ROOT, "unknown type for group_by field `%s`, only keywords and numbers are accepted", groupBy)
+            );
+        }
+        if (type.hasDocValues() == false) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT, "cannot group on field `%s` without `doc_values`", groupBy));
+        }
+        return new KnnTopVectorQuery.Grouping(type.name(), keyword, groupSize());
     }
 
     /**
@@ -752,12 +854,14 @@ public final class KnnQueryBuilder extends AbstractQueryBuilder<KnnQueryBuilder>
             && Objects.equals(rescore, o.rescore)
             && Objects.equals(oversample, o.oversample)
             && Objects.equals(expandNested, o.expandNested)
-            && ignoreUnmapped == o.ignoreUnmapped;
+            && ignoreUnmapped == o.ignoreUnmapped
+            && Objects.equals(groupBy, o.groupBy)
+            && Objects.equals(groupSize, o.groupSize);
     }
 
     @Override
     protected int doHashCode() {
-        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, explorationSlack, filter, rescore, oversample, expandNested, ignoreUnmapped);
+        return Objects.hash(fieldName, Arrays.hashCode(vector), k, maxDistance, minScore, efSearch, nprobes, explorationSlack, filter, rescore, oversample, expandNested, ignoreUnmapped, groupBy, groupSize);
     }
 
     @Override

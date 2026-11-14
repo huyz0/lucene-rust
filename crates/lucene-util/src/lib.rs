@@ -11,6 +11,7 @@ pub mod fixed_bit_set;
 pub mod float_heap;
 pub mod fx_hash;
 pub mod geo;
+pub mod group_top;
 pub mod half_float;
 pub mod hit_compact;
 pub mod inflate;

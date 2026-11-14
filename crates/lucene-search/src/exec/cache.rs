@@ -284,6 +284,21 @@ pub(crate) enum SortColumn {
         starts: Vec<usize>,
         values: Vec<i64>,
     },
+    /// A collapse field as group ids (a grouped KNN search's groups): each
+    /// document's, `-1` for one without a value; a keyword field's are its
+    /// ordinals, a numeric field's index `values`. `groups` counts the
+    /// distinct ids, the missing one included.
+    Groups {
+        ids: Vec<i32>,
+        values: Vec<i64>,
+        groups: usize,
+        /// Group id `g`'s documents are `members[starts[g + 1]..starts[g + 2]]`
+        /// (the missing group, `-1`, first), in document order.
+        starts: Vec<u32>,
+        members: Vec<i32>,
+        /// A numeric field's ids, by their values ascending.
+        by_value: Vec<i32>,
+    },
 }
 
 impl SortColumn {
@@ -292,6 +307,20 @@ impl SortColumn {
             SortColumn::Ords(o) => o.len() * 4,
             SortColumn::Longs { values, has } => values.len() * 8 + has.words().len() * 8,
             SortColumn::Multi { starts, values } => starts.len() * 8 + values.len() * 8,
+            SortColumn::Groups {
+                ids,
+                values,
+                starts,
+                members,
+                by_value,
+                ..
+            } => {
+                ids.len() * 4
+                    + values.len() * 8
+                    + starts.len() * 4
+                    + members.len() * 4
+                    + by_value.len() * 4
+            }
         }
     }
 }
@@ -519,8 +548,9 @@ impl SegmentQueryCache {
     }
 
     /// The sort column `key` of a segment of `max_doc` documents: cached,
-    /// or built by `build` on its second use when it fits the budget. `None`
-    /// means read the column per document.
+    /// or built by `build` on its second use (and handed back, uncached,
+    /// when it does not fit the budget). `None` means read the column per
+    /// document.
     pub(crate) fn sort_column(
         &self,
         key: &str,
@@ -545,8 +575,9 @@ impl SegmentQueryCache {
         let col = Arc::new(build()?);
         let bytes = col.ram_bytes();
         let mut c = lock(&self.columns);
+        // Built but over a cap: the search still uses it, uncached.
         if c.bytes.saturating_add(bytes) > MAX_COLUMN_BYTES {
-            return Ok(None);
+            return Ok(Some(col));
         }
         // Reserve against the process-wide cap; the segment's share goes
         // back when its cache is dropped.
@@ -556,7 +587,7 @@ impl SegmentQueryCache {
             |t| t.checked_add(bytes).filter(|&n| n <= total_column_budget()),
         );
         if reserved.is_err() {
-            return Ok(None);
+            return Ok(Some(col));
         }
         c.bytes += bytes;
         c.built.insert(key.to_string(), Arc::clone(&col));
@@ -1296,10 +1327,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(Arc::ptr_eq(&built, &again));
-        // A column past the budget is built once and dropped; not retried.
+        // A column past the budget is built once, handed back uncached, and
+        // not retried.
         let big = MAX_COLUMN_BYTES / 4 + 1;
         assert!(col("g", 20_000, big).unwrap().is_none());
-        assert!(col("g", 20_000, big).unwrap().is_none());
+        assert!(col("g", 20_000, big).unwrap().is_some());
         assert!(col("g", 20_000, big).unwrap().is_none());
         // A failed build is the search's error.
         assert!(col("h", 20_000, 1).unwrap().is_none());
