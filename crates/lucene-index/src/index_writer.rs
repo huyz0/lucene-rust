@@ -1053,6 +1053,11 @@ pub(crate) struct IndexingConfig {
     /// the codec routes it anywhere but the default `Lucene90DocValuesFormat()`
     /// -- see [`IndexWriter::set_default_doc_values_format`].
     default_doc_values_format: per_field_doc_values::Lucene90DocValuesFormat,
+    /// `index.codec.adaptive_doc_values: auto`: the choice between stock and
+    /// adaptive doc values for the fields that get the default format, made
+    /// from the index's first documents -- see
+    /// [`IndexWriter::set_adaptive_doc_values_auto`].
+    adaptive_auto: Option<std::sync::Arc<crate::adaptive_auto::AdaptiveAuto>>,
     /// The format a field gets when neither [`Self::postings_formats`] nor
     /// the codec routes it anywhere but the default `Lucene104PostingsFormat()`
     /// -- see [`IndexWriter::set_default_postings_format`].
@@ -1650,6 +1655,7 @@ impl LazyDocValues {
             std::slice::from_ref(&config),
             &[info.name.as_str()],
             segment_id,
+            false,
         ) else {
             return Ok(None);
         };
@@ -3510,7 +3516,7 @@ impl IndexingConfig {
                 hnsw_beam_width: self.hnsw_beam_width,
                 postings_formats: self.postings_formats.clone(),
                 doc_values_formats: self.doc_values_formats.clone(),
-                default_doc_values_format: self.default_doc_values_format,
+                default_doc_values_format: self.resolved_default_doc_values_format(),
                 default_postings_format: self.default_postings_format,
                 stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
                 ivf_partition_clusters: self.ivf_partition_clusters,
@@ -3921,9 +3927,13 @@ impl IndexingConfig {
             })
     }
 
-    pub(crate) fn doc_values_format_for(
+    /// The doc-values format field `name` is written in: its explicit
+    /// route, else the codec's, else `default`, which the caller resolves
+    /// once per segment so every field sees the same `auto` choice.
+    fn doc_values_format_with_default(
         &self,
         name: &str,
+        default: per_field_doc_values::Lucene90DocValuesFormat,
     ) -> per_field_doc_values::Lucene90DocValuesFormat {
         // A field routed explicitly keeps its format, even the default one.
         if let Some((_, format)) = self
@@ -3939,10 +3949,115 @@ impl IndexingConfig {
             .map(|c| c.doc_values_format_for_field(name))
             .unwrap_or_default();
         if routed == per_field_doc_values::Lucene90DocValuesFormat::default() {
-            self.default_doc_values_format
+            default
         } else {
             routed
         }
+    }
+
+    /// [`Self::default_doc_values_format`], or under `auto` its choice:
+    /// adaptive once chosen so, stock until then or when chosen not.
+    fn resolved_default_doc_values_format(&self) -> per_field_doc_values::Lucene90DocValuesFormat {
+        match &self.adaptive_auto {
+            None => self.default_doc_values_format,
+            Some(auto) if auto.decided() == Some(true) => {
+                per_field_doc_values::Lucene90DocValuesFormat::rust_adaptive()
+            }
+            Some(_) => per_field_doc_values::Lucene90DocValuesFormat::default(),
+        }
+    }
+
+    /// Feeds `auto`'s sample with a segment about to be written from
+    /// buffered documents: each numeric field every document has exactly one
+    /// value of. Nothing once the choice is made.
+    fn observe_adaptive_auto_docs<D: DocValueFields>(
+        &self,
+        docs: &[D],
+        configs: &[DocValuesFieldConfig],
+    ) {
+        let Some(auto) = self
+            .adaptive_auto
+            .as_ref()
+            .filter(|a| a.decided().is_none())
+        else {
+            return;
+        };
+        let numbers: Vec<i32> = configs
+            .iter()
+            .filter(|c| {
+                sampled_field(c)
+                    && matches!(
+                        c.doc_values_type,
+                        DocValuesType::Numeric | DocValuesType::SortedNumeric
+                    )
+            })
+            .map(|c| c.field_number)
+            .collect();
+        let mut columns: Vec<Vec<i64>> = vec![Vec::with_capacity(docs.len()); numbers.len()];
+        let mut single = vec![true; numbers.len()];
+        let mut counts = vec![0u32; numbers.len()];
+        for doc in docs {
+            counts.fill(0);
+            for f in doc.dv_fields() {
+                let (Some(i), lucene_codecs::stored_fields::FieldValue::Long(v)) =
+                    (numbers.iter().position(|&n| n == f.field_number), &f.value)
+                else {
+                    continue;
+                };
+                counts[i] = counts[i].saturating_add(1);
+                columns[i].push(*v);
+            }
+            for (ok, &c) in single.iter_mut().zip(&counts) {
+                *ok &= c == 1;
+            }
+        }
+        auto.observe(
+            docs.len(),
+            numbers
+                .iter()
+                .zip(&columns)
+                .zip(&single)
+                .filter(|(_, &ok)| ok)
+                .map(|((&n, c), _)| (n, c.as_slice())),
+        );
+    }
+
+    /// [`Self::observe_adaptive_auto_docs`] for a segment written from
+    /// columns already built.
+    fn observe_adaptive_auto_columns(
+        &self,
+        columns: &[(i32, PrebuiltDocValues)],
+        max_doc: i32,
+        configs: &[DocValuesFieldConfig],
+    ) {
+        let Some(auto) = self
+            .adaptive_auto
+            .as_ref()
+            .filter(|a| a.decided().is_none())
+        else {
+            return;
+        };
+        let max = usize::try_from(max_doc).unwrap_or(0);
+        let sampled = |n: i32| {
+            configs
+                .iter()
+                .any(|c| c.field_number == n && sampled_field(c))
+        };
+        auto.observe(
+            max,
+            columns
+                .iter()
+                .filter(|(n, _)| sampled(*n))
+                .filter_map(|(n, c)| match c {
+                    PrebuiltDocValues::Numeric(v) => Some((*n, v.as_slice())),
+                    PrebuiltDocValues::SortedNumeric(c)
+                        if c.docs.len() == max && c.values.len() == max =>
+                    {
+                        Some((*n, c.values.as_slice()))
+                    }
+                    _ => None,
+                }),
+        );
     }
 
     /// `IndexingChain.writeDocValues` through `PerFieldDocValuesFormat`: the
@@ -3953,13 +4068,20 @@ impl IndexingConfig {
     /// instance of the format they are routed to, instances numbered in
     /// that order; each instance's fields are written, in that order, into
     /// its own `.dvm`/`.dvd`/`.dvs`.
+    ///
+    /// `observe`: the segment is a flush of the writer's own documents,
+    /// which feeds `auto`'s sample (not a search's view of buffered ones).
     fn build_doc_values_groups<D: DocValueFields>(
         &self,
         docs: &[D],
         configs: &[DocValuesFieldConfig],
         segment_fields: &[&str],
         segment_id: &[u8; ID_LENGTH],
+        observe: bool,
     ) -> Result<Vec<DocValuesGroupOutput>> {
+        if observe {
+            self.observe_adaptive_auto_docs(docs, configs);
+        }
         self.doc_values_groups_with(
             i32::try_from(docs.len()).unwrap_or(i32::MAX),
             configs,
@@ -3979,7 +4101,9 @@ impl IndexingConfig {
 
     /// [`Self::build_doc_values_groups`] from columns already built, one
     /// per field of `configs` (by field number); `None` when one is missing
-    /// or of another type.
+    /// or of another type. `observe`: a flush of the writer's own
+    /// documents, which feeds `auto`'s sample (not one field's columns
+    /// encoded on their own, nor a search's view of buffered documents).
     fn build_prebuilt_doc_values_groups(
         &self,
         columns: &[(i32, PrebuiltDocValues)],
@@ -3987,6 +4111,7 @@ impl IndexingConfig {
         configs: &[DocValuesFieldConfig],
         segment_fields: &[&str],
         segment_id: &[u8; ID_LENGTH],
+        observe: bool,
     ) -> Option<Result<Vec<DocValuesGroupOutput>>> {
         let column = |n: i32| columns.iter().find(|(f, _)| *f == n).map(|(_, c)| c);
         let covered = configs.iter().all(|c| {
@@ -3994,6 +4119,9 @@ impl IndexingConfig {
         });
         if !covered {
             return None;
+        }
+        if observe {
+            self.observe_adaptive_auto_columns(columns, max_doc, configs);
         }
         Some(self.doc_values_groups_with(
             max_doc,
@@ -4057,11 +4185,11 @@ impl IndexingConfig {
                 .collect::<Vec<_>>()
         };
         let decoded = self
-            .build_doc_values_groups(docs, &configs, &names, &id)
+            .build_doc_values_groups(docs, &configs, &names, &id, false)
             .unwrap();
         let max_doc = i32::try_from(docs.len()).unwrap();
         let prebuilt = self
-            .build_prebuilt_doc_values_groups(columns, max_doc, &configs, &names, &id)
+            .build_prebuilt_doc_values_groups(columns, max_doc, &configs, &names, &id, false)
             .expect("a column per field")
             .unwrap();
         (files(decoded), files(prebuilt))
@@ -4093,7 +4221,8 @@ impl IndexingConfig {
             .iter()
             .map(|c| (c.field_number, c.name.as_str()))
             .collect();
-        let format_for = |name: &str| self.doc_values_format_for(name);
+        let default = self.resolved_default_doc_values_format();
+        let format_for = |name: &str| self.doc_values_format_with_default(name, default);
         per_field_doc_values::group_fields(&fields, &format_for)
             .into_iter()
             .map(|group| {
@@ -4433,6 +4562,7 @@ impl IndexingConfig {
                     &self.doc_values_fields,
                     &names,
                     &segment_id,
+                    buf.limit.is_none(),
                 )?)
             })
         };
@@ -6596,6 +6726,27 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().default_doc_values_format = format;
     }
 
+    /// `index.codec.adaptive_doc_values: auto`: the fields that get the
+    /// default doc-values format get stock or adaptive doc values, one
+    /// choice for all of them, made from the index's first documents
+    /// ([`crate::adaptive_auto`]): stock until then, then adaptive when
+    /// some numeric column is clustered in document order. The choice is
+    /// kept in the commit's user data; a writer opened on a commit that
+    /// holds one keeps it. Replaces [`Self::set_default_doc_values_format`]'s
+    /// format while set.
+    pub fn set_adaptive_doc_values_auto(&mut self) {
+        let recorded = crate::adaptive_auto::AdaptiveAuto::recorded(&self.segment_infos.user_data);
+        self.cfg_mut().adaptive_auto = Some(std::sync::Arc::new(
+            crate::adaptive_auto::AdaptiveAuto::new(recorded),
+        ));
+    }
+
+    /// The choice [`Self::set_adaptive_doc_values_auto`] made (`true`:
+    /// adaptive), once made.
+    pub fn adaptive_doc_values_choice(&self) -> Option<bool> {
+        self.cfg.adaptive_auto.as_ref().and_then(|a| a.decided())
+    }
+
     /// The postings format of every field that would otherwise get the
     /// default `Lucene104PostingsFormat()` -- neither routed by
     /// [`Self::set_postings_format_for_field`] nor by the codec to anything
@@ -6970,6 +7121,7 @@ impl<'d> IndexWriter<'d> {
                 postings_formats: Vec::new(),
                 doc_values_formats: Vec::new(),
                 default_doc_values_format: Default::default(),
+                adaptive_auto: None,
                 default_postings_format: Default::default(),
                 merge_lz4_high_compression: false,
                 ivf_partition_clusters: None,
@@ -9429,6 +9581,8 @@ impl IndexWriter<'_> {
         // (`maxFullFlushMergeWaitMillis > 0`): the commit names the merged
         // segments.
         self.merge_on_full_flush(merge_policy::MergeTrigger::Commit, merging)?;
+        // After the flush, which may be the one that makes `auto`'s choice.
+        self.stamp_adaptive_doc_values_choice();
 
         let mut new_segment_infos = self.segment_infos.clone();
         // ARITH: `segment_infos::parse` rejects any generation, version or
@@ -13383,6 +13537,22 @@ impl IndexWriter<'_> {
     pub fn set_live_commit_data(&mut self, data: Vec<(String, String)>) {
         self.segment_infos.user_data = data;
         self.changed();
+    }
+
+    /// `auto`'s choice, once made, into the live commit data under
+    /// [`crate::adaptive_auto::COMMIT_KEY`], so the commit carries it and a
+    /// writer reopened on it keeps it.
+    fn stamp_adaptive_doc_values_choice(&mut self) {
+        let Some(choice) = self.adaptive_doc_values_choice() else {
+            return;
+        };
+        let key = crate::adaptive_auto::COMMIT_KEY;
+        let value = choice.to_string();
+        let data = &mut self.segment_infos.user_data;
+        match data.iter_mut().find(|(k, _)| k == key) {
+            Some((_, v)) => *v = value,
+            None => data.push((key.to_string(), value)),
+        }
     }
 
     /// `IndexWriter.changed()`: a change the next commit must write even if
@@ -27096,4 +27266,11 @@ pub(crate) mod tests {
             assert!(result.all_passed(), "{:?}", result.failures());
         }
     }
+}
+
+/// Whether `auto`'s sample reads `config`'s field: not the engine's own
+/// fields, named with a leading underscore (OpenSearch's `_seq_no` rises with
+/// arrival in every index, and says nothing of the documents' own columns).
+fn sampled_field(config: &DocValuesFieldConfig) -> bool {
+    !config.name.starts_with('_')
 }

@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 179;
+    public static final int EXPECTED_ABI_VERSION = 180;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -562,6 +562,14 @@ public final class NativeBridge {
         static final MethodHandle LIVE_VIEW_LUCENE = bind(
             "ffi_live_view_lucene",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle WRITER_SET_ADAPTIVE_AUTO = bind(
+            "ffi_engine_writer_set_adaptive_auto",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_ADAPTIVE_CHOICE = bind(
+            "ffi_engine_writer_adaptive_choice",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS)
         );
         static final MethodHandle WRITER_SET_LIVE_STALENESS = bind(
             "ffi_engine_writer_set_live_staleness",
@@ -3635,6 +3643,35 @@ public final class NativeBridge {
     public static int liveViewClose(long view) {
         try {
             return (int) H.LIVE_VIEW_CLOSE.invokeExact(view);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code index.codec.adaptive_doc_values: auto}: the writer chooses its doc-values format from
+     * its first documents, or keeps the choice its commit holds. Call before the first document.
+     */
+    public static int writerSetAdaptiveAuto(long writer) {
+        try {
+            return (int) H.WRITER_SET_ADAPTIVE_AUTO.invokeExact(writer);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** {@code auto}'s choice into {@code out[0]}: 1 adaptive, 0 stock, -1 not made yet. */
+    public static int writerAdaptiveChoice(long writer, int[] out) {
+        if (out == null || out.length < 1) {
+            return nullArgument("out");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment slot = s.alloc(Integer.BYTES);
+            int rc = (int) H.WRITER_ADAPTIVE_CHOICE.invokeExact(writer, slot);
+            if (rc == OK) {
+                out[0] = slot.get(JAVA_INT, 0);
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
