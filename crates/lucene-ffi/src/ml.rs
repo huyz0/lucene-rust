@@ -19,6 +19,12 @@
 //! the format; a TorchScript text-embedding model answers with typed outputs
 //! ([`ffi_ml_torch_text_embedding_alloc`]).
 //!
+//! A sentence highlighting model ([`ffi_ml_highlighter_open`]) answers a
+//! question about a context with the sentences that answer it
+//! ([`ffi_ml_highlight_alloc`]): a `u32` count, then per sentence its `u32`
+//! position, start and end (UTF-16 units) and the `u32` byte length and UTF-8
+//! bytes of its text.
+//!
 //! Texts go in as a sequence of `u32` little-endian byte length + UTF-8
 //! bytes. Vectors come back, one per text in order, as `u32` rank, `rank`
 //! `u32` dimensions, then the `f32` values; token weights, one list per text
@@ -35,6 +41,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lucene_ml::hf_analyzer::HfAnalyzer;
+use lucene_ml::question_answering::{Config as HighlightConfig, HighlighterModel};
 use lucene_ml::sparse_encoding::{SparseEncodingModel, SparseOutput};
 use lucene_ml::sparse_tokenize::{SparseTokenizer, Weight};
 use lucene_ml::text_embedding::{
@@ -60,6 +67,7 @@ pub(crate) enum Model {
     SparseEncoding(SparseEncodingModel),
     TextSimilarity(TextSimilarityModel),
     TorchTextEmbedding(TorchTextEmbeddingModel),
+    Highlighter(HighlighterModel),
     /// A remote model's connector, credentials decrypted.
     Remote(lucene_ml::remote::connector::Connector),
 }
@@ -626,6 +634,105 @@ pub unsafe extern "C" fn ffi_ml_torch_open(
         let handle = lock_recovering(models()).insert_checked(Arc::new(loaded))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// Highlighter flag: a context longer than the token limit is read past its
+/// first chunk.
+const HIGHLIGHT_OVERFLOWING: u8 = 1;
+/// Highlighter flag: each chunk is padded.
+const HIGHLIGHT_PADDING: u8 = 2;
+
+/// Opens the TorchScript sentence highlighting model at `model` with the
+/// `tokenizer.json` bytes `tokenizer`, cutting a context into chunks of
+/// `max_length` tokens that overlap by `stride`, as the `HIGHLIGHT_*` bits of
+/// `flags` say. Writes its handle to `*out_handle`; close it with
+/// [`ffi_ml_model_close`]. [`ffi_ml_torch_init`] must have run.
+///
+/// # Safety
+/// Each pointer must be valid for its length; `out_handle` for one write.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_highlighter_open(
+    model: *const u8,
+    model_len: usize,
+    tokenizer: *const u8,
+    tokenizer_len: usize,
+    max_length: u32,
+    stride: u32,
+    flags: u8,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract, for both.
+        let (model, tokenizer) = unsafe {
+            (
+                str_from_raw(model.cast(), model_len)?,
+                bytes_from_raw(tokenizer, tokenizer_len)?,
+            )
+        };
+        let module = Box::new(ml_torch::Module::load(Path::new(model)).map_err(ml_failure)?);
+        let config = HighlightConfig {
+            max_length: max_length as usize,
+            stride: stride as usize,
+            overflowing: flags & HIGHLIGHT_OVERFLOWING != 0,
+            padding: flags & HIGHLIGHT_PADDING != 0,
+        };
+        let loaded =
+            HighlighterModel::torchscript(module, tokenizer, config).map_err(ml_failure)?;
+        let handle =
+            lock_recovering(models()).insert_checked(Arc::new(Model::Highlighter(loaded)))?;
+        // SAFETY: caller contract.
+        unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// The sentences of `context` that answer `question` (see the module doc),
+/// from the highlighter `handle`, to `*out_ptr`/`*out_len`, a buffer to free
+/// with [`crate::ffm_bridge::ffi_jvm_free_bytes`].
+///
+/// # Safety
+/// `question` and `context` must be valid for their lengths; `out_ptr` and
+/// `out_len` for one write each.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ml_highlight_alloc(
+    handle: u64,
+    question: *const u8,
+    question_len: usize,
+    context: *const u8,
+    context_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len) }?;
+        // SAFETY: caller contract, for both.
+        let (question, context) = unsafe {
+            (
+                str_from_raw(question.cast(), question_len)?,
+                str_from_raw(context.cast(), context_len)?,
+            )
+        };
+        let model = model(handle)?;
+        let Model::Highlighter(model) = &*model else {
+            return Err(wrong_kind("sentence highlighting"));
+        };
+        let hits = model.highlight(question, context).map_err(ml_failure)?;
+        let mut out = Vec::new();
+        out.extend_from_slice(&u32_of(hits.len())?.to_le_bytes());
+        for h in &hits {
+            for n in [h.position, h.start, h.end, h.text.len()] {
+                out.extend_from_slice(&u32_of(n)?.to_le_bytes());
+            }
+            out.extend_from_slice(h.text.as_bytes());
+        }
+        // SAFETY: caller contract.
+        unsafe { give(out, out_ptr, out_len) };
         Ok(())
     })
 }
