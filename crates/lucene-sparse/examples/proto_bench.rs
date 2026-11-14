@@ -41,9 +41,12 @@ fn main() {
     let nq: usize = arg("--queries", 200);
     let kind: String = arg("--corpus", "flat".to_string());
     let npost: i32 = arg("--npost", 2000);
-    let passes = 3;
+    let passes: usize = arg("--passes", 3);
     let t0 = Instant::now();
-    let corpus = if kind == "topical" {
+    let data: String = arg("--data", String::new());
+    let corpus = if !data.is_empty() {
+        real_corpus(&data, n, nq)
+    } else if kind == "topical" {
         topical_corpus(n, nq, 400, 20261114)
     } else {
         flat_corpus(n, nq, 20261104)
@@ -77,7 +80,13 @@ fn main() {
     println!("graph bisection {bp_secs:.1}s");
 
     let mut indexes = Vec::new();
-    for &(b, c, bp) in &[(8usize, 16usize, true), (8, 64, true), (8, 16, false)] {
+    for &(b, c, bp) in &[(8usize, 16usize, true), (8, 64, true), (8, 16, false)]
+        [..if std::env::args().any(|a| a == "--quick") {
+            2
+        } else {
+            3
+        }]
+    {
         let t0 = Instant::now();
         let o = if bp { order.clone() } else { identity.clone() };
         let bi = BlockIndex::build(&corpus.docs, o, b, c, seis.field.ceiling_ingest);
@@ -102,10 +111,10 @@ fn main() {
         println!("\n=== k = {k} ===");
         let mut rows: Vec<Row> = Vec::new();
         // Queries per grid point: top_n and heap_factor of the Seismic search.
-        let queries: Vec<Vec<SeismicQuery>> = [10usize, 20, 40, 80]
+        let queries: Vec<Vec<SeismicQuery>> = [10usize, 20, 40]
             .iter()
             .flat_map(|&top_n| {
-                [32.0f32, 8.0, 3.0, 1.0, 0.8, 0.5]
+                [8.0f32, 2.0, 1.0, 0.7, 0.4]
                     .iter()
                     .map(move |&hf| (top_n, hf))
             })
@@ -117,13 +126,9 @@ fn main() {
                     .collect()
             })
             .collect();
-        let params: Vec<(usize, f32)> = [10usize, 20, 40, 80]
+        let params: Vec<(usize, f32)> = [10usize, 20, 40]
             .iter()
-            .flat_map(|&t| {
-                [32.0f32, 8.0, 3.0, 1.0, 0.8, 0.5]
-                    .iter()
-                    .map(move |&h| (t, h))
-            })
+            .flat_map(|&t| [8.0f32, 2.0, 1.0, 0.7, 0.4].iter().map(move |&h| (t, h)))
             .collect();
         let exact_q = SeismicQuery::new(&corpus.queries[0], 10, k, 1.0, 1.0, &seis.field).unwrap();
         let _ = exact_q;
@@ -231,7 +236,7 @@ fn main() {
 
         // --- Block / superblock pruning.
         for (name, bi) in &indexes {
-            for &bt in &[10usize, 20, 40, usize::MAX] {
+            for &bt in &[10usize, 20, usize::MAX] {
                 for &(gamma, mu) in &[
                     (1usize, 1.0f32),
                     (2, 1.0),

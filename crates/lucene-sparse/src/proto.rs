@@ -141,6 +141,39 @@ pub fn topical_corpus(n: usize, nq: usize, topics: usize, seed: u64) -> Corpus {
     Corpus { docs, queries }
 }
 
+/// Real vectors written by the converter: `u32 count`, then per vector `u16 nnz`
+/// and `nnz` of `(u16 token, f32 weight)`, little endian.
+pub fn load_vectors(path: &str, limit: usize) -> Vec<Pairs> {
+    let b = std::fs::read(path).unwrap();
+    let n = u32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
+    let mut at = 4;
+    let mut out = Vec::with_capacity(n.min(limit));
+    for _ in 0..n.min(limit) {
+        let nnz = u16::from_le_bytes(b[at..at + 2].try_into().unwrap()) as usize;
+        at += 2;
+        let mut v = Pairs::with_capacity(nnz);
+        for _ in 0..nnz {
+            let t = u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
+            let w = f32::from_le_bytes(b[at + 2..at + 6].try_into().unwrap());
+            at += 6;
+            v.push((u32::from(t), w));
+        }
+        out.push(v);
+    }
+    out
+}
+
+/// A real corpus: the first `n` documents and every tenth of the first
+/// `nq * 10` queries.
+pub fn real_corpus(dir: &str, n: usize, nq: usize) -> Corpus {
+    let docs = load_vectors(&format!("{dir}/docs.bin"), n);
+    let queries = load_vectors(&format!("{dir}/queries.bin"), nq * 10)
+        .into_iter()
+        .step_by(10)
+        .collect();
+    Corpus { docs, queries }
+}
+
 pub fn field(n_postings: i32) -> (FieldInfo, SeismicField) {
     let info = FieldInfo::new("emb", 1).with_attributes(vec![
         ("sparse_vector_field".into(), "true".into()),
