@@ -1724,3 +1724,51 @@ fn with_postings_kinds(dir: &std::path::Path, name: &str) -> std::collections::B
         .map(|n| n.rsplit('.').next().unwrap().to_owned())
         .collect()
 }
+
+/// Chunks written for searches of the buffers are views, not flushes: they
+/// do not count towards `index.codec.adaptive_doc_values: auto`'s sample.
+#[test]
+fn live_chunks_do_not_feed_the_adaptive_sample() {
+    let tmp = TempDir::new("live-adaptive-auto");
+    let dir = FsDirectory::open(tmp.path());
+    let mut iw = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    iw.enable_explicit_documents().unwrap();
+    iw.set_adaptive_doc_values_auto();
+    let ts = iw
+        .register_field(FieldInfo::new("ts", 0).with_doc_values(
+            DocValuesType::SortedNumeric,
+            DocValuesSkipIndexType::None,
+            -1,
+        ))
+        .unwrap();
+    let w = ConcurrentIndexWriter::new(iw, 1).unwrap();
+    w.enable_live_search().unwrap();
+    let docs = (0..2_048i64)
+        .map(|i| ExplicitDocument {
+            stored: Vec::new(),
+            fields: ExplicitFields {
+                doc_values: vec![StoredField {
+                    field_number: ts,
+                    value: FieldValue::Long(i),
+                }],
+                ..ExplicitFields::default()
+            },
+        })
+        .collect();
+    w.add_explicit_documents(docs).unwrap();
+    let id = w.live_slot_buffers()[0].id;
+    // 40 chunks of 2,048 documents: more than the sample, were they counted.
+    for n in 0..40 {
+        w.live_buffer_segment(
+            id,
+            0..2_048,
+            HashMap::new(),
+            &[],
+            n % 2 == 0,
+            &dir,
+            &format!("_c{n}"),
+        )
+        .unwrap();
+    }
+    assert_eq!(w.with_writer(|iw| iw.adaptive_doc_values_choice()), None);
+}

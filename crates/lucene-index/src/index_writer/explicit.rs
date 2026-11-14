@@ -1106,6 +1106,7 @@ impl IndexingConfig {
                             &dv_configs,
                             &names,
                             &segment_id,
+                            !chunk,
                         )
                     });
                     let (groups, phase) = match prebuilt {
@@ -1124,6 +1125,7 @@ impl IndexingConfig {
                                 &dv_configs,
                                 &names,
                                 &segment_id,
+                                !chunk,
                             )?;
                             (groups, crate::live_timing::Phase::ChunkDocValuesDecoded)
                         }
