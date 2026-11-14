@@ -6,5 +6,7 @@ mod function_score;
 mod max_sim;
 pub(crate) mod nodes;
 mod painless_score;
+#[cfg(feature = "js")]
+mod painless_score_js;
 mod pattern_phrase;
 mod queries;

@@ -68,6 +68,9 @@ analysis-smartcn = ["lucene-engine/analysis-smartcn"]
 analysis-stempel = ["lucene-engine/analysis-stempel"]
 analysis-morfologik = ["lucene-engine/analysis-morfologik"]
 analysis-phonetic = ["lucene-engine/analysis-phonetic"]
+# `lang: "js"` scripts on V8 (lucene-engine's `painless_score/js.rs`): off by default, and the
+# plugin builds it only with -Pjs.
+js = ["lucene-engine/js"]
 # Compiles the enabled modules' dictionaries in, so no pack directory is
 # needed (a library about 22 MB larger).
 embedded-data = ["lucene-engine/embedded-data"]
