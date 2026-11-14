@@ -110,6 +110,7 @@ public final class MlCommons {
     private final ThreadPool threadPool;
     private final MlIndices indices;
     private final MlAgents agents = new MlAgents(this);
+    private final MlMemoryContainers containers = new MlMemoryContainers(this);
     private final MlMemory memory = new MlMemory(this);
     private final LocalModels local;
     private final RemoteModels remote;
@@ -208,6 +209,18 @@ public final class MlCommons {
         return memory;
     }
 
+    MlMemoryContainers containers() {
+        return containers;
+    }
+
+    org.opensearch.cluster.ClusterState clusterState() {
+        return clusterService.state();
+    }
+
+    MlIndices indices() {
+        return indices;
+    }
+
     MlAgents agents() {
         return agents;
     }
@@ -271,7 +284,7 @@ public final class MlCommons {
         return Instant.now().toEpochMilli();
     }
 
-    private <T> T setting(org.opensearch.common.settings.Setting<T> s) {
+    <T> T setting(org.opensearch.common.settings.Setting<T> s) {
         return clusterService.getClusterSettings().get(s);
     }
 

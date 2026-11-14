@@ -1,0 +1,165 @@
+{
+  "_meta": {
+    "schema_version": 3
+  },
+  "properties": {
+    "backend_roles": {
+      "type": "text",
+      "fields": {
+        "keyword": {
+          "type": "keyword"
+        }
+      }
+    },
+    "configuration": {
+      "properties": {
+        "disable_history": {
+          "type": "boolean"
+        },
+        "disable_session": {
+          "type": "boolean"
+        },
+        "embedding_dimension": {
+          "type": "integer"
+        },
+        "embedding_model_id": {
+          "type": "keyword"
+        },
+        "embedding_model_type": {
+          "type": "keyword"
+        },
+        "index_prefix": {
+          "type": "keyword"
+        },
+        "index_settings": {
+          "type": "flat_object"
+        },
+        "llm_id": {
+          "type": "keyword"
+        },
+        "max_infer_size": {
+          "type": "integer"
+        },
+        "retention_policy": {
+          "properties": {
+            "history": {
+              "properties": {
+                "max_count": {
+                  "type": "integer"
+                }
+              }
+            },
+            "long-term": {
+              "properties": {
+                "max_count": {
+                  "type": "integer"
+                },
+                "retention_days": {
+                  "type": "integer"
+                }
+              }
+            },
+            "sessions": {
+              "properties": {
+                "max_count": {
+                  "type": "integer"
+                },
+                "retention_days": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "strategies": {
+          "type": "nested",
+          "properties": {
+            "configuration": {
+              "type": "flat_object"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "keyword"
+            },
+            "namespace": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            }
+          }
+        },
+        "use_system_index": {
+          "type": "boolean"
+        }
+      }
+    },
+    "created_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "description": {
+      "type": "text"
+    },
+    "last_updated_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "name": {
+      "type": "text",
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      }
+    },
+    "orphan_sweep_baseline_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "owner": {
+      "type": "nested",
+      "properties": {
+        "backend_roles": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "custom_attribute_names": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "name": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "roles": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    },
+    "tenant_id": {
+      "type": "keyword"
+    }
+  }
+}

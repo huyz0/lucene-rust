@@ -102,6 +102,7 @@ def agents(c, ours, stock):
     registry(c, ours, stock)
     execution(c, ours, stock)
     memory(c, ours, stock)
+    containers(c, ours, stock)
     chat(c, ours, stock)
 
 
@@ -585,6 +586,161 @@ BODIES = {
     "gemini": ('{"system_instruction":{"parts":[{"text":"${parameters.system_prompt}"}]},"contents":[${parameters._chat_history:-}'
                '{"role":"user","parts":[{"text":"${parameters.question}"}]}${parameters._interactions:-}]${parameters.tool_configs:-}}'),
 }
+
+
+CONTAINERS = {
+    "plain": {"name": "mc"}, "description": {"name": "mc", "description": "d"}, "no name": {"description": "d"}, "empty name": {"name": ""},
+    "name number": {"name": 5}, "prefix": {"name": "mc", "configuration": {"index_prefix": "pfx"}}, "blank prefix": {"name": "mc", "configuration": {"index_prefix": " "}},
+    "bad prefix": {"name": "mc", "configuration": {"index_prefix": "a/b"}}, "user index": {"name": "mc", "configuration": {"index_prefix": "usr", "use_system_index": False}},
+    "no session": {"name": "mc", "configuration": {"index_prefix": "nos", "disable_session": True}}, "no history": {"name": "mc", "configuration": {"disable_history": True}},
+    "infer size": {"name": "mc", "configuration": {"max_infer_size": 5}}, "big infer size": {"name": "mc", "configuration": {"max_infer_size": 11}},
+    "zero infer size": {"name": "mc", "configuration": {"max_infer_size": 0}}, "roles": {"name": "mc", "backend_roles": ["a", "b"]},
+    "strategies": {"name": "mc", "configuration": {"strategies": [{"type": "SEMANTIC", "namespace": ["user_id"]}]}},
+    "strategies bad type": {"name": "mc", "configuration": {"strategies": [{"type": "zzz", "namespace": ["u"]}]}}, "strategies no namespace": {"name": "mc", "configuration": {"strategies": [{"type": "SEMANTIC"}]}},
+    "llm missing": {"name": "mc", "configuration": {"llm_id": "nope"}}, "embedding no dimension": {"name": "mc", "configuration": {"embedding_model_id": "x", "embedding_model_type": "TEXT_EMBEDDING"}},
+    "embedding missing": {"name": "mc", "configuration": {"embedding_model_id": "x", "embedding_model_type": "TEXT_EMBEDDING", "embedding_dimension": 4}},
+    "extra field": {"name": "mc", "zzz": 1}, "configuration extra": {"name": "mc", "configuration": {"zzz": 1, "parameters": {"a": 1}}},
+}
+
+CONTAINER_UPDATES = [
+    ("name", {"name": "n2"}), ("name number", {"name": 7}), ("description", {"description": "d2"}), ("roles", {"backend_roles": ["x"]}),
+    ("infer size", {"configuration": {"max_infer_size": 3}}), ("llm", {"configuration": {"llm_id": "m9"}}), ("llm infer size", {"configuration": {"llm_id": "m8", "max_infer_size": 4}}), ("llm again", {"configuration": {"llm_id": "m7"}}), ("prefix ignored", {"configuration": {"index_prefix": "zz"}}),
+    ("disable ignored", {"configuration": {"disable_history": True}}), ("retention", {"retention_policy": {"x": 1}}),
+    ("strategies", {"configuration": {"strategies": [{"type": "SEMANTIC"}]}}), ("strategies namespace", {"configuration": {"strategies": [{"type": "SEMANTIC", "namespace": ["u"]}]}}), ("strategies bad type", {"configuration": {"strategies": [{"type": "zzz", "namespace": ["u"]}]}}), ("empty", {}), ("unknown", {"zzz": 1}),
+]
+
+MEMORIES = {
+    "messages": {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]},
+    "messages and session": {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}], "namespace": {"session_id": "s1", "user_id": "u"}},
+    "second in session": {"messages": [{"role": "assistant", "content": [{"type": "text", "text": "yo"}]}], "namespace": {"session_id": "s1"}},
+    "data": {"structured_data": {"a": 1}, "payload_type": "DATA"}, "lower payload": {"structured_data": {"a": 1}, "payload_type": "data"},
+    "bad payload": {"structured_data": {"a": 1}, "payload_type": "zzz"}, "data string": {"structured_data": "x"},
+    "binary": {"binary_data": "AAEC"}, "tags": {"messages": [{"role": "user", "content": []}], "tags": {"a": 1, "b": {"c": [1]}}},
+    "metadata": {"structured_data": {"k": 1}, "metadata": {"m": 5, "n": True}}, "namespace values": {"structured_data": {"k": 1}, "namespace": {"n": 5, "o": {"p": 1}}},
+    "no role": {"messages": [{"content": []}]}, "no content": {"messages": [{"role": "user"}]}, "messages string": {"messages": "x"},
+    "empty messages": {"messages": []}, "empty": {}, "infer": {"messages": [{"role": "user", "content": []}], "infer": True},
+    "infer false": {"messages": [{"role": "user", "content": []}], "infer": False}, "infer text": {"messages": [{"role": "user", "content": []}], "infer": "x"},
+    "top level session": {"structured_data": {"a": 1}, "session_id": "s7", "owner": "o"}, "extra": {"structured_data": {"a": 1}, "zzz": 1},
+}
+
+MEMORY_UPDATES = [
+    ("tags", {"tags": {"t": "1"}}), ("metadata", {"metadata": {"m": "2"}}), ("structured data", {"structured_data": {"z": 9}}), ("messages", {"messages": [{"role": "user", "content": []}]}),
+    ("bad messages", {"messages": "x"}), ("binary", {"binary_data": "AQ=="}), ("namespace ignored", {"namespace": {"q": "1"}}), ("unknown", {"zzz": 1}), ("empty", {}),
+]
+
+
+def containers(c, ours, stock):
+    """Agentic memory containers, the working memories and sessions they hold."""
+    side = (("ours", ours), ("stock", stock))
+    ids = {"ours": [], "stock": []}
+    C = "/_plugins/_ml/memory_containers"
+
+    def both(label, method, path, body=None, made=None, keep=True):
+        got = {}
+        for name, n in side:
+            p = path.format(**{k: v[name] for k, v in (made or {}).items()})
+            if "_search" in p:
+                n.call("POST", "/.plugins-ml-am-*,default-memory-*,pfx-*,usr-*,nos-*/_refresh")
+            s, o = n.call(method, p, body)
+            if isinstance(o, dict) and "memory_container_id" in o and keep:
+                ids[name].append(o["memory_container_id"])
+            if isinstance(o, dict) and "working_memory_id" in o and keep:
+                ids[name].append(o["working_memory_id"])
+            if isinstance(o, dict) and "hits" in o:
+                o = {"total": o["hits"]["total"], "hits": [{k: v for k, v in h.items() if k not in ("_version", "_seq_no", "_primary_term", "sort", "_score")} for h in o["hits"]["hits"]]}
+            if s != 200 and isinstance(o, dict) and "error" in o:
+                o = {"type": o["error"].get("type"), "reason": o["error"].get("reason"), "caused_by": o["error"].get("caused_by", {}).get("type")}
+            got[name] = {"status": s, "body": mask(o, ids[name])}
+            if isinstance(got[name]["body"], dict) and isinstance(got[name]["body"].get("hits"), list):
+                got[name]["body"]["hits"].sort(key=lambda h: json.dumps({k: v for k, v in h.items() if k != "_source"} | {"_source": {k: v for k, v in h["_source"].items() if k not in ("created_time", "last_updated_time")}}, sort_keys=True))
+            got[name] = json.loads(re.sub(r"at 1:\d+", "at 1:N", json.dumps(got[name])))
+        c.same(f"containers {label}", got["ours"], got["stock"])
+        return got
+
+    def reset():
+        for name, n in side:
+            s, o = n.call("POST", C + "/_search", {"query": {"match_all": {}}, "size": 100})
+            for h in (o.get("hits", {}).get("hits", []) if s == 200 else []):
+                n.call("DELETE", f"{C}/{h['_id']}")
+            n.call("DELETE", "/.plugins-ml-am-*,default-memory-*,pfx-*,usr-*,nos-*")
+            ids[name].clear()
+
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.agentic_memory_enabled": False}})
+    both("disabled create", "POST", C + "/_create", {"name": "x"})
+    both("disabled get", "GET", C + "/x")
+    both("disabled search", "POST", C + "/_search", {})
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.agentic_memory_enabled": True}})
+    reset()
+
+    for label, body in CONTAINERS.items():
+        both(f"create {label}", "POST", C + "/_create", body)
+    reset()
+    made = {}
+    for name, n in side:
+        made.setdefault("c", {})[name] = n.ok("POST", C + "/_create", {"name": "base", "description": "d", "backend_roles": ["r"]})["memory_container_id"]
+        ids[name].append(made["c"][name])
+    both("get", "GET", C + "/{c}", made=made)
+    both("get unknown", "GET", C + "/nope")
+    for name, n in side:
+        made.setdefault("u", {})[name] = n.ok("POST", C + "/_create", {"name": "upd", "description": "d", "backend_roles": ["r"]})["memory_container_id"]
+        ids[name].append(made["u"][name])
+    for label, body in CONTAINER_UPDATES:
+        both(f"update {label}", "PUT", C + "/{u}", body, made=made)
+        both(f"get after update {label}", "GET", C + "/{u}", made=made)
+    both("update unknown", "PUT", C + "/nope", {"name": "x"})
+    both("search", "POST", C + "/_search", {"query": {"match_all": {}}}, made=made)
+    both("search get", "GET", C + "/_search", {"query": {"match_all": {}}}, made=made)
+    both("search no body", "POST", C + "/_search")
+    both("search sorted", "POST", C + "/_search", {"query": {"match": {"name": "n2"}}, "_source": ["name"]}, made=made)
+
+    W = C + "/{c}/memories"
+    for label, body in MEMORIES.items():
+        got = both(f"add {label}", "POST", W, body, made=made)
+        if got["ours"]["status"] == 200:
+            both(f"search working after {label}", "POST", W + "/working/_search", {"query": {"match_all": {}}, "size": 100}, made=made)
+            both(f"search sessions after {label}", "POST", W + "/sessions/_search", {"query": {"match_all": {}}, "size": 100}, made=made)
+    both("add unknown container", "POST", C + "/nope/memories", {"structured_data": {"a": 1}})
+    both("add no body", "POST", W, made=made)
+
+    one = {}
+    for name, n in side:
+        one[name] = n.ok("POST", f"{C}/{made['c'][name]}/memories", {"structured_data": {"a": 1}, "tags": {"t": "0"}, "namespace": {"session_id": "sess9"}})
+        ids[name].append(one[name]["working_memory_id"])
+    made["m"] = {name: one[name]["working_memory_id"] for name in one}
+    made["s"] = {name: "sess9" for name in one}
+    both("get working", "GET", W + "/working/{m}", made=made)
+    both("get session", "GET", W + "/sessions/{s}", made=made)
+    both("get type invalid", "GET", W + "/zzz/{m}", made=made)
+    both("get long term", "GET", W + "/long-term/{m}", made=made)
+    both("get history", "GET", W + "/history/{m}", made=made)
+    both("get missing", "GET", W + "/working/nope", made=made)
+    both("get unknown container", "GET", C + "/nope/memories/working/{m}", made=made)
+    for label, body in MEMORY_UPDATES:
+        both(f"update working {label}", "PUT", W + "/working/{m}", body, made=made)
+        both(f"get working after {label}", "GET", W + "/working/{m}", made=made)
+    for label, body in [("summary", {"summary": "s"}), ("metadata", {"metadata": {"a": "1"}}), ("agents", {"agents": {"a": 1}}), ("additional", {"additional_info": {"x": "y"}}), ("tags", {"tags": {}}), ("empty", {})]:
+        both(f"update session {label}", "PUT", W + "/sessions/{s}", body, made=made)
+        both(f"get session after {label}", "GET", W + "/sessions/{s}", made=made)
+    both("update missing", "PUT", W + "/working/nope", {"tags": {"a": "1"}}, made=made)
+    both("update long term", "PUT", W + "/long-term/x", {"tags": {"a": "1"}}, made=made)
+    both("search no body", "POST", W + "/working/_search", made=made)
+    both("search long term", "POST", W + "/long-term/_search", {"query": {"match_all": {}}}, made=made)
+    both("search invalid type", "POST", W + "/zzz/_search", {"query": {"match_all": {}}}, made=made)
+    both("search query", "POST", W + "/working/_search", {"query": {"term": {"tags.t": "0"}}}, made=made)
+    both("delete working", "DELETE", W + "/working/{m}", made=made)
+    both("delete working again", "DELETE", W + "/working/{m}", made=made)
+    both("delete session", "DELETE", W + "/sessions/{s}", made=made)
+    both("delete session again", "DELETE", W + "/sessions/{s}", made=made)
+    both("delete long term", "DELETE", W + "/long-term/x", made=made)
+    both("delete container", "DELETE", C + "/{c}", made=made)
+    both("delete container again", "DELETE", C + "/{c}", made=made)
+    both("get after delete", "GET", C + "/{c}", made=made)
+
+    for name, n in side:
+        n.call("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.agentic_memory_enabled": None}})
+    reset()
 
 
 def final(text):
