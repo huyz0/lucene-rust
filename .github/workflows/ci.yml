@@ -342,7 +342,9 @@ jobs:
 
       - name: Slowest tests (non-blocking)
         if: always()
-        run: python3 scripts/ci-slowest-tests.py target/llvm-cov-target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY" || true
+        # Under cargo-llvm-cov the report is not at the path plain nextest uses
+        # (the step failed with FileNotFoundError on 2026-11-14).
+        run: python3 scripts/ci-slowest-tests.py "$(find target -path '*nextest/ci/junit.xml' | head -1)" >> "$GITHUB_STEP_SUMMARY" || true
 
   # ---------------------------------------------------------------------------
   # The Rust gate on arm64: clippy (SIMD and `c_char` differ by target) and
