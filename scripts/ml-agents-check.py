@@ -4,9 +4,12 @@ Registers, reads, updates, searches and deletes agents on both nodes and
 compares the answers (agent ids, times and index versions masked), then
 lists and reads the tools ml-commons itself registers. A stock node with
 other plugins lists their tools too; only the names both sides know from
-ml-commons are compared.
+ml-commons are compared. Then runs flow and conversational_flow agents with
+the tools that need no language model, against indices both nodes hold, a
+remote model and a connector on the mock model server of the `remote`
+section, sync and with `?async=true`.
 """
-import json
+import importlib.util, json, os, re, time
 
 ML_TOOLS = ["ConnectorTool", "IndexInsightTool", "QueryPlanningTool", "VisualizationTool", "McpSseTool", "AgentTool",
             "WriteToScratchPadTool", "ReadFromScratchPadTool", "McpStreamableHttpTool", "SearchIndexTool", "MLModelTool",
@@ -94,6 +97,11 @@ def answer(n, method, path, body, ids):
 
 
 def agents(c, ours, stock):
+    registry(c, ours, stock)
+    execution(c, ours, stock)
+
+
+def registry(c, ours, stock):
     ids = {"ours": [], "stock": []}
     made = {}
     for label, body in REGISTER.items():
@@ -168,3 +176,245 @@ def agents(c, ours, stock):
     for name in ML_TOOLS + ["Nope"]:
         got = {side: answer(n, "GET", f"/_plugins/_ml/tools/{name}", None, []) for side, n in (("ours", ours), ("stock", stock))}
         c.same(f"tools get {name}", got["ours"], got["stock"])
+
+
+DOCS = [("a", {"t": "hello world", "n": 1}), ("b", {"t": "second doc", "n": 2}), ("c", {"t": "third \"quoted\" <doc> & more", "n": 3, "o": {"p": [1, 2.5, True, None]}})]
+INDICES = {
+    "ag1": {"settings": {"number_of_replicas": 1}},
+    "ag2": {"settings": {"number_of_replicas": 0}, "mappings": {"properties": {"k": {"type": "keyword"}, "d": {"type": "date"}}}},
+    "ag3": {"settings": {"number_of_replicas": 0, "refresh_interval": "5s"},
+            "mappings": {"dynamic": "strict", "_meta": {"v": 1}, "properties": {"o": {"properties": {"z": {"type": "keyword"}, "y": {"type": "date"}}},
+                                                                                "a": {"type": "text", "analyzer": "standard"}}}},
+}
+
+
+def text_mask(t, ids):
+    """A tool's text without what differs between nodes: ids, uuids, times, sizes."""
+    for i in ids:
+        t = t.replace(i, "<id>")
+    t = re.sub(r"index\.(creation_date|uuid)=[A-Za-z0-9_-]*", r"index.\1=<x>", t)
+    lines = []
+    for line in t.split("\n"):
+        cols = line.split(",")
+        if len(cols) == 11 and cols[0].isdigit():
+            cols[0], cols[4], cols[9], cols[10] = "<row>", "<uuid>", "<size>", "<size>"
+        lines.append(",".join(cols))
+    if lines and lines[0].startswith("row,health"):
+        rows = sorted(x for x in lines[1:] if x)
+        lines = [lines[0]] + rows + [""]
+    return "\n".join(lines)
+
+
+def deep(x, ids):
+    if isinstance(x, str):
+        return text_mask(x, ids)
+    if isinstance(x, list):
+        return [deep(v, ids) for v in x]
+    if isinstance(x, dict):
+        return {k: deep(v, ids) for k, v in x.items()}
+    return x
+
+
+def run_mask(o, ids):
+    if isinstance(o, dict) and "inference_results" in o:
+        o = deep(o, ids)
+    return mask(o, ids)
+
+
+def mock_server():
+    spec = importlib.util.spec_from_file_location("remote_check", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml-remote-check.py"))
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    try:
+        rc.serve_mock()
+    except OSError:
+        pass  # the remote section's mock is still serving
+    return rc
+
+
+def execution(c, ours, stock):
+    rc = mock_server()
+    side = (("ours", ours), ("stock", stock))
+    ids = {"ours": [], "stock": []}
+    fx = {"ours": {}, "stock": {}}
+    for name, n in side:
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.trusted_connector_endpoints_regex": [".*"],
+                                                          "plugins.ml_commons.connector.private_ip_enabled": True}})
+        for ix, body in INDICES.items():
+            n.call("DELETE", f"/{ix}")
+            n.ok("PUT", f"/{ix}", body)
+        for ix in INDICES:
+            for did, doc in DOCS:
+                n.call("PUT", f"/{ix}/_doc/{did}?refresh=true", doc)
+        con = rc.connector("agent-conn", "http", {"k": "v"}, [rc.act(f"http://127.0.0.1:{rc.MOCK}/gen/x", "{\"q\": \"${parameters.question}\"}")], {"a": "b"})
+        fx[name]["connector"] = n.ok("POST", "/_plugins/_ml/connectors/_create", con)["connector_id"]
+        fx[name]["model"] = n.ok("POST", "/_plugins/_ml/models/_register?deploy=true", {"name": "agent-model", "function_name": "remote", "connector": con})["model_id"]
+        n.ok("POST", "/_plugins/_ml/agents/_register", {"name": "inner", "type": "flow", "tools": [{"type": "ListIndexTool", "parameters": {"indices": ["ag2"]}}]})
+        s, o = n.call("POST", "/_plugins/_ml/agents/_search", {"query": {"term": {"name.keyword": "inner"}}})
+        fx[name]["inner"] = o["hits"]["hits"][0]["_id"]
+        ids[name] += list(fx[name].values())
+    time.sleep(3)
+
+    def agent(label, body, tools=None):
+        got = {}
+        for name, n in side:
+            b = json.loads(json.dumps(body).replace("<connector>", fx[name]["connector"]).replace("<model>", fx[name]["model"]).replace("<inner>", fx[name]["inner"]))
+            s, o = n.call("POST", "/_plugins/_ml/agents/_register", b)
+            got[name] = o["agent_id"] if s == 200 else None
+            if s == 200:
+                ids[name].append(o["agent_id"])
+        return got
+
+    def execute(label, body, request, query=""):
+        made = agent(label, body)
+        if None in made.values():
+            return None
+        got = {}
+        for name, n in side:
+            s, o = n.call("POST", f"/_plugins/_ml/agents/{made[name]}/_execute{query}", json.loads(json.dumps(request).replace("<connector>", fx[name]["connector"]).replace("<model>", fx[name]["model"])))
+            got[name] = {"status": s, "body": run_mask(o, ids[name])}
+        c.same(f"agents execute {label}", got["ours"], got["stock"])
+        return made
+
+    counter = [0]
+
+    def flow(label, tools, request, type="flow", **extra):
+        counter[0] += 1
+        return execute(label, dict({"name": f"e{counter[0]}", "type": type, "tools": tools}, **extra), request)
+
+    def one(label, tool, request, **kw):
+        return flow(label, [tool], request, **kw)
+
+    LI, IM, SI = "ListIndexTool", "IndexMappingTool", "SearchIndexTool"
+    for label, p in {"explicit": {"indices": ["ag1"]}, "two": {"indices": ["ag1", "ag2"]}, "wildcard": {"indices": ["ag*"]}, "missing": {"indices": ["nope"]},
+                     "missing wildcard": {"indices": ["nope*"]}, "bare": {"indices": "ag1"}, "text array": {"indices": "[\"ag2\"]"},
+                     "local": {"indices": ["ag1"], "local": "true"}, "number": {"indices": 5}, "object": {"indices": {"a": 1}}}.items():
+        one(f"list {label}", {"type": LI}, {"parameters": p})
+    for label, p in {"explicit": {"index": ["ag1"]}, "strict": {"index": ["ag3"]}, "keyword": {"index": ["ag2"]}, "two": {"index": ["ag1", "ag2"]},
+                     "wildcard": {"index": ["ag*"]}, "missing": {"index": ["nope"]}, "empty": {"index": []}, "absent": {}, "bare": {"index": "ag1"}}.items():
+        one(f"mapping {label}", {"type": IM}, {"parameters": p})
+    q = lambda index, query: json.dumps({"index": index, "query": query})
+    for label, p in {
+        "match all": {"input": q("ag1", {"query": {"match_all": {}}})},
+        "size zero": {"input": q("ag1", {"query": {"match_all": {}}, "size": 0})},
+        "size one": {"input": q("ag1", {"query": {"match_all": {}}, "size": 1})},
+        "match": {"input": q("ag1", {"query": {"match": {"t": "doc"}}})},
+        "sorted": {"input": q("ag1", {"query": {"match_all": {}}, "sort": [{"n": "desc"}]})},
+        "aggs only": {"input": q("ag1", {"size": 1, "aggs": {"a": {"max": {"field": "n"}}}})},
+        "source filter": {"input": q("ag1", {"query": {"match_all": {}}, "_source": ["n"]})},
+        "unknown query": {"input": q("ag1", {"query": {"zzz": {}}})},
+        "missing index": {"input": q("nope", {"query": {"match_all": {}}})},
+        "wildcard": {"input": q("ag*", {"query": {"term": {"n": 2}}})},
+        "no index": {"input": json.dumps({"query": {"query": {"match_all": {}}}})},
+        "no query": {"input": json.dumps({"index": "ag1"})},
+        "neither": {}, "bare word": {"input": "x"}, "array": {"input": "[1]"}, "number": {"input": "5"}, "null": {"input": "null"},
+        "query text": {"input": json.dumps({"index": "ag1", "query": "{\"query\":{\"match_all\":{}},\"size\":1}"})},
+    }.items():
+        one(f"search {label}", {"type": SI}, {"parameters": p})
+    one("model", {"type": "MLModelTool", "parameters": {"model_id": "<model>"}}, {"parameters": {"question": "hi <there> & 'you'"}})
+    one("model tool parameter", {"type": "MLModelTool", "parameters": {"model_id": "<model>", "question": "tool"}}, {"parameters": {}})
+    one("model response field", {"type": "MLModelTool", "parameters": {"model_id": "<model>", "response_field": "echo"}}, {"parameters": {"question": "hi"}})
+    one("model missing response field", {"type": "MLModelTool", "parameters": {"model_id": "<model>", "response_field": "nope"}}, {"parameters": {"question": "hi"}})
+    one("model nested value", {"type": "MLModelTool", "parameters": {"model_id": "<model>", "response_field": "nested"}}, {"parameters": {"question": "hi"}})
+    one("model no id", {"type": "MLModelTool"}, {"parameters": {"question": "hi"}})
+    one("model blank id", {"type": "MLModelTool", "parameters": {"model_id": " "}}, {"parameters": {}})
+    one("model unknown", {"type": "MLModelTool", "parameters": {"model_id": "zz"}}, {"parameters": {"question": "hi"}})
+    one("model id in request", {"type": "MLModelTool"}, {"parameters": {"model_id": "<model>", "question": "hi"}})
+    CT = {"type": "ConnectorTool", "parameters": {"connector_id": "<connector>", "connector_action": "predict"}}
+    one("connector", CT, {"parameters": {"question": "hi"}})
+    one("connector newline", CT, {"parameters": {"question": "a\nb\"c\\d"}})
+    one("connector bool and number", CT, {"parameters": {"question": True}})
+    one("connector number", CT, {"parameters": {"question": 1.50}})
+    one("connector null value", CT, {"parameters": {"question": None}})
+    one("connector object value", CT, {"parameters": {"question": {"a": 1}}})
+    one("connector unfilled", CT, {"parameters": {"question": "a ${parameters.nope} b"}})
+    one("connector no action", {"type": "ConnectorTool", "parameters": {"connector_id": "<connector>"}}, {"parameters": {"question": "hi"}})
+    one("connector bad action", {"type": "ConnectorTool", "parameters": {"connector_id": "<connector>", "connector_action": "zz"}}, {"parameters": {}})
+    one("connector missing", {"type": "ConnectorTool", "parameters": {"connector_id": "zz", "connector_action": "predict"}}, {"parameters": {}})
+    one("connector blank", {"type": "ConnectorTool", "parameters": {"connector_id": " "}}, {"parameters": {}})
+    one("agent tool", {"type": "AgentTool", "parameters": {"agent_id": "<inner>"}}, {"parameters": {}})
+    one("agent tool missing", {"type": "AgentTool", "parameters": {"agent_id": "zz"}}, {"parameters": {}})
+    one("agent tool blank", {"type": "AgentTool"}, {"parameters": {}})
+    one("scratch write", {"type": "WriteToScratchPadTool"}, {"parameters": {"notes": "a\nb"}})
+    one("scratch write blank", {"type": "WriteToScratchPadTool"}, {"parameters": {"notes": "  "}})
+    one("scratch write missing", {"type": "WriteToScratchPadTool"}, {"parameters": {}})
+    one("scratch read", {"type": "ReadFromScratchPadTool"}, {"parameters": {"notes": "a"}})
+    flow("scratch write then read", [{"type": "WriteToScratchPadTool", "name": "w"}, {"type": "ReadFromScratchPadTool", "name": "r"}], {"parameters": {"notes": "x"}})
+    flow("two unnamed", [{"type": LI, "parameters": {"indices": ["ag1"]}}, {"type": IM, "parameters": {"index": ["ag2"]}}], {"parameters": {}})
+    flow("two named", [{"type": LI, "name": "li", "parameters": {"indices": ["ag1"]}}, {"type": IM, "name": "im", "parameters": {"index": ["ag2"]}}], {"parameters": {}})
+    flow("included", [{"type": LI, "name": "li", "include_output_in_agent_response": True, "parameters": {"indices": ["ag1"]}},
+                      {"type": IM, "name": "im", "parameters": {"index": ["ag2"]}}], {"parameters": {}})
+    flow("included last only", [{"type": LI, "name": "li", "parameters": {"indices": ["ag1"]}},
+                                {"type": IM, "name": "im", "include_output_in_agent_response": True, "parameters": {"index": ["ag2"]}}], {"parameters": {}})
+    flow("all included", [{"type": LI, "name": "li", "include_output_in_agent_response": True, "parameters": {"indices": ["ag1"]}},
+                          {"type": IM, "name": "im", "include_output_in_agent_response": True, "parameters": {"index": ["ag2"]}},
+                          {"type": SI, "name": "si", "include_output_in_agent_response": True,
+                           "parameters": {"input": q("ag2", {"query": {"match_all": {}}})}}], {"parameters": {}})
+    flow("first fails", [{"type": LI, "parameters": {"indices": ["nope"]}}, {"type": IM, "parameters": {"index": ["ag2"]}}], {"parameters": {}})
+    flow("chain output", [{"type": IM, "name": "im", "parameters": {"index": ["ag2"]}},
+                          {"type": "ConnectorTool", "name": "ct", "parameters": {"connector_id": "<connector>", "connector_action": "predict", "question": "got:${parameters.im.output}"}}],
+         {"parameters": {}})
+    flow("chain search output", [{"type": SI, "name": "si", "parameters": {"input": q("ag1", {"query": {"match_all": {}}})}},
+                                 {"type": "ConnectorTool", "name": "ct", "parameters": {"connector_id": "<connector>", "connector_action": "predict", "question": "${parameters.si.output}"}}],
+         {"parameters": {}})
+    flow("chain request wins", [{"type": LI, "name": "li", "parameters": {"indices": ["ag1"]}},
+                                {"type": "ConnectorTool", "parameters": {"connector_id": "<connector>", "connector_action": "predict", "question": "tool"}}], {"parameters": {"question": "request"}})
+    one("request over tool", {"type": LI, "parameters": {"indices": ["nope"]}}, {"parameters": {"indices": ["ag1"]}})
+    one("tool over agent", {"type": LI, "parameters": {"indices": ["nope"]}}, {"parameters": {}}, parameters={"indices": ["ag1"]})
+    one("request over agent", {"type": LI}, {"parameters": {"indices": ["ag1"]}}, parameters={"indices": ["nope"]})
+    one("prefix by name", {"type": LI, "name": "li"}, {"parameters": {"li.indices": ["ag1"]}})
+    one("prefix by type", {"type": LI}, {"parameters": {"ListIndexTool.indices": ["ag1"]}})
+    one("prefix other tool", {"type": LI, "name": "li", "parameters": {"indices": ["ag1"]}}, {"parameters": {"other.indices": ["nope"]}})
+    one("parameters null", {"type": IM, "parameters": {"index": ["ag1"]}}, {"parameters": None})
+    one("parameters text", {"type": IM, "parameters": {"index": ["ag1"]}}, {"parameters": "x"})
+    one("parameters number", {"type": IM, "parameters": {"index": ["ag1"]}}, {"parameters": 5})
+    one("no parameters key", {"type": IM, "parameters": {"index": ["ag1"]}}, {})
+    one("other input", {"type": IM, "parameters": {"index": ["ag1"]}}, {"text_docs": ["a"]})
+    one("conversational flow", {"type": IM, "parameters": {"index": ["ag2"]}}, {"parameters": {"question": "q"}}, type="conversational_flow")
+    one("conversational flow with memory", {"type": IM, "name": "im", "parameters": {"index": ["ag2"]}}, {"parameters": {"question": "q"}}, type="conversational_flow",
+        memory={"type": "conversation_index"})
+    one("conversational flow without question", {"type": IM, "parameters": {"index": ["ag2"]}}, {"parameters": {}}, type="conversational_flow")
+    one("conversational flow connector", CT, {"parameters": {"question": "q"}}, type="conversational_flow")
+    flow("no tools", [], {"parameters": {}})
+    execute("no tools field", {"name": "e-nt", "type": "flow"}, {"parameters": {}})
+    execute("no tools field conversational flow", {"name": "e-nt2", "type": "conversational_flow"}, {"parameters": {"question": "q"}})
+    got = {}
+    for name, n in side:
+        s, o = n.call("POST", "/_plugins/_ml/agents/nope/_execute", {"parameters": {}})
+        got[name] = {"status": s, "body": o}
+    c.same("agents execute missing agent", got["ours"], got["stock"])
+    got = {}
+    for name, n in side:
+        s, o = n.call("POST", "/_plugins/_ml/agents/nope/_execute", {})
+        got[name] = {"status": s, "body": o}
+    c.same("agents execute missing agent without parameters", got["ours"], got["stock"])
+    made = agent("body required", {"name": "e-br", "type": "flow", "tools": [{"type": IM, "parameters": {"index": ["ag1"]}}]})
+    got = {}
+    for name, n in side:
+        s, o = n.call("POST", f"/_plugins/_ml/agents/{made[name]}/_execute", None)
+        got[name] = {"status": s, "body": o}
+    c.same("agents execute without a body", got["ours"], got["stock"])
+    # async: a task, then the task's document.
+    for label, tools in {"async ok": [{"type": IM, "parameters": {"index": ["ag2"]}}],
+                         "async fails": [{"type": SI, "parameters": {}}],
+                         "async missing index": [{"type": LI, "parameters": {"indices": ["nope"]}}],
+                         "async two tools": [{"type": IM, "name": "im", "parameters": {"index": ["ag2"]}}, {"type": "ConnectorTool", "parameters": {"connector_id": "<connector>", "connector_action": "predict", "question": "z"}}]}.items():
+        counter[0] += 1
+        made = agent(label, {"name": f"e{counter[0]}", "type": "flow", "tools": tools})
+        got = {}
+        for name, n in side:
+            s, o = n.call("POST", f"/_plugins/_ml/agents/{made[name]}/_execute?async=true", {"parameters": {}})
+            body = {"status": s, "keys": sorted(o), "state": o.get("status")}
+            task = None
+            if s == 200:
+                task = n.task(o["task_id"])
+                ids[name].append(o["task_id"])
+                task = {k: v for k, v in task.items() if k not in ("create_time", "last_update_time", "worker_node")}
+                task["response"] = run_mask(task.get("response"), ids[name])
+            got[name] = {"start": body, "task": task}
+        c.same(f"agents execute {label}", got["ours"], got["stock"])
+    got = {}
+    for name, n in side:
+        s, o = n.call("POST", "/_plugins/_ml/agents/nope/_execute?async=true", {"parameters": {}})
+        got[name] = {"status": s, "body": o}
+    c.same("agents execute async missing agent", got["ours"], got["stock"])

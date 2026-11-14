@@ -554,8 +554,13 @@ final class RemoteModels {
      * ({@code null} on {@code models/<id>/_predict}, a remote model's own parameters), each split
      * input one request; the answer as {@code MLPredictionOutput} writes it.
      */
-    @SuppressWarnings("unchecked")
     Map<String, Object> predict(long handle, String route, Map<String, Object> body) throws Exception {
+        return predict(handle, route, "predict", body);
+    }
+
+    /** {@link #predict(long, String, Map)} for the connector action named {@code action}. */
+    @SuppressWarnings("unchecked")
+    Map<String, Object> predict(long handle, String route, String action, Map<String, Object> body) throws Exception {
         Connection connection = connections.get(handle);
         if (connection == null) {
             throw new IllegalStateException("the remote model is not deployed here");
@@ -572,18 +577,18 @@ final class RemoteModels {
             }
             default -> Map.of("text_docs", MlCommons.textDocs(body));
         };
-        Map<String, Object> split = call(handle, Map.of("op", "split", "action", "predict", "input", input));
+        Map<String, Object> split = call(handle, Map.of("op", "split", "action", action, "input", input));
         List<Object> parts = (List<Object>) split.get("inputs");
         List<Object> results = new ArrayList<>();
         if (parts.size() == 1) {
-            results.add(request(handle, connection, algorithm, (Map<String, Object>) parts.get(0)));
+            results.add(request(handle, connection, algorithm, action, (Map<String, Object>) parts.get(0)));
             return Map.of("inference_results", results);
         }
         // Each part is its own request, sent at once as stock does; virtual threads, since each waits on HTTP.
         try (java.util.concurrent.ExecutorService parallel = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             List<java.util.concurrent.Future<Map<String, Object>>> pending = new ArrayList<>();
             for (Object part : parts) {
-                pending.add(parallel.submit(() -> request(handle, connection, algorithm, (Map<String, Object>) part)));
+                pending.add(parallel.submit(() -> request(handle, connection, algorithm, action, (Map<String, Object>) part)));
             }
             for (java.util.concurrent.Future<Map<String, Object>> f : pending) {
                 try {
@@ -597,10 +602,10 @@ final class RemoteModels {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> request(long handle, Connection connection, String algorithm, Map<String, Object> input) throws Exception {
+    private Map<String, Object> request(long handle, Connection connection, String algorithm, String action, Map<String, Object> input) throws Exception {
         Map<String, Object> prepare = new LinkedHashMap<>();
         prepare.put("op", "prepare");
-        prepare.put("action", "predict");
+        prepare.put("action", action);
         prepare.put("algorithm", algorithm);
         prepare.put("input", input);
         prepare.put("amz_date", ZonedDateTime.now(ZoneOffset.UTC).format(AMZ_DATE));
@@ -631,7 +636,7 @@ final class RemoteModels {
         }
         Map<String, Object> parse = new LinkedHashMap<>();
         parse.put("op", "parse");
-        parse.put("action", "predict");
+        parse.put("action", action);
         parse.put("parameters", prepared.get("parameters"));
         parse.put("body", response.body());
         Map<String, Object> parsed = call(handle, parse);

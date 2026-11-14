@@ -39,6 +39,26 @@ all. A path missing from a filter is a job that silently stops running for
 that change, which is worse than a wasted run. Add new top-level directories
 to the filters when they are created.
 
+## Which run does what
+
+GitHub's pool of hosted runners is shared by every open pull request and
+`main`, and the wait for a free runner (50 to 80 minutes with several pull
+requests open on 2026-11-13/14) was longer than any job. A full run is ~221
+runner minutes, 60 of them arm64. So the runs are tiered:
+
+| run | what runs |
+|---|---|
+| pull request | everything the change touches, **x64 only** |
+| push to `main` | `checks`, `gate (x64)`, `lucene-search in release (x64)`, `fips` |
+| `workflow_dispatch` (manual) | every job, x64 and arm64, regardless of what changed |
+
+What only a manual run covers: the arm64 jobs (gate, release tests,
+plugin), and, after a merge, the write-path, fuzz, fixtures, snowball and
+OpenSearch jobs, which a pull request has already run on its own head. Nothing
+schedules it: run `ci` by hand from the Actions tab to check `main`, or a
+pull request, on arm64 before a change that touches SIMD, atomics
+or unsafe code; a manual run gets its own concurrency group.
+
 ## Jobs, and what changed
 
 | job | before | now |
