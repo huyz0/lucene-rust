@@ -220,6 +220,34 @@ fn sparse_and_multi_valued_fields_read_back() {
             assert_eq!(values[i], ts[d]);
         }
     }
+    // Windows of a sparse adaptive field decode their values as a run: every
+    // alignment and length (whole words or not), across value blocks, past
+    // the last document, and backwards (the cursor rewinds).
+    let mut r = NumericReader::new(&data, entry);
+    for (start, len) in [
+        (0, 1024),
+        (1024, 1024),
+        (64, 128),
+        (5, 77),
+        (2900, 128),
+        (2950, 64),
+        (128, 2048),
+        (0, 64),
+        (1500, 1),
+    ] {
+        let mut values = vec![-7i64; len];
+        let mut present = vec![u64::MAX; len.div_ceil(64)];
+        r.fill_window(start as i32, &mut values, &mut present)
+            .unwrap();
+        for i in 0..len {
+            let d = start + i;
+            let has = d < n as usize && d % 3 != 0;
+            assert_eq!(present[i / 64] >> (i % 64) & 1 == 1, has, "doc {d}");
+            if has {
+                assert_eq!(values[i], ts[d], "doc {d}");
+            }
+        }
+    }
 
     for (field, want) in [
         (
