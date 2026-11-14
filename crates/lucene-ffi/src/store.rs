@@ -743,7 +743,7 @@ mod tests {
             let shard: Arc<str> = Arc::from(path.as_str());
             let held = std::panic::AssertUnwindSafe(&input);
             let rc = guard(move || {
-                crate::error::note_shard(&shard);
+                lucene_engine::status::note_shard(&shard);
                 // The page holding the flipped chunk reads as zeros.
                 let held = held;
                 let input: &Input = held.0;

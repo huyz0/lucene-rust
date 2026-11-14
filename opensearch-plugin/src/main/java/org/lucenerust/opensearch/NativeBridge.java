@@ -2193,7 +2193,7 @@ public final class NativeBridge {
         }
     }
 
-    // ---- The engine writer (engine_writer.rs). ----
+    // ---- The engine writer (writer.rs). ----
 
     /** Indices into {@link #writerStats}' output. */
     public static final int STAT_RAM_BYTES = 0;
@@ -2974,7 +2974,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The commit-data upcall's statuses ({@code COMMIT_DATA_*} in {@code engine_writer.rs}). */
+    /** The commit-data upcall's statuses ({@code COMMIT_DATA_*} in {@code writer.rs}). */
     public static final int COMMIT_DATA_OK = 0;
     public static final int COMMIT_DATA_BUFFER_TOO_SMALL = 1;
     public static final int COMMIT_DATA_FAILED = 2;
@@ -3299,7 +3299,7 @@ public final class NativeBridge {
         }
     }
 
-    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code engine_writer.rs}). */
+    /** Merge policy kinds for {@link #writerSetPluggableMergePolicy} ({@code MERGE_POLICY_*} in {@code writer.rs}). */
     public static final int MERGE_POLICY_TIERED = 0;
     public static final int MERGE_POLICY_LOG_BYTE_SIZE = 1;
     public static final int MERGE_POLICY_NONE = 2;
@@ -3338,7 +3338,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The warm upcall's answers: {@code WARM_OK} in {@code engine_writer.rs}, and any other value fails the merge. */
+    /** The warm upcall's answers: {@code WARM_OK} in {@code writer.rs}, and any other value fails the merge. */
     public static final int WARM_OK = 0;
     public static final int WARM_FAILED = 1;
 
@@ -3466,7 +3466,7 @@ public final class NativeBridge {
         }
     }
 
-    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code engine_writer.rs}). */
+    /** The merge upcall's events and failure kinds ({@code MERGE_*} in {@code writer.rs}). */
     public static final int MERGE_EVENT_BEFORE = 0;
     public static final int MERGE_EVENT_AFTER = 1;
     public static final int MERGE_OK = 0;
