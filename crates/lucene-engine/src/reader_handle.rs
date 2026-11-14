@@ -72,3 +72,105 @@ impl JvmReaderHandle {
         })
     }
 }
+
+/// A reader over the segments listed in `infos` (a whole `segments_N`
+/// file's bytes at generation `generation`) under `dir`, with segment `i`
+/// checked to have exactly `expected[i]` documents and masked with the
+/// JVM's live docs: `counts[i]` is how many words of segment `i`'s live-docs
+/// bitset follow in `words` (the segments' words concatenated, in order);
+/// `0` means no deletions, any other count exactly `bits2words(maxDoc)`
+/// with no bit set past `maxDoc`. `counts` is `None` when no segment has
+/// deletions. They replace whatever the segment has on disk.
+///
+/// `previous` is the handle of an earlier call over the same directory:
+/// its unchanged segments are shared instead of re-read.
+#[allow(clippy::too_many_arguments)]
+pub fn open_reader(
+    path: &str,
+    dir: &dyn lucene_store::Directory,
+    infos: &[u8],
+    generation: i64,
+    previous: Option<&JvmReaderHandle>,
+    expected: &[i32],
+    counts: Option<&[usize]>,
+    words: &[u64],
+) -> Result<JvmReaderHandle, crate::status::Status> {
+    use crate::alloc::try_with_capacity;
+    use crate::status::{set_last_error, Status};
+    let segment_infos = lucene_index::segment_infos::parse(infos, generation).map_err(|e| {
+        set_last_error(format!("parsing the JVM reader's SegmentInfos: {e}"));
+        Status::Decode
+    })?;
+    let reader = match previous {
+        None => lucene_search::directory_reader::DirectoryReader::open_at(dir, segment_infos),
+        Some(prev) => prev.reader.reopen_at(dir, segment_infos),
+    }
+    .map_err(|e| {
+        set_last_error(format!("opening the JVM reader's segments: {e}"));
+        Status::Decode
+    })?;
+
+    let opened: Vec<i32> = reader.segment_readers().iter().map(|s| s.max_doc).collect();
+    if opened != expected {
+        set_last_error(format!(
+            "segment maxDocs {opened:?} do not match the JVM reader's {expected:?}"
+        ));
+        return Err(Status::InvalidArgument);
+    }
+    let mut live_docs = try_with_capacity(opened.len())?;
+    let mut deleted = try_with_capacity(opened.len())?;
+    let mut at = 0usize;
+    for (segment, &max_doc) in opened.iter().enumerate() {
+        let n = counts.map_or(0, |c| c[segment]);
+        let live = live_from_words(segment, max_doc, &words[at..at + n])?;
+        at += n;
+        deleted.push(live.as_ref().map_or(0, |l| {
+            (usize::try_from(max_doc).unwrap_or(0) - l.cardinality()) as i64
+        }));
+        live_docs.push(live);
+    }
+    let cacheable = live_docs.len();
+    Ok(JvmReaderHandle {
+        reader,
+        live_docs,
+        deleted,
+        commit_live: std::sync::Mutex::new(None),
+        cacheable,
+        agg_identities: std::sync::OnceLock::new(),
+        path: Arc::from(path),
+    })
+}
+
+/// Segment `segment`'s live docs from its `words` ([`open_reader`]'s
+/// contract): `None` for no words, else exactly `bits2words(max_doc)` words
+/// with no bit past `max_doc`.
+fn live_from_words(
+    segment: usize,
+    max_doc: i32,
+    words: &[u64],
+) -> Result<Option<FixedBitSet>, crate::status::Status> {
+    use crate::status::{set_last_error, Status};
+    use lucene_util::fixed_bit_set::bits2words;
+    if words.is_empty() {
+        return Ok(None);
+    }
+    let max_doc = usize::try_from(max_doc).unwrap_or(0);
+    if words.len() != bits2words(max_doc) {
+        set_last_error(format!(
+            "segment {segment}: {} live-docs words for maxDoc {max_doc}, expected {}",
+            words.len(),
+            bits2words(max_doc)
+        ));
+        return Err(Status::InvalidArgument);
+    }
+    let tail_bits = max_doc % 64;
+    if tail_bits != 0 && words[words.len() - 1] >> tail_bits != 0 {
+        set_last_error(format!(
+            "segment {segment}: live-docs bits set past maxDoc {max_doc}"
+        ));
+        return Err(Status::InvalidArgument);
+    }
+    let mut owned = crate::alloc::try_with_capacity::<u64>(words.len())?;
+    owned.extend_from_slice(words);
+    Ok(Some(FixedBitSet::from_words(owned, max_doc)))
+}
