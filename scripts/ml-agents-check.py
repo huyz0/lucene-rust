@@ -1064,6 +1064,13 @@ def chat(c, ours, stock):
     case("plan missing fields", "pe_missing", q("q"), **pe)
     case("plan max steps", "pe_max", q("q"), parameters={"max_steps": "2"}, **pe)
     case("plan empty", "pe_empty", q("q"), **pe)
+    for label, extra in [("prefix", {"planner_system_prompt_prefix": "PFX"}), ("important rules", {"important_rules_expand": "RULE ONE"}),
+                         ("result expand", {"result_expand_and_override": "RESULT TEXT"}), ("response format", {"plan_execute_reflect_response_format": "FORMAT"}),
+                         ("system prompt", {"system_prompt": "SYS"}), ("executor system prompt", {"executor_system_prompt": "EXEC SYS"}),
+                         ("history limits", {"message_history_limit": "1", "executor_message_history_limit": "1"}),
+                         ("datetime", {"inject_datetime": "true", "datetime_format": "yyyy"}),
+                         ("all prompts", {"planner_system_prompt_prefix": "P", "important_rules_expand": "I", "result_expand_and_override": "R", "plan_execute_reflect_response_format": "F"})]:
+        case(f"plan {label}", "pe_tool", q("q"), parameters=extra, **pe)
     case("plan no question", "pe_tool", {"parameters": {}}, **pe)
     case("plan unknown memory", "pe_tool", q("q", memory_id="nope"), **pe)
     mcp_rows(c, ours, stock, case, ids, mcp_log)
