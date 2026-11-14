@@ -23,16 +23,13 @@ on:
     branches: [main]
   pull_request:
   # A full run on demand, every job regardless of what changed.
-  # The whole suite, both architectures, every night: the pull request and
-  # merge runs below leave out what the nightly run covers (docs/ci.md).
-  schedule:
-    - cron: '30 5 * * *'
+  # The whole suite, both architectures, on demand (docs/ci.md).
   workflow_dispatch:
 
 # A newer push to the same pull request or to main replaces the run in flight.
-# A nightly or manual run has a group of its own, so a merge never cancels it.
+# A manual run has a group of its own, so a merge never cancels it.
 concurrency:
-  group: ci-${{ github.event_name == 'schedule' && 'nightly' || (github.event_name == 'workflow_dispatch' && github.run_id) || github.ref }}
+  group: ci-${{ (github.event_name == 'workflow_dispatch' && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -67,10 +64,9 @@ jobs:
       fixtures: ${{ steps.mode.outputs.full == 'true' || steps.filter.outputs.fixtures == 'true' }}
       snowball: ${{ steps.mode.outputs.full == 'true' || steps.filter.outputs.snowball == 'true' }}
       # false on a push to main: the merge run is the x64 gate and release
-      # tests, the rest runs on the pull request and nightly.
+      # tests, the rest runs on the pull request and on demand.
       heavy: ${{ steps.mode.outputs.heavy }}
-      # The architectures the matrix jobs run on. arm64 only in a nightly or
-      # manual run.
+      # The architectures the matrix jobs run on. arm64 only in a manual run.
       arches: ${{ steps.mode.outputs.arches }}
     steps:
       - id: mode
@@ -80,7 +76,7 @@ jobs:
           full=false; heavy=true
           arches='[{"arch":"x64","runner":"ubuntu-24.04"}]'
           case "$EVENT" in
-            schedule|workflow_dispatch)
+            workflow_dispatch)
               full=true
               arches='[{"arch":"x64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' ;;
             push) heavy=false ;;

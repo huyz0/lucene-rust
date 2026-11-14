@@ -50,14 +50,13 @@ runner minutes, 60 of them arm64. So the runs are tiered:
 |---|---|
 | pull request | everything the change touches, **x64 only** |
 | push to `main` | `checks`, `gate (x64)`, `lucene-search in release (x64)`, `fips` |
-| nightly (05:30 UTC) and `workflow_dispatch` | every job, x64 and arm64, regardless of what changed |
+| `workflow_dispatch` (manual) | every job, x64 and arm64, regardless of what changed |
 
-What the nightly run alone covers: the arm64 jobs (gate, release tests,
+What only a manual run covers: the arm64 jobs (gate, release tests,
 plugin), and, after a merge, the write-path, fuzz, fixtures, snowball and
-OpenSearch jobs, which a pull request has already run on its own head. A
-nightly failure on `main` means one of the merges since the last nightly broke
-something only combined, or only arm64. Run `ci` by hand from the Actions tab
-to check a pull request on arm64 before a change that touches SIMD, atomics
+OpenSearch jobs, which a pull request has already run on its own head. Nothing
+schedules it: run `ci` by hand from the Actions tab to check `main`, or a
+pull request, on arm64 before a change that touches SIMD, atomics
 or unsafe code; a manual run gets its own concurrency group.
 
 ## Jobs, and what changed
