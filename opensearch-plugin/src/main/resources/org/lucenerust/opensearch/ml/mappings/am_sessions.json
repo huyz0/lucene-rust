@@ -1,0 +1,83 @@
+{
+  "_meta": {
+    "schema_version": 2
+  },
+  "properties": {
+    "additional_info": {
+      "type": "flat_object"
+    },
+    "agents": {
+      "type": "flat_object"
+    },
+    "created_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "last_updated_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "memory_container_id": {
+      "type": "keyword"
+    },
+    "metadata": {
+      "type": "flat_object"
+    },
+    "namespace": {
+      "type": "flat_object"
+    },
+    "namespace_size": {
+      "type": "integer"
+    },
+    "owner": {
+      "type": "nested",
+      "properties": {
+        "backend_roles": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "custom_attribute_names": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "name": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "roles": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    },
+    "owner_id": {
+      "type": "keyword"
+    },
+    "pinned": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "text"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    }
+  }
+}

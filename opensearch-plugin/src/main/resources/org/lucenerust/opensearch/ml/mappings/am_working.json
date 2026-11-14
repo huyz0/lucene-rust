@@ -1,0 +1,113 @@
+{
+  "_meta": {
+    "schema_version": 3
+  },
+  "properties": {
+    "binary_data": {
+      "type": "binary"
+    },
+    "checkpoint_id": {
+      "type": "keyword"
+    },
+    "created_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "infer": {
+      "type": "boolean"
+    },
+    "last_updated_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "memory_container_id": {
+      "type": "keyword"
+    },
+    "message_id": {
+      "type": "integer"
+    },
+    "messages": {
+      "type": "nested",
+      "properties": {
+        "content": {
+          "type": "flat_object"
+        },
+        "role": {
+          "type": "keyword"
+        }
+      }
+    },
+    "metadata": {
+      "type": "flat_object"
+    },
+    "namespace": {
+      "type": "flat_object"
+    },
+    "namespace_size": {
+      "type": "integer"
+    },
+    "owner": {
+      "type": "nested",
+      "properties": {
+        "backend_roles": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "custom_attribute_names": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "name": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "roles": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    },
+    "owner_id": {
+      "type": "keyword"
+    },
+    "parameters": {
+      "type": "flat_object"
+    },
+    "payload_type": {
+      "type": "keyword"
+    },
+    "session_id": {
+      "type": "keyword"
+    },
+    "structured_data": {
+      "type": "flat_object"
+    },
+    "structured_data_blob": {
+      "type": "object",
+      "enabled": false
+    },
+    "tags": {
+      "type": "flat_object"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    }
+  }
+}

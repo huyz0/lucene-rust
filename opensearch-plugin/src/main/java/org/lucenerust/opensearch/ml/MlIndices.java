@@ -55,7 +55,8 @@ public final class MlIndices {
             new SystemIndexDescriptor(CONNECTOR, "ML Commons Connector System Index"),
             new SystemIndexDescriptor(AGENT, "ML Commons Agent System Index"),
             new SystemIndexDescriptor(MEMORY_META, "ML Commons Memory Meta System Index"),
-            new SystemIndexDescriptor(MEMORY_MESSAGE, "ML Commons Memory Message System Index")
+            new SystemIndexDescriptor(MEMORY_MESSAGE, "ML Commons Memory Message System Index"),
+            new SystemIndexDescriptor(".plugins-ml-am-*", "ML Commons Agentic Memory System Indices")
         );
     }
 
