@@ -21,6 +21,9 @@ import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.automaton.CompiledAutomaton;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
@@ -30,7 +33,8 @@ import org.apache.lucene.util.packed.DirectMonotonicReader;
 
 /**
  * {@link RustAdaptiveDocValuesFormat}'s reader: Lucene90's producer for everything, except the
- * NUMERIC and SORTED_NUMERIC fields whose value array is adaptive blocks, which this class decodes.
+ * NUMERIC and SORTED_NUMERIC fields whose value array is adaptive blocks, and the SORTED and SORTED_SET
+ * fields whose ordinals are, which this class decodes (their term dictionaries stay Lucene90's).
  *
  * <p>Lucene90's producer parses the whole {@code .dvm} -- an adaptive entry keeps Lucene90's shape,
  * with a {@code tableSize} of {@value #ADAPTIVE_TABLE_SIZE}, or {@value #ADAPTIVE_ZONES_TABLE_SIZE} when
@@ -82,6 +86,10 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
     private final DocValuesProducer delegate;
     private final Map<Integer, Entry> numerics;
     private final Map<Integer, Entry> sortedNumerics;
+    /** SORTED fields, and SORTED_SET fields in which every document has one value. */
+    private final Map<Integer, Entry> sortedOrds;
+    /** SORTED_SET fields with documents of several values. */
+    private final Map<Integer, Entry> sortedSetOrds;
     private final IndexInput data;
     private final int maxDoc;
     private final boolean owner;
@@ -91,6 +99,8 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
         this.maxDoc = state.segmentInfo.maxDoc();
         this.numerics = new HashMap<>();
         this.sortedNumerics = new HashMap<>();
+        this.sortedOrds = new HashMap<>();
+        this.sortedSetOrds = new HashMap<>();
         this.owner = true;
         String metaName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, "dvm");
         // Lucene90's producer has verified this file's checksum already.
@@ -99,7 +109,7 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
                 meta, META_CODEC, VERSION_START, VERSION_CURRENT, state.segmentInfo.getId(), state.segmentSuffix);
             readFields(meta, state, version);
         }
-        if (numerics.isEmpty() && sortedNumerics.isEmpty()) {
+        if (numerics.isEmpty() && sortedNumerics.isEmpty() && sortedOrds.isEmpty() && sortedSetOrds.isEmpty()) {
             this.data = null;
             return;
         }
@@ -114,6 +124,12 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
             for (Entry e : sortedNumerics.values()) {
                 readDescriptor(in, e);
             }
+            for (Entry e : sortedOrds.values()) {
+                readDescriptor(in, e);
+            }
+            for (Entry e : sortedSetOrds.values()) {
+                readDescriptor(in, e);
+            }
         } catch (Throwable t) {
             IOUtils.closeWhileSuppressingExceptions(t, in);
             throw t;
@@ -125,6 +141,8 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
         this.delegate = delegate;
         this.numerics = of.numerics;
         this.sortedNumerics = of.sortedNumerics;
+        this.sortedOrds = of.sortedOrds;
+        this.sortedSetOrds = of.sortedSetOrds;
         this.data = of.data;
         this.maxDoc = of.maxDoc;
         this.owner = false;
@@ -149,14 +167,15 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
                     }
                 }
                 case BINARY -> skipBinary(meta);
-                case SORTED -> skipSorted(meta);
+                case SORTED -> readSorted(meta, number);
                 case SORTED_SET -> {
                     byte multiValued = meta.readByte();
                     if (multiValued == 0) {
-                        skipSorted(meta);
+                        readSorted(meta, number);
                     } else if (multiValued == 1) {
-                        if (readSortedNumeric(meta).adaptive) {
-                            throw new CorruptIndexException("adaptive values for ordinals", meta);
+                        Entry e = readSortedNumeric(meta);
+                        if (e.adaptive) {
+                            sortedSetOrds.put(number, e);
                         }
                         skipTermDict(meta);
                     } else {
@@ -225,9 +244,10 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
         }
     }
 
-    private static void skipSorted(IndexInput meta) throws IOException {
-        if (readNumeric(meta).adaptive) {
-            throw new CorruptIndexException("adaptive values for ordinals", meta);
+    private void readSorted(IndexInput meta, int number) throws IOException {
+        Entry e = readNumeric(meta);
+        if (e.adaptive) {
+            sortedOrds.put(number, e);
         }
         skipTermDict(meta);
     }
@@ -283,9 +303,10 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
     @Override
     public SortedNumericDocValues getSortedNumeric(FieldInfo field) throws IOException {
         Entry e = sortedNumerics.get(field.number);
-        if (e == null) {
-            return delegate.getSortedNumeric(field);
-        }
+        return e == null ? delegate.getSortedNumeric(field) : sortedNumeric(e);
+    }
+
+    private SortedNumericDocValues sortedNumeric(Entry e) throws IOException {
         if (e.numValues == e.numDocsWithField) {
             return DocValues.singleton(numeric(e));
         }
@@ -307,11 +328,21 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
 
     @Override
     public SortedDocValues getSorted(FieldInfo field) throws IOException {
-        return delegate.getSorted(field);
+        Entry e = sortedOrds.get(field.number);
+        return e == null ? delegate.getSorted(field) : new AdaptiveSorted(delegate.getSorted(field), numeric(e));
     }
 
     @Override
     public SortedSetDocValues getSortedSet(FieldInfo field) throws IOException {
+        Entry single = sortedOrds.get(field.number);
+        if (single != null) {
+            SortedDocValues terms = DocValues.unwrapSingleton(delegate.getSortedSet(field));
+            return DocValues.singleton(new AdaptiveSorted(terms, numeric(single)));
+        }
+        Entry multi = sortedSetOrds.get(field.number);
+        if (multi != null) {
+            return new AdaptiveSortedSet(delegate.getSortedSet(field), sortedNumeric(multi));
+        }
         return delegate.getSortedSet(field);
     }
 
@@ -334,6 +365,143 @@ final class RustAdaptiveDocValuesProducer extends DocValuesProducer {
     public void close() throws IOException {
         if (owner) {
             IOUtils.close(delegate, data);
+        }
+    }
+
+    /** A SORTED field whose ordinals are adaptive blocks; terms come from Lucene90's dictionary. */
+    private static final class AdaptiveSorted extends SortedDocValues {
+        private final SortedDocValues terms;
+        private final NumericDocValues ords;
+
+        AdaptiveSorted(SortedDocValues terms, NumericDocValues ords) {
+            this.terms = terms;
+            this.ords = ords;
+        }
+
+        @Override
+        public int ordValue() throws IOException {
+            return (int) ords.longValue();
+        }
+
+        @Override
+        public BytesRef lookupOrd(int ord) throws IOException {
+            return terms.lookupOrd(ord);
+        }
+
+        @Override
+        public int getValueCount() {
+            return terms.getValueCount();
+        }
+
+        @Override
+        public int lookupTerm(BytesRef key) throws IOException {
+            return terms.lookupTerm(key);
+        }
+
+        @Override
+        public TermsEnum termsEnum() throws IOException {
+            return terms.termsEnum();
+        }
+
+        @Override
+        public TermsEnum intersect(CompiledAutomaton automaton) throws IOException {
+            return terms.intersect(automaton);
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+            return ords.advanceExact(target);
+        }
+
+        @Override
+        public int docID() {
+            return ords.docID();
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+            return ords.nextDoc();
+        }
+
+        @Override
+        public int advance(int target) throws IOException {
+            return ords.advance(target);
+        }
+
+        @Override
+        public long cost() {
+            return ords.cost();
+        }
+    }
+
+    /** A SORTED_SET field whose ordinals are adaptive blocks. */
+    private static final class AdaptiveSortedSet extends SortedSetDocValues {
+        private final SortedSetDocValues terms;
+        private final SortedNumericDocValues ords;
+
+        AdaptiveSortedSet(SortedSetDocValues terms, SortedNumericDocValues ords) {
+            this.terms = terms;
+            this.ords = ords;
+        }
+
+        @Override
+        public long nextOrd() throws IOException {
+            return ords.nextValue();
+        }
+
+        @Override
+        public int docValueCount() {
+            return ords.docValueCount();
+        }
+
+        @Override
+        public BytesRef lookupOrd(long ord) throws IOException {
+            return terms.lookupOrd(ord);
+        }
+
+        @Override
+        public long getValueCount() {
+            return terms.getValueCount();
+        }
+
+        @Override
+        public long lookupTerm(BytesRef key) throws IOException {
+            return terms.lookupTerm(key);
+        }
+
+        @Override
+        public TermsEnum termsEnum() throws IOException {
+            return terms.termsEnum();
+        }
+
+        @Override
+        public TermsEnum intersect(CompiledAutomaton automaton) throws IOException {
+            return terms.intersect(automaton);
+        }
+
+        @Override
+        public boolean advanceExact(int target) throws IOException {
+            return ords.advanceExact(target);
+        }
+
+        @Override
+        public int docID() {
+            return ords.docID();
+        }
+
+        @Override
+        public int nextDoc() throws IOException {
+            return ords.nextDoc();
+        }
+
+        @Override
+        public int advance(int target) throws IOException {
+            return ords.advance(target);
+        }
+
+        @Override
+        public long cost() {
+            return ords.cost();
         }
     }
 

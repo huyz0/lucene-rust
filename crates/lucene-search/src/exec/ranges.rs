@@ -5,6 +5,7 @@
 //! `DocValuesRewriteMethod`. Every one is a `ConstantScoreWeight`: its
 //! documents score the boost.
 
+use lucene_codecs::adaptive_zones::ZONE_SHIFT;
 use lucene_codecs::doc_values::{self, NumericReader, SortedNumericEntry, SortedNumericReader};
 use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -260,6 +261,189 @@ impl<F: FnMut(i32, bool) -> Result<bool>> Scorer for SkipBlockRange<'_, F> {
     }
 }
 
+/// The approximation of a range over a dense single-valued `Adaptive90`
+/// field written with per-1024-document statistics
+/// ([`lucene_codecs::adaptive_zones`]) and no skip index: it visits only the
+/// windows whose `[min, max]` meets the range, and a window inside the range
+/// matches whole without reading a value.
+struct ZoneRange<'a> {
+    stats: NumericReader<'a>,
+    values: NumericReader<'a>,
+    /// The values of the window starting at `window_start`, once read.
+    window: Vec<i64>,
+    window_start: i32,
+    min: i64,
+    max: i64,
+    max_doc: i32,
+    doc: i32,
+    matched: BlockMatch,
+}
+
+impl ZoneRange<'_> {
+    /// How window `window` meets the range: `None` when it cannot match.
+    fn classify(&self, window: i32) -> Result<Option<BlockMatch>> {
+        let start = window << ZONE_SHIFT;
+        let Some((s, _)) = self.stats.window_stats(start)? else {
+            return Ok(Some(BlockMatch::Maybe));
+        };
+        Ok(if s.max < self.min || s.min > self.max {
+            None
+        } else if s.min >= self.min && s.max <= self.max {
+            Some(BlockMatch::Yes)
+        } else {
+            Some(BlockMatch::Maybe)
+        })
+    }
+}
+
+impl Scorer for ZoneRange<'_> {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        let target = self.doc.saturating_add(1);
+        self.advance(target)
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.doc == NO_MORE_DOCS {
+            return Ok(NO_MORE_DOCS);
+        }
+        if self.doc > -1
+            && target < self.max_doc
+            && target < ((self.doc >> ZONE_SHIFT).saturating_add(1) << ZONE_SHIFT)
+        {
+            self.doc = target.max(self.doc);
+            return Ok(self.doc);
+        }
+        let mut window = target.max(0) >> ZONE_SHIFT;
+        while target < self.max_doc && (window << ZONE_SHIFT) < self.max_doc {
+            if let Some(m) = self.classify(window)? {
+                self.matched = m;
+                self.doc = target.max(window << ZONE_SHIFT);
+                return Ok(self.doc);
+            }
+            window += 1;
+        }
+        self.doc = NO_MORE_DOCS;
+        Ok(NO_MORE_DOCS)
+    }
+    fn cost(&self) -> i64 {
+        i64::from(NO_MORE_DOCS)
+    }
+    fn two_phase(&self) -> bool {
+        true
+    }
+    fn matches(&mut self) -> Result<bool> {
+        match self.matched {
+            BlockMatch::Yes | BlockMatch::YesIfPresent => Ok(true),
+            BlockMatch::Maybe => {
+                let start = (self.doc >> ZONE_SHIFT) << ZONE_SHIFT;
+                if self.window_start != start {
+                    let end = start.saturating_add(1 << ZONE_SHIFT).min(self.max_doc);
+                    let window = &mut self.window;
+                    window.clear();
+                    self.values
+                        .for_each_value(start, end, |_, v| window.push(v))?;
+                    self.window_start = start;
+                }
+                let at = usize::try_from(self.doc.saturating_sub(start)).unwrap_or(0);
+                Ok(self
+                    .window
+                    .get(at)
+                    .is_some_and(|&v| v >= self.min && v <= self.max))
+            }
+        }
+    }
+    fn match_cost(&self) -> f32 {
+        2.0
+    }
+    fn two_phase_run_end(&self) -> i32 {
+        if self.matched != BlockMatch::Yes || self.doc == NO_MORE_DOCS {
+            return self.doc;
+        }
+        let mut window = (self.doc >> ZONE_SHIFT).saturating_add(1);
+        while (window << ZONE_SHIFT) < self.max_doc {
+            if !matches!(self.classify(window), Ok(Some(BlockMatch::Yes))) {
+                break;
+            }
+            window += 1;
+        }
+        (window << ZONE_SHIFT).min(self.max_doc)
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(0.0)
+    }
+    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
+        Ok(0.0)
+    }
+}
+
+/// The documents `q` matches in a segment, as a bit set, read straight from
+/// a dense single-valued field: a window of an `Adaptive90` field whose
+/// statistics put every value in range sets its bits in one run, one whose
+/// values all miss is skipped, and the rest are decoded a window at a time.
+/// `None` where the scorer tree must answer: a field that is not dense and
+/// single-valued, or one a skip index serves better than a full decode
+/// (skip index, no statistics).
+// ARITH: window starts and document ids below `max_doc`, an `i32`.
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) fn dense_range_bits(
+    reader: &SegmentReader,
+    q: &NumericDocValuesRangeQuery,
+) -> Result<Option<FixedBitSet>> {
+    if q.lower > q.upper || (q.lower == i64::MIN && q.upper == i64::MAX) {
+        return Ok(None);
+    }
+    let Some(values) = Values::open(reader, &q.field) else {
+        return Ok(None);
+    };
+    let (data, entry) = match &values {
+        Values::Numeric(data, e) => (*data, *e),
+        Values::Sorted(data, e) if e.addresses.is_none() => (*data, &e.numeric),
+        Values::Sorted(..) => return Ok(None),
+    };
+    if !entry.is_dense() || entry.num_values != i64::from(reader.max_doc) {
+        return Ok(None);
+    }
+    let stats = NumericReader::new(data, entry);
+    let zoned = stats.has_window_stats();
+    let has_skip = match reader.field_infos().field_by_name(&q.field) {
+        Some(fi) => reader.doc_values_skip_index(fi.number)?.is_some(),
+        None => false,
+    };
+    if has_skip && !zoned {
+        return Ok(None);
+    }
+    let max_doc = reader.max_doc;
+    let (lo, hi) = (q.lower, q.upper);
+    let mut bits = FixedBitSet::new(usize::try_from(max_doc).unwrap_or(0));
+    let mut decode = NumericReader::new(data, entry);
+    let mut start = 0i32;
+    while start < max_doc {
+        let end = start.saturating_add(1 << ZONE_SHIFT).min(max_doc);
+        let class = if zoned {
+            stats.window_stats(start)?.map(|(s, _)| s)
+        } else {
+            None
+        };
+        match class {
+            Some(s) if s.max < lo || s.min > hi => {}
+            Some(s) if s.min >= lo && s.max <= hi => {
+                bits.set_range(start as usize, end as usize);
+            }
+            _ => decode.for_each_value(start, end, |doc, v| {
+                // FBS: `for_each_value` yields documents in `[start, end)`,
+                // below `max_doc`, the set's length.
+                if v >= lo && v <= hi {
+                    bits.set(doc as usize);
+                }
+            })?,
+        }
+        start = end;
+    }
+    Ok(Some(bits))
+}
+
 fn reader<'a>(ctx: &LeafContext<'a>, what: &str) -> Result<&'a SegmentReader> {
     ctx.reader
         .ok_or_else(|| crate::Error::MissingSegmentReader(what.to_string()))
@@ -332,6 +516,12 @@ pub(crate) fn numeric_range<'a>(
             mode,
         ));
     }
+    let zoned = match &values {
+        Values::Numeric(data, e) => Some((*data, *e)),
+        Values::Sorted(data, e) if e.addresses.is_none() => Some((*data, &e.numeric)),
+        Values::Sorted(..) => None,
+    }
+    .filter(|&(data, e)| NumericReader::new(data, e).has_window_stats());
     let mut column = values.column();
     let mut buf = Vec::new();
     let accept = move |doc: i32| -> Result<bool> {
@@ -341,6 +531,23 @@ pub(crate) fn numeric_range<'a>(
             .find(|&&v| v >= lower)
             .is_some_and(|&v| v <= upper))
     };
+    if let Some((data, entry)) = zoned {
+        return Ok(constant(
+            Box::new(ZoneRange {
+                stats: NumericReader::new(data, entry),
+                values: NumericReader::new(data, entry),
+                window: Vec::with_capacity(1 << ZONE_SHIFT),
+                window_start: -1,
+                min: lower,
+                max: upper,
+                max_doc: reader.max_doc,
+                doc: -1,
+                matched: BlockMatch::Maybe,
+            }),
+            boost,
+            mode,
+        ));
+    }
     Ok(constant(
         Box::new(TwoPhaseDocs {
             doc: -1,
