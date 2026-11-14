@@ -111,6 +111,92 @@ pub fn avx512_popcount() -> bool {
     features().popcount
 }
 
+/// The CPU features the build's baseline was compiled to require and that
+/// this host lacks, found once per process. Empty when the host meets it.
+///
+/// A build for `x86-64-v3` (`.cargo/config.toml`) lets the compiler emit
+/// AVX2, FMA, BMI and the rest anywhere, so on an older CPU the first such
+/// instruction is `SIGILL`, with no message. A node asks this at startup
+/// and refuses to serve with a named reason instead. This is best effort
+/// from inside the same binary: the check itself is built for the baseline.
+/// A deployment that must never crash can also test `/proc/cpuinfo` before
+/// exec. Wiring this into a node's startup is up to the embedder; nothing in
+/// this crate calls it. aarch64 (NEON is architectural) and other targets require nothing.
+pub fn missing_baseline() -> &'static [&'static str] {
+    static MISSING: OnceLock<Vec<&'static str>> = OnceLock::new();
+    MISSING.get_or_init(|| {
+        #[cfg(target_arch = "x86_64")]
+        {
+            {
+                let req = required_x86();
+                let names: Vec<&'static str> = req.iter().map(|r| r.0).collect();
+                missing_from(&names, |f| req.iter().any(|r| r.0 == f && (r.1)()))
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            Vec::new()
+        }
+    })
+}
+
+/// [`missing_baseline`] as a `Result`, for a startup check.
+pub fn check_baseline() -> Result<(), BaselineError> {
+    as_result(missing_baseline())
+}
+
+fn as_result(missing: &[&'static str]) -> Result<(), BaselineError> {
+    match missing {
+        [] => Ok(()),
+        m => Err(BaselineError {
+            missing: m.to_vec(),
+        }),
+    }
+}
+
+/// The host lacks CPU features the build requires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaselineError {
+    /// Feature names as `std::arch` spells them (`avx2`, `fma`, ...).
+    pub missing: Vec<&'static str>,
+}
+
+impl std::fmt::Display for BaselineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this build needs CPU features the host lacks: {} \
+             (rebuild for a lower baseline or run on a newer CPU)",
+            self.missing.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for BaselineError {}
+
+/// The members of `required` that `has` denies, in order.
+#[cfg_attr(not(any(test, target_arch = "x86_64")), allow(dead_code))]
+fn missing_from(required: &[&'static str], has: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    required.iter().copied().filter(|f| !has(f)).collect()
+}
+
+/// The v3 features the code relies on, each with its run-time probe, in one
+/// table so a name and its probe cannot drift apart.
+#[cfg(target_arch = "x86_64")]
+type Probe = (&'static str, fn() -> bool);
+
+#[cfg(target_arch = "x86_64")]
+fn required_x86() -> Vec<Probe> {
+    let mut r: Vec<Probe> = Vec::new();
+    macro_rules! need {
+        ($($f:tt),*) => { $( if cfg!(target_feature = $f) {
+            r.push(($f, || std::arch::is_x86_feature_detected!($f)));
+        } )* };
+    }
+    need!("avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "lzcnt", "movbe", "popcnt");
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +224,56 @@ mod tests {
         assert_eq!((r.level, r.popcount), (Level::Avx2, false));
         let r = resolve(base, Some("bogus"));
         assert_eq!(r.level, Level::Avx2);
+    }
+
+    #[test]
+    fn missing_lists_exactly_the_required_features_the_cpu_lacks() {
+        let have = |f: &str| f == "avx2" || f == "fma";
+        assert_eq!(
+            missing_from(&["avx2", "fma", "bmi2", "movbe"], have),
+            vec!["bmi2", "movbe"]
+        );
+        assert!(missing_from(&["avx2", "fma"], have).is_empty());
+        assert!(missing_from(&[], |_| false).is_empty());
+    }
+
+    #[test]
+    fn this_host_meets_the_baseline_it_was_built_for() {
+        // The test binary runs here, so it was built for a CPU like this one.
+        assert!(missing_baseline().is_empty(), "{:?}", missing_baseline());
+        assert_eq!(check_baseline(), Ok(()));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn every_listed_feature_has_a_probe_that_agrees_on_this_host() {
+        // Probes are real: a host that runs this build has each feature.
+        for (name, probe) in required_x86() {
+            assert!(probe(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_missing_feature_is_an_error_and_none_is_ok() {
+        assert_eq!(as_result(&[]), Ok(()));
+        assert_eq!(
+            as_result(&["avx2"]),
+            Err(BaselineError {
+                missing: vec!["avx2"]
+            })
+        );
+    }
+
+    #[test]
+    fn the_baseline_error_names_every_missing_feature() {
+        let e = BaselineError {
+            missing: vec!["avx2", "fma"],
+        };
+        assert_eq!(
+            e.to_string(),
+            "this build needs CPU features the host lacks: avx2, fma \
+             (rebuild for a lower baseline or run on a newer CPU)"
+        );
     }
 
     #[test]
