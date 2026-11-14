@@ -14,7 +14,7 @@ This check pairs every integer `static final` in the plugin's main sources
 with its Rust counterpart and fails when the values differ:
 
   * The Rust candidates are the `const`s of the `lucene-ffi` files the Java
-    file names (`jvm_aggs.rs`, ...) plus those `EXTRA_FILES` adds. A Rust
+    file names (`agg_tree.rs`, ...) plus those `EXTRA_FILES` adds. A Rust
     constant pairs when its name is the Java name, or the Java name behind
     the Java file's `PREFIXES` entry (`AGG_TERMS` for `NativeAggregationTree`'s
     `TERMS`); `RENAMES` covers the rest. The exact name wins over a prefixed
@@ -60,8 +60,8 @@ MAX_SIM_RS = os.path.join(ROOT, "crates", "lucene-util", "src", "max_sim.rs")
 EXTRA_FILES = {
     "NativeCollapse.java": ["reader_search.rs"],
     "NativeStoredFieldsReader.java": ["fetch.rs"],
-    "NativeTopHits.java": ["jvm_aggs.rs"],
-    "NativeSignificantTerms.java": ["jvm_aggs.rs"],
+    "NativeTopHits.java": ["agg_tree.rs"],
+    "NativeSignificantTerms.java": ["agg_tree.rs"],
     "QueryEncoder.java": ["nodes.rs", "query_blob.rs"],
     "MultiVectorEncoding.java": ["max_sim.rs"],
 }
