@@ -11,7 +11,7 @@
 //! past a close never aliases the slot's next occupant. Generation 0 is never
 //! issued, so the handle `0` is always invalid.
 
-use crate::error::FfiStatus;
+use crate::status::{set_last_error, Status};
 
 const INDEX_BITS: u32 = 24;
 const GENERATION_BITS: u32 = 32;
@@ -129,14 +129,14 @@ impl<T> SlotMap<T> {
     }
 
     /// [`SlotMap::insert`] with exhaustion mapped to
-    /// [`FfiStatus::HandleLimit`] and a last-error message.
-    pub fn insert_checked(&mut self, value: T) -> Result<u64, FfiStatus> {
+    /// [`Status::HandleLimit`] and a last-error message.
+    pub fn insert_checked(&mut self, value: T) -> Result<u64, Status> {
         self.insert(value).ok_or_else(|| {
-            crate::error::set_last_error(format!(
+            set_last_error(format!(
                 "handle registry exhausted: {MAX_SLOTS} handles of this kind are already open \
                  (are handles being leaked instead of closed?)"
             ));
-            FfiStatus::HandleLimit
+            Status::HandleLimit
         })
     }
 
@@ -254,7 +254,7 @@ mod tests {
         let mut map: SlotMap<i32> = SlotMap::new(RegistryTag::JvmReader);
         map.set_max_slots_for_test(1);
         map.insert_checked(1).unwrap();
-        assert_eq!(map.insert_checked(2), Err(FfiStatus::HandleLimit));
+        assert_eq!(map.insert_checked(2), Err(Status::HandleLimit));
     }
 
     #[test]
