@@ -1560,7 +1560,7 @@ pub unsafe extern "C" fn ffi_live_view_knn(
             return Err(FfiStatus::BufferTooSmall);
         }
         let v = view(view_id)?;
-        let (request, key) = if knn.nested.is_some() {
+        let (request, key) = if knn.whole_segments() {
             (None, None)
         } else {
             let all = Clause::MatchAllDocs(lucene_search::query::MatchAllDocsQuery::new(0));
@@ -1590,7 +1590,7 @@ pub unsafe extern "C" fn ffi_live_view_knn(
             .reader
             .segment_readers()
             .len();
-        let buffers = if knn.nested.is_some() {
+        let buffers = if knn.whole_segments() {
             Vec::new()
         } else {
             buffer_graphs(&v, &h, base, &knn.field)

@@ -48,6 +48,11 @@ import java.util.Objects;
  * <p>{@code nprobes} ({@code method_parameters.nprobes}) is the clusters probed in each segment
  * whose field has an IVF index ({@code IvfVectorsFormat}), {@code 0} for the depth each
  * segment calibrated, nested searches included; other formats ignore it.
+ *
+ * <p>With a {@link Grouping} ({@code group_by}) it matches the best {@link Grouping#size} documents of
+ * each of the shard's best {@code k} groups of a keyword or numeric field: the Rust engine's walks
+ * collect by group; Lucene, for a reader the engine does not hold, searches ever more candidates
+ * until they cover {@code k} groups.
  */
 public final class KnnTopVectorQuery extends Query {
     /** Searches a query natively over a searcher's reader: its hits, or null when the reader is not native. */
@@ -62,7 +67,23 @@ public final class KnnTopVectorQuery extends Query {
         default void readBuffersByLucene(IndexSearcher searcher) throws IOException {}
     }
 
+    /**
+     * What a grouped search groups by: the concrete field (an alias resolved), whether it is a keyword
+     * (else a number), and the documents kept per group.
+     */
+    public record Grouping(String field, boolean keyword, int size) {
+        public Grouping {
+            Objects.requireNonNull(field);
+            if (size < 1) {
+                throw new IllegalArgumentException("group size must be at least 1");
+            }
+        }
+    }
+
     private static volatile NativeSearch nativeSearch;
+
+    /** The group of the documents without a value, as collapse groups them. */
+    private static final Object MISSING = new Object();
 
     /** Installs the Rust engine's search (by the plugin, once). */
     public static void setNative(NativeSearch search) {
@@ -77,6 +98,7 @@ public final class KnnTopVectorQuery extends Query {
     private final BitSetProducer parents;
     private final boolean expand;
     private final int nprobes;
+    private final Grouping grouping;
     /** The graph walk's adaptive beam stop over the best {@code k}, or null for Lucene's stop. */
     private final Float explorationSlack;
     private final RecallTarget recall;
@@ -97,7 +119,7 @@ public final class KnnTopVectorQuery extends Query {
     }
 
     public KnnTopVectorQuery(String field, KnnTarget target, int k, int candidates, Query filter, BitSetProducer parents, boolean expand) {
-        this(field, target, k, candidates, filter, parents, expand, 0, null, null);
+        this(field, target, k, candidates, filter, parents, expand, 0, null, null, null);
     }
 
     private KnnTopVectorQuery(
@@ -110,7 +132,8 @@ public final class KnnTopVectorQuery extends Query {
         boolean expand,
         int nprobes,
         Float explorationSlack,
-        RecallTarget recall
+        RecallTarget recall,
+        Grouping grouping
     ) {
         if (k <= 0) {
             throw new IllegalArgumentException("k must be at least 1");
@@ -134,16 +157,30 @@ public final class KnnTopVectorQuery extends Query {
         }
         this.explorationSlack = explorationSlack;
         this.recall = recall;
+        if (grouping != null && parents != null) {
+            throw new IllegalArgumentException("a grouped search cannot be nested");
+        }
+        this.grouping = grouping;
     }
 
     /** This query probing {@code nprobes} IVF clusters per segment. */
     public KnnTopVectorQuery withNprobes(int nprobes) {
-        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall);
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, grouping);
     }
 
     /** This query searching at the depth tuned for {@code recall} (null: as asked). */
     public KnnTopVectorQuery withRecallTarget(RecallTarget recall) {
-        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall);
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, grouping);
+    }
+
+    /** This query grouped by {@code grouping}: {@code k} counts groups. */
+    public KnnTopVectorQuery withGrouping(Grouping grouping) {
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, Objects.requireNonNull(grouping));
+    }
+
+    /** The grouping, or null for a search that is not grouped. */
+    public Grouping grouping() {
+        return grouping;
     }
 
     public int nprobes() {
@@ -156,7 +193,7 @@ public final class KnnTopVectorQuery extends Query {
      * found. A nested search and the {@code lucene} engine's Java fallback ignore it.
      */
     public KnnTopVectorQuery withExplorationSlack(float slack) {
-        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, slack, recall);
+        return new KnnTopVectorQuery(field, target, k, candidates, filter, parents, expand, nprobes, slack, recall, grouping);
     }
 
     /** The adaptive beam stop's slack, or null. */
@@ -204,7 +241,7 @@ public final class KnnTopVectorQuery extends Query {
         if (filter != null) {
             Query f = searcher.rewrite(filter);
             if (f != filter) {
-                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes, explorationSlack, recall);
+                q = new KnnTopVectorQuery(field, target, k, candidates, f, parents, expand, nprobes, explorationSlack, recall, grouping);
             }
         }
         NativeSearch n = nativeSearch;
@@ -224,6 +261,9 @@ public final class KnnTopVectorQuery extends Query {
         if (n != null) {
             n.readBuffersByLucene(searcher);
         }
+        if (grouping != null) {
+            return KnnHitsQuery.of(searcher.getIndexReader(), groupedByLucene(searcher, q.filter));
+        }
         Query lucene;
         if (parents == null) {
             lucene = target.floats() != null
@@ -237,6 +277,92 @@ public final class KnnTopVectorQuery extends Query {
         TopDocs top = searcher.search(lucene, k);
         ScoreDoc[] hits = expand ? expanded(searcher, q.filter, top.scoreDocs) : top.scoreDocs;
         return KnnHitsQuery.of(searcher.getIndexReader(), hits);
+    }
+
+    /**
+     * The grouped answer by Lucene: the top {@code n} documents for ever larger {@code n} (from {@code
+     * candidates}, four times more each round) until they cover {@code k} groups, the reader's every
+     * document, or a round brings no new group, then grouped.
+     */
+    private ScoreDoc[] groupedByLucene(IndexSearcher searcher, Query filter) throws IOException {
+        int maxDoc = Math.max(1, searcher.getIndexReader().maxDoc());
+        int n = Math.min(maxDoc, (int) Math.min(Integer.MAX_VALUE, Math.max((long) candidates, (long) k * grouping.size())));
+        int before = -1;
+        while (true) {
+            Query lucene = target.floats() != null
+                ? new KnnFloatVectorQuery(field, target.floats(), n, filter)
+                : new KnnByteVectorQuery(field, target.bytes(), n, filter);
+            ScoreDoc[] top = searcher.search(lucene, n).scoreDocs;
+            List<ScoreDoc> grouped = new ArrayList<>();
+            int groups = group(searcher, top, grouped);
+            if (groups >= k || groups == before || n >= maxDoc || top.length < n) {
+                return grouped.toArray(ScoreDoc[]::new);
+            }
+            before = groups;
+            n = (int) Math.min(maxDoc, (long) n * 4);
+        }
+    }
+
+    /**
+     * Groups {@code hits} (best first) by the group field: the best {@link Grouping#size} of each of
+     * the first {@code k} groups go to {@code out}, best first. Returns how many groups the hits hold.
+     */
+    private int group(IndexSearcher searcher, ScoreDoc[] hits, List<ScoreDoc> out) throws IOException {
+        List<LeafReaderContext> leaves = searcher.getIndexReader().leaves();
+        Object[] keys = new Object[hits.length];
+        Integer[] byDoc = new Integer[hits.length];
+        for (int i = 0; i < hits.length; i++) {
+            byDoc[i] = i;
+        }
+        java.util.Arrays.sort(byDoc, Comparator.comparingInt(i -> hits[i].doc));
+        int leafAt = -1;
+        org.apache.lucene.index.SortedSetDocValues terms = null;
+        org.apache.lucene.index.SortedNumericDocValues numbers = null;
+        LeafReaderContext leaf = null;
+        for (int i : byDoc) {
+            int at = ReaderUtil.subIndex(hits[i].doc, leaves);
+            if (at != leafAt) {
+                leafAt = at;
+                leaf = leaves.get(at);
+                if (grouping.keyword()) {
+                    terms = org.apache.lucene.index.DocValues.getSortedSet(leaf.reader(), grouping.field());
+                } else {
+                    numbers = org.apache.lucene.index.DocValues.getSortedNumeric(leaf.reader(), grouping.field());
+                }
+            }
+            int local = hits[i].doc - leaf.docBase;
+            Object key = null;
+            if (grouping.keyword()) {
+                if (terms.advanceExact(local)) {
+                    if (terms.docValueCount() > 1) {
+                        throw new IllegalStateException("failed to group " + local + ", the group_by field must be single valued");
+                    }
+                    key = org.apache.lucene.util.BytesRef.deepCopyOf(terms.lookupOrd(terms.nextOrd()));
+                }
+            } else if (numbers.advanceExact(local)) {
+                if (numbers.docValueCount() > 1) {
+                    throw new IllegalStateException("failed to group " + local + ", the group_by field must be single valued");
+                }
+                key = numbers.nextValue();
+            }
+            keys[i] = key;
+        }
+        java.util.Map<Object, Integer> kept = new java.util.HashMap<>();
+        java.util.Set<Object> seen = new java.util.HashSet<>();
+        for (int i = 0; i < hits.length; i++) {
+            Object key = keys[i] == null ? MISSING : keys[i];
+            seen.add(key);
+            Integer held = kept.get(key);
+            if (held == null && kept.size() >= k) {
+                continue;
+            }
+            int count = held == null ? 0 : held;
+            if (count < grouping.size()) {
+                kept.put(key, count + 1);
+                out.add(hits[i]);
+            }
+        }
+        return seen.size();
     }
 
     /**
@@ -325,7 +451,7 @@ public final class KnnTopVectorQuery extends Query {
 
     @Override
     public String toString(String defaultField) {
-        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + (explorationSlack == null ? "" : ", exploration_slack=" + explorationSlack) + (recall == null ? "" : ", target_recall=" + recall.recall()) + ")";
+        return "KnnTopVectorQuery(" + field + ", k=" + k + ", candidates=" + candidates + (parents == null ? "" : ", nested") + (expand ? ", expand" : "") + (nprobes == 0 ? "" : ", nprobes=" + nprobes) + (explorationSlack == null ? "" : ", exploration_slack=" + explorationSlack) + (recall == null ? "" : ", target_recall=" + recall.recall()) + (grouping == null ? "" : ", group_by=" + grouping.field() + "/" + grouping.size()) + ")";
     }
 
     @Override
@@ -341,11 +467,12 @@ public final class KnnTopVectorQuery extends Query {
             && expand == q.expand
             && nprobes == q.nprobes
             && Objects.equals(explorationSlack, q.explorationSlack)
-            && Objects.equals(recall, q.recall);
+            && Objects.equals(recall, q.recall)
+            && Objects.equals(grouping, q.grouping);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall);
+        return Objects.hash(classHash(), field, target, k, candidates, filter, parents, expand, nprobes, explorationSlack, recall, grouping);
     }
 }
