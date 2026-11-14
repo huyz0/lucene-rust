@@ -7,14 +7,15 @@ other plugins lists their tools too; only the names both sides know from
 ml-commons are compared. Then runs flow and conversational_flow agents with
 the tools that need no language model, against indices both nodes hold, a
 remote model and a connector on the mock model server of the `remote`
-section, sync and with `?async=true`.
+section, sync and with `?async=true`. Last, the conversation memory API:
+memories, messages and traces, their listing, search and deletion.
 """
 import importlib.util, json, os, re, time
 
 ML_TOOLS = ["ConnectorTool", "IndexInsightTool", "QueryPlanningTool", "VisualizationTool", "McpSseTool", "AgentTool",
             "WriteToScratchPadTool", "ReadFromScratchPadTool", "McpStreamableHttpTool", "SearchIndexTool", "MLModelTool",
             "IndexMappingTool", "ListIndexTool"]
-DROP = {"created_time", "last_updated_time", "_version", "_seq_no", "_primary_term", "took"}
+DROP = {"created_time", "create_time", "updated_time", "last_updated_time", "_version", "_seq_no", "_primary_term", "took"}
 
 FULL = {"name": "full", "type": "conversational", "description": "d",
         "llm": {"model_id": "m", "parameters": {"x": "y", "n": 3}},
@@ -99,6 +100,7 @@ def answer(n, method, path, body, ids):
 def agents(c, ours, stock):
     registry(c, ours, stock)
     execution(c, ours, stock)
+    memory(c, ours, stock)
 
 
 def registry(c, ours, stock):
@@ -192,6 +194,7 @@ def text_mask(t, ids):
     """A tool's text without what differs between nodes: ids, uuids, times, sizes."""
     for i in ids:
         t = t.replace(i, "<id>")
+    t = re.sub(r"START_OBJECT at 1:\d+", "START_OBJECT at 1:N", t)
     t = re.sub(r"index\.(creation_date|uuid)=[A-Za-z0-9_-]*", r"index.\1=<x>", t)
     lines = []
     for line in t.split("\n"):
@@ -418,3 +421,147 @@ def execution(c, ours, stock):
         s, o = n.call("POST", "/_plugins/_ml/agents/nope/_execute?async=true", {"parameters": {}})
         got[name] = {"status": s, "body": o}
     c.same("agents execute async missing agent", got["ours"], got["stock"])
+
+
+def memory(c, ours, stock):
+    side = (("ours", ours), ("stock", stock))
+    ids = {"ours": [], "stock": []}
+    M = "/_plugins/_ml/memory"
+    for name, n in side:
+        s, o = n.call("POST", M + "/_search", {"query": {"match_all": {}}, "size": 100})
+        for h in (o.get("hits", {}).get("hits", []) if s == 200 else []):
+            n.call("DELETE", f"{M}/{h['_id']}")
+
+    def both(label, method, path, body=None, keep=True):
+        """Runs one call on both nodes (path may use {m0}, {m1}, ... for memories, {g0}... for messages)."""
+        got = {}
+        for name, n in side:
+            p = path.format(**{k: v[name] for k, v in made.items()})
+            b = body
+            if body is not None:
+                b = json.loads(json.dumps(body).replace("{m2}", made["m2"][name]) if "m2" in made else json.dumps(body))
+            s, o = n.call(method, p, b)
+            if isinstance(o, dict):
+                for key in ("memory_id", "message_id"):
+                    if key in o and keep:
+                        ids[name].append(o[key])
+                if "hits" in o:
+                    o = {"total": o["hits"]["total"], "hits": [{k: (v is not None if k == "_score" else v) for k, v in h.items() if k not in ("_version", "_seq_no", "_primary_term", "sort")} for h in o["hits"]["hits"]]}
+            got[name] = {"status": s, "body": run_mask(o, ids[name])}
+            got[name] = json.loads(re.sub(r"START_OBJECT at 1:\d+", "START_OBJECT at 1:N", json.dumps(got[name])))
+        c.same(f"memory {label}", got["ours"], got["stock"])
+        return got
+
+    made = {}
+
+    def make(key, kind, path, body):
+        got = {}
+        for name, n in side:
+            p = path.format(**{k: v[name] for k, v in made.items()})
+            s, o = n.call("POST", p, body)
+            if s != 200:
+                return False
+            got[name] = o[kind]
+            ids[name].append(o[kind])
+        made[key] = got
+        return True
+
+    for label, body in {"empty": None, "named": {"name": "c1"}, "application": {"name": "c2", "application_type": "chat", "additional_info": {"a": 1, "b": {"c": "d"}}},
+                        "unknown field": {"zzz": 1}, "name number": {"name": 5}, "name object": {"name": {"a": 1}}, "info text": {"additional_info": "x"},
+                        "application number": {"application_type": 5}}.items():
+        both(f"create {label}", "POST", M, body)
+        # Only the answers' shape is compared: each node makes its own ids.
+    for n_ in ("m0", "m1", "m2"):
+        make(n_, "memory_id", M, {"name": n_, "additional_info": {"k": n_}})
+    both("get", "GET", M + "/{m0}")
+    both("get with info", "GET", M + "/{m1}")
+    both("get missing", "GET", M + "/nope")
+    for label, body in [("name", {"name": "renamed"}), ("empty", {}), ("unknown", {"zzz": 1}), ("info", {"additional_info": {"x": 1}}), ("number", {"name": 5}),
+                        ("application", {"application_type": "chat"}), ("blank name", {"name": ""})]:
+        both(f"update {label}", "PUT", M + "/{m0}", body)
+        both(f"get after update {label}", "GET", M + "/{m0}")
+    both("update missing", "PUT", M + "/nope", {"name": "x"})
+    both("update no body", "PUT", M + "/{m0}")
+    # messages
+    msgs = [("input", {"input": "hi"}), ("template", {"prompt_template": "t"}), ("response", {"response": "r"}), ("origin", {"origin": "o"}),
+            ("info", {"additional_info": {"k": "v", "n": 1}}), ("all", {"input": "hi", "prompt_template": "t", "response": "hello", "origin": "o", "additional_info": {"k": "v"}}),
+            ("unicode", {"input": "h\u00e9llo \u4e16\u754c \"q\" <b>", "response": "x"})]
+    for i, (label, body) in enumerate(msgs):
+        if make(f"g{i}", "message_id", M + "/{m0}/messages", body):
+            both(f"message {label}", "GET", M + "/message/{g%d}" % i)
+    for label, body in {"empty": {}, "blank strings": {"input": "", "response": ""}, "empty info": {"additional_info": {}}, "unknown only": {"zzz": 1},
+                        "input number": {"input": 5}, "input object": {"input": {"a": 1}}, "info text": {"additional_info": "x"}, "trace text": {"input": "a", "trace_number": "1"},
+                        "trace number float": {"input": "a", "trace_number": 1.5}, "parent number": {"input": "a", "parent_message_id": 5}}.items():
+        both(f"add message {label}", "POST", M + "/{m1}/messages", body)
+    both("add message to missing memory", "POST", M + "/nope/messages", {"input": "x"})
+    both("add message without body", "POST", M + "/{m1}/messages")
+    # traces
+    make("t0", "message_id", M + "/{m2}/messages", {"input": "q", "response": "r"})
+    for i, (num, extra) in enumerate([(2, "b"), (1, "a"), (3, "c"), (1, "again"), (None, "no number")]):
+        body = {"input": extra, "parent_message_id": made["t0"]["ours"] if False else "PARENT"}
+        got = {}
+        for name, n in side:
+            b = {"input": extra, "parent_message_id": made["t0"][name]}
+            if num is not None:
+                b["trace_number"] = num
+            s, o = n.call("POST", f"{M}/{made['m2'][name]}/messages", b)
+            ids[name].append(o.get("message_id"))
+            got[name] = s
+        c.same(f"memory add trace {i}", got["ours"], got["stock"])
+    both("traces", "GET", M + "/message/{t0}/traces")
+    both("traces max", "GET", M + "/message/{t0}/traces?max_results=2")
+    both("traces next", "GET", M + "/message/{t0}/traces?max_results=2&next_token=2")
+    both("traces of a message without any", "GET", M + "/message/{g0}/traces")
+    both("traces missing", "GET", M + "/message/nope/traces")
+    both("trace message get", "GET", M + "/message/{t0}")
+    both("messages list excludes traces", "GET", M + "/{m2}/messages")
+    # list
+    both("messages list", "GET", M + "/{m0}/messages")
+    both("messages list max", "GET", M + "/{m0}/messages?max_results=2")
+    both("messages list next", "GET", M + "/{m0}/messages?max_results=2&next_token=2")
+    both("messages list exact page", "GET", M + "/{m0}/messages?max_results=7")
+    both("messages list past end", "GET", M + "/{m0}/messages?next_token=50")
+    both("messages list zero", "GET", M + "/{m0}/messages?max_results=0")
+    both("messages list negative start", "GET", M + "/{m0}/messages?next_token=-1")
+    both("messages list both bad", "GET", M + "/{m0}/messages?max_results=-1&next_token=-1")
+    both("messages list text", "GET", M + "/{m0}/messages?max_results=x")
+    both("messages list missing memory", "GET", M + "/nope/messages")
+    both("memories list", "GET", M)
+    both("memories list max", "GET", M + "?max_results=2")
+    both("memories list next", "GET", M + "?max_results=2&next_token=2")
+    both("memories list zero", "GET", M + "?max_results=0")
+    both("memories list negative", "GET", M + "?next_token=-1")
+    # message update and get
+    for label, body in [("response", {"response": "new"}), ("info", {"additional_info": {"z": 1}}), ("input", {"input": "changed"}), ("template", {"prompt_template": "pt"}),
+                        ("origin", {"origin": "oo"}), ("empty", {}), ("unknown", {"zzz": 1}), ("number", {"response": 5}), ("trace", {"trace_number": 4})]:
+        both(f"update message {label}", "PUT", M + "/message/{g0}", body)
+        both(f"message after update {label}", "GET", M + "/message/{g0}")
+    both("update message info merges", "PUT", M + "/message/{g0}", {"additional_info": {"q": "w"}})
+    both("message after info merge", "GET", M + "/message/{g0}")
+    both("update message without body", "PUT", M + "/message/{g0}")
+    both("update missing message", "PUT", M + "/message/nope", {"response": "x"})
+    both("get missing message", "GET", M + "/message/nope")
+    both("get message after memory update", "GET", M + "/{m0}")
+    # search
+    both("search memories", "POST", M + "/_search", {"query": {"match_all": {}}, "sort": [{"name.keyword": "asc"}] if False else [{"create_time": "asc"}], "size": 100})
+    both("search memories by name", "POST", M + "/_search", {"query": {"match": {"name": "m1"}}})
+    both("search memories by info", "POST", M + "/_search", {"query": {"term": {"additional_info.k": "m1"}}})
+    both("search memories without body", "POST", M + "/_search")
+    both("search messages", "POST", M + "/{m0}/_search", {"query": {"match_all": {}}, "sort": [{"create_time": "asc"}], "size": 100})
+    both("search messages by text", "POST", M + "/{m0}/_search", {"query": {"match": {"input": "hi"}}, "sort": [{"create_time": "asc"}]})
+    both("search messages scored", "POST", M + "/{m0}/_search", {"query": {"match": {"input": "hi"}}})
+    both("search messages no query", "POST", M + "/{m0}/_search", {"size": 100, "sort": [{"create_time": "asc"}]})
+    both("search messages includes traces", "POST", M + "/{m2}/_search", {"query": {"match_all": {}}, "sort": [{"create_time": "asc"}], "size": 100})
+    both("search messages without body", "POST", M + "/{m0}/_search")
+    both("search messages get without body", "GET", M + "/{m0}/_search")
+    both("search messages missing memory", "POST", M + "/nope/_search", {"query": {"match_all": {}}})
+    # delete
+    both("delete", "DELETE", M + "/{m2}")
+    both("delete again", "DELETE", M + "/{m2}")
+    both("get deleted", "GET", M + "/{m2}")
+    both("message of a deleted memory", "GET", M + "/message/{t0}")
+    both("trace of a deleted memory", "GET", M + "/message/{t0}/traces")
+    both("memory messages index after delete", "POST", "/.plugins-ml-memory-message/_search", {"query": {"term": {"memory_id": "{m2}"}}, "size": 0})
+    both("delete with messages", "DELETE", M + "/{m0}")
+    both("delete missing", "DELETE", M + "/nope")
+    both("memories list after delete", "GET", M)
