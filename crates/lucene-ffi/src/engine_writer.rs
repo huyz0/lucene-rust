@@ -7447,7 +7447,7 @@ mod tests {
             for d in 0..seg.max_doc {
                 let blob = crate::jvm_fetch::document_blob(jh, 0, d).unwrap();
                 let mut want = source.to_le_bytes().to_vec();
-                want.push(crate::jvm_fetch::DERIVED_SOURCE);
+                want.push(lucene_engine::fetch::DERIVED_SOURCE);
                 assert!(
                     blob.windows(want.len()).any(|w| w == want.as_slice()),
                     "document {d}: _source left out"

@@ -28,7 +28,7 @@ import java.util.Arrays;
  * getValueCount}), and every read the native side fails.
  */
 final class NativeDocValues {
-    /** {@code jvm_fetch.rs}'s kinds. */
+    /** {@code fetch.rs}'s kinds. */
     static final byte NONE = 0;
     static final byte SORTED_NUMERIC = 1;
     static final byte SORTED_SET = 2;
