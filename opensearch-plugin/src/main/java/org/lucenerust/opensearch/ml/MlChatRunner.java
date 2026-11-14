@@ -31,7 +31,7 @@ import java.util.Map;
  * tool runs, its answer goes back to the model, until the model answers in words or {@code max_iteration} calls
  * have been made. The turns and every step are written to the conversation memory.
  *
- * <p>Only the {@code openai/v1/chat/completions} function-calling interface is ported; the other interfaces and the
+ * <p>The openai, bedrock converse and gemini function-calling interfaces are ported; the other interfaces and the
  * text ReAct prompt answer 501.
  */
 final class MlChatRunner {
@@ -45,6 +45,8 @@ final class MlChatRunner {
         + "Your only task is to summarize the message.";
     private static final String NO_ESCAPE = "_chat_history,_tools,_interactions,tool_configs";
     private static final String OPENAI = "openai/v1/chat/completions";
+    private static final String BEDROCK = "bedrock/converse/claude";
+    private static final String GEMINI = "gemini/v1beta/generatecontent";
 
     /** The error ml-commons' JSON path reader raises for a model answer without the expected field. */
     static final class PathNotFoundException extends RuntimeException {
@@ -74,7 +76,11 @@ final class MlChatRunner {
         final StringBuilder interactions = new StringBuilder();
         List<String> chain;
         boolean memory;
+        String style;
     }
+
+    /** What the model answered: words, or a tool to run. */
+    private record Reply(String text, String id, String name, String arguments, Object message) {}
 
     @SuppressWarnings("unchecked")
     void run(Map<String, Object> agent, Map<String, Object> request, List<String> chain, ActionListener<Map<String, Object>> listener) {
@@ -93,12 +99,15 @@ final class MlChatRunner {
             p.forEach((k, v) -> run.params.put(String.valueOf(k), MlAgentRunner.text(v)));
         }
         String iface = run.params.get("_llm_interface");
-        if (OPENAI.equals(iface) == false) {
-            throw new OpenSearchStatusException(
-                "Running conversational agents is only supported with _llm_interface " + OPENAI,
+        run.style = switch (iface == null ? "" : iface) {
+            case OPENAI -> "openai";
+            case BEDROCK -> "bedrock";
+            case GEMINI -> "gemini";
+            default -> throw new OpenSearchStatusException(
+                "Running conversational agents is only supported with _llm_interface " + OPENAI + ", " + BEDROCK + " or " + GEMINI,
                 RestStatus.NOT_IMPLEMENTED
             );
-        }
+        };
         run.question = run.params.get("question");
         if (run.question == null) {
             throw new NullPointerException();
@@ -128,8 +137,13 @@ final class MlChatRunner {
                 StringBuilder out = new StringBuilder();
                 for (Map<String, Object> turn : history) {
                     if (turn.get("input") != null && turn.get("response") != null) {
-                        out.append("{\"role\":\"user\",\"content\":\"").append(MlAgentRunner.escape(String.valueOf(turn.get("input")))).append("\"}, ");
-                        out.append("{\"role\":\"assistant\",\"content\":\"").append(MlAgentRunner.escape(String.valueOf(turn.get("response")))).append("\"}, ");
+                        String q = MlAgentRunner.escape(String.valueOf(turn.get("input")));
+                        String a = MlAgentRunner.escape(String.valueOf(turn.get("response")));
+                        switch (run.style) {
+                            case "bedrock" -> out.append("{\"role\":\"user\",\"content\":[{\"text\":\"").append(q).append("\"}]}, {\"role\":\"assistant\",\"content\":[{\"text\":\"").append(a).append("\"}]}, ");
+                            case "gemini" -> out.append("{\"role\":\"user\",\"parts\":[{\"text\":\"").append(q).append("\"}]}, {\"role\":\"model\",\"parts\":[{\"text\":\"").append(a).append("\"}]}, ");
+                            default -> out.append("{\"role\":\"user\",\"content\":\"").append(q).append("\"}, {\"role\":\"assistant\",\"content\":\"").append(a).append("\"}, ");
+                        }
                     }
                 }
                 begin(run, out.toString(), listener);
@@ -175,30 +189,20 @@ final class MlChatRunner {
     private void handle(Run run, Map<String, Object> data, int round, ActionListener<Map<String, Object>> listener) {
         {
             String raw = MlCommons.json(data);
-            if (data == null || data.get("choices") instanceof List<?> == false) {
-                throw new PathNotFoundException("Missing property in path $['choices']");
-            }
-            Map<String, Object> choice = (Map<String, Object>) ((List<?>) data.get("choices")).get(0);
-            Map<String, Object> message = (Map<String, Object>) choice.get("message");
-            Map<String, Object> toolCall = firstToolCall(message);
-            if (toolCall == null) {
-                Object content = message.get("content");
-                if (content == null) {
-                    throw new NullPointerException("Cannot invoke \"Object.toString()\" because \"response\" is null");
-                }
-                String text = content.toString();
+            Reply reply = parse(run, data);
+            if (reply.text() != null) {
+                String text = reply.text();
                 trace(run, run.question, text, "LLM", ActionListener.wrap(v -> finish(run, text, listener), listener::onFailure));
                 return;
             }
-            Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
-            String name = String.valueOf(function.get("name"));
+            String name = reply.name();
             trace(run, run.question, raw, "LLM", ActionListener.wrap(v -> {
                 if (run.specs.containsKey(name) == false) {
                     finish(run, raw, listener);
                 } else if (round >= run.max - 1) {
                     exhausted(run, listener);
                 } else {
-                    runTool(run, name, String.valueOf(toolCall.get("id")), String.valueOf(function.get("arguments")), message, round, listener);
+                    runTool(run, name, reply.id(), reply.arguments(), reply.message(), round, listener);
                 }
             }, listener::onFailure));
         }
@@ -217,15 +221,7 @@ final class MlChatRunner {
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> firstToolCall(Map<String, Object> message) {
-        if (message.get("tool_calls") instanceof List<?> l && l.isEmpty() == false && l.get(0) instanceof Map<?, ?> m) {
-            return (Map<String, Object>) m;
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private void runTool(Run run, String name, String id, String arguments, Map<String, Object> message, int round, ActionListener<Map<String, Object>> listener) {
+    private void runTool(Run run, String name, String id, String arguments, Object message, int round, ActionListener<Map<String, Object>> listener) {
         Map<String, Object> spec = run.specs.get(name);
         String type = String.valueOf(spec.get("type"));
         Map<String, String> params = new LinkedHashMap<>();
@@ -252,13 +248,13 @@ final class MlChatRunner {
         ActionListener<MlAgentRunner.Answer> done = ActionListener.wrap(answer -> {
             String out = answer.text() != null ? answer.text() : MlCommons.json(answer.tensors());
             trace(run, arguments, out, name, ActionListener.wrap(v -> {
-                run.interactions.append(", ").append(assistant).append(", {\"tool_call_id\":\"").append(MlAgentRunner.escape(id)).append("\",\"content\":\"").append(MlAgentRunner.escape(out)).append("\",\"role\":\"tool\"}");
+                run.interactions.append(", ").append(assistant).append(", ").append(toolResult(run, id, name, out, false));
                 iterate(run, round + 1, listener);
             }, listener::onFailure));
         }, e -> {
             String text = "Tool " + name + " failed: " + e.getMessage();
             trace(run, arguments, "Failed to run the tool " + name + " with the error message " + e.getMessage() + ".", name, ActionListener.wrap(v -> {
-                run.interactions.append(", ").append(assistant).append(", {\"role\":\"tool\",\"tool_call_id\":\"").append(MlAgentRunner.escape(id)).append("\",\"content\":\"").append(MlAgentRunner.escape(text)).append("\"}");
+                run.interactions.append(", ").append(assistant).append(", ").append(toolResult(run, id, name, text, true));
                 iterate(run, round + 1, listener);
             }, listener::onFailure));
         });
@@ -267,6 +263,92 @@ final class MlChatRunner {
         } catch (RuntimeException e) {
             done.onFailure(e);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Reply parse(Run run, Map<String, Object> data) {
+        switch (run.style) {
+            case "bedrock" -> {
+                if (data == null || data.get("output") instanceof Map<?, ?> == false) {
+                    throw new PathNotFoundException("Missing property in path $['output']");
+                }
+                Map<String, Object> message = (Map<String, Object>) ((Map<String, Object>) data.get("output")).get("message");
+                List<Object> content = (List<Object>) message.get("content");
+                if ("tool_use".equals(data.get("stopReason"))) {
+                    for (Object part : content) {
+                        if (part instanceof Map<?, ?> m && m.get("toolUse") instanceof Map<?, ?> use) {
+                            return new Reply(null, String.valueOf(use.get("toolUseId")), String.valueOf(use.get("name")), MlCommons.json(use.get("input")), firstCall(message, "content", "toolUse"));
+                        }
+                    }
+                }
+                return new Reply(answerText(((Map<String, Object>) content.get(0)).get("text")), null, null, null, message);
+            }
+            case "gemini" -> {
+                if (data == null || data.get("candidates") instanceof List<?> == false) {
+                    throw new PathNotFoundException("Missing property in path $['candidates']");
+                }
+                Map<String, Object> content = (Map<String, Object>) ((Map<String, Object>) ((List<?>) data.get("candidates")).get(0)).get("content");
+                List<Object> parts = (List<Object>) content.get("parts");
+                Map<String, Object> first = (Map<String, Object>) parts.get(0);
+                if (first.get("text") != null) {
+                    return new Reply(first.get("text").toString(), null, null, null, content);
+                }
+                for (Object part : parts) {
+                    if (part instanceof Map<?, ?> m && m.get("functionCall") instanceof Map<?, ?> call) {
+                        return new Reply(null, String.valueOf(call.get("name")), String.valueOf(call.get("name")), MlCommons.json(call.get("args")), firstCall(content, "parts", "functionCall"));
+                    }
+                }
+                return new Reply(answerText(null), null, null, null, content);
+            }
+            default -> {
+                if (data == null || data.get("choices") instanceof List<?> == false) {
+                    throw new PathNotFoundException("Missing property in path $['choices']");
+                }
+                Map<String, Object> choice = (Map<String, Object>) ((List<?>) data.get("choices")).get(0);
+                Map<String, Object> message = (Map<String, Object>) choice.get("message");
+                if (message.get("tool_calls") instanceof List<?> l && l.isEmpty() == false && l.get(0) instanceof Map<?, ?> m) {
+                    Map<String, Object> function = (Map<String, Object>) m.get("function");
+                    return new Reply(null, String.valueOf(m.get("id")), String.valueOf(function.get("name")), String.valueOf(function.get("arguments")), message);
+                }
+                return new Reply(answerText(message.get("content")), null, null, null, message);
+            }
+        }
+    }
+
+    /** {@code message} keeping only the first tool call among the parts under {@code key}. */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> firstCall(Map<String, Object> message, String key, String call) {
+        List<Object> kept = new ArrayList<>();
+        boolean seen = false;
+        for (Object part : (List<Object>) message.get(key)) {
+            boolean isCall = part instanceof Map<?, ?> m && m.get(call) != null;
+            if (isCall && seen) {
+                continue;
+            }
+            seen |= isCall;
+            kept.add(part);
+        }
+        Map<String, Object> out = new LinkedHashMap<>(message);
+        out.put(key, kept);
+        return out;
+    }
+
+    private static String answerText(Object content) {
+        if (content == null) {
+            throw new NullPointerException("Cannot invoke \"Object.toString()\" because \"response\" is null");
+        }
+        return content.toString();
+    }
+
+    private static String toolResult(Run run, String id, String name, String text, boolean error) {
+        String e = MlAgentRunner.escape(text);
+        return switch (run.style) {
+            case "bedrock" -> "{\"role\":\"user\",\"content\":[{\"toolResult\":{\"content\":[{\"text\":\"" + e + "\"}]," + (error ? "" : "\"status\":null,") + "\"toolUseId\":\"" + MlAgentRunner.escape(id) + "\"}}]}";
+            case "gemini" -> "{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"name\":\"" + MlAgentRunner.escape(name) + "\",\"response\":{\"text\":\"" + e + "\"}}}]}";
+            default -> error
+                ? "{\"role\":\"tool\",\"tool_call_id\":\"" + MlAgentRunner.escape(id) + "\",\"content\":\"" + e + "\"}"
+                : "{\"tool_call_id\":\"" + MlAgentRunner.escape(id) + "\",\"content\":\"" + e + "\",\"role\":\"tool\"}";
+        };
     }
 
     /** The {@code tool_configs} parameter: every tool as the model's function list wants it. */
@@ -281,16 +363,53 @@ final class MlChatRunner {
                     entry = t;
                 }
             }
-            String description = spec.get("description") != null ? String.valueOf(spec.get("description")) : entry == null ? "" : String.valueOf(entry.get("description"));
+            String description = MlAgentRunner.escape(spec.get("description") != null ? String.valueOf(spec.get("description")) : entry == null ? "" : String.valueOf(entry.get("description")));
+            String name = MlAgentRunner.escape(e.getKey());
             Map<?, ?> attributes = entry != null && entry.get("attributes") instanceof Map<?, ?> a ? a : Map.of();
-            String schema = attributes.get("input_schema") == null ? "${tool.attributes.input_schema}" : String.valueOf(attributes.get("input_schema"));
-            boolean strict = attributes.get("strict") instanceof Boolean b && b;
-            entries.add(
-                "{\"type\": \"function\", \"function\": { \"name\": \"" + MlAgentRunner.escape(e.getKey()) + "\", \"description\": \"" + MlAgentRunner.escape(description)
-                    + "\", \"parameters\": " + schema + ", \"strict\": " + strict + " } }"
-            );
+            Object given = attributes.get("input_schema");
+            switch (run.style) {
+                case "bedrock" -> entries.add(
+                    "{\"toolSpec\":{\"name\":\"" + name + "\",\"description\":\"" + description + "\",\"inputSchema\": {\"json\": "
+                        + (given == null ? "${tool.attributes.input_schema}" : given) + " } }}"
+                );
+                case "gemini" -> entries.add(
+                    "{\"name\":\"" + name + "\",\"description\":\"" + description + "\",\"parameters\":"
+                        + (given == null ? "${tool.attributes.input_schema_cleaned}" : cleaned(String.valueOf(given))) + "}"
+                );
+                default -> entries.add(
+                    "{\"type\": \"function\", \"function\": { \"name\": \"" + name + "\", \"description\": \"" + description + "\", \"parameters\": "
+                        + (given == null ? "${tool.attributes.input_schema}" : given) + ", \"strict\": " + (attributes.get("strict") instanceof Boolean b && b) + " } }"
+                );
+            }
         }
-        return ", \"tools\": [" + String.join(", ", entries) + "], \"parallel_tool_calls\": false";
+        return switch (run.style) {
+            case "bedrock" -> ", \"toolConfig\": {\"tools\": [" + String.join(", ", entries) + "]}";
+            case "gemini" -> ", \"tools\": [{\"functionDeclarations\": [" + String.join(", ", entries) + "]}], \"toolConfig\": {\"functionCallingConfig\": {\"mode\": \"AUTO\"}}";
+            default -> ", \"tools\": [" + String.join(", ", entries) + "], \"parallel_tool_calls\": false";
+        };
+    }
+
+    /** A tool's input schema without the keys Gemini's API refuses. */
+    private static String cleaned(String schema) {
+        return MlCommons.json(strip(MlCommons.parse(schema.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+    }
+
+    private static Object strip(Object v) {
+        if (v instanceof Map<?, ?> m) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            m.forEach((k, x) -> {
+                if ("additionalProperties".equals(k) == false) {
+                    out.put(String.valueOf(k), strip(x));
+                }
+            });
+            return out;
+        }
+        if (v instanceof List<?> l) {
+            List<Object> out = new ArrayList<>();
+            l.forEach(x -> out.add(strip(x)));
+            return out;
+        }
+        return v;
     }
 
     private void trace(Run run, String input, String response, String origin, ActionListener<Void> next) {
