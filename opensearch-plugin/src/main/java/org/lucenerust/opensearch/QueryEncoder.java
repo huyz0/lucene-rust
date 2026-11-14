@@ -698,7 +698,7 @@ public final class QueryEncoder {
 
     /**
      * {@code query} as one query-tree node, as a filter inside another request ({@code
-     * jvm_knn.rs}): null when written, else the fallback reason. Its scores are not read, so every
+     * knn.rs}): null when written, else the fallback reason. Its scores are not read, so every
      * field is accepted.
      */
     static String encodeNode(Query query, ByteArrayOutputStream out, IndexReaderContext top) {
