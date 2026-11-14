@@ -588,7 +588,7 @@ public final class MlActions {
 
         @Override
         void run(MlCommons ml, Request r, ActionListener<Response> l) {
-            ml.agents().register(r.json(), ActionListener.wrap(id -> l.onResponse(Response.of(Map.of("agent_id", id))), l::onFailure));
+            ml.agents().register(r.json(), new String(r.body, StandardCharsets.UTF_8), ActionListener.wrap(id -> l.onResponse(Response.of(Map.of("agent_id", id))), l::onFailure));
         }
     }
 

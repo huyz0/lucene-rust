@@ -48,6 +48,15 @@ REGISTER = {
     "same tool other name": {"name": "r-d2", "type": "flow", "tools": [{"type": "A", "name": "n1"}, {"type": "A", "name": "n2"}]},
     "unknown tool": {"name": "r-u", "type": "flow", "tools": [{"type": "Nope"}]},
     "bad memory": {"name": "r-bm", "type": "flow", "memory": {"type": "bogus"}},
+    "name object": {"name": {"a": "b"}, "type": "flow"},
+    "name list": {"name": [1], "type": "flow"},
+    "name number": {"name": 5, "type": "flow"},
+    "type object": {"name": "r-to", "type": {"a": 1}},
+    "llm string": {"name": "r-ls", "type": "flow", "llm": "x"},
+    "tools string": {"name": "r-ts", "type": "flow", "tools": "x"},
+    "memory number": {"name": "r-mn", "type": "flow", "memory": 5},
+    "window size text": {"name": "r-ws", "type": "flow", "memory": {"type": "conversation_index", "window_size": "4"}},
+    "description object": {"name": "r-do", "type": "flow", "description": {"a": 1}},
 }
 
 UPDATES = [
@@ -58,7 +67,7 @@ UPDATES = [
     ("app type", {"app_type": "A1"}), ("memory", {"memory": {"type": "conversation_index", "session_id": "s2"}}),
     ("memory window", {"memory": {"window_size": 9}}), ("bad memory", {"memory": {"type": "bogus"}}),
     ("agentic memory", {"memory": {"type": "agentic_memory"}}), ("blank name", {"name": ""}),
-    ("hidden", {"is_hidden": True}), ("unknown", {"zzz": 1}), ("empty", {}),
+    ("upper case type", {"type": "CONVERSATIONAL"}), ("hidden", {"is_hidden": True}), ("unknown", {"zzz": 1}), ("empty", {}),
 ]
 
 
@@ -117,6 +126,15 @@ def agents(c, ours, stock):
         got = {side: answer(n, "GET", f"/_plugins/_ml/agents/{target[side]}", None, ids[side])
                for side, n in (("ours", ours), ("stock", stock))}
         c.same(f"agents after update {label}", got["ours"], got["stock"])
+    up = {}
+    for side, n in (("ours", ours), ("stock", stock)):
+        up[side] = made[side, "upper case type"]
+    for body in ({"type": "flow"}, {"type": "FLOW"}, {"type": "conversational"}):
+        got = {}
+        for side, n in (("ours", ours), ("stock", stock)):
+            s, o = n.call("PUT", f"/_plugins/_ml/agents/{up[side]}", body)
+            got[side] = {"status": s, "body": o["error"].get("reason") if s != 200 else o.get("result")}
+        c.same(f"agents update upper case agent to {body['type']}", got["ours"], got["stock"])
     got = {side: answer(n, "PUT", "/_plugins/_ml/agents/nope", {"description": "x"}, ids[side])
            for side, n in (("ours", ours), ("stock", stock))}
     c.same("agents update missing", got["ours"], got["stock"])

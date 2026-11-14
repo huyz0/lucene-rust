@@ -47,6 +47,13 @@ final class MlAgents {
     /** The tools ml-commons registers, as {@code GET _plugins/_ml/tools} lists them. */
     @SuppressWarnings("unchecked")
     static List<Map<String, Object>> tools() {
+        return TOOLS;
+    }
+
+    private static final List<Map<String, Object>> TOOLS = loadTools();
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> loadTools() {
         try (InputStream in = MlAgents.class.getResourceAsStream("tools.json")) {
             if (in == null) {
                 throw new IllegalStateException("no tools.json resource");
@@ -76,10 +83,10 @@ final class MlAgents {
     // ---- Registry -----------------------------------------------------------------------------
 
     /** {@code POST _plugins/_ml/agents/_register}: the new agent's id. */
-    void register(Map<String, Object> body, ActionListener<String> listener) {
+    void register(Map<String, Object> body, String raw, ActionListener<String> listener) {
         Map<String, Object> agent;
         try {
-            agent = parse(body);
+            agent = parse(body, raw);
         } catch (RuntimeException e) {
             listener.onFailure(e);
             return;
@@ -116,8 +123,23 @@ final class MlAgents {
 
     /** The document of a registration: the fields {@code MLAgent} reads, checked as its parser and constructor check them. */
     @SuppressWarnings("unchecked")
-    static Map<String, Object> parse(Map<String, Object> body) {
+    static Map<String, Object> parse(Map<String, Object> body, String raw) {
         Map<String, Object> agent = new LinkedHashMap<>();
+        for (String key : List.of("name", "type", "description", "app_type")) {
+            if (body.containsKey(key)) {
+                Object v = body.get(key);
+                String token = v == null ? "VALUE_NULL" : v instanceof Map<?, ?> ? "START_OBJECT" : v instanceof List<?> ? "START_ARRAY" : null;
+                if (token != null) {
+                    throw new OpenSearchStatusException(
+                        "Can't get text on a " + token + " at " + location(raw, key),
+                        RestStatus.INTERNAL_SERVER_ERROR
+                    );
+                }
+            }
+        }
+        expect(body, "llm", Map.class, "START_OBJECT");
+        expect(body, "memory", Map.class, "START_OBJECT");
+        expect(body, "tools", List.class, "START_ARRAY");
         Object name = body.get("name");
         if (name == null) {
             throw new IllegalArgumentException("Agent name can't be null");
@@ -202,6 +224,40 @@ final class MlAgents {
         return agent;
     }
 
+    /** Refuses a {@code key} that is neither absent, null nor a {@code wanted}, as a parser expecting {@code token} does. */
+    private static void expect(Map<String, Object> body, String key, Class<?> wanted, String token) {
+        Object v = body.get(key);
+        if (v == null || wanted.isInstance(v)) {
+            return;
+        }
+        String found = v instanceof String ? "VALUE_STRING"
+            : v instanceof Number ? "VALUE_NUMBER"
+            : v instanceof Boolean b ? (b ? "VALUE_TRUE" : "VALUE_FALSE")
+            : v instanceof Map<?, ?> ? "START_OBJECT" : "START_ARRAY";
+        throw new IllegalArgumentException("Failed to parse object: expecting token of type [" + token + "] but found [" + found + "]");
+    }
+
+    /** {@code line:column} where the value of {@code key} starts in the request's JSON text, as the parser reports it. */
+    private static String location(String raw, String key) {
+        int at = raw.indexOf("\"" + key + "\"");
+        if (at < 0) {
+            return "1:1";
+        }
+        int i = raw.indexOf(':', at + key.length() + 2) + 1;
+        while (i < raw.length() && Character.isWhitespace(raw.charAt(i))) {
+            i++;
+        }
+        int line = 1;
+        int lineStart = 0;
+        for (int k = 0; k < i; k++) {
+            if (raw.charAt(k) == '\n') {
+                line++;
+                lineStart = k + 1;
+            }
+        }
+        return line + ":" + (i - lineStart + 1);
+    }
+
     private static Map<String, Object> llmSpec(Map<String, Object> llm) {
         if (llm.get("model_id") == null) {
             throw new IllegalArgumentException("model id is null");
@@ -253,6 +309,8 @@ final class MlAgents {
         }
         if (memory.get("window_size") instanceof Number w) {
             spec.put("window_size", w.intValue());
+        } else if (memory.get("window_size") instanceof String w && w.matches("-?\\d+")) {
+            spec.put("window_size", Integer.parseInt(w));
         }
         return spec;
     }
