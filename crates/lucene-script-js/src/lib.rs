@@ -506,6 +506,9 @@ thread_local! {
     static HEAP: RefCell<Option<v8::IsolateHandle>> = const { RefCell::new(None) };
     /// Whether the thread's isolate reached its heap limit.
     static HEAP_HIT: Cell<bool> = const { Cell::new(false) };
+    /// Whether V8 has had the room for its largest object: given once per
+    /// isolate, whoever saw the limit passed first.
+    static HEAP_GRANTED: Cell<bool> = const { Cell::new(false) };
     /// The thread's isolate's heap limit.
     static HEAP_MAX: Cell<usize> = const { Cell::new(usize::MAX) };
     /// The thread's isolate's watch, for the heap check to reach.
@@ -550,7 +553,8 @@ fn with_engine<R>(
 /// at once (a string or array of about 1 GB), which would otherwise end the
 /// process: a thread's isolate holds at most its limit and that.
 extern "C" fn near_heap_limit(_data: *mut c_void, current: usize, _initial: usize) -> usize {
-    let again = HEAP_HIT.try_with(|h| h.replace(true)).unwrap_or(true);
+    let again = HEAP_GRANTED.try_with(|g| g.replace(true)).unwrap_or(true);
+    let _ = HEAP_HIT.try_with(|h| h.set(true));
     let _ = HEAP.try_with(|h| {
         if let Ok(h) = h.try_borrow() {
             if let Some(h) = h.as_ref() {
@@ -801,6 +805,7 @@ impl Engine {
         // raises comes from.
         isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 16);
         HEAP_HIT.with(|h| h.set(false));
+        HEAP_GRANTED.with(|g| g.set(false));
         HEAP_MAX.with(|h| h.set(limits.max_heap));
         HEAP.with(|h| h.replace(Some(isolate.thread_safe_handle())));
         isolate.add_near_heap_limit_callback(near_heap_limit, std::ptr::null_mut());
