@@ -4379,7 +4379,7 @@ fn end_offsets(lengths: impl ExactSizeIterator<Item = usize>) -> Vec<i64> {
     ends
 }
 
-/// [`write_numeric_entry_body`], its values as adaptive blocks when
+/// A NUMERIC entry body for a column that may be sparse, its values as adaptive blocks when
 /// `adaptive` and that is smaller, with [`crate::adaptive_zones`] statistics
 /// when every document has exactly one value.
 fn write_numeric_entry_body_with(
