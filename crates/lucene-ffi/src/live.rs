@@ -1544,7 +1544,7 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         }
         // SAFETY: caller contract.
         let blob = unsafe { bytes_from_raw(request, request_len)? };
-        let knn = crate::jvm_knn::decode(blob)?;
+        let knn = lucene_engine::knn::decode(blob)?;
         if buf_len < knn.k {
             return Err(FfiStatus::BufferTooSmall);
         }
@@ -1586,7 +1586,7 @@ pub unsafe extern "C" fn ffi_live_view_knn(
         };
         let hits =
             lucene_index::live_timing::timed(lucene_index::live_timing::Phase::KnnSearch, || {
-                crate::jvm_knn::search(&h, &knn, &buffers)
+                lucene_engine::knn::search(&h, &knn, &buffers)
             })?;
         // SAFETY: caller contract.
         unsafe { crate::jvm_knn::write_hits(&hits, out_docs, out_scores, buf_len, out_count) }
