@@ -54,8 +54,11 @@ final class MlAgentRunner {
     private final MlCommons ml;
     volatile NamedXContentRegistry registry = NamedXContentRegistry.EMPTY;
 
+    private final MlChatRunner chat;
+
     MlAgentRunner(MlCommons ml) {
         this.ml = ml;
+        this.chat = new MlChatRunner(ml, this);
     }
 
     /** What a tool answered: text, or the tensors of a model's answer. */
@@ -71,6 +74,10 @@ final class MlAgentRunner {
     @SuppressWarnings("unchecked")
     void run(Map<String, Object> agent, Map<String, Object> request, List<String> chain, ActionListener<Map<String, Object>> listener) {
         String type = String.valueOf(agent.get("type"));
+        if (type.equals("conversational")) {
+            chat.run(agent, request, chain, listener);
+            return;
+        }
         if (type.equals("flow") == false && type.equals("conversational_flow") == false) {
             throw new OpenSearchStatusException("Running " + type + " agents is not supported", RestStatus.NOT_IMPLEMENTED);
         }
@@ -146,7 +153,7 @@ final class MlAgentRunner {
 
     // ---- Tools --------------------------------------------------------------------------------
 
-    private void tool(String type, Map<String, String> params, List<String> chain, ActionListener<Answer> listener) {
+    void tool(String type, Map<String, String> params, List<String> chain, ActionListener<Answer> listener) {
         switch (type) {
             case "ListIndexTool" -> listIndices(params, listener);
             case "IndexMappingTool" -> indexMapping(params, listener);
