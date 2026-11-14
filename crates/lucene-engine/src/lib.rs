@@ -46,5 +46,6 @@ pub mod status;
 pub mod writer;
 pub mod writer_blob;
 pub mod writer_error;
+pub mod writer_ops;
 
 pub use status::Status;
