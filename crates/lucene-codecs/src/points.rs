@@ -3436,6 +3436,32 @@ pub fn write_merged_with_mode(
     native_merge: bool,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     write_fields(
+        fields.into_iter().map(Ok::<_, Error>),
+        max_points_in_leaf_node,
+        DEFAULT_MAX_MB_SORT_IN_HEAP,
+        None,
+        max_doc,
+        temp_dir,
+        (temp_prefix, segment_id, segment_suffix),
+        native_merge,
+    )
+}
+
+/// [`write_merged_with_mode`] taking each field from `fields` as it is
+/// written, so a merge gathers one field's points, writes its tree and drops
+/// them before gathering the next, instead of holding every field at once.
+#[allow(clippy::too_many_arguments)]
+pub fn write_merged_streaming<E: From<Error>>(
+    fields: impl IntoIterator<Item = std::result::Result<MergePointsField, E>>,
+    max_points_in_leaf_node: i32,
+    max_doc: i32,
+    temp_dir: &dyn lucene_store::directory::Directory,
+    temp_prefix: &str,
+    segment_id: &[u8; codec_util::ID_LENGTH],
+    segment_suffix: &str,
+    native_merge: bool,
+) -> std::result::Result<PointsFiles, E> {
+    write_fields(
         fields,
         max_points_in_leaf_node,
         DEFAULT_MAX_MB_SORT_IN_HEAP,
@@ -3447,6 +3473,9 @@ pub fn write_merged_with_mode(
     )
 }
 
+/// A points writer's finished `.kdm`, `.kdi` and `.kdd`.
+type PointsFiles = (Vec<u8>, Vec<u8>, Vec<u8>);
+
 /// One sorted segment's `(packed value, doc)` points, fed to the 1-D BKD merge.
 type MergeSource<'a> = Box<dyn Iterator<Item = (&'a [u8], i32)> + 'a>;
 
@@ -3454,8 +3483,8 @@ type MergeSource<'a> = Box<dyn Iterator<Item = (&'a [u8], i32)> + 'a>;
 /// `Lucene90PointsWriter` with its leaf size and heap budget, and a
 /// subclass's `split` override when `split` is given.
 #[allow(clippy::too_many_arguments)]
-fn write_fields(
-    fields: Vec<MergePointsField>,
+fn write_fields<E: From<Error>>(
+    fields: impl IntoIterator<Item = std::result::Result<MergePointsField, E>>,
     max_points_in_leaf_node: i32,
     max_mb_sort_in_heap: f64,
     split: Option<SplitFor<'_>>,
@@ -3463,68 +3492,95 @@ fn write_fields(
     temp_dir: &dyn lucene_store::directory::Directory,
     (temp_prefix, segment_id, segment_suffix): (&str, &[u8; codec_util::ID_LENGTH], &str),
     native_merge: bool,
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> std::result::Result<PointsFiles, E> {
     let mut out = PointsOutputs::new(segment_id, segment_suffix);
     for field in fields {
-        let count: usize = field.sources.iter().map(|s| s.docs.len()).sum();
-        check_write_config(
-            field.field_number,
-            count.max(1),
-            field.num_dims,
-            field.num_index_dims,
-            field.bytes_per_dim,
+        write_field(
+            field?,
+            &mut out,
             max_points_in_leaf_node,
-        )?;
-        let config = bkd_config(
-            field.num_dims,
-            field.num_index_dims,
-            field.bytes_per_dim,
-            max_points_in_leaf_node,
-        )?;
-        let stride = config.packed_bytes_length();
-        for source in &field.sources {
-            if source.values.len() != source.docs.len().saturating_mul(stride) {
-                return Err(Error::PackedValuesLength {
-                    field_number: field.field_number,
-                    points: source.docs.len(),
-                    stride,
-                    actual: source.values.len(),
-                });
-            }
-        }
-        let mut writer = bkd_writer::BkdWriter::new(
-            usize::try_from(max_doc).unwrap_or(0),
-            Some(temp_dir),
-            temp_prefix,
-            config,
             max_mb_sort_in_heap,
-            field.max_point_count,
-            bkd_writer::VERSION_CURRENT,
+            split,
+            max_doc,
+            temp_dir,
+            temp_prefix,
+            native_merge,
         )?;
-        if let Some(split) = split.and_then(|split| split(&field.field_name)) {
-            writer = writer.with_split(split);
-        }
-        let plan = if native_merge && field.num_dims == 1 {
-            let sources: Vec<MergeSource<'_>> = field
-                .sources
-                .iter()
-                .map(|s| {
-                    Box::new(s.values.chunks_exact(stride).zip(s.docs.iter().copied()))
-                        as MergeSource<'_>
-                })
-                .collect();
-            writer.merge(&mut out.data, sources)?
-        } else {
-            for source in &field.sources {
-                for (value, &doc) in source.values.chunks_exact(stride).zip(&source.docs) {
-                    writer.add(value, doc)?;
-                }
-            }
-            writer.finish(&mut out.data)?
-        };
-        out.finish_field(field.field_number, &writer, plan);
     }
     Ok(out.finish())
+}
+
+/// One field's BKD tree into `out`.
+#[allow(clippy::too_many_arguments)]
+fn write_field(
+    field: MergePointsField,
+    out: &mut PointsOutputs,
+    max_points_in_leaf_node: i32,
+    max_mb_sort_in_heap: f64,
+    split: Option<SplitFor<'_>>,
+    max_doc: i32,
+    temp_dir: &dyn lucene_store::directory::Directory,
+    temp_prefix: &str,
+    native_merge: bool,
+) -> Result<()> {
+    let count: usize = field.sources.iter().map(|s| s.docs.len()).sum();
+    check_write_config(
+        field.field_number,
+        count.max(1),
+        field.num_dims,
+        field.num_index_dims,
+        field.bytes_per_dim,
+        max_points_in_leaf_node,
+    )?;
+    let config = bkd_config(
+        field.num_dims,
+        field.num_index_dims,
+        field.bytes_per_dim,
+        max_points_in_leaf_node,
+    )?;
+    let stride = config.packed_bytes_length();
+    for source in &field.sources {
+        if source.values.len() != source.docs.len().saturating_mul(stride) {
+            return Err(Error::PackedValuesLength {
+                field_number: field.field_number,
+                points: source.docs.len(),
+                stride,
+                actual: source.values.len(),
+            });
+        }
+    }
+    let mut writer = bkd_writer::BkdWriter::new(
+        usize::try_from(max_doc).unwrap_or(0),
+        Some(temp_dir),
+        temp_prefix,
+        config,
+        max_mb_sort_in_heap,
+        field.max_point_count,
+        bkd_writer::VERSION_CURRENT,
+    )?;
+    if let Some(split) = split.and_then(|split| split(&field.field_name)) {
+        writer = writer.with_split(split);
+    }
+    let plan = if native_merge && field.num_dims == 1 {
+        let sources: Vec<MergeSource<'_>> = field
+            .sources
+            .iter()
+            .map(|s| {
+                Box::new(s.values.chunks_exact(stride).zip(s.docs.iter().copied()))
+                    as MergeSource<'_>
+            })
+            .collect();
+        writer.merge(&mut out.data, sources)?
+    } else {
+        for source in &field.sources {
+            for (value, &doc) in source.values.chunks_exact(stride).zip(&source.docs) {
+                writer.add(value, doc)?;
+            }
+        }
+        writer.finish(&mut out.data)?
+    };
+    out.finish_field(field.field_number, &writer, plan);
+    Ok(())
 }
 
 /// A field's `BKDWriter.split` override, by field name, if any.
@@ -3557,7 +3613,7 @@ pub fn write_added(
     segment_suffix: &str,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     write_fields(
-        fields,
+        fields.into_iter().map(Ok::<_, Error>),
         options.max_points_in_leaf_node,
         options.max_mb_sort_in_heap,
         Some(options.split),
