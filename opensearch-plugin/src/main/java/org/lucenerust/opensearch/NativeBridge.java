@@ -1130,7 +1130,7 @@ public final class NativeBridge {
     }
 
     /**
-     * The reader's top hits for a KNN request ({@code jvm_knn.rs}): global doc ids into {@code
+     * The reader's top hits for a KNN request ({@code knn.rs}): global doc ids into {@code
      * outDocs}, scores into {@code outScores}, best first, at most {@code room} of them; returns the
      * status, the hit count in {@code outCount[0]}. An expanded nested search can find more than
      * {@code room}: the status is then {@link #BUFFER_TOO_SMALL} and {@code outCount[0]} the room it
