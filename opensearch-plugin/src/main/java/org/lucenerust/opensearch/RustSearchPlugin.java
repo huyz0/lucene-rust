@@ -739,6 +739,7 @@ public class RustSearchPlugin extends Plugin implements
             org.lucenerust.opensearch.logs.LogsPreset.ENABLED,
             SparseSettings.SPARSE_INDEX
         ));
+        settings.addAll(org.lucenerust.opensearch.js.JsScripts.settings());
         settings.addAll(NeuralSearchSettings.all());
         if (stockKnn == false) {
             settings.addAll(KnnSettings.settings());
@@ -968,6 +969,7 @@ public class RustSearchPlugin extends Plugin implements
             semanticMappingTransformer.setModelResolver(modelResolver);
         }
         org.lucenerust.opensearch.painless.PainlessScore.initialize(scriptService);
+        org.lucenerust.opensearch.js.JsScripts.install(scriptService, clusterService.getSettings());
         if (org.lucenerust.opensearch.logs.LogsPreset.ENABLED.get(environment.settings())) {
             clusterService.addListener(new org.lucenerust.opensearch.logs.LogsPreset(client));
         }
