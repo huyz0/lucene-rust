@@ -97,6 +97,7 @@ use std::sync::Arc;
 mod collapse;
 mod newest_n;
 mod opensearch;
+pub(crate) use collapse::GroupColumn;
 pub use collapse::{
     search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue,
     MULTI_VALUED,
@@ -2631,7 +2632,7 @@ fn cached_ord(c: &SortColumn, doc: i32) -> Option<i32> {
     match c {
         // FBS: `v` is a `Vec<i32>`, not a bit set; `get` bounds the index.
         SortColumn::Ords(v) => usize::try_from(doc).ok().and_then(|i| v.get(i)).copied(),
-        SortColumn::Longs { .. } | SortColumn::Multi { .. } => None,
+        SortColumn::Longs { .. } | SortColumn::Multi { .. } | SortColumn::Groups { .. } => None,
     }
 }
 
