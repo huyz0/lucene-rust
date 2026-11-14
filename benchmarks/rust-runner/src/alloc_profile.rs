@@ -365,6 +365,27 @@ fn phrase_query(field: &str, terms: &[&str]) -> Vec<u8> {
 }
 
 fn main() {
+    // `CYCLES` repeats the whole run in one process and reports the heap and
+    // resident set after each, to show growth.
+    let cycles: usize = std::env::var("CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    for cycle in 0..cycles {
+        run();
+        let rss_kb = std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0)
+            * 4;
+        eprintln!(
+            "cycle {cycle}: live {} KB, resident {rss_kb} KB",
+            LIVE.load(Relaxed) / 1024
+        );
+    }
+}
+
+fn run() {
     let docs: usize = std::env::args()
         .nth(1)
         .map(|a| a.parse().expect("docs"))
