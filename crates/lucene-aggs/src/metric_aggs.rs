@@ -949,6 +949,13 @@ fn all_accepted(accept: &Accept<'_>, base: usize, len: usize) -> bool {
     }
 }
 
+/// Whether none of documents `64 base..64 base + len` is accepted.
+// ARITH: `len <= FOLD_WINDOW`, so `base + w` stays small.
+#[allow(clippy::arithmetic_side_effects)]
+fn none_accepted(accept: &Accept<'_>, base: usize, len: usize) -> bool {
+    (0..len.div_ceil(64)).all(|w| accept.word(base + w) == 0)
+}
+
 /// Folds a whole window of `count` single-valued documents from its zone
 /// statistics into `state`, when that gives exactly what folding its values
 /// one by one would: the count; the extremes, unless one is a NaN (a stored
@@ -1051,6 +1058,10 @@ fn fold_windows<const N: u8>(
         {
             let len = ((max_doc - start) as usize).min(FOLD_WINDOW);
             let base = start as usize >> 6;
+            if none_accepted(accept, base, len) {
+                start += len as i32;
+                continue;
+            }
             if zoned && all_accepted(accept, base, len) {
                 if let Some((stats, count)) = r.window_stats(start)? {
                     if let Some(next) = (count == len)
@@ -1112,12 +1123,21 @@ fn fold_window_values<const N: u8>(
     }
 }
 
+/// A window's matches are read with one [`NumericReader::fill_window`] over
+/// their span, rather than a lookup each, when at least one document in this
+/// many of the span matches: decoding the span's every value then costs less
+/// than looking each match up through the reader's layers.
+const SPAN_PER_MATCH: usize = 8;
+
 /// A single-valued column at the matches `docs` (ascending, distinct) into
-/// `state`, one value at a time, except that a run of matches covering a
-/// whole zone is folded from its statistics
-/// ([`fold_zone`]).
-// ARITH: `i < docs.len()`; `doc + len - 1` is checked against `max_doc`
-// before use, and `len <= FOLD_WINDOW`.
+/// `state`, a [`FOLD_WINDOW`] at a time and in ascending order: a window
+/// whose every document matches is folded from its statistics
+/// ([`fold_zone`]) where they answer exactly; a window's matches dense
+/// enough in their span ([`SPAN_PER_MATCH`]) are read with one
+/// [`NumericReader::fill_window`]; the others one value at a time.
+// ARITH: `i + n <= docs.len()`; `start..end` is one window below `max_doc`,
+// so `end - start <= FOLD_WINDOW` and every match's offset from `first` is
+// below the span; `n * SPAN_PER_MATCH` is at most `FOLD_WINDOW * 8`.
 #[allow(clippy::arithmetic_side_effects)]
 fn fold_seek<const N: u8>(
     r: &mut NumericReader<'_>,
@@ -1125,34 +1145,78 @@ fn fold_seek<const N: u8>(
     state: &mut MetricState,
     kind: ValueKind,
     max_doc: i32,
+    values: &mut Vec<i64>,
 ) -> Result<()> {
-    let mut i = 0;
+    values.resize(FOLD_WINDOW, 0);
+    let mut present = [0u64; FOLD_WINDOW / 64];
     let zoned = r.has_window_stats();
-    while let Some(&doc) = docs.get(i) {
-        if zoned && (doc as usize).is_multiple_of(FOLD_WINDOW) && doc < max_doc {
-            let len = ((max_doc - doc) as usize).min(FOLD_WINDOW);
-            // Distinct ascending matches: the run is whole when its last is
-            // `len - 1` past its first.
-            let whole = docs.get(i + len - 1) == Some(&(doc + len as i32 - 1));
-            if whole {
-                if let Some((stats, count)) = r.window_stats(doc)? {
-                    if let Some(next) = (count == len)
-                        .then(|| fold_zone::<N>(*state, stats, len, kind))
-                        .flatten()
-                    {
-                        *state = next;
-                        i += len;
-                        continue;
-                    }
+    let mut i = 0;
+    while let Some(&first) = docs.get(i) {
+        if first < 0 || first >= max_doc {
+            // Out of the segment: the reader reports it.
+            if let Some(v) = r.value(first)? {
+                state.one::<N>(to_double(kind, v));
+            }
+            i += 1;
+            continue;
+        }
+        let start = first & !(FOLD_WINDOW as i32 - 1);
+        let end = start.saturating_add(FOLD_WINDOW as i32).min(max_doc);
+        let len = (end - start) as usize;
+        let rest = &docs[i..docs.len().min(i + len)];
+        let n = rest.partition_point(|&d| d < end);
+        let run = &rest[..n];
+        i += n;
+        if zoned && n == len {
+            if let Some((stats, count)) = r.window_stats(start)? {
+                if let Some(next) = (count == len)
+                    .then(|| fold_zone::<N>(*state, stats, len, kind))
+                    .flatten()
+                {
+                    *state = next;
+                    continue;
                 }
             }
         }
-        if let Some(v) = r.value(doc)? {
-            state.one::<N>(to_double(kind, v));
+        let span = (run[n - 1] - first + 1) as usize;
+        if n * SPAN_PER_MATCH >= span {
+            r.fill_window(first, &mut values[..span], &mut present)?;
+            fold_run_values::<N>(&values[..span], &present, run, state, kind);
+        } else {
+            for &doc in run {
+                if let Some(v) = r.value(doc)? {
+                    state.one::<N>(to_double(kind, v));
+                }
+            }
         }
-        i += 1;
     }
     Ok(())
+}
+
+/// The values of the matches `run` (ascending) that are `present` in
+/// `values` -- documents `run[0]..` -- into `state`, in order. Out of line,
+/// with the state in a local so the compensated sum stays in registers.
+// ARITH: every match is at most `values.len() - 1` past `run[0]`.
+#[allow(clippy::arithmetic_side_effects)]
+#[inline(never)]
+fn fold_run_values<const N: u8>(
+    values: &[i64],
+    present: &[u64],
+    run: &[i32],
+    state: &mut MetricState,
+    kind: ValueKind,
+) {
+    let Some(&first) = run.first() else {
+        return;
+    };
+    let mut s = *state;
+    for &doc in run {
+        let o = (doc - first) as usize;
+        if present[o >> 6] >> (o & 63) & 1 == 1 {
+            s.one::<N>(to_double(kind, values[o]));
+        }
+    }
+    *state = s;
 }
 
 /// One field's column over a segment's matches into `state`, keeping `N`.
@@ -1170,7 +1234,7 @@ fn fold<const N: u8>(
             fold_windows::<N>(&mut r, accept, state, kind, max_doc, raw)?
         }
         (Values::Single(mut r), ColumnRead::Seek(docs)) => {
-            fold_seek::<N>(&mut r, docs, state, kind, max_doc)?
+            fold_seek::<N>(&mut r, docs, state, kind, max_doc, raw)?
         }
         (Values::Multi(mut r), ColumnRead::Stream(accept)) => r.for_each_accepted(
             0,

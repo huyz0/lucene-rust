@@ -29,6 +29,7 @@ use lucene_index::index_writer::{
 use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::extended_query::{ExtendedQuery, NumericDocValuesRangeQuery};
+use lucene_search::java_math::{java_max, java_min};
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::MatchAllDocsQuery;
 use lucene_search::segment_match::MinScore;
@@ -306,6 +307,133 @@ fn check(pair: &Pair) -> usize {
         }
     }
     with_zones
+}
+
+/// Document `i`'s stored value of field `number`, if it has one.
+fn value_of(i: usize, number: i32) -> Option<i64> {
+    doc(i)
+        .fields
+        .doc_values
+        .iter()
+        .find(|f| f.field_number == number)
+        .map(|f| match f.value {
+            FieldValue::Long(v) => v,
+            _ => unreachable!("every test field is a long"),
+        })
+}
+
+/// `CompensatedSum.add` (Java's order; non-finite values added straight).
+fn compensated(sum: &mut f64, delta: &mut f64, v: f64) {
+    if !v.is_finite() {
+        let tally = v + *sum;
+        *sum = if tally.is_nan() { f64::NAN } else { tally };
+    }
+    if sum.is_finite() {
+        let corrected = v + *delta;
+        let updated = *sum + corrected;
+        *delta = corrected - (updated - *sum);
+        *sum = updated;
+    }
+}
+
+/// The single-valued fields' metrics over matches read a window at a time
+/// (whole windows from statistics, dense spans with one window read, scattered
+/// matches one by one), in both copies, against the documents' own values
+/// folded in document order. `live` says which documents are still there;
+/// documents keep their order, so the `n`-th live one is document `n`.
+fn check_seek_against_values(pair: &Pair, live: impl Fn(usize) -> bool) {
+    let ids = |docs: Vec<usize>| {
+        let mut q = BooleanQuery::new();
+        q.should = docs
+            .iter()
+            .map(|i| Clause::Term(TermQuery::new("id", format!("{i}").as_bytes())))
+            .collect();
+        (q, docs)
+    };
+    let ts_value = |i: usize| value_of(i, TS).unwrap();
+    let ts = |lo: usize, hi: usize| {
+        let (lo, hi) = (
+            1_700_000_000_000 + lo as i64 * 37,
+            1_700_000_000_000 + hi as i64 * 37,
+        );
+        let q = clause_query(Clause::Extended(Box::new(
+            ExtendedQuery::NumericDocValuesRange(NumericDocValuesRangeQuery::new("ts", lo, hi)),
+        )));
+        let docs = (0..DOCS)
+            .filter(|&i| (lo..=hi).contains(&ts_value(i)))
+            .collect();
+        (q, docs)
+    };
+    let cases = [
+        // Whole windows and partial ones at both ends.
+        ts(1_000, 3_500),
+        // One document in five of a few hundred: one window read with gaps.
+        ids((1_000..1_400).step_by(5).collect()),
+        // One in fifty: one by one.
+        ids((0..3_000).step_by(50).collect()),
+        // Both kinds across the segment boundary, and the last document.
+        ids((6_000..6_300)
+            .step_by(3)
+            .chain((6_500..8_999).step_by(97))
+            .chain([8_999])
+            .collect()),
+    ];
+    let readers = pair
+        .dirs
+        .each_ref()
+        .map(|d| DirectoryReader::open(d).unwrap());
+    let mut opened = readers.each_ref().map(|r| r.open_segments().unwrap());
+    let [o0, o1] = &mut opened;
+    let segments: [Vec<OpenSegment<'_>>; 2] = [o0.as_open_segments(), o1.as_open_segments()];
+    let fields = [
+        ("ts", TS, ValueKind::Long),
+        ("small", SMALL, ValueKind::Long),
+        ("wide", WIDE, ValueKind::Long),
+        ("sparse", SPARSE, ValueKind::Long),
+        ("dbl", DBL, ValueKind::Double),
+        ("signed", SIGNED, ValueKind::Double),
+    ];
+    let specs: Vec<MetricSpec> = fields
+        .iter()
+        .map(|&(f, _, kind)| MetricSpec {
+            field: f.to_string(),
+            kind,
+            source: Source::DocValues,
+            needs: NEED_ALL,
+        })
+        .collect();
+    for (ci, (q, docs)) in cases.iter().enumerate() {
+        for (fi, &(name, number, kind)) in fields.iter().enumerate() {
+            let mut want = MetricState::default();
+            for &i in docs.iter().filter(|&&i| live(i)) {
+                let Some(v) = value_of(i, number) else {
+                    continue;
+                };
+                let v = match kind {
+                    ValueKind::Double => {
+                        f64::from_bits((v ^ ((v >> 63) & 0x7fff_ffff_ffff_ffff)) as u64)
+                    }
+                    _ => v as f64,
+                };
+                want.count += 1;
+                compensated(&mut want.sum, &mut want.delta, v);
+                want.min = java_min(want.min, v);
+                want.max = java_max(want.max, v);
+            }
+            want.min_of_mins = want.min;
+            want.max_of_maxes = want.max;
+            for k in 0..2 {
+                let got =
+                    metric_states(&segments[k], readers[k].segment_readers(), q, &specs).unwrap();
+                assert_eq!(
+                    bits(&got[fi]),
+                    bits(&want),
+                    "case {ci} field {name} copy {k}:\n got  {:?}\n want {want:?}",
+                    got[fi]
+                );
+            }
+        }
+    }
 }
 
 /// Top-level bucket aggregations (`date_histogram`, `histogram`, numeric
@@ -688,6 +816,7 @@ fn zone_folds_answer_bit_for_bit_as_the_values() {
     // value throughout the second segment (Lucene90's constant wins there).
     assert_eq!(check(&pair), 11);
     check_buckets(&pair);
+    check_seek_against_values(&pair, |_| true);
 
     // Deletions: the windows holding them are read value by value.
     for w in &mut w {
@@ -700,6 +829,7 @@ fn zone_folds_answer_bit_for_bit_as_the_values() {
     }
     check(&pair);
     check_buckets(&pair);
+    check_seek_against_values(&pair, |i| i != 5 && i != 4_100);
 
     // Merged: the statistics are rewritten for the merged values.
     for w in &mut w {
@@ -708,4 +838,5 @@ fn zone_folds_answer_bit_for_bit_as_the_values() {
     }
     assert_eq!(check(&pair), 6);
     check_buckets(&pair);
+    check_seek_against_values(&pair, |i| i != 5 && i != 4_100);
 }
