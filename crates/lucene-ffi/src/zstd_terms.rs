@@ -8,9 +8,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use lucene_zstd::DecoderDictionary;
 
 use crate::error::{guard, set_last_error, FfiStatus};
-use crate::handle::{RegistryTag, SlotMap};
 use crate::raw::bytes_from_raw;
 use crate::registry::{lock_recovering, read_recovering};
+use lucene_engine::handle::{RegistryTag, SlotMap};
 
 /// The prepared dictionaries, by handle.
 fn dictionaries() -> &'static RwLock<SlotMap<Arc<DecoderDictionary>>> {
