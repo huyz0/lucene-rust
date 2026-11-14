@@ -203,9 +203,10 @@ pub(crate) fn segment_counts(
             }
         }
         (Ords::Single(mut r), ColumnRead::Seek(docs)) => {
-            for &doc in *docs {
-                if let Some(ord) = r.value(doc)? {
-                    bump(ord);
+            bad_ord = count_seek(&mut r, docs, max_doc, map.len(), scratch)?.or(bad_ord);
+            for (&g, &n) in map.iter().zip(&scratch.local) {
+                if let Some(c) = counts.get_mut(g as usize) {
+                    *c += u64::from(n);
                 }
             }
         }
@@ -348,6 +349,68 @@ fn count_window_stream(
     }
 }
 
+/// A single-valued ordinal column's values at `docs` (ascending) counted into
+/// `scratch.local` by segment ordinal: the matches of one window of the
+/// column (a [`COUNT_WINDOW`] of documents) are decoded together when they
+/// are an eighth of it or more, and looked up one by one when fewer.
+/// `Some(ordinal)` for the first one past the dictionary (counted nowhere).
+fn count_seek(
+    r: &mut NumericReader<'_>,
+    docs: &[i32],
+    max_doc: i32,
+    ords: usize,
+    scratch: &mut TermsScratch,
+) -> Result<Option<i64>> {
+    let TermsScratch { window, local, .. } = scratch;
+    local.clear();
+    local.resize(ords, 0);
+    window.resize(COUNT_WINDOW, 0);
+    let mut present = [0u64; COUNT_WINDOW / 64];
+    let mut bad = None;
+    let mut count = |ord: i64, local: &mut [u32]| match usize::try_from(ord)
+        .ok()
+        .and_then(|o| local.get_mut(o))
+    {
+        Some(c) => *c += 1,
+        None => {
+            bad.get_or_insert(ord);
+        }
+    };
+    let mut i = 0usize;
+    while let Some(&first) = docs.get(i) {
+        // ARITH: `first` is a document below `max_doc`, `COUNT_WINDOW` fits an `i32`.
+        #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_wrap)]
+        let (base, end) = {
+            let base = first - first.rem_euclid(COUNT_WINDOW as i32);
+            (base, base.saturating_add(COUNT_WINDOW as i32))
+        };
+        let j = i + docs[i..].partition_point(|&d| d < end);
+        let group = &docs[i..j];
+        // ARITH: `base <= first < max_doc`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let len = ((max_doc - base) as usize).min(COUNT_WINDOW);
+        if group.len().saturating_mul(8) >= len && len > 0 {
+            r.fill_window(base, &mut window[..len], &mut present)?;
+            for &d in group {
+                // ARITH: `base <= d < base + len`.
+                #[allow(clippy::arithmetic_side_effects)]
+                let k = (d - base) as usize;
+                if k < len && present[k >> 6] >> (k & 63) & 1 == 1 {
+                    count(window[k], local);
+                }
+            }
+        } else {
+            for &d in group {
+                if let Some(ord) = r.value(d)? {
+                    count(ord, local);
+                }
+            }
+        }
+        i = j;
+    }
+    Ok(bad)
+}
+
 /// Counter lanes per ordinal for a small dictionary ([`count_window_stream`]).
 const COUNT_LANES: usize = 4;
 
@@ -385,11 +448,22 @@ fn count_lanes<const L: usize>(
         #[allow(clippy::arithmetic_side_effects)]
         {
             let len = ((max_doc - start) as usize).min(COUNT_WINDOW);
-            r.fill_window(start, &mut window[..len], &mut present)?;
             let base = start as usize >> 6;
             let words = len.div_ceil(64);
-            for (w, have) in present[..words].iter_mut().enumerate() {
-                *have &= accept.word(base + w);
+            // A window no match falls in is not decoded.
+            let mut accepted = [0u64; COUNT_WINDOW / 64];
+            let mut any = 0u64;
+            for (w, a) in accepted[..words].iter_mut().enumerate() {
+                *a = accept.word(base + w);
+                any |= *a;
+            }
+            if any == 0 {
+                start += len as i32;
+                continue;
+            }
+            r.fill_window(start, &mut window[..len], &mut present)?;
+            for (have, &a) in present[..words].iter_mut().zip(&accepted) {
+                *have &= a;
             }
             for (w, &have) in present[..words].iter().enumerate() {
                 let mut bits = have;

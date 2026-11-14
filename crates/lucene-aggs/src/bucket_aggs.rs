@@ -1483,6 +1483,9 @@ fn grow_to<T: Default>(v: &mut Vec<T>, i: usize) {
 
 /// The documents an aggregation reads its columns ahead for at a time.
 const WINDOW: i32 = 1024;
+/// Matches in a window below which its few values are read one by one as
+/// they are collected, not gathered first ([`Leaf::prefetch_docs`]).
+const SPARSE_WINDOW: usize = 16;
 
 #[cfg(test)]
 thread_local! {
@@ -1852,6 +1855,55 @@ impl Leaf<'_> {
         if let Some(c) = &mut self.composite {
             for s in &mut c.sources {
                 s.prefetch(base, len)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::prefetch`] for a window whose matches are too few to read in
+    /// full: only `docs`' values are read (and each sub-aggregation's), into
+    /// the same arrays, so the window loops of [`collect_window`] run over
+    /// them instead of a dispatch per document. A document outside `docs`
+    /// reads as without a value.
+    fn prefetch_docs(&mut self, base: i32, len: usize, docs: &[i32]) -> Result<()> {
+        self.pre_len = 0;
+        self.pre_multi = false;
+        if self.nested.is_some() {
+            for s in &mut self.subs {
+                s.drop_prefetch();
+            }
+            return Ok(());
+        }
+        match &mut self.col {
+            Col::Values(Values::Single(r), false) | Col::Ords(Ords::Single(r), _) => {
+                self.pre_vals.resize(len, 0);
+                self.pre_bits.clear();
+                self.pre_bits.resize(len.div_ceil(64), 0);
+                for &doc in docs {
+                    let at = doc.wrapping_sub(base) as u32 as usize;
+                    if at >= len {
+                        continue;
+                    }
+                    let v = match r.dense_value(doc) {
+                        Some(v) => Some(v),
+                        None => r.value(doc).map_err(lucene_search::Error::from)?,
+                    };
+                    if let Some(v) = v.or(self.missing) {
+                        self.pre_vals[at] = v;
+                        self.pre_bits[at >> 6] |= 1 << (at & 63);
+                    }
+                }
+                self.pre_base = base;
+                self.pre_len = len;
+            }
+            _ => {}
+        }
+        for s in &mut self.subs {
+            s.prefetch_docs(base, len, docs)?;
+        }
+        if let Some(c) = &mut self.composite {
+            for s in &mut c.sources {
+                s.prefetch_docs(base, len, docs)?;
             }
         }
         Ok(())
@@ -5215,7 +5267,8 @@ pub fn aggregate_tree_cached(
                       base: i32,
                       end: i32,
                       matches: usize,
-                      live: usize| {
+                      live: usize,
+                      docs: &[i32]| {
             // ARITH: `base < end <= max_doc`.
             #[allow(clippy::arithmetic_side_effects)]
             let len = (end - base) as usize;
@@ -5223,9 +5276,18 @@ pub fn aggregate_tree_cached(
             for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(leaves.iter_mut()) {
                 l.zoned = full && !l.done && zone_window(n, s, l, base, len)?;
             }
-            for l in leaves.iter_mut().filter(|l| !l.done && !l.zoned) {
+            for (n, l) in nodes
+                .iter()
+                .zip(leaves.iter_mut())
+                .filter(|(_, l)| !l.done && !l.zoned)
+            {
                 if matches.saturating_mul(8) >= len && !no_windows() {
                     l.prefetch(base, len)?;
+                } else if docs.len() >= SPARSE_WINDOW
+                    && !no_windows()
+                    && !matches!(n, AggNode::Metric { .. })
+                {
+                    l.prefetch_docs(base, len, docs)?;
                 } else {
                     l.drop_prefetch();
                 }
@@ -5246,7 +5308,7 @@ pub fn aggregate_tree_cached(
                     let base = first - first.rem_euclid(WINDOW);
                     let end = base.saturating_add(WINDOW).min(max_doc).max(first + 1);
                     let j = i + docs[i..].partition_point(|&d| d < end);
-                    window(states, leaves, base, end, j - i, j - i)?;
+                    window(states, leaves, base, end, j - i, j - i, &docs[i..j])?;
                     visit_window(states, leaves, &docs[i..j])?;
                     i = j;
                 }
@@ -5327,7 +5389,15 @@ pub fn aggregate_tree_cached(
                         }
                         let end = base.saturating_add(WINDOW).min(max_doc);
                         let matches = window_docs.len();
-                        window(states, &mut leaves, base, end, matches, matches)?;
+                        window(
+                            states,
+                            &mut leaves,
+                            base,
+                            end,
+                            matches,
+                            matches,
+                            window_docs,
+                        )?;
                         visit_window(states, &mut leaves, window_docs)?;
                     }
                 }
@@ -5377,7 +5447,15 @@ pub fn aggregate_tree_cached(
                         // ARITH: `base < end`.
                         #[allow(clippy::arithmetic_side_effects)]
                         let matches = (end - base) as usize;
-                        window(states, &mut leaves, base, end, matches, live_window.len())?;
+                        window(
+                            states,
+                            &mut leaves,
+                            base,
+                            end,
+                            matches,
+                            live_window.len(),
+                            &live_window,
+                        )?;
                         visit_window(states, &mut leaves, &live_window)?;
                         base = end;
                     }
