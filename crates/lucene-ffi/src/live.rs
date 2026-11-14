@@ -2255,7 +2255,7 @@ fn overlay_request(
 ) -> Result<Option<(LiveRequest, bool)>, FfiStatus> {
     let (query, _, _) = decode_request(query)?;
     let main = Clause::Boolean(Box::new(boolean_of(&query)));
-    let decoded = tree.map(crate::jvm_aggs::decode_tree).transpose()?;
+    let decoded = tree.map(lucene_engine::agg_tree::decode_tree).transpose()?;
     let mut clauses = vec![main];
     let mut rest = extra.unwrap_or_default();
     while !rest.is_empty() {
