@@ -59,6 +59,18 @@ schedules it: run `ci` by hand from the Actions tab to check `main`, or a
 pull request, on arm64 before a change that touches SIMD, atomics
 or unsafe code; a manual run gets its own concurrency group.
 
+## One build of liblucene_ffi for the OpenSearch jobs
+
+The OpenSearch plugin, engine, 2.x upgrade and k-NN jobs each ran Gradle's
+`cargoBuild`, compiling the same x64 release `liblucene_ffi.so` (3.4 to 5.3
+minutes apiece on 2026-11-14). The `ffi-lib` job builds it once and uploads it;
+the four download it into `target/release/` and set
+`ORG_GRADLE_PROJECT_nativeLib` to it, which makes `cargoBuild` skip itself
+(`opensearch-plugin/build.gradle`). The FIPS variant is a different build
+(`-Pfips`) and the manual arm64 plugin job builds its own, so both are
+unchanged. The library is the same bytes either way; the cost is one extra
+job in the chain (the four wait for it).
+
 ## Jobs, and what changed
 
 | job | before | now |
