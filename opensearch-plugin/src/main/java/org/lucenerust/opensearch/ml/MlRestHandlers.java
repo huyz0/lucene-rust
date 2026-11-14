@@ -183,13 +183,45 @@ public final class MlRestHandlers {
             ),
             new Handler("ml_list_tools_action", MlActions.LIST_TOOLS, Set.of(), List.of(new Route(GET, BASE + "/tools"))),
             new Handler("ml_get_tool_action", MlActions.GET_TOOL, Set.of(), List.of(new Route(GET, BASE + "/tools/{tool_name}"))),
+            new Handler("ml_create_memory_action", MlActions.CREATE_MEMORY, Set.of(), List.of(new Route(POST, BASE + "/memory"))),
+            new Handler("ml_list_memories_action", MlActions.LIST_MEMORIES, Set.of("max_results", "next_token"), List.of(new Route(GET, BASE + "/memory"))),
+            new Handler("ml_get_memory_action", MlActions.GET_MEMORY, Set.of(), List.of(new Route(GET, BASE + "/memory/{memory_id}"))),
+            new Handler("ml_update_memory_action", MlActions.UPDATE_MEMORY, Set.of(), List.of(new Route(PUT, BASE + "/memory/{memory_id}"))),
+            new Handler("ml_delete_memory_action", MlActions.DELETE_MEMORY, Set.of(), List.of(new Route(DELETE, BASE + "/memory/{memory_id}"))),
+            new Handler(
+                "ml_search_memories_action",
+                MlActions.SEARCH_MEMORIES,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/memory/_search"), new Route(GET, BASE + "/memory/_search"))
+            ),
+            new Handler(
+                "ml_search_messages_action",
+                MlActions.SEARCH_MESSAGES,
+                Set.of(),
+                List.of(new Route(POST, BASE + "/memory/{memory_id}/_search"), new Route(GET, BASE + "/memory/{memory_id}/_search"))
+            ),
+            new Handler("ml_create_message_action", MlActions.CREATE_MESSAGE, Set.of(), List.of(new Route(POST, BASE + "/memory/{memory_id}/messages"))),
+            new Handler(
+                "ml_list_messages_action",
+                MlActions.LIST_MESSAGES,
+                Set.of("max_results", "next_token"),
+                List.of(new Route(GET, BASE + "/memory/{memory_id}/messages"))
+            ),
+            new Handler("ml_get_message_action", MlActions.GET_MESSAGE, Set.of(), List.of(new Route(GET, BASE + "/memory/message/{message_id}"))),
+            new Handler("ml_update_message_action", MlActions.UPDATE_MESSAGE, Set.of(), List.of(new Route(PUT, BASE + "/memory/message/{message_id}"))),
+            new Handler(
+                "ml_get_traces_action",
+                MlActions.GET_TRACES,
+                Set.of("max_results", "next_token"),
+                List.of(new Route(GET, BASE + "/memory/message/{message_id}/traces"))
+            ),
             new Handler("ml_execute_agent_action", MlActions.EXECUTE_AGENT, Set.of("async"), Map.of(), true, List.of(new Route(POST, BASE + "/agents/{agent_id}/_execute")))
         );
     }
 
     /** Hands the call's path parameters, the {@code query} parameters it reads, and its body to {@code action}. */
     static final class Handler extends BaseRestHandler {
-        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat", "agent_id", "tool_name");
+        private static final Set<String> PATH = Set.of("model_id", "algorithm", "model_group_id", "task_id", "connector_id", "chunk_number", "nodeId", "stat", "agent_id", "tool_name", "memory_id", "message_id");
 
         private final String name;
         private final MlActions.Type action;
