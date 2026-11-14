@@ -12,7 +12,6 @@
 //! The guarded closures capture only raw pointers and `Copy` values, which
 //! are `UnwindSafe`, so no `AssertUnwindSafe` is needed.
 
-use std::cell::RefCell;
 use std::sync::Once;
 
 /// Every exported function's return code ([`lucene_engine::Status`]): `0`
@@ -30,31 +29,11 @@ thread_local! {
     /// message-capture mechanism).
     static CAPTURING_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The shard paths the running [`guard`] call read through
-    /// ([`note_shard`]), and how deep in nested guard calls this thread is.
-    static CALL_SHARDS: RefCell<Vec<std::sync::Arc<str>>> = const { RefCell::new(Vec::new()) };
+    /// (`lucene_engine::status::note_shard`), and how deep in nested guard calls this thread is.
     static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// [`lucene_store::read_failures::epoch`] when the outermost running
     /// [`guard`] call started.
     static CALL_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Notes that the running call reads the shard at `path`: if a page of a
-/// file under it fails to decode (an encrypted chunk that fails
-/// authentication) or cannot be read from disk while the call runs,
-/// [`guard`] fails the call with that error.
-///
-/// Noting a shard makes the call checked
-/// ([`lucene_store::read_failures::set_checked`]) until it ends: only then
-/// may a page that cannot be read be handed to it as zeros, since only then
-/// does the failure fail the call.
-pub(crate) fn note_shard(path: &std::sync::Arc<str>) {
-    lucene_store::read_failures::set_checked(true);
-    CALL_SHARDS.with(|c| {
-        let mut shards = c.borrow_mut();
-        if !shards.iter().any(|s| std::sync::Arc::ptr_eq(s, path)) {
-            shards.push(std::sync::Arc::clone(path));
-        }
-    });
 }
 
 /// A recorded read failure under one of the shards the running call read
@@ -64,8 +43,8 @@ fn shard_read_failure() -> Option<String> {
         return None;
     }
     let since = CALL_EPOCH.with(|e| e.get());
-    CALL_SHARDS.with(|c| {
-        c.borrow()
+    lucene_engine::status::call_shards(|shards| {
+        shards
             .iter()
             .find_map(|path| lucene_store::read_failures::failure_under(path, since))
     })
@@ -131,7 +110,7 @@ where
         depth
     });
     if depth == 0 {
-        CALL_SHARDS.with(|c| c.borrow_mut().clear());
+        lucene_engine::status::clear_call_shards();
         CALL_EPOCH.with(|e| e.set(lucene_store::read_failures::epoch()));
     }
     CAPTURING_PANIC.with(|c| c.set(true));
