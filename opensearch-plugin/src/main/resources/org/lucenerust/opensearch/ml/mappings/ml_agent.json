@@ -1,0 +1,77 @@
+{
+  "_meta": {
+    "schema_version": 5
+  },
+  "properties": {
+    "app_type": {
+      "type": "text",
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      }
+    },
+    "context_management": {
+      "properties": {
+        "description": {
+          "type": "text"
+        },
+        "hooks": {
+          "type": "object",
+          "enabled": false
+        },
+        "name": {
+          "type": "keyword"
+        }
+      }
+    },
+    "context_management_name": {
+      "type": "keyword"
+    },
+    "created_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "description": {
+      "type": "text"
+    },
+    "is_hidden": {
+      "type": "boolean"
+    },
+    "last_updated_time": {
+      "type": "date",
+      "format": "strict_date_time||epoch_millis"
+    },
+    "llm": {
+      "type": "flat_object"
+    },
+    "memory": {
+      "type": "flat_object"
+    },
+    "name": {
+      "type": "text",
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      }
+    },
+    "parameters": {
+      "type": "flat_object"
+    },
+    "provisioned_by": {
+      "type": "keyword"
+    },
+    "tenant_id": {
+      "type": "keyword"
+    },
+    "tools": {
+      "type": "flat_object"
+    },
+    "type": {
+      "type": "keyword"
+    }
+  }
+}
