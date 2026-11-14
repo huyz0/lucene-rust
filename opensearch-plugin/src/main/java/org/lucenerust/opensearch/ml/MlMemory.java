@@ -220,6 +220,29 @@ final class MlMemory {
         }, listener::onFailure));
     }
 
+    /** The last {@code limit} turns of a memory, oldest first, for an agent's chat history. */
+    void recent(String memoryId, int limit, ActionListener<List<Map<String, Object>>> listener) {
+        memory(memoryId, ActionListener.wrap(doc -> {
+            BoolQueryBuilder query = QueryBuilders.boolQuery()
+                .filter(QueryBuilders.termQuery("memory_id", memoryId))
+                .mustNot(QueryBuilders.existsQuery("trace_number"));
+            SearchSourceBuilder source = new SearchSourceBuilder().query(query).sort("create_time", SortOrder.DESC).size(limit);
+            ml.searchDocs(new SearchRequest(MlIndices.MEMORY_MESSAGE).source(source), ActionListener.wrap(r -> {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (SearchHit hit : r.getHits().getHits()) {
+                    out.add(0, hit.getSourceAsMap());
+                }
+                listener.onResponse(out);
+            }, e -> {
+                if (e instanceof org.opensearch.index.IndexNotFoundException) {
+                    listener.onResponse(List.of());
+                } else {
+                    listener.onFailure(e);
+                }
+            }));
+        }, listener::onFailure));
+    }
+
     /** {@code GET memory/message/<id>}. */
     void message(String id, ActionListener<Map<String, Object>> listener) {
         message(id, "Message [" + id + "] not found", ActionListener.wrap(doc -> listener.onResponse(messageView(id, doc, true)), listener::onFailure));

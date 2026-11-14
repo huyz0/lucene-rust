@@ -7,8 +7,9 @@ other plugins lists their tools too; only the names both sides know from
 ml-commons are compared. Then runs flow and conversational_flow agents with
 the tools that need no language model, against indices both nodes hold, a
 remote model and a connector on the mock model server of the `remote`
-section, sync and with `?async=true`. Last, the conversation memory API:
-memories, messages and traces, their listing, search and deletion.
+section, sync and with `?async=true`. Then the conversation memory API:
+memories, messages and traces, their listing, search and deletion. Last, conversational agents
+on a scripted model: what they ask it, the tools they run, and what they write to memory.
 """
 import importlib.util, json, os, re, time
 
@@ -101,6 +102,7 @@ def agents(c, ours, stock):
     registry(c, ours, stock)
     execution(c, ours, stock)
     memory(c, ours, stock)
+    chat(c, ours, stock)
 
 
 def registry(c, ours, stock):
@@ -565,3 +567,159 @@ def memory(c, ours, stock):
     both("delete with messages", "DELETE", M + "/{m0}")
     both("delete missing", "DELETE", M + "/nope")
     both("memories list after delete", "GET", M)
+
+
+LLM_PORT = 8768
+
+
+def final(text):
+    return {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7}}
+
+
+def calls(*specs):
+    return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": i, "type": "function", "function": {"name": n, "arguments": a}} for i, n, a in specs]}, "finish_reason": "tool_calls"}]}
+
+
+LISTING = ("c1", "ListIndexTool", "{\"indices\":[\"ag1\"]}")
+SCENARIOS = {
+    "plain": [final("hello")],
+    "quoted": [final("a \"quoted\"\nline \\ end")],
+    "tool": [calls(LISTING), final("the index is ag1")],
+    "loop": [calls(LISTING)],
+    "summary": [calls(LISTING), calls(LISTING), final("steps one and two")],
+    "badargs": [calls(("c1", "IndexMappingTool", "not json")), final("done")],
+    "unknown": [calls(("c1", "Nope", "{}")), final("done")],
+    "toolerr": [calls(("c1", "SearchIndexTool", "{}")), final("after error")],
+    "two": [calls(LISTING, ("c2", "ListIndexTool", "{\"indices\":[\"ag2\"]}")), final("end")],
+    "weird": [{"weird": 1}],
+    "nullcontent": [{"choices": [{"message": {"role": "assistant", "content": None}, "finish_reason": "stop"}]}],
+    "scratch": [calls(("c1", "WriteToScratchPadTool", "{\"notes\":\"n1\"}")), final("saved")],
+}
+
+
+def llm_server():
+    import http.server, threading
+    seen = {}
+    state = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n).decode("utf-8") if n else ""
+            scenario, node, run = self.path.strip("/").split("/")
+            key = (scenario, node, run)
+            seen.setdefault(key, []).append(body)
+            steps = SCENARIOS[scenario]
+            out = steps[min(len(seen[key]) - 1, len(steps) - 1)]
+            data = json.dumps(out).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", LLM_PORT), Handler)
+    except OSError:
+        return seen
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return seen
+
+
+def chat(c, ours, stock):
+    seen = llm_server()
+    side = (("ours", ours), ("stock", stock))
+    ids = {"ours": [], "stock": []}
+    body = ('{ "model": "${parameters.model}", "messages": [{"role":"developer","content":"${parameters.system_prompt}"},${parameters._chat_history:-}'
+            '{"role":"user","content":"${parameters.question}"}${parameters._interactions:-}]${parameters.tool_configs:-} }')
+    counter = [0]
+
+    def setup(name, n, scenario, run, extra=None, tools=None, memory=True, parameters=None):
+        n.ok("PUT", "/_cluster/settings", {"persistent": {"plugins.ml_commons.trusted_connector_endpoints_regex": [".*"],
+                                                          "plugins.ml_commons.connector.private_ip_enabled": True}})
+        con = {"name": "llm", "description": "d", "version": "1", "protocol": "http", "parameters": {"endpoint": "x", "model": "gpt-x"}, "credential": {"k": "v"},
+               "actions": [{"action_type": "predict", "method": "POST", "url": f"http://127.0.0.1:{LLM_PORT}/{scenario}/{name}/{run}", "headers": {"a": "b"}, "request_body": body}]}
+        model = n.ok("POST", "/_plugins/_ml/models/_register?deploy=true", {"name": "m", "function_name": "remote", "connector": con})["model_id"]
+        time.sleep(2)
+        agent = {"name": f"chat{run}", "type": "conversational", "llm": {"model_id": model, "parameters": {"max_iteration": "3", "system_prompt": "You are X"}},
+                 "app_type": "chat", "tools": tools if tools is not None else [{"type": "ListIndexTool"}], "parameters": dict({"_llm_interface": "openai/v1/chat/completions"}, **(parameters or {}))}
+        if memory:
+            agent["memory"] = {"type": "conversation_index"}
+        agent.update(extra or {})
+        s, o = n.call("POST", "/_plugins/_ml/agents/_register", agent)
+        if s != 200:
+            return None, s, o
+        ids[name] += [model, o["agent_id"]]
+        return o["agent_id"], s, o
+
+    def requests(name, scenario, run):
+        out = []
+        for b in seen.get((scenario, name, run), []):
+            out.append(deep(json.loads(b), ids[name]))
+        return out
+
+    def case(label, scenario, request, again=None, **kw):
+        counter[0] += 1
+        run = str(counter[0])
+        got = {}
+        for name, n in side:
+            agent, s, o = setup(name, n, scenario, run, **kw)
+            if agent is None:
+                got[name] = {"register": s, "body": run_mask(o, ids[name])}
+                continue
+            s, o = n.call("POST", f"/_plugins/_ml/agents/{agent}/_execute", request)
+            result = {"status": s}
+            if s == 200 and again:
+                first = next(x["result"] for x in o["inference_results"][0]["output"] if x["name"] == "memory_id")
+                ids[name].append(first)
+                s, o = n.call("POST", f"/_plugins/_ml/agents/{agent}/_execute", {"parameters": dict(again["parameters"], memory_id=first)})
+                result["status"] = s
+            if s == 200:
+                out = o["inference_results"][0]["output"]
+                mem = next((x["result"] for x in out if x["name"] == "memory_id"), None)
+                par = next((x["result"] for x in out if x["name"] == "parent_interaction_id"), None)
+                ids[name] += [x for x in (mem, par) if x]
+                result["body"] = run_mask(o, ids[name])
+                if mem:
+                    s2, tr = n.call("GET", f"/_plugins/_ml/memory/message/{par}/traces")
+                    ids[name] += [t["message_id"] for t in tr.get("traces", [])] if s2 == 200 else []
+                    result["traces"] = [{k: v for k, v in t.items() if k not in ("create_time", "updated_time")} for t in deep(run_mask(tr, ids[name]), ids[name])["traces"]] if s2 == 200 else s2
+                    result["traces"] = json.loads(json.dumps(result["traces"]))
+                    s3, msgs = n.call("GET", f"/_plugins/_ml/memory/{mem}/messages")
+                    if s3 == 200:
+                        ids[name] += [m["message_id"] for m in msgs["messages"]]
+                    result["messages"] = run_mask(msgs, ids[name]) if s3 == 200 else s3
+                    s4, meta = n.call("GET", f"/_plugins/_ml/memory/{mem}")
+                    result["memory"] = run_mask(meta, ids[name]) if s4 == 200 else s4
+            else:
+                result["body"] = run_mask(o, ids[name])
+            result["llm"] = requests(name, scenario, run)
+            got[name] = result
+        c.same(f"agents chat {label}", got["ours"], got["stock"])
+
+    q = lambda t, **p: {"parameters": dict({"question": t}, **p)}
+    case("plain", "plain", q("hi"))
+    case("quoted question", "plain", q("say \"x\"\nnow \\ y"))
+    case("quoted answer", "quoted", q("hi"))
+    case("tool", "tool", q("which index?"))
+    case("loop", "loop", q("loop"))
+    case("summary", "summary", q("sum"))
+    case("unknown tool", "unknown", q("unk"))
+    case("bad arguments", "badargs", q("bad"), tools=[{"type": "IndexMappingTool"}])
+    case("tool error", "toolerr", q("err"), tools=[{"type": "ListIndexTool"}, {"type": "SearchIndexTool"}])
+    case("two calls", "two", q("two"))
+    case("weird answer", "weird", q("w"))
+    case("null content", "nullcontent", q("n"))
+    case("no question", "plain", {"parameters": {}})
+    case("no memory", "tool", q("nomem"), memory=False)
+    case("scratchpad", "scratch", q("note"), tools=[{"type": "WriteToScratchPadTool"}, {"type": "ReadFromScratchPadTool"}])
+    case("renamed tool", "tool", q("rename"), tools=[{"type": "ListIndexTool", "name": "ListIndexTool", "description": "custom \"desc\""}])
+    case("request overrides", "plain", q("hi", system_prompt="Be brief", max_iteration="1"))
+    case("history", "quoted", q("first \"turn\""), again=q("second"))
+    case("unknown memory", "plain", q("hi", memory_id="nope"))
