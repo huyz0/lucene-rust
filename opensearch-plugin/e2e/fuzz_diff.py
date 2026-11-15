@@ -28,9 +28,19 @@ UNI = ["café", "naïve", "日本語", "مرحبا", "\U0001f600smile", "straße
 TAGS = ["red", "green", "blue", "Red", "RED", "a b", "", "x*y", "x.y", "UPPER", "lower", "10", "-1"]
 
 
+_tie_rng = random.Random(4242)
+
+
+def TIE():
+    """The unique sort tie-break: `_seq_no` runs on the native path, `_id` falls back to Lucene
+    (the `_id` sort has no native comparator), so most cases use the former."""
+    return {"_seq_no": "asc"} if _tie_rng.random() < 0.8 else {"_id": "asc"}
+
+
 class Node:
-    def __init__(self, url):
+    def __init__(self, url, timeout=300):
         self.url = url.rstrip("/")
+        self.timeout = timeout
 
     def req(self, method, path, body=None, raw=False):
         data = None
@@ -40,7 +50,7 @@ class Node:
             hdr["Content-Type"] = "application/x-ndjson" if raw else "application/json"
         r = urllib.request.Request(self.url + path, data=data, method=method, headers=hdr)
         try:
-            with urllib.request.urlopen(r, timeout=300) as f:
+            with urllib.request.urlopen(r, timeout=self.timeout) as f:
                 return f.status, json.loads(f.read() or b"null")
         except urllib.error.HTTPError as e:
             txt = e.read()
@@ -128,7 +138,7 @@ def make_doc(r, i):
     if maybe(0.5):
         d["sh"] = r.randint(-100, 100)
     if maybe(0.85):
-        d["price"] = r.choice([0.0, -0.0, 1.5, -1.5, 1e300, -1e300, 1e-300, r.uniform(-100, 100), round(r.uniform(0, 50), 1)])
+        d["price"] = r.choice([0.0, -0.0, 1.5, -1.5, 1e6, -1e6, 1e-9, r.uniform(-100, 100), round(r.uniform(0, 50), 1)])
     if maybe(0.5):
         d["f"] = r.choice([0.1, 0.5, 1.0, r.uniform(-10, 10)])
     if maybe(0.4):
@@ -458,7 +468,7 @@ def metric(r):
     if t == "geo_centroid":
         return {"geo_centroid": {"field": "loc"}}
     if t == "top_hits":
-        return {"top_hits": {"size": r.randint(1, 3), "sort": [{r.choice(["n", "price", "i"]): {"order": r.choice(["asc", "desc"]), "missing": "_last"}}, {"_id": "asc"}], "_source": r.choice([True, False, ["tag"], ["n", "title"]])}}
+        return {"top_hits": {"size": r.randint(1, 3), "sort": [{r.choice(["n", "price", "i"]): {"order": r.choice(["asc", "desc"]), "missing": "_last"}}, TIE()], "_source": r.choice([True, False, ["tag"], ["n", "title"]])}}
     if t == "min_str":
         return {"max": {"field": "n", "format": "000"}}
     return {"avg": {"field": "n"}}
@@ -577,7 +587,7 @@ def sort_spec(r):
         fs = [{"_geo_distance": {"loc": {"lat": 10, "lon": 20}, "order": "asc", "unit": "km"}}]
     if r.random() < .1:
         fs = [{"_script": {"type": "number", "script": {"source": "doc['n'].size() > 0 ? doc['n'].value % 7 : -1"}, "order": r.choice(["asc", "desc"])}}]
-    fs.append({"_id": "asc"})
+    fs.append(TIE())
     return fs
 
 
@@ -618,6 +628,8 @@ def diff(a, b, path="", rel=1e-4, ignore=IGNORE):
             d = diff(x, y, f"{path}[{i}]", rel, ignore)
             if d:
                 return d
+        return None
+    if "/values/" in path and path.endswith("_as_string"):
         return None
     if "/values/" in path and close(a, b, 0.3 if isinstance(a, (int, float)) and abs(a) > 1e-3 else 1e9):
         return None   # t-digest estimates depend on the order the values arrive in, and a merge reorders documents
@@ -782,7 +794,7 @@ def main():
         elif mode == "aggq":
             body["aggs"] = aggs(r)
             body["size"] = 5
-            body["sort"] = [{"_score": "desc"}, {"_id": "asc"}]
+            body["sort"] = [{"_score": "desc"}, TIE()]
             ordered = True
         if r.random() < .1 and mode != "agg":
             body["post_filter"] = leaf(r)

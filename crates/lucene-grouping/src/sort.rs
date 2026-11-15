@@ -193,7 +193,7 @@ enum LeafKey<'a> {
     /// substituted.
     Single(Box<dyn NumericDocValues + 'a>),
     /// [`LeafKey::Single`] over a segment's own column, read without an
-    /// iterator object between (the same values).
+    /// iterator object between (stage 3: the same values).
     Direct(Box<lucene_codecs::doc_values::NumericReader<'a>>),
     /// The values, and the slot terms placed in this segment with their
     /// ordinals: a term copied from this segment's document keeps its
