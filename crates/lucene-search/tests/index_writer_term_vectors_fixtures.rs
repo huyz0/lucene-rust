@@ -90,7 +90,7 @@ fn tempdir(tag: &str) -> TempDir {
     TempDir::new(&format!("index-writer-tv-fixture-{tag}"))
 }
 
-/// The critical end-to-end proof this task requires: documents added via
+/// End-to-end proof: documents added via
 /// `IndexWriter::add_document` (not a hand-built fixture), flushed by a real
 /// `IndexWriter::commit()` with `set_term_vector_field(Some("body"))`
 /// configured, opened back through the existing, unmodified

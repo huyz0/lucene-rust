@@ -189,8 +189,7 @@ pub trait ScoringCollector {
     /// built for an exhaustive mode simply never receives a
     /// `setMinCompetitiveScore` call. This port has no `Weight` to make it at,
     /// so every scoring loop asks here instead — and asking
-    /// `min_competitive_score()` directly, which several loops used to do, is
-    /// the bug this prevents: a collector promising an exact `totalHits` would
+    /// `min_competitive_score()` directly is the bug this prevents: a collector promising an exact `totalHits` would
     /// still hand out a threshold and still get its blocks skipped.
     fn pruning_threshold(&self) -> Option<f32> {
         if self.score_mode().is_exhaustive() {
@@ -1311,8 +1310,7 @@ fn field_rank_order(
 /// call [`TopFieldCollector::offer`] with the already-decoded `i64`, which is
 /// infallible. Internally this is the exact same bounded, always-sorted
 /// `Vec` design [`TopDocsCollector`] already uses (see that struct's doc
-/// comment for the tradeoff rationale) — same `O(n)`-per-insert simple first
-/// cut, revisit if scale demands it.
+/// comment for the tradeoff rationale) — same simple `O(n)`-per-insert cost.
 #[derive(Debug, Clone)]
 pub struct TopFieldCollector {
     top_n: usize,

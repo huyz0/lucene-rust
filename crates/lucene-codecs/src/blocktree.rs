@@ -3585,7 +3585,7 @@ impl FieldTerms {
     /// Costs `.doc`'s skip data down to the one 256-document block holding
     /// `doc_id`, plus the `.pos`/`.pay` blocks that actually hold its
     /// occurrences -- not, as [`Self::positions`] would, every document's,
-    /// and not, as this used to, the term's whole doc list. See
+    /// and not the term's whole doc list. See
     /// [`postings::read_occurrences_for_doc`].
     pub fn occurrences_for_doc(
         &self,
@@ -5780,10 +5780,8 @@ mod tests {
     }
 
     /// Test-only: every physical `.tim` block reachable from `node`, paired
-    /// with the trie label path that led to it. This is what `open` used to
-    /// do for every field of every segment before the lazy port; it survives
-    /// only as a way for the fixture tests to assert on a field's whole
-    /// block structure.
+    /// with the trie label path that led to it. Lets the fixture tests assert
+    /// on a field's whole block structure; `open` loads blocks lazily instead.
     fn collect_leaf_blocks(
         slice: &[u8],
         node: &TrieNode,
@@ -6570,9 +6568,9 @@ mod tests {
 
     /// `CodecUtil.retrieveChecksum(IndexInput, long expectedLength)` rejects
     /// "file too long" as well as "truncated file": the recorded length must
-    /// equal the file's own. Only the truncation half used to be checked, so
-    /// a `.tmd` claiming a shorter `.tip`/`.tim` than the one it describes
-    /// was accepted -- and the footer was then read from the wrong offset.
+    /// equal the file's own. A `.tmd` claiming a shorter `.tip`/`.tim` than the
+    /// one it describes would otherwise be accepted and the footer read from
+    /// the wrong offset.
     #[test]
     fn recorded_tip_or_tim_length_shorter_than_the_file_is_rejected() {
         let b = Builder::new();
@@ -7111,7 +7109,7 @@ mod tests {
         let fis = FieldInfos {
             fields: vec![field_info(0, "f", IndexOptions::Docs)],
         };
-        // `open` no longer reads any `.tim` block (see the module doc), so a
+        // `open` reads no `.tim` block (see the module doc), so a
         // block this corrupt is rejected where real Lucene rejects it too:
         // from inside the lookup that loads it.
         let fields = open(&tim, &tip, &tmd, &fis, &id, "", 5).unwrap();
@@ -7125,8 +7123,7 @@ mod tests {
     /// A corrupt block is now discovered where real Lucene discovers it --
     /// inside the lookup that loads it, not at `open` -- and every lookup's
     /// `Result`-returning form surfaces it. The infallible spellings degrade
-    /// to "no such term"/end-of-terms instead, which is the one behaviour
-    /// this batch deliberately traded away (see the module doc).
+    /// to "no such term"/end-of-terms instead (see the module doc).
     #[test]
     fn a_corrupt_block_errors_from_the_lookup_not_from_open() {
         let b = Builder::new();
@@ -8743,9 +8740,8 @@ mod tests {
     /// mirrors the `.tim` block hierarchy at *every* level including the
     /// root -- `collect_leaf_blocks` already walks past a no-terms output
     /// into that node's trie children unconditionally (see its own doc
-    /// comment), so `blocks` was never actually empty for this shape; the
-    /// check was simply wrong, not a real gap, and was removed rather than
-    /// specially handled.
+    /// comment), so `blocks` is never empty for this shape and needs no
+    /// special handling.
     #[test]
     fn open_field_with_no_terms_in_root_block_still_finds_every_term() {
         let dir = concat!(
@@ -9082,10 +9078,10 @@ mod tests {
     const SAMPLE_TERMS: &[(&str, u32, u64)] = &[("a", 1, 1), ("ab", 2, 3), ("b", 1, 1)];
 
     /// `rootFP` is a `.tmd` vlong that `open` casts with `as usize`, so a
-    /// negative one arrives at `load_node` as `usize::MAX`. `read_u64_at`'s
-    /// bound used to be `fp + 8 > slice.len()`, which panics on that in a
-    /// debug build and wraps to `7` -- passing the bound -- in a release one,
-    /// only to panic on the slice index right after.
+    /// negative one arrives at `load_node` as `usize::MAX`. A bound written as
+    /// `fp + 8 > slice.len()` panics on that in a debug build and wraps to `7`
+    /// -- passing the bound -- in a release one, so `read_u64_at` must not
+    /// form that sum.
     #[test]
     fn absurd_root_fp_is_a_decode_error_not_an_overflow() {
         let mut b = Builder::new();
@@ -9263,7 +9259,7 @@ mod tests {
     /// The assertion is deliberately *not* "every corruption is rejected":
     /// plenty of single-bit flips produce a self-consistent dictionary that
     /// answers differently but well-formedly, which is exactly what the
-    /// checksum this sweep defeats exists for.
+    /// checksum such re-signing defeats exists for.
     #[test]
     fn every_resigned_single_byte_terms_dict_corruption_is_an_error_or_a_clean_decode() {
         let b = Builder::new();

@@ -391,12 +391,10 @@ fn multi_field_segment_term_queries_are_isolated_per_field() {
 /// `blocktree::open`, and queried through the unmodified `search_term_query`
 /// for terms at the start, the middle and the end of the span.
 ///
-/// It was written as the capstone for a multi-block writer that split such a
-/// field into one `.tim` block per leading byte; that writer was removed
-/// because real Lucene cannot read a `SIGN_MULTI_CHILDREN` root with no output
-/// of its own (see `postings_writer.rs`'s module doc). The property it proves
-/// is the one that outlived it: a wide leading-byte span is queryable, from
-/// the single block this writer emits.
+/// The writer emits a single block rather than one `.tim` block per leading
+/// byte, because real Lucene cannot read a `SIGN_MULTI_CHILDREN` root with no
+/// output of its own (see `postings_writer.rs`'s module doc). The property
+/// proved is that a wide leading-byte span is queryable from that one block.
 #[test]
 fn term_query_finds_correct_docs_across_a_wide_leading_byte_span() {
     let mut terms = Vec::new();

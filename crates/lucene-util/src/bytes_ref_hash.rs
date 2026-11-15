@@ -520,8 +520,8 @@ mod tests {
         c.close();
         c.reinit();
         assert_eq!(c.size(), 0);
-        // Regression: `reinit` after `close` used to zero-fill the table,
-        // which made this `add` probe forever.
+        // `reinit` after `close` must not zero-fill the table, or this `add`
+        // probes forever.
         assert_eq!(c.add(b"q").unwrap(), 0);
         assert_eq!(c.add(b"r").unwrap(), 1);
         assert_eq!(c.add(b"q").unwrap(), -1);

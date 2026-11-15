@@ -42,7 +42,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA_DIR = os.path.join(ROOT, "opensearch-plugin", "src", "main", "java")
 RUST_DIR = os.path.join(ROOT, "crates", "lucene-ffi", "src")
 # The query-blob decoders and the status codes, which the plugin encodes for
-# (what `lucene-ffi` used to hold itself).
+# (which live in `lucene-engine`, not `lucene-ffi`).
 ENGINE_DIR = os.path.join(ROOT, "crates", "lucene-engine", "src")
 # The encrypted store's file format, which the plugin's store/Lrse.java reads
 # and writes too.

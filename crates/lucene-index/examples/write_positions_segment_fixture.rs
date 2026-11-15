@@ -318,9 +318,9 @@ fn main() {
     // payloads. This is what makes `CheckIndex.testTermVectors` bite: at
     // MIN_LEVEL_FOR_SLOW_CHECKS it walks every document's vector against that
     // document's postings, occurrence by occurrence, and compares positions,
-    // offsets and payloads wherever both carry the axis. Before this batch the
-    // writer recorded positions only in a vector, whatever the field's
-    // options, so the offset and payload halves of that check could not fire.
+    // offsets and payloads wherever both carry the axis. The vector must carry
+    // the same axes the field's postings do, or the offset and payload halves
+    // of that check cannot fire.
     writer
         .set_term_vector_field(Some("body"))
         .expect("set term vector field");

@@ -191,7 +191,7 @@ mod allocation_hazard_tests {
         // Substrings, not full paths: `::with_capacity(` catches the
         // turbofished `Vec::<T>::with_capacity` form and every other
         // capacity-preallocating constructor (`HashMap`, `HashSet`,
-        // `BytesMut`, ...) that the two-name list used to miss. Everything
+        // `BytesMut`, ...) that a list of full names would miss. Everything
         // matched here is length-driven and aborts on failure; the
         // `alloc-ok:` opt-out below is how a provably Rust-side length is
         // allowed through.

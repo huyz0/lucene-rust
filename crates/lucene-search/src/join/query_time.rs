@@ -221,8 +221,8 @@ enum Resolved<'t> {
 /// sorted stably by ordinal, and drains run in collection order), terms do
 /// not interact, and the collected terms come out sorted either way. A
 /// segment ordinal is looked up once however many drains it spans: its id
-/// is kept, by ordinal, until the next segment. Stage 3: the per-document
-/// lookup was most of the from side's time.
+/// is kept, by ordinal, until the next segment, because a per-document
+/// lookup would be most of the from side's time.
 ///
 /// Memory: the pending pairs (bounded by [`PENDING_LIMIT`]) and the blocks
 /// of ids the matching ordinals fall in -- not a pair per matching document

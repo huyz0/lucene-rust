@@ -918,13 +918,12 @@ mod tests {
     /// writes uses it, and it is the only value besides 7..=15 that
     /// `lucene_codecs::indexed_disi` accepts.
     ///
-    /// These tests used to put a literal `0` here, which is *not* a legal
-    /// `denseRankPower`: `dense_rank_bytes(0)` rejects it, so any DENSE
-    /// `IndexedDISI` block reached with it fails to decode. Dense-norms entries
-    /// never look at the field at all and a 4-document sparse block is SPARSE,
-    /// so nothing in the old tests noticed -- but the fixtures were describing
-    /// metadata no writer can produce, which is exactly the kind of
-    /// almost-right test input that hides a real decode bug.
+    /// A literal `0` would *not* be a legal `denseRankPower`:
+    /// `dense_rank_bytes(0)` rejects it, so any DENSE `IndexedDISI` block
+    /// reached with it fails to decode. Dense-norms entries never look at the
+    /// field and a 4-document sparse block is SPARSE, so a `0` would go
+    /// unnoticed -- but the fixtures would describe metadata no writer can
+    /// produce, an almost-right test input that hides real decode bugs.
     const NO_RANK: u8 = 0xFF;
 
     fn dense_entry(bytes_per_norm: u8, num_docs: i32, norms_offset: i64) -> NormsEntry {

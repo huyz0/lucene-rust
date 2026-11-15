@@ -32,7 +32,6 @@ import org.apache.lucene.util.automaton.CompiledAutomaton;
  */
 public final class FieldReader extends Terms {
 
-  // private final boolean DEBUG = BlockTreeTermsWriter.DEBUG;
 
   final long numTerms;
   final FieldInfo fieldInfo;
@@ -48,7 +47,6 @@ public final class FieldReader extends Terms {
   final IndexInput indexIn;
   final ZstdTermsDictionary zstdDictionary;
 
-  // private boolean DEBUG;
 
   FieldReader(
       ZstdBlockTreeTermsReader parent,
@@ -64,7 +62,6 @@ public final class FieldReader extends Terms {
       throws IOException {
     assert numTerms > 0;
     this.fieldInfo = fieldInfo;
-    // DEBUG = BlockTreeTermsReader.DEBUG && fieldInfo.name.equals("id");
     this.parent = parent;
     this.numTerms = numTerms;
     this.sumTotalTermFreq = sumTotalTermFreq;
@@ -73,10 +70,6 @@ public final class FieldReader extends Terms {
     this.minTerm = minTerm;
     this.maxTerm = maxTerm;
 
-    // if (DEBUG) {
-    //   System.out.println("BTTR: seg=" + segment + " field=" + fieldInfo.name + " rootBlockCode="
-    // + rootCode + " divisor=" + indexDivisor);
-    // }
 
     this.indexStart = metaIn.readVLong();
     this.rootFP = metaIn.readVLong();
@@ -164,9 +157,6 @@ public final class FieldReader extends Terms {
 
   @Override
   public TermsEnum intersect(CompiledAutomaton compiled, BytesRef startTerm) throws IOException {
-    // if (DEBUG) System.out.println("  FieldReader.intersect startTerm=" +
-    // ToStringUtils.bytesRefToString(startTerm));
-    // System.out.println("intersect: " + compiled.type + " a=" + compiled.automaton);
     // TODO: we could push "it's a range" or "it's a prefix" down into IntersectTermsEnum?
     // can we optimize knowing that...?
     if (compiled.type != CompiledAutomaton.AUTOMATON_TYPE.NORMAL) {

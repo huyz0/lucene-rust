@@ -706,8 +706,8 @@ mod tests {
     /// `ReadersAndUpdates.writeLiveDocs` ends in `advanceDelGen()`, whose
     /// `generationAdvanced()` re-derives `SegmentCommitInfo.id`. Two rounds
     /// of deletes against one segment therefore give three distinct ids.
-    /// This port used to carry `sci_id` straight across, so a replication or
-    /// NRT consumer keying on the id was told the segment had not changed.
+    /// Carrying `sci_id` straight across would tell a replication or NRT
+    /// consumer keying on the id that the segment had not changed.
     #[test]
     fn each_round_of_deletes_gives_the_segment_commit_a_new_id() {
         let tmp = lucene_util::test_support::TempDir::new("deletes-sci-id-advances");

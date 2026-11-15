@@ -370,8 +370,8 @@ fn exact_phrase_scores_match_real_lucene_bit_for_bit() {
 /// `alpha beta` adjacent (`matchLength == 0`, weight `1`) while doc 8557 has
 /// them two positions apart (`matchLength == 2`, weight `1/3`), so real
 /// Lucene scores them very differently even though both are single sloppy
-/// matches. Scoring every sloppy match as frequency `1` -- which this port did
-/// before this sweep -- gives both documents the same `tf`.
+/// matches. Scoring every sloppy match as frequency `1` would give both
+/// documents the same `tf`.
 #[test]
 fn sloppy_phrase_scores_match_real_lucene_bit_for_bit() {
     let seg = open_segment();

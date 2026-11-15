@@ -119,12 +119,11 @@ pub fn edit_distance_at_most(
 /// **Three rolling rows, one allocation.** The table is `(n + 1) * (m + 1)`
 /// but only rows `i`, `i - 1` and `i - 2` are ever read -- the third only
 /// because of the transposition rule, which is `Lev1T`/`Lev2T`'s and not
-/// plain Levenshtein's. This used to be a `Vec<Vec<usize>>`, i.e. **`n + 2`
-/// heap allocations per candidate term**, and a fuzzy expansion tests every
-/// term in the dictionary's prefix range: on the 1 M-term corpus that is over
-/// eight million allocations for one query. Java allocates nothing at all here
-/// (it runs a compiled DFA over the term's bytes), so the flat buffer is not
-/// an optimisation past Java, it is the gap closing.
+/// plain Levenshtein's. A `Vec<Vec<usize>>` would cost **`n + 2` heap
+/// allocations per candidate term**, and a fuzzy expansion tests every term in
+/// the dictionary's prefix range. Java allocates nothing here (it runs a
+/// compiled DFA over the term's bytes), so one flat buffer is the closest
+/// match.
 // ARITH: `n` and `m` are `Vec<char>` lengths, so `n + 1` and `m + 1` cannot
 // overflow (a `Vec`'s length is at most `isize::MAX`, and a `Vec<char>`'s at
 // most a quarter of that); `3 * width` likewise, since `width <= isize::MAX/4`.
@@ -669,9 +668,8 @@ mod tests {
 
     /// `FuzzyAutomatonBuilder` decodes the term to `int[]` codepoints before
     /// building the automaton, so one multi-byte character substituted for
-    /// another is **one** edit. This module used to count UTF-8 bytes and
-    /// reported 2 or 3 for the same pair, which silently narrowed every
-    /// non-ASCII fuzzy query.
+    /// another is **one** edit; counting UTF-8 bytes would report 2 or 3 for the
+    /// same pair and silently narrow every non-ASCII fuzzy query.
     #[test]
     fn distance_counts_codepoints_not_utf8_bytes() {
         // é (2 bytes) -> è (2 bytes): one codepoint substitution.
@@ -693,8 +691,8 @@ mod tests {
         assert_eq!(edit_distance(&[0xFF], b"a", true), 1);
     }
 
-    /// The straightforward full-matrix Damerau-Levenshtein this module used to
-    /// compute, kept as a **reference** for the rolling-row rewrite: three
+    /// The straightforward full-matrix Damerau-Levenshtein, kept as a
+    /// **reference** for the rolling-row implementation: three
     /// live rows and an index-arithmetic band is exactly the shape where an
     /// off-by-one hides, and the hand-picked cases above cannot reach the
     /// combinations that would expose one (a transposition that must read two
@@ -844,9 +842,9 @@ mod tests {
     }
 
     /// `FuzzyAutomatonBuilder` builds the automaton from the **suffix** past
-    /// `prefixLength`, so the edit budget applies to the suffix alone. This
-    /// port used to run the DP over the whole terms, which is a strictly
-    /// weaker test: a shared prefix can absorb part of an alignment.
+    /// `prefixLength`, so the edit budget applies to the suffix alone. Running
+    /// the DP over the whole terms would be a strictly weaker test: a shared
+    /// prefix can absorb part of an alignment.
     #[test]
     fn prefix_length_takes_the_prefix_out_of_the_edit_budget() {
         // "aab" vs "ab" is distance 1 over the whole terms, but with
@@ -890,8 +888,7 @@ mod tests {
     }
 
     /// `FuzzyTermsEnum.next`'s `BoostAttribute` formula, term by term. This
-    /// is what makes `FuzzyQuery` scored; the port used to give every fuzzy
-    /// hit a flat 1.0.
+    /// is what makes `FuzzyQuery` scored rather than a flat 1.0.
     #[test]
     fn boost_matches_fuzzy_terms_enums_similarity_formula() {
         let m = FuzzyMatch::new(b"kitten", 2, 0, true);

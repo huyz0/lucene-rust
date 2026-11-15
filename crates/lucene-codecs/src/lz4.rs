@@ -876,11 +876,10 @@ mod tests {
     /// Since matchLen would be read next but dOff reaches destEnd right after
     /// the literals, no match bytes follow.
     /// An LZ4 length extension is a run of `0xFF` bytes, each adding 255 to
-    /// the accumulator. The accumulator used to be a bare `usize +=`, so a
-    /// long enough run wrapped it to a small length and decoded a silently
-    /// truncated block (release) or panicked (debug). It has to come back as
-    /// corruption instead, for both the literal and the match halves of the
-    /// token.
+    /// the accumulator. A bare `usize +=` would let a long enough run wrap to a
+    /// small length and decode a silently truncated block (release) or panic
+    /// (debug). It has to come back as corruption instead, for both the
+    /// literal and the match halves of the token.
     #[test]
     fn length_extension_run_is_bounded() {
         // A short, legal extension still decodes: literalLen 15 + 3 = 18.

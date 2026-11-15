@@ -143,8 +143,7 @@ impl PrefixQuery {
     }
 }
 
-/// `FuzzyQuery`-equivalent (`org.apache.lucene.search.FuzzyQuery`), task
-/// #42's addition: a field plus a target `term`, matching every term indexed
+/// `FuzzyQuery`-equivalent (`org.apache.lucene.search.FuzzyQuery`): a field plus a target `term`, matching every term indexed
 /// for `field` whose edit distance to `term` is `<= max_edits`, restricted to
 /// terms sharing `term`'s first `prefix_length` bytes exactly (real
 /// `FuzzyQuery`'s `prefixLength` — an exact-match requirement, not part of
@@ -200,9 +199,8 @@ impl PrefixQuery {
 /// Lucene's. `TopTermsRewrite.collect` keeps a size-`maxExpansions` priority
 /// queue ordered by the `FuzzyTermsEnum` boost, dropping the lexicographically
 /// later term on a tie, and `crate::fuzzy_expanded_terms` reproduces that
-/// ordering. (This port used to keep the first `max_expansions` terms in
-/// sorted term-dictionary order instead, which is close to the *opposite*
-/// selection: term order is uncorrelated with edit distance.)
+/// ordering (term-dictionary order would be close to the *opposite*
+/// selection: term order is uncorrelated with edit distance).
 ///
 /// **`max_edits` is not validated here.** Real `FuzzyQuery`'s constructor
 /// throws when `maxEdits > LevenshteinAutomata.MAXIMUM_SUPPORTED_DISTANCE`
@@ -2335,11 +2333,11 @@ mod tests {
     fn rewrite_of_one_should_clause_with_minimum_should_match_two_is_match_no_docs() {
         // Real `BooleanQuery.rewrite()`: `shoulds.size() <
         // minimumNumberShouldMatch` -> `MatchNoDocsQuery("SHOULD clause count
-        // less than minimumNumberShouldMatch")`. This port used to leave the
-        // query alone and rely on `matched_boolean_docs` reaching the same
-        // "matches nothing" outcome at execution time -- same answer, but the
-        // rewrite could not report it, and a caller inspecting the rewritten
-        // query saw a query that looked satisfiable.
+        // less than minimumNumberShouldMatch")`. Leaving the query alone and
+        // relying on `matched_boolean_docs` reaching the same "matches nothing"
+        // outcome at execution time gives the same answer, but the rewrite
+        // could not report it, and a caller inspecting the rewritten query
+        // would see one that looks satisfiable.
         let q = BooleanQuery::new()
             .with_should([TermQuery::new("body", "cat")])
             .with_minimum_should_match(2);
@@ -2696,11 +2694,10 @@ mod tests {
         // Rule 8, first half. `BooleanQuery.rewrite()`: "Check whether some
         // clauses are both required and excluded" -> `new
         // MatchNoDocsQuery("FILTER or MUST clause also in MUST_NOT")`. Both
-        // halves of Java's predicate are now reachable
+        // halves of Java's predicate are reachable
         // (`clauseSets.get(MUST)::contains` **or**
         // `clauseSets.get(FILTER)::contains`), so the reason string is Java's
-        // verbatim rather than the shortened one this port used while it had
-        // no `FILTER`.
+        // verbatim.
         let q = BooleanQuery::new()
             .with_must([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
             .with_must_not([TermQuery::new("body", "cat")]);

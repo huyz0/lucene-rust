@@ -325,8 +325,8 @@ fn a_field_without_positions_is_an_error_not_a_silent_wrong_offset() {
 /// Doc 8557 has `alpha` at position 0 and `beta` at position 3, so
 /// `"alpha beta"` at slop 0 does not match it -- and real Lucene says so, in
 /// this fixture's own `field.pos.sloppyGap.realLuceneSlopResults`. The
-/// position-insensitive source (`offsets_from_postings`, what this port had
-/// before) highlights both terms there regardless.
+/// position-insensitive source (`offsets_from_postings`) highlights both
+/// terms there regardless.
 #[test]
 fn phrase_offsets_drop_occurrences_that_are_not_in_a_phrase_match() {
     let (fields, doc, pos, pay, id, suffix, m) = open_segment();

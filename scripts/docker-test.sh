@@ -41,10 +41,9 @@ JAVA_SOURCE="${LUCENE_JAVA_SRC:-$HOME/work/lucene-10.5.2}"
 MEM="${MEM:-16g}"
 CPUS="${CPUS:-8}"
 PIDS="${PIDS:-512}"
-# /tmp is a tmpfs and therefore RAM. The suites used to leak a directory per
-# test into it and filled a 16 GB tmpfs; that leak is fixed
-# (`lucene_util::test_support::TempDir`), but a bounded mount means a
-# regression costs a failed test rather than the machine.
+# /tmp is a tmpfs and therefore RAM. Tests clean up their directories
+# (`lucene_util::test_support::TempDir`), and a bounded mount means a leak
+# costs a failed test rather than the machine.
 TMPFS="${TMPFS:-1g}"
 
 # `gate` expands to the whole pre-commit gate, so that the definition lives in

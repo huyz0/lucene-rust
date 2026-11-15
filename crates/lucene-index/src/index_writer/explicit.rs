@@ -3149,8 +3149,8 @@ mod tests {
     fn stored_only_adds_mark_their_parent() {
         // Java's `addDocument`/`addDocuments` mark the last document of
         // every add once a parent field is configured; the stored-only
-        // entry points used to buffer it unmarked, so a block had no
-        // parent and `MockRandomMergePolicy.reverse` saw none.
+        // entry points must mark it too, or a block has no parent and
+        // `MockRandomMergePolicy.reverse` sees none.
         let tmp = TempDir::new("explicit-stored-only-parent");
         let dir = FsDirectory::open(tmp.path());
         let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
@@ -4447,12 +4447,9 @@ mod tests {
             .store_payloads
     }
 
-    /// A document whose analyzer produced payloads is indexed with them. The
-    /// OpenSearch engine used to refuse it, and OpenSearch then records a
-    /// refused primary operation as a no-op tombstone -- so on a seed whose
-    /// `MockAnalyzer` put payloads on the `value` field, the engine tests
-    /// lost almost every document (`testAppendConcurrently`: `expected:<1024>
-    /// but was:<6>`, the six whose random payloads happened to be empty). The
+    /// A document whose analyzer produced payloads is indexed with them.
+    /// Refusing it would make OpenSearch record the refused primary operation
+    /// as a no-op tombstone and lose the document. The
     /// field stores payloads in exactly the segments one of whose documents
     /// gave it one, as `FieldInfo.setStorePayloads` does, the bytes read back
     /// through the postings, and a merge keeps them.

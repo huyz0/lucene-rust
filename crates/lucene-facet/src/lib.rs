@@ -2242,10 +2242,8 @@ mod tests {
     /// via a straightforward per-doc `SortedSetDocValues.nextOrd()` iteration
     /// (see `GenMultiValuedDocValues.java`'s `field.tags.ords`/`.terms`
     /// output) -- an honest differential check without depending on the
-    /// `lucene-facet` module (not a project dependency), per this task's
-    /// brief: "a straightforward manual per-doc iteration ... is a
-    /// reasonable, real ground truth even without the facet module
-    /// specifically."
+    /// `lucene-facet` module (not a project dependency): a straightforward
+    /// manual per-doc iteration is a reasonable, real ground truth.
     fn expected_counts_from_manifest(manifest: &Manifest, num_terms: usize) -> Vec<u64> {
         let mut counts = vec![0u64; num_terms];
         for doc_ords in manifest.get("field.tags.ords").split(';') {

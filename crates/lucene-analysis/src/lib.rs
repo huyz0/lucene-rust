@@ -249,11 +249,8 @@ pub struct AnalyzedTokens {
 /// every token. See [`StandardTokenizer`] for the tokenizer itself (and its
 /// token types, which [`Token`] does not carry).
 ///
-/// This used to be a stand-in built on the `unicode-segmentation` crate's
-/// word boundaries, which agree with Lucene's grammar on most text but not
-/// all of it: it emitted nothing for emoji (Lucene emits `<EMOJI>` tokens,
-/// ZWJ sequences whole), did not keep Southeast Asian runs whole, and had no
-/// `maxTokenLength` splitting. It now *is* Lucene's scanner.
+/// The scanner is Lucene's own, so emoji (`<EMOJI>` tokens, ZWJ sequences
+/// whole), Southeast Asian runs and `maxTokenLength` splitting all match.
 ///
 /// Every token gets `position_increment == 1` unless a token longer than the
 /// maximum is skipped (see [`StandardTokenizer`]); offsets are UTF-16 code
@@ -671,11 +668,6 @@ impl StopFilter {
 /// Supplemental Punctuation, Alphabetic Presentation Forms (the `ﬁ`/`ﬂ`
 /// ligatures) and Halfwidth/Fullwidth Forms -- the same list this filter's
 /// own javadoc enumerates.
-///
-/// This port previously carried 92 hand-picked entries (Latin-1 letters plus
-/// 30 Latin Extended-A picks), 7% of the real table: Vietnamese, fullwidth
-/// CJK-Latin, ligature and typographic-quote text folded to itself here and
-/// to ASCII in Lucene, so the two engines indexed different terms.
 ///
 /// A codepoint outside the table passes through unchanged (never dropped,
 /// never a panic), which is also what Lucene does.
@@ -2538,18 +2530,15 @@ fn build_bidirectional_map(
 /// increment: Java accumulates `curPosIncr += posIncrAtt.getPositionIncrement()`
 /// per input token and only zeroes it once a gram is actually emitted, so a
 /// skipped short token pushes the *next* token's grams one position further
-/// along. This port used to drop that increment on the floor, so with
-/// `min_gram = 3` the text `"a big cat"` put `cat`'s grams one position after
-/// `a` where Lucene puts them two positions after -- a silent corruption of
-/// every phrase and slop offset downstream.
+/// along: with `min_gram = 3` the text `"a big cat"` puts `cat`'s grams two
+/// positions after `a`, which keeps phrase and slop offsets downstream right.
 ///
 /// **Offsets are the original token's, unchanged.** Java's `incrementToken`
 /// calls `restoreState(state)` before emitting each gram, which restores the
 /// captured `OffsetAttribute` wholesale; it never calls `setOffset`. The
 /// filter's own javadoc says so outright and notes that this is why
-/// highlighting does not work with it. This port used to compute a precise
-/// per-gram offset range, which looks more useful and disagrees with Lucene
-/// on every single gram.
+/// highlighting does not work with it. A precise per-gram offset range would
+/// look more useful but disagree with Lucene on every gram.
 pub struct NGramTokenFilter;
 
 /// Computes, for `term`, the ordered list of gram substrings whose codepoint
@@ -4143,15 +4132,11 @@ mod tests {
         );
     }
 
-    /// Regression test for a real bug caught in review: `y` immediately
-    /// after a CONSONANT must count as a VOWEL (Porter's own reference rule,
-    /// `case 'y': return (i==0) ? TRUE : !cons(i-1);`), not a consonant, when
-    /// deciding whether a stem "contains a vowel" for step 1b's `-ing`
-    /// removal guard. Before this fix, `contains_vowel("fly")` was wrongly
-    /// `false` (the `y`, following consonant `l`, was misclassified as a
-    /// consonant instead of a vowel), so `-ing` was never stripped and
-    /// "flying"/"trying" passed through completely unstemmed. After the fix,
-    /// `-ing` correctly strips to "fly"/"try" -- step 1c's own, separate
+    /// `y` immediately after a CONSONANT must count as a VOWEL (Porter's own
+    /// reference rule, `case 'y': return (i==0) ? TRUE : !cons(i-1);`), not a
+    /// consonant, when deciding whether a stem "contains a vowel" for step
+    /// 1b's `-ing` removal guard. So `contains_vowel("fly")` is `true`, and
+    /// `-ing` strips "flying"/"trying" to "fly"/"try" -- step 1c's own, separate
     /// `(*v*)` condition (checked against the letters preceding the trailing
     /// `y`, i.e. "fl"/"tr") doesn't additionally fire here since neither
     /// contains a vowel, so the final `y` is not further converted to `i`.
@@ -4299,10 +4284,8 @@ mod tests {
     /// Java's `PorterStemmer` has **no** "lowercase ASCII only" guard: its
     /// `cons()` treats every character that is not `a/e/i/o/u/y` as a
     /// consonant, so an uppercase or accented word is stemmed like any other.
-    /// This port used to bail out on such words, which meant `"Running"`
-    /// survived a `PorterStemFilter` that Lucene would have reduced to
-    /// `"Run"` -- a real divergence for any chain that does not lowercase
-    /// first.
+    /// So `"Running"` is reduced to `"Run"`, which matters for any chain that
+    /// does not lowercase first.
     #[test]
     fn porter_stem_has_no_ascii_lowercase_guard() {
         // "Running": step 1 strips `-ing` and undoubles `nn`, exactly as it
@@ -4355,10 +4338,9 @@ mod tests {
         }
     }
 
-    /// The three step-3/step-5 rules this port had wrong: `bli -> ble` was
-    /// written as `abli -> able`, `logi -> log` was missing outright, and a
-    /// suffix whose measure test fails must stop the search rather than fall
-    /// through to a shorter suffix.
+    /// Three step-3/step-5 rules: `bli -> ble` (not `abli -> able`), `logi ->
+    /// log`, and a suffix whose measure test fails must stop the search rather
+    /// than fall through to a shorter suffix.
     #[test]
     fn porter_stem_first_matching_suffix_wins_even_when_its_measure_test_fails() {
         let cases: &[(&str, &str)] = &[
@@ -5084,7 +5066,7 @@ mod tests {
 
     /// Java accumulates `curPosIncr` across input tokens that emit nothing,
     /// so a token skipped for being shorter than `min_gram` still pushes the
-    /// next token's grams along. This port used to drop that increment.
+    /// next token's grams along.
     #[test]
     fn ngram_filter_carries_the_increment_of_a_skipped_short_token() {
         let tokens = vec![tok("big", 0, 3, 1), tok("a", 4, 5, 1), tok("cat", 6, 9, 1)];
@@ -5385,9 +5367,8 @@ mod tests {
     #[test]
     fn snowball_english_eed_family_ee_replacement() {
         // "-eed"/"-eedly", R1-gated, unconditionally replaced with "ee"
-        // (the succ/proc/exc protection this branch used to need in an
-        // older generation of the algorithm is now handled globally by
-        // the exception2 table, see the dedicated test above).
+        // (the succ/proc/exc protection is handled globally by the
+        // exception2 table, see the dedicated test above).
         assert_eq!(snowball("agreed"), "agre");
         assert_eq!(snowball("feed"), "feed"); // m(fe) == 0 at R1 -> R1 not yet reached, unchanged
     }

@@ -60,8 +60,8 @@ import java.util.TreeSet;
  * {@code maxItemsInBlock}. Empirically, 2000 distinct 16-byte strings over
  * {@code {a,b}} with {@code minItemsInBlock=2}/{@code maxItemsInBlock=4}
  * reaches a genuine depth of 6 non-leaf-chained physical `.tim` blocks
- * (verified with a throwaway depth-probing walk against this exact
- * generator's output before this fixture was made permanent) -- comfortably
+ * (verified with a depth-probing walk against this exact generator's
+ * output) -- comfortably
  * past the 4-level bar this fixture exists to clear, with margin against
  * incidental fixture-regen variance.
  *

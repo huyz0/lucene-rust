@@ -204,13 +204,9 @@ pub(crate) fn decode_all(input: &mut impl DataInput, total_value_count: i64) -> 
 /// `minValue` varint without widening anything), and `min == 0` is signalled
 /// by the token's low bit instead of being written out.
 ///
-/// This used to hardcode `minValue = 0` and size `bitsPerValue` from the block
-/// max alone, which is not merely non-minimal: it is **wrong for any block
-/// containing a negative value**. A block of all-negative values took
-/// `max <= 0 -> bitsPerValue = 0`, encoding every value as the constant `0`;
-/// a mixed block truncated each negative value to the low `bitsPerValue` bits.
-/// That was latent when it was fixed and is **not latent any more**:
-/// the term-vectors writer stores a length as `span - prefixLength -
+/// Negative values matter: sizing `bitsPerValue` from the block max alone
+/// would encode an all-negative block as the constant `0` and truncate a mixed
+/// block's negative values. The term-vectors writer stores a length as `span - prefixLength -
 /// suffixLength`, where `span` is `endOffset - startOffset`: the
 /// occurrence's span minus the term's length *in UTF-8 bytes* -- exactly
 /// what Java's
@@ -636,9 +632,9 @@ mod tests {
 
     #[test]
     fn encode_all_round_trips_negative_and_mixed_sign_values() {
-        // The case the old `minValue = 0` writer silently destroyed: a block
-        // whose max is <= 0 used to pick bitsPerValue = 0 and decode as all
-        // zeros, and a mixed-sign block truncated the negatives.
+        // A block whose max is <= 0 must not pick bitsPerValue = 0 (it would
+        // decode as all zeros), and a mixed-sign block must not truncate the
+        // negatives.
         for values in [
             vec![-5i64, -3, -100, -1],
             vec![-5i64, 10, -3, 0, 7],

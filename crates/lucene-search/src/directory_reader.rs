@@ -303,8 +303,8 @@ pub struct SegmentReader {
     term_vectors: Option<Arc<CodecFiles>>,
     /// [`Self::term_vectors`]' parsed `.tvm`, read on first use and shared by
     /// every reader over this core, as [`StoredFiles::meta`] is for stored
-    /// fields: `LeafReader::term_vectors(doc)` used to re-open (header checks,
-    /// `.tvm` decode) on every document.
+    /// fields, so `LeafReader::term_vectors(doc)` does not re-open (header
+    /// checks, `.tvm` decode) on every document.
     term_vectors_meta: Arc<TermVectorsMeta>,
     /// The segment's flat KNN vectors (`.vec` data, `.vemf` metadata), one
     /// per `PerFieldKnnVectorsFormat` instance with its codec suffix, sorted
@@ -3393,9 +3393,8 @@ pub type SegmentNorms<'a> = Vec<HashMap<String, crate::field_norms::FieldNorms<'
 /// `DirectoryReader.open(Directory)`-equivalent: reads the latest
 /// `segments_N`, opens every listed segment (whichever files it actually
 /// has), and computes each segment's `doc_base` automatically as the running
-/// sum of every earlier segment's `maxDoc` -- the two things
-/// [`OpenSegment::doc_base`]'s doc comment previously left entirely to the
-/// caller.
+/// sum of every earlier segment's `maxDoc`, as [`OpenSegment::doc_base`]
+/// requires.
 #[derive(Debug)]
 pub struct DirectoryReader {
     pub segment_infos: SegmentInfos,
@@ -3429,9 +3428,10 @@ pub struct DirectoryReader {
 
 /// One field's norms over a reader's segments: the reader-wide
 /// `avgFieldLength`, its norm table, and where each segment's norms come from.
-/// What [`DirectoryReader::field_norms_by_field`] used to work out on every
-/// search -- two lookups by name, a norms entry and the field's statistics in
-/// every segment -- and which cannot change for the reader's life.
+/// What [`DirectoryReader::field_norms_by_field`] would otherwise work out on
+/// every search -- two lookups by name, a norms entry and the field's
+/// statistics in every segment -- and which cannot change for the reader's
+/// life.
 #[derive(Debug)]
 struct NormsPlan {
     avg: f32,
@@ -5546,10 +5546,8 @@ mod tests {
 
     // -- "NRT reopen after sparse doc-values commits" (docs/parity.md) --
     //
-    // The rest of this module never previously read a segment's `.dvm`/
-    // `.dvd` at all (see this module's doc comment, before this task) --
-    // every other doc-values test in this crate (`doc_value_query.rs`,
-    // `facets.rs`) fed hand-loaded fixture bytes straight to the low-level
+    // Every other doc-values test in this crate (`doc_value_query.rs`,
+    // `facets.rs`) feeds hand-loaded fixture bytes straight to the low-level
     // `lucene_codecs::doc_values` readers, never through
     // `DirectoryReader`/`SegmentReader`. These tests are the real
     // `IndexWriter` -> commit -> NRT reopen -> read-back path: a genuinely
@@ -5880,12 +5878,11 @@ mod tests {
             drop(segments_after);
 
             // Opened through the real `DirectoryReader` -> `SegmentReader`
-            // stack -- now that `SegmentReader::open`'s `.tim`-suffix
-            // derivation special-cases this port's own no-codec-suffix
-            // convention (segment_suffix == "", matching every write site in
+            // stack: `SegmentReader::open`'s `.tim`-suffix derivation
+            // special-cases this port's own no-codec-suffix convention
+            // (segment_suffix == "", matching every write site in
             // `index_writer.rs`/`merge.rs`) the same way its `.dvm`-suffix
-            // derivation already did, this no longer needs a manual
-            // off-disk-file workaround.
+            // derivation does.
             let reader = DirectoryReader::open(&dir).unwrap();
             assert_eq!(reader.segment_readers().len(), 1);
             let opened = reader.open_segments().unwrap();

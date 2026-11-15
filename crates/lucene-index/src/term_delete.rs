@@ -340,9 +340,9 @@ mod tests {
     }
 
     /// A `.doc` file whose posting list names a doc ID past this segment's
-    /// `maxDoc` used to reach `FixedBitSet::get` directly, and that method
+    /// `maxDoc` must not reach `FixedBitSet::get` directly: that method
     /// indexes `words[index >> 6]` while only `debug_assert`ing the bound. So
-    /// the unfixed code had two failure modes, both wrong and neither an
+    /// the unguarded code has two failure modes, both wrong and neither an
     /// error: the assertion fires in a debug build, and in a release build the
     /// read either **panics on the `words` index** (once the ID is 64 or more
     /// past the end, so the word index escapes the `Vec`) or silently returns
