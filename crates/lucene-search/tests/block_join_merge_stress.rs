@@ -212,16 +212,30 @@ fn run(seed: u64, sorted: bool, ops: usize) -> usize {
     commits
 }
 
-#[test]
-fn blocks_survive_many_merges_unsorted() {
-    for seed in 0..12 {
-        run(seed, false, 700);
-    }
+// One test per seed, so the runner spreads the streams over its cores instead
+// of walking them one after another inside a single test.
+macro_rules! seeded {
+    ($($name:ident: $seed:expr, $sorted:expr;)*) => {
+        $(
+            #[test]
+            fn $name() {
+                run($seed, $sorted, 700);
+            }
+        )*
+    };
 }
 
-#[test]
-fn blocks_survive_many_merges_index_sorted() {
-    for seed in 100..112 {
-        run(seed, true, 700);
-    }
+seeded! {
+    unsorted_seed_0: 0, false; unsorted_seed_1: 1, false;
+    unsorted_seed_2: 2, false; unsorted_seed_3: 3, false;
+    unsorted_seed_4: 4, false; unsorted_seed_5: 5, false;
+    unsorted_seed_6: 6, false; unsorted_seed_7: 7, false;
+    unsorted_seed_8: 8, false; unsorted_seed_9: 9, false;
+    unsorted_seed_10: 10, false; unsorted_seed_11: 11, false;
+    sorted_seed_100: 100, true; sorted_seed_101: 101, true;
+    sorted_seed_102: 102, true; sorted_seed_103: 103, true;
+    sorted_seed_104: 104, true; sorted_seed_105: 105, true;
+    sorted_seed_106: 106, true; sorted_seed_107: 107, true;
+    sorted_seed_108: 108, true; sorted_seed_109: 109, true;
+    sorted_seed_110: 110, true; sorted_seed_111: 111, true;
 }
