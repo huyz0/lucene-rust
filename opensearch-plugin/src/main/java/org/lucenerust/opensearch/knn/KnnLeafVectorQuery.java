@@ -37,6 +37,9 @@ public final class KnnLeafVectorQuery extends Query {
     /** The hits per segment; 0 for a radial search. */
     private final int k;
     private final int efSearch;
+    /** The k-NN plugin's radial search traverses with this greediness (Lucene's default is 0.9). */
+    static final float RADIAL_GREEDINESS = 0.95f;
+
     private final float minScore;
     private final Query filter;
 
@@ -101,8 +104,8 @@ public final class KnnLeafVectorQuery extends Query {
     public Weight createWeight(IndexSearcher searcher, ScoreMode scoreMode, float boost) throws IOException {
         if (isRadial()) {
             Query q = target.floats() != null
-                ? new FloatVectorSimilarityQuery(field, target.floats(), minScore, filter)
-                : new ByteVectorSimilarityQuery(field, target.bytes(), minScore, filter);
+                ? new FloatVectorSimilarityQuery(field, target.floats(), minScore, RADIAL_GREEDINESS, filter)
+                : new ByteVectorSimilarityQuery(field, target.bytes(), minScore, RADIAL_GREEDINESS, filter);
             return searcher.createWeight(searcher.rewrite(q), scoreMode, boost);
         }
         Weight filterWeight = filter == null ? null : searcher.createWeight(searcher.rewrite(filter), ScoreMode.COMPLETE_NO_SCORES, 1);
