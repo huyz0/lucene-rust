@@ -119,6 +119,8 @@ def prep(src, out, n):
     Q["phrase 2 words (real)"] = ph2
     Q["phrase 3 words (real)"] = ph3
     Q["phrase 2 words (frequent bigram)"] = [" ".join(rnd.choice(topbi)) for _ in range(NQ)]
+    Q["keyword term"] = ["c%d" % rnd.randrange(20) for _ in range(NQ)]
+    Q["count (exact total, size 0)"] = [pick(freq) for _ in range(NQ)]
     Q["bool must+should+must_not"] = [json.dumps([pick(mid), pick(mid), pick(freq)]) for _ in range(NQ)]
     Q["bool must + filter cat"] = [pick(mid) for _ in range(NQ)]
     Q["bool must frequent + range n"] = [pick(freq) for _ in range(NQ)]
@@ -155,6 +157,10 @@ def body_for(name, q):
         return {"size": 0, "query": {"match_none": {}}}
     if name == "floor: rare term size 0":
         return {"size": 0, "query": {"match": {"text": q}}}
+    if name == "keyword term":
+        return {"size": SIZE, "query": {"term": {"cat": q}}}
+    if name.startswith("count"):
+        return {"size": 0, "track_total_hits": True, "query": {"match": {"text": q}}}
     if name.startswith("bool must+should"):
         a, b, c = json.loads(q)
         return {"size": SIZE, "query": {"bool": {"must": {"match": {"text": a}}, "should": {"match": {"text": b}}, "must_not": {"match": {"text": c}}}}}

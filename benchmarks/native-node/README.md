@@ -42,3 +42,7 @@ OUT_DIR=/data/marco PROF_EVENT=cpu AP=/path/asprof PROF_SHAPES="term frequent|re
 ```
 
 The node runs as `osbench`, so the path to the node home and the libraries must be traversable by it (`chmod o+x /root`), and async-profiler writes through `/tmp/prof` (mode 777). The `itimer` event crashed JDK 25 here; `cpu` works.
+
+## Throughput and cold start
+
+`cc.sh KIND[:LIB.so] ...` runs `conc.py` per shape (`SHAPES_CC="a|b"`, `OUT_DIR`): closed-loop keep-alive raw-socket clients (`PROCS` x `CONNS`, default 2 x 4; `PROCS=1 CONNS=1` is serial) and prints qps and node CPU per request. The node takes cores 0-1, the driver 2-3. Use it instead of `text_bench.py time` when shapes are under ~3 ms: that driver's python `http.client` costs about 1.7 ms per request on both engines and 30-request samples are JIT warm-up. `warmcurve.py` prints serial latency per block of requests right after a node start.
