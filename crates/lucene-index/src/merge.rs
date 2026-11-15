@@ -17326,10 +17326,10 @@ mod tests {
 
     /// End to end through `merge_segments`: the merged `.si` records the
     /// **oldest** source `minVersion`, not the merging writer's own version,
-    /// and `hasBlocks` is the disjunction of the sources'. Before this was
-    /// ported, `min_version` was hardcoded to the writer's version, so a
-    /// merge that took in a segment written by an older Lucene erased the
-    /// only record that older bytes were still present.
+    /// and `hasBlocks` is the disjunction of the sources'. A `min_version`
+    /// hardcoded to the writer's version would erase, on a merge that took in
+    /// a segment written by an older Lucene, the only record that older bytes
+    /// were still present.
     #[test]
     fn a_merged_si_takes_the_oldest_source_min_version_and_any_sources_blocks() {
         let tmp = tempdir();

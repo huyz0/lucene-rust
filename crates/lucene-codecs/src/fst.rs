@@ -4952,8 +4952,8 @@ mod tests {
     fn typed_output_decoders_reject_a_corrupt_payload_instead_of_panicking() {
         // `PositiveIntOutputs::decode`/`PairOutputs::decode` read a payload
         // that came off the FST body, so a truncated or corrupt one reaches
-        // them. Before this they indexed the slice directly (`bytes[idx]`)
-        // and shifted by an unbounded amount -- both panics.
+        // them. Indexing the slice directly (`bytes[idx]`) or shifting by an
+        // unbounded amount would panic.
         assert!(PositiveIntOutputs::decode(&[0x80]).is_err());
         assert!(PositiveIntOutputs::decode(&[0x80; 32]).is_err());
         type Pairs = PairOutputs<PositiveIntOutputs, ByteSequenceOutputs>;
