@@ -17,6 +17,9 @@
 // comparing them with the document-at-a-time ones.
 thread_local! {
     pub(crate) static BATCHES_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Has `minimum_should_match` enumerate candidates from its cheapest
+    /// clauses only, whatever the clauses' costs.
+    pub(crate) static FORCE_SPARSE_MSM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Picks the dense conjunction for every non-scoring term conjunction,
     /// whatever the segment size and lead cost.
     pub(crate) static FORCE_DENSE_CONJUNCTION: std::cell::Cell<bool> =
@@ -2257,6 +2260,46 @@ mod fixture {
                     crate::exec::tests::FORCE_DENSE_CONJUNCTION.with(|f| f.set(false));
                     (kind, docs.0, counted.0)
                 };
+                // `minimum_should_match`: leads enumerate the candidates and the
+                // tail is looked up, as against every clause decoded a window
+                // at a time -- the same documents and scores, with and without
+                // a threshold.
+                for mode in [Mode::Complete, Mode::TopScores] {
+                    let hits_of = |sparse: bool| {
+                        crate::exec::tests::FORCE_SPARSE_MSM.with(|f| f.set(sparse));
+                        let mut all = crate::exec::tests::All(Vec::new());
+                        let mut top = crate::TopDocsCollector::with_total_hits_threshold(5, 5);
+                        let mut kind = "";
+                        if let Some(mut b) = bulk_boolean(&ctx, &q, 1.0, mode).unwrap() {
+                            kind = b.kind();
+                            let c: &mut dyn crate::ScoringCollector = if mode == Mode::Complete {
+                                &mut all
+                            } else {
+                                &mut top
+                            };
+                            crate::exec::score_segment(&mut b, mode, seg.live_docs, c, ctx.max_doc)
+                                .unwrap();
+                        }
+                        crate::exec::tests::FORCE_SPARSE_MSM.with(|f| f.set(false));
+                        (kind, all.0, crate::exec::tests::pairs(top.top_docs()))
+                    };
+                    let (kind, dense_all, dense_top) = hits_of(false);
+                    if kind == "min_should_match" {
+                        let (_, sparse_all, sparse_top) = hits_of(true);
+                        assert_eq!(
+                            sparse_all,
+                            dense_all,
+                            "{}: sparse msm {mode:?}",
+                            m[&format!("query.{i}")]
+                        );
+                        assert_eq!(
+                            sparse_top,
+                            dense_top,
+                            "{}: sparse msm top {mode:?}",
+                            m[&format!("query.{i}")]
+                        );
+                    }
+                }
                 let (_, want, _) = docs_of(false);
                 let (kind, got, counted) = docs_of(true);
                 if !kind.is_empty() {
