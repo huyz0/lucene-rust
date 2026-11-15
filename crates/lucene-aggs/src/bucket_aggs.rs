@@ -1018,6 +1018,10 @@ pub struct Globals<'g> {
     /// less what it made already): a pass whose buckets pass it stops with
     /// [`lucene_search::Error::TooManyBuckets`] instead of building them all.
     bucket_limit: usize,
+    /// The reader-wide preparation of each filter query's function queries
+    /// (a `script` filter, say), by the filter's address: a segment's
+    /// filter bits are built with it ([`filter_bits`]).
+    filter_stats: HashMap<usize, lucene_search::GlobalStats>,
 }
 
 /// A keyword `missing` term among the global ordinals.
@@ -1036,6 +1040,7 @@ impl<'g> Globals<'g> {
             ords,
             missing: HashMap::new(),
             bucket_limit: usize::MAX,
+            filter_stats: HashMap::new(),
         }
     }
 
@@ -2117,7 +2122,7 @@ fn open_leaf<'a>(
         AggNode::Filters { filters, .. } => {
             let mut bits = Vec::with_capacity(filters.len());
             for f in filters {
-                bits.push(filter_bits(view.seg, f)?);
+                bits.push(filter_bits(view.seg, f, globals)?);
             }
             Col::Filters(bits)
         }
@@ -2324,15 +2329,47 @@ fn composite_leaf<'a>(
     })))
 }
 
+/// The reader-wide preparation of the function queries of every filter in
+/// `nodes` (and under them), by the filter's address; a filter without one
+/// has no entry.
+///
+/// # Errors
+/// What preparing a function query reports.
+fn resolve_filter_stats(
+    nodes: &[AggNode],
+    segments: &[OpenSegment<'_>],
+) -> Result<HashMap<usize, lucene_search::GlobalStats>> {
+    let mut filters = Vec::new();
+    for n in nodes {
+        n.filter_queries(&mut filters);
+    }
+    let mut out = HashMap::new();
+    for f in filters {
+        if let Some(stats) = lucene_search::multi_segment::leaf_stats(segments, f, false, None)? {
+            out.insert(f as *const BooleanQuery as usize, stats);
+        }
+    }
+    Ok(out)
+}
+
 /// A filter's matches in one segment, deletions ignored (`FiltersAggregator`
 /// asks the weight for every document; only live ones are collected), as
 /// bits; `None` when it matches every document.
-fn filter_bits(seg: &OpenSegment<'_>, filter: &BooleanQuery) -> Result<Option<Vec<u64>>> {
+fn filter_bits(
+    seg: &OpenSegment<'_>,
+    filter: &BooleanQuery,
+    globals: &Globals<'_>,
+) -> Result<Option<Vec<u64>>> {
+    let original = filter;
     let rewritten =
         lucene_search::multi_segment::rewrite_points_ranges(filter, std::slice::from_ref(seg));
     let filter = rewritten.as_ref().unwrap_or(filter);
     let clause = segment_match::lone_clause(filter);
-    let ctx = segment_match::plain_context(seg);
+    let ctx = segment_match::plain_context(seg).with_global(
+        globals
+            .filter_stats
+            .get(&(original as *const BooleanQuery as usize)),
+    );
     let max_doc = seg.max_doc.unwrap_or(0);
     let max = usize::try_from(max_doc).unwrap_or(0);
     let mut words = Vec::new();
@@ -5139,6 +5176,7 @@ pub fn aggregate_tree_cached(
         ords: globals.ords,
         missing: resolve_missing(nodes, globals, readers)?,
         bucket_limit: globals.bucket_limit,
+        filter_stats: resolve_filter_stats(nodes, segments)?,
     };
     let globals = &resolved;
     // The request's key, when the cache can answer it at all: the tree's and
@@ -9680,5 +9718,48 @@ mod tests {
         let (docs, rev) = docs_of(&subs[0]);
         assert_eq!(docs, vec![want[0].0, want[1].0]);
         assert_eq!(docs_of(&rev[0]).0, vec![want[0].1, want[1].1]);
+    }
+
+    /// A filter whose query holds a function query is prepared over the whole
+    /// reader first, as the request's own query is: its bits count the same
+    /// documents as that query run as the request's.
+    #[test]
+    fn a_filter_with_a_function_query_is_prepared_reader_wide() {
+        use lucene_search::function::valuesource::IntFieldSource;
+        use lucene_search::function::{FunctionRangeQuery, ValueSource};
+        let dir = format!(
+            "{}/../../fixtures/data/function/index",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let reader = DirectoryReader::open(&FsDirectory::open(dir)).expect("open fixture");
+        let source: Arc<dyn ValueSource> = Arc::new(IntFieldSource::new("i"));
+        let function = || BooleanQuery {
+            must: vec![Clause::from(FunctionRangeQuery::new(
+                Arc::clone(&source),
+                Some("1"),
+                None,
+                true,
+                true,
+            ))],
+            ..Default::default()
+        };
+        let count = |q: &BooleanQuery, filter: BooleanQuery| {
+            let node = AggNode::Filters {
+                filters: vec![filter],
+                other: false,
+                subs: Vec::new(),
+            };
+            let got = run(&reader, q, std::slice::from_ref(&node), &whole(&reader))
+                .unwrap()
+                .remove(0)
+                .remove(0);
+            let AggResult::Fixed { docs, .. } = got else {
+                panic!("{got:?}")
+            };
+            docs[0]
+        };
+        let matched = count(&function(), all());
+        assert!(matched > 0, "the fixture has documents with i >= 1");
+        assert_eq!(count(&all(), function()), matched);
     }
 }
