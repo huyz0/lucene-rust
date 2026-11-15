@@ -986,6 +986,19 @@ pub extern "C" fn ffi_engine_writer_set_ivf_partition_clusters(
     guard(|| with_writer(handle, |w| set_ivf_partition_clusters(w, min_vectors)))
 }
 
+/// `index.codec.stored_fields.recompress_on_merge: non_force` (with the open
+/// flag for the setting on): forced merges bulk-copy stored-field chunks
+/// instead of recompressing them. `on == 0` clears it.
+#[no_mangle]
+pub extern "C" fn ffi_engine_writer_set_merge_lz4_hc_non_force(handle: u64, on: u8) -> i32 {
+    guard(|| {
+        with_writer(handle, |w| {
+            set_merge_lz4_hc_non_force(w, on != 0);
+            Ok(())
+        })
+    })
+}
+
 /// `BPReorderingMergePolicy` around the shard's merge policy
 /// (`index.merge.reorder.*`), or off when `enabled == 0`: merges of
 /// at least `max(min_merge_docs, min_merge_ratio * the biggest segment's
@@ -2278,6 +2291,15 @@ mod tests {
 
     /// The setting reaches the writer, `0` turns it off, and a negative
     /// value is refused without changing it.
+    #[test]
+    fn merge_lz4_hc_non_force_is_accepted_by_a_live_writer_only() {
+        let tmp = empty_index("engine-writer-hc-non-force");
+        let h = open(&tmp, 0);
+        assert_eq!(ffi_engine_writer_set_merge_lz4_hc_non_force(h, 1), 0);
+        assert_eq!(ffi_engine_writer_set_merge_lz4_hc_non_force(h, 0), 0);
+        assert_ne!(ffi_engine_writer_set_merge_lz4_hc_non_force(0, 1), 0);
+    }
+
     #[test]
     fn ivf_partition_clusters_reach_the_writer() {
         let tmp = empty_index("engine-writer-ivf-partitions");
