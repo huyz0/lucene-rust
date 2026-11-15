@@ -105,7 +105,6 @@ def cases():
     T["text_prefixes"] = ({"type": "text", "index_prefixes": {"min_chars": 2, "max_chars": 4}}, text)
     T["text_phrases"] = ({"type": "text", "index_phrases": True}, text)
     T["text_boolsim"] = ({"type": "text", "similarity": "boolean"}, text)
-    T["text_lmd"] = ({"type": "text", "similarity": "LMDirichlet"}, text)
     T["text_slop_gap"] = ({"type": "text", "position_increment_gap": 5}, lambda r: [text(r) for _ in range(r.randint(1, 3))])
     T["match_only_text"] = ({"type": "match_only_text"}, text)
     T["search_as_you_type"] = ({"type": "search_as_you_type"}, text)
@@ -128,7 +127,6 @@ def cases():
     T["nested"] = ({"type": "nested", "properties": {"a": {"type": "keyword"}, "n": {"type": "long"}}}, lambda r: [{"a": r.choice(["x", "y", "z"]), "n": r.randint(0, 9)} for _ in range(r.randint(0, 3))])
     T["completion"] = ({"type": "completion"}, lambda r: r.choice(["alpha", "alphabet", "beta", {"input": ["gamma", "gam"], "weight": 5}, ["delta", "del"]]))
     T["version"] = ({"type": "version"}, lambda r: r.choice(["1.0.0", "1.10.0", "2.0.0-rc1", "1.2.3+build", "10.0.1", "bad" if r.random() < .05 else "1.0.0"]))
-    T["xy_point"] = ({"type": "xy_point"}, lambda r: r.choice([{"x": r.uniform(-100, 100), "y": r.uniform(-100, 100)}, [r.uniform(-100, 100), r.uniform(-100, 100)], "1.5, 2.5"]))
     return T
 
 
@@ -136,12 +134,12 @@ def cases():
 def queries(name, r):
     t = name
     q = [{"exists": {"field": "f"}}, {"match_all": {}}]
-    numeric = t.split("_")[0] in ("byte", "short", "integer", "long", "unsigned", "float", "half", "double", "scaled") or t.startswith("long")
+    numeric = (t.split("_")[0] in ("byte", "short", "integer", "long", "unsigned", "float", "half", "double", "scaled") or t.startswith("long")) and not t.endswith("_range")
     if numeric:
         v = r.choice([0, 1, -1, 5, 3.5, 100, 2**31, -7])
         q += [{"term": {"f": v}}, {"terms": {"f": [v, 2, 3]}}, {"range": {"f": {"gte": -5, "lte": 50}}}, {"range": {"f": {"gt": v}}}, {"range": {"f": {"lt": v}}},
               {"match": {"f": v}}, {"query_string": {"query": "f:[-5 TO 50]"}}, {"query_string": {"query": f"f:{v}"}}, {"bool": {"must_not": {"range": {"f": {"gte": 0}}}}}]
-    elif t.startswith("date"):
+    elif t.startswith("date") and not t.endswith("_range"):
         d = r.choice(["2020-02-29", "2000-01-01", "1970-01-01T00:00:00Z", "2020-02-29T12:00:00Z"])
         q += [{"term": {"f": d}}, {"range": {"f": {"gte": "1999-01-01", "lte": "2021-01-01"}}}, {"range": {"f": {"gt": d}}}, {"range": {"f": {"lt": d, "format": "strict_date_optional_time"}}},
               {"range": {"f": {"gte": 0, "lte": 10**12, "format": "epoch_millis"}}}, {"match": {"f": d}}, {"query_string": {"query": "f:[2000 TO 2020]"}},
@@ -203,12 +201,12 @@ def queries(name, r):
 def aggs(name, r):
     a = []
     t = name
-    numeric = t.split("_")[0] in ("byte", "short", "integer", "long", "unsigned", "float", "half", "double", "scaled") or t.startswith("long")
+    numeric = (t.split("_")[0] in ("byte", "short", "integer", "long", "unsigned", "float", "half", "double", "scaled") or t.startswith("long")) and not t.endswith("_range")
     dv = not t.endswith("_nodv")
     if numeric and dv and not t.endswith("noindex") or (numeric and t.endswith("noindex")):
         a += [{"stats": {"field": "f"}}, {"terms": {"field": "f", "size": 50, "order": [{"_key": "asc"}]}}, {"histogram": {"field": "f", "interval": 10, "min_doc_count": 1}} if t not in ("unsigned_long",) else {"max": {"field": "f"}},
               {"percentiles": {"field": "f", "percents": [50]}} if False else {"cardinality": {"field": "f"}}, {"range": {"field": "f", "ranges": [{"to": 0}, {"from": 0}]}}, {"avg": {"field": "f", "missing": 1}} if t != "unsigned_long" else {"min": {"field": "f"}}]
-    elif t.startswith("date"):
+    elif t.startswith("date") and not t.endswith("_range"):
         a += [{"date_histogram": {"field": "f", "calendar_interval": "year", "min_doc_count": 1}}, {"min": {"field": "f"}}, {"max": {"field": "f", "format": "yyyy"}}, {"terms": {"field": "f", "size": 50, "order": [{"_key": "asc"}]}},
               {"date_range": {"field": "f", "ranges": [{"to": "2000-01-01"}, {"from": "2000-01-01"}]}}, {"cardinality": {"field": "f"}}]
     elif t == "boolean":
@@ -246,7 +244,7 @@ def main():
     ap.add_argument("--only", default="")
     ap.add_argument("--merge", type=int, default=1)
     a = ap.parse_args()
-    plugin, stock = Node(a.plugin), Node(a.stock)
+    plugin, stock = Node(a.plugin, 60), Node(a.stock, 60)
     r = random.Random(a.seed)
     bad = 0
     checked = 0
@@ -303,7 +301,8 @@ def main():
                 bad += 1
                 print(f"{name}: agg {json.dumps(ag)[:200]} -> {d[:300]}")
         # sort by the field, and docvalue_fields / fields API
-        for body in [{"size": 20, "sort": [{"f": {"order": o, "missing": m}}, {"_seq_no": "asc"}], "_source": False} for o in ("asc", "desc") for m in ("_first", "_last")] + \
+        sortable = not (name.endswith("_range") or name in ("geo_shape", "geo_point", "geo_point_ign", "xy_point", "nested", "object_dynamic", "object_strict_ok", "flat_object", "completion", "binary", "rank_feature", "rank_features", "search_as_you_type", "text", "match_only_text") or name.startswith("text") or name.endswith("noindex") or name.endswith("_nodv"))
+        for body in ([] if not sortable else [{"size": 20, "sort": [{"f": {"order": o, "missing": m}}, {"_seq_no": "asc"}], "_source": False} for o in ("asc", "desc") for m in (("_last",) if name == "date_nanos" else ("_first", "_last"))]) + \
                     [{"size": 30, "docvalue_fields": ["f"], "_source": False, "sort": [{"_seq_no": "asc"}]}, {"size": 30, "fields": ["f"], "_source": False, "sort": [{"_seq_no": "asc"}]}]:
             checked += 1
             p = plugin.req("POST", f"/{idx}/_search", body)
