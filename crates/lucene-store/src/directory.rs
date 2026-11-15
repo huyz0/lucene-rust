@@ -1832,14 +1832,11 @@ mod tests {
     /// A **zero-length** file: the edge `SMALL_FILE_READ_THRESHOLD` moves
     /// across a code path, checked to move nothing observable.
     ///
-    /// `0 <= threshold` is always true, so an empty file now takes the read
-    /// arm where it used to be mapped. It is worth pinning because the
-    /// obvious guess about the old behaviour is wrong: `mmap(2)` rejects a
-    /// zero length, but `memmap2::Mmap::map` special-cases it and hands back
-    /// an empty mapping rather than an error -- so the two arms *already*
-    /// agreed and this change kept them agreeing. Asserted rather than
-    /// assumed, because a reviewer of this batch predicted the opposite and
-    /// only running it settled which.
+    /// `0 <= threshold` is always true, so an empty file takes the read arm
+    /// rather than being mapped. Worth pinning because the obvious guess is
+    /// wrong: `mmap(2)` rejects a zero length, but `memmap2::Mmap::map`
+    /// special-cases it and hands back an empty mapping rather than an error,
+    /// so the two arms agree.
     #[test]
     fn a_zero_length_file_reads_as_empty_on_every_backend() {
         let root = tempdir();
@@ -1850,7 +1847,7 @@ mod tests {
         assert!(matches!(read, Input::Owned(_)), "{read:?}");
         assert!(read.is_empty());
 
-        // The mapping arm, which it used to take -- still `Ok`, still empty.
+        // The mapping arm -- also `Ok`, also empty.
         let mapped = MmapDirectory::with_read_threshold(&root, 0)
             .open("_0.nvm")
             .expect("memmap2 maps a zero-length file rather than refusing it");

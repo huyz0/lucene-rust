@@ -1761,8 +1761,8 @@ fn write_merged_stored_fields(
         .collect();
     let matching = matching_readers(sources, per_source_maps);
     // Java runs `reader.checkIntegrity(mergeState.oneMerge)` on every
-    // source before it picks a strategy, and it matters most for the one
-    // this batch added: BULK copies a source's compressed bytes verbatim
+    // source before it picks a strategy, and it matters most for
+    // BULK, which copies a source's compressed bytes verbatim
     // and then writes a freshly computed, valid footer over them, so a bit
     // flip in the source would be laundered into a merged segment that
     // passes every checksum from then on. `stored_fields::open` only
@@ -2164,12 +2164,11 @@ fn write_merged_stored_fields_with_factory(
 /// writer is, which is also what an empty source list yields (Java would
 /// keep the seed too).
 ///
-/// This port used to write the writer's own version here unconditionally. It
-/// is right only while every source was written by this writer at this
-/// version: the moment a merge takes in a segment another Lucene wrote, the
-/// merged `.si` claims a `minVersion` newer than the oldest bytes it
-/// actually carries, which is the one fact upgrade tooling and
-/// `IndexFormatTooOldException` are decided from.
+/// Writing the writer's own version unconditionally is right only while every
+/// source was written by this writer at this version: once a merge takes in a
+/// segment another Lucene wrote, the merged `.si` would claim a `minVersion`
+/// newer than the oldest bytes it carries, which is the one fact upgrade
+/// tooling and `IndexFormatTooOldException` are decided from.
 fn merged_min_version(sources: &[MergeSource], latest: LuceneVersion) -> Option<LuceneVersion> {
     fold_min_version(latest, sources.iter().map(|s| s.min_version))
 }
@@ -2547,8 +2546,9 @@ fn merge_segments_mapped_inner(
     //
     // The five doc-values merges, the norms merge and the points merge read
     // only the sources and write nothing, so they run in parallel up front.
-    // Each result is unwrapped where its stage used to run, so the files
-    // written before a failing stage, and which error wins, are unchanged.
+    // Each result is unwrapped at the stage that consumes it, so the files
+    // written before a failing stage, and which error wins, do not depend on
+    // the parallelism.
     let reverse_maps = invert_field_number_maps(&per_source_maps);
     let sorted_numeric_remap = options.sorted_numeric_remap.as_deref();
     let norms_result = merge_norms(
@@ -5547,13 +5547,11 @@ fn source_ord_to_doc(
 fn build_doc_id_maps(per_source_max_doc: &[i32], doc_order: &[(usize, i32)]) -> Vec<Vec<i32>> {
     let mut maps: Vec<Vec<i32>> = per_source_max_doc
         .iter()
-        // `max_doc` is a **file-derived value sizing an allocation**, and it
-        // was not as validated as this comment used to claim:
+        // `max_doc` is a **file-derived value sizing an allocation**:
         // `stored_fields::open` checks only that its `.fdm` `maxDoc` is
-        // non-negative, so `i32::MAX` here reserves 8.6 GB -- a SIGABRT,
-        // reproduced under `ulimit -v` by
-        // `index_writer`'s `a_segment_whose_fdm_disagrees_with_its_si_about_max_doc_is_not_merged`.
-        // The bound is now at the caller, where the `.si`'s document count
+        // non-negative, so `i32::MAX` here would reserve 8.6 GB -- a SIGABRT
+        // (`index_writer`'s `a_segment_whose_fdm_disagrees_with_its_si_about_max_doc_is_not_merged`
+        // covers it). The bound is at the caller, where the `.si`'s document count
         // (the figure Java's `SegmentMerger` works from) is in scope:
         // `IndexWriter::execute_merge` reports `SegmentDocCountMismatch`
         // rather than reserving for a number one file made up. The
@@ -9387,8 +9385,7 @@ mod tests {
         // Doc-values *types* mix freely in one segment: every merged field
         // goes into the same `.dvm`/`.dvd`/`.dvs` through
         // `doc_values::write_dense_fields`, which is what a real
-        // `Lucene90DocValuesFormat` segment is. (Before this batch the merge
-        // wrote one field triple per type and had to refuse the combination.)
+        // `Lucene90DocValuesFormat` segment is.
         let seg0_id = [1u8; ID_LENGTH];
         let numeric_dv = flush_numeric_dv(0, &[1], seg0_id);
         let binary_dv = flush_binary_dv(1, &[b"v".to_vec()], seg0_id);
@@ -15049,9 +15046,7 @@ mod tests {
     #[test]
     fn two_sources_merge_positions_offsets_and_payloads_correctly() {
         // End-to-end: two segments, each with a field indexing positions,
-        // offsets, and payloads, merged into one -- regression test for the
-        // gap flagged in the module's top doc comment ("only Docs/
-        // DocsAndFreqs fields merge today"). Verifies the merged term
+        // offsets, and payloads, merged into one. Verifies the merged term
         // dictionary's positions/offsets/payloads are queryable post-merge
         // via `FieldTerms::positions`, the same read path phrase matching
         // uses.
@@ -15834,7 +15829,7 @@ mod tests {
     fn a_positions_indexing_source_missing_an_opened_pos_reader_is_a_clean_error_not_a_panic() {
         // Reuses source0's fixture from the payloads-disagreement test above
         // (a real DocsAndFreqsAndPositions field), but the caller "forgets"
-        // to open pos_in -- regression test proving this is a typed
+        // to open pos_in -- proves this is a typed
         // `Error::PostingsPositionsInputMissingInSource`, not an `expect()`
         // panic deep inside the per-term merge loop.
         let seg0_id = [1u8; ID_LENGTH];

@@ -644,8 +644,8 @@ fn write_deflate_unit(
 
 /// One sub-block's *compressed* byte count, as a length rather than as a raw
 /// vint: these are only ever used to skip or to bound a decompressor, and a
-/// negative one sign-extended through `as usize` into ~2^64 -- which then
-/// overflowed the running total the `length == 0` skip path sums up.
+/// negative one would sign-extend through `as usize` into ~2^64 and overflow
+/// the running total the `length == 0` skip path sums up.
 fn read_compressed_length(input: &mut SliceInput) -> Result<usize> {
     let len = input.read_vint()?;
     if len < 0 {

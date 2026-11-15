@@ -42,19 +42,15 @@ fn main() {
     // triggers here).
     let values: Vec<i64> = vec![5, 250, 0, 1_000_000, -1_000_000, 42, 42, 999_999];
 
-    // Regression case for the `gcd==1 && min>0 && unsignedBitsRequired(max)
+    // Case for the `gcd==1 && min>0 && unsignedBitsRequired(max)
     // == unsignedBitsRequired(max-min)` min-shift-drop optimization
     // (Lucene90DocValuesConsumer.java): every value here has `min == 1 > 0`,
     // and `bitsRequired(255) == bitsRequired(254) == 8`, so the shift must
-    // be dropped -- a review pass before this writer's commit found this
-    // exact branch had zero coverage against real Lucene (segment "_0"
-    // above never has `min > 0`), only against this port's own reader.
+    // be dropped (segment "_0" above never has `min > 0`).
     let shift_drop_values: Vec<i64> = vec![1, 255, 128, 64, 200, 1, 254, 100];
 
-    // Regression case for the `min >= max` all-constant encoding
-    // (`bitsPerValue == 0`, every doc decodes to `min_value` alone) -- also
-    // previously unverified against real Lucene, only via a pure-Rust unit
-    // test.
+    // Case for the `min >= max` all-constant encoding
+    // (`bitsPerValue == 0`, every doc decodes to `min_value` alone).
     let constant_values: Vec<i64> = vec![42; 6];
 
     let numeric_segments: [(&str, &[i64]); 3] = [

@@ -9,8 +9,9 @@
 //! document -- over `read_occurrences_for_docs`.
 //!
 //! Three documents per term: the first in the postings list, one in the
-//! middle, and the last. The new path's cost depends on where the document
-//! sits (everything after it is never read); the old path's does not.
+//! middle, and the last. The per-document path's cost depends on where the
+//! document sits (everything after it is never read); the all-documents
+//! path's does not.
 //!
 //! Measured against `benchmarks/.corpus/merged` (`scripts/bench-corpus.sh`);
 //! **the bench skips itself when that corpus is absent**.

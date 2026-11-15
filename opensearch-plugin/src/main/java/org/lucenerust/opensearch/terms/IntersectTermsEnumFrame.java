@@ -35,7 +35,6 @@ final class IntersectTermsEnumFrame {
   long fpEnd;
   long lastSubFP;
 
-  // private static boolean DEBUG = IntersectTermsEnum.DEBUG;
 
   // State in automaton
   int state;

@@ -40,7 +40,6 @@ import org.apache.lucene.util.automaton.TransitionAccessor;
  */
 final class IntersectTermsEnum extends BaseTermsEnum {
 
-  // static boolean DEBUG = BlockTreeTermsWriter.DEBUG;
 
   final IndexInput in;
 

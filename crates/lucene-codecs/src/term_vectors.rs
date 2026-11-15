@@ -620,13 +620,12 @@ impl<'d> TermVectorsReader<'d> {
         // array (see `packed_ints`), not `direct_reader`/`block_packed`.
         let token = input.read_byte()? as u32;
         let bits_per_field_num = token & 0x1F;
-        // The count arrives as a 3-bit inline field with a vint escape. It
-        // used to accumulate into a `u32`: `read_vint` returns `i32`, so a
-        // negative escape became ~4 billion through `as u32`, the `+=`
-        // overflowed (debug panic) or wrapped (release), and
-        // `packed_ints::byte_count` then sized `vec![0u8; n]` at up to ~16 GB
-        // -- the **abort** shape, which `catch_unwind` at the FFI boundary
-        // cannot intercept.
+        // The count arrives as a 3-bit inline field with a vint escape.
+        // Accumulating into a `u32` would turn a negative escape (`read_vint`
+        // returns `i32`) into ~4 billion through `as u32`, overflow or wrap
+        // the `+=`, and let `packed_ints::byte_count` size `vec![0u8; n]` at up
+        // to ~16 GB -- the **abort** shape, which `catch_unwind` at the FFI
+        // boundary cannot intercept.
         //
         // `i64` throughout so nothing can wrap, then bounded by two
         // independent facts: the writer's own invariant (`flush_field_nums`
@@ -876,18 +875,18 @@ impl<'d> TermVectorsReader<'d> {
         // chunk cannot be produced by *any* input and is rejected before a
         // byte is allocated.
         //
-        // The `.max(0)` this used to fold in silently accepted a *negative*
-        // length and then let the per-document cursor below add it as a huge
-        // `usize`. A byte length off disk is never negative in anything
+        // Folding negatives away with `.max(0)` would silently accept a
+        // *negative* length and let the per-document cursor below add it as a
+        // huge `usize`. A byte length off disk is never negative in anything
         // Lucene wrote, so a negative one is rejected outright: that is what
         // makes every partial sum below a prefix of a total that has already
         // been bounded.
         // `prefix_lengths` does not contribute to the decompressed length --
         // a prefix is shared with the *previous* term, not stored again -- but
-        // it is the same kind of value off the same stream, and `build_field`
-        // used to fold a negative one away with `.max(0)`, decoding the term
-        // from its suffix alone: accepted, self-consistent and wrong, where
-        // Java throws (`System.arraycopy` with a negative `destPos`). Checked
+        // it is the same kind of value off the same stream, and folding a
+        // negative one away with `.max(0)` would decode the term from its
+        // suffix alone: accepted, self-consistent and wrong, where Java throws
+        // (`System.arraycopy` with a negative `destPos`). Checked
         // here so `build_field` can cast without a reflex.
         sum_byte_lengths(&prefix_lengths, "term prefix")?;
         let total_suffix_len = sum_byte_lengths(&suffix_lengths, "term suffix")?;
@@ -2400,13 +2399,13 @@ fn build_field(inp: FieldDecodeInput) -> Result<TermVectorField> {
     let has_offsets = inp.flags & FLAG_OFFSETS != 0;
     let has_payloads = inp.flags & FLAG_PAYLOADS != 0;
 
-    // Every length below comes off `.tvd`, and every one of them used to
-    // reach an index or a `Vec::with_capacity` unbounded: a `prefixLength`
-    // longer than the term it shares with panicked, and a `freq` or a
-    // `numTerms` a corrupt file chose asked for a multi-petabyte allocation,
-    // which **aborts** -- a failure no `catch_unwind` at the FFI boundary can
-    // intercept. The re-signed `.tvd` body sweep hands this decoder
-    // well-formed-but-wrong files. The rule (`docs/arithmetic-gate.md`): a length off disk is
+    // Every length below comes off `.tvd`, and none may reach an index or a
+    // `Vec::with_capacity` unbounded: a `prefixLength` longer than the term it
+    // shares with would panic, and a `freq` or a `numTerms` a corrupt file
+    // chose would ask for a multi-petabyte allocation, which **aborts** -- a
+    // failure no `catch_unwind` at the FFI boundary can intercept. Re-signed
+    // corrupt `.tvd` bodies reach this decoder as well-formed-but-wrong files.
+    // The rule (`docs/arithmetic-gate.md`): a length off disk is
     // bounded by the bytes that must exist for it before it sizes anything.
     let bounded = |off: usize, len: usize, have: usize| -> Result<std::ops::Range<usize>> {
         let end = off
@@ -3124,10 +3123,9 @@ mod tests {
     #[test]
     fn negative_term_prefix_length_is_a_decode_error_not_a_shorter_term() {
         // A prefix is shared with the *previously decoded* term, which lives
-        // in a different part of the file. `build_field` used to fold a
-        // negative one away with `.max(0)` and decode the term from its
-        // suffix alone -- accepted, self-consistent and wrong, where Java
-        // throws (`System.arraycopy` with a negative `destPos`).
+        // in a different part of the file. Folding a negative one away with
+        // `.max(0)` would decode the term from its suffix alone -- accepted,
+        // self-consistent and wrong, where Java throws (`System.arraycopy` with a negative `destPos`).
         let (mut tvd, tvx, mut tvm, chunk_start) =
             build_single_doc_chunk_with_meta_overrides(1, 0, 0);
         let prefixes_at = chunk_start + 13;
@@ -3148,8 +3146,8 @@ mod tests {
 
     #[test]
     fn negative_term_suffix_length_is_a_decode_error() {
-        // The decompressed-length ceiling used to fold negatives away with
-        // `.max(0)`, which let the per-document byte cursor add one as a huge
+        // Folding negatives away with `.max(0)` in the decompressed-length
+        // ceiling would let the per-document byte cursor add one as a huge
         // `usize` and index the decompressed buffer from nowhere.
         let (mut tvd, tvx, mut tvm, chunk_start) =
             build_single_doc_chunk_with_meta_overrides(1, 0, 0);
@@ -3756,9 +3754,8 @@ mod tests {
     /// With `OffsetAttribute`'s real unit (UTF-16 code units), a
     /// multi-byte term's offset span is **shorter** than the term's UTF-8 byte
     /// length, so `flushOffsets`' `length - prefixLength - suffixLength` goes
-    /// negative -- the first caller in this crate ever to feed
-    /// `block_packed::encode_all` a negative value (its doc comment used to
-    /// say no caller did). `caf\u{e9}` spans 4 Java `char`s and occupies 5
+    /// negative -- the one caller in this crate that feeds
+    /// `block_packed::encode_all` negative values. `caf\u{e9}` spans 4 Java `char`s and occupies 5
     /// bytes: -1. `\u{4e16}\u{754c}` spans 2 and occupies 6: -4. Java's
     /// reader adds `prefixLength + suffixLength` back the same way, so a
     /// wrong sign here is invisible to every ASCII fixture and wrong for
@@ -3833,7 +3830,7 @@ mod tests {
 
     #[test]
     fn write_best_speed_all_field_numbers_zero_uses_nonzero_bit_width() {
-        // Regression test: a chunk where every field across every doc has
+        // A chunk where every field across every doc has
         // field_number == 0 (an entirely ordinary case -- e.g. any
         // single-field index) must not encode bits_per_field_num as 0. Real
         // Lucene's reader unconditionally indexes packedBulkOps[bitsPerValue
@@ -4874,10 +4871,9 @@ mod tests {
         // `a_chunk_claiming_two_billion_documents_is_a_decode_error_not_an_overflow`:
         // `Lucene90CompressingTermVectorsWriter.copyChunks` also decodes
         // `code >>> 1`, so a corrupt token drives both `doc` and the writer's
-        // own `numDocs` past `i32::MAX`. The old code advanced both with a
-        // plain `+=` *before* testing `doc > to_doc`, so a wrap put the
-        // cursor back inside the range and copied a chunk body two billion
-        // documents long.
+        // own `numDocs` past `i32::MAX`. Advancing both with a plain `+=`
+        // *before* testing `doc > to_doc` would let a wrap put the cursor back
+        // inside the range and copy a chunk body two billion documents long.
         let docs: Vec<_> = (0..300).map(tiny_doc).collect();
         let (mut s_tvd, s_tvx, mut s_tvm) = segment(&docs);
         let entry = {

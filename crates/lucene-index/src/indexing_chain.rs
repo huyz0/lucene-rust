@@ -419,9 +419,7 @@ pub fn invert_documents(docs: &[(i32, &str, &str)], analyzer: &Analyzer) -> InMe
 ///
 /// `check_index` carries a private copy of the same constant, for the read
 /// side of the identical rule (`postings.positions_valid`). The two should be
-/// one definition -- this is the writer's half, so this is the one to keep --
-/// but that module is another batch's, so the consolidation is left as a
-/// follow-up rather than done across the boundary.
+/// one definition -- this is the writer's half, so this is the one to keep.
 pub const MAX_POSITION: i32 = i32::MAX - 128;
 
 /// `IndexingChain.PerField.invert`'s `invertState.position += posIncr`, with
@@ -510,9 +508,9 @@ pub fn invert_documents_with_payloads(
     // field, and Java runs them through one `FieldInvertState`
     // (`PerField.invert(docID, field, first)` resets it only when `first`,
     // which `IndexingChain.processField` sets from `pf.fieldGen != fieldGen`).
-    // Splitting them, as this loop used to, restarted both counters at each
-    // value -- so two values both began at position 0 and offset 0, which is a
-    // phrase match across a value boundary that Lucene does not have, and two
+    // Splitting them would restart both counters at each value -- so two
+    // values would both begin at position 0 and offset 0, giving a phrase
+    // match across a value boundary that Lucene does not have, and two
     // occurrences claiming the same offsets.
     //
     // Gathered **by key, not by adjacency**: `PerField` owns its state for the

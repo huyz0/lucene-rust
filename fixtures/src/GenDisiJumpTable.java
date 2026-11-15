@@ -19,19 +19,17 @@ import java.nio.file.Path;
  * A Java-written segment carrying a real {@code IndexedDISI} <b>block jump
  * table</b>, which nothing else in this tree does.
  *
- * <p>{@code c39-codecs-readpath} ported the jump table in both directions and
- * proved the <i>write</i> side against real Lucene
+ * <p>The jump table is ported in both directions and the <i>write</i> side is
+ * proved against real Lucene
  * ({@code VerifySparseNumericDocValues}' block-jump pass, two independent
- * negative controls). The read side had never run over bytes Lucene wrote, for
- * a fixture reason rather than a design one: {@code IndexedDISI.writeBitSet}
- * emits {@code jumpTableEntryCount = 0} for anything under two logical blocks,
- * and the largest Java-written index in the tree was 36 000 documents against a
- * block size of 65 536. So there was no Java-written table to read.
+ * negative controls). The read side needs bytes Lucene wrote, which an
+ * ordinary fixture cannot give: {@code IndexedDISI.writeBitSet} emits {@code
+ * jumpTableEntryCount = 0} for anything under two logical blocks (65 536
+ * documents each), so a Java-written table needs a larger index.
  *
  * <p>That is the one direction of this format not covered by real bytes, and
- * this sweep has twice found the writer and the reader agreeing on a shared
- * mistake -- the FST framing bug and the invented {@code .si} sort encoding --
- * precisely where only one direction was checked.
+ * a writer and a reader can agree on a shared mistake precisely where only one
+ * direction is checked.
  *
  * <p>{@link #NUM_DOCS} is 200 000, so the sparse field spans four logical
  * 65 536-document blocks and Lucene emits a four-entry table. Every third

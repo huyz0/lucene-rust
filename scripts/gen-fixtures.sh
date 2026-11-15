@@ -75,8 +75,8 @@
 set -euo pipefail
 
 # Modules the generators actually need. lucene-queries is required by
-# GenBlockTree (org.apache.lucene.queries.spans); the fixtures README used to
-# document only lucene-core + lucene-analysis-common, which no longer compiles.
+# GenBlockTree (org.apache.lucene.queries.spans); lucene-core +
+# lucene-analysis-common alone do not compile the generators.
 # lucene-facet is required by GenFacets (org.apache.lucene.facet.*).
 # lucene-highlighter is required by AppendHighlightManifest, which records what
 # `UnifiedHighlighter`'s own PhraseHelper produces rather than re-deriving it.

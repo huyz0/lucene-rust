@@ -486,9 +486,8 @@ pub enum OrdToDoc {
 /// and validates that region against the file, but the two `ordToDoc` regions
 /// get neither treatment.
 ///
-/// The guard they used to carry formed the very sum it existed to guard
-/// (`if start + length > file.len()`, the shape `docs/arithmetic-gate.md`
-/// names): a negative `addressesOffset` arrives as `usize::MAX` through
+/// A guard written `if start + length > file.len()` forms the very sum it exists
+/// to guard (the shape `docs/arithmetic-gate.md` names): a negative `addressesOffset` arrives as `usize::MAX` through
 /// `as usize`, the addition wraps to something small, the comparison
 /// *passes*, and the slice then panics with `start > end`. This decoder is on the query path, so through the FFI that is a dead JVM.
 pub(crate) fn file_region(file: &[u8], offset: i64, length: i64) -> Option<&[u8]> {

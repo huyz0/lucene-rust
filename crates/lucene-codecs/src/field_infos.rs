@@ -786,9 +786,7 @@ fn parse_generation(
         // already cleared `storeTermVector`/`storePayloads`/`omitNorms` before
         // any check looks at them. A `.fnm` carrying those bits on a
         // non-indexed field is therefore a file real Lucene **opens**, with the
-        // bits dropped -- not a corrupt one. This port used to reject it, which
-        // is how a writer-produced segment became unreadable to its own reader
-        // while real Lucene read it fine.
+        // bits dropped -- not a corrupt one, so the reader must accept it.
         fields.push(field.checked()?);
     }
 

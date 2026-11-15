@@ -46,9 +46,7 @@ import java.util.TreeMap;
  * must correctly distinguish "no value" from "value present" for every doc,
  * not just skip past them during forward iteration).
  *
- * <p>Two segments are verified, both previously checked only against this
- * port's own reader (`write_single_sparse_numeric_field_round_trips_through_
- * own_reader` in `doc_values.rs`), never against real Lucene: {@code _0}
+ * <p>Two segments are verified: {@code _0}
  * (20 docs, values missing on docs interspersed throughout -- not just
  * trailing) and {@code _1} (200,000 docs, 1 of every 3 present, forcing
  * {@code IndexedDISI}'s DENSE-bitset per-block shape).

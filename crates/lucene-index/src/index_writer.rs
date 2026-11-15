@@ -2873,9 +2873,9 @@ impl IndexingConfig {
         // 0-doc segment, so we do nothing except commit the merge to remove all
         // the 0-doc segments that we merged").
         //
-        // This port used to run the merge and publish the empty result: a real
-        // zero-document segment that every later open, merge and `CheckIndex`
-        // then pays for, and a `.si`/`.fnm`/`.fdt` set nothing will ever read.
+        // Publishing the empty result would leave a real zero-document segment
+        // that every later open, merge and `CheckIndex` pays for, and a
+        // `.si`/`.fnm`/`.fdt` set nothing will ever read.
         // Placed exactly where Java's is: after the readers exist and before
         // the merge writes anything. It is deliberately *not* hoisted above
         // the `opened` loop, even though each source's live count is
@@ -4824,21 +4824,14 @@ impl IndexingConfig {
             buf.partition,
         );
 
-        // The inner closure the previous shape needed to collect `?`s is
-        // gone: this whole method is that scope now.
         // `IndexWriter.sealFlushedSegment`: every format writes its own files
         // into the segment, each one adding them to the *in-memory*
         // `SegmentInfo.files`, and the `.si` is written once at the end from
         // that accumulated set.
         //
-        // This used to be a `.si` write per file group: the stored-fields
-        // flush wrote one, then postings, term vectors, doc values, norms,
-        // vectors and the index-sort descriptor each re-opened it, re-parsed
-        // it, extended `files` and rewrote and re-fsynced it -- up to seven
-        // writes, six parses and seven fsyncs of a file whose entire content
-        // was already in memory, for a segment whose *data* files were written
-        // exactly once. Only the last write survived; the six before it were
-        // pure I/O.
+        // Rewriting it per file group would re-open, re-parse, extend and
+        // re-fsync a file whose entire content is already in memory, and only
+        // the last write would survive.
         before_write(
             self.codec.as_deref(),
             lucene_codecs::codec::WritePoint::FieldInfos,
@@ -6139,7 +6132,7 @@ impl DocumentVector {
 
 /// Real Lucene routes postings and doc values through
 /// `PerFieldPostingsFormat`/`PerFieldDocValuesFormat`, which do two things this
-/// port previously did neither of: they segregate each format's files under a
+/// port must also do: they segregate each format's files under a
 /// suffixed segment name, `<segment>_<format>_<suffix>.<ext>`, and they record
 /// the format and suffix in each field's `.fnm` attributes so a reader can find
 /// them again. Without both, real Lucene opens the segment, reports zero terms
@@ -6147,7 +6140,7 @@ impl DocumentVector {
 /// format registered against them.
 ///
 /// This port's own reader resolves codec files by extension suffix, so it reads
-/// either naming, which is exactly why the divergence stayed invisible.
+/// either naming; only real Lucene notices a missing suffix.
 /// `IndexWriterConfig.DISABLE_AUTO_FLUSH` (-1): the sentinel that turns one of
 /// the two automatic-flush triggers off.
 pub const DISABLE_AUTO_FLUSH: i32 = -1;
@@ -7402,12 +7395,11 @@ impl<'d> IndexWriter<'d> {
             ));
         }
         // Java's `FieldInfo.checkConsistency`' "indexed field 'x' cannot have
-        // payloads without positions" used to be re-checked here. It is not
-        // any more: `IndexWriter::open` now puts the whole field list through
+        // payloads without positions" is not re-checked here:
+        // `IndexWriter::open` puts the whole field list through
         // `FieldInfos::new` (Java's constructor), so a `FieldInfo` this writer
         // holds has already been through the check that makes the combination
-        // unrepresentable -- and a guard no input can trip is a guard nothing
-        // tests.
+        // unrepresentable.
         Ok(PostingsFieldConfig {
             name: name.to_string(),
             field_number: info.number,
@@ -8165,9 +8157,8 @@ impl<'d> IndexWriter<'d> {
     /// segment is on disk and protected by the deleter, but is **not** yet part
     /// of any commit: it becomes visible to a reader at the next
     /// [`IndexWriter::commit`], and is discarded -- files included -- by
-    /// [`IndexWriter::rollback`]. This is why the method is fallible where it
-    /// used to return `()`; `addDocument` throws `IOException` in Java for the
-    /// same reason.
+    /// [`IndexWriter::rollback`]. This is why the method is fallible;
+    /// `addDocument` throws `IOException` in Java for the same reason.
     pub fn add_document(&mut self, doc: Document) -> Result<SeqNo> {
         self.write_pending_try_changes()?;
         // Not `add_documents(vec![doc])`: the single-document add is the hot
@@ -9510,7 +9501,7 @@ impl IndexWriter<'_> {
 
     /// The file-writing half of a real two-phase commit, port of real Lucene's
     /// `IndexWriter.prepareCommit()`: does every single thing
-    /// [`IndexWriter::commit`] used to do *except* the final
+    /// [`IndexWriter::commit`] does *except* the final
     /// [`crate::segment_infos::write`] call that actually produces the next
     /// `segments_N` -- flushes `pending_docs` (if any) to a brand-new segment
     /// via
@@ -9540,9 +9531,8 @@ impl IndexWriter<'_> {
     ///   [`IndexWriter::finish_commit`], leaves the previous commit current
     ///   and the pending file an inert orphan. There is no window in which a
     ///   truncated `segments_N` exists under a name a reader would pick up --
-    ///   which is exactly the failure the older "write `segments_N` directly"
-    ///   shape had, and exactly why Java never creates a `segments_N` by
-    ///   writing to it.
+    ///   which is exactly why Java never creates a `segments_N` by writing to
+    ///   it directly.
     ///
     /// [`IndexWriter::finish_commit`] then performs the single atomic publish:
     /// `rename(pending_segments_N -> segments_N)` plus a directory fsync.
@@ -9582,9 +9572,9 @@ impl IndexWriter<'_> {
         self.write_pending_try_changes()?;
         // Real `prepareCommitInternal` refuses re-entry outright
         // (`IllegalStateException("prepareCommit was already called with no
-        // corresponding call to commit")`). This used to *replace* the pending
-        // state instead, which silently threw away every document the first
-        // prepare had already flushed: the second prepare rebuilds its
+        // corresponding call to commit")`). Replacing the pending state
+        // instead would silently throw away every document the first prepare
+        // had already flushed: the second prepare rebuilds its
         // `SegmentInfos` from `self.segment_infos`, which never saw the first
         // prepare's segment, so `finish_commit` published a commit that did not
         // reference it.
@@ -10120,17 +10110,12 @@ impl IndexWriter<'_> {
     /// `PerField.invert()` exactly once per (document, field) and fans the
     /// result out to `FreqProxTermsWriterPerField` (postings),
     /// `TermVectorsConsumerPerField` (term vectors) and
-    /// `NormValuesWriter` (norms) from that one pass. This port previously ran
-    /// a *separate* full tokenize-and-invert over the same text per consumer:
-    /// a commit with postings and norms on one field analyzed every document
-    /// twice, and with term vectors as well, three times. Measured on
-    /// `benchmarks/rust-runner`'s `index-bench` (20k docs x 40 tokens,
-    /// postings + norms on one field), the redundant norms pass alone cost
-    /// 17.6 us/doc out of 43.6 us/doc -- 40% of the whole commit.
+    /// `NormValuesWriter` (norms) from that one pass; a separate
+    /// tokenize-and-invert per consumer would analyze every document up to
+    /// three times per commit.
     ///
     /// A field with no [`FieldValue::String`] value on any pending doc simply
-    /// contributes no entries, exactly as it did when each consumer built its
-    /// own `triples` list and bailed on an empty one.
+    /// contributes no entries.
     fn invert_pending_fields(
         docs: &[Document],
         postings: &[PostingsFieldConfig],
@@ -10161,8 +10146,8 @@ impl IndexWriter<'_> {
         // and `IndexingChain` inverts each value through one
         // `FieldInvertState`), and `invert_documents_with_payloads` groups the
         // consecutive tuples for one (doc, field) into one multi-valued field.
-        // `find` used to stop at the first value, so every later value of a
-        // multi-valued field was stored but never indexed.
+        // Every value is gathered, not only the first: a later value of a
+        // multi-valued field would otherwise be stored but never indexed.
         let mut triples: Vec<(i32, &str, &str)> = Vec::new();
         for (field_number, field_name) in wanted {
             for (doc_id, doc) in docs.iter().enumerate() {
@@ -10296,8 +10281,7 @@ impl IndexWriter<'_> {
             // `positions`/`offsets` when this field's `index_options`
             // indexes them (see `TermPostings`'s doc comment) -- leaving
             // them empty for `Docs`/`DocsAndFreqs` fields matches that
-            // contract exactly, and is what keeps that path byte-for-byte
-            // unchanged from before this task.
+            // contract exactly.
             let mut positions: Vec<Vec<i32>> = Vec::new();
             let mut offsets: Vec<Vec<(i32, i32)>> = Vec::new();
             if has_positions {
@@ -10830,8 +10814,8 @@ impl IndexWriter<'_> {
     /// has indexable text for two or more of `configs`' fields gets a
     /// `fields` list with one `TermVectorField` per such field, all built
     /// and written in this single pass -- no per-field
-    /// `write_best_speed` call is needed the way postings previously needed
-    /// one `write_single_field` call per field.
+    /// `write_best_speed` call is needed, unlike postings' one
+    /// `write_single_field` call per field.
     ///
     /// Returns `None` only when no field is configured. The fixed-schema
     /// facade retains indexed fields even when their text is absent: an empty
@@ -11215,8 +11199,7 @@ impl IndexWriter<'_> {
     /// (`"values out of order: ... for doc: ..."`), and
     /// `SortedNumericSelector.MIN`/`MAX` are literally "the first stored
     /// value" and "the last stored value" -- so an unsorted column makes a
-    /// selector pick the wrong one rather than merely looking untidy. This
-    /// port used to keep the caller's order.
+    /// selector pick the wrong one rather than merely looking untidy.
     fn collect_sorted_numeric_values<D: DocValueFields>(
         docs: &[D],
         config: &DocValuesFieldConfig,
@@ -12959,9 +12942,9 @@ impl IndexWriter<'_> {
         // done.
         //
         // On a failed apply the lists still go back, and so do the packets:
-        // returning early used to drop both, so the next commit published a
+        // returning early would drop both, so the next commit would publish a
         // `segments_N` naming none of the committed segments and the deleter
-        // reclaimed their files. Java never reaches that state, because a
+        // would reclaim their files. Java never reaches that state, because a
         // failed packet apply is a tragic event that closes the writer
         // (`onTragicEvent(t, "applyUpdatesPacket")`); this writer stays
         // usable, so a retry re-applies the packets, which is idempotent for
@@ -15393,11 +15376,11 @@ pub(crate) mod tests {
     fn calling_prepare_commit_again_before_finish_commit_is_rejected_and_loses_nothing() {
         // Real `IndexWriter.prepareCommitInternal` throws
         // IllegalStateException("prepareCommit was already called with no
-        // corresponding call to commit"). This port used to *replace* the
-        // prepared state instead, which silently discarded every document the
-        // first prepare had already flushed and synced: the second prepare
-        // rebuilt its SegmentInfos from `self.segment_infos`, which had never
-        // seen the first prepare's segment.
+        // corresponding call to commit"). Replacing the prepared state
+        // instead would silently discard every document the first prepare had
+        // already flushed and synced: the second prepare would rebuild its
+        // SegmentInfos from `self.segment_infos`, which never saw the first
+        // prepare's segment.
         let tmp = tempdir("prepare-twice");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0)];
@@ -15645,8 +15628,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A failed publish must not swallow the prepared commit: `finish_commit`
-    /// used to `take()` it unconditionally, so a failure at the rename left the
+    /// A failed publish must not swallow the prepared commit: if `finish_commit`
+    /// `take()`s it unconditionally, a failure at the rename leaves the
     /// already-flushed-and-synced segment orphaned with no way to retry or roll
     /// back. Deleting the pending file out from under it is the cheapest way to
     /// make the rename fail for real.
@@ -15745,11 +15728,11 @@ pub(crate) mod tests {
 
     #[test]
     fn rollback_after_prepare_commit_discards_the_prepared_state_too() {
-        // Found in review: rollback() previously only cleared pending_docs,
-        // leaving `prepared_commit` intact -- so prepare_commit() ->
-        // rollback() -> finish_commit() would silently activate the segment
-        // the caller just asked to roll back. rollback() must now discard
-        // prepared_commit as well, and finish_commit() afterward must fail
+        // rollback() clearing only pending_docs would leave `prepared_commit`
+        // intact, so prepare_commit() -> rollback() -> finish_commit() would
+        // silently activate the segment the caller just asked to roll back.
+        // rollback() must discard prepared_commit as well, and finish_commit()
+        // afterward must fail
         // with NoPreparedCommit, exactly like it would if prepare_commit()
         // had never been called.
         let tmp = tempdir("rollback-after-prepare");
@@ -16077,12 +16060,12 @@ pub(crate) mod tests {
 
     /// Real `IndexWriter.newSegmentName()` bumps `segmentInfos.counter` at
     /// the moment it hands out a name, so the counter written into the very
-    /// next commit already accounts for the flushed segment. This port used to
-    /// bump it only on the in-memory writer *after* `update_document` had
-    /// already written its `segments_N`, so the committed counter was stale: a
-    /// writer reopened on the same directory handed out the same `_N` again and
-    /// the next flush truncated a live segment's files out from under the
-    /// commit that referenced them.
+    /// next commit already accounts for the flushed segment. Bumping it only
+    /// on the in-memory writer *after* `update_document` had written its
+    /// `segments_N` would leave the committed counter stale: a writer reopened
+    /// on the same directory would hand out the same `_N` again and the next
+    /// flush would truncate a live segment's files out from under the commit
+    /// that referenced them.
     #[test]
     fn update_document_persists_the_bumped_segment_counter_so_a_reopen_never_reuses_a_name() {
         let fx = open_fixture();
@@ -16655,9 +16638,9 @@ pub(crate) mod tests {
     }
 
     /// A buffered delete whose `.liv` cannot be written fails the commit,
-    /// and the writer keeps every segment and every packet. It used to take
-    /// the segment lists out for the apply and drop them on the error, so
-    /// the next commit published a `segments_N` naming no segment at all.
+    /// and the writer keeps every segment and every packet; dropping the
+    /// segment lists on the error would make the next commit publish a
+    /// `segments_N` naming no segment at all.
     /// The partial `.liv` cannot be deleted either, so the retry must also
     /// take the next delete generation (`PendingDeletes.writeLiveDocs`'
     /// `advanceNextWriteDelGen`).
@@ -16701,11 +16684,7 @@ pub(crate) mod tests {
 
     /// `IndexWriter.sealFlushedSegment` writes a segment's `.si` **once**,
     /// from the in-memory `SegmentInfo` every format's writer has added its
-    /// files to. This port used to write it once per file group: the
-    /// stored-fields flush, then postings, then term vectors, then doc
-    /// values, then norms, then the index-sort descriptor each re-opened,
-    /// re-parsed, extended, rewrote and re-fsynced it. Only the last write
-    /// survived.
+    /// files to, not once per file group.
     ///
     /// Counted rather than inferred: every intermediate rewrite produces the
     /// same final bytes, so nothing about the resulting segment can see them.
@@ -17044,10 +17023,9 @@ pub(crate) mod tests {
     /// `IndexWriter.mergeMiddle`: a merge whose result holds no live
     /// document writes nothing and drops both the result and its sources
     /// ("Merge would produce a 0-doc segment, so we do nothing except commit
-    /// the merge to remove all the 0-doc segments that we merged"). This port
-    /// used to run the merge and publish the empty segment, so the commit
-    /// carried a real zero-document segment that every later open, merge and
-    /// `CheckIndex` had to pay for.
+    /// the merge to remove all the 0-doc segments that we merged"), so no
+    /// zero-document segment is left for every later open, merge and
+    /// `CheckIndex` to pay for.
     #[test]
     fn a_merge_whose_sources_are_all_deleted_is_dropped_not_committed() {
         let tmp = tempdir("zero-doc-merge-dropped");
@@ -17655,11 +17633,10 @@ pub(crate) mod tests {
     }
 
     /// A `store_payloads` field whose `index_options` indexes positions but
-    /// **not** offsets is the shape that used to be unwritable: `.pay` exists
-    /// only when a field has offsets or payloads, and before this batch
-    /// `build_postings_output` hardcoded `has_payloads: false`, so the `.fnm`
-    /// promised payloads real Lucene would then look for in a `.pay` that was
-    /// never written. Lucene's `Lucene104PostingsReader` opens `.pay`
+    /// **not** offsets needs a `.pay`, which exists only when a field has
+    /// offsets or payloads: if `build_postings_output` did not set
+    /// `has_payloads`, the `.fnm` would promise payloads real Lucene would then
+    /// look for in a `.pay` that was never written. Lucene's `Lucene104PostingsReader` opens `.pay`
     /// unconditionally when `fieldInfos.hasPayloads()`, so that segment could
     /// not be opened at all.
     ///
@@ -17904,9 +17881,8 @@ pub(crate) mod tests {
         assert!(fox[0][0].payload.is_empty());
     }
 
-    /// Term vectors must carry the same axes the field's postings do. Before
-    /// this batch `build_term_vectors_output` recorded positions only,
-    /// whatever the field's options -- which made
+    /// Term vectors must carry the same axes the field's postings do:
+    /// recording positions only, whatever the field's options, would make
     /// `CheckIndex.testTermVectors`' offset and payload cross-checks vacuous
     /// rather than failing, since it compares only the axes a vector declares.
     #[test]
@@ -18004,7 +17980,7 @@ pub(crate) mod tests {
     /// *numbers*, and this writer's numbers come from the caller's field list,
     /// so a caller who declares `zeta` as field 1 and `alpha` as field 2 --
     /// and calls `set_term_vector_field("zeta")` before
-    /// `add_term_vector_field("alpha")` -- used to get a segment written in
+    /// `add_term_vector_field("alpha")` -- must not get a segment written in
     /// call order, i.e. `zeta` then `alpha`, which real `CheckIndex` rejects.
     ///
     /// The negative control is the field *numbers*: they must stay 1 and 2
@@ -18523,24 +18499,16 @@ pub(crate) mod tests {
         assert!(sis.segments.is_empty());
     }
 
-    /// `postings_writer` now emits real full `ForUtil`/`PForUtil` blocks for
-    /// `docFreq >= BLOCK_SIZE (256)` (see `crates/lucene-codecs/src/
-    /// postings_writer.rs`'s `write_full_block` and its own
-    /// `docfreq_exactly_one_full_block_no_tail`/`docfreq_spans_multiple_full_blocks_plus_tail`
-    /// unit tests for the byte-level round-trip proof), so `docFreq == 256`
-    /// alone no longer rejects a `commit()` the way it used to. A later task
-    /// added level-1 skip-entry emission
-    /// (`postings_writer::write_level1_span`), so `docFreq >= LEVEL1_NUM_DOCS`
-    /// (8192) is no longer a hard ceiling either -- see that module's doc
-    /// comment for the current state (no further per-term docFreq ceiling
-    /// remains). There is deliberately no end-to-end `IndexWriter`-level test
-    /// of the 8192 boundary here: reaching it requires >=8192 pending docs in
-    /// one flush, which trips a wholly unrelated, pre-existing cap in
-    /// the postings layer is ever reached. The
-    /// `LEVEL1_NUM_DOCS` boundary itself is exercised directly at the
-    /// `postings_writer` unit level instead
-    /// (`docfreq_at_level1_boundaries_round_trips`).
-    /// A term just under the 256 boundary must still commit successfully.
+    /// `postings_writer` emits real full `ForUtil`/`PForUtil` blocks for
+    /// `docFreq >= BLOCK_SIZE (256)` and level-1 skip entries
+    /// (`postings_writer::write_level1_span`) for `docFreq >= LEVEL1_NUM_DOCS`
+    /// (8192); the byte-level round-trip proofs are that module's
+    /// `docfreq_exactly_one_full_block_no_tail`,
+    /// `docfreq_spans_multiple_full_blocks_plus_tail` and
+    /// `docfreq_at_level1_boundaries_round_trips` unit tests. There is no
+    /// end-to-end `IndexWriter`-level test of the 8192 boundary because
+    /// reaching it needs >= 8192 pending docs in one flush. A term just under
+    /// the 256 boundary must commit successfully.
     #[test]
     fn commit_succeeds_below_the_doc_freq_boundary() {
         let tmp = tempdir("postings-docfreq-just-under");
@@ -20636,7 +20604,7 @@ pub(crate) mod tests {
     // `IndexWriter` supports only one `doc_values_field` configured at a
     // time (`doc_values_field: Option<DocValuesFieldConfig>`, not a list;
     // see `set_doc_values_field`'s doc comment), a pre-existing limitation
-    // unrelated to sparse support and out of this task's scope. The dense
+    // unrelated to sparse support. The dense
     // vs. sparse build paths for a *single* field are independent match
     // arms in `build_doc_values_output` (dense/sparse is decided per field,
     // per call), so there is no shared mutable state between fields for
@@ -20695,11 +20663,8 @@ pub(crate) mod tests {
 
     #[test]
     fn an_automatic_merge_carries_doc_values_through_instead_of_dropping_them() {
-        // Doc-values-bearing segments used to be withheld from the merge
-        // policy entirely, because `execute_merge` opened no doc values and
-        // merging would have dropped the column silently. It opens them now,
-        // so the exclusion is gone -- and the thing to assert is not that the
-        // merge happened but that **every document still has its own value**
+        // Doc-values-bearing segments take part in merges, so the thing to
+        // assert is not that the merge happened but that **every document still has its own value**
         // afterwards, which is the property a lost or mis-mapped column
         // breaks while leaving a perfectly valid segment behind.
         let tmp = tempdir("dv-and-merge-policy");
@@ -21178,8 +21143,7 @@ pub(crate) mod tests {
 
     /// A prepared commit has already flushed its segment to disk and written a
     /// `pending_segments_N`. Rolling it back must leave the directory exactly as
-    /// it was before the prepare -- previously every one of those files stayed
-    /// forever.
+    /// it was before the prepare, with none of those files left behind.
     #[test]
     fn rollback_after_a_prepared_commit_deletes_every_file_that_prepare_wrote() {
         let tmp = tempdir("deleter-rollback-prepare");
@@ -23541,12 +23505,12 @@ pub(crate) mod tests {
     #[test]
     fn a_delete_after_a_rollback_still_reaches_every_committed_segment() {
         // Two committed segments carry `buffered_deletes_gen` 1 and 2. A
-        // rollback used to rewind `BufferedUpdatesStream`'s counter to 1 (as
+        // rollback must not rewind `BufferedUpdatesStream`'s counter to 1 (as
         // Java's `clear()` does -- safely, because Java then *closes* the
-        // writer), so the next packet was stamped gen 1 and `applies_to`
-        // rejected it for `_1`: the delete silently reached only the oldest
-        // segment. One segment is not enough to see it -- gen 1 == gen 1 passes
-        // by luck -- which is why this test uses two.
+        // writer): the next packet would be stamped gen 1 and `applies_to`
+        // would reject it for `_1`, so the delete would silently reach only
+        // the oldest segment. One segment is not enough to see it -- gen 1 ==
+        // gen 1 passes by luck -- which is why this test uses two.
         let tmp = tempdir("rollback-then-delete");
         let dir = FsDirectory::open(&tmp);
         let mut writer = seq_writer(&dir);
@@ -23593,7 +23557,7 @@ pub(crate) mod tests {
         // snapshot `prepare_commit` took and clears `flushed_segments`, so a
         // flush in between would have its segment *and* every buffered delete
         // it resolved thrown away. With `max_buffered_docs = 2`, the two adds
-        // below used to trip the automatic flush inside the window.
+        // below trip the automatic flush inside the window.
         let tmp = tempdir("prepared-window");
         let dir = FsDirectory::open(&tmp);
         let mut writer = seq_writer(&dir);
@@ -25813,7 +25777,7 @@ pub(crate) mod tests {
         writer
     }
 
-    /// **The headline of this batch.** Three index-sorted flushes are folded
+    /// Three index-sorted flushes are folded
     /// into one segment by the merge policy, and the merged segment is still
     /// in sort order -- globally, across sources, not per source -- with
     /// every format still describing the same document at the same doc id.
@@ -26558,7 +26522,7 @@ pub(crate) mod tests {
         }
 
         // Sparse SORTED alongside it: written as a sparse SORTED column in the
-        // same `.dvm`/`.dvd` (this used to be refused), and clean.
+        // same `.dvm`/`.dvd`, and clean.
         let tmp = tempdir("multi-dv-sparse-sorted");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![

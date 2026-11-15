@@ -107,8 +107,8 @@ pub fn term_vector_for_doc(
 /// term's raw UTF-8 bytes), across all of that term's occurrences (a
 /// repeated matched term contributes multiple spans), in real Lucene's
 /// `OffsetsEnum.compareTo` order: ascending `start_offset`, then ascending
-/// `end_offset`, then ascending term. That full ordering (not just the
-/// `start_offset` key this used to sort on) is what makes the result
+/// `end_offset`, then ascending term. That full ordering (not just a
+/// `start_offset` key) is what makes the result
 /// deterministic when two different terms start at the same offset -- the
 /// synonym/overlapping-token case a highlighter has to render consistently.
 pub fn matched_term_offsets(

@@ -66,8 +66,8 @@ public class VerifyTermVectors {
     int failures = verifySegment(dir, id, "_0", manifest, "");
 
     // "_1": every field across every doc has field_number == 0
-    // (max_field_num == 0 for the whole chunk), a regression case for a
-    // real Lucene-incompatible bits_per_field_num == 0 encoding that "_0"
+    // (max_field_num == 0 for the whole chunk), the case where a
+    // real Lucene-incompatible bits_per_field_num == 0 encoding would arise, which "_0"
     // can never hit since it always mixes field numbers 0 and 1 -- keys
     // are prefixed with "all_zero." (e.g. "all_zero.max_doc").
     failures += verifySegment(dir, id, "_1", manifest, "all_zero.");

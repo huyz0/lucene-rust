@@ -49,7 +49,7 @@ struct Slot<'d> {
     last: i32,
 }
 
-/// Every column of `configs` this pass builds, in `configs`' order; `None`
+/// Every column of `configs` this function builds, in `configs`' order; `None`
 /// for one it leaves to the per-field path, or for all of them when a value
 /// has the wrong kind, a document number overflows, or a field number is
 /// too large to route.

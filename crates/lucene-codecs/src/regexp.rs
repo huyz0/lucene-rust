@@ -375,8 +375,7 @@ impl RegexpPattern {
     /// begin with, or `None` when every prefix of `term` is still viable.
     ///
     /// This is the capability a `CompiledAutomaton`/`ByteRunAutomaton` gives
-    /// `IntersectTermsEnum` and that this port previously had no way to
-    /// express: *the automaton is in a dead state, so stop*. Over a sorted
+    /// `IntersectTermsEnum`: *the automaton is in a dead state, so stop*. Over a sorted
     /// term array it turns into a skip -- when `dead_prefix_len(term)` is
     /// `Some(k)`, every term sharing `term[..k]` is a guaranteed non-match, so
     /// a scan can binary-search straight past the whole run instead of testing
@@ -2035,7 +2034,7 @@ mod tests {
     #[test]
     fn intersection_requires_both_sides_to_accept_the_same_string() {
         // `&` is enabled by `RegExp.ALL`, which is what `RegexpQuery(Term)`
-        // uses. It used to be rejected outright by this port.
+        // uses.
         assert!(m("[a-z]+&...", "abc"));
         assert!(!m("[a-z]+&...", "ab"));
         assert!(!m("[a-z]+&...", "ab1"));
@@ -2204,7 +2203,7 @@ mod tests {
     fn a_leading_quantifier_is_an_ordinary_literal_in_lucene() {
         // Lucene's `parseSimpleExp` falls through to `makeChar`, so `*cat`
         // matches the literal term `*cat` -- it is not a "dangling
-        // quantifier" error the way this port used to report.
+        // quantifier" error.
         assert!(m("*cat", "*cat"));
         assert!(m("{2,3}", "{2,3}"));
         assert!(m("+x", "+x"));

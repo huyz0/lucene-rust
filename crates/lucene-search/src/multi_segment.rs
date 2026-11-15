@@ -417,7 +417,7 @@ where
 /// a `rayon` `par_iter` instead of hand-rolling an `Executor`/`Future`
 /// mechanism -- rayon's global pool plays the same role real Lucene's
 /// `Executor` does here, minus any configuration knobs (see this crate's
-/// `docs/parity.md` entry for this task for exactly what that leaves out).
+/// `docs/parity.md` entry for exactly what that leaves out).
 ///
 /// Every segment's own `TopDocsCollector::new(top_n)` + doc-base translation
 /// happens independently inside the `par_iter` closure -- each segment's
@@ -1067,7 +1067,7 @@ pub fn search_term_query_multi_segment_counting(
 /// [`search_term_query_multi_segment`]'s next page.
 ///
 /// `after` is a hit this function (or [`search_term_query_multi_segment`])
-/// previously returned, in **global** doc-ID space and with the score it was
+/// returned on an earlier page, in **global** doc-ID space and with the score it was
 /// returned with -- see [`merge_multi_segment_scored_after`] for why both
 /// halves matter and how the doc id is translated per leaf.
 ///
@@ -1123,13 +1123,10 @@ pub fn search_term_query_multi_segment_concurrent(
         "one norms entry per segment expected"
     );
     // Reader-wide statistics, exactly as the sequential path computes them.
-    // This used to call `search_term_query_scored_maxscore` (no stats), so the
-    // concurrent path scored every segment from its *own* `docFreq`/`docCount`
-    // while the sequential path used the summed ones -- the two produced
-    // different rankings for the same query on any multi-segment index, and
-    // the idf spread that causes is precisely the bug this module's doc comment
-    // records (1.6x across the 15-segment corpus, all 20 benchmark queries
-    // disagreeing with Java).
+    // Scoring each segment from its *own* `docFreq`/`docCount` (no stats)
+    // would rank differently from the sequential path on any multi-segment
+    // index, with an idf spread the module's doc comment records (1.6x across
+    // a 15-segment corpus).
     let global = global_term_stats(segments, &query.field, &query.term)?;
     let doc_bases: Vec<i32> = segments.iter().map(|s| s.doc_base).collect();
     merge_multi_segment_scored_concurrent_shared_max_score(&doc_bases, top_n, 0, |i, local| {
@@ -1691,8 +1688,7 @@ pub fn search_boolean_query_multi_segment_maxscore_concurrent(
 // each segment producing its own `Vec<FieldValueDoc>`, sequential final
 // merge) -- but adding it here without a caller or test exercising it would
 // be exactly the untested, unmotivated surface `rust-performance`/
-// `test-coverage` warn against. Tracked as a documented follow-up in
-// `docs/parity.md`, not silently dropped.
+// `test-coverage` warn against. It is listed in `docs/parity.md`.
 use crate::doc_value_query::{self, MissingValue};
 use lucene_codecs::doc_values::NumericEntry;
 
@@ -1992,12 +1988,10 @@ mod tests {
         // leaves interleave.
         //
         // **It deliberately does not assert that leaf 1 observed leaf 0's
-        // bar.** It used to, and that is a property the design does not have:
-        // the accumulator is opportunistic, so whether leaf 1 sees 8.0 depends
-        // on whether leaf 0 got there first, which under `rayon` it need not.
-        // Measured, the assertion failed roughly one run in five on a loaded
-        // host -- a test that fails for the right reason a fifth of the time is
-        // a test nobody can read. The mechanism itself is pinned
+        // bar.** The design does not guarantee that: the accumulator is
+        // opportunistic, so whether leaf 1 sees 8.0 depends on whether leaf 0
+        // got there first, which under `rayon` it need not. The mechanism
+        // itself is pinned
         // deterministically at its seam by
         // `a_leaf_sees_a_bar_another_leaf_published_through_the_accumulator`.
         let per_leaf = vec![
@@ -2465,8 +2459,8 @@ mod tests {
     /// per-segment collector `merge_multi_segment_scored` supplies -- this
     /// tests the merge core in isolation from any real blocktree/postings
     /// decoding, since the merge/doc-base-translation/tie-break logic is
-    /// exactly what this task's brief flags as the highest-risk "looks
-    /// locally correct, wrong globally" class of bug.
+    /// exactly the highest-risk "looks locally correct, wrong globally" class
+    /// of bug.
     fn fake_segment_search(hits: Vec<(i32, f32)>) -> impl FnMut(&mut TopDocsCollector) {
         move |local: &mut TopDocsCollector| {
             for &(doc_id, score) in &hits {

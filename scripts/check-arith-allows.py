@@ -91,8 +91,8 @@ def main() -> int:
     # Cross-check *every* crate that has its own burn-down row, including the
     # ones the tree says have zero markers.
     #
-    # This used to skip `count == 0`, which made the check blind in the
-    # direction that actually matters: deleting a module's marker without
+    # Skipping `count == 0` would make the check blind in the direction that
+    # actually matters: deleting a module's marker without
     # auditing it turns the crate's gate red and silences this script at the
     # same time.
     for crate, count in sorted(per_crate.items()):

@@ -147,10 +147,10 @@ fn decode_weight(cost: i64) -> u32 {
 /// weight, not the first one the caller happened to pass.
 ///
 /// This function sorts by `(term asc, weight desc)` and keeps the first of
-/// each run for exactly that reason. It previously sorted by term alone and
-/// relied on the sort's stability, which kept whichever weight came first in
-/// the caller's input -- a silently different suggester for any dictionary
-/// with a repeated surface form.
+/// each run for exactly that reason; sorting by term alone and relying on the
+/// sort's stability would keep whichever weight came first in the caller's
+/// input -- a silently different suggester for any dictionary with a repeated
+/// surface form.
 pub fn build_suggester_fst(entries: &[(Vec<u8>, u32)]) -> Result<Fst<'static>, BuildError> {
     let mut sorted: Vec<(Vec<u8>, u32)> = entries.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));

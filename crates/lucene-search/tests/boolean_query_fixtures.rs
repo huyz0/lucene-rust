@@ -282,8 +282,8 @@ fn minimum_should_match_narrows_the_matched_set_even_with_must_present() {
     // one of dog/bird -- doc 2 satisfies neither, so it drops out even though it
     // satisfies `must`, unlike the `minimum_should_match == 0` case
     // (`must_with_should_present_ignores_should_for_matching`, above) where doc 2
-    // stays. This is the exact real-`BooleanWeight` interaction rule this task
-    // implements: `should` gates matching regardless of `must`'s presence, once
+    // stays. This is the exact real-`BooleanWeight` interaction rule:
+    // `should` gates matching regardless of `must`'s presence, once
     // `minimum_should_match > 0`.
     let (fields, doc, id, suffix, m) = open_segment();
     let doc_in = DocInput::open(&doc, &id, &suffix).expect("open .doc");

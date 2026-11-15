@@ -35,8 +35,7 @@ import java.util.TreeSet;
  * these files, byte for byte.
  *
  * <p>This term set is built so Java takes neither of the two paths below;
- * {@code GenBlockTreeSuffixCompression} is the fixture that takes both (the
- * port used to deviate from Java on exactly these two):
+ * {@code GenBlockTreeSuffixCompression} is the fixture that takes both:
  *
  * <ul>
  *   <li><b>Suffix compression.</b> Java only tries LZ4/LOWERCASE_ASCII when a

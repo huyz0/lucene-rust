@@ -92,9 +92,9 @@ struct CacheKey<S, Q> {
 /// encodes implicitly in its list order.
 ///
 /// The set is behind an [`Arc`]: a cache *hit* must not copy the set it just
-/// found. Handing back a clone of the whole thing, as this used to, made a hit
-/// cost `O(maxDoc)` bytes of memcpy -- on a 10M-document segment, 1.25 MB per
-/// hit, which is more work than re-running many queries would have been. Java
+/// found. Handing back a clone of the whole thing would make a hit cost
+/// `O(maxDoc)` bytes of memcpy -- on a 10M-document segment, 1.25 MB per hit,
+/// which is more work than re-running many queries. Java
 /// hands back a reference to the shared immutable `DocIdSet`; an `Arc` is that.
 struct Entry {
     set: Arc<CachedDocIdSet>,
@@ -567,10 +567,8 @@ pub fn leaf_is_worth_caching(
     leaf_max_doc * 2 > average_total_docs
 }
 
-/// Cached wrapper around [`crate::search_term_query`] -- this module's first,
-/// and so far only, real query-execution entry point wired to [`QueryCache`]
-/// (see this module's top doc comment: `QueryCache` itself was previously a
-/// standalone primitive with nothing in this port actually calling it).
+/// Cached wrapper around [`crate::search_term_query`] -- this module's only
+/// query-execution entry point wired to [`QueryCache`].
 ///
 /// Feeds `collector` exactly the documents `search_term_query(fields, doc_in,
 /// live_docs, query, collector)` would, in the same ascending order, and
@@ -581,8 +579,7 @@ pub fn leaf_is_worth_caching(
 /// rather than being cached (see below), so an entry stays correct across
 /// delete generations.
 ///
-/// **Why only `TermQuery`, not also `BooleanQuery`** (the task's other
-/// suggested candidate): [`QueryCache`]'s `Q` bound is `Eq + Hash + Clone`,
+/// **Why only `TermQuery`, not also `BooleanQuery`**: [`QueryCache`]'s `Q` bound is `Eq + Hash + Clone`,
 /// and `TermQuery` already derives all three (see that struct's doc comment).
 /// `query::BooleanQuery` cannot cheaply gain the same derives: transitively,
 /// via `Clause::DisjunctionMax(DisjunctionMaxQuery)`, it embeds an `f32`
@@ -590,20 +587,15 @@ pub fn leaf_is_worth_caching(
 /// and `Clause` deliberately derive only `PartialEq`, not `Eq`, for exactly
 /// this reason (see `Clause`'s own derive-list comment in `query.rs`).
 /// Bolting on `Hash`/`Eq` for `BooleanQuery` would mean inventing a
-/// `NaN`-handling hash/equality convention with no existing precedent in this
-/// crate to justify it, for a wrapper this task doesn't require to cover
-/// every query type -- so `TermQuery`, which already satisfies `QueryCache`'s
-/// bound with zero new derive risk, is the one wired up here. Wiring
-/// `BooleanQuery` in later is still possible (e.g. by caching its resolved
-/// `Clause` tree under a hand-rolled key type), just out of scope for this
-/// task.
+/// `NaN`-handling hash/equality convention with no precedent in this crate --
+/// so `TermQuery`, which already satisfies `QueryCache`'s bound, is the one
+/// wired up here. Caching `BooleanQuery` would need a hand-rolled key type
+/// for its resolved `Clause` tree.
 ///
 /// **Opt-in, not a replacement**: [`crate::search_term_query`] itself is
 /// completely unchanged and still the uncached default -- this function is a
 /// separate, additional entry point a caller reaches for explicitly when it
-/// wants caching, exactly the "not wired into any live search path" gap this
-/// module's top doc comment used to describe having now been closed *for this
-/// one query type*, opt-in.
+/// wants caching.
 ///
 /// **Deletions are not baked into the cached set.** The entry is computed with
 /// `live_docs == None` and `live_docs` is applied while *iterating* it, which is
@@ -660,9 +652,9 @@ where
     })?;
 
     // Iterating the set costs O(matches) for the Roaring shape and
-    // O(maxDoc / 64) for the bitset shape -- never the O(maxDoc) bit-by-bit
-    // scan this used to do, which made a 3-hit query on a 10M-document
-    // segment walk 10M bits per cache hit.
+    // O(maxDoc / 64) for the bitset shape -- never an O(maxDoc) bit-by-bit
+    // scan, which would make a 3-hit query on a 10M-document segment walk 10M
+    // bits per cache hit.
     for doc_id in set.iter() {
         // `live_docs` is a *separate* caller-supplied bitset from the cached
         // set being iterated; nothing here makes their lengths equal. A doc
@@ -1564,9 +1556,9 @@ mod tests {
     /// inputs to this `pub fn`: the caller's claim about the segment, and the
     /// segment's own `.doc` file. `FixedBitSet::new(num_docs)` then gets
     /// indexed by a doc id nothing relates to it, on a public API. With
-    /// `num_docs = 1` and a term whose postings name doc 2, the old code wrote
-    /// a ghost bit into word 0 of a one-bit set; the doc it claimed to cache
-    /// was never recoverable, and a `num_docs` of 0 panicked outright.
+    /// `num_docs = 1` and a term whose postings name doc 2, an unchecked write
+    /// would put a ghost bit into word 0 of a one-bit set (the doc it claimed
+    /// to cache is unrecoverable), and a `num_docs` of 0 would panic outright.
     #[test]
     fn a_num_docs_below_the_segments_own_doc_ids_is_reported_not_absorbed() {
         let segment = open_fixture();
@@ -1605,7 +1597,7 @@ mod tests {
     }
 
     /// The other half: `live_docs` is a *separate* caller-supplied bitset from
-    /// the cached set being iterated, so a shorter one used to be indexed by a
+    /// the cached set being iterated, so a shorter one must not be indexed by a
     /// doc id it does not cover. A doc outside the live-docs bitset is not
     /// live -- the same answer `soft_deletes::is_live` and `vector_query`'s
     /// accept filter give.
@@ -1626,7 +1618,7 @@ mod tests {
 
     #[test]
     fn cached_repeat_call_reuses_cached_result_without_recomputing() {
-        // The decisive proof this task asks for: run the *same* query twice
+        // The decisive proof: run the *same* query twice
         // against the *same* segment through `search_term_query_cached`, and
         // confirm the second call reused the cache rather than re-running
         // `search_term_query`. The mechanism: the first call supplies `.doc`

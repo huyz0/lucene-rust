@@ -102,11 +102,11 @@ fn main() {
         },
     ];
 
-    // Regression case: every field across every doc in this chunk has
-    // field_number == 0 (an entirely ordinary shape -- any single-field
-    // index). This makes `max_field_num == 0`, which previously encoded
-    // `bits_per_field_num` as 0 -- wire-format-valid for this port's own
-    // (more permissive) reader, but real Lucene's reader unconditionally
+    // Every field across every doc in this chunk has field_number == 0 (an
+    // entirely ordinary shape -- any single-field index). This makes
+    // `max_field_num == 0`, and `bits_per_field_num` must not be encoded as 0:
+    // a 0-bit width is wire-format-valid for this port's own (more permissive)
+    // reader, but real Lucene's reader unconditionally
     // indexes `packedBulkOps[bitsPerValue - 1]` and throws
     // `ArrayIndexOutOfBoundsException` on a 0-bit width. Written as a
     // second segment ("_1") so the primary multi-field-number fixture above

@@ -43,7 +43,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
   final FieldReader fr;
   private int targetBeforeCurrentLength;
 
-  // static boolean DEBUG = BlockTreeTermsWriter.DEBUG;
 
   // What prefix of the current term was present in the index; when we only next() through the
   // index, this stays at 0.  It's only set when
@@ -65,16 +64,8 @@ final class SegmentTermsEnum extends BaseTermsEnum {
     currentFrame = staticFrame;
     nodes[0] = trieReader.root;
 
-    // currentFrame = pushFrame(arc, rootCode, 0);
-    // currentFrame.loadBlock();
     validIndexPrefix = 0;
-    // if (DEBUG) {
-    //   System.out.println("init frame state " + currentFrame.ord);
-    //   printSeekState();
-    // }
 
-    // System.out.println();
-    // computeBlockStats().print(System.out);
   }
 
   // Not private to avoid synthetic access$NNN methods
@@ -118,9 +109,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
           final long lastFP = currentFrame.fpOrig;
           currentFrame = stack[currentFrame.ord - 1];
           assert lastFP == currentFrame.lastSubFP;
-          // if (DEBUG) {
-          //   System.out.println("  reset validIndexPrefix=" + validIndexPrefix);
-          // }
         }
       }
 
@@ -207,17 +195,9 @@ final class SegmentTermsEnum extends BaseTermsEnum {
     final SegmentTermsEnumFrame f = getFrame(1 + currentFrame.ord);
     f.node = node;
     if (f.fpOrig == fp && f.nextEnt != -1) {
-      // if (DEBUG) System.out.println("      push reused frame ord=" + f.ord + " fp=" + f.fp +
-      // " isFloor?=" + f.isFloor + " hasTerms=" + f.hasTerms + " pref=" + term + " nextEnt=" +
-      // f.nextEnt + " targetBeforeCurrentLength=" + targetBeforeCurrentLength + " term.length=" +
-      // term.length + " vs prefix=" + f.prefix);
-      // if (f.prefix > targetBeforeCurrentLength) {
       if (f.ord > targetBeforeCurrentLength) {
         f.rewind();
       } else {
-        // if (DEBUG) {
-        //   System.out.println("        skip rewind!");
-        // }
       }
       assert length == f.prefixLength;
     } else {
@@ -226,13 +206,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       f.state.termBlockOrd = 0;
       f.fpOrig = f.fp = fp;
       f.lastSubFP = -1;
-      // if (DEBUG) {
-      //   final int sav = term.length;
-      //   term.length = length;
-      //   System.out.println("      push new frame ord=" + f.ord + " fp=" + f.fp + " hasTerms=" +
-      // f.hasTerms + " isFloor=" + f.isFloor + " pref=" + ToStringUtils.bytesRefToString(term));
-      //   term.length = sav;
-      // }
     }
 
     return f;
@@ -259,13 +232,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
 
     assert clearEOF();
 
-    // if (DEBUG) {
-    //   System.out.println("\nBTTR.seekExact seg=" + fr.parent.segment + " target=" +
-    // fr.fieldInfo.name + ":" + ToStringUtils.bytesRefToString(target) + " current=" +
-    // ToStringUtils.bytesRefToString(term) +
-    // " (exists?=" + termExists + ") validIndexPrefix=" + validIndexPrefix);
-    //   printSeekState(System.out);
-    // }
 
     TrieReader.Node node;
     int targetUpto;
@@ -281,9 +247,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // seeks to foobaz, we can re-use the seek state
       // for the first 5 bytes.
 
-      // if (DEBUG) {
-      //   System.out.println("  re-use current seek state validIndexPrefix=" + validIndexPrefix);
-      // }
 
       node = nodes[0];
       assert node.hasOutput();
@@ -299,13 +262,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // First compare up to valid seek frames:
       while (targetUpto < targetLimit) {
         cmp = (term.byteAt(targetUpto) & 0xFF) - (target.bytes[target.offset + targetUpto] & 0xFF);
-        // if (DEBUG) {
-        //    System.out.println("    cycle targetUpto=" + targetUpto + " (vs limit=" + targetLimit
-        // + ") cmp=" + cmp + " (targetLabel=" + (char) (target.bytes[target.offset + targetUpto]) +
-        // " vs termLabel=" + (char) (term.bytes[targetUpto]) + ")"   + " node.output=" +
-        // node.output
-        // + " output=" + output);
-        // }
         if (cmp != 0) {
           break;
         }
@@ -341,10 +297,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         // Common case: target term is after current
         // term, ie, app is seeking multiple terms
         // in sorted order
-        // if (DEBUG) {
-        //   System.out.println("  target is after current (shares prefixLen=" + targetUpto + ");
-        // frame.ord=" + lastFrame.ord);
-        // }
         currentFrame = lastFrame;
 
       } else if (cmp > 0) {
@@ -353,28 +305,15 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         // keep the currentFrame but we must rewind it
         // (so we scan from the start)
         targetBeforeCurrentLength = lastFrame.ord;
-        // if (DEBUG) {
-        //   System.out.println("  target is before current (shares prefixLen=" + targetUpto + ");
-        // rewind frame ord=" + lastFrame.ord);
-        // }
         currentFrame = lastFrame;
         currentFrame.rewind();
       } else {
         // Target is exactly the same as current term
         assert term.length() == target.length;
         if (termExists) {
-          // if (DEBUG) {
-          //   System.out.println("  target is same as current; return true");
-          // }
           return () -> true;
         } else {
-          // if (DEBUG) {
-          //   System.out.println("  target is same as current but term doesn't exist");
-          // }
         }
-        // validIndexPrefix = currentFrame.depth;
-        // term.length = target.length;
-        // return termExists;
       }
 
     } else {
@@ -385,9 +324,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // Empty string prefix must have an output (block) in the index!
       assert node.hasOutput();
 
-      // if (DEBUG) {
-      //   System.out.println("    no seek state; push root frame");
-      // }
 
       currentFrame = staticFrame;
 
@@ -396,11 +332,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       currentFrame = pushFrame(node, 0);
     }
 
-    // if (DEBUG) {
-    //   System.out.println("  start index loop targetUpto=" + targetUpto + " output=" + output +
-    // " currentFrame.ord=" + currentFrame.ord + " targetBeforeCurrentLength=" +
-    // targetBeforeCurrentLength);
-    // }
 
     // We are done sharing the common prefix with the incoming target and where we are currently
     // seek'd; now continue walking the index:
@@ -414,10 +345,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       if (nextNode == null) {
 
         // Index is exhausted
-        // if (DEBUG) {
-        //   System.out.println("    index: index exhausted label=" + ((char) targetLabel) + " " +
-        // toHex(targetLabel));
-        // }
 
         validIndexPrefix = currentFrame.prefixLength;
         // validIndexPrefix = targetUpto;
@@ -428,9 +355,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
           termExists = false;
           term.setByteAt(targetUpto, (byte) targetLabel);
           term.setLength(1 + targetUpto);
-          // if (DEBUG) {
-          //   System.out.println("  FAST NOT_FOUND term=" + ToStringUtils.bytesRefToString(term));
-          // }
           return null;
         }
 
@@ -441,17 +365,10 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         term.setByteAt(targetUpto, (byte) targetLabel);
         // Aggregate output as we go:
 
-        // if (DEBUG) {
-        //   System.out.println("    index: follow label=" + toHex(target.bytes[target.offset +
-        // targetUpto]&0xff) + " node.output=" + node.output + " node.nfo=" + node.nextFinalOutput);
-        // }
         targetUpto++;
 
         if (node.hasOutput()) {
-          // if (DEBUG) System.out.println("    node is final!");
           currentFrame = pushFrame(node, targetUpto);
-          // if (DEBUG) System.out.println("    curFrame.ord=" + currentFrame.ord + " hasTerms=" +
-          // currentFrame.hasTerms);
         }
       }
     }
@@ -465,9 +382,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
     if (!currentFrame.hasTerms) {
       termExists = false;
       term.setLength(targetUpto);
-      // if (DEBUG) {
-      //   System.out.println("  FAST NOT_FOUND term=" + ToStringUtils.bytesRefToString(term));
-      // }
       return null;
     }
 
@@ -485,15 +399,8 @@ final class SegmentTermsEnum extends BaseTermsEnum {
 
       final SeekStatus result = currentFrame.scanToTerm(target, true);
       if (result == SeekStatus.FOUND) {
-        // if (DEBUG) {
-        //   System.out.println("  return FOUND term=" + term.utf8ToString() + " " + term);
-        // }
         return true;
       } else {
-        // if (DEBUG) {
-        //   System.out.println("  got result " + result + "; return NOT_FOUND term=" +
-        // term.utf8ToString());
-        // }
 
         return false;
       }
@@ -518,13 +425,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
 
     assert clearEOF();
 
-    // if (DEBUG) {
-    //   System.out.println("\nBTTR.seekCeil seg=" + fr.parent.segment + " target=" +
-    // fr.fieldInfo.name + ":" + ToStringUtils.bytesRefToString(target) + " current=" +
-    // ToStringUtils.bytesRefToString(term) + " (exists?=" + termExists +
-    // ") validIndexPrefix=  " + validIndexPrefix);
-    //   printSeekState(System.out);
-    // }
 
     TrieReader.Node node;
     int targetUpto;
@@ -540,9 +440,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // seeks to foobaz, we can re-use the seek state
       // for the first 5 bytes.
 
-      // if (DEBUG) {
-      // System.out.println("  re-use current seek state validIndexPrefix=" + validIndexPrefix);
-      // }
 
       node = nodes[0];
       assert node.hasOutput();
@@ -558,13 +455,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // First compare up to valid seek frames:
       while (targetUpto < targetLimit) {
         cmp = (term.byteAt(targetUpto) & 0xFF) - (target.bytes[target.offset + targetUpto] & 0xFF);
-        // if (DEBUG) {
-        // System.out.println("    cycle targetUpto=" + targetUpto + " (vs limit=" + targetLimit +
-        // ") cmp=" + cmp + " (targetLabel=" + (char) (target.bytes[target.offset + targetUpto]) +
-        // " vs termLabel=" + (char) (term.byteAt(targetUpto)) + ")"   + " node.output=" +
-        // node.output
-        // + " output=" + output);
-        // }
         if (cmp != 0) {
           break;
         }
@@ -598,10 +488,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         // Common case: target term is after current
         // term, ie, app is seeking multiple terms
         // in sorted order
-        // if (DEBUG) {
-        // System.out.println("  target is after current (shares prefixLen=" + targetUpto + ");
-        // clear frame.scanned ord=" + lastFrame.ord);
-        // }
         currentFrame = lastFrame;
 
       } else if (cmp > 0) {
@@ -610,24 +496,14 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         // keep the currentFrame but we must rewind it
         // (so we scan from the start)
         targetBeforeCurrentLength = 0;
-        // if (DEBUG) {
-        // System.out.println("  target is before current (shares prefixLen=" + targetUpto + ");
-        // rewind frame ord=" + lastFrame.ord);
-        // }
         currentFrame = lastFrame;
         currentFrame.rewind();
       } else {
         // Target is exactly the same as current term
         assert term.length() == target.length;
         if (termExists) {
-          // if (DEBUG) {
-          // System.out.println("  target is same as current; return FOUND");
-          // }
           return SeekStatus.FOUND;
         } else {
-          // if (DEBUG) {
-          // System.out.println("  target is same as current but term doesn't exist");
-          // }
         }
       }
 
@@ -639,9 +515,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // Empty string prefix must have an output (block) in the index!
       assert node.hasOutput();
 
-      // if (DEBUG) {
-      // System.out.println("    no seek state; push root frame");
-      // }
 
       currentFrame = staticFrame;
 
@@ -650,11 +523,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       currentFrame = pushFrame(node, 0);
     }
 
-    // if (DEBUG) {
-    // System.out.println("  start index loop targetUpto=" + targetUpto + " output=" + output +
-    // " currentFrame.ord+1=" + currentFrame.ord + " targetBeforeCurrentLength=" +
-    // targetBeforeCurrentLength);
-    // }
 
     // We are done sharing the common prefix with the incoming target and where we are currently
     // seek'd; now continue walking the index:
@@ -668,10 +536,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       if (nextNode == null) {
 
         // Index is exhausted
-        // if (DEBUG) {
-        //   System.out.println("    index: index exhausted label=" + ((char) targetLabel) + " " +
-        // targetLabel);
-        // }
 
         validIndexPrefix = currentFrame.prefixLength;
         // validIndexPrefix = targetUpto;
@@ -680,29 +544,17 @@ final class SegmentTermsEnum extends BaseTermsEnum {
 
         currentFrame.loadBlock();
 
-        // if (DEBUG) System.out.println("  now scanToTerm");
         final SeekStatus result = currentFrame.scanToTerm(target, false);
         if (result == SeekStatus.END) {
           term.copyBytes(target);
           termExists = false;
 
           if (next() != null) {
-            // if (DEBUG) {
-            // System.out.println("  return NOT_FOUND term=" +
-            // ToStringUtils.bytesRefToString(term));
-            // }
             return SeekStatus.NOT_FOUND;
           } else {
-            // if (DEBUG) {
-            // System.out.println("  return END");
-            // }
             return SeekStatus.END;
           }
         } else {
-          // if (DEBUG) {
-          // System.out.println("  return " + result + " term=" +
-          // ToStringUtils.bytesRefToString(term));
-          // }
           return result;
         }
       } else {
@@ -710,17 +562,10 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         term.setByteAt(targetUpto, (byte) targetLabel);
         node = nextNode;
 
-        // if (DEBUG) {
-        // System.out.println("    index: follow label=" + (target.bytes[target.offset +
-        // targetUpto]&0xff) + " node.output=" + node.output + " node.nfo=" + node.nextFinalOutput);
-        // }
         targetUpto++;
 
         if (node.hasOutput()) {
-          // if (DEBUG) System.out.println("    node is final!");
           currentFrame = pushFrame(node, targetUpto);
-          // if (DEBUG) System.out.println("    curFrame.ord=" + currentFrame.ord + " hasTerms=" +
-          // currentFrame.hasTerms);
         }
       }
     }
@@ -738,14 +583,8 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       term.copyBytes(target);
       termExists = false;
       if (next() != null) {
-        // if (DEBUG) {
-        // System.out.println("  return NOT_FOUND term=" + term.get().utf8ToString() + " " + term);
-        // }
         return SeekStatus.NOT_FOUND;
       } else {
-        // if (DEBUG) {
-        // System.out.println("  return END");
-        // }
         return SeekStatus.END;
       }
     } else {
@@ -889,13 +728,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
     targetBeforeCurrentLength = currentFrame.ord;
 
     assert !eof;
-    // if (DEBUG) {
-    //   System.out.println("\nBTTR.next seg=" + fr.parent.segment + " term=" +
-    // ToStringUtils.bytesRefToString(term) + " termExists?=" + termExists + " field=" +
-    // fr.fieldInfo.name + " termBlockOrd=" + currentFrame.state.termBlockOrd +
-    // " validIndexPrefix=" + validIndexPrefix);
-    //   printSeekState(System.out);
-    // }
 
     if (currentFrame == staticFrame) {
       // If seek was previously called and the term was
@@ -904,8 +736,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       // docFreq, etc.  But, if they then call next(),
       // this method catches up all internal state so next()
       // works properly:
-      // if (DEBUG) System.out.println("  re-seek to pending term=" + term.utf8ToString() + " " +
-      // term);
       final boolean result = seekExact(term.get());
       assert result;
     }
@@ -917,9 +747,7 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         currentFrame.loadNextFloorBlock();
         break;
       } else {
-        // if (DEBUG) System.out.println("  pop frame");
         if (currentFrame.ord == 0) {
-          // if (DEBUG) System.out.println("  return null");
           assert setEOF();
           term.clear();
           validIndexPrefix = 0;
@@ -941,24 +769,18 @@ final class SegmentTermsEnum extends BaseTermsEnum {
         // Note that the seek state (last seek) has been
         // invalidated beyond this depth
         validIndexPrefix = Math.min(validIndexPrefix, currentFrame.prefixLength);
-        // if (DEBUG) {
-        // System.out.println("  reset validIndexPrefix=" + validIndexPrefix);
-        // }
       }
     }
 
     while (true) {
       if (currentFrame.next()) {
         // Push to new block:
-        // if (DEBUG) System.out.println("  push frame");
         currentFrame = pushFrame(null, currentFrame.lastSubFP, term.length());
         // This is a "next" frame -- even if it's
         // floor'd we must pretend it isn't so we don't
         // try to scan to the right floor frame:
         currentFrame.loadBlock();
       } else {
-        // if (DEBUG) System.out.println("  return term=" + ToStringUtils.bytesRefToString(term) +
-        // " currentFrame.ord=" + currentFrame.ord);
         return term.get();
       }
     }
@@ -973,9 +795,7 @@ final class SegmentTermsEnum extends BaseTermsEnum {
   @Override
   public int docFreq() throws IOException {
     assert !eof;
-    // if (DEBUG) System.out.println("BTR.docFreq");
     currentFrame.decodeMetaData();
-    // if (DEBUG) System.out.println("  return " + currentFrame.state.docFreq);
     return currentFrame.state.docFreq;
   }
 
@@ -989,35 +809,19 @@ final class SegmentTermsEnum extends BaseTermsEnum {
   @Override
   public PostingsEnum postings(PostingsEnum reuse, int flags) throws IOException {
     assert !eof;
-    // if (DEBUG) {
-    // System.out.println("BTTR.docs seg=" + segment);
-    // }
     currentFrame.decodeMetaData();
-    // if (DEBUG) {
-    // System.out.println("  state=" + currentFrame.state);
-    // }
     return fr.parent.postingsReader.postings(fr.fieldInfo, currentFrame.state, reuse, flags);
   }
 
   @Override
   public ImpactsEnum impacts(int flags) throws IOException {
     assert !eof;
-    // if (DEBUG) {
-    // System.out.println("BTTR.docs seg=" + segment);
-    // }
     currentFrame.decodeMetaData();
-    // if (DEBUG) {
-    // System.out.println("  state=" + currentFrame.state);
-    // }
     return fr.parent.postingsReader.impacts(fr.fieldInfo, currentFrame.state, flags);
   }
 
   @Override
   public void seekExact(BytesRef target, TermState otherState) {
-    // if (DEBUG) {
-    //   System.out.println("BTTR.seekExact termState seg=" + segment + " target=" +
-    // target.utf8ToString() + " " + target + " state=" + otherState);
-    // }
     assert clearEOF();
     if (target.compareTo(term.get()) != 0 || !termExists) {
       assert otherState != null && otherState instanceof BlockTermState;
@@ -1028,9 +832,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
       assert currentFrame.metaDataUpto > 0;
       validIndexPrefix = 0;
     } else {
-      // if (DEBUG) {
-      //   System.out.println("  skip seek: already on target state=" + currentFrame.state);
-      // }
     }
   }
 
@@ -1039,7 +840,6 @@ final class SegmentTermsEnum extends BaseTermsEnum {
     assert !eof;
     currentFrame.decodeMetaData();
     TermState ts = currentFrame.state.clone();
-    // if (DEBUG) System.out.println("BTTR.termState seg=" + segment + " state=" + ts);
     return ts;
   }
 

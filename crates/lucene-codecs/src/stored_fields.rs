@@ -2010,8 +2010,8 @@ const INDEX_BLOCK_SHIFT: u32 = 10;
 ///   *serialized* bytes (from
 ///   [`StoredFieldsReader::serialized_document`]) are appended to the
 ///   current chunk buffer without ever being parsed into fields.
-/// - **VISITOR** ([`Self::add_document`]) -- the fallback, and the only path
-///   this port had before: parse every field, then recompress.
+/// - **VISITOR** ([`Self::add_document`]) -- the fallback: parse every field,
+///   then recompress.
 ///
 /// See `merge.rs`'s `stored_fields_merge_strategy` for the conditions that
 /// pick between them; the two fast paths copy bytes that embed source field
@@ -4412,8 +4412,8 @@ mod tests {
     }
 
     /// Decodes one value through [`visit_field`] and hands back what the
-    /// visitor was given -- the shape `read_field` used to have, now that
-    /// there is one decode path and it is the visitor's.
+    /// visitor was given, so tests can assert on the one decode path, which is
+    /// the visitor's.
     fn visit_one(payload: &[u8], bits: i64) -> Result<FieldValue> {
         let mut input = SliceInput::new(payload);
         let mut visitor = DocumentVisitor::all();
@@ -5407,8 +5407,8 @@ mod tests {
     }
 
     /// A `.fdt` whose unit header claims `blockLength == 0` while the unit
-    /// still has bytes left to cover used to spin forever counting blocks
-    /// (Java divides by it and throws). It must be reported as corruption.
+    /// still has bytes left to cover would spin forever counting blocks (Java
+    /// divides by it and throws). It must be reported as corruption.
     /// `.fdm`'s `chunkSize` is what a `sliced` chunk is divided by; zero
     /// would make the reader's unit loop make no progress.
     #[test]
@@ -6142,8 +6142,7 @@ mod tests {
     fn negative_max_doc_is_rejected_by_open() {
         // Java takes `numDocs` from `SegmentInfo`; this port takes it from
         // the `.fdm`, and every chunk-bounds check is stated relative to it.
-        // A negative one used to be accepted and then made
-        // `doc_base + chunk_docs > max_doc` vacuous.
+        // A negative one would make `doc_base + chunk_docs > max_doc` vacuous.
         let doc_bytes = field_bytes(0, TYPE_STRING, &string_field_payload("x"));
         let (fdt, fdx, mut fdm) = build_single_chunk_index(&doc_bytes);
         let at = fdm_max_doc_offset();
@@ -6233,9 +6232,8 @@ mod tests {
     #[test]
     fn a_negative_document_length_is_a_decode_error_not_a_backwards_offset() {
         // Only the `bpv == 0` bulk-int shape can carry a negative value (the
-        // 8/16/32-bit shapes are masked), and it used to run straight into
-        // the cumulative `offsets` array. The result was a *decreasing*
-        // offsets array, and `serialized_document`'s
+        // 8/16/32-bit shapes are masked), and running it into the cumulative
+        // `offsets` array would give a *decreasing* offsets array, so `serialized_document`'s
         // `offsets[i + 1] as usize - doc_offset` then underflowed to ~2^64 --
         // which `Vec::with_capacity` turns into a capacity-overflow panic.
         let (fdt, fdx, fdm) = single_chunk_with_claimed_counts(2, 1, -1, 2);
@@ -6288,7 +6286,7 @@ mod tests {
     fn an_oversized_binary_field_length_is_a_decode_error_not_an_allocation() {
         // Java hands its visitor a lazy `StoredFieldDataInput`; this port owns
         // a `Vec<u8>`, so the vint length has to be bounded by the bytes
-        // actually left. A negative one used to sign-extend to ~2^64.
+        // actually left. A negative one would sign-extend to ~2^64.
         let mut payload = Vec::new();
         write_vint(&mut payload, 1_000_000);
         let field = field_bytes(0, TYPE_BYTE_ARR, &payload);

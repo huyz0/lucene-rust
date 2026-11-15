@@ -547,7 +547,7 @@ fn the_state_reports_lucenes_own_dims_and_size() {
 
 /// The defect an `OrdinalMap` exists to prevent, demonstrated rather than
 /// asserted about: summing the per-segment count arrays elementwise -- the
-/// only thing a caller *could* do before this batch -- gives visibly wrong
+/// what a caller would otherwise have to do -- gives visibly wrong
 /// counts, because a given ordinal means different terms in different
 /// segments.
 #[test]

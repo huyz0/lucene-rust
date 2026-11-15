@@ -535,9 +535,9 @@ mod tests {
     /// `bits_per_value` reaches `get` from a `.tvd` chunk token. Above 64 the
     /// shift `n_bytes * 8 - bit_offset - bits_per_value` underflows -- a panic
     /// in a debug build -- before any bounds check runs.
-    /// `index as u128` sign-extends, so a negative index used to become
-    /// ~2^128 and overflow the `index * bits_per_value` multiply -- a
-    /// debug-build panic before any bounds check ran.
+    /// `index as u128` sign-extends, so a negative index becomes ~2^128 and
+    /// would overflow the `index * bits_per_value` multiply -- a debug-build
+    /// panic before any bounds check ran.
     #[test]
     fn negative_index_is_a_decode_error_not_a_multiply_overflow() {
         let data = [0u8; 64];

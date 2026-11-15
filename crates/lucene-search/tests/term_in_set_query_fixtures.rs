@@ -236,8 +236,7 @@ fn composes_as_a_boolean_query_should_clause() {
 /// scores that are equal to its boost" -- i.e. every matching doc scores flat
 /// `1.0` (no boost wrapper here), *regardless* of how many of the given terms
 /// matched that doc. This is explicitly checked against two alternative
-/// (wrong) formulas this task's own instructions called out as easy to
-/// assume by mistake:
+/// (wrong) formulas that are easy to assume by mistake:
 ///
 /// - NOT `max`-of-matched-terms' own idf-based scores (there is no such
 ///   per-term score computed at all in this port's unscored-clause

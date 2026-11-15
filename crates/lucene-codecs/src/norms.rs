@@ -968,8 +968,8 @@ mod tests {
     /// overflows `i64`.
     ///
     /// Both halves are read straight off `.nvm` with no relationship between
-    /// them on the wire, so a corrupt file can pick any pair. The sum used to
-    /// be a plain `+` feeding a slice range: in a debug build that is
+    /// them on the wire, so a corrupt file can pick any pair. A plain `+`
+    /// feeding a slice range would, in a debug build, be
     /// `attempt to add with overflow`, i.e. a panic where the caller (and,
     /// through the FFI, the JVM) expected a decode error. Java is not exposed
     /// to it because `IndexInput.slice(offset, length)` takes the two
@@ -1037,7 +1037,7 @@ mod tests {
         }
     }
 
-    /// The same shape from the other side: a negative `normsOffset` used to
+    /// The same shape from the other side: a negative `normsOffset` must not
     /// become a huge `usize` through an `as` cast and merely look like EOF.
     #[test]
     fn negative_norms_offset_is_a_decode_error() {

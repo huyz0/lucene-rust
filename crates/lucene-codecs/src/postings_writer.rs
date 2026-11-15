@@ -249,16 +249,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// (`FieldInfo.hasPayloads()`), never a per-occurrence one, so there is no
 /// "absent" state to model beyond zero-length.
 ///
-/// Flat rather than the nested `Vec<Vec<Vec<u8>>>` it used to be, because
-/// that shape cost a heap object per occurrence *and* a vector header per
-/// posting entry, on both sides of the `lucene-index` boundary: it measured
-/// 26 us/doc and ~190 MB per 50 000 documents with an all-empty-payload
-/// control costing the same, which is what identifies the slot rather than
-/// the bytes as the cost. This is also the exact layout
-/// [`write_position_tail`] already had to build internally, and the layout
+/// Flat rather than nested `Vec<Vec<Vec<u8>>>`, because a nested shape costs a
+/// heap object per occurrence *and* a vector header per posting entry. This is
+/// also the exact layout [`write_position_tail`] builds internally and
 /// `Lucene104PostingsWriter` accumulates into its own `payloadBytes` /
-/// `payloadLengthBuffer`, so the writer now borrows the caller's run instead
-/// of re-flattening it.
+/// `payloadLengthBuffer`, so the writer borrows the caller's run instead of
+/// re-flattening it.
 #[derive(Debug, Clone, Default)]
 pub struct TermPostings {
     pub term: Vec<u8>,
@@ -2531,9 +2527,7 @@ fn write_full_block(
         // `validate_field` rejects `freq < 1`, so every block has at least one
         // document and its frontier at least one pair. Asserted here rather
         // than inferred from a validator several hundred lines up: an empty
-        // impacts region is what Lucene rejects outright, and the guard that
-        // prevents it is no longer local to this expression (it used to be a
-        // `.max(1)` on the line this replaced).
+        // impacts region is what Lucene rejects outright.
         debug_assert!(!block_impacts.is_empty());
         write_impacts(&block_impacts, impacts);
         maxima.observe_level0(block_impacts.len() as i32, impacts.len());
@@ -5399,12 +5393,10 @@ mod tests {
     }
 
     /// `total_term_freq >= BLOCK_SIZE` alone (via a single doc with a huge
-    /// freq, so `docFreq == 1`) is no longer rejected. (A `docFreq >=
-    /// BLOCK_SIZE` ceiling for positions, the since-removed
-    /// `DocFreqTooLargeForPositions`, outlived it for a while.) This is the
-    /// "one doc, many positions" full-position-block case (see
+    /// freq, so `docFreq == 1`) is accepted. This is the "one doc, many
+    /// positions" full-position-block case (see
     /// [`positions_full_block_from_one_doc_round_trips`] for the round-trip
-    /// proof); this test only checks it no longer errors.
+    /// proof); this test only checks it does not error.
     #[test]
     fn total_term_freq_at_or_above_block_size_from_one_doc_is_now_accepted() {
         let positions: Vec<Vec<i32>> = vec![(0..BLOCK_SIZE).collect()];
@@ -5427,11 +5419,10 @@ mod tests {
             .expect("docFreq == 1 stays well under BLOCK_SIZE; only docFreq is now bounded");
     }
 
-    /// `docFreq >= BLOCK_SIZE` while indexing positions used to be rejected
-    /// (the since-removed `DocFreqTooLargeForPositions`), because a `.doc` full block of
-    /// a positions-indexing field carries pos/pay skip sub-fields this writer
-    /// did not emit. It emits them now ([`PosSkipWriter`]), so the shape is
-    /// accepted -- and the level-0 header it produces is read back by the
+    /// `docFreq >= BLOCK_SIZE` while indexing positions is accepted: a `.doc`
+    /// full block of a positions-indexing field carries pos/pay skip
+    /// sub-fields, which this writer emits ([`PosSkipWriter`]). The level-0
+    /// header it produces is read back by the
     /// unmodified `crate::postings::read_full_block_header`, which would
     /// mis-frame the block if the sub-fields were missing or misplaced.
     #[test]
@@ -6244,8 +6235,7 @@ mod tests {
         }
     }
 
-    /// The exact test named in this task's requirements: `docs: vec![(0, 1),
-    /// (2, 1)...]`-shaped round trip specifically for the "one doc, huge
+    /// A `docs: vec![(0, 1), (2, 1)...]`-shaped round trip specifically for the "one doc, huge
     /// freq" full-position-block case accepted by
     /// [`total_term_freq_at_or_above_block_size_from_one_doc_is_now_accepted`]
     /// above -- proves that acceptance actually round-trips correctly, not

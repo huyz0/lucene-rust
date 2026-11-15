@@ -109,10 +109,9 @@ random_strings! {
 
 /// `icu_collation_key` at seed C950197: its huge-strings run indexes the
 /// collation key of a long text, and `CheckIndex`'s
-/// `postings.intersect_agrees` scan used to match it with a regexp
-/// backtracker a few frames deep per code point, overflowing the 2 MB
-/// test-thread stack (seen before the fix: `TESTS_SEED=C950197` aborted at
-/// `RUST_MIN_STACK` 2, 1 and 0.5 MB, and passed at 64 MB).
+/// `postings.intersect_agrees` scan must not match it with a regexp
+/// backtracker a few frames deep per code point, which would overflow the
+/// 2 MB test-thread stack.
 #[test]
 fn icu_collation_key_seed_c950197() {
     let t = LuceneTestCase::with_config(
