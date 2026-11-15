@@ -99,8 +99,8 @@ public final class RustEngineSupport {
      * timestamp in arrival order, an index-sort key), stock otherwise. Until then the shard writes
      * stock segments; the choice is kept in the shard's commit, and merges write it. Only nodes
      * with this plugin read {@code Adaptive90} segments; to go back, close the index, set this to
-     * false, reopen it and force-merge, which rewrites every segment stock-readable. A new index
-     * that does not set this gets {@link #ADAPTIVE_DOC_VALUES_DEFAULT}.
+     * false, reopen it and force-merge, which rewrites every segment stock-readable. An index that does not
+     * set this follows {@link #ADAPTIVE_DOC_VALUES_DEFAULT}.
      */
     public static final Setting<String> ADAPTIVE_DOC_VALUES = new Setting<>(
         "index.codec.adaptive_doc_values",
@@ -110,10 +110,11 @@ public final class RustEngineSupport {
     );
 
     /**
-     * What {@link #ADAPTIVE_DOC_VALUES} a new accelerated-engine index gets when its request and
-     * templates do not set it: {@code auto} (the default), {@code true} or {@code false}. Dynamic;
-     * an index keeps the value it was created with, so changing this affects only indices created
-     * after. {@code auto} by default: on 1M-document indices end to end it chose {@code Adaptive90}
+     * What {@link #ADAPTIVE_DOC_VALUES} an accelerated-engine index uses when it does not set it:
+     * {@code auto} (the default), {@code true} or {@code false}. Dynamic. Only {@code true} is stored
+     * into a new index (an unknown setting would make a node without the plugin refuse its
+     * replicas); for {@code auto} and {@code false} an index follows the current value, and a shard
+     * that already chose {@code Adaptive90} keeps it in its commit. {@code auto} by default: on 1M-document indices end to end it chose {@code Adaptive90}
      * for time-ordered logs and taxi trips in file order (aggregations 0.54x and 0.61x of stock
      * OpenSearch's time, stores 27% and 38% smaller) and stock doc values for the same trips
      * shuffled, where {@code true} makes filtered metrics up to 1.5x slower; no response differed.
@@ -126,6 +127,18 @@ public final class RustEngineSupport {
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
+
+    private static volatile String adaptiveDefault = ADAPTIVE_AUTO;
+
+    /** Follows {@link #ADAPTIVE_DOC_VALUES_DEFAULT}, which an index that does not store its own setting uses. */
+    public static void setAdaptiveDocValuesDefault(String value) {
+        adaptiveDefault = value;
+    }
+
+    /** The doc-values mode of an index: its own setting, else the cluster default. */
+    static String adaptiveMode(org.opensearch.common.settings.Settings settings) {
+        return ADAPTIVE_DOC_VALUES.exists(settings) ? ADAPTIVE_DOC_VALUES.get(settings) : adaptiveDefault;
+    }
 
     private static String adaptiveDocValues(String key, String v) {
         return switch (v) {
@@ -686,7 +699,7 @@ public final class RustEngineSupport {
             FAULT_INJECTION.get(config.getIndexSettings().getSettings()),
             org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(config.getIndexSettings().getSettings()),
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
-            "true".equals(ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings())),
+            "true".equals(adaptiveMode(config.getIndexSettings().getSettings())),
             ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
             "off".equals(MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings())) == false,
             partitionField(config.getIndexSettings().getSettings()),
@@ -712,7 +725,7 @@ public final class RustEngineSupport {
         boolean success = false;
         try {
             writer.setLiveStaleness(REALTIME_MAX_STALENESS.get(indexSettings.getSettings()));
-            if (ADAPTIVE_AUTO.equals(ADAPTIVE_DOC_VALUES.get(indexSettings.getSettings()))) {
+            if (ADAPTIVE_AUTO.equals(adaptiveMode(indexSettings.getSettings()))) {
                 writer.setAdaptiveDocValuesAuto();
             }
             writer.setSeqNoLayout(

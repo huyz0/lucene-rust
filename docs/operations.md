@@ -377,18 +377,19 @@ The rehearsal found two defects, both fixed before these numbers:
   toward the request breaker and `indices.memory.off_heap.limit`. A document
   is still decompressed whole, so `_source: false` on a 100 MB document costs
   about 240 ms (Lucene stops before the `_source` field).
-- **Rust engine**: no `index.merge.policy.*`, and no merge statistics in
-  `_stats`, because merges run inside commits. Segments are non-compound, so
-  there are more files per segment. `_segments` counts only hard deletes. On
-  update-heavy indices, scores can differ from OpenSearch's engine until a
-  force merge. See
-  [where it behaves differently](opensearch-engine.md#where-it-behaves-differently).
-- **Only Lucene 10.5's default codec** is read natively, with any of its stored
-  fields: LZ4 (`default`), DEFLATE (`best_compression`), or the custom-codecs
-  plugin's `zstd` and `zstd_no_dict`. Indices from older Lucene majors, or
-  with a custom per-field format, are answered by OpenSearch. The accelerated engine
-  writes those four codecs; `zstd` needs the bundled `opensearch-custom-codecs`
-  plugin installed, as it does for OpenSearch's own engine.
+- **Accelerated engine**: `_segments` counts only hard deletes, refresh is a
+  commit, and on update-heavy indices scores can differ from OpenSearch's
+  engine until a force merge. See
+  [where it behaves differently](opensearch-engine.md#where-it-behaves-differently)
+  and the [compatibility ledger](compatibility.md).
+- **Codecs**: segments written with Lucene's default codec of 9.0 to 10.5 are
+  read natively, with any of its stored fields: LZ4 (`default`), DEFLATE
+  (`best_compression`), or the custom-codecs plugin's `zstd` and
+  `zstd_no_dict`. Segments with a custom per-field format (`completion`) or
+  the stock k-NN plugin's codec are answered by OpenSearch. The accelerated
+  engine writes those four codecs; `zstd` needs the bundled
+  `opensearch-custom-codecs` plugin installed, as it does for OpenSearch's own
+  engine.
 
 ## Verifying a build
 

@@ -135,7 +135,8 @@ Numbers: [docs/benchmarks/lean-seq-no.md](benchmarks/lean-seq-no.md).
 
 When an index is created:
 
-- a codec other than `default` or `lucene_default`
+- an `index.codec` other than `default`, `lucene_default`, `best_compression`, `zstd` and `zstd_no_dict`
+- `index.optimize_doc_id_lookup.fuzzy_set.enabled`
 - index sorting on an index created before 3.2.0 (whose nested blocks have no
   parent field), or together with `index.search.realtime.enabled`
 - context-aware segments
