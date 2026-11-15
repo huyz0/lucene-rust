@@ -26,6 +26,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::directory::Directory;
 use crate::error::{Error, Result};
+use crate::fetch_budget::{FetchBudget, FetchPermit};
 use crate::lock::lock_ignoring_poison;
 use crate::page_disk::DiskTier;
 
@@ -73,6 +74,13 @@ pub const DEFAULT_DOWNLOAD_WINDOW: usize = 1 << 20;
 pub const DEFAULT_MAX_REQUEST: usize = 8 << 20;
 /// The default number of requests in flight for one read.
 pub const DEFAULT_CONCURRENCY: usize = 16;
+/// The default most ranged requests in flight at once over every reader
+/// of one cache: 256, the I/O threads a node runs at most.
+pub const DEFAULT_MAX_INFLIGHT_REQUESTS: usize = 256;
+/// The default most bytes of ranged requests in flight at once over every
+/// reader of one cache: 512 MiB, four reads at [`DEFAULT_CONCURRENCY`]
+/// requests of [`DEFAULT_MAX_REQUEST`] bytes.
+pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 512 << 20;
 
 /// Extensions of the files read whole when a segment opens, or on every
 /// query: metadata, the terms index (FST), norms, the stored-fields and BKD
@@ -104,6 +112,16 @@ pub struct PageCacheConfig {
     pub max_request: usize,
     /// Requests in flight at once for one read.
     pub concurrency: usize,
+    /// The most ranged requests in flight at once over every reader of
+    /// this cache: a read past it waits for one to finish, so a node's
+    /// fetch threads and open connections stay bounded however many
+    /// queries miss at once. At least 1.
+    pub max_inflight_requests: usize,
+    /// The most bytes of ranged requests in flight at once over every
+    /// reader of this cache, each request counted at its length from
+    /// before it is sent until its pages are cut from its buffer: the
+    /// heap fetching may hold. At least [`Self::max_request`].
+    pub max_inflight_bytes: usize,
     /// Extensions of files whose pages are pinned and that are read whole
     /// on open.
     pub pinned_extensions: Vec<String>,
@@ -181,6 +199,8 @@ impl Default for PageCacheConfig {
             download_window: None,
             max_request: DEFAULT_MAX_REQUEST,
             concurrency: DEFAULT_CONCURRENCY,
+            max_inflight_requests: DEFAULT_MAX_INFLIGHT_REQUESTS,
+            max_inflight_bytes: DEFAULT_MAX_INFLIGHT_BYTES,
             pinned_extensions: DEFAULT_PINNED_EXTENSIONS
                 .iter()
                 .map(|e| (*e).to_string())
@@ -219,6 +239,10 @@ pub struct PageCacheStats {
     pub spill_open_bytes: u64,
     /// Files opened through the spill fallback since the cache was created.
     pub spill_opens: u64,
+    /// Ranged requests that waited before being sent, the cache's
+    /// [`PageCacheConfig::max_inflight_requests`] or
+    /// [`PageCacheConfig::max_inflight_bytes`] being in use.
+    pub fetch_waits: u64,
 }
 
 #[derive(Default)]
@@ -394,6 +418,8 @@ pub struct PageCache {
     tuner: Tuner,
     /// Bytes of spill-mapped files open now.
     spill_open: Arc<AtomicU64>,
+    /// Requests and bytes in flight over every reader.
+    budget: FetchBudget,
 }
 
 /// Holds `bytes` of [`PageCacheConfig::spill_budget`] while a mapped spill
@@ -492,17 +518,28 @@ impl PageCache {
                 "page_size and max_request must be positive".into(),
             ));
         }
+        if config.max_inflight_requests == 0 || config.max_inflight_bytes < config.max_request {
+            return Err(Error::IllegalArgument(format!(
+                "max_inflight_requests must be positive and max_inflight_bytes ({}) at least \
+                 max_request ({})",
+                config.max_inflight_bytes, config.max_request
+            )));
+        }
         let disk = match &config.disk_dir {
             Some(dir) => Some(DiskTier::open(dir, config.disk_budget, config.page_size)?),
             None => None,
         };
         Ok(PageCache {
-            config,
             disk,
             inflight: Mutex::new(HashMap::new()),
             counters: Counters::default(),
             tuner: Tuner::default(),
             spill_open: Arc::new(AtomicU64::new(0)),
+            budget: FetchBudget::new(
+                config.max_inflight_requests,
+                config.max_inflight_bytes as u64,
+            ),
+            config,
         })
     }
 
@@ -526,6 +563,7 @@ impl PageCache {
             disk_footprint_bytes: self.disk.as_ref().map_or(0, DiskTier::footprint),
             spill_open_bytes: self.spill_open.load(Ordering::Relaxed),
             spill_opens: c.spill_opens.load(Ordering::Relaxed),
+            fetch_waits: self.budget.waits(),
         }
     }
 
@@ -754,65 +792,85 @@ impl PageCache {
             }
             runs.push((j, 1));
         }
-        let fetch_run = |&(start, count): &(usize, usize)| -> Vec<Fetched> {
-            let first = mine[start].0;
+        // The stored bytes a run asks for, which its permit counts.
+        let span = |&(start, count): &(usize, usize)| -> u64 {
+            let (from, _) = geom.stored_range(mine[start].0);
             let last = mine[start.saturating_add(count).saturating_sub(1)].0;
-            let (from, _) = geom.stored_range(first);
-            let (_, to) = geom.stored_range(last);
-            let len = usize::try_from(to.saturating_sub(from)).unwrap_or(usize::MAX);
-            self.counters.requests.fetch_add(1, Ordering::Relaxed);
-            let started = std::time::Instant::now();
-            let fetched = fetch(from, len).and_then(|bytes| {
-                if bytes.len() == len {
-                    Ok(bytes)
-                } else {
-                    Err(Error::Corrupted(format!(
-                        "short read: {} of {len} bytes at {from}",
-                        bytes.len()
-                    )))
-                }
-            });
-            match fetched {
-                Ok(bytes) => {
-                    self.tuner
-                        .record(bytes.len(), started.elapsed(), geom.stored_page);
-                    self.counters
-                        .fetched_bytes
-                        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                    self.counters
-                        .fetched_pages
-                        .fetch_add(count as u64, Ordering::Relaxed);
-                    (0..count)
-                        .map(|k| {
-                            let page = mine[start.saturating_add(k)].0;
-                            let (a, b) = geom.stored_range(page);
-                            let a = usize::try_from(a.saturating_sub(from)).unwrap_or(0);
-                            let b = usize::try_from(b.saturating_sub(from)).unwrap_or(0);
-                            let page_bytes =
-                                Arc::<[u8]>::from(&bytes[a.min(b)..b.min(bytes.len())]);
-                            // Written here, on the run's own thread, so the
-                            // disk writes of parallel runs overlap too.
-                            if let Some(d) = &self.disk {
-                                d.put(&geom.key, page, &page_bytes);
-                            }
-                            Ok(page_bytes)
-                        })
-                        .collect()
-                }
-                Err(e) => {
-                    let e = FetchError::of(&e);
-                    (0..count).map(|_| Err(e.clone())).collect()
-                }
-            }
+            geom.stored_range(last).1.saturating_sub(from)
         };
+        // The permit is held until the run's pages are cut from its buffer,
+        // so the buffer is inside the bound for its whole life.
+        let fetch_run =
+            |&(start, count): &(usize, usize), _permit: FetchPermit<'_>| -> Vec<Fetched> {
+                let first = mine[start].0;
+                let last = mine[start.saturating_add(count).saturating_sub(1)].0;
+                let (from, _) = geom.stored_range(first);
+                let (_, to) = geom.stored_range(last);
+                let len = usize::try_from(to.saturating_sub(from)).unwrap_or(usize::MAX);
+                self.counters.requests.fetch_add(1, Ordering::Relaxed);
+                let started = std::time::Instant::now();
+                let fetched = fetch(from, len).and_then(|bytes| {
+                    if bytes.len() == len {
+                        Ok(bytes)
+                    } else {
+                        Err(Error::Corrupted(format!(
+                            "short read: {} of {len} bytes at {from}",
+                            bytes.len()
+                        )))
+                    }
+                });
+                match fetched {
+                    Ok(bytes) => {
+                        self.tuner
+                            .record(bytes.len(), started.elapsed(), geom.stored_page);
+                        self.counters
+                            .fetched_bytes
+                            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                        self.counters
+                            .fetched_pages
+                            .fetch_add(count as u64, Ordering::Relaxed);
+                        (0..count)
+                            .map(|k| {
+                                let page = mine[start.saturating_add(k)].0;
+                                let (a, b) = geom.stored_range(page);
+                                let a = usize::try_from(a.saturating_sub(from)).unwrap_or(0);
+                                let b = usize::try_from(b.saturating_sub(from)).unwrap_or(0);
+                                let page_bytes =
+                                    Arc::<[u8]>::from(&bytes[a.min(b)..b.min(bytes.len())]);
+                                // Written here, on the run's own thread, so the
+                                // disk writes of parallel runs overlap too.
+                                if let Some(d) = &self.disk {
+                                    d.put(&geom.key, page, &page_bytes);
+                                }
+                                Ok(page_bytes)
+                            })
+                            .collect()
+                    }
+                    Err(e) => {
+                        let e = FetchError::of(&e);
+                        (0..count).map(|_| Err(e.clone())).collect()
+                    }
+                }
+            };
         let per_run: Vec<Vec<_>> = if runs.len() <= 1 {
-            runs.iter().map(fetch_run).collect()
+            runs.iter()
+                .map(|run| fetch_run(run, self.budget.acquire(span(run))))
+                .collect()
         } else {
+            let fetch_run = &fetch_run;
             let mut results: Vec<Vec<_>> = Vec::with_capacity(runs.len());
             for batch in runs.chunks(self.config.concurrency.max(1)) {
                 let batch_results: Vec<Vec<_>> = std::thread::scope(|s| {
-                    let handles: Vec<_> =
-                        batch.iter().map(|run| s.spawn(|| fetch_run(run))).collect();
+                    // Each run's permit is taken here, before its thread
+                    // starts, so the threads fetching at once over every
+                    // reader are bounded too, not only their requests.
+                    let handles: Vec<_> = batch
+                        .iter()
+                        .map(|run| {
+                            let permit = self.budget.acquire(span(run));
+                            s.spawn(move || fetch_run(run, permit))
+                        })
+                        .collect();
                     handles
                         .into_iter()
                         .zip(batch)
@@ -967,6 +1025,124 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), before);
         cache.stored_pages(&other, &[0], &fetch).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), before + 1);
+    }
+
+    #[test]
+    fn the_in_flight_limits_must_admit_one_request() {
+        for config in [
+            PageCacheConfig {
+                max_inflight_requests: 0,
+                ..PageCacheConfig::default()
+            },
+            PageCacheConfig {
+                max_request: 1000,
+                max_inflight_bytes: 999,
+                ..PageCacheConfig::default()
+            },
+        ] {
+            assert!(matches!(
+                PageCache::new(config),
+                Err(Error::IllegalArgument(_))
+            ));
+        }
+        assert!(PageCache::new(PageCacheConfig {
+            max_request: 1000,
+            max_inflight_bytes: 1000,
+            max_inflight_requests: 1,
+            ..PageCacheConfig::default()
+        })
+        .is_ok());
+    }
+
+    /// A fetch that records how many requests and bytes are in flight at
+    /// once, holding each for `nap`.
+    struct InFlight {
+        data: Vec<u8>,
+        nap: std::time::Duration,
+        now: AtomicUsize,
+        bytes_now: AtomicUsize,
+        peak: AtomicUsize,
+        peak_bytes: AtomicUsize,
+    }
+
+    impl InFlight {
+        fn new(data: Vec<u8>, nap_ms: u64) -> InFlight {
+            InFlight {
+                data,
+                nap: std::time::Duration::from_millis(nap_ms),
+                now: AtomicUsize::new(0),
+                bytes_now: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                peak_bytes: AtomicUsize::new(0),
+            }
+        }
+
+        fn fetch(&self, off: u64, len: usize) -> Result<Vec<u8>> {
+            let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(n, Ordering::SeqCst);
+            let b = self.bytes_now.fetch_add(len, Ordering::SeqCst) + len;
+            self.peak_bytes.fetch_max(b, Ordering::SeqCst);
+            std::thread::sleep(self.nap);
+            self.bytes_now.fetch_sub(len, Ordering::SeqCst);
+            self.now.fetch_sub(1, Ordering::SeqCst);
+            Ok(self.data[off as usize..off as usize + len].to_vec())
+        }
+    }
+
+    #[test]
+    fn requests_in_flight_are_bounded_over_every_reader_of_the_cache() {
+        // Eight readers, each missing four scattered pages of its own file:
+        // without the bound 32 requests would be in flight at once.
+        let cache = PageCache::new(PageCacheConfig {
+            page_size: 100,
+            max_inflight_requests: 3,
+            ..PageCacheConfig::default()
+        })
+        .unwrap();
+        let store = InFlight::new(bytes(1000), 20);
+        let fetch = |off: u64, len: usize| store.fetch(off, len);
+        std::thread::scope(|s| {
+            for r in 0..8 {
+                let cache = &cache;
+                let fetch = &fetch;
+                s.spawn(move || {
+                    let g = Geometry::plain(Arc::from(format!("f{r}")), 1000, 100);
+                    let got = cache.stored_pages(&g, &[0, 2, 4, 6], fetch).unwrap();
+                    assert_eq!(&got[1][..], &bytes(1000)[200..300]);
+                });
+            }
+        });
+        assert_eq!(store.peak.load(Ordering::SeqCst), 3);
+        assert_eq!(cache.stats().requests, 32);
+        assert!(cache.stats().fetch_waits > 0);
+    }
+
+    #[test]
+    fn bytes_in_flight_are_bounded_over_every_reader_of_the_cache() {
+        // Requests of 300 bytes (three adjacent pages) under a 600-byte
+        // bound: two at once, whatever the request bound.
+        let cache = PageCache::new(PageCacheConfig {
+            page_size: 100,
+            max_request: 300,
+            max_inflight_bytes: 600,
+            ..PageCacheConfig::default()
+        })
+        .unwrap();
+        let store = InFlight::new(bytes(1200), 20);
+        let fetch = |off: u64, len: usize| store.fetch(off, len);
+        std::thread::scope(|s| {
+            for r in 0..4 {
+                let cache = &cache;
+                let fetch = &fetch;
+                s.spawn(move || {
+                    let g = Geometry::plain(Arc::from(format!("f{r}")), 1200, 100);
+                    let pages: Vec<u64> = (0..12).collect();
+                    assert_eq!(cache.stored_pages(&g, &pages, fetch).unwrap().len(), 12);
+                });
+            }
+        });
+        assert_eq!(store.peak_bytes.load(Ordering::SeqCst), 600);
+        assert_eq!(store.peak.load(Ordering::SeqCst), 2);
     }
 
     #[test]
