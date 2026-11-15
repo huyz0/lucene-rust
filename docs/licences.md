@@ -380,7 +380,7 @@ a dependency the shipped library links is not under a licence listed here.
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 | MIT |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | MIT (build time only) |
-| quick-xml | 0.39.4 | MIT | MIT (M13: reads the XML query parser's documents) |
+| quick-xml | 0.41.0 | MIT | MIT (M13: reads the XML query parser's documents) |
 | quote | 1.0.47 | MIT OR Apache-2.0 | MIT (build time only) |
 | rayon | 1.12.0 | MIT OR Apache-2.0 | MIT |
 | rayon-core | 1.13.0 | MIT OR Apache-2.0 | MIT |
