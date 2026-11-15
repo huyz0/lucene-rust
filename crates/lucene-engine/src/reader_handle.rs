@@ -121,11 +121,20 @@ pub fn open_reader(
     let mut deleted = try_with_capacity(opened.len())?;
     let mut at = 0usize;
     for (segment, &max_doc) in opened.iter().enumerate() {
-        let n = counts.map_or(0, |c| c[segment]);
-        let live = live_from_words(segment, max_doc, &words[at..at + n])?;
-        at += n;
+        let n = counts.map_or(0, |c| c.get(segment).copied().unwrap_or(usize::MAX));
+        let Some(segment_words) = at.checked_add(n).and_then(|end| words.get(at..end)) else {
+            set_last_error(format!(
+                "segment {segment}: {n} live-docs words past the {} supplied",
+                words.len()
+            ));
+            return Err(Status::InvalidArgument);
+        };
+        let live = live_from_words(segment, max_doc, segment_words)?;
+        at = at.saturating_add(n);
         deleted.push(live.as_ref().map_or(0, |l| {
-            (usize::try_from(max_doc).unwrap_or(0) - l.cardinality()) as i64
+            usize::try_from(max_doc)
+                .unwrap_or(0)
+                .saturating_sub(l.cardinality()) as i64
         }));
         live_docs.push(live);
     }
@@ -164,7 +173,7 @@ fn live_from_words(
         return Err(Status::InvalidArgument);
     }
     let tail_bits = max_doc % 64;
-    if tail_bits != 0 && words[words.len() - 1] >> tail_bits != 0 {
+    if tail_bits != 0 && words.last().is_some_and(|&w| w >> tail_bits != 0) {
         set_last_error(format!(
             "segment {segment}: live-docs bits set past maxDoc {max_doc}"
         ));

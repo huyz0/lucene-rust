@@ -181,7 +181,7 @@ pub unsafe extern "C" fn ffi_sparse_postings_write_alloc(
             fields.push(clusterer.ok_or(FfiStatus::InvalidHandle)?.finish(id));
         }
         let (sit, sip) = lucene_sparse::postings::write(id, &fields);
-        let mut out = try_with_capacity(8 + sit.len() + sip.len())?;
+        let mut out = try_with_capacity(sit.len().saturating_add(sip.len()).saturating_add(8))?;
         out.extend_from_slice(&(sit.len() as u64).to_le_bytes());
         out.extend_from_slice(&sit);
         out.extend_from_slice(&sip);

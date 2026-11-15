@@ -220,11 +220,12 @@ impl MultiValue {
             MultiValue::Sum => sorted.iter().fold(0.0, |t, v| t + v),
             MultiValue::Avg => sorted.iter().fold(0.0, |t, v| t + v) / n as f64,
             MultiValue::Median if n.is_multiple_of(2) => {
-                (sorted[(n - 1) / 2] + sorted[(n - 1) / 2 + 1]) / 2.0
+                let hi = n / 2;
+                (sorted[hi.saturating_sub(1)] + sorted[hi]) / 2.0
             }
-            MultiValue::Median => sorted[(n - 1) / 2],
+            MultiValue::Median => sorted[n.saturating_sub(1) / 2],
             MultiValue::Min => sorted[0],
-            MultiValue::Max => sorted[n - 1],
+            MultiValue::Max => sorted[n.saturating_sub(1)],
         }
     }
 }
@@ -370,7 +371,7 @@ pub fn decode(
         }
     };
     let max_boost = f32::from_bits(c.i32()? as u32);
-    let sub = decode_node(c, depth + 1, nodes)?;
+    let sub = decode_node(c, depth.saturating_add(1), nodes)?;
     let n = c.length()?;
     if n == 0 {
         return Err(invalid("query tree: a function score without functions"));
@@ -381,7 +382,7 @@ pub fn decode(
         *nodes = nodes.saturating_add(1);
         let filter = match c.u8()? {
             0 => None,
-            _ => Some(decode_node(c, depth + 1, nodes)?),
+            _ => Some(decode_node(c, depth.saturating_add(1), nodes)?),
         };
         functions.push(Filtered {
             source: filter
@@ -400,7 +401,11 @@ pub fn decode(
         f.function.script_ids(&mut ids);
     }
     for at in ids {
-        key[at - start..at - start + 4].fill(0);
+        if let Some(from) = at.checked_sub(start) {
+            if let Some(word) = key.get_mut(from..from.saturating_add(4)) {
+                word.fill(0);
+            }
+        }
     }
     let needs_sub =
         combine != Combine::Replace || functions.iter().any(|f| f.function.needs_score());
@@ -454,7 +459,7 @@ pub fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<
             let weight = f32::from_bits(c.i32()? as u32);
             Function::Weight {
                 weight,
-                inner: Box::new(decode_function(c, depth + 1)?),
+                inner: Box::new(decode_function(c, depth.saturating_add(1))?),
             }
         }
         FUNCTION_FIELD_VALUE => {

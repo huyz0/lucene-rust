@@ -227,12 +227,12 @@ pub fn read_boolean_clauses<'a>(
         let my_depth = if parent < 0 {
             0
         } else {
-            depth[parent as usize] + 1
+            depth[parent as usize].saturating_add(1)
         };
         if my_depth >= MAX_CLAUSE_DEPTH {
             set_last_error(format!(
                 "clause {i}: nesting depth {} exceeds the maximum of {MAX_CLAUSE_DEPTH}",
-                my_depth + 1
+                my_depth.saturating_add(1)
             ));
             return Err(Status::InvalidArgument);
         }

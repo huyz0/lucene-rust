@@ -147,13 +147,13 @@ pub fn decode(
     let extended = match kind {
         NODE_TO_PARENT => {
             let score_mode = decode_score_mode(c)?;
-            let parents = decode_parents(c, depth + 1, nodes)?;
-            let child = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+            let parents = decode_parents(c, depth.saturating_add(1), nodes)?;
+            let child = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
             ExtendedQuery::ToParentBlockJoin(ToParentBlockJoinQuery::new(
                 child, parents, score_mode,
             ))
         }
-        NODE_SPAN => ExtendedQuery::Span(decode_span(c, depth + 1, nodes)?),
+        NODE_SPAN => ExtendedQuery::Span(decode_span(c, depth.saturating_add(1), nodes)?),
         NODE_INTERVAL => {
             let field = utf8(c.bytes()?)?.to_string();
             let scoring = c.u8()?;
@@ -168,7 +168,7 @@ pub fn decode(
                 }
             }
             .map_err(|e| refused("interval query", e))?;
-            let source = decode_source(c, depth + 1, nodes)?;
+            let source = decode_source(c, depth.saturating_add(1), nodes)?;
             ExtendedQuery::Interval(IntervalQuery {
                 field,
                 source,
@@ -235,7 +235,7 @@ pub fn decode_span(
         let n = count(c, 1, nodes, "span query")?;
         let mut out = Vec::new();
         for _ in 0..n {
-            out.push(decode_span(c, depth + 1, nodes)?);
+            out.push(decode_span(c, depth.saturating_add(1), nodes)?);
         }
         Ok(out)
     };
@@ -253,21 +253,21 @@ pub fn decode_span(
         SPAN_OR => SpanNode::or(list(c, nodes)?).map_err(built)?,
         SPAN_FIRST => {
             let end = c.i32()?;
-            SpanNode::first(decode_span(c, depth + 1, nodes)?, end)
+            SpanNode::first(decode_span(c, depth.saturating_add(1), nodes)?, end)
         }
         SPAN_POSITION_RANGE => {
             let (start, end) = (c.i32()?, c.i32()?);
-            SpanNode::position_range(decode_span(c, depth + 1, nodes)?, start, end)
+            SpanNode::position_range(decode_span(c, depth.saturating_add(1), nodes)?, start, end)
         }
         SPAN_NOT => {
             let (pre, post) = (c.i32()?, c.i32()?);
-            let include = decode_span(c, depth + 1, nodes)?;
-            let exclude = decode_span(c, depth + 1, nodes)?;
+            let include = decode_span(c, depth.saturating_add(1), nodes)?;
+            let exclude = decode_span(c, depth.saturating_add(1), nodes)?;
             SpanNode::not(include, exclude, pre, post).map_err(built)?
         }
         SPAN_CONTAINING | SPAN_WITHIN => {
-            let big = decode_span(c, depth + 1, nodes)?;
-            let little = decode_span(c, depth + 1, nodes)?;
+            let big = decode_span(c, depth.saturating_add(1), nodes)?;
+            let little = decode_span(c, depth.saturating_add(1), nodes)?;
             if tag == SPAN_CONTAINING {
                 SpanNode::containing(big, little).map_err(built)?
             } else {
@@ -276,7 +276,7 @@ pub fn decode_span(
         }
         SPAN_FIELD_MASKING => {
             let field = utf8(c.bytes()?)?.to_string();
-            SpanNode::field_masking(decode_span(c, depth + 1, nodes)?, field)
+            SpanNode::field_masking(decode_span(c, depth.saturating_add(1), nodes)?, field)
         }
         other => {
             return Err(invalid(format!(
@@ -345,13 +345,13 @@ pub fn decode_source(
 ) -> Result<IntervalsSource, Status> {
     descend(depth, nodes)?;
     let sub = |c: &mut Cursor<'_>, nodes: &mut usize| -> Result<Box<IntervalsSource>, Status> {
-        Ok(Box::new(decode_source(c, depth + 1, nodes)?))
+        Ok(Box::new(decode_source(c, depth.saturating_add(1), nodes)?))
     };
     let list = |c: &mut Cursor<'_>, nodes: &mut usize| -> Result<Vec<IntervalsSource>, Status> {
         let n = count(c, 1, nodes, "interval source")?;
         let mut out = Vec::new();
         for _ in 0..n {
-            out.push(decode_source(c, depth + 1, nodes)?);
+            out.push(decode_source(c, depth.saturating_add(1), nodes)?);
         }
         Ok(out)
     };

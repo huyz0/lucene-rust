@@ -351,7 +351,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
         for _ in 0..n {
             index_sorted.push(match c.u8()? {
                 0 => None,
-                at @ 1..=127 => Some(usize::from(at - 1)),
+                at @ 1..=127 => Some(usize::from(at.saturating_sub(1))),
                 other => return Err(bad(format!("sort blob: index-sort flag {other}"))),
             });
         }
@@ -359,7 +359,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
     if c.pos != blob.len() {
         return Err(bad(format!(
             "sort blob: {} trailing bytes",
-            blob.len() - c.pos
+            blob.len().saturating_sub(c.pos)
         )));
     }
     Ok((
@@ -630,7 +630,7 @@ pub fn decode_collapse(blob: &[u8]) -> Result<(String, CollapseKind), Status> {
     if c.pos != blob.len() {
         set_last_error(format!(
             "collapse blob: {} trailing bytes",
-            blob.len() - c.pos
+            blob.len().saturating_sub(c.pos)
         ));
         return Err(Status::InvalidArgument);
     }
@@ -971,7 +971,7 @@ pub fn decode_metrics(blob: &[u8]) -> Result<DecodedAggs, Status> {
         });
     }
     let t = usize::from(c.u8()?);
-    if t > MAX_METRICS || n + t == 0 {
+    if t > MAX_METRICS || n.saturating_add(t) == 0 {
         return Err(bad(format!(
             "metrics blob: {n} fields and {t} terms, want 1..={MAX_METRICS} of each"
         )));
@@ -998,7 +998,7 @@ pub fn decode_metrics(blob: &[u8]) -> Result<DecodedAggs, Status> {
     if c.pos != blob.len() {
         return Err(bad(format!(
             "metrics blob: {} trailing bytes",
-            blob.len() - c.pos
+            blob.len().saturating_sub(c.pos)
         )));
     }
     Ok((specs, terms, slices))
@@ -1242,7 +1242,7 @@ pub fn decode_count_spec(blob: &[u8]) -> Result<CountSpec, Status> {
     if c.pos != blob.len() {
         return Err(bad(format!(
             "count blob: {} trailing bytes",
-            blob.len() - c.pos
+            blob.len().saturating_sub(c.pos)
         )));
     }
     Ok((u64::from(n.unsigned_abs()), iterate, slices))
@@ -1860,19 +1860,21 @@ impl HybridCollector {
                 while let Some(h) = hits.get(next[q]).filter(|h| h.doc_id < end) {
                     // Only a score above the threshold is collected.
                     if h.score > min {
-                        let d = (h.doc_id - base) as usize;
+                        let d = h.doc_id.wrapping_sub(base) as usize;
                         matching[d / 64] |= 1 << (d % 64);
                         self.window[q][d] = h.score;
                     }
-                    next[q] += 1;
+                    next[q] = next[q].saturating_add(1);
                 }
             }
             for (word, bits) in matching.iter_mut().enumerate() {
                 while *bits != 0 {
-                    let d = word * 64 + bits.trailing_zeros() as usize;
-                    *bits &= *bits - 1;
-                    self.total += 1;
-                    let doc = doc_base + base + d as i32;
+                    let d = word
+                        .saturating_mul(64)
+                        .saturating_add(bits.trailing_zeros() as usize);
+                    *bits &= bits.wrapping_sub(1);
+                    self.total = self.total.saturating_add(1);
+                    let doc = doc_base.wrapping_add(base).wrapping_add(d as i32);
                     for (q, queue) in self.queues.iter_mut().enumerate() {
                         let score = std::mem::take(&mut self.window[q][d]);
                         if score <= 0.0 {
@@ -2068,7 +2070,7 @@ pub fn lower_bound_boolean(
         // Lucene matches nothing when fewer SHOULD clauses exist than must match.
         return Ok(0);
     }
-    let required = b.must.len() + b.filter.len();
+    let required = b.must.len().saturating_add(b.filter.len());
     if required == 0 && b.minimum_should_match <= 1 {
         let mut best = 0;
         for c in &b.should {
