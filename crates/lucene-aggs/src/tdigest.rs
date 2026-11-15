@@ -134,7 +134,7 @@ impl MergingDigest {
         self.temp_mean[count..count + last].copy_from_slice(&self.mean[..last]);
         self.temp_weight[count..count + last].copy_from_slice(&self.weight[..last]);
         count += last;
-        stable_sort(&mut self.order[..count], &self.temp_mean);
+        sort_new_then_merge(&mut self.order[..count], &self.temp_mean, self.temp_used);
         self.total_weight += unmerged_weight;
         if backwards {
             self.order[..count].reverse();
@@ -183,6 +183,113 @@ impl MergingDigest {
             self.min = java_min(self.min, self.mean[0]);
             self.max = java_max(self.max, self.mean[cell - 1]);
         }
+    }
+}
+
+/// The keys sorted and the radix sort's scratch space.
+type RadixBuffers = (Vec<(u64, u32)>, Vec<(u64, u32)>);
+
+/// The order key of `v`: integers that compare as `v` does, with -0.0 as 0.0
+/// (Java's `<` ties them).
+#[inline]
+fn order_key(v: f64) -> u64 {
+    let bits = if v == 0.0 { 0 } else { v.to_bits() };
+    if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits | 1 << 63
+    }
+}
+
+/// [`stable_sort`] of `values[..order.len()]` when `values[fresh..]` (the
+/// centroids of the last merge) is already ascending: only the `fresh` new
+/// values are sorted and the two runs merged, new values first on a tie (their
+/// indexes are lower), which leaves the same order. Any other input takes the
+/// full sort.
+fn sort_new_then_merge(order: &mut [u32], values: &[f64], fresh: usize) {
+    thread_local! {
+        static KEYS: std::cell::RefCell<RadixBuffers> =
+            const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+    }
+    let n = order.len();
+    let values = &values[..n];
+    let old = &values[fresh..];
+    let sorted = !values.iter().any(|v| v.is_nan())
+        && old.windows(2).all(|w| order_key(w[0]) <= order_key(w[1]));
+    if !sorted || fresh == 0 || fresh == n {
+        stable_sort(order, values);
+        return;
+    }
+    KEYS.with(|keys| {
+        let mut keys = keys.borrow_mut();
+        let keys = &mut *keys;
+        keys.0.clear();
+        keys.0.extend(
+            values[..fresh]
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| (order_key(v), i as u32)),
+        );
+        radix_sort(&mut keys.0, &mut keys.1);
+        let keys = &keys.0;
+        let (mut a, mut b, mut out) = (0, fresh, 0);
+        while a < fresh && b < n {
+            let ka = keys[a].0;
+            if ka <= order_key(values[b]) {
+                order[out] = keys[a].1;
+                a += 1;
+            } else {
+                order[out] = b as u32;
+                b += 1;
+            }
+            out += 1;
+        }
+        while a < fresh {
+            order[out] = keys[a].1;
+            a += 1;
+            out += 1;
+        }
+        while b < n {
+            order[out] = b as u32;
+            b += 1;
+            out += 1;
+        }
+    });
+}
+
+/// Sorts `(key, index)` pairs, given in index order, by key then index: an
+/// LSD radix sort on the key's bytes (stable, so the index order holds among
+/// equal keys), skipping the bytes all keys share.
+fn radix_sort(a: &mut Vec<(u64, u32)>, tmp: &mut Vec<(u64, u32)>) {
+    let n = a.len();
+    if n < 64 {
+        a.sort_unstable();
+        return;
+    }
+    let mut hist = [[0u32; 256]; 8];
+    for &(k, _) in a.iter() {
+        for (d, h) in hist.iter_mut().enumerate() {
+            h[(k >> (8 * d)) as usize & 0xff] += 1;
+        }
+    }
+    tmp.clear();
+    tmp.resize(n, (0, 0));
+    for (d, h) in hist.iter().enumerate() {
+        if h.iter().any(|&c| c as usize == n) {
+            continue;
+        }
+        let mut sum = 0u32;
+        let mut start = [0u32; 256];
+        for (s, &c) in start.iter_mut().zip(h.iter()) {
+            *s = sum;
+            sum += c;
+        }
+        for &p in a.iter() {
+            let b = (p.0 >> (8 * d)) as usize & 0xff;
+            tmp[start[b] as usize] = p;
+            start[b] += 1;
+        }
+        std::mem::swap(a, tmp);
     }
 }
 
@@ -287,6 +394,45 @@ mod tests {
         stable_sort(&mut got, &values);
         got.sort_unstable();
         assert_eq!(got, [0, 1, 2, 3]);
+    }
+
+    /// Sorting the new values and merging them into ascending centroids
+    /// leaves the full sort's order, ties and signed zeros included.
+    #[test]
+    fn new_then_merge_is_the_full_sort() {
+        let mut r = JavaRandom::new(11);
+        for round in 0..300 {
+            let fresh = r.next_int_bounded(if round % 2 == 0 { 40 } else { 400 }) as usize + 1;
+            let old = r.next_int_bounded(40) as usize + 1;
+            let mut values: Vec<f64> = (0..fresh)
+                .map(|_| match r.next_int_bounded(3) {
+                    0 => {
+                        0.0 * if r.next_int_bounded(2) == 0 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
+                    1 => f64::from(r.next_int_bounded(6)),
+                    _ => r.next_double() * 4.0 - 2.0,
+                })
+                .collect();
+            let mut centroids: Vec<f64> = (0..old)
+                .map(|_| f64::from(r.next_int_bounded(6)) + if round % 7 == 0 { -0.0 } else { 0.0 })
+                .collect();
+            centroids.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if round % 5 == 0 {
+                // Not ascending: the full sort answers.
+                centroids.reverse();
+            }
+            values.extend(centroids);
+            let n = values.len();
+            let mut want = vec![0u32; n];
+            stable_sort(&mut want, &values);
+            let mut got = vec![0u32; n];
+            sort_new_then_merge(&mut got, &values, fresh);
+            assert_eq!(got, want, "round {round}");
+        }
     }
 
     /// FNV-1a over the little-endian bytes of each value, as `GenTDigest` folds them.
