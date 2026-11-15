@@ -142,9 +142,9 @@ pub fn decode(c: &mut Cursor<'_>) -> std::result::Result<Painless, Status> {
             1 => Op::Double(f64::from_bits(c.i64()? as u64)),
             2 => Op::Value,
             3 => Op::Widen,
-            code @ 16..=19 => Op::Float2(arith(code - 16)),
+            code @ 16..=19 => Op::Float2(arith(code.saturating_sub(16))),
             20 => Op::FloatNeg,
-            code @ 32..=35 => Op::Double2(arith(code - 32)),
+            code @ 32..=35 => Op::Double2(arith(code.saturating_sub(32))),
             36 => Op::DoubleNeg,
             other => return Err(invalid(format!("query tree: painless operation {other}"))),
         };
@@ -280,6 +280,11 @@ impl Painless {
     }
 
     /// The program's value, as the `float` `ScriptScoreQuery` scores with.
+    // ARITH: `top` is the stack depth the decode-time type check tracked
+    // (`depth`): it proved every pop has a value under it, so `top - 1` and
+    // `top -= 1` never go below zero, and no push passes `MAX_DEPTH`, so
+    // `top += 1` stays far below `usize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
     fn run(&self, value: f32) -> f32 {
         // Every value is held as an `f64`: exact for a `float`, and each
         // `float` operation rounds back to `f32` as Java's does.

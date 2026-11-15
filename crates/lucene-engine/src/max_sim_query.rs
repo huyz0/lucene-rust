@@ -35,7 +35,7 @@ pub fn decode(
     depth: usize,
     nodes: &mut usize,
 ) -> std::result::Result<Clause, Status> {
-    let sub = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+    let sub = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
     let field = std::str::from_utf8(c.bytes()?)
         .map_err(|_| Status::InvalidUtf8)?
         .to_string();

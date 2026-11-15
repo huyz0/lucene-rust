@@ -115,9 +115,9 @@ pub fn decode(blob: &[u8]) -> Result<Request, Status> {
     let (filter, filter_bytes) = match c.u8()? {
         0 => (None, 0..0),
         1 => {
-            let start = blob.len() - c.remaining();
+            let start = blob.len().saturating_sub(c.remaining());
             let node = crate::query_blob::decode_node(&mut c, 0, &mut nodes)?;
-            (Some(node), start..blob.len() - c.remaining())
+            (Some(node), start..blob.len().saturating_sub(c.remaining()))
         }
         _ => return Err(invalid("filter flag (expected 0..=1)")),
     };

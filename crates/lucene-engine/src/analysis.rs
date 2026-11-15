@@ -112,7 +112,7 @@ fn build(spec: &[u8]) -> Result<CustomAnalyzer, Status> {
     if c.pos() != spec.len() {
         return Err(invalid(format!(
             "analysis spec: {} trailing bytes",
-            spec.len() - c.pos()
+            spec.len().saturating_sub(c.pos())
         )));
     }
     let factory = |e: FactoryError| invalid(format!("analysis spec: {e}"));
@@ -249,7 +249,7 @@ pub fn analyze(spec: &[u8], field: &str, text: &str) -> Result<Vec<u8>, Status> 
         .analyzer()
         .token_stream(field, text)
         .map_err(failed)?;
-    let mut out = Vec::with_capacity(16 + text.len() * 3); // alloc-ok: sized from a &str Rust already holds
+    let mut out = Vec::with_capacity(text.len().saturating_mul(3).saturating_add(16)); // alloc-ok: sized from a &str Rust already holds
     put_i32(&mut out, 0);
     let mut count: i32 = 0;
     stream.reset().map_err(failed)?;

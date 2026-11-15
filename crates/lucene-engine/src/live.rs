@@ -233,7 +233,7 @@ pub mod phases {
             SPENT.with(|s| {
                 let mut v = s.get();
                 if let Some(d) = v.get_mut(phase) {
-                    *d += took;
+                    *d = d.saturating_add(took);
                 }
                 s.set(v);
             });
@@ -466,9 +466,10 @@ impl Warmer {
                 .any(|v| v.id == b.id && v.max_doc == b.max_doc)
         });
         if !grown {
-            return age >= max / 2;
+            return age >= max.checked_div(2).unwrap_or_default();
         }
-        h.served.load(Ordering::Relaxed) || age >= max.saturating_sub(max / 4)
+        h.served.load(Ordering::Relaxed)
+            || age >= max.saturating_sub(max.checked_div(4).unwrap_or_default())
     }
 
     pub fn asked(&self, commit: Option<i64>) {
@@ -682,7 +683,9 @@ pub fn searched_lean(w: &Arc<EngineWriter>) {
 pub fn prepare_ahead_of(warmer: &Warmer, h: &Arc<ViewHandle>) {
     let budget = warmer
         .max_staleness()
-        .map_or(std::time::Duration::ZERO, |m| m / 4);
+        .map_or(std::time::Duration::ZERO, |m| {
+            m.checked_div(4).unwrap_or_default()
+        });
     let in_budget = || h.opened().elapsed() < budget;
     for blob in warmer.recent_plain() {
         if !in_budget() {
@@ -1083,7 +1086,7 @@ pub fn plan(
                 break;
             }
             acc = acc.saturating_add(size);
-            kept -= 1;
+            kept = kept.saturating_sub(1);
         }
     }
     let mut out = Vec::new();
@@ -1774,7 +1777,7 @@ pub fn buffer_segment_files(
         // values encoded a field at a time as the search reads them, its
         // points only when the request reads points, and without waiting
         // for another thread writing the same documents.
-        let lean = lean_tail.filter(|_| !postings && i + 1 == plan.len());
+        let lean = lean_tail.filter(|_| !postings && i.saturating_add(1) == plan.len());
         // Claimed before the cache is read: a chunk another thread is
         // writing is waited for and then found there.
         let _writing = (b.in_slot && lean.is_none()).then(|| {
@@ -1886,14 +1889,14 @@ pub fn overlay_request(
                 set_last_error("live view: a request query of a bad length");
                 Status::Decode
             })?;
-        let blob = rest.get(4..4 + len).unwrap_or_default();
+        let blob = rest.get(4..4_usize.saturating_add(len)).unwrap_or_default();
         // One that does not decode leaves the search to a handle of every
         // term, which its own run reports on.
         let Ok((q, _, _)) = decode_request(blob) else {
             return Ok(None);
         };
         clauses.push(Clause::Boolean(Box::new(boolean_of(&q))));
-        rest = rest.get(4 + len..).unwrap_or_default();
+        rest = rest.get(4_usize.saturating_add(len)..).unwrap_or_default();
     }
     if let Some(t) = &decoded {
         let mut filters = Vec::new();
@@ -2431,7 +2434,7 @@ pub fn check_published_numbering(view_id: u64, id_field: i32) -> Result<usize, S
                 _ => None,
             })
     };
-    let mut checked = 0;
+    let mut checked = 0usize;
     for (bi, (b, plan)) in v.view.buffers.iter().zip(&v.plans).enumerate() {
         let Some(sci) = w.live_published_segment(b.id) else {
             continue;
@@ -2453,7 +2456,7 @@ pub fn check_published_numbering(view_id: u64, id_field: i32) -> Result<usize, S
                         sci.segment_name
                     ));
                 }
-                checked += 1;
+                checked = checked.saturating_add(1);
             }
         }
     }
@@ -2473,9 +2476,9 @@ pub fn check_view_reader_numbering(reader: u64, view_id: u64) -> Result<(), Stri
     let widths: Vec<i32> = v
         .plans
         .iter()
-        .flat_map(|plan| plan.iter().map(|p| p.end - p.start))
+        .flat_map(|plan| plan.iter().map(|p| p.end.saturating_sub(p.start)))
         .collect();
-    if segments.len() != base + widths.len() {
+    if segments.len() != base.saturating_add(widths.len()) {
         return Err(format!(
             "{} leaves for {base} committed and {} chunks",
             segments.len(),
@@ -2490,7 +2493,7 @@ pub fn check_view_reader_numbering(reader: u64, view_id: u64) -> Result<(), Stri
                 s.doc_base
             ));
         }
-        expected += w;
+        expected = expected.saturating_add(*w);
     }
     Ok(())
 }
