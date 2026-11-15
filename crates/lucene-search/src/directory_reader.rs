@@ -5288,11 +5288,10 @@ mod tests {
         std::fs::remove_dir_all(&dir_path).ok();
     }
 
-    /// Norms must be reachable through the reader. Before this they were not
-    /// opened at all, so a caller who opened an index the normal way could only
-    /// pass `None` for norms and score every document at
-    /// `UNNORMED_FIELD_LENGTH` -- a wrong BM25 length-normalization term, not
-    /// just a missing feature.
+    /// Norms must be reachable through the reader: a caller who opened an index
+    /// the normal way would otherwise have to pass `None` for norms and score
+    /// every document at `UNNORMED_FIELD_LENGTH` -- a wrong BM25
+    /// length-normalization term, not just a missing feature.
     ///
     /// Checked against the real Java-written `blocktree_index` fixture, whose
     /// `body` field has real `.nvm`/`.nvd` files.

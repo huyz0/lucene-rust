@@ -3,8 +3,7 @@
 //! `updateBinaryDocValue`), across three update rounds. Regenerate with
 //! `fixtures/src/GenDocValuesUpdates.java`.
 //!
-//! A doc-values update is the one write this port used to do in a format of
-//! its own invention. What Lucene actually writes is the updated field's
+//! A doc-values update is written in Lucene's format: the updated field's
 //! **whole column** in a new generation of ordinary
 //! `Lucene90DocValuesFormat` files, named
 //! `_<segment>_<base36 gen>_Lucene90_0.{dvm,dvd,dvs}`, plus a `FieldInfos`
