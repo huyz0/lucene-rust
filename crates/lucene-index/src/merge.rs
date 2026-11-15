@@ -8298,7 +8298,7 @@ mod tests {
         assert_eq!(values, vec![10, 30]);
     }
 
-    /// Task #54's numeric doc-values update overlay
+    /// The numeric doc-values update overlay
     /// (`lucene_codecs::doc_values_updates`) composed with this module's
     /// numeric doc-values merge -- proving, end to end through both
     /// already-shipped features' real public APIs, that a doc's
@@ -11865,8 +11865,7 @@ mod tests {
 
     #[test]
     fn doc_values_norms_and_term_vectors_follow_the_sort_key_not_source_concatenation() {
-        // Task #205 (the doc-values/norms/term-vectors long-tail item from
-        // PLAN.md's Phase 8 backlog): confirms `merge_sorted_stored_only_
+        // Confirms `merge_sorted_stored_only_
         // segments` physically reorders BINARY doc-values, norms, and term
         // vectors by sort key -- not just stored fields -- exactly like
         // `three_sources_k_way_merge_by_sort_key` proves for stored fields
@@ -13962,12 +13961,10 @@ mod tests {
         assert_eq!(cherry.freqs, vec![3]);
     }
 
-    /// Task #212's coverage/scope review flagged that `IndexOptions::
-    /// DocsAndCustomFreqs` -- accepted by `merge_postings`'s supported-list
-    /// alongside `Docs`/`DocsAndFreqs`, wire-identical to `DocsAndFreqs` --
-    /// had zero merge test coverage despite being a real, reachable field
-    /// type since `IndexWriter::set_custom_freq_postings_field`. This proves
-    /// merging preserves the caller's opaque custom-freq values verbatim
+    /// `IndexOptions::DocsAndCustomFreqs` -- accepted by `merge_postings`'s
+    /// supported-list alongside `Docs`/`DocsAndFreqs`, wire-identical to
+    /// `DocsAndFreqs`, reachable through
+    /// `IndexWriter::set_custom_freq_postings_field`. Merging preserves the caller's opaque custom-freq values verbatim
     /// (not re-derived as an occurrence count), the same way
     /// [`two_sources_no_deletions_merge_postings_correctly`] proves it for
     /// `DocsAndFreqs`.

@@ -17345,7 +17345,7 @@ pub(crate) mod tests {
         assert!(field.seek_exact(b"missing").is_none());
     }
 
-    /// Task #211's headline proof at the `lucene-index` level (the fuller
+    /// Proof at the `lucene-index` level (the fuller
     /// `PhraseQuery`-based proof lives in
     /// `lucene-search/src/directory_reader.rs`'s `phrase_query_e2e` module,
     /// since `lucene-index` can't depend on `lucene-search`): a field opted

@@ -331,7 +331,7 @@ pub(crate) fn point_in_set_including_score<'a>(
 /// the collected global ordinals translated through the segment's map once,
 /// when the scorer is made. Java maps every document's ordinal to its global
 /// one (`segmentOrdToGlobalOrdLookup.get(ord)`) and asks the collector; the
-/// matches and scores are the same (stage 3: the per-document lookups were
+/// matches and scores are the same (the per-document lookups were
 /// most of the scorer's time).
 enum OrdinalMatch {
     /// `GlobalOrdinalsQuery`: the found ordinals, at the constant score.
