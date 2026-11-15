@@ -19,43 +19,27 @@ import statistics
 import sys
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
+import benchhttp as bh  # noqa: E402
+
 TOK = re.compile(r"[a-z0-9]+")
 SIZE = int(os.environ.get("SIZE", "10"))
-PASSES = int(os.environ.get("PASSES", "3"))
+PASSES = int(os.environ.get("PASSES", "5"))
+WARMUP_S = float(os.environ.get("WARMUP_S", "3"))  # a freshly started JVM is still compiling after 30 requests
 NQ = int(os.environ.get("NQ", "60"))
 
 
 class Conn:
+    """benchhttp's keep-alive client with this file's (parsed body, response bytes) return."""
+
     def __init__(self, base):
-        host, port = base.split("//")[1].split(":")
-        self.addr = (host, int(port))
-        self.s = None
-        self.buf = b""
+        self.c = bh.Client(base)
 
     def call(self, method, path, body=None):
-        if self.s is None:
-            self.s = socket.create_connection(self.addr)
-            self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.buf = b""
-        data = b"" if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
-        hdr = f"{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\n\r\n".encode()
-        self.s.sendall(hdr + data)
-        while b"\r\n\r\n" not in self.buf:
-            c = self.s.recv(65536)
-            if not c:
-                self.s = None
-                raise RuntimeError("closed")
-            self.buf += c
-        head, _, rest = self.buf.partition(b"\r\n\r\n")
-        m = re.search(rb"(?i)content-length: (\d+)", head)
-        n = int(m.group(1))
-        while len(rest) < n:
-            rest += self.s.recv(65536)
-        self.buf = rest[n:]
-        status = int(head.split()[1])
+        status, data = self.c.request(method, path, body)
         if status >= 300:
-            raise RuntimeError(f"{method} {path}: {status} {rest[:n][:300]}")
-        return json.loads(rest[:n]), n
+            raise RuntimeError(f"{method} {path}: {status} {data[:300]!r}")
+        return json.loads(data), len(data)
 
 
 def prep(src, out, n):
@@ -223,8 +207,9 @@ def time_all(base, label, outf, out):
         if want and not any(w in name for w in want):
             continue
         bodies = [json.dumps(body_for(name, q)).encode() for q in qs]
-        for b in bodies:
-            c.call("POST", "/txt/_search?request_cache=false", b)
+        it = iter(range(10**9))
+        bh.warm(lambda: c.call("POST", "/txt/_search?request_cache=false", bodies[next(it) % len(bodies)]),
+                len(bodies), WARMUP_S)
         wall, took, size = [], [], 0
         s0 = nstats(c)
         for _ in range(PASSES):
@@ -244,7 +229,7 @@ def time_all(base, label, outf, out):
                 nat[k.split("_")[0] + "_native_ms"] = round((b["accelerated"] - a["accelerated"]) / n / 1e6, 3)
                 nat[k.split("_")[0] + "_fallback_ms"] = round((b["fallback"] - a["fallback"]) / n / 1e6, 3)
         res[name] = {**nat, "median_ms": round(statistics.median(wall), 3), "mean_ms": round(statistics.mean(wall), 3),
-                     "p90_ms": round(wall[int(len(wall) * 0.9) - 1], 3), "took_mean": round(statistics.mean(took), 2),
+                     "p90_ms": round(wall[int(len(wall) * 0.9) - 1], 3), "p99_ms": round(bh.pct(wall, 0.99), 3), "n": len(wall), "took_mean": round(statistics.mean(took), 2),
                      "resp_bytes": size // len(wall)}
     json.dump(res, open(outf, "w"), indent=1)
 

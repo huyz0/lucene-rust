@@ -8,12 +8,14 @@ The lines are the Loghub sets interleaved as benchmarks/newest-n/NewestN.java
 interleaves them (its own random order: the times, not the order of the
 sets, matter here), one document per line.
 """
-import http.client
 import json
+import os
 import random
 import sys
 import time
-import urllib.parse
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
+import benchhttp as bh  # noqa: E402
 
 SETS = ["bgl", "hdfs", "openssh", "thunderbird"]
 T0 = 1730000000000
@@ -22,18 +24,11 @@ TOTAL = 6_454_808
 
 
 def conn(base):
-    u = urllib.parse.urlparse(base)
-    return http.client.HTTPConnection(u.hostname, u.port, timeout=600)
+    return bh.Client(base)
 
 
 def req(c, method, path, body=None, ctype="application/json"):
-    data = body if isinstance(body, (bytes, type(None))) else json.dumps(body).encode()
-    c.request(method, path, body=data, headers={"Content-Type": ctype})
-    r = c.getresponse()
-    out = r.read()
-    if r.status >= 300:
-        raise RuntimeError(f"{method} {path}: {r.status} {out[:500]}")
-    return json.loads(out) if out else None
+    return c.json(method, path, body, ndjson=ctype.endswith("ndjson"))
 
 
 def load(base, data):
@@ -101,8 +96,7 @@ def run(base, out, reps):
     for name, size, body, order in shapes():
         b = dict(body, size=size, sort=[{"ts": order}], _source=["n"])
         path = "/logs/_search?request_cache=false"
-        for _ in range(5):
-            r = req(c, "POST", path, b)
+        bh.warm(lambda: req(c, "POST", path, b), 50, 2.0)
         tooks, rtts = [], []
         for _ in range(reps):
             st = time.perf_counter()

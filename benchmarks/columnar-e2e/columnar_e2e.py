@@ -28,8 +28,9 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
 import bench_nodes as bn  # noqa: E402
 
-ROUNDS = int(os.environ.get("ROUNDS", "20"))
+ROUNDS = int(os.environ.get("ROUNDS", "50"))
 WARMUP = int(os.environ.get("WARMUP", "5"))
+WARMUP_S = float(os.environ.get("WARMUP_S", "2"))
 CLIENTS = int(os.environ.get("CLIENTS", "3"))
 
 TS = {"taxi": "pickup", "bgl": "@timestamp"}
@@ -150,17 +151,10 @@ def time_all(dataset, label, out):
         for scope, win in (("all", None), ("10%", (f, lo, hi))):
             key = f"{scope} | {name}"
             b = body(aggs, win)
-            for _ in range(WARMUP):
-                r = search(b)
-            wall = []
-            for _ in range(ROUNDS):
-                t = time.perf_counter()
-                r = search(b)
-                wall.append((time.perf_counter() - t) * 1000)
-            wall.sort()
-            res[key] = {"median_ms": round(statistics.median(wall), 3),
-                        "p90_ms": round(wall[max(0, int(len(wall) * 0.9) - 1)], 3), "took_ms": r["took"],
-                        "response": strip(r)}
+            last = []
+            wall = bn.bh.measure(lambda: last.__setitem__(slice(None), [search(b)]), ROUNDS, WARMUP, WARMUP_S)
+            r = last[0]
+            res[key] = {**bn.bh.summarize(wall), "took_ms": r["took"], "response": strip(r)}
             print(f"  {label} {key:52s} {res[key]['median_ms']:9.2f} ms", flush=True)
     lo2 = bn.req("POST", "/bench/_search", {"size": 0, "aggs": {"lo": {"min": {"field": f}}, "hi": {"max": {"field": f}}}})["aggregations"]
     swin = small_window(dataset, int(lo2["lo"]["value"]), int(lo2["hi"]["value"]))
@@ -168,17 +162,10 @@ def time_all(dataset, label, out):
     for name, b in fs:
         key = f"fetch | {name}"
         b = dict(b, track_total_hits=True)
-        for _ in range(WARMUP):
-            r = search(b)
-        wall = []
-        for _ in range(ROUNDS):
-            t = time.perf_counter()
-            r = search(b)
-            wall.append((time.perf_counter() - t) * 1000)
-        wall.sort()
-        res[key] = {"median_ms": round(statistics.median(wall), 3),
-                    "p90_ms": round(wall[max(0, int(len(wall) * 0.9) - 1)], 3), "took_ms": r["took"],
-                    "response": strip(r, sources=True)}
+        last = []
+        wall = bn.bh.measure(lambda: last.__setitem__(slice(None), [search(b)]), ROUNDS, WARMUP, WARMUP_S)
+        r = last[0]
+        res[key] = {**bn.bh.summarize(wall), "took_ms": r["took"], "response": strip(r, sources=True)}
         print(f"  {label} {key:52s} {res[key]['median_ms']:9.2f} ms", flush=True)
     json.dump(res, open(out, "w"), indent=1)
 

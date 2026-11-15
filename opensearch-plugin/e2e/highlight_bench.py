@@ -14,7 +14,8 @@ Usage: highlight_bench.py [load|run|all] [DOCS] [SECONDS]
 import json, os, random, statistics, sys, time
 import requests
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import benchhttp as bh  # noqa: E402
 import highlight_matrix as m
 
 PLUGIN, STOCK = m.PLUGIN, m.STOCK
@@ -74,10 +75,11 @@ def load(docs):
 
 
 def timed(base, index, body):
+    c = bh.for_thread(base)
     t = time.perf_counter()
-    r = S.post(f"{base}/{index}/_search", json=body)
+    status, data = c.request("POST", f"/{index}/_search", body)
     dt = (time.perf_counter() - t) * 1000
-    assert r.ok, r.text[:300]
+    assert status < 300, data[:300]
     return dt
 
 
