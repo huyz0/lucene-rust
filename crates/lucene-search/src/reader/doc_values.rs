@@ -372,7 +372,7 @@ impl SortedNumericDocValues for SingletonSortedNumeric<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// Direct columns
+// Direct columns (stage 3)
 // ---------------------------------------------------------------------------
 
 /// A segment's `NUMERIC` field as the codec's column
