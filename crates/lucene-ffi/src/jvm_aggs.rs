@@ -125,6 +125,8 @@ pub const AGG_CACHE_STATS: usize = 6;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // Tests index and count freely: the gate is about values read off disk.
+    #![allow(clippy::arithmetic_side_effects)]
     #![allow(unused_imports)]
     use super::{aggregate_tree_blobs, aggregate_tree_blobs_cached};
     use lucene_engine::agg_tree::*;

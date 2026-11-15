@@ -103,7 +103,9 @@ use lucene_index::inverter::hash_bytes;
 #[inline]
 fn home(hash: u64, mask: usize) -> usize {
     let bits = (mask as u64).count_ones();
-    hash.checked_shr(u64::BITS - bits).unwrap_or(0) as usize & mask
+    hash.checked_shr(u64::BITS.saturating_sub(bits))
+        .unwrap_or(0) as usize
+        & mask
 }
 
 /// The last inverted field's buffers, emptied: the next field on the same
@@ -162,7 +164,7 @@ impl TermIds {
     /// Room for about `expected` terms before the first rehash, in `slots`'
     /// allocation when it is large enough.
     fn with_expected(expected: usize, mut slots: Vec<u32>) -> TermIds {
-        let n = (expected.max(4) * 2).next_power_of_two();
+        let n = expected.max(4).saturating_mul(2).next_power_of_two();
         slots.clear();
         slots.resize(n, Self::EMPTY); // alloc-ok: expected is capped at 2^16
         TermIds { slots }
@@ -180,7 +182,7 @@ impl TermIds {
         term: &[u8],
         hash: u64,
     ) -> Result<usize, usize> {
-        let mask = self.slots.len() - 1;
+        let mask = self.slots.len().saturating_sub(1);
         let mut i = home(hash, mask);
         loop {
             match self.slots[i] {
@@ -192,21 +194,22 @@ impl TermIds {
                     }
                 }
             }
-            i = (i + 1) & mask;
+            i = i.wrapping_add(1) & mask;
         }
     }
 
     /// Records the newest of `terms` in the empty slot `slot`, growing the
     /// table past half full.
     fn insert(&mut self, slot: usize, terms: &[TermState]) {
-        self.slots[slot] = (terms.len() - 1) as u32;
-        if terms.len() * 2 > self.slots.len() {
-            let mask = self.slots.len() * 2 - 1;
-            let mut slots = vec![Self::EMPTY; mask + 1]; // alloc-ok: twice the terms already held
+        self.slots[slot] = terms.len().saturating_sub(1) as u32;
+        if terms.len().saturating_mul(2) > self.slots.len() {
+            let grown = self.slots.len().saturating_mul(2);
+            let mask = grown.saturating_sub(1);
+            let mut slots = vec![Self::EMPTY; grown]; // alloc-ok: twice the terms already held
             for (id, t) in terms.iter().enumerate() {
                 let mut i = home(t.hash, mask);
                 while slots[i] != Self::EMPTY {
-                    i = (i + 1) & mask;
+                    i = i.wrapping_add(1) & mask;
                 }
                 slots[i] = id as u32;
             }

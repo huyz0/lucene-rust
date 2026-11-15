@@ -169,7 +169,13 @@ pub(crate) fn highlight(
         .map(|f| f.text.encode_utf16().collect())
         .collect();
     let units: usize = encoded.iter().map(Vec::len).sum();
-    let mut out = crate::raw::try_with_capacity::<u8>(13 + fragments.len() * 8 + units * 2)?;
+    let mut out = crate::raw::try_with_capacity::<u8>(
+        fragments
+            .len()
+            .saturating_mul(8)
+            .saturating_add(units.saturating_mul(2))
+            .saturating_add(13),
+    )?;
     out.push(STATUS_FRAGMENTS);
     put_i32(&mut out, i32::try_from(fragments.len()).unwrap_or(i32::MAX));
     for (f, text) in fragments.iter().zip(&encoded) {

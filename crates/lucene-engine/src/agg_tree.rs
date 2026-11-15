@@ -282,7 +282,7 @@ pub fn nodes(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<Vec<
     let n = usize::from(c.u8()?);
     let mut out = Vec::new();
     for _ in 0..n {
-        *count += 1;
+        *count = count.saturating_add(1);
         if *count > MAX_NODES {
             return Err(bad(format!(
                 "aggregation tree: more than {MAX_NODES} nodes"
@@ -418,7 +418,7 @@ pub fn node_of(
                 missing_term,
                 missing: None,
                 text: None,
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_SIGNIFICANT_TEXT => {
@@ -453,7 +453,7 @@ pub fn node_of(
                         dedup,
                     },
                 )),
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_TOP_HITS => {
@@ -487,7 +487,7 @@ pub fn node_of(
         AGG_CARDINALITY => {
             let kind = match c.u8()? {
                 0 => CardinalityKind::Keyword,
-                k @ 1..=3 => CardinalityKind::Numeric(value_kind(k - 1)?),
+                k @ 1..=3 => CardinalityKind::Numeric(value_kind(k.saturating_sub(1))?),
                 other => return Err(bad(format!("aggregation tree: cardinality kind {other}"))),
             };
             // `AbstractCardinalityAlgorithm`'s bounds, refused here rather
@@ -543,7 +543,7 @@ pub fn node_of(
             } else {
                 None
             };
-            let subs = nodes(c, depth + 1, count)?;
+            let subs = nodes(c, depth.saturating_add(1), count)?;
             if zero_buckets && !subs.is_empty() {
                 return Err(bad(
                     "aggregation tree: min_doc_count 0 with sub-aggregations".to_string(),
@@ -569,7 +569,7 @@ pub fn node_of(
                 kind,
                 shard_size,
                 order: terms_order(c)?,
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_HISTOGRAM => {
@@ -599,7 +599,7 @@ pub fn node_of(
                 interval,
                 offset,
                 hard_bounds: (min, max),
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_DATE_HISTOGRAM => {
@@ -613,7 +613,7 @@ pub fn node_of(
                 field,
                 rounding,
                 hard_bounds: (min, max),
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_COMPOSITE if depth == 0 => {
@@ -700,7 +700,7 @@ pub fn node_of(
                 size,
                 after,
                 sorted_lead,
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_RANGE => {
@@ -716,7 +716,7 @@ pub fn node_of(
                 field,
                 kind,
                 ranges,
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_FILTERS => {
@@ -733,11 +733,11 @@ pub fn node_of(
             AggNode::Filters {
                 filters,
                 other,
-                subs: nodes(c, depth + 1, count)?,
+                subs: nodes(c, depth.saturating_add(1), count)?,
             }
         }
         AGG_GLOBAL => AggNode::Global {
-            subs: nodes(c, depth + 1, count)?,
+            subs: nodes(c, depth.saturating_add(1), count)?,
         },
         AGG_NESTED | AGG_REVERSE_NESTED => {
             let parents = query_of(c.bytes()?)?;
@@ -746,7 +746,7 @@ pub fn node_of(
             } else {
                 None
             };
-            let subs = nodes(c, depth + 1, count)?;
+            let subs = nodes(c, depth.saturating_add(1), count)?;
             // A child document has no score of its own (Java hands it its
             // parent's).
             if subs.iter().any(AggNode::needs_scores) {
@@ -800,7 +800,7 @@ pub fn decode_tree(blob: &[u8]) -> Result<DecodedTree, Status> {
     if c.pos() != blob.len() {
         return Err(bad(format!(
             "aggregation tree: {} trailing bytes",
-            blob.len() - c.pos()
+            blob.len().saturating_sub(c.pos())
         )));
     }
     if main.is_empty() && global.is_none() {
