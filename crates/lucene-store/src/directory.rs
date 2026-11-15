@@ -386,7 +386,7 @@ fn cgroup_memory_limit() -> Option<u64> {
 /// cache: see [`Input::is_resident`].
 #[cfg(target_os = "linux")]
 fn pages_resident(bytes: &[u8]) -> bool {
-    const MAX: usize = 64;
+    const MAX: usize = 256;
     // SAFETY: `sysconf` has no preconditions.
     let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
         .ok()
@@ -424,6 +424,13 @@ fn pages_resident(bytes: &[u8]) -> bool {
 /// [`crate::read_ahead`].
 #[cfg(unix)]
 pub(crate) fn advise_will_need(bytes: &[u8]) {
+    // Pages already in the page cache have nothing to read in, and the
+    // advice walks every page it covers: a scan over a resident file (one
+    // that fits in memory) would pay a syscall per 128 KiB for nothing.
+    #[cfg(target_os = "linux")]
+    if pages_resident(bytes) {
+        return;
+    }
     // SAFETY: `sysconf` has no preconditions.
     let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
         .ok()
