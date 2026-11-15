@@ -28,6 +28,7 @@ zeroize = "1"
 # after purging then faults in, and zeroes, a whole 2 MiB page. Off by
 # default so tests can install their own counting allocator.
 mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls", "no_thp"], optional = true }
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-zstd = { path = "../lucene-zstd" }
 lucene-index = { path = "../lucene-index" }
@@ -61,7 +62,7 @@ default = [
 crypto = ["lucene-store-crypto/aws-lc", "lucene-ml/aws-lc"]
 fips = ["lucene-store-crypto/fips", "lucene-ml/fips"]
 analysis-icu = ["lucene-engine/analysis-icu"]
-mimalloc = ["dep:mimalloc"]
+mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 analysis-kuromoji = ["lucene-engine/analysis-kuromoji"]
 analysis-nori = ["lucene-engine/analysis-nori"]
 analysis-smartcn = ["lucene-engine/analysis-smartcn"]
