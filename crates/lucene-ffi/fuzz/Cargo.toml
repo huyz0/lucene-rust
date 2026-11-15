@@ -18,6 +18,9 @@ libfuzzer-sys = "0.4"
 lucene-ffi = { path = ".." }
 lucene-util = { path = "../../lucene-util" }
 lucene-spatial3d = { path = "../../lucene-spatial3d" }
+lucene-index = { path = "../../lucene-index" }
+lucene-store = { path = "../../lucene-store" }
+lucene-ml = { path = "../../lucene-ml" }
 
 [workspace]
 members = ["."]
@@ -53,6 +56,34 @@ bench = false
 [[bin]]
 name = "jvm_search_sorted"
 path = "fuzz_targets/jvm_search_sorted.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "check_corrupt_index"
+path = "fuzz_targets/check_corrupt_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sigv4_sign"
+path = "fuzz_targets/sigv4_sign.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "esdk_decrypt"
+path = "fuzz_targets/esdk_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connector_text"
+path = "fuzz_targets/connector_text.rs"
 test = false
 doc = false
 bench = false
