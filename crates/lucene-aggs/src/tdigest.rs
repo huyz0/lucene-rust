@@ -619,4 +619,43 @@ mod tests {
         assert_eq!(d.add(f64::NAN), Err(NanValue));
         assert_eq!(d.temp_used, 0);
     }
+
+    proptest::proptest! {
+        /// Whatever the values and compression, the merged state keeps the
+        /// digest's invariants: every value's weight is accounted for, `min`
+        /// and `max` are the exact extremes, and the centroids ascend and
+        /// stay within [min, max].
+        #[test]
+        fn merged_state_keeps_the_digest_invariants(
+            values in proptest::collection::vec(-1.0e9f64..1.0e9, 1..3000),
+            compression in 10.0f64..400.0,
+        ) {
+            let mut d = MergingDigest::new(compression);
+            for &v in &values {
+                d.add(v).unwrap();
+            }
+            d.merge_new_values(true, d.compression);
+            let n = values.len() as f64;
+            proptest::prop_assert_eq!(d.total_weight, n);
+            proptest::prop_assert_eq!(d.unmerged_weight, 0.0);
+            let lo = values.iter().cloned().fold(f64::INFINITY, f64::min);
+            let hi = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            proptest::prop_assert_eq!(d.min, lo);
+            proptest::prop_assert_eq!(d.max, hi);
+            let cells = d.last_used_cell;
+            proptest::prop_assert!(cells >= 1);
+            let weight: f64 = d.weight[..cells].iter().sum();
+            proptest::prop_assert_eq!(weight, n);
+            for i in 0..cells {
+                proptest::prop_assert!(d.weight[i] >= 1.0);
+                proptest::prop_assert!(d.mean[i] >= lo && d.mean[i] <= hi);
+                if i > 0 {
+                    proptest::prop_assert!(d.mean[i - 1] <= d.mean[i]);
+                }
+            }
+            // The first and last centroids hold the single extreme values.
+            proptest::prop_assert_eq!(d.mean[0], lo);
+            proptest::prop_assert_eq!(d.mean[cells - 1], hi);
+        }
+    }
 }
