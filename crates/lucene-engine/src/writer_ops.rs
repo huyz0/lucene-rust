@@ -517,6 +517,13 @@ pub fn set_merge_on_flush(w: &EngineWriter, wait_millis: i64, merge_on_flush_pol
     });
 }
 
+/// `index.codec.stored_fields.recompress_on_merge: non_force`: forced merges
+/// keep the fast compressor ([`IndexWriter::set_merge_lz4_high_compression_non_force`]).
+pub fn set_merge_lz4_hc_non_force(w: &EngineWriter, on: bool) {
+    w.writer()
+        .with_writer(|iw| iw.set_merge_lz4_high_compression_non_force(on));
+}
+
 /// `index.knn.ivf.partition_min_vectors`.
 pub fn set_ivf_partition_clusters(w: &EngineWriter, min_vectors: i64) -> Result<(), Status> {
     let min = match usize::try_from(min_vectors) {

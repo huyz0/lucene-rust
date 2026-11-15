@@ -1066,6 +1066,10 @@ pub(crate) struct IndexingConfig {
     /// high-compression LZ4 match finder -- see
     /// [`IndexWriter::set_merge_lz4_high_compression`].
     merge_lz4_high_compression: bool,
+    /// With [`Self::merge_lz4_high_compression`] on, leave the forced merges
+    /// (`force_merge`, `_upgrade`) on the fast compressor, see
+    /// [`IndexWriter::set_merge_lz4_high_compression_non_force`].
+    merge_lz4_hc_non_force: bool,
     /// The fewest vectors an IVF field clusters a partition of the index
     /// sort's first field alone with, `None` for no per-partition clusters
     /// -- see [`IndexWriter::set_ivf_partition_clusters`].
@@ -3518,7 +3522,12 @@ impl IndexingConfig {
                 doc_values_formats: self.doc_values_formats.clone(),
                 default_doc_values_format: self.resolved_default_doc_values_format(),
                 default_postings_format: self.default_postings_format,
-                stored_fields_lz4_high_compression: self.merge_lz4_high_compression,
+                stored_fields_lz4_high_compression: self.merge_lz4_high_compression
+                    && !(self.merge_lz4_hc_non_force
+                        && matches!(
+                            plan.kind,
+                            merge::MergeKind::Merge { max_num_segments, .. } if max_num_segments >= 0
+                        )),
                 ivf_partition_clusters: self.ivf_partition_clusters,
                 lz4_high_compression_sources: opened.iter().map(|o| o.lz4_hc).collect(),
                 zstd_dictionary_min_bytes: self.zstd_dictionary_min_bytes,
@@ -6777,6 +6786,16 @@ impl<'d> IndexWriter<'d> {
         self.cfg_mut().merge_lz4_high_compression = on;
     }
 
+    /// With [`Self::set_merge_lz4_high_compression`] on, keeps the explicitly
+    /// forced merges (`force_merge` with a segment target, which `_upgrade`
+    /// also uses) on the fast compressor: they copy the sources' chunks
+    /// instead of recompressing every one, as stock does, at the cost of the
+    /// 8-33% the match finder would save. The plugin's
+    /// `index.codec.stored_fields.recompress_on_merge: non_force`.
+    pub fn set_merge_lz4_high_compression_non_force(&mut self, on: bool) {
+        self.cfg_mut().merge_lz4_hc_non_force = on;
+    }
+
     /// Clusters the vectors of IVF fields ([`KnnVectorsFormat::Ivf`]) per
     /// partition of an index sorted by a partition field (the index sort's
     /// first field), at flush and merge: each partition of at least
@@ -7124,6 +7143,7 @@ impl<'d> IndexWriter<'d> {
                 adaptive_auto: None,
                 default_postings_format: Default::default(),
                 merge_lz4_high_compression: false,
+                merge_lz4_hc_non_force: false,
                 ivf_partition_clusters: None,
                 zstd_dictionary_min_bytes:
                     lucene_codecs::stored_fields::ZSTD_PAGED_DICTIONARY_MIN_BYTES,
