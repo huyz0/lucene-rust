@@ -55,6 +55,8 @@ pub use lucene_engine::alloc::{try_to_vec, try_with_capacity};
 
 #[cfg(test)]
 mod tests {
+    // Tests index and count freely: the gate is about values read off disk.
+    #![allow(clippy::arithmetic_side_effects)]
     use super::*;
 
     #[test]
@@ -118,6 +120,8 @@ mod tests {
 /// be the right tool the day cargo grows it.
 #[cfg(test)]
 mod allocation_hazard_tests {
+    // Tests index and count freely: the gate is about values read off disk.
+    #![allow(clippy::arithmetic_side_effects)]
     /// The lines of `source` that are *not* inside a `#[cfg(test)]` item.
     ///
     /// Brace-depth tracked rather than "everything before the first

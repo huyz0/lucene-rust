@@ -74,9 +74,9 @@ unsafe impl<A: std::alloc::GlobalAlloc> std::alloc::GlobalAlloc for Accounting<A
         let p = unsafe { self.0.realloc(ptr, layout, new_size) };
         if !p.is_null() {
             if new_size >= layout.size() {
-                lucene_util::memory::on_alloc(new_size - layout.size());
+                lucene_util::memory::on_alloc(new_size.saturating_sub(layout.size()));
             } else {
-                lucene_util::memory::on_free(layout.size() - new_size);
+                lucene_util::memory::on_free(layout.size().saturating_sub(new_size));
             }
         }
         p

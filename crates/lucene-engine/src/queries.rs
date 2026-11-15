@@ -331,7 +331,11 @@ pub fn decode(
             check_clause_count(nodes.saturating_add(count))?;
             let mut queries = Vec::new();
             for _ in 0..count {
-                queries.push(crate::query_blob::decode_node(c, depth + 1, nodes)?);
+                queries.push(crate::query_blob::decode_node(
+                    c,
+                    depth.saturating_add(1),
+                    nodes,
+                )?);
             }
             let minimum: Arc<dyn LongValuesSource> = match c.u8()? {
                 MINIMUM_CONSTANT => long_constant(c.i64()?),
@@ -411,14 +415,18 @@ pub fn decode(
             let heap_factor = f32(c)?;
             let filter = match c.u8()? {
                 0 => None,
-                1 => Some(crate::query_blob::decode_node(c, depth + 1, nodes)?),
+                1 => Some(crate::query_blob::decode_node(
+                    c,
+                    depth.saturating_add(1),
+                    nodes,
+                )?),
                 other => {
                     return Err(invalid(format!(
                         "query tree: sparse filter flag {other} (expected 0..=1)"
                     )))
                 }
             };
-            let fallback = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+            let fallback = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
             let query = SparseAnnQuery {
                 field: field.clone(),
                 tokens,
@@ -458,7 +466,11 @@ pub fn decode(
             };
             let filter = match c.u8()? {
                 0 => None,
-                1 => Some(crate::query_blob::decode_node(c, depth + 1, nodes)?),
+                1 => Some(crate::query_blob::decode_node(
+                    c,
+                    depth.saturating_add(1),
+                    nodes,
+                )?),
                 other => {
                     return Err(invalid(format!(
                         "query tree: KNN filter flag {other} (expected 0..=1)"
@@ -550,11 +562,11 @@ pub fn decode(
             return Ok(Clause::MultiPhrase(phrase));
         }
         NODE_VISITED => {
-            let record = visit_record(c, depth + 1, nodes)?;
+            let record = visit_record(c, depth.saturating_add(1), nodes)?;
             return Ok(Clause::Extended(Box::new(ExtendedQuery::Visited(record))));
         }
         NODE_VISIT_ONLY => {
-            let inner = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+            let inner = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
             return Ok(Clause::Extended(Box::new(ExtendedQuery::VisitOnly(
                 Box::new(inner),
             ))));
@@ -617,8 +629,8 @@ pub fn decode(
                     "query tree: join min_children {min} and max_children {max}"
                 )));
             }
-            let to_query = crate::query_blob::decode_node(c, depth + 1, nodes)?;
-            let from_query = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+            let to_query = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
+            let from_query = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
             return Ok(Clause::Extended(Box::new(ExtendedQuery::LateJoin(
                 lucene_search::join::LateJoinQuery {
                     join_field,
@@ -631,8 +643,8 @@ pub fn decode(
             ))));
         }
         NODE_TO_CHILD => {
-            let parents = crate::nodes::decode_parents(c, depth + 1, nodes)?;
-            let parent = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+            let parents = crate::nodes::decode_parents(c, depth.saturating_add(1), nodes)?;
+            let parent = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
             return Ok(Clause::Extended(Box::new(ExtendedQuery::ToChildBlockJoin(
                 lucene_search::join::ToChildBlockJoinQuery::new(parent, parents),
             ))));
@@ -793,9 +805,13 @@ pub fn visit_record(
                         )))
                     }
                 };
-                VisitEvent::Sub(occur, visit_record(c, depth + 1, nodes)?)
+                VisitEvent::Sub(occur, visit_record(c, depth.saturating_add(1), nodes)?)
             }
-            VISIT_NODE => VisitEvent::Node(crate::query_blob::decode_node(c, depth + 1, nodes)?),
+            VISIT_NODE => VisitEvent::Node(crate::query_blob::decode_node(
+                c,
+                depth.saturating_add(1),
+                nodes,
+            )?),
             other => {
                 return Err(invalid(format!(
                     "query tree: unknown visit event {other} (expected 0..=3)"

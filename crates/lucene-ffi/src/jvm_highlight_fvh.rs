@@ -135,7 +135,7 @@ fn node(c: &mut Cursor<'_>, depth: usize) -> Result<QueryPhraseMap, FfiStatus> {
     let mut subs = HashMap::with_capacity(n); // alloc-ok: count() bounds it by the request's bytes
     for _ in 0..n {
         let term = string(c, "a term")?;
-        let sub = node(c, depth + 1)?;
+        let sub = node(c, depth.saturating_add(1))?;
         subs.insert(term, sub);
     }
     Ok(QueryPhraseMap::from_parts(
@@ -409,7 +409,13 @@ pub(crate) fn highlight(
     };
     let encoded: Vec<Vec<u16>> = found.iter().map(|f| f.encode_utf16().collect()).collect();
     let units: usize = encoded.iter().map(Vec::len).sum();
-    let mut out = crate::raw::try_with_capacity::<u8>(5 + encoded.len() * 4 + units * 2)?;
+    let mut out = crate::raw::try_with_capacity::<u8>(
+        encoded
+            .len()
+            .saturating_mul(4)
+            .saturating_add(units.saturating_mul(2))
+            .saturating_add(5),
+    )?;
     out.push(STATUS_FRAGMENTS);
     put_i32(&mut out, i32::try_from(encoded.len()).unwrap_or(i32::MAX));
     for text in &encoded {

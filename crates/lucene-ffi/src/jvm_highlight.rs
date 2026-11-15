@@ -269,7 +269,7 @@ fn with_prepared<T>(
         let found = cache.iter().position(|(k, _)| &**k == request);
         let idx = match found {
             Some(i) => {
-                let last = cache.len() - 1;
+                let last = cache.len().saturating_sub(1);
                 if i != last {
                     let entry = cache.remove(i);
                     cache.push(entry);
@@ -282,7 +282,7 @@ fn with_prepared<T>(
                     cache.remove(0);
                 }
                 cache.push((request.into(), prepared));
-                cache.len() - 1
+                cache.len().saturating_sub(1)
             }
         };
         // taken out while it runs: a failed or panicking hit leaves no
@@ -303,7 +303,13 @@ pub(crate) fn put_i32(out: &mut Vec<u8>, v: i32) {
 
 fn encode(snippets: &[Snippet]) -> Result<Vec<u8>, FfiStatus> {
     let units: usize = snippets.iter().map(|s| s.text.len()).sum();
-    let mut out = crate::raw::try_with_capacity::<u8>(5 + snippets.len() * 9 + units * 2)?;
+    let mut out = crate::raw::try_with_capacity::<u8>(
+        snippets
+            .len()
+            .saturating_mul(9)
+            .saturating_add(units.saturating_mul(2))
+            .saturating_add(5),
+    )?;
     out.push(STATUS_SNIPPETS);
     put_i32(&mut out, i32::try_from(snippets.len()).unwrap_or(i32::MAX));
     for s in snippets {

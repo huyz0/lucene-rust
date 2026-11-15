@@ -66,3 +66,6 @@ embedded-data = [
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
+
+[lints]
+workspace = true

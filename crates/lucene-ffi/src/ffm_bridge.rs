@@ -247,7 +247,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted_alloc(
         for (i, hit) in out.hits.iter().enumerate() {
             docs[i] = hit.doc;
             for (k, &v) in hit.values.iter().take(out.keys).enumerate() {
-                values[i * out.keys + k] = v;
+                values[i.saturating_mul(out.keys).saturating_add(k)] = v;
             }
         }
         let counts = [
@@ -355,8 +355,8 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate_alloc(
         for (i, s) in states.iter().enumerate() {
             counts[i] = i64::try_from(s.count).unwrap_or(i64::MAX);
             let v = jvm_reader::metric_values(s);
-            values[i * jvm_reader::METRIC_VALUES..(i + 1) * jvm_reader::METRIC_VALUES]
-                .copy_from_slice(&v);
+            let from = i.saturating_mul(jvm_reader::METRIC_VALUES);
+            values[from..from.saturating_add(jvm_reader::METRIC_VALUES)].copy_from_slice(&v);
         }
         // SAFETY: caller contract.
         unsafe { give(terms, out_terms, out_terms_len) };
