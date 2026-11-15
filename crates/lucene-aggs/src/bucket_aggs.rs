@@ -3473,6 +3473,55 @@ fn collect_window(
             leaf.win_ords = win_ords;
             return out;
         }
+        // `filters`: each document in the bucket of every filter it matches
+        // (or `other`), the (document, bucket) pairs in document order handed
+        // to the sub-aggregations as one window, as `collect` hands them one
+        // by one.
+        (
+            AggNode::Filters { other, .. },
+            State::Fixed {
+                width,
+                docs: counts,
+                ..
+            },
+        ) if matches!(leaf.col, Col::Filters(_)) => {
+            let (mut win_docs, mut win_ords) = (
+                std::mem::take(&mut leaf.win_docs),
+                std::mem::take(&mut leaf.win_ords),
+            );
+            win_docs.clear();
+            win_ords.clear();
+            let subs = !node.subs().is_empty();
+            if let Col::Filters(bits) = &leaf.col {
+                for (&doc, &owner) in docs.iter().zip(owners) {
+                    let base = owner as usize * *width;
+                    let mut matched = false;
+                    for (i, b) in bits.iter().enumerate() {
+                        if b.as_ref().is_none_or(|w| bit(w, doc)) {
+                            matched = true;
+                            let ord = (base + i) as u32;
+                            *slot(counts, ord as usize) += 1;
+                            if subs {
+                                win_docs.push(doc);
+                                win_ords.push(ord);
+                            }
+                        }
+                    }
+                    if *other && !matched {
+                        let ord = (base + bits.len()) as u32;
+                        *slot(counts, ord as usize) += 1;
+                        if subs {
+                            win_docs.push(doc);
+                            win_ords.push(ord);
+                        }
+                    }
+                }
+            }
+            let out = collect_subs_window(node, state, leaf, &win_docs, &win_ords);
+            leaf.win_docs = win_docs;
+            leaf.win_ords = win_ords;
+            return out;
+        }
         // `global`: every document in its owner's bucket, the window handed
         // on as it came.
         (AggNode::Global { .. }, State::Fixed { docs: counts, .. }) => {
@@ -6903,6 +6952,50 @@ mod tests {
                         assert_eq!(w, e, "{owners:?} gap {gap} subs {}", subs.len());
                     }
                 }
+            }
+        }
+        // `filters`: three filters (one matching everything), with and
+        // without the `other` bucket, over owners past 0.
+        for (other, subs) in [
+            (false, vec![sub.clone()]),
+            (true, vec![sub.clone()]),
+            (true, Vec::new()),
+        ] {
+            let node = AggNode::Filters {
+                filters: vec![BooleanQuery::default(); 3],
+                other,
+                subs: subs.clone(),
+            };
+            let bits = vec![
+                Some(vec![0b0000_1010_0101u64]),
+                None,
+                Some(vec![0b0011_0000_0000u64]),
+            ];
+            for owners in &owners_sets {
+                let leaf_for = || {
+                    let mut leaf = windowed(vec![0; 10], None);
+                    leaf.col = Col::Filters(bits.clone());
+                    if !subs.is_empty() {
+                        leaf.subs = vec![windowed((0..10).map(|v| v * 3).collect(), None)];
+                    }
+                    leaf
+                };
+                let (mut window, mut each) = (State::new(&node), State::new(&node));
+                let mut leaf = leaf_for();
+                for _ in 0..2 {
+                    collect_window(&node, &mut window, &mut leaf, &docs, owners).unwrap();
+                }
+                let mut leaf = leaf_for();
+                for _ in 0..2 {
+                    for (&doc, &owner) in docs.iter().zip(owners) {
+                        collect(&node, &mut each, &mut leaf, doc, owner).unwrap();
+                    }
+                }
+                assert_eq!(
+                    summary(&window),
+                    summary(&each),
+                    "filters {other} {owners:?}"
+                );
             }
         }
         assert!((-0.0f64).to_bits() >= SMALL_KEYS_F64_BITS);
