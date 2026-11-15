@@ -3689,6 +3689,10 @@ fn collect_composite(
     }
 }
 
+/// A table slot not yet settled, and one that is never competitive.
+const PAIR_UNSEEN: u32 = u32::MAX;
+const PAIR_DEAD: u32 = u32::MAX - 1;
+
 /// Largest first-source dictionary the two-keyword window pass tabulates.
 const MAX_TABULATED_ORDS: usize = 1 << 16;
 
@@ -3868,6 +3872,7 @@ fn collect_composite_sorted(
         l.drop_prefetch();
     }
     let live = seg.live_docs;
+    let mut table: Vec<u32> = Vec::new();
     for ord in from..map.len() {
         let term = dict
             .seek_ord(ord as i64)
@@ -3881,9 +3886,52 @@ fn collect_composite_sorted(
             .map(|p| p.docs)
             .unwrap_or_default();
         let (mut collected, mut placed) = (false, 0usize);
+        // Every key this term leads sorts past the worst kept one: its
+        // documents offer keys and place none, so the first that offers one
+        // settles the term.
+        let hopeless = st.worst.as_deref().is_some_and(|w| {
+            first
+                .key(map, ord as i64)
+                .is_ok_and(|k| first.compare(Some(k), w[0]).is_gt())
+        });
+        let second = match (sources.as_slice(), c.sources.as_slice()) {
+            ([_, s1], [_, l1])
+                if s1.values == CompositeValues::Keyword
+                    && matches!(l1.col, Col::Ords(Ords::Single(_), _))
+                    && l1.missing.is_none() =>
+            {
+                Some(s1)
+            }
+            _ => None,
+        };
+        // The second source's segment ordinals settled under this term: the
+        // bucket of one, or that its key is never competitive.
+        table.clear();
+        if second.is_some() {
+            if let Col::Ords(_, m) = &c.sources[1].col {
+                if m.len() <= MAX_TABULATED_ORDS {
+                    table.resize(m.len(), PAIR_UNSEEN);
+                }
+            }
+        }
         for doc in docs {
-            if live.is_none_or(|l| l.get_doc(doc)) {
-                let offered = collect_composite(
+            if !live.is_none_or(|l| l.get_doc(doc)) {
+                continue;
+            }
+            let offered = match second {
+                Some(s1) if !hopeless => collect_sorted_pair(
+                    sources,
+                    s1,
+                    *size,
+                    subs,
+                    st,
+                    c,
+                    &mut leaf.subs,
+                    doc,
+                    ord as i64,
+                    &mut table,
+                )?,
+                _ => collect_composite(
                     sources,
                     *size,
                     subs,
@@ -3892,10 +3940,13 @@ fn collect_composite_sorted(
                     &mut leaf.subs,
                     doc,
                     Some(ord as i64),
-                )?;
-                if let Some(n) = offered {
-                    collected = true;
-                    placed += n;
+                )?,
+            };
+            if let Some(n) = offered {
+                collected = true;
+                placed += n;
+                if hopeless {
+                    break;
                 }
             }
         }
@@ -3905,6 +3956,79 @@ fn collect_composite_sorted(
         }
     }
     Ok(true)
+}
+
+/// [`collect_composite`] of one document of a sorted read's term over two
+/// keyword sources, the second single-valued: its key is the term and the
+/// document's one value, checked against `after` and the worst kept key
+/// without the generic combination bookkeeping. A document without a
+/// single second value goes the generic way.
+#[allow(clippy::too_many_arguments)]
+fn collect_sorted_pair(
+    sources: &[CompositeSource],
+    s1: &CompositeSource,
+    size: usize,
+    subs: &[AggNode],
+    st: &mut CompositeState,
+    c: &mut CompositeLeaf<'_>,
+    leaf_subs: &mut [Leaf<'_>],
+    doc: i32,
+    ord: i64,
+    table: &mut [u32],
+) -> Result<Option<usize>> {
+    let l1 = &mut c.sources[1];
+    if size == 0 || !l1.read(doc)? || l1.buf.len() != 1 {
+        return collect_composite(sources, size, subs, st, c, leaf_subs, doc, Some(ord));
+    }
+    let v = l1.buf[0];
+    let at = usize::try_from(v).ok().filter(|&i| i < table.len());
+    if let Some(i) = at {
+        let b = table[i];
+        if b == PAIR_DEAD {
+            return Ok(Some(0));
+        }
+        if b != PAIR_UNSEEN && !st.keys[b as usize].is_empty() {
+            *slot(&mut st.docs, b as usize) += 1;
+            for ((n, sub), l) in subs.iter().zip(&mut st.subs).zip(leaf_subs) {
+                collect(n, sub, l, doc, b)?;
+            }
+            return Ok(Some(1));
+        }
+    }
+    let map1 = match &l1.col {
+        Col::Ords(_, map) => *map,
+        _ => &[],
+    };
+    let map0 = match &c.sources[0].col {
+        Col::Ords(_, map) => *map,
+        _ => &[],
+    };
+    let key = [Some(sources[0].key(map0, ord)?), Some(s1.key(map1, v)?)];
+    let past_after = c.after.as_ref().is_none_or(|after| {
+        for ((s, &k), &a) in sources.iter().zip(&key).zip(after) {
+            let o = s.compare_after(k, a);
+            if o.is_ne() {
+                return o.is_gt();
+            }
+        }
+        false
+    });
+    let competitive = past_after
+        && st
+            .worst
+            .as_deref()
+            .is_none_or(|w| compare_keys(sources, &key, w).is_le());
+    if !competitive {
+        if let Some(i) = at {
+            table[i] = PAIR_DEAD;
+        }
+        return Ok(Some(0));
+    }
+    place(sources, size, subs, st, &key, true, leaf_subs, doc)?;
+    if let Some(i) = at {
+        table[i] = st.index.get(&key[..]).copied().unwrap_or(PAIR_DEAD);
+    }
+    Ok(Some(1))
 }
 
 /// Whether a sub-aggregation's columns read documents in any order (each
