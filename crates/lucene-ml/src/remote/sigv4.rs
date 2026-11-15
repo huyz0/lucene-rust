@@ -146,23 +146,28 @@ fn encode(s: &str, keep_slash: bool) -> String {
     out
 }
 
-// ARITH: `i` indexes `s`, and `i + 2` is compared with its length before
-// `i + 3` is used.
-#[allow(clippy::arithmetic_side_effects)]
+/// Percent-decodes `s`; a `%` not followed by two hex digits stays as written.
 fn decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+    while let Some(&c) = b.get(i) {
+        if c == b'%' {
+            let hex = i
+                .checked_add(1)
+                .zip(i.checked_add(3))
+                .and_then(|(from, to)| b.get(from..to))
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .filter(|h| h.bytes().all(|d| d.is_ascii_hexdigit()))
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(v) = hex {
                 out.push(v);
-                i += 3;
+                i = i.saturating_add(3);
                 continue;
             }
         }
-        out.push(b[i]);
-        i += 1;
+        out.push(c);
+        i = i.saturating_add(1);
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -383,6 +388,20 @@ mod tests {
         assert_eq!(canonical_path("/m/a:b%20c"), "/m/a%3Ab%2520c");
         assert_eq!(canonical_query(Some("b=2&a=%41 x&c")), "a=A%20x&b=2&c=");
         assert_eq!(canonical_query(None), "");
+    }
+
+    #[test]
+    fn decoding_leaves_malformed_escapes_and_multibyte_text_alone() {
+        // A `%` followed by one hex digit and a multibyte char used to slice
+        // inside the char, and `%+1` used to decode as 0x01.
+        assert_eq!(decode("%aé"), "%aé");
+        assert_eq!(decode("%é"), "%é");
+        assert_eq!(decode("%+1"), "%+1");
+        assert_eq!(decode("%-1x"), "%-1x");
+        assert_eq!(decode("100%"), "100%");
+        assert_eq!(decode("%4"), "%4");
+        assert_eq!(decode("a%41%7e%"), "aA~%");
+        assert_eq!(canonical_query(Some("k=%aé")), "k=%25a%C3%A9");
         assert_eq!(collapse("  a   b "), "a b");
         assert_eq!(decode("%zz%4"), "%zz%4");
     }
