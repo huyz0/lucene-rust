@@ -86,8 +86,13 @@ fn inspect(dir: &dyn Directory) -> (Vec<(String, usize, bool)>, Vec<String>) {
 }
 
 fn build(dir: &FsDirectory, hc: bool) {
+    build_with(dir, hc, false);
+}
+
+fn build_with(dir: &FsDirectory, hc: bool, non_force: bool) {
     let mut w = IndexWriter::open(dir, vec![body_field()], "Lucene104", version()).unwrap();
     w.set_merge_lz4_high_compression(hc);
+    w.set_merge_lz4_high_compression_non_force(non_force);
     for i in 0..6000 {
         w.add_document(Document {
             fields: vec![StoredField {
@@ -167,4 +172,31 @@ fn a_merge_copies_high_compression_chunks_as_they_are() {
         second[0].1 > first[0].1 && second[0].1 < first[0].1 + 2000,
         "{first:?} {second:?}"
     );
+}
+
+#[test]
+fn non_force_leaves_a_forced_merge_on_the_fast_compressor() {
+    let fast_tmp = TempDir::new("lz4-hc-nf-off");
+    let fast_dir = FsDirectory::open(fast_tmp.path());
+    build(&fast_dir, false);
+    let (fast_segs, fast_bodies) = inspect(&fast_dir);
+
+    let nf_tmp = TempDir::new("lz4-hc-nf-on");
+    let nf_dir = FsDirectory::open(nf_tmp.path());
+    build_with(&nf_dir, true, true);
+    let (nf_segs, nf_bodies) = inspect(&nf_dir);
+
+    assert_eq!(nf_segs.len(), 1);
+    assert!(
+        !nf_segs[0].2,
+        "a forced merge wrote no high-compression chunks"
+    );
+    assert_eq!(nf_segs[0].1, fast_segs[0].1);
+    assert_eq!(nf_bodies, fast_bodies);
+
+    // With the option off, the same forced merge recompresses.
+    let hc_tmp = TempDir::new("lz4-hc-nf-hc");
+    let hc_dir = FsDirectory::open(hc_tmp.path());
+    build_with(&hc_dir, true, false);
+    assert!(inspect(&hc_dir).0[0].2);
 }
