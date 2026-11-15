@@ -1,4 +1,4 @@
-//! Task #48: soft-delete **visibility** — real Lucene's `IndexWriterConfig
+//! Soft-delete **visibility** — real Lucene's `IndexWriterConfig
 //! .setSoftDeletesField` convention, where a document is invisible to search
 //! if *either* its hard-delete bit is cleared in `.liv` *or* its
 //! soft-deletes-field doc-values value is present for that doc.
@@ -280,7 +280,7 @@ pub fn effective_live_docs(
     Ok(Some(bits))
 }
 
-/// Task #54's concrete unblocking of this module's write-side gap: marks a
+/// Marks a
 /// single document soft-deleted by writing **only** a tiny update-overlay
 /// file (`lucene_codecs::doc_values_updates::write_numeric_updates`) — the
 /// base segment's `.dvd`/`.dvm` bytes are never read, decoded, or rewritten

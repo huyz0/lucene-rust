@@ -97,7 +97,7 @@ fn utf16_len(text: &str) -> i32 {
     text.encode_utf16().count() as i32
 }
 
-/// Task #64 (ASCIIFoldingFilter) cross-engine check: real
+/// Cross-engine check (ASCIIFoldingFilter): real
 /// `ASCIIFoldingFilter` (fold only, no lowercasing) run over a string
 /// containing several Latin-1/Latin-Extended-A diacritics, the special
 /// eszett case, and a ligature ("café naïve Müller cœur straße"), recorded
@@ -124,7 +124,7 @@ fn ascii_folding_matches_real_ascii_folding_filter() {
     assert_eq!(actual, expected, "fold-only case diverged from real Lucene");
 }
 
-/// Task #207 (full UAX#29-style tokenizer) cross-engine check: bare real
+/// Cross-engine check (full UAX#29-style tokenizer): bare real
 /// `StandardTokenizer` output (no filters) over strings exercising combining
 /// marks, CJK ideograph segmentation, precomposed and conjoining-Jamo Hangul
 /// syllables, mixed CJK/Latin text, and midword punctuation (numeric
@@ -165,7 +165,7 @@ fn tokenize_matches_real_standard_tokenizer_on_uax29_cases() {
     }
 }
 
-/// Task #64 cross-engine check for the composed `Analyzer::with_ascii_folding`
+/// Cross-engine check for the composed `Analyzer::with_ascii_folding`
 /// chain (fold, then lowercase): `fixtures/src/GenAnalysis.java`'s
 /// `fold_then_lower` case runs real `ASCIIFoldingFilter` followed by real
 /// `LowerCaseFilter` over "Café Naïve ÉCOLE".
@@ -191,8 +191,7 @@ fn ascii_folding_then_lowercase_matches_real_lucene() {
     );
 }
 
-/// Task #208 (second analyzer-chain producer, `Analyzer::keyword`) cross-engine
-/// check: real `KeywordAnalyzer` (bare `KeywordTokenizer`, no filters) over a
+/// Cross-engine check of `Analyzer::keyword`: real `KeywordAnalyzer` (bare `KeywordTokenizer`, no filters) over a
 /// handful of representative inputs -- a plain id-like string, a mixed-case
 /// string with punctuation that would otherwise split under
 /// `StandardAnalyzer`, embedded whitespace, non-ASCII text, and the empty
@@ -233,7 +232,7 @@ fn keyword_analyzer_matches_real_keyword_analyzer() {
     }
 }
 
-/// Task #209 (Porter2/Snowball English stemmer) cross-engine check: real
+/// Cross-engine check (Porter2/Snowball English stemmer): real
 /// `SnowballFilter` constructed with a real `EnglishStemmer`
 /// (`org.tartarus.snowball.ext.EnglishStemmer`, generated from Snowball's
 /// `english.sbl` -- the actual Porter2 algorithm, a different filter than
@@ -277,7 +276,7 @@ fn snowball_english_stemmer_matches_real_snowball_english_stemmer() {
     );
 }
 
-/// Task #220 (French default stopword list) cross-engine check: real
+/// Cross-engine check (French default stopword list): real
 /// `StandardTokenizer` + `LowerCaseFilter` + `StopFilter` fed
 /// `FrenchAnalyzer.getDefaultStopSet()` directly -- deliberately *not* the
 /// full `FrenchAnalyzer` (no elision, no French stemming; see
