@@ -9,7 +9,7 @@
 //!   fixed pages on first touch ([`crate::paged_input`], Linux
 //!   `userfaultfd`) or ahead of the reads through [`Input::will_need`], each
 //!   page from the cache's disk tier when it holds it, else by ranged reads
-//!   ([`BlobStore::get_range`]) that merge adjacent pages.
+//!   ([`BlobStore::get_range_into`]) that merge adjacent pages.
 //! - Files read on every query or whole at open (metadata, the terms
 //!   index, norms, the stored-fields and points indexes, live docs: see
 //!   [`crate::page_cache::DEFAULT_PINNED_EXTENSIONS`]) and files of one page
@@ -418,7 +418,15 @@ struct CachedFile<S: BlobStore + 'static> {
 impl<S: BlobStore + 'static> CachedFile<S> {
     /// The decoded bytes of `pages`.
     fn pages(&self, pages: &[u64]) -> Result<Vec<Arc<[u8]>>> {
-        let fetch = |offset: u64, len: usize| self.store.get_range(&self.name, offset, len);
+        // The buffer is allocated inside the request's in-flight permit
+        // ([`PageCacheConfig::max_inflight_bytes`]) and the store reads
+        // into it, so fetching holds no heap the bound does not count.
+        let fetch = |offset: u64, len: usize| {
+            let mut buf = vec![0u8; len];
+            let n = self.store.get_range_into(&self.name, offset, &mut buf)?;
+            buf.truncate(n);
+            Ok(buf)
+        };
         let stored = self.cache.stored_pages(&self.geom, pages, &fetch)?;
         pages
             .iter()
@@ -733,6 +741,80 @@ mod tests {
         fn delete(&self, name: &str) -> Result<()> {
             self.inner.delete(name)
         }
+    }
+
+    /// A store whose ranged reads only go into the caller's buffer.
+    #[derive(Clone, Default)]
+    struct IntoOnly {
+        inner: InMemoryBlobStore,
+        largest: Arc<AtomicUsize>,
+    }
+
+    impl BlobStore for IntoOnly {
+        fn list(&self) -> Result<Vec<String>> {
+            self.inner.list()
+        }
+        fn get(&self, name: &str) -> Result<Input> {
+            self.inner.get(name)
+        }
+        fn get_range(&self, _: &str, _: u64, _: usize) -> Result<Vec<u8>> {
+            Err(Error::Io(std::io::Error::other("an owned ranged read")))
+        }
+        fn get_range_into(&self, name: &str, offset: u64, out: &mut [u8]) -> Result<usize> {
+            self.largest.fetch_max(out.len(), Ordering::Relaxed);
+            let bytes = self.inner.get_range(name, offset, out.len())?;
+            out[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+        fn list_with_sizes(&self) -> Result<Option<Vec<(String, u64)>>> {
+            self.inner.list_with_sizes()
+        }
+        fn put(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
+            self.inner.put(name, bytes)
+        }
+        fn delete(&self, name: &str) -> Result<()> {
+            self.inner.delete(name)
+        }
+    }
+
+    #[test]
+    fn pages_are_read_into_buffers_the_cache_holds() {
+        let tmp = lucene_util::test_support::TempDir::new("cached-blob-into");
+        let config = PageCacheConfig {
+            page_size: 64 * 1024,
+            max_request: 256 * 1024,
+            max_inflight_bytes: 256 * 1024,
+            disk_dir: Some(tmp.path().join("cache")),
+            ..PageCacheConfig::default()
+        };
+        for demand_paging in [true, false] {
+            let cache = Arc::new(
+                PageCache::new(PageCacheConfig {
+                    demand_paging,
+                    ..config.clone()
+                })
+                .unwrap(),
+            );
+            let store = IntoOnly::default();
+            let d = CachedBlobDirectory::new(store.clone(), cache, "idx");
+            let big = data(1_000_000, 7);
+            put(&d, "_0.doc", &big);
+            let input = d.open("_0.doc").unwrap();
+            assert!(input[..] == big[..]);
+            let largest = store.largest.load(Ordering::Relaxed);
+            assert!(largest > 0 && largest <= 256 * 1024, "{largest}");
+        }
+    }
+
+    #[test]
+    fn the_default_ranged_read_into_a_buffer_stops_at_the_object_end() {
+        let store = InMemoryBlobStore::new();
+        store.put("f", data(100, 1)).unwrap();
+        let mut out = [0u8; 50];
+        assert_eq!(store.get_range_into("f", 90, &mut out).unwrap(), 10);
+        assert_eq!(out[..10], data(100, 1)[90..]);
+        assert_eq!(store.get_range_into("f", 0, &mut out).unwrap(), 50);
+        assert!(store.get_range_into("missing", 0, &mut out).is_err());
     }
 
     fn data(len: usize, seed: usize) -> Vec<u8> {
