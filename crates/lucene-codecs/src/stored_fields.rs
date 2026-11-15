@@ -3643,16 +3643,17 @@ mod tests {
 
     /// A single-block, zero-dictionary `LZ4WithPresetDictCompressionMode`
     /// unit wrapping `bytes` verbatim (see `decompress_unit`'s doc comment
-    /// for why the interleaved length vints can be anything -- they're
+    /// for the interleaved length vints -- they're
     /// only used by Java's partial-read optimization).
     fn encode_store_unit(bytes: &[u8]) -> Vec<u8> {
+        let block = encode_literal_lz4(bytes);
         let mut out = Vec::new();
         write_vint(&mut out, 0); // dictLength = 0
         write_vint(&mut out, bytes.len().max(1) as i32); // blockLength
-        write_vint(&mut out, 0); // dict's compressed length, unused
-        write_vint(&mut out, 0); // block0's compressed length, unused
+        write_vint(&mut out, 1); // dict's compressed length
+        write_vint(&mut out, block.len() as i32); // block0's compressed length
         out.push(0x00); // dict decompress unit: dictLength=0 -> single empty token
-        out.extend(encode_literal_lz4(bytes));
+        out.extend(block);
         out
     }
 

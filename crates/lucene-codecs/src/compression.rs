@@ -805,7 +805,20 @@ fn decompress_preset(
                 let lo = offset.max(plain);
                 let hi = want_end.min(plain + this_len);
                 if lo < hi {
-                    lz4::decompress_slice(input, this_len, buffer, dict_length)?;
+                    // Only the block's bytes up to the range's end are decoded, as Java's
+                    // `LZ4.decompress(in, bytesToDecompress, ..)` stops there; a block cut short
+                    // has the rest of its compressed bytes skipped by their recorded length.
+                    let want = hi - plain;
+                    let at = input.position();
+                    lz4::decompress_slice(input, want, buffer, dict_length)?;
+                    if want < this_len {
+                        let used = input.position() - at;
+                        input.skip(compressed_length.checked_sub(used).ok_or_else(|| {
+                            lucene_store::Error::Corrupted(
+                                "LZ4 sub-block longer than its recorded length".into(),
+                            )
+                        })?)?;
+                    }
                     out.extend_from_slice(
                         &buffer[dict_length + lo - plain..dict_length + hi - plain],
                     );
