@@ -70,6 +70,21 @@ pub trait BlobStore: Send + Sync {
         Ok(bytes[start..end].to_vec())
     }
 
+    /// Reads object `name` from `offset` into `out`, as [`Self::get_range`]
+    /// of `out.len()` bytes would, and returns how many bytes it wrote:
+    /// fewer than `out.len()` where the object ends first.
+    /// [`crate::CachedBlobDirectory`]'s page cache reads through this, into
+    /// a buffer it has counted against its in-flight bound
+    /// ([`crate::PageCacheConfig::max_inflight_bytes`]), so a store that
+    /// streams the response body into `out` holds no buffer of its own. The
+    /// default copies from [`Self::get_range`]; a real store overrides it.
+    fn get_range_into(&self, name: &str, offset: u64, out: &mut [u8]) -> Result<usize> {
+        let bytes = self.get_range(name, offset, out.len())?;
+        let n = bytes.len().min(out.len());
+        out[..n].copy_from_slice(&bytes[..n]);
+        Ok(n)
+    }
+
     /// Every object name with its length, when the store's listing carries
     /// lengths (S3's `ListObjectsV2`, Azure's and GCS's lists do): a reader
     /// then opens files without asking for each length. `None`, the
