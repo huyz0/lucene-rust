@@ -200,3 +200,47 @@ fn non_force_leaves_a_forced_merge_on_the_fast_compressor() {
     build_with(&hc_dir, true, false);
     assert!(inspect(&hc_dir).0[0].2);
 }
+
+/// `non_force` only spares forced merges: a merge the policy picks on its own
+/// still writes high-compression chunks.
+#[test]
+fn non_force_still_compresses_a_natural_merge() {
+    let tmp = TempDir::new("lz4-hc-nf-natural");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = IndexWriter::open(&dir, vec![body_field()], "Lucene104", version()).unwrap();
+    w.set_merge_lz4_high_compression(true);
+    w.set_merge_lz4_high_compression_non_force(true);
+    w.set_merge_policy(Some(
+        lucene_index::merge_policy::MergePolicyConfig::default(),
+    ));
+    let flushes = 30;
+    for i in 0..flushes * 400 {
+        w.add_document(Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(body(i)),
+            }],
+        })
+        .unwrap();
+        if i % 400 == 399 {
+            w.flush().unwrap();
+        }
+    }
+    w.commit().unwrap();
+    let (segs, bodies) = inspect(&dir);
+    assert!(
+        segs.len() < flushes,
+        "the policy merged nothing: {} segments",
+        segs.len()
+    );
+    assert!(
+        segs.iter().any(|s| s.2),
+        "no merged segment has high-compression chunks: {segs:?}"
+    );
+    assert_eq!(bodies.len(), flushes * 400);
+    let mut want: Vec<String> = (0..flushes * 400).map(body).collect();
+    let mut got = bodies;
+    want.sort_unstable();
+    got.sort_unstable();
+    assert!(got == want, "documents changed through the merges");
+}

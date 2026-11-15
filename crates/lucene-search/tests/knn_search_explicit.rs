@@ -225,6 +225,9 @@ fn check(format: KnnVectorsFormat, exact_scores: bool) {
     if exact_scores {
         assert_eq!(all.len(), 20);
     }
+    // Not vacuous: quantized scores are close to the float ones, so the
+    // search still finds most of the 20.
+    assert!(all.len() >= 14, "{} hits", all.len());
     assert!(all.iter().all(|h| h.score >= threshold));
 }
 
@@ -285,4 +288,59 @@ fn deleted_documents_are_never_returned() {
         .map(|w| w.0)
         .collect();
     assert_eq!(got, want);
+}
+
+/// Radial search at thresholds from "only the best" to "everything" and past
+/// the best score: every hit really scores at least the threshold with its
+/// exact score, none repeats, and the search finds nearly all of the
+/// documents an exhaustive scan finds. A threshold above every score finds
+/// nothing, and one at or below the worst finds all of them.
+#[test]
+fn radial_search_matches_an_exhaustive_scan_at_every_threshold() {
+    let tmp = TempDir::new("knn-search-explicit-radial");
+    let dir = FsDirectory::open(&tmp);
+    build(&dir, KnnVectorsFormat::hnsw(16, 100).unwrap());
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let target = vector(7777);
+    let ranked = exact_top(&target, DOCS, |_| true);
+    let best = ranked[0].1;
+    let worst = ranked[DOCS - 1].1;
+    // Vectors repeat across ids, so ties make the count at a threshold
+    // larger than its rank: count the scores reaching it.
+    let thresholds = [
+        ranked[0].1,
+        ranked[4].1,
+        ranked[49].1,
+        ranked[149].1,
+        worst,
+        best + 1.0,
+    ];
+    for threshold in thresholds {
+        let expected = ranked.iter().filter(|r| r.1 >= threshold).count();
+        let query = KnnLeafQuery::new(
+            "v",
+            KnnTarget::Float(target.clone()),
+            KnnLeafKind::Radial {
+                min_score: threshold,
+            },
+        )
+        .unwrap();
+        let hits = search_all(&segments, &query).unwrap();
+        let mut ids: Vec<i32> = hits.iter().map(|h| h.doc_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), hits.len(), "a document repeats at {threshold}");
+        for h in &hits {
+            let exact = l2_score(&target, &vector(h.doc_id as usize));
+            assert!(h.score >= threshold, "{} < {threshold}", h.score);
+            assert!((h.score - exact).abs() < 1e-6, "{} vs {exact}", h.score);
+        }
+        assert!(
+            hits.len() <= expected && hits.len() * 10 >= expected * 9,
+            "threshold {threshold}: found {} of {expected}",
+            hits.len()
+        );
+    }
 }
