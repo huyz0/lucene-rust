@@ -2826,8 +2826,8 @@ mod tests {
     }
 
     /// Confirms `explain_clause` has no interaction whatsoever with
-    /// `crate::search_term_query_scored_maxscore`'s MAXSCORE-skip path (task
-    /// #135): `explain_term` only ever calls `crate::term_doc_freqs` (the
+    /// `crate::search_term_query_scored_maxscore`'s MAXSCORE-skip path:
+    /// `explain_term` only ever calls `crate::term_doc_freqs` (the
     /// eager, non-pruning path this module's top doc comment already
     /// documents), so it can correctly explain a doc that a MAXSCORE search
     /// over the *same term* would have safely skipped decoding entirely once
@@ -3127,7 +3127,7 @@ mod tests {
 
     #[test]
     fn boolean_explain_no_match_for_pure_must_not_query() {
-        // Task #60 edge case: a `BooleanQuery` with only `must_not` clauses
+        // Edge case: a `BooleanQuery` with only `must_not` clauses
         // (no `must`/`should`) matches nothing -- `matched_boolean_docs` already
         // folds this into the same "no must/should clauses" `Ok(None)` case an
         // entirely empty query hits (see that function's doc comment), so
@@ -3156,7 +3156,7 @@ mod tests {
 
     #[test]
     fn boolean_explain_no_match_when_minimum_should_match_exceeds_should_clause_count() {
-        // Task #60 edge case: `minimum_should_match` greater than the number of
+        // Edge case: `minimum_should_match` greater than the number of
         // `should` clauses can never be satisfied -- must explain as no-match,
         // not panic or (worse) accidentally match.
         let (fields, doc) = open_fixture();
@@ -3181,7 +3181,7 @@ mod tests {
 
     #[test]
     fn boolean_explain_duplicate_should_clause_sums_twice_matching_scored_search() {
-        // Task #60 edge case: a duplicated `should` clause must contribute its
+        // Edge case: a duplicated `should` clause must contribute its
         // score twice in the explanation, exactly matching
         // `search_boolean_query_scored`'s own double-counting (real Lucene does
         // not dedupe clauses -- see the `lib.rs` regression test

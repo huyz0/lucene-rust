@@ -7,7 +7,7 @@
 //! entries in a slab with prev/next links, so every operation is O(1). The
 //! index hashes with [`FxHasher`]: the taxonomy caches hash a label per
 //! `addCategory`/`getOrdinal`, where SipHash's DoS resistance buys nothing
-//! (stage 3: SipHash was most of a cached `addCategory`).
+//! (SipHash was most of a cached `addCategory`).
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash};

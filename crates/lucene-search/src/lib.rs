@@ -6202,7 +6202,7 @@ mod tests {
         }
     }
 
-    /// Task #199's end-to-end proof: a real query *string* (not a
+    /// End-to-end proof: a real query *string* (not a
     /// hand-built [`Clause::PointsRange`]) parsed via
     /// [`query_parser::parse_query`], resolved through
     /// [`search_boolean_query`] against a real `PointsInput` -- the full
@@ -7570,7 +7570,7 @@ mod tests {
 
     #[test]
     fn boolean_minimum_should_match_with_no_should_clauses_at_all_matches_nothing() {
-        // Task #60 edge case: a must-only query with a nonzero
+        // Edge case: a must-only query with a nonzero
         // `minimum_should_match` but zero `should` clauses -- this is the same
         // "should.len() < minimum_should_match" rule the exceeding-clause-count
         // test above already exercises, just at the should.len() == 0 boundary.
@@ -7595,7 +7595,7 @@ mod tests {
 
     #[test]
     fn boolean_duplicate_should_clause_counts_and_scores_twice() {
-        // Task #60 edge case: the same `TermQuery` appears twice in `should`.
+        // Edge case: the same `TermQuery` appears twice in `should`.
         // Real Lucene does not dedupe clauses at the `BooleanQuery` level --
         // two identical `TermQuery` clauses produce two independent scorers,
         // so a matching doc counts twice toward `minimum_should_match` and
@@ -7747,7 +7747,7 @@ mod tests {
 
     #[test]
     fn nested_boolean_must_not_at_different_levels_does_not_leak_between_them() {
-        // Task #60 edge case: a `must_not` at the outer level must exclude based
+        // Edge case: a `must_not` at the outer level must exclude based
         // on the outer clause's own matching set, independent of a nested inner
         // `BooleanQuery`'s own separate `must_not`. dog={0,1}, cat={0,2},
         // bird={1,4}.
@@ -10762,7 +10762,7 @@ mod tests {
 
     #[test]
     fn search_term_query_scored_with_similarity_using_defaults_matches_hardcoded_path() {
-        // Task #214 regression proof: Bm25Params::default() through the new
+        // Regression proof: Bm25Params::default() through the new
         // parameterized path must reproduce `search_term_query_scored`'s
         // hardcoded-default scores byte-for-byte.
         let (fields, doc) = open_fixture();
