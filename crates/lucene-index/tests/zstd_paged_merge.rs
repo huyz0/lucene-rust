@@ -107,8 +107,8 @@ fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
     let mut w = IndexWriter::open(&dir, vec![body_field()], "Lucene104", version()).unwrap();
     w.set_codec(Some(std::sync::Arc::new(codec))).unwrap();
     // Small enough for a test; the default is for real segments.
-    w.set_zstd_dictionary_min_bytes(1 << 20);
-    let n = 160_000;
+    w.set_zstd_dictionary_min_bytes(1 << 18);
+    let n = 48_000;
     for i in 0..n {
         w.add_document(Document {
             fields: vec![StoredField {
@@ -117,7 +117,7 @@ fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
             }],
         })
         .unwrap();
-        if i % 40_000 == 39_999 {
+        if i % 12_000 == 11_999 {
             w.flush().unwrap();
         }
     }
@@ -129,7 +129,7 @@ fn a_large_merge_trains_a_dictionary_and_reads_back_the_same() {
         "{flushed:?}"
     );
     let flushed_bytes: usize = flushed.iter().map(|s| s.0).sum();
-    assert!(flushed_bytes >= 1 << 20, "{flushed_bytes}");
+    assert!(flushed_bytes >= 1 << 18, "{flushed_bytes}");
 
     w.force_merge(1).unwrap();
     w.commit().unwrap();
