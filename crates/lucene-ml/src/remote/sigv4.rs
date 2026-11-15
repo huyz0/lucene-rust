@@ -147,7 +147,9 @@ fn encode(s: &str, keep_slash: bool) -> String {
 }
 
 fn hex_digit(b: u8) -> Option<u8> {
-    char::from(b).to_digit(16).and_then(|d| u8::try_from(d).ok())
+    char::from(b)
+        .to_digit(16)
+        .and_then(|d| u8::try_from(d).ok())
 }
 
 // ARITH: `i` indexes `s`, and `i + 2` is compared with its length before
@@ -414,7 +416,13 @@ mod tests {
         assert_eq!(decode("/a%41b%zz%2f"), "/aAb%zz/");
         let url = Url::parse("https://h/m%\u{e9}/x").unwrap();
         let mut headers = Vec::new();
-        let signing = Signing { access_key: "AK", secret_key: "SK", session_token: None, service: "s", region: "r" };
+        let signing = Signing {
+            access_key: "AK",
+            secret_key: "SK",
+            session_token: None,
+            service: "s",
+            region: "r",
+        };
         sign("GET", &url, &mut headers, b"", &signing, "20260101T000000Z");
         assert!(headers.iter().any(|(k, _)| k == "Authorization"));
     }
