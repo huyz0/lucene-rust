@@ -135,6 +135,8 @@ pub unsafe extern "C" fn ffi_jvm_reader_prefetch_documents(
 
 #[cfg(test)]
 mod tests {
+    // Tests index and count freely: the gate is about values read off disk.
+    #![allow(clippy::arithmetic_side_effects)]
     use super::*;
     use crate::jvm_reader::tests::open;
     use lucene_codecs::stored_fields::FieldValue;

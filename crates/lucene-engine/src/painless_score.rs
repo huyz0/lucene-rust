@@ -231,7 +231,7 @@ pub fn decode(
     depth: usize,
     nodes: &mut usize,
 ) -> std::result::Result<Clause, Status> {
-    let sub = crate::query_blob::decode_node(c, depth + 1, nodes)?;
+    let sub = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
     let spec = decode_spec(c)?;
     if !spec.is_score() {
         return Err(invalid(
@@ -712,11 +712,11 @@ pub fn oversize(min: usize, bytes_per_element: usize) -> usize {
     if min == 0 {
         return 0;
     }
-    let size = min + (min >> 3).max(3);
+    let size = min.saturating_add((min >> 3).max(3));
     match bytes_per_element {
-        4 => (size + 1) & !1,
-        2 => (size + 3) & !3,
-        1 => (size + 7) & !7,
+        4 => size.saturating_add(1) & !1,
+        2 => size.saturating_add(3) & !3,
+        1 => size.saturating_add(7) & !7,
         _ => size,
     }
 }
@@ -1121,7 +1121,7 @@ impl Env for ScoreEnv<'_> {
             "getDoc" => Ok(self.doc_lookup.clone()),
             "get_score" if self.source.needs_score => Ok(Value::Double(self.score)),
             "_getDocId" => Ok(Value::Int(self.doc)),
-            "_getDocBaseId" => Ok(Value::Int(self.reader.doc_base + self.doc)),
+            "_getDocBaseId" => Ok(Value::Int(self.reader.doc_base.wrapping_add(self.doc))),
             "_getIndex" => Ok(self.index.clone()),
             "_getShardId" => Ok(Value::Int(self.source.shard)),
             _ => Err(missing(format!("score script method {name}"))),
@@ -1312,7 +1312,7 @@ impl ScriptScores<'_> {
             unreachable!("a typed script")
         };
         let env = &mut self.env;
-        env.epoch += 1;
+        env.epoch = env.epoch.wrapping_add(1);
         env.batch.clear();
         env.batch.extend_from_slice(docs);
         env.batch_scores.clear();

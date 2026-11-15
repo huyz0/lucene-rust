@@ -299,7 +299,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_sorted(
             for (i, hit) in hits.iter().enumerate() {
                 *out_docs.add(i) = hit.doc;
                 for (k, &v) in hit.values.iter().enumerate() {
-                    *out_values.add(i * keys + k) = v;
+                    *out_values.add(i.wrapping_mul(keys).wrapping_add(k)) = v;
                 }
             }
             *out_hit_count = hits.len();
@@ -410,7 +410,7 @@ pub unsafe extern "C" fn ffi_jvm_reader_aggregate(
             for (i, s) in states.iter().enumerate() {
                 *out_counts.add(i) = i64::try_from(s.count).unwrap_or(i64::MAX);
                 for (j, v) in metric_values(s).into_iter().enumerate() {
-                    *out_values.add(i * METRIC_VALUES + j) = v;
+                    *out_values.add(i.wrapping_mul(METRIC_VALUES).wrapping_add(j)) = v;
                 }
             }
         }
@@ -608,6 +608,8 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // Tests index and count freely: the gate is about values read off disk.
+    #![allow(clippy::arithmetic_side_effects)]
     #![allow(unused_imports)]
     use std::os::raw::c_char;
 

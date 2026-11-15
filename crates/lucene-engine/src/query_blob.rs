@@ -86,11 +86,11 @@ pub fn decode_request(
         let at = c.pos;
         match blob.get(at) {
             Some(&QUERY_MIN_SCORE) if min.is_none() => {
-                c.pos += 1;
+                c.pos = c.pos.saturating_add(1);
                 min = Some(f32::from_bits(u32::from_le_bytes(c.i32()?.to_le_bytes())));
             }
             Some(&QUERY_SIMILARITY) if similarity.is_none() => {
-                c.pos += 1;
+                c.pos = c.pos.saturating_add(1);
                 similarity = Some(crate::similarity::decode(&mut c)?);
             }
             Some(&QUERY_MIN_SCORE | &QUERY_SIMILARITY) => {
@@ -314,7 +314,7 @@ pub fn decode_query(blob: &[u8]) -> Result<JvmQuery, Status> {
     if c.pos != blob.len() {
         set_last_error(format!(
             "query blob: {} trailing bytes after the query",
-            blob.len() - c.pos
+            blob.len().saturating_sub(c.pos)
         ));
         return Err(Status::InvalidArgument);
     }
@@ -437,7 +437,7 @@ pub fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Resul
             let mut b = BooleanQuery::new().with_minimum_should_match(msm);
             for _ in 0..count {
                 let occur = c.u8()?;
-                let child = decode_node(c, depth + 1, nodes)?;
+                let child = decode_node(c, depth.saturating_add(1), nodes)?;
                 match occur {
                     0 => b.must.push(child),
                     1 => b.filter.push(child),
@@ -455,11 +455,11 @@ pub fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Resul
         }
         NODE_CONSTANT_SCORE => {
             let score = float(c, "constant score", f32::MAX)?;
-            ConstantScoreQuery::new(decode_node(c, depth + 1, nodes)?, score).into()
+            ConstantScoreQuery::new(decode_node(c, depth.saturating_add(1), nodes)?, score).into()
         }
         NODE_BOOST => {
             let boost = float(c, "boost", f32::MAX)?;
-            BoostQuery::new(decode_node(c, depth + 1, nodes)?, boost).into()
+            BoostQuery::new(decode_node(c, depth.saturating_add(1), nodes)?, boost).into()
         }
         NODE_DISMAX => {
             let tie = float(c, "tie breaker", 1.0)?;
@@ -467,7 +467,7 @@ pub fn decode_node(c: &mut Cursor<'_>, depth: usize, nodes: &mut usize) -> Resul
             check_clause_count(count)?;
             let mut disjuncts = Vec::new();
             for _ in 0..count {
-                disjuncts.push(decode_node(c, depth + 1, nodes)?);
+                disjuncts.push(decode_node(c, depth.saturating_add(1), nodes)?);
             }
             DisjunctionMaxQuery::new(disjuncts, tie).into()
         }
