@@ -84,7 +84,7 @@ for the accelerated engine refuses those documents one by one.
 | `index.search.accelerated`, `index.fetch.accelerated`, `index.highlight.accelerated` | `true` | native search, answers identical to stock in the differential suites |
 | `index.search.approximation.exact` | `true` | **deviates, bounded**: a sorted `match_all` or `range` that stock answers with its approximation returns the exact top hits, 4-5x faster. Only which documents of the last hit's value survive a BKD-leaf tie can differ from stock's |
 | `index.codec.stored_fields.recompress_on_merge` | `non_force` | see section 2 |
-| `index.codec.adaptive_doc_values` | `auto` | see section 2. **deviates**: an index created with the default carries the setting, which a stock node does not know, so a stock node refuses its replicas (`unknown setting`). Plugin removal then needs a reindex of such indices, or `indices.codec.adaptive_doc_values.default: false` before they are created (soak `plugin_swap`, 2026-11-15: with it off, rolling removal kept every acknowledged write) |
+| `index.codec.adaptive_doc_values` | `auto` | see section 2. Only `true` is stored in a new index; `auto` and `false` leave the index without the setting (it follows `indices.codec.adaptive_doc_values.default`), so a node without the plugin still opens it. Verified by soak `plugin_swap` with the default config: rolling removal and re-adding kept every acknowledged write |
 | `index.search.aggregation_segment_cache.enabled` | `false` | **opt-in**, same results |
 | `index.search.realtime.enabled`, `max_staleness` | `false`, `20ms` | **opt-in** |
 | `index.merge.reorder.*` (BP reorder) | disabled | **opt-in**, stock-readable, forced merges 3x slower |
@@ -139,8 +139,7 @@ update-heavy indices until a force merge (refresh is a commit, so deletes are re
 5. No `infoStream`.
 6. One plugin per node may register a `QueryPhaseSearcher`: `neural-search` cannot run beside this plugin.
 7. Opt-in own formats are not readable by stock; the default configuration writes none except `Adaptive90` where `auto` selects it. Set `indices.codec.adaptive_doc_values.default: false` before an adoption that must stay stock-readable.
-8. Indices created with `indices.codec.adaptive_doc_values.default` left at `auto` carry `index.codec.adaptive_doc_values`, and are refused by a stock node like item 9.
-9. Indices carrying `index.engine.accelerated: true` cannot be opened by a node without the plugin: reindex first.
+8. Indices carrying `index.engine.accelerated: true` cannot be opened by a node without the plugin: reindex first.
 
 ## 6. Evidence
 
