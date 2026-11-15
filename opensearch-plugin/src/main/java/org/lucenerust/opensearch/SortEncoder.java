@@ -503,6 +503,12 @@ public final class SortEncoder {
             if (ownType == false) {
                 return "type_" + ifd.getNumericType();
             }
+            // A scaled_float reports DOUBLE but stores its value times the scaling factor as a long:
+            // the comparator's values (and the sort values it reports) are the scaled doubles, which
+            // the native side does not divide out.
+            if (type == DOUBLE && ifd.getClass().getName().contains("ScaledFloat")) {
+                return "scaled_float";
+            }
             if (type == LONG) {
                 Field converter = Reflect.declared(src.getClass(), "converter");
                 if (converter == null || converter.get(src) != null) {
