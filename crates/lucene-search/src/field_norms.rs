@@ -884,9 +884,8 @@ mod tests {
 
     /// A field without norms scores every document at norm 1 -- field length
     /// one -- against the real `avgdl`, as `LeafSimScorer` + `BM25Similarity`
-    /// do: `cache[1] = 1 / (k1 * ((1 - b) + b * 1 / avgdl))`. Before this, a
-    /// norm-less field was scored with `avgdl` forced to one too, which
-    /// `VerifyIndex` measured 12% low on a freqs-only field.
+    /// do: `cache[1] = 1 / (k1 * ((1 - b) + b * 1 / avgdl))`. Forcing `avgdl` to
+    /// one as well would score a freqs-only field about 12% low.
     #[test]
     fn unnormed_field_scores_at_length_one_against_the_real_avgdl() {
         let avgdl = 3.5f32;

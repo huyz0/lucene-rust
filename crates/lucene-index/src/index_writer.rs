@@ -15127,8 +15127,8 @@ pub(crate) mod tests {
 
     /// `IndexWriter::open` is the port's caller-facing door for a hand-built
     /// field list, and Java's is the one place a `FieldInfo` can come from --
-    /// its constructor, which throws. Before this, an inconsistent field was
-    /// only found much later, at `parse` time or (for the combinations
+    /// its constructor, which throws. An inconsistent field must be found at
+    /// open, not much later at `parse` time or (for the combinations
     /// `field_infos::write` coerces) never.
     #[test]
     fn open_rejects_a_field_list_javas_fieldinfo_constructor_would_throw_on() {
@@ -25782,10 +25782,8 @@ pub(crate) mod tests {
     /// in sort order -- globally, across sources, not per source -- with
     /// every format still describing the same document at the same doc id.
     ///
-    /// Before this, the merge concatenated: the merged segment was valid,
-    /// `CheckIndex`-clean and no longer in the order its inputs were in, and
-    /// the only reason nothing broke was that `segment_stats` refused to
-    /// offer a sorted segment to the merge policy at all.
+    /// Concatenating instead would give a valid, `CheckIndex`-clean segment
+    /// that is no longer in the order its inputs were in.
     #[test]
     fn an_automatic_merge_preserves_the_index_sort_across_every_format() {
         let tmp = tempdir("sorted-merge-all-formats");

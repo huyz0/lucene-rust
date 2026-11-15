@@ -1,8 +1,8 @@
 //! `DirectoryReader::open` of one compound, multi-format segment: a text
 //! field plus a completion field (`completion104`), so postings come in two
 //! groups and every file is a `.cfs` member. Measures what opening pays for
-//! the archive and for the per-field dictionary, which used to be copies of
-//! the `.cfs` and of every group's `.tim`/`.tip`.
+//! the archive and for the per-field dictionary, which must not copy the
+//! `.cfs` or every group's `.tim`/`.tip`.
 //!
 //! Self-contained: the index is written into a scratch directory first.
 //! Run with `cargo bench -p lucene-search --bench segment_open_compound`.

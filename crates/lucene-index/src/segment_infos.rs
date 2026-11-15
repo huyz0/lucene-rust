@@ -1179,7 +1179,7 @@ mod tests {
     /// `SegmentCommitInfo.generationAdvanced()` -> `id = randomId()`: every
     /// generation-advancing mutator must give the segment-commit a new id,
     /// because the id is the only change token a replication/NRT consumer
-    /// has. Before this was ported, all four left the id frozen.
+    /// has.
     #[test]
     fn every_generation_advance_gives_the_segment_commit_a_new_id() {
         type Advance = fn(&mut SegmentCommitInfo);
