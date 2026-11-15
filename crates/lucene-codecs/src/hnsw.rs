@@ -3227,8 +3227,8 @@ mod tests {
         OnHeapHnswGraph::new(0);
     }
 
-    /// `2 * m + 1` is an `i32` multiply: an absurd `M` used to overflow it
-    /// (a panic in debug, a negative `nsize0` in release, and from there a
+    /// `2 * m + 1` is an `i32` multiply: an absurd `M` would overflow it (a
+    /// panic in debug, a negative `nsize0` in release, and from there a
     /// `NeighborArray` whose `max_size` is nonsense).
     #[test]
     #[should_panic(expected = "M (max connections) must be in 1..=")]
@@ -3237,9 +3237,9 @@ mod tests {
     }
 
     /// `add_node` takes ordinals as `i32` and indexes with them: a negative
-    /// one used to sign-extend into `resize_with(~2^64)` -- an allocation
-    /// abort, not a panic -- and a negative level pushed neighbour arrays
-    /// until memory ran out.
+    /// one would sign-extend into `resize_with(~2^64)` -- an allocation abort,
+    /// not a panic -- and a negative level would push neighbour arrays until
+    /// memory ran out.
     #[test]
     #[should_panic(expected = "node ordinal must be non-negative")]
     fn add_node_rejects_a_negative_ordinal() {

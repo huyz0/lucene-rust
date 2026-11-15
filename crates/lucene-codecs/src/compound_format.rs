@@ -538,15 +538,12 @@ mod tests {
         assert!(open_input(&cfs, &entries, "f").is_err());
     }
 
-    /// This module used to carry its own `index_header_length`/`vint_len`
-    /// pair, computed a different way (`4 + vint_len(name) + name + 4 +
-    /// ID_LENGTH + 1`) from `lucene_store::codec_util::index_header_length`'s
-    /// (`9 + name + ID_LENGTH + 1 + suffix`). They agree for every codec name
+    /// `lucene_store::codec_util::index_header_length` (`9 + name + ID_LENGTH +
+    /// 1 + suffix`) agrees with the alternative derivation (`4 + vint_len(name)
+    /// then name, then 4 + ID_LENGTH + 1`) for every codec name
     /// `write_index_header` accepts -- ASCII shorter than 128 bytes, so the
-    /// name's length prefix is exactly one byte -- which is what made
-    /// replacing the private copy with the shared one safe. Pinned here
-    /// against the bytes `write_index_header` actually emits, so the shared
-    /// helper is checked against the writer rather than against a second
+    /// name's length prefix is exactly one byte. Pinned here against the bytes
+    /// `write_index_header` actually emits rather than against a second
     /// hand-derived formula.
     #[test]
     fn index_header_length_matches_the_bytes_write_index_header_emits() {

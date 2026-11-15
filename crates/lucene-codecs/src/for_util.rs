@@ -228,7 +228,7 @@ fn split_ints<R: DataInput>(
     );
     // Shift level outer, element inner -- Lucene's order, and its own comment
     // says why: "Process each shift level across all elements (better for
-    // vectorization)". The transposed nest this port had first gives the inner
+    // vectorization)". The transposed nest gives the inner
     // loop a variable trip count and a stride-`count` write, which is precisely
     // what stops a vectorizer. Slice-and-zip rather than indexing so the bounds
     // checks hoist out of the loop instead of repeating per element.
@@ -1054,12 +1054,12 @@ impl ForUtil {
     ///
     /// `ints` is lane-collapsed **in place**, exactly like Java's
     /// `ForUtil.encode(int[] ints, int bitsPerValue, DataOutput out)`; the
-    /// caller's array is scratch afterwards. The previous shape here took
-    /// `&[u32; 256]` and copied, so every encoded block paid a 1 KiB memcpy on
-    /// top of the 1 KiB zero-fill of a stack-local `tmp` -- work Java does
-    /// neither of. Neither saving is separable in a microbenchmark: a
+    /// caller's array is scratch afterwards. Taking
+    /// `&[u32; 256]` and copying would cost every encoded block a 1 KiB memcpy
+    /// on top of the 1 KiB zero-fill of a stack-local `tmp` -- work Java does
+    /// neither of. The saving is not separable in a microbenchmark: a
     /// repeatable bench of a destructive encoder has to restore its input each
-    /// iteration, which reinstates exactly the copy that was removed. See
+    /// iteration, which reinstates exactly the copy the encoder avoids. See
     /// `for_util/for_encode`'s `oneshot` vs `reused` arms in
     /// `benches/for_util_decode.rs` for the scratch-reuse half.
     ///
@@ -1655,8 +1655,7 @@ mod tests {
     // --- pfor_encode/for_encode round-trip tests -----------------------
     //
     // This repo's `BLOCK_SIZE` is 256 (real Lucene 10.5.0's
-    // `Lucene104PostingsFormat`/`ForUtil.BLOCK_SIZE`), not the 128 this task
-    // was originally scoped against -- these boundary tests exercise exactly
+    // `Lucene104PostingsFormat`/`ForUtil.BLOCK_SIZE`) -- these boundary tests exercise exactly
     // one full block (256 entries) plus the module's own decode-side
     // boundary cases (all-zero / full-32-bit) that a real-Lucene fixture
     // term won't reliably hit. The 127/129-style "one packed block + a

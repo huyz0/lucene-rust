@@ -673,9 +673,8 @@ fn read_u8(buf: &[u8], pos: &mut usize) -> Result<u8> {
 /// ("between one and five bytes" -- its loop is `i >>>= 7` on an `int`), so
 /// the bound cannot reject a `vint` any writer produced. It is deliberately
 /// stricter than 10.5.0's *reader*: `DataInput.readVInt` there is a bare
-/// unchecked loop, and the "Invalid vInt detected (too many bits)" exception
-/// this comment used to cite is a later addition that is **not** in the pinned
-/// tree. Unbounded, the shift itself overflows on the sixth byte -- a panic in
+/// unchecked loop (the "Invalid vInt detected (too many bits)" exception of
+/// later releases is **not** in the pinned tree). Unbounded, the shift itself overflows on the sixth byte -- a panic in
 /// debug builds, a silently wrong value in release ones.
 // ARITH: `shift` starts at 7, is compared against 28 before every use, and
 // advances by 7, so it never leaves `7..=35` and `<<` on an `i32` stays in

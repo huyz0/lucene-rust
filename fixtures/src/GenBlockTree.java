@@ -288,8 +288,8 @@ public class GenBlockTree {
         //       match this doc (clause 0's span does not precede clause 1's),
         //       while inOrder=false MUST match (any relative order is
         //       accepted within the slop budget) -- the exact `in_order`
-        //       differentiator this task calls out as most likely to be
-        //       subtly wrong if hand-derived without checking real Lucene.
+        //       differentiator, subtly wrong if hand-derived without checking
+        //       real Lucene.
         Document doc8 = new Document();
         doc8.add(
             new Field(

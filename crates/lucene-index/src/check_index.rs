@@ -142,19 +142,17 @@ pub struct Check {
 /// A verifier's most dangerous failure is not a missing check; it is a check
 /// that *could not run* being indistinguishable, from the outside, from a
 /// check that passed. Almost every family here depends on an `*.open` step,
-/// and when that step fails the family used to contribute **nothing** to the
-/// result -- so a segment whose `.fnm` would not parse reported a failed
-/// `fnm.open` and then, silently, no postings checks at all. Worse, three of
-/// the term-vector families were pushed as *passes* in that state, because
-/// their problem lists were empty for the simple reason that nothing had
-/// looked.
+/// and when that step fails a family that contributed **nothing** to the
+/// result would make a segment whose `.fnm` would not parse report a failed
+/// `fnm.open` and then, silently, no postings checks at all -- or, worse,
+/// report *passes* because the problem lists were empty for the simple reason
+/// that nothing had looked.
 ///
 /// [`Outcome::Skipped`] is that state made visible: the check is named, the
 /// prerequisite that took it down is named, and [`CheckResult::all_passed`]
 /// is `false`. It is emitted **only** when a prerequisite actually failed --
 /// a format the segment legitimately does not have (no vectors, no points)
-/// produces no check at all, as before, because there is nothing there to be
-/// unguarded.
+/// produces no check at all, because there is nothing there to be unguarded.
 ///
 /// For example, a `.fnm` that does not parse must not make every postings
 /// check in the segment vanish silently.
@@ -919,12 +917,11 @@ fn open_fnm(
 ///
 /// This is real `CheckIndex`'s `test: check integrity` step, which runs
 /// `reader.checkIntegrity()` (every format's `checkIntegrity` bottoms out in
-/// `CodecUtil.checksumEntireFile`) on every segment file. It previously used
-/// [`codec_util::retrieve_checksum`], which validates the footer's *shape*
-/// (magic/algorithm id/checksum field) and never touches the payload -- so a
-/// flipped byte in the middle of a `.tim`/`.fdt`/`.dvd` passed this check
-/// cleanly and only got caught later by whichever decoder happened to trip
-/// over it (and not at all for the bytes no decoder reads). It shares
+/// `CodecUtil.checksumEntireFile`) on every segment file.
+/// [`codec_util::retrieve_checksum`] would not do: it validates only the
+/// footer's *shape* (magic/algorithm id/checksum field), so a flipped byte in
+/// the middle of a `.tim`/`.fdt`/`.dvd` would pass cleanly and be caught, if at
+/// all, by whichever decoder happened to trip over it. It shares
 /// [`codec_util::check_whole_file_footer`] with `merge.rs`'s pre-bulk-copy
 /// `check_integrity` and with [`crate::checksum_verify`].
 fn check_files_exist_and_validate(
@@ -2712,8 +2709,8 @@ fn check_postings(
 
         let index_options = fi.index_options;
         // No `has_freqs` here: every one of `checkFields`' three
-        // freq-flag checks turned out to be `x == x` in this port and is
-        // documented as such where it used to live (see `postings.term_stats`
+        // freq-flag checks is `x == x` in this port and is documented as such
+        // (see `postings.term_stats`
         // above, `postings.doc_ids_valid` below and `postings.field_summary`
         // at the end of this loop). `blocktree`'s decoder derives
         // `totalTermFreq`, `freq` and `sumTotalTermFreq` from the *same*
@@ -3547,13 +3544,9 @@ fn compare_intersect_with_scan(
 /// and the number of docs that actually have a value matching what `.dvm`
 /// recorded.
 ///
-/// This was previously listed as out of scope ("doc-values value-range
-/// sanity ... a separate task"). It is not: `lucene-codecs::doc_values`
-/// already exposes `parse_meta` plus a per-doc accessor for every kind, and
-/// `lucene-search`'s `directory_reader` already calls them. Without this,
-/// nothing anywhere read a single doc-values *value* during a check, so a
-/// corrupted `.dvd` payload passed a clean `CheckIndex` run -- the exact
-/// "verifier that does not check something silently passes corrupt
+/// Without this, nothing during a check would read a single doc-values
+/// *value*, so a corrupted `.dvd` payload would pass a clean `CheckIndex` run
+/// -- the "verifier that does not check something silently passes corrupt
 /// segments" failure mode.
 ///
 /// Skipped (not failed) for a segment where no field claims doc-values. A field
@@ -6536,10 +6529,8 @@ mod tests {
         ))
     }
 
-    /// A scratch directory that actually goes away. This used to hand back a
-    /// bare `PathBuf` that nothing ever removed -- and `/tmp` is a 16 GB
-    /// tmpfs, i.e. RAM, so ~21 000 leaked directories from repeated runs ate
-    /// memory until the kernel started killing processes. See
+    /// A scratch directory that actually goes away: `/tmp` can be a tmpfs, i.e.
+    /// RAM, so leaked directories from repeated runs would eat memory. See
     /// [`lucene_util::test_support`].
     fn tempdir() -> lucene_util::test_support::TempDir {
         lucene_util::test_support::TempDir::new("check-index")
@@ -7086,10 +7077,9 @@ mod tests {
     }
 
     /// `postings.intersect_agrees` scans a term of tens of thousands of code
-    /// points in constant stack: the scan side used to run `.*[a-e].*`'s
-    /// backtracker, a few frames per code point, and overflowed the 2 MB
-    /// test-thread stack (`check_random_data_all_analyzers::
-    /// icu_collation_key`, seed C950197, a long collation key). A binary
+    /// points in constant stack: a backtracker for `.*[a-e].*` would use a few
+    /// frames per code point and overflow a 2 MB test-thread stack on a long
+    /// collation key. A binary
     /// term takes part in Java's `anyBinary [a-e] anyBinary` round too.
     #[test]
     fn intersect_agrees_scans_a_long_term_in_constant_stack() {
@@ -7141,9 +7131,8 @@ mod tests {
 
     /// A segment whose only indexed field has term vectors enabled but no
     /// tokens has neither postings nor any vectors: the cross-check has
-    /// nothing to compare and passes, as in Java. It used to report
-    /// `term_vectors.match_postings` as skipped ("the postings side"),
-    /// which failed `test_random_regexps` for regexps matching no text.
+    /// nothing to compare and passes, as in Java, rather than reporting
+    /// `term_vectors.match_postings` as skipped ("the postings side").
     #[test]
     fn term_vectors_without_any_terms_pass_the_postings_cross_check() {
         use crate::document::{Document, Field, FieldType, IndexOptions};
@@ -7357,9 +7346,8 @@ mod tests {
 
     /// Negative control on real Java-written positional bytes: no
     /// single-byte corruption of `blocktree_index`'s `.pos` may pass every
-    /// check. Before this batch nothing in `check_index` decoded a single
-    /// position, so a `.pos` was only ever validated by its footer -- and
-    /// the footer check was shape-only.
+    /// check. Without a position decode a `.pos` would be validated only by its
+    /// footer.
     #[test]
     fn no_corruption_of_a_real_pos_file_is_silently_accepted() {
         let dst = copy_fixture("blocktree_index");
@@ -7544,8 +7532,8 @@ mod tests {
     /// well-formed and only the skip index's own invariants (each level's
     /// bounds nested inside the global ones, doc ranges not inverted, the
     /// per-interval doc counts summing to the declared `docCount`) can catch
-    /// it. Before this batch the `.dvs` was CRC-verified and never
-    /// interpreted, so every one of these passed.
+    /// it. A `.dvs` that was only CRC-verified and never interpreted would
+    /// pass every one of these.
     ///
     /// The sweep runs against the check function directly, because a
     /// `check_directory` call over this fixture costs ~0.9 s and there are
@@ -8117,12 +8105,12 @@ mod tests {
         );
     }
 
-    /// Negative control for the upgrade from `retrieve_checksum` (footer
-    /// *shape* only) to `CodecUtil.checksumEntireFile` in the `file:*`
-    /// checks: a byte flipped in the middle of a file, leaving every footer
-    /// field intact, used to pass.
+    /// Negative control for `CodecUtil.checksumEntireFile` (as opposed to
+    /// `retrieve_checksum`, footer *shape* only) in the `file:*` checks: a byte
+    /// flipped in the middle of a file, leaving every footer field intact,
+    /// must fail.
     #[test]
-    fn a_payload_byte_flip_now_fails_the_file_integrity_check() {
+    fn a_payload_byte_flip_fails_the_file_integrity_check() {
         let dst = copy_fixture("points_index");
         let kdd_path = find_file(&dst, ".kdd");
         let original = std::fs::read(&kdd_path).unwrap();
@@ -8158,8 +8146,8 @@ mod tests {
     }
 
     /// Corrupting a byte inside the `.dvd` payload must be caught by the
-    /// value-decode pass. Before this batch nothing in `check_index` read a
-    /// single doc-values *value*, so this exact corruption passed clean.
+    /// value-decode pass; without a value read this exact corruption would pass
+    /// clean.
     #[test]
     fn corrupted_doc_values_payload_is_caught() {
         let src_dir = fixture_dir("sorted_dv_index");
@@ -8380,8 +8368,7 @@ mod tests {
     }
 
     /// A segment whose doc values really are in the declared sort order must
-    /// pass; one whose are not must fail. Before this batch nothing verified
-    /// that a `.si`'s `indexSort` claim matched the docs' actual order --
+    /// pass; one whose are not must fail. A `.si`'s `indexSort` claim is
     /// exactly the claim a sorted-index merge and an early-terminating query
     /// both silently rely on.
     #[test]
@@ -9405,7 +9392,7 @@ mod tests {
     /// layer lower than `postings.positions_valid` -- the `for_util`/
     /// `SliceInput` decoders reject a bad bits-per-value or block length
     /// before a position is ever produced, so the failure surfaces as
-    /// `postings.terms_decode` (a check this batch added) or as the file's
+    /// `postings.terms_decode` or as the file's
     /// own CRC. That is the property worth pinning: nothing gets through.
     #[test]
     fn no_single_byte_corruption_of_pos_or_pay_is_silently_accepted() {
@@ -10595,8 +10582,8 @@ mod tests {
         );
 
         // 5. `maxDocID(0) == i32::MAX` on a fresh skipper: the walk's
-        //    `max_doc_id(0) + 1` used to be a plain `+`, so a `.dvs` whose
-        //    first interval already sits at the sentinel panicked the
+        //    `max_doc_id(0) + 1` must not be a plain `+`, or a `.dvs` whose
+        //    first interval already sits at the sentinel would panic the
         //    verifier in a debug build instead of reporting the file.
         let sentinel = doc_values::DocValuesSkipIndex {
             min_value: 0,
@@ -13182,7 +13169,7 @@ mod tests {
                 "{family} must be reported as not run: {skipped:?}"
             );
         }
-        // And specifically the three that used to be reported as *passing*.
+        // And specifically the three that must not be reported as *passing*.
         for family in [
             "term_vectors.fields_marked_in_fnm",
             "term_vectors.self_consistent",
@@ -13212,14 +13199,14 @@ mod tests {
     }
 
     /// A segment that **declares an index sort** but carries no doc-values
-    /// files: the one skip case where `all_passed()` used to return `true`.
+    /// files: the one skip case where `all_passed()` must still return `false`.
     ///
     /// `fnm.doc_values_vs_files` does not cover it -- a sort field that is
     /// not in `.fnm` at all leaves no field claiming doc values, so that
-    /// check passes too. The result was a segment whose declared sort order
+    /// check passes too. Without a dedicated check the segment's declared sort order
     /// (which every merge, every early-terminating query and Lucene's own
-    /// `testSort` trust) had been verified by nothing whatsoever, reported as
-    /// entirely healthy.
+    /// `testSort` trust) would be verified by nothing whatsoever yet reported
+    /// as entirely healthy.
     #[test]
     fn a_declared_index_sort_with_no_doc_values_is_reported_as_unverified() {
         let dst = tempdir();
@@ -13389,7 +13376,7 @@ mod tests {
         // whole segment unexamined, which is why it enumerates every family.
         assert_eq!(FAMILIES_BELOW_SI.len(), 16);
         // The three cross-checks are the sharpest, because a cross-check with
-        // one side missing is the shape that used to report a pass.
+        // one side missing is the shape that must not report a pass.
         for cross in [
             "term_vectors.match_postings",
             "norms.agree_with_postings",

@@ -424,9 +424,9 @@ impl MergeReaderHooks for CountingRank {
 }
 
 /// Java's `getMergeReader` wraps each source once, and a hook may draw
-/// (`MockRandomOneMerge`): a reordering merge used to wrap every source a
-/// second time for its live documents, so a drawing hook's stream ran ahead
-/// of Java's.
+/// (`MockRandomOneMerge`): a reordering merge must not wrap every source a
+/// second time for its live documents, or a drawing hook's stream would run
+/// ahead of Java's.
 #[test]
 fn a_reordering_merge_wraps_each_source_once() {
     let tmp = TempDir::new("merge-reorder-wraps");

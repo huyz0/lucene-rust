@@ -117,8 +117,8 @@ impl Iterator for Conjunction<'_> {
 /// clause currently peeking the emitted minimum is advanced past it in the same
 /// step, so no clause can re-offer that doc). Simple min-scan over all clauses'
 /// peeked heads per step — `DisjunctionDISIApproximation`'s min-heap does the same
-/// thing in `O(log n)` per step instead of this port's `O(n)`; fine for a first cut
-/// per the module doc, revisit if clause counts get large.
+/// thing in `O(log n)` per step instead of this port's `O(n)`, which is fine
+/// for the clause counts queries have in practice.
 pub struct Disjunction<'a> {
     iters: Vec<Peekable<BoxDocIter<'a>>>,
 }
@@ -1399,7 +1399,7 @@ mod tests {
             vec![vec![], vec![7, 8, 9]],
             // The top of the doc-id space. `i32::MAX` is the last window's last
             // slot, and computing that window's exclusive end in `i32` overflows
-            // -- which used to saturate to `i32::MAX`, make `doc >= max` true for
+            // -- saturating to `i32::MAX` would make `doc >= max` true for
             // the very document that selected the window, and **hang**: no clause
             // advanced, nothing was emitted, and the next iteration re-derived
             // the same window forever. `Disjunction` terminates on this input, so

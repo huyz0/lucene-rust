@@ -2182,10 +2182,9 @@ mod tests {
 
     /// The level count is a vint, so a single flipped byte can name
     /// `Integer.MAX_VALUE` levels. Java answers that with
-    /// `new int[numLevels][]`, an `OutOfMemoryError`; this port used to answer
-    /// it with `vec![Vec::new(); 2^31 - 1]` -- **51 GB, an abort**, which
-    /// `catch_unwind` cannot turn into a JVM exception. Reproduce the unfixed
-    /// version under `( ulimit -v 4000000; cargo test ... )`.
+    /// `new int[numLevels][]`, an `OutOfMemoryError`; allocating
+    /// `vec![Vec::new(); 2^31 - 1]` instead would be **51 GB, an abort**, which
+    /// `catch_unwind` cannot turn into a JVM exception.
     #[test]
     fn an_absurd_level_count_is_a_decode_error_not_an_allocation() {
         let (vex, vem) = valid_pair();
@@ -3001,8 +3000,7 @@ mod tests {
         .is_none());
     }
 
-    /// A graph over 2-d-ish points on a line for the filtered-search tests
-    /// (moved from the retired second port, `filtered_hnsw_searcher.rs`).
+    /// A graph over 2-d-ish points on a line for the filtered-search tests.
     fn filtered_graph(n: usize) -> (crate::hnsw::OnHeapHnswGraph, Vec<f32>) {
         let points: Vec<f32> = (0..n).map(|i| ((i * 7919) % 1000) as f32 / 10.0).collect();
         let g = HnswGraphBuilder::new(

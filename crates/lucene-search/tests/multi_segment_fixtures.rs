@@ -130,18 +130,15 @@ fn multi_segment_merge_matches_real_lucene_scores_from_two_real_segment_copies()
     // the ground truth this test cross-checks the multi-segment merge against,
     // not a re-implementation of the scoring math).
     //
-    // Both are given the *reader-wide* statistics the multi-segment search now
+    // Both are given the *reader-wide* statistics the multi-segment search
     // uses, because that is what real Lucene does: `IndexSearcher` aggregates
     // TermStatistics/CollectionStatistics across every leaf and scores each one
     // with the same idf. Segment 1 here is a byte-identical copy of segment 0,
     // so the reader holds twice the documents and twice the postings.
     //
-    // Before this, the expectation was each segment scored from its own
-    // counters -- which is what the multi-segment search used to do, and is why
-    // the benchmark found all 20 queries disagreeing with Java on a
-    // 15-segment index while agreeing exactly on a single-segment one. This
-    // test asserts the *merge* is correct, so it must not also pin the older
-    // per-segment idf.
+    // Scoring each segment from its own counters would disagree with Java on a
+    // multi-segment index while agreeing on a single-segment one. This test
+    // asserts the *merge* is correct, so it must not pin a per-segment idf.
     let field_stats = fields0.field("big").expect("field present");
     let global = lucene_search::CollectionStats {
         doc_freq: field_stats

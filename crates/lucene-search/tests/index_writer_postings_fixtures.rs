@@ -88,7 +88,7 @@ fn tempdir(tag: &str) -> TempDir {
     TempDir::new(&format!("index-writer-postings-fixture-{tag}"))
 }
 
-/// The critical end-to-end proof this task requires: documents added via
+/// End-to-end proof: documents added via
 /// `IndexWriter::add_document` (not a hand-built fixture), flushed by a real
 /// `IndexWriter::commit()`, opened back through the existing, unmodified
 /// `blocktree::open`/`postings::DocInput` read side, and queried via the
@@ -210,7 +210,7 @@ fn doc_with_title_and_body(id: &str, title: &str, body: &str) -> Document {
     }
 }
 
-/// The critical regression-proof for this task: `IndexWriter::commit()`
+/// `IndexWriter::commit()`
 /// batching two distinct postings fields (`title`, `body`) into **one**
 /// `postings_writer::write_fields` call (via
 /// `IndexWriter::set_postings_field` + `IndexWriter::add_postings_field`)
@@ -339,11 +339,10 @@ fn two_distinct_postings_fields_in_one_commit_are_both_searchable() {
     case("body", "space", &[]);
 }
 
-// `postings_writer` now emits real full `ForUtil`/`PForUtil` blocks for
+// `postings_writer` emits real full `ForUtil`/`PForUtil` blocks for
 // `docFreq >= BLOCK_SIZE (256)` (see `crates/lucene-codecs/src/
-// postings_writer.rs`'s `write_full_block`), so `docFreq == 256` alone no
-// longer makes `commit()` fail the way it used to -- there is deliberately
-// no end-to-end `IndexWriter`-level test of that here, though: reaching
+// postings_writer.rs`'s `write_full_block`) -- there is deliberately
+// no end-to-end `IndexWriter`-level test of that here: reaching
 // `docFreq == 256` requires 256 pending docs in one flush, which trips a
 // wholly unrelated, pre-existing cap in `flush_stored_only_segment`'s
 // `write_best_speed` (`docs.len() < 128` per flush chunk -- see that
@@ -353,6 +352,6 @@ fn two_distinct_postings_fields_in_one_commit_are_both_searchable() {
 // `postings_writer` unit level instead (`docfreq_exactly_one_full_block_no_tail`/
 // `docfreq_one_full_block_plus_one_doc_tail`/
 // `docfreq_spans_multiple_full_blocks_plus_tail` in
-// `crates/lucene-codecs/src/postings_writer.rs`), and the remaining
-// postings-side upper bound (`LEVEL1_NUM_DOCS`, 8192) is exercised there too
-// (`rejects_docfreq_at_or_above_level1_num_docs`).
+// `crates/lucene-codecs/src/postings_writer.rs`), and the `LEVEL1_NUM_DOCS`
+// (8192) boundary is exercised there too
+// (`docfreq_at_level1_boundaries_round_trips`).

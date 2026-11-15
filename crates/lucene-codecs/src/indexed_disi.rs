@@ -302,10 +302,10 @@ pub fn or_into_words(data: &[u8], dense_rank_power: u8, words: &mut [u64]) -> Re
 /// `advance_exact` **must** be called with non-decreasing doc ids; a smaller
 /// one **panics**. Java's `advanceExact` has the same precondition and enforces
 /// it with a bare `assert` (off in production, undefined behaviour when
-/// violated). Returning `None` instead -- what this cursor used to do -- is the
-/// worst of the three options: "this document has no value" is a legitimate
-/// answer, so a caller that violated the contract got a plausible wrong number
-/// rather than a diagnosis. This file already panics on a violated writer
+/// violated). Returning `None` instead would be the worst of the three
+/// options: "this document has no value" is a legitimate answer, so a caller
+/// that violated the contract would get a plausible wrong number rather than
+/// a diagnosis. This file already panics on a violated writer
 /// contract ([`write()`]'s ascending check), so a violated reader contract panics
 /// too; corrupt *data*, as always, is an `Err`.
 ///
@@ -1696,8 +1696,7 @@ mod tests {
 
     /// Java: "Jumps with a single real entry + NO_MORE_DOCS is just wasted
     /// space so we ignore that." Every doc in one block therefore produces no
-    /// table at all, and `jumpTableEntryCount` is `0` -- which is also what
-    /// this port used to record unconditionally.
+    /// table at all, and `jumpTableEntryCount` is `0`.
     #[test]
     fn a_single_block_region_writes_no_jump_table() {
         let (bytes, count) = write(&[1, 5, 100]);

@@ -99,9 +99,8 @@ pub const DEFAULT_B: f32 = 0.75;
 /// the MAXSCORE-pruned variants (`search_term_query_scored_maxscore`,
 /// `search_boolean_query_scored_maxscore`), phrase queries, and
 /// `explain`/`explain_boolean` all remain hardcoded to [`DEFAULT_K1`]/
-/// [`DEFAULT_B`], unchanged. Threading custom `k1`/`b` through every scored
-/// path is a larger, separately-scoped change; this task deliberately covers
-/// only the single most fundamental scored entry point.
+/// [`DEFAULT_B`]. Threading custom `k1`/`b` through every scored path is a
+/// larger change; only the single most fundamental scored entry point takes it.
 ///
 /// **The fields are private and [`Bm25Params::new`] is the only way to build a
 /// non-default one.** Real Lucene validates `k1`/`b` in its constructor and has
@@ -308,7 +307,7 @@ pub fn score(
 
 /// [`score`]'s sibling taking an explicit [`Bm25Params`] instead of the
 /// hardcoded [`DEFAULT_K1`]/[`DEFAULT_B`] -- see that struct's doc comment for
-/// this task's scope. `Bm25Params::default()` produces byte-for-byte the same
+/// scope. `Bm25Params::default()` produces byte-for-byte the same
 /// result as [`score`] (same formula, same constants).
 pub fn score_with_params(
     doc_freq: i64,

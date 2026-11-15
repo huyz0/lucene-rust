@@ -82,11 +82,10 @@ pub fn get(slice: &[u8], bits_per_value: u8, index: i64) -> Result<i64> {
     // needs at most eight bytes: the non-byte-aligned ones stop at 28 bits
     // (five bytes at worst), and the byte-aligned ones never carry a shift.
     //
-    // The byte-at-a-time loop below is the tail fallback, and it used to be the
-    // only path. It cost one load, one shift and one OR per byte, so the read
-    // got linearly slower with the width: 1.96 ns at one bit rising to 5.25 ns
-    // at 64, against Lucene's flat 2.3 ns for all fourteen widths -- Lucene's
-    // `DirectPackedReaderNN` classes each do a single `readInt`/`readLong`.
+    // The byte-at-a-time loop below is the tail fallback: one load, one shift
+    // and one OR per byte, so it gets linearly slower with the width, whereas
+    // Lucene's `DirectPackedReaderNN` classes each do a single
+    // `readInt`/`readLong`.
     // ARITH: `byte_pos <= slice.len() <= isize::MAX` was just checked, and
     // `bytes_needed <= 9`, so neither sum can overflow `usize`.
     #[allow(clippy::arithmetic_side_effects)]

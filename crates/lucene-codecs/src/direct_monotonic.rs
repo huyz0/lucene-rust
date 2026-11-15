@@ -541,8 +541,8 @@ mod tests {
         assert!(load_meta(&mut input, -1, 2).is_err());
     }
 
-    /// A corrupt `index_num_chunks` used to be reserved for verbatim, which
-    /// for the `i32` the `.fdm` carries is a 51 GB `Vec` -- an abort, which
+    /// A corrupt `index_num_chunks` must not be reserved for verbatim: for the
+    /// `i32` the `.fdm` carries that is a 51 GB `Vec` -- an abort, which
     /// `catch_unwind` cannot intercept. The read loop must run out of input
     /// instead.
     #[test]

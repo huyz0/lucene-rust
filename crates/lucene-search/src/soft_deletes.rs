@@ -222,16 +222,15 @@ pub fn is_soft_deleted(field: &SoftDeletesField<'_>, doc: i32) -> Result<bool> {
     Ok(doc_values::numeric_value(field.data, field.entry, doc)?.is_some())
 }
 
-/// The single per-doc visibility check this task exists to get right: NOT
+/// The single per-doc visibility check: NOT
 /// live if hard-deleted (`live_docs` bit cleared) OR soft-deleted (soft-
 /// deletes field has a value for this doc) — an OR of "is invisible", i.e.
 /// an AND of "is visible": `live(doc) == live_docs.get(doc) &&
 /// !soft_deleted(doc)`.
 ///
 /// `soft_deletes: None` means this segment has no soft-deletes field
-/// configured at all (the common case for every fixture/test this port had
-/// before this task) — falls back to pure hard-delete visibility, unchanged
-/// from every existing call site's behavior.
+/// configured at all (the common case) — falls back to pure hard-delete
+/// visibility.
 pub fn is_live(
     live_docs: Option<&FixedBitSet>,
     soft_deletes: Option<&SoftDeletesField<'_>>,
@@ -1090,8 +1089,8 @@ mod tests {
     /// `is_live` takes a caller-supplied `doc` and a caller-supplied
     /// `live_docs` and nothing relates the two. A negative `doc` sign-extends
     /// through `as usize` into `usize::MAX`, which `FixedBitSet::get` turns
-    /// into an index panic. This is the `fixed-bitset-bound` rule's own
-    /// regression test: without the bound it panics rather than answering.
+    /// into an index panic. This is the `fixed-bitset-bound` rule's own test:
+    /// without the bound it panics rather than answering.
     #[test]
     fn a_negative_doc_id_is_not_live_rather_than_a_panic() {
         let mut live = FixedBitSet::new(5);

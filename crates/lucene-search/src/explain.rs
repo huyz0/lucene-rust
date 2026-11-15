@@ -2839,10 +2839,9 @@ mod tests {
     /// term's docs -- yet `explain_clause` asked to explain one of those
     /// *not*-returned docs still produces the exact score
     /// `search_term_query_scored` (the eager path) computes for it,
-    /// unaffected by the unrelated search having pruned blocks. This is not a
-    /// bug fix (`explain_clause` never touches the maxscore path in the first
-    /// place, by construction), just a regression test making that
-    /// non-interaction explicit and permanent.
+    /// unaffected by the unrelated search having pruned blocks
+    /// (`explain_clause` never touches the maxscore path, by construction;
+    /// this makes the non-interaction explicit).
     #[test]
     fn explain_is_unaffected_by_an_unrelated_maxscore_search_pruning_the_same_term() {
         let (fields, doc) = open_fixture();
@@ -3181,10 +3180,10 @@ mod tests {
 
     #[test]
     fn boolean_explain_duplicate_should_clause_sums_twice_matching_scored_search() {
-        // Task #60 edge case: a duplicated `should` clause must contribute its
+        // Edge case: a duplicated `should` clause must contribute its
         // score twice in the explanation, exactly matching
         // `search_boolean_query_scored`'s own double-counting (real Lucene does
-        // not dedupe clauses -- see the `lib.rs` regression test
+        // not dedupe clauses -- see the `lib.rs` test
         // `boolean_duplicate_should_clause_counts_and_scores_twice` for the
         // full rationale). Verified here by requiring bit-for-bit equality
         // against the scored search path, the same technique

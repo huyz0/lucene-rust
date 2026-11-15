@@ -1283,10 +1283,9 @@ mod tests {
     /// `reverse: true` the `Long.MAX_VALUE` doc compares **greatest** and,
     /// after `reverseMul`, lands **first**.
     ///
-    /// This test used to assert the opposite ("missing-last stays last even
-    /// when reversed"), which made the physical order disagree with the `.si`
-    /// describing it -- a disagreement real Lucene's `CheckIndex.testSort`
-    /// rejects outright.
+    /// ("Missing-last stays last even when reversed" would make the physical
+    /// order disagree with the `.si` describing it -- a disagreement real
+    /// Lucene's `CheckIndex.testSort` rejects outright.)
     #[test]
     fn sorted_flush_missing_value_sentinel_is_reversed_like_any_other_value() {
         let tmp = tempdir();
