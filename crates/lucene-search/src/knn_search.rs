@@ -30,6 +30,10 @@ use crate::vector_query::{
 };
 use crate::{Error, Result};
 
+/// The greediness the k-NN plugin gives Lucene's radial search (`0.95`; the Lucene
+/// default is `0.9`): how far below the threshold the graph walk keeps going.
+pub const RADIAL_GREEDINESS: f32 = 0.95;
+
 /// A KNN query vector: `float[]` or Java's signed `byte[]` verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KnnTarget {
@@ -117,7 +121,7 @@ impl KnnLeafQuery {
                     self.field.clone(),
                     t.clone(),
                     min_score,
-                    FloatVectorSimilarityQuery::DEFAULT_DECAY,
+                    RADIAL_GREEDINESS,
                 )?;
                 let seg = [KnnSegment {
                     vectors: input,
@@ -130,7 +134,7 @@ impl KnnLeafQuery {
                     self.field.clone(),
                     t.clone(),
                     min_score,
-                    ByteVectorSimilarityQuery::DEFAULT_DECAY,
+                    RADIAL_GREEDINESS,
                 )?;
                 let seg = [KnnSegment {
                     vectors: input,
