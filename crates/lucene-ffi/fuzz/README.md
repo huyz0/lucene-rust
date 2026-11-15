@@ -11,6 +11,10 @@ AddressSanitizer (cargo-fuzz's default).
 | `jvm_open_reader` | `ffi_open_jvm_reader` with arbitrary `SegmentInfos` bytes, generation and expected segment sizes; whatever opens is searched and closed |
 | `jvm_live_docs` | `ffi_open_jvm_reader` with arbitrary live-docs words and per-segment word counts, then searches and counts under whatever was accepted |
 | `read_planet_object` | geo3d's `readPlanetObject` (the bytes a `Geo3dBinaryCodec` shape doc value holds) straight through `lucene-util`, not the exported functions: any input must read or fail with an `Err` -- never a panic, a stack overflow (nesting stops at 64 levels) or a count-sized allocation -- and a shape that reads must write, re-read and re-write to the same bytes. Seeds are one Java-written shape per geo3d class, from `fixtures/data/geo3d/shapes.tsv`. Run it with `-a` too: debug assertions catch a geo3d exception raised outside a `catch` |
+| `check_corrupt_index` | a Java-written fixture index with up to eight edits to its files (flip, set, truncate, zero a run), through the `CheckIndex` port: every decoder sees damaged bytes and must report, not panic or over-allocate |
+| `sigv4_sign` | `lucene-ml`'s SigV4 signer over an arbitrary method, URL, headers and body; the credentials must not reach a header |
+| `esdk_decrypt` | the AWS Encryption SDK message parser behind connector credentials; an own message must round-trip |
+| `connector_text` | the connector JSON reader, JSONPath and `${...}` substitution |
 
 **A caught panic is a finding.** The boundary would survive it — every entry
 point is `catch_unwind`-guarded and reports `FfiStatus::Panic` — but every

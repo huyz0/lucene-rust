@@ -10,18 +10,18 @@ fuzz_target!(|data: &[u8]| {
     let mut parts = data.split(|b| *b == 0).map(|p| String::from_utf8_lossy(p).into_owned());
     let (method, url) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
     let (service, region) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
-    let secret = format!("S3CR3T{}", parts.next().unwrap_or_default());
-    let token = parts.next().map(|t| format!("T0K3N{t}"));
+    let secret = "fuzz-secret-9f3a1c70d2".to_string();
+    let _ = parts.next();
+    let token = parts.next().map(|_| "fuzz-token-5b8e44a1c9".to_string());
     let body = parts.next().unwrap_or_default();
     let mut headers: Vec<(String, String)> = parts
         .collect::<Vec<_>>()
         .chunks(2)
         .map(|c| (c[0].clone(), c.get(1).cloned().unwrap_or_default()))
         .collect();
-    // The scope and the signed-header list echo the request, so only a secret that did not come in
-    // with the request itself can be a leak.
-    let echoed = |s: &str| s.contains(&secret) || token.as_deref().is_some_and(|t| s.contains(t));
-    if [&method, &url, &service, &region, &body, &secret].into_iter().chain(token.as_ref()).any(|s| echoed(s) && s != &secret && Some(s) != token.as_ref() || token.as_deref().is_some_and(|t| t.contains(&secret) || secret.contains(t))) || headers.iter().any(|(k, v)| echoed(k) || echoed(v)) {
+    // Inputs cannot contain the credentials (they are fixed strings the fuzzer would have to guess),
+    // so any appearance in a header is a leak.
+    if String::from_utf8_lossy(data).contains("fuzz-") {
         return;
     }
     let Some(url) = Url::parse(&url) else { return };
