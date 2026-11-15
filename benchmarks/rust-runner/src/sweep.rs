@@ -49,6 +49,10 @@ fn traced(size: usize) {
     }
 }
 
+/// Off with `SWEEP_THREADS` above 1: four threads bumping the shared counters
+/// on every allocation would measure the counters' cache line, not the engine.
+static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 fn grew(by: u64) {
     let live = LIVE.fetch_add(by, Relaxed) + by;
     PEAK.fetch_max(live, Relaxed);
@@ -58,34 +62,42 @@ fn grew(by: u64) {
 // pointer; the counters never touch the memory.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        traced(layout.size());
-        ALLOCS.fetch_add(1, Relaxed);
-        BYTES.fetch_add(layout.size() as u64, Relaxed);
-        grew(layout.size() as u64);
+        if COUNTING.load(Relaxed) {
+            traced(layout.size());
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Relaxed);
+            grew(layout.size() as u64);
+        }
         // SAFETY: forwarded.
         unsafe { MiMalloc.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        traced(layout.size());
-        ALLOCS.fetch_add(1, Relaxed);
-        BYTES.fetch_add(layout.size() as u64, Relaxed);
-        grew(layout.size() as u64);
+        if COUNTING.load(Relaxed) {
+            traced(layout.size());
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Relaxed);
+            grew(layout.size() as u64);
+        }
         // SAFETY: forwarded.
         unsafe { MiMalloc.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size() as u64, Relaxed);
+        if COUNTING.load(Relaxed) {
+            LIVE.fetch_sub(layout.size() as u64, Relaxed);
+        }
         // SAFETY: forwarded.
         unsafe { MiMalloc.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        traced(new_size);
-        ALLOCS.fetch_add(1, Relaxed);
-        BYTES.fetch_add(new_size as u64, Relaxed);
-        if new_size >= layout.size() {
-            grew((new_size - layout.size()) as u64);
-        } else {
-            LIVE.fetch_sub((layout.size() - new_size) as u64, Relaxed);
+        if COUNTING.load(Relaxed) {
+            traced(new_size);
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(new_size as u64, Relaxed);
+            if new_size >= layout.size() {
+                grew((new_size - layout.size()) as u64);
+            } else {
+                LIVE.fetch_sub((layout.size() - new_size) as u64, Relaxed);
+            }
         }
         // SAFETY: forwarded.
         unsafe { MiMalloc.realloc(ptr, layout, new_size) }
@@ -471,7 +483,15 @@ struct Row {
     peak_kib: u64,
 }
 
-fn measure(budget: Duration, mut f: impl FnMut() -> u64) -> (Row, u64) {
+/// `SWEEP_THREADS`: how many threads run the case at once (default 1); the
+/// row's `us` is then the wall time per call across all of them, so a case
+/// that scales reads `1/threads` of its one-thread figure.
+fn measure(budget: Duration, f: impl Fn() -> u64 + Sync) -> (Row, u64) {
+    let threads: usize = std::env::var("SWEEP_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let warm = Instant::now();
     let mut digest = 0u64;
     while warm.elapsed() < Duration::from_millis(300) {
@@ -481,12 +501,21 @@ fn measure(budget: Duration, mut f: impl FnMut() -> u64) -> (Row, u64) {
     PEAK.store(live, Relaxed);
     let (a0, b0) = (ALLOCS.load(Relaxed), BYTES.load(Relaxed));
     let start = Instant::now();
-    let mut calls = 0u64;
-    while start.elapsed() < budget || calls < 3 {
-        let d = f();
-        assert_eq!(d, digest, "nondeterministic output");
-        calls += 1;
-    }
+    let total = AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let mut calls = 0u64;
+                while start.elapsed() < budget || calls < 3 {
+                    let d = f();
+                    assert_eq!(d, digest, "nondeterministic output");
+                    calls += 1;
+                }
+                total.fetch_add(calls, Relaxed);
+            });
+        }
+    });
+    let calls = total.load(Relaxed);
     let el = start.elapsed().as_secs_f64();
     let n = calls as f64;
     (
@@ -511,6 +540,13 @@ fn hash(bytes: &[u8]) -> u64 {
 
 fn main() {
     let dir = std::env::args().nth(1).expect("sweep <index dir> [filter]");
+    if std::env::var("SWEEP_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|t| t > 1)
+    {
+        COUNTING.store(false, Relaxed);
+    }
     let only = std::env::args().nth(2);
     let budget = Duration::from_millis(
         std::env::var("SWEEP_MS")
@@ -618,6 +654,64 @@ fn main() {
             2,
         ),
     ];
+    // Scored top-10 searches, the plugin's hot read path.
+    let boolean = |clauses: &[(u8, &str)]| {
+        let mut b = Blob::default();
+        b.u8(1).i32(0).i32(clauses.len() as i32);
+        for (occur, term) in clauses {
+            b.u8(*occur).u8(0).i32(-1).i32(0).s("body").s(term);
+        }
+        b.0
+    };
+    let searches: Vec<(&str, Vec<u8>)> = vec![
+        ("term_t0", term_query("body", "t0")),
+        ("term_t5", term_query("body", "t5")),
+        ("term_rare", term_query("body", "t1k")),
+        ("or_t0_t5", boolean(&[(2, "t0"), (2, "t5")])),
+        ("and_t0_t5", boolean(&[(0, "t0"), (0, "t5")])),
+        ("or3", boolean(&[(2, "t1"), (2, "t5"), (2, "t20")])),
+        ("filter_or", boolean(&[(1, "t0"), (2, "t5"), (2, "t20")])),
+    ];
+    for (name, q) in &searches {
+        let name = format!("search/{name}");
+        if !wanted(&name) {
+            continue;
+        }
+        let run = || {
+            let mut docs = [0i32; 10];
+            let mut scores = [0f32; 10];
+            let (mut n, mut total, mut lower) = (0usize, 0i64, false);
+            // SAFETY: live slices and buffers of 10.
+            unsafe {
+                check(
+                    ffi_jvm_reader_search(
+                        r,
+                        q.as_ptr(),
+                        q.len(),
+                        10,
+                        1000,
+                        docs.as_mut_ptr(),
+                        scores.as_mut_ptr(),
+                        10,
+                        &mut n,
+                        &mut total,
+                        &mut lower,
+                    ),
+                    &name,
+                );
+            }
+            let mut h = (total as u64) ^ (n as u64);
+            for d in &docs[..n] {
+                h = h.wrapping_mul(31).wrapping_add(*d as u64);
+            }
+            for sc in &scores[..n] {
+                h = h.wrapping_mul(31).wrapping_add(u64::from(sc.to_bits()));
+            }
+            h
+        };
+        print(&name, measure(budget, run));
+    }
+
     for (sn, sort, keys) in &sorts {
         for (qn, q) in &queries {
             for top in [10usize, 100] {
@@ -625,10 +719,10 @@ fn main() {
                 if !wanted(&name) {
                     continue;
                 }
-                let mut docs = vec![0i32; top];
-                let mut values = vec![0i64; top * keys];
-                let mut counts = [0i64; 4];
                 let run = || {
+                    let mut docs = vec![0i32; top];
+                    let mut values = vec![0i64; top * keys];
+                    let mut counts = [0i64; 6];
                     let (mut tp, mut tl) = (std::ptr::null_mut(), 0usize);
                     // SAFETY: buffers of `top` hits and `top * keys` values.
                     unsafe {
