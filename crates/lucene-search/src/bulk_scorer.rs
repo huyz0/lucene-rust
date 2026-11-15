@@ -1502,6 +1502,18 @@ pub(crate) struct MsmBulk {
     counts: Vec<u32>,
     sums: Vec<f64>,
     buf: DocScores,
+    /// The `n - msm + 1` cheapest clauses (indices into the legs): a document
+    /// matching `msm` of `n` clauses matches at least one of them, so only
+    /// they enumerate candidates once a threshold exists. `tail`: the rest,
+    /// most expensive first, which candidates are looked up in.
+    lead: Vec<usize>,
+    tail: Vec<usize>,
+    /// Per tail clause, its score bound in the window, and the suffix sums.
+    tail_max: Vec<f32>,
+    tail_suffix: Vec<f64>,
+    /// The tail's postings dwarf the leads', so enumerating candidates from the
+    /// leads is cheaper even with every match counted (no threshold yet).
+    sparse_by_cost: bool,
 }
 
 /// `ScorerUtil.costWithMinShouldMatch`: the summed costs of the
@@ -1530,6 +1542,181 @@ impl MsmBulk {
             counts: vec![0; INNER_WINDOW_SIZE as usize],
             sums: vec![0.0; INNER_WINDOW_SIZE as usize],
             buf: DocScores::default(),
+            lead: Vec::new(),
+            tail: Vec::new(),
+            tail_max: Vec::new(),
+            tail_suffix: Vec::new(),
+            sparse_by_cost: false,
+        }
+    }
+
+    /// Splits the clauses into leads (cheapest) and tail.
+    fn split_legs(&mut self, legs: &[TermLeg<'_>]) {
+        let mut order: Vec<usize> = (0..legs.len()).collect();
+        order.sort_by_key(|&i| legs[i].cost);
+        let leads = (legs.len() + 1).saturating_sub(self.msm as usize).max(1);
+        let tail = order.split_off(leads.min(order.len()));
+        let cost = |v: &[usize]| v.iter().fold(0i64, |c, &i| c.saturating_add(legs[i].cost));
+        self.sparse_by_cost = cost(&tail) / 4 > cost(&order);
+        #[cfg(test)]
+        {
+            self.sparse_by_cost |= crate::exec::tests::FORCE_SPARSE_MSM.with(std::cell::Cell::get);
+        }
+        self.lead = order;
+        self.tail = tail;
+        self.tail.reverse();
+        self.tail_max = vec![0.0; self.tail.len()];
+        self.tail_suffix = vec![0.0; self.tail.len() + 1];
+    }
+
+    /// With a threshold, a window at a time over the lead clauses only; the
+    /// tail clauses are looked up for the candidates whose best possible
+    /// score still competes, and a candidate stops as soon as `msm` can no
+    /// longer be reached or its score bound falls under the threshold. This is
+    /// what `WANDScorer` does with its tail.
+    fn score_window_sparse<C: ScoringCollector + ?Sized>(
+        &mut self,
+        legs: &mut [TermLeg<'_>],
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        start: i32,
+        end: i32,
+        min_competitive: f32,
+    ) -> Result<()> {
+        let msm = self.msm as usize;
+        let lead = std::mem::take(&mut self.lead);
+        let tail = std::mem::take(&mut self.tail);
+        let mut bound = 0.0f64;
+        let mut lead_present = 0usize;
+        for &l in &lead {
+            let leg = &mut legs[l];
+            let doc = leg.doc_id();
+            if doc < end {
+                lead_present += 1;
+                if min_competitive > 0.0 {
+                    leg.advance_shallow(doc)?;
+                    bound += f64::from(leg.max_score(end - 1));
+                }
+            }
+        }
+        let mut tail_bound = 0.0f64;
+        for (j, &t) in tail.iter().enumerate() {
+            let leg = &mut legs[t];
+            let doc = leg.doc_id();
+            self.tail_max[j] = if min_competitive <= 0.0 || doc >= end {
+                0.0
+            } else {
+                leg.advance_shallow(doc.max(start))?;
+                leg.max_score(end - 1)
+            };
+            tail_bound += f64::from(self.tail_max[j]);
+        }
+        let mut acc = 0.0f64;
+        for j in (0..tail.len()).rev() {
+            acc += f64::from(self.tail_max[j]);
+            self.tail_suffix[j] = acc;
+        }
+        self.tail_suffix[tail.len()] = 0.0;
+        if lead_present == 0
+            || (min_competitive > 0.0 && ((bound + tail_bound) as f32) < min_competitive)
+        {
+            #[cfg(any(test, feature = "test-support"))]
+            crate::test_only_maxscore_block_skip_counter::record_skip();
+            self.lead = lead;
+            self.tail = tail;
+            return Ok(());
+        }
+        for &l in &lead {
+            let leg = &mut legs[l];
+            if leg.doc_id() >= end {
+                continue;
+            }
+            loop {
+                leg.next_docs_and_scores(end, live_docs, &mut self.buf)?;
+                if self.buf.docs.is_empty() {
+                    break;
+                }
+                for (&doc, &sub) in self.buf.docs.iter().zip(&self.buf.scores) {
+                    // ARITH: `start <= doc < end <= start + INNER_WINDOW_SIZE`.
+                    let i = (doc - start) as usize;
+                    // FBS: `matches` holds `INNER_WINDOW_SIZE` bits, `i` below it.
+                    self.matches.set(i);
+                    self.counts[i] += 1;
+                    self.sums[i] += f64::from(sub);
+                }
+            }
+        }
+        let mut threshold = min_competitive;
+        let (counts, sums) = (&mut self.counts, &mut self.sums);
+        let (tail_suffix, want) = (&self.tail_suffix, self.msm);
+        // The tail's bounds were read only for a window that began with a
+        // threshold; a threshold that appears mid-window cannot prune by them.
+        let bounded = min_competitive > 0.0;
+        let mut failed: Option<crate::Error> = None;
+        self.matches.for_each_set_bit(|i| {
+            let mut count = counts[i];
+            let mut sum = sums[i];
+            counts[i] = 0;
+            sums[i] = 0.0;
+            if failed.is_some() {
+                return;
+            }
+            // ARITH: `i < INNER_WINDOW_SIZE`, `start + i < end`.
+            let doc = start + i as i32;
+            let mut alive = true;
+            if (count as usize) + tail.len() < msm
+                || (bounded && ((sum + tail_suffix[0]) as f32) < threshold)
+            {
+                alive = false;
+            }
+            if alive {
+                for (j, &t) in tail.iter().enumerate() {
+                    let leg = &mut legs[t];
+                    let found = match (|| -> Result<bool> {
+                        let d = if leg.doc_id() < doc {
+                            leg.advance(doc)?
+                        } else {
+                            leg.doc_id()
+                        };
+                        if d == doc {
+                            sum += f64::from(leg.score()?);
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    })() {
+                        Ok(f) => f,
+                        Err(e) => {
+                            failed = Some(e);
+                            return;
+                        }
+                    };
+                    if found {
+                        count += 1;
+                    }
+                    let left = tail.len() - j - 1;
+                    if (count as usize) + left < msm
+                        || (bounded && ((sum + tail_suffix[j + 1]) as f32) < threshold)
+                    {
+                        alive = false;
+                        break;
+                    }
+                }
+            }
+            if alive && count >= want {
+                let score = sum as f32;
+                if score >= threshold {
+                    collector.collect(doc, score);
+                    threshold = min_competitive_score(collector);
+                }
+            }
+        });
+        self.matches.clear_all();
+        self.lead = lead;
+        self.tail = tail;
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
@@ -1544,21 +1731,42 @@ impl MsmBulk {
         max: i32,
     ) -> Result<i32> {
         let msm = self.msm as usize;
+        if self.lead.is_empty() {
+            self.split_legs(legs);
+        }
         let mut window_min = min;
         loop {
+            let sparse = !self.tail.is_empty()
+                && (self.sparse_by_cost || min_competitive_score(collector) > 0.0);
             let mut start = NO_MORE_DOCS;
-            for leg in legs.iter_mut() {
-                let mut doc = leg.doc_id();
-                if doc < window_min {
-                    doc = leg.advance(window_min)?;
+            if sparse {
+                for &l in &self.lead {
+                    let leg = &mut legs[l];
+                    let mut doc = leg.doc_id();
+                    if doc < window_min {
+                        doc = leg.advance(window_min)?;
+                    }
+                    start = start.min(doc);
                 }
-                start = start.min(doc);
+            } else {
+                for leg in legs.iter_mut() {
+                    let mut doc = leg.doc_id();
+                    if doc < window_min {
+                        doc = leg.advance(window_min)?;
+                    }
+                    start = start.min(doc);
+                }
             }
             if start >= max {
                 return Ok(start);
             }
             let end = max.min(start.saturating_add(INNER_WINDOW_SIZE));
             let min_competitive = min_competitive_score(collector);
+            if sparse {
+                self.score_window_sparse(legs, live_docs, collector, start, end, min_competitive)?;
+                window_min = end;
+                continue;
+            }
             // The clauses with a document in the window, and (with a
             // threshold) the sum of their maxima there.
             let mut present = 0usize;
