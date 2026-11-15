@@ -1400,6 +1400,7 @@ impl State {
                 docs: Vec::new(),
                 worst: None,
                 direct: Vec::new(),
+                epoch: 0,
                 subs: subs(),
             })),
         }
@@ -1419,6 +1420,8 @@ struct CompositeState {
     /// A lone keyword source's competitive buckets by global ordinal (the
     /// missing value first): the index without hashing a key per document.
     direct: Vec<u32>,
+    /// How many times `worst` has been set.
+    epoch: u64,
     subs: Vec<State>,
 }
 
@@ -1444,6 +1447,7 @@ impl CompositeState {
         self.worst = live
             .get(size.wrapping_sub(1))
             .map(|&o| self.keys[o as usize].clone());
+        self.epoch += 1;
     }
 }
 
@@ -1732,6 +1736,11 @@ struct CompositeLeaf<'a> {
     key: Vec<KeyPart>,
     /// The combination being collected: a position in each source's keys.
     at: Vec<usize>,
+    /// The two-keyword window pass's first-source segment ordinals that
+    /// cannot lead a competitive key, as of [`CompositeState::epoch`]
+    /// `dead_epoch`; empty when the dictionary is too large to tabulate.
+    dead0: Vec<bool>,
+    dead_epoch: u64,
 }
 
 /// An ordinal a `terms` window has not placed yet.
@@ -2330,6 +2339,8 @@ fn composite_leaf<'a>(
         values: vec![Vec::new(); sources.len()],
         key: Vec::with_capacity(sources.len()),
         at: Vec::with_capacity(sources.len()),
+        dead0: Vec::new(),
+        dead_epoch: u64::MAX,
         sources: leaves,
         after,
         sorted_lead: sorted_lead.get(view.index).copied().unwrap_or(false),
@@ -3530,6 +3541,19 @@ fn collect_window(
             }
             return collect_subs_window(node, state, leaf, docs, owners);
         }
+        (
+            AggNode::Composite {
+                sources,
+                size,
+                subs,
+                ..
+            },
+            State::Composite(st),
+        ) => {
+            if collect_composite_pairs(sources, *size, subs, st, leaf, docs)? {
+                return Ok(());
+            }
+        }
         _ => {}
     }
     for (&doc, &owner) in docs.iter().zip(owners) {
@@ -3663,6 +3687,120 @@ fn collect_composite(
             at[i] = 0;
         }
     }
+}
+
+/// Largest first-source dictionary the two-keyword window pass tabulates.
+const MAX_TABULATED_ORDS: usize = 1 << 16;
+
+/// Whether no key led by the first-source segment ordinal `ord` can be
+/// competitive: before `after`'s first part, or past the worst kept key's.
+fn first_hopeless(
+    s0: &CompositeSource,
+    after: Option<&[AfterPart]>,
+    st: &CompositeState,
+    map0: &[i64],
+    ord: i64,
+) -> Result<bool> {
+    let k0 = Some(s0.key(map0, ord)?);
+    Ok(after.is_some_and(|a| s0_before_after(s0, k0, a[0]))
+        || st
+            .worst
+            .as_deref()
+            .is_some_and(|w| s0.compare(k0, w[0]).is_gt()))
+}
+
+/// A window of a `composite` over two keyword sources, both read ahead as
+/// single-valued columns: the documents' ordinals are read straight from the
+/// windows, a document whose first key cannot be competitive (before `after`,
+/// or past the worst kept key) is dropped without building its key, and the
+/// rest are placed as [`collect_composite`] places them. A document missing
+/// either value goes through [`collect_composite`]. False when the window is
+/// not of that shape, with nothing collected.
+fn collect_composite_pairs(
+    sources: &[CompositeSource],
+    size: usize,
+    subs: &[AggNode],
+    st: &mut CompositeState,
+    leaf: &mut Leaf<'_>,
+    docs: &[i32],
+) -> Result<bool> {
+    let Some(c) = leaf.composite.as_deref_mut() else {
+        return Ok(false);
+    };
+    let [s0, s1] = sources else {
+        return Ok(false);
+    };
+    let [l0, l1] = c.sources.as_slice() else {
+        return Ok(false);
+    };
+    let (Col::Ords(_, map0), Col::Ords(_, map1)) = (&l0.col, &l1.col) else {
+        return Ok(false);
+    };
+    let (map0, map1) = (*map0, *map1);
+    let reads_ahead = |l: &Leaf<'_>| l.pre_len > 0 && !l.pre_multi && l.missing.is_none();
+    if size == 0
+        || c.sorted_lead
+        || s0.values != CompositeValues::Keyword
+        || s1.values != CompositeValues::Keyword
+        || !reads_ahead(l0)
+        || !reads_ahead(l1)
+    {
+        return Ok(false);
+    }
+    let tabulate = map0.len() <= MAX_TABULATED_ORDS;
+    // A document's ordinals in the two read-ahead columns, when it has both.
+    let ords_of = |c: &CompositeLeaf<'_>, doc: i32| -> Option<(i64, i64)> {
+        let at = |l: &Leaf<'_>| {
+            let i = doc.wrapping_sub(l.pre_base) as u32 as usize;
+            let has = l
+                .pre_bits
+                .get(i >> 6)
+                .is_some_and(|w| w >> (i & 63) & 1 == 1);
+            (i < l.pre_len && has).then(|| l.pre_vals[i])
+        };
+        at(&c.sources[0]).zip(at(&c.sources[1]))
+    };
+    for &doc in docs {
+        let Some((a, b)) = ords_of(c, doc) else {
+            collect_composite(sources, size, subs, st, c, &mut leaf.subs, doc, None)?;
+            continue;
+        };
+        if tabulate && c.dead_epoch != st.epoch {
+            c.dead0.clear();
+            for o in 0..map0.len() {
+                c.dead0
+                    .push(first_hopeless(s0, c.after.as_deref(), st, map0, o as i64)?);
+            }
+            c.dead_epoch = st.epoch;
+        }
+        if tabulate {
+            if c.dead0.get(a as usize).copied().unwrap_or(false) {
+                continue;
+            }
+        } else if first_hopeless(s0, c.after.as_deref(), st, map0, a)? {
+            continue;
+        }
+        let k0 = Some(s0.key(map0, a)?);
+        let key = [k0, Some(s1.key(map1, b)?)];
+        let past_after = c.after.as_ref().is_none_or(|after| {
+            for ((s, &k), &a) in sources.iter().zip(&key).zip(after) {
+                let o = s.compare_after(k, a);
+                if o.is_ne() {
+                    return o.is_gt();
+                }
+            }
+            false
+        });
+        if past_after
+            && st
+                .worst
+                .as_deref()
+                .is_none_or(|w| compare_keys(sources, &key, w).is_le())
+        {
+            place(sources, size, subs, st, &key, true, &mut leaf.subs, doc)?;
+        }
+    }
+    Ok(true)
 }
 
 /// `TermsSortedDocsProducer.processLeaf`: a top-level `composite` whose
@@ -8797,6 +8935,61 @@ mod tests {
             panic!()
         };
         assert_eq!(buckets.len(), 3);
+    }
+
+    /// The two-keyword window pass collects what the document pass does, for
+    /// each page size, `after`, order and sub-aggregation.
+    #[test]
+    fn composite_two_keyword_window_pass_matches_the_document_pass() {
+        let reader = fixture("terms_aggs_index");
+        let source = |field: &str, reverse, missing_bucket| CompositeSource {
+            field: field.to_string(),
+            values: CompositeValues::Keyword,
+            reverse,
+            missing_bucket,
+            missing_order: MissingOrder::Default,
+        };
+        let both = |tree: &AggNode| {
+            let nodes = std::slice::from_ref(tree);
+            NO_WINDOWS.with(|w| w.set(true));
+            let one = run(&reader, &all(), nodes, &whole(&reader)).unwrap();
+            NO_WINDOWS.with(|w| w.set(false));
+            let windowed = run(&reader, &all(), nodes, &whole(&reader)).unwrap();
+            assert_eq!(format!("{windowed:?}"), format!("{one:?}"), "{tree:?}");
+            windowed
+        };
+        for (first, second) in [
+            (source("kw", false, false), source("sk", false, false)),
+            (source("kw", true, false), source("sk", false, true)),
+            (source("sk", false, true), source("kw", true, false)),
+        ] {
+            let sub = AggNode::Metric {
+                script: None,
+                missing: None,
+                field: "ml".to_string(),
+                kind: ValueKind::Long,
+                source: Source::DocValues,
+                needs: 0xff,
+            };
+            let node = |size, after, subs| AggNode::Composite {
+                sources: vec![first.clone(), second.clone()],
+                size,
+                after,
+                sorted_lead: Vec::new(),
+                subs,
+            };
+            let every = both(&node(1 << 20, None, Vec::new()));
+            assert!(format!("{every:?}").len() > 100);
+            for size in [1, 3, 8, 1 << 20] {
+                both(&node(size, None, Vec::new()));
+                both(&node(size, None, vec![sub.clone()]));
+                let after = vec![
+                    CompositeAfter::Term(b"w2".to_vec()),
+                    CompositeAfter::Term(b"s1".to_vec()),
+                ];
+                both(&node(size, Some(after), Vec::new()));
+            }
+        }
     }
 
     /// A `composite` paged with `after` lists the same buckets as one page
