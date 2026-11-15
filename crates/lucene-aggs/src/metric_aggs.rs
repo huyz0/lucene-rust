@@ -223,6 +223,59 @@ fn compensated_add(sum_ref: &mut f64, delta_ref: &mut f64, value: f64) {
     *delta_ref = delta;
 }
 
+/// A window of single-valued longs folded as integers: what a top-level
+/// metric over a column of longs needs, without a dependent floating-point
+/// chain per value.
+///
+/// The compensated sum is exact while every partial sum is an integer of at
+/// most 2^53 in magnitude: each addition is then exact, so the delta stays
+/// zero and the result is the integer total, bit for bit what the
+/// document-by-document path computes. [`LongFold::exact_on`] checks that
+/// bound from the window's largest magnitude; a window that fails it, or a
+/// state that already carries a rounding delta, goes through `one` instead.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LongFold {
+    pub count: u64,
+    pub sum: i64,
+    pub min: i64,
+    pub max: i64,
+    max_abs: u64,
+}
+
+/// Largest magnitude a window total or a state's running sum may reach and
+/// still add exactly (half of 2^53, leaving the final addition headroom).
+const EXACT_BOUND: f64 = 4_503_599_627_370_496.0;
+
+impl LongFold {
+    pub(crate) const EMPTY: Self = Self {
+        count: 0,
+        sum: 0,
+        min: i64::MAX,
+        max: i64::MIN,
+        max_abs: 0,
+    };
+
+    #[inline(always)]
+    pub(crate) fn push(&mut self, v: i64) {
+        self.count += 1;
+        self.sum = self.sum.wrapping_add(v);
+        self.min = self.min.min(v);
+        self.max = self.max.max(v);
+        self.max_abs = self.max_abs.max(v.unsigned_abs());
+    }
+
+    /// Whether adding this window to a compensated sum at (`sum`, `delta`)
+    /// is exact: the sum an integer within the bound, no pending delta, and
+    /// no prefix of the window able to leave the bound.
+    fn exact_on(&self, sum: f64, delta: f64) -> bool {
+        delta == 0.0
+            && sum.is_finite()
+            && sum.fract() == 0.0
+            && sum.abs() <= EXACT_BOUND
+            && (self.count as f64) * (self.max_abs as f64) <= EXACT_BOUND
+    }
+}
+
 /// One owning bucket's metric in the form a bucketed state keeps it: only
 /// the parts its node reads (`NEED_*`), read back as a [`MetricState`]
 /// whose other parts are their defaults.
@@ -233,6 +286,13 @@ pub(crate) trait MetricSlot: Default + Clone {
     fn one(&mut self, v: f64);
     /// A document's stored values, ascending, read as `kind`.
     fn many(&mut self, kind: ValueKind, values: &[i64]);
+    /// A whole window of single-valued longs at once; `false` when the
+    /// state cannot take it exactly (the caller then adds the values one by
+    /// one).
+    fn fold_longs(&mut self, f: &LongFold) -> bool {
+        let _ = f;
+        false
+    }
     /// A bound read from the points, for a `min` (`is_min`) or a `max`.
     fn bound(&mut self, is_min: bool, v: f64);
     /// The state as the result reads it.
@@ -243,6 +303,23 @@ pub(crate) trait MetricSlot: Default + Clone {
 
 impl MetricSlot for MetricState {
     const NEEDS: u8 = NEED_ALL;
+    fn fold_longs(&mut self, f: &LongFold) -> bool {
+        if f.count == 0 {
+            return true;
+        }
+        if !f.exact_on(self.sum, self.delta) {
+            return false;
+        }
+        let (lo, hi) = (f.min as f64, f.max as f64);
+        self.count += f.count;
+        self.sum += f.sum as f64;
+        self.delta = 0.0;
+        self.min = java_min(self.min, lo);
+        self.max = java_max(self.max, hi);
+        self.min_of_mins = java_min(self.min_of_mins, lo);
+        self.max_of_maxes = java_max(self.max_of_maxes, hi);
+        true
+    }
     #[inline]
     fn one(&mut self, v: f64) {
         MetricState::one::<NEED_ALL>(self, v);
@@ -276,6 +353,18 @@ pub(crate) struct CountSum {
 
 impl MetricSlot for CountSum {
     const NEEDS: u8 = NEED_COUNT | NEED_SUM;
+    fn fold_longs(&mut self, f: &LongFold) -> bool {
+        if f.count == 0 {
+            return true;
+        }
+        if !f.exact_on(self.sum, self.delta) {
+            return false;
+        }
+        self.count += f.count;
+        self.sum += f.sum as f64;
+        self.delta = 0.0;
+        true
+    }
     #[inline]
     fn one(&mut self, v: f64) {
         self.count += 1;
@@ -308,6 +397,10 @@ pub(crate) struct Count(u64);
 
 impl MetricSlot for Count {
     const NEEDS: u8 = NEED_COUNT;
+    fn fold_longs(&mut self, f: &LongFold) -> bool {
+        self.0 += f.count;
+        true
+    }
     #[inline]
     fn one(&mut self, _: f64) {
         self.0 += 1;
@@ -1268,6 +1361,86 @@ mod tests {
     fn enc(d: f64) -> i64 {
         let bits = d.to_bits() as i64;
         bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
+    }
+
+    /// **A long window folded as integers lands on the very bits the
+    /// per-value compensated path does**, for every window it accepts, and
+    /// is refused (left to `one`) when the bound could be crossed or the
+    /// state carries a rounding delta.
+    #[test]
+    fn a_folded_long_window_matches_value_by_value_bits() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let same = |a: &MetricState, b: &MetricState| {
+            a.count == b.count
+                && a.sum.to_bits() == b.sum.to_bits()
+                && a.delta.to_bits() == b.delta.to_bits()
+                && a.min.to_bits() == b.min.to_bits()
+                && a.max.to_bits() == b.max.to_bits()
+                && a.min_of_mins.to_bits() == b.min_of_mins.to_bits()
+                && a.max_of_maxes.to_bits() == b.max_of_maxes.to_bits()
+        };
+        let mut accepted = 0;
+        let mut refused = 0;
+        for round in 0..400 {
+            // Magnitudes from tiny to past the bound, windows from 0 to 70.
+            let bits = 1 + (next() % 62) as u32;
+            let len = (next() % 71) as usize;
+            let values: Vec<i64> = (0..len)
+                .map(|_| {
+                    let m = (next() >> (64 - bits)) as i64;
+                    if next() & 1 == 0 {
+                        m
+                    } else {
+                        -m
+                    }
+                })
+                .collect();
+            let mut by_value = MetricState::default();
+            let mut folded = MetricState::default();
+            // Half the rounds start from a state that already holds values,
+            // some with a pending delta from inexact additions.
+            if round % 2 == 1 {
+                for v in [1_i64 << 60, 3, -(1 << 59), 7] {
+                    by_value.one::<NEED_ALL>(v as f64);
+                    folded.one::<NEED_ALL>(v as f64);
+                }
+            }
+            let mut f = LongFold::EMPTY;
+            values.iter().for_each(|&v| f.push(v));
+            for &v in &values {
+                by_value.one::<NEED_ALL>(v as f64);
+            }
+            if folded.fold_longs(&f) {
+                accepted += 1;
+                assert!(
+                    same(&by_value, &folded),
+                    "round {round}: {by_value:?} vs {folded:?}"
+                );
+            } else {
+                refused += 1;
+                assert!(f.count > 0, "an empty window is always taken");
+            }
+        }
+        assert!(
+            accepted > 50 && refused > 50,
+            "{accepted} accepted, {refused} refused"
+        );
+        // A state whose running sum is already at the bound refuses.
+        let mut at_bound = CountSum::default();
+        at_bound.one(9_007_199_254_740_992.0);
+        let mut f = LongFold::EMPTY;
+        f.push(1);
+        assert!(!at_bound.fold_longs(&f));
+        // `Count` takes any window.
+        let mut c = Count::default();
+        assert!(c.fold_longs(&f));
+        assert_eq!(c.0, 1);
     }
 
     /// A document's values, as a `double` column holds them.
