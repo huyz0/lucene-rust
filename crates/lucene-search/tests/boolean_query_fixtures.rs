@@ -357,7 +357,7 @@ fn must_across_multi_block_and_singleton_fields() {
     assert!(collector.docs.is_empty());
 }
 
-/// Nested `BooleanQuery` clauses: a top-level `must` clause that is
+/// Task #25 (nested `BooleanQuery` clauses): a top-level `must` clause that is
 /// itself a nested `BooleanQuery`, against this fixture's real `body` postings --
 /// proves `resolve_clause_docs`/`matched_boolean_docs`'s recursion produces the
 /// same result real Lucene's own `BooleanQuery.add(nestedQuery, Occur.MUST)` would,

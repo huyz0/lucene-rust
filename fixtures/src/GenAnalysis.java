@@ -85,7 +85,7 @@ public class GenAnalysis {
     // exercises tokenizer + lowercasing + stopword removal all together.
     analyze(m, "case6", "The Quick, Brown FOX!", stopwords);
 
-    // ASCIIFoldingFilter: a real ASCIIFoldingFilter run, fold-only
+    // Task #64 (ASCIIFoldingFilter): a real ASCIIFoldingFilter run, fold-only
     // (no lowercasing), over a string with several diacritics and a
     // ligature -- this checks this port's AsciiFoldingFilter::apply in
     // isolation (case preserved, offsets untouched despite the ligature
@@ -94,14 +94,14 @@ public class GenAnalysis {
       analyze(m, "fold_only", "café naïve Müller cœur straße", foldOnly);
     }
 
-    // The composed Analyzer chain this port wires up via
+    // Task #64: the composed Analyzer chain this port wires up via
     // Analyzer::with_ascii_folding -- fold, then lowercase, then (no
     // stopwords here) -- over the same text.
     try (Analyzer foldLower = new FoldThenLowerAnalyzer()) {
       analyze(m, "fold_then_lower", "Café Naïve ÉCOLE", foldLower);
     }
 
-    // Full UAX#29-style tokenizer: bare StandardTokenizer output
+    // Task #207 (full UAX#29-style tokenizer): bare StandardTokenizer output
     // (no stopwords/lowercasing) over strings exercising combining marks,
     // CJK ideograph segmentation, and Hangul syllable clustering, to
     // differentially confirm this port's unicode-segmentation-backed
@@ -125,7 +125,7 @@ public class GenAnalysis {
       analyze(m, "uax29_midword_punct", "3.14 U.S.A. don't 1,000", plain);
     }
 
-    // Second analyzer-chain producer: real KeywordAnalyzer --
+    // Task #208 (second analyzer-chain producer): real KeywordAnalyzer --
     // whole-field-value-as-one-token, no tokenization/lowercasing/filtering
     // at all -- over a handful of representative inputs (plain id-like
     // string, mixed-case with punctuation that would otherwise split under
@@ -142,7 +142,7 @@ public class GenAnalysis {
       analyze(m, "keyword_empty", "", keyword);
     }
 
-    // Porter2/Snowball English stemmer: real Snowball
+    // Task #209 (Porter2/Snowball English stemmer): real Snowball
     // `EnglishStemmer` (the actual `org.tartarus.snowball.ext.EnglishStemmer`
     // generated from Snowball's english.sbl -- the algorithm real Lucene
     // exposes via SnowballFilter(new EnglishStemmer()), a different filter
@@ -193,7 +193,7 @@ public class GenAnalysis {
       analyze(m, "snowball_english", String.join(" ", words), snow);
     }
 
-    // French default stopword list: StandardTokenizer +
+    // Task #220 (French default stopword list): StandardTokenizer +
     // LowerCaseFilter + real StopFilter fed FrenchAnalyzer.getDefaultStopSet()
     // directly (NOT the full FrenchAnalyzer -- no elision, no French
     // stemming, matching this port's deliberately narrower scope: just the

@@ -441,7 +441,7 @@ fn boolean_query_scored_minimum_should_match_sums_all_matching_clauses() {
     );
 }
 
-/// Nested `BooleanQuery` clauses: a nested `must` clause's own score
+/// Task #25 (nested `BooleanQuery` clauses): a nested `must` clause's own score
 /// contribution against this fixture's real `body` postings -- top.must =
 /// [dog, nested], nested.should = [cat, bird]. Matching-side proof: dog={0,1},
 /// nested's own disjunction cat∪bird={0,1,2,4}, conjunction={0,1}. Score-side: doc
