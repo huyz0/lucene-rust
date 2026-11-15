@@ -146,6 +146,12 @@ fn encode(s: &str, keep_slash: bool) -> String {
     out
 }
 
+fn hex_digit(b: u8) -> Option<u8> {
+    char::from(b)
+        .to_digit(16)
+        .and_then(|d| u8::try_from(d).ok())
+}
+
 // ARITH: `i` indexes `s`, and `i + 2` is compared with its length before
 // `i + 3` is used.
 #[allow(clippy::arithmetic_side_effects)]
@@ -155,8 +161,8 @@ fn decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
+            if let (Some(hi), Some(lo)) = (hex_digit(b[i + 1]), hex_digit(b[i + 2])) {
+                out.push(hi << 4 | lo);
                 i += 3;
                 continue;
             }
@@ -401,5 +407,23 @@ mod tests {
         assert!(Url::parse("http://:80/").is_none());
         assert!(Url::parse("http://h:x/").is_none());
         assert!(Url::parse("ht tp://h/").is_none());
+    }
+
+    #[test]
+    fn a_percent_before_a_multibyte_character_is_literal() {
+        assert_eq!(decode("/a%\u{e9}z"), "/a%\u{e9}z");
+        assert_eq!(decode("/a%4"), "/a%4");
+        assert_eq!(decode("/a%41b%zz%2f"), "/aAb%zz/");
+        let url = Url::parse("https://h/m%\u{e9}/x").unwrap();
+        let mut headers = Vec::new();
+        let signing = Signing {
+            access_key: "AK",
+            secret_key: "SK",
+            session_token: None,
+            service: "s",
+            region: "r",
+        };
+        sign("GET", &url, &mut headers, b"", &signing, "20260101T000000Z");
+        assert!(headers.iter().any(|(k, _)| k == "Authorization"));
     }
 }

@@ -12,7 +12,7 @@ lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 lucene-analysis = { path = "../lucene-analysis" }
 # A streaming XML pull parser for `xml`'s DOM-shaped query documents.
-quick-xml = "0.39"
+quick-xml = "0.41"
 
 [dev-dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }

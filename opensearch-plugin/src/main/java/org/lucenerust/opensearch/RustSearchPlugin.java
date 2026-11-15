@@ -458,8 +458,11 @@ public class RustSearchPlugin extends Plugin implements
         if (RustEngineSupport.servedByRust(effective) == false) {
             return null;
         }
+        // Only `true` is stored: it is not stock-readable whatever the settings say. `auto` and `false`
+        // stay out of the index, so a node without the plugin still opens it (an unknown index setting
+        // would refuse its replicas); an index without the setting follows the cluster default.
         String value = cluster.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT);
-        return "false".equals(value) ? null : value;
+        return "true".equals(value) ? value : null;
     }
 
     /** Every shard of a Rust-engine index gets the indexer that lets it be a segment-replication primary. */
@@ -976,6 +979,9 @@ public class RustSearchPlugin extends Plugin implements
     ) {
         this.clusterService.set(clusterService);
         this.resolver.set(indexNameExpressionResolver);
+        RustEngineSupport.setAdaptiveDocValuesDefault(clusterService.getClusterSettings().get(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT));
+        clusterService.getClusterSettings()
+            .addSettingsUpdateConsumer(RustEngineSupport.ADAPTIVE_DOC_VALUES_DEFAULT, RustEngineSupport::setAdaptiveDocValuesDefault);
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(
                 NativeMemory.OFF_HEAP_LIMIT,
