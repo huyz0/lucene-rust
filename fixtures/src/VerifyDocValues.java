@@ -61,9 +61,8 @@ import java.util.Map;
  * <p>Ten segments are verified. NUMERIC: {@code _0} (mixed small/medium/negative
  * values, exercising a real {@code bitsPerValue > 0} with {@code min <= 0}),
  * {@code _1} (every value has {@code min > 0} and {@code
- * unsignedBitsRequired(max) == unsignedBitsRequired(max-min)}, a regression
- * case for the min-shift-drop optimization a review pass found was
- * previously unverified against real Lucene), and {@code _2} (all-equal
+ * unsignedBitsRequired(max) == unsignedBitsRequired(max-min)}, the case for
+ * the min-shift-drop optimization), and {@code _2} (all-equal
  * values, the {@code bitsPerValue == 0} constant encoding). BINARY: {@code
  * _3} (fixed-length values, direct addressing) and {@code _4} (variable
  * length, including an empty value, {@code DirectMonotonicReader} address
@@ -73,8 +72,7 @@ import java.util.Map;
  * dictionary). SORTED_SET: {@code _8} (every doc one distinct value, the
  * {@code multiValued = false} collapse case) and {@code _9} (1-2 distinct
  * values per doc sharing a dictionary, including a doc whose raw values
- * repeat and dedup to one ordinal). All ten were previously verified only
- * against this port's own reader, never against real Lucene.
+ * repeat and dedup to one ordinal).
  */
 public class VerifyDocValues {
   public static void main(String[] args) throws IOException {

@@ -834,7 +834,7 @@ impl<'a> Parser<'a> {
         )))
     }
 
-    /// The body of what used to be `parse_boosted_atom`: one atom plus its
+    /// One atom plus its
     /// `^boost` / `~slop` suffixes, in either order.
     fn parse_atom_with_suffixes(&mut self) -> Result<Clause, ParseError> {
         let atom = self.parse_atom()?;

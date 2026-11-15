@@ -4,7 +4,7 @@
 //! It lives here rather than beside the points reader because the geo
 //! relations (`lucene_util::geo`, `Component2D.relate`) answer in it too, and
 //! `lucene-util` is the lowest crate both reach; `lucene_codecs::points`
-//! re-exports it under its old path.
+//! re-exports it.
 
 /// Port of `org.apache.lucene.index.PointValues.Relation`. The declaration
 /// order is Java's, so `as u8` is Java's `ordinal()`.

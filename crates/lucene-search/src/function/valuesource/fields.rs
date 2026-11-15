@@ -61,7 +61,7 @@ fn dense_enough(n: usize, span: i32) -> bool {
 
 /// Where a column's values come from: any `NumericDocValues` (a
 /// selector's view, an empty column), or a segment's own `NUMERIC` field
-/// read through the codec's reader directly (stage 3: no iterator object
+/// read through the codec's reader directly (no iterator object
 /// between the source and the values; the same values, read forward as the
 /// iterator reads them).
 enum Arr<'a> {

@@ -343,7 +343,7 @@ public class GenDocumentColumns {
         cells(r, numDocs, false, false,
             () -> (r.nextInt(21) - 10) / 2f + "," + (r.nextInt(21) - 10) / 2f + "," + (r.nextInt(21) - 10) / 2f)));
     if (numDocs == 35) {
-      // Columns that yield no value in this batch: Lucene still registers each field's FieldInfo in
+      // Columns that yield no value in this segment: Lucene still registers each field's FieldInfo in
       // the segment (processBatch initializes every column's field before reading a cell).
       specs.add(new Spec('L', "none_l", sparse, "numeric_dv_skip", "LONG", List.of()));
       specs.add(new Spec('B', "none_kw", sparse, "keyword_stored", "STRING", List.of()));

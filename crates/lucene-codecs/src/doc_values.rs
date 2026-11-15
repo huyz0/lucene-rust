@@ -122,13 +122,12 @@ const TERMS_DICT_REVERSE_INDEX_MASK: i64 = (1i64 << TERMS_DICT_REVERSE_INDEX_SHI
 /// values, with one `(min, avgInc, offset, bitsPerValue)` record per block in
 /// `.dvm`.
 ///
-/// This port used to write `0` here (one block per value). That round-tripped
-/// -- the shift is stored per array, so the reader honours whatever it finds
-/// -- but it made the *metadata* grow linearly with the value count: 21 bytes
-/// of `.dvm` and one eagerly-materialised [`direct_monotonic::Meta`] block per
-/// address, i.e. ~21 MB of `.dvm` and ~32 MB of heap on open for a 1M-doc
-/// variable-length BINARY field, where Java needs ~336 bytes of `.dvm` and 16
-/// blocks. See `direct_monotonic_block_shift_keeps_meta_size_constant`.
+/// A shift of `0` (one block per value) would round-trip, since the shift is
+/// stored per array, but the *metadata* would grow linearly with the value
+/// count: 21 bytes of `.dvm` and one eagerly-materialised
+/// [`direct_monotonic::Meta`] block per address, against ~336 bytes and 16
+/// blocks for a 1M-doc variable-length BINARY field. See
+/// `direct_monotonic_block_shift_keeps_meta_size_constant`.
 const DIRECT_MONOTONIC_BLOCK_SHIFT: u32 = 16;
 
 /// `DirectMonotonicWriter` block shift for both the terms-address and
@@ -1333,10 +1332,8 @@ pub fn numeric_value(data: &[u8], entry: &NumericEntry, doc: i32) -> Result<Opti
 /// single-lookup callers and for tests.
 ///
 /// **Memory is O(1) in the field's cardinality**, which is the whole point of
-/// composing a cursor rather than a doc-id array: this used to decode the
-/// sparse field's entire `IndexedDISI` region into a `Vec<i32>` (4 bytes per
-/// present document -- 2 MB for a field on half of a million documents) so it
-/// could binary-search it.
+/// composing a cursor rather than decoding the sparse field's `IndexedDISI`
+/// region into a doc-id array.
 ///
 /// Both caches are transparent: the values returned are identical to
 /// [`numeric_value`]'s, which is asserted document-for-document in this
@@ -2448,9 +2445,8 @@ fn binary_value_at_ordinal<'d>(
     let bytes_region = region(data, entry.data_offset, entry.data_length)?;
 
     // The two branches produce a `[start, end)` pair rather than an offset
-    // and a length: the variable-width one used to subtract two `i64`s that
-    // came out of the address array and then add the difference straight
-    // back, so a non-monotonic address pair overflowed twice over.
+    // and a length: subtracting two `i64`s out of the address array and adding
+    // the difference back would overflow twice over on a non-monotonic pair.
     let (start, end) = if let Some(addrs) = &entry.addresses {
         let addr_data = region(data, addrs.offset, addrs.length)?;
         let start = direct_monotonic::get(addr_data, &addrs.meta, ordinal)?;
@@ -5472,13 +5468,12 @@ fn finish_field_list_and_footers(
 /// ([`write_single_dense_binary_field`]), SORTED_NUMERIC
 /// ([`write_single_dense_sorted_numeric_field`]), SORTED
 /// ([`write_single_dense_sorted_field`]), and SORTED_SET
-/// ([`write_single_dense_sorted_set_field`]) write sides now exist as siblings
-/// of this function, all built on this same dense scope. Sparse BINARY
+/// ([`write_single_dense_sorted_set_field`]) write sides are siblings of this
+/// function, all built on this same dense scope. Sparse BINARY
 /// ([`write_single_sparse_binary_field`]), sparse SORTED
 /// ([`write_single_sparse_sorted_field`]), sparse SORTED_NUMERIC
 /// ([`write_single_sparse_sorted_numeric_field`]), and sparse SORTED_SET
-/// ([`write_single_sparse_sorted_set_field`]) writing are also now ported --
-/// all 5 doc-values types now support sparse writing.
+/// ([`write_single_sparse_sorted_set_field`]) writers cover the other types.
 ///
 /// Returns `(meta_bytes, data_bytes, skip_index_bytes)` -- three separate
 /// buffers matching the real writer's three `IndexOutput`s (`.dvm`, `.dvd`,
@@ -5506,24 +5501,15 @@ pub fn write_single_dense_numeric_field(
 /// Port of `Lucene90DocValuesConsumer.addNumericField`'s **sparse** branch
 /// (`numDocsWithValue != maxDoc`, feeding an [`indexed_disi`]-backed
 /// docs-with-field structure instead of the `-1`/DENSE marker
-/// [`write_single_dense_numeric_field`] always writes) -- the one doc-values
-/// type/shape this port's write side extends beyond dense in this slice; see
-/// that function's doc comment for the rest of this module's scope
-/// statement (BINARY sparse writing is also now ported, see
-/// [`write_single_sparse_binary_field`]; SORTED sparse writing is now ported
-/// too, see [`write_single_sparse_sorted_field`]; SORTED_NUMERIC sparse
-/// writing is now ported as well, see
-/// [`write_single_sparse_sorted_numeric_field`]; SORTED_SET sparse writing is
-/// now ported too, see [`write_single_sparse_sorted_set_field`] -- this was
-/// the last of the 4 non-NUMERIC/BINARY doc-values types to get sparse
-/// support, so all 5 doc-values types now support sparse writing. Still
-/// deferred is real Lucene's SPARSE-as-shorts-vs-DENSE-bitset
-/// choice for any *single* 65536-doc block -- [`indexed_disi::write`]
-/// already makes that choice per block exactly like real Lucene, so a
-/// `doc_values` big enough to span more than one block, at varying
-/// densities, already exercises all three on-disk block shapes; only the
-/// jump table and DENSE rank table are never written, both pure
-/// random-access speedups this port's whole-structure decode doesn't need).
+/// [`write_single_dense_numeric_field`] always writes); see that function's
+/// doc comment for the rest of this module's scope. The sparse siblings are
+/// [`write_single_sparse_binary_field`], [`write_single_sparse_sorted_field`],
+/// [`write_single_sparse_sorted_numeric_field`] and
+/// [`write_single_sparse_sorted_set_field`]. [`indexed_disi::write`] makes
+/// Lucene's SPARSE-vs-DENSE choice per 65536-doc block, so a field spanning
+/// several blocks at varying densities exercises all three on-disk block
+/// shapes; only the jump table and DENSE rank table are never written, both
+/// pure random-access speedups.
 ///
 /// `doc_values` need not be sorted by the caller; this function sorts a
 /// clone by doc id itself. Each doc id must be unique and `< max_doc`.
@@ -6582,11 +6568,11 @@ mod tests {
     #[test]
     fn a_block_shift_of_63_masks_without_overflowing() {
         // `blockShift` is `-2 - tableSize` off `.dvm`, and `read_numeric_entry`
-        // accepts the whole of `0..=63`. At exactly 63 the mask used to be
-        // `(1i64 << 63) - 1`, i.e. `i64::MIN - 1` -- a debug-build panic at the
+        // accepts the whole of `0..=63`. At exactly 63 an `i64` mask
+        // `(1i64 << 63) - 1` is `i64::MIN - 1` -- a debug-build panic at the
         // one value the range check lets through.
         // Java's `(1L << 63) - 1` wraps to `Long.MAX_VALUE`, which is what the
-        // `u64` computation now reproduces exactly.
+        // `u64` computation reproduces exactly.
         assert_eq!(low_bits_mask(63), i64::MAX);
         assert_eq!(low_bits_mask(0), 0);
         assert_eq!(low_bits_mask(1), 1);
@@ -8280,9 +8266,9 @@ mod tests {
         }
     }
 
-    /// [`NumericReader`] holds a forward-only `DisiCursor` where it used to
-    /// hold a decoded `Vec<i32>` of every present doc. The two access patterns
-    /// that distinguishes are checked against [`numeric_value`], which is the
+    /// [`NumericReader`] holds a forward-only `DisiCursor` rather than a decoded
+    /// `Vec<i32>` of every present doc. The two access patterns that
+    /// distinguishes are checked against [`numeric_value`], which is the
     /// independent implementation (fresh cursor per call):
     ///
     /// - ascending, the order a sort or facet count uses, where the cursor is
@@ -8747,8 +8733,8 @@ mod tests {
     /// arrays are bit-packed in blocks of 2^16, so one `(min, avgInc, offset,
     /// bitsPerValue)` record covers 65536 addresses instead of one. Writing a
     /// variable-length BINARY field with 10x the docs must not grow `.dvm` by
-    /// anything like 10x -- with the block shift of 0 this port used to write,
-    /// it grew by exactly 21 bytes per extra doc.
+    /// anything like 10x -- with a block shift of 0 it would grow by exactly 21
+    /// bytes per extra doc.
     #[test]
     fn direct_monotonic_block_shift_keeps_meta_size_constant() {
         let id = [1u8; ID_LENGTH];
@@ -9569,8 +9555,8 @@ mod tests {
             }
         };
 
-        // The four sparse encoders this batch added are the only paths that
-        // emit an `IndexedDISI` region, so without them the sweep never
+        // The four sparse encoders are the only paths that emit an
+        // `IndexedDISI` region, so without them the sweep never
         // exercises the sparse *reader* either (`DisiCursor` + rank
         // ordinals). One multi-field container covers all four at once.
         let sparse = write_dense_fields(
@@ -9737,7 +9723,7 @@ mod tests {
         // 2200 distinct terms crosses two sample boundaries (ord 1024,
         // 2048), exercising the `ord & MASK == MASK` capture and the
         // `common_prefix_len(&sampled_previous, term) + 1` branch for a
-        // sample past the first -- both previously untested.
+        // sample past the first.
         let id = [24u8; ID_LENGTH];
         let mut values: Vec<Vec<u8>> = (0..2200)
             .map(|i: i32| format!("term{i:05}").into_bytes())
@@ -10802,10 +10788,9 @@ mod tests {
     fn a_sparse_column_that_covers_every_document_writes_javas_dense_marker() {
         // `Lucene90DocValuesConsumer` writes the `-1` docs-with-field marker
         // whenever `numDocsWithField == maxDoc` -- `addBinaryField` does it
-        // inline and the other four types get it from `writeValues`. Before
-        // this batch only the NUMERIC sparse writer collapsed; the other four
-        // emitted a full `IndexedDISI` region for a complete column, which is
-        // readable but is not a byte sequence real Lucene ever produces.
+        // inline and the other four types get it from `writeValues`. A full
+        // `IndexedDISI` region for a complete column is readable but is not a
+        // byte sequence real Lucene ever produces.
         let id = [122u8; ID_LENGTH];
         let values: Vec<Vec<u8>> = vec![b"aa".to_vec(), b"bbb".to_vec()];
         let pairs: Vec<(i32, Vec<u8>)> = vec![(0, values[0].clone()), (1, values[1].clone())];

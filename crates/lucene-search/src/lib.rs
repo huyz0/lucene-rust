@@ -1323,9 +1323,9 @@ struct FuzzyExpansion {
 /// Expands `query` over `field_terms` exactly the way
 /// `MultiTermQuery.TopTermsBlendedFreqScoringRewrite` does.
 ///
-/// Three Lucene behaviours live here, and this port previously had none of
-/// them (it kept the first `max_expansions` terms in term-dictionary order
-/// and scored every match a flat `1.0`):
+/// Four Lucene behaviours live here (as opposed to keeping the first
+/// `max_expansions` terms in term-dictionary order and scoring every match a
+/// flat `1.0`):
 ///
 /// 1. **Per-term boost.** `FuzzyTermsEnum.next` sets `BoostAttribute` to
 ///    `1.0` for an exact match and `1 - ed/min(len(term), len(query term))`
@@ -2292,9 +2292,8 @@ fn resolve_dismax_docs(
 }
 
 /// Shared matched-doc-set computation for [`search_boolean_query`] and
-/// [`search_boolean_query_scored`] (previously duplicated between the two; unified
-/// here since `minimum_should_match` handling would otherwise need implementing
-/// twice) — see this module's doc comment for the exact semantics, including the
+/// [`search_boolean_query_scored`] (shared so `minimum_should_match` handling is
+/// implemented once) — see this module's doc comment for the exact semantics, including the
 /// `minimum_should_match` interaction rules. Returns `Ok(None)` for the "no `must`
 /// and no `should` clauses" case (real `BooleanQuery.rewrite()`'s `MatchNoDocsQuery`
 /// outcome — see the doc comment), `Ok(Some(iter))` of the ascending, live-filtered
@@ -2570,8 +2569,7 @@ fn search_term_query_scored_with_collection_stats<C: ScoringCollector>(
 
 /// [`term_doc_scores`]'s sibling taking an explicit [`similarity::Bm25Params`]
 /// instead of always using [`similarity::DEFAULT_K1`]/[`similarity::DEFAULT_B`]
-///. See [`similarity::Bm25Params`]'s doc comment for this task's
-/// scope.
+/// See [`similarity::Bm25Params`]'s doc comment for scope.
 fn term_doc_scores_with_similarity(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
@@ -2619,12 +2617,10 @@ fn term_doc_scores_with_similarity(
 
 /// [`search_term_query_scored`]'s sibling taking an explicit
 /// [`similarity::Bm25Params`] (`k1`/`b`) instead of the hardcoded BM25
-/// defaults — the narrowest
-/// useful surface this task adds: the single most fundamental scored search
-/// entry point (a plain `TermQuery`, no MAXSCORE pruning), left as a new
-/// sibling function rather than an added parameter on
-/// [`search_term_query_scored`] itself, so that function's signature and
-/// behavior stay byte-for-byte unchanged for its existing callers/tests.
+/// defaults. This is the single most fundamental scored search entry point (a
+/// plain `TermQuery`, no MAXSCORE pruning), a sibling function rather than an
+/// added parameter on [`search_term_query_scored`], so that function's
+/// signature and behavior stay unchanged for its callers.
 ///
 /// `params: similarity::Bm25Params::default()` produces byte-for-byte the same
 /// scores as [`search_term_query_scored`] — see
@@ -2637,9 +2633,9 @@ fn term_doc_scores_with_similarity(
 /// honor a custom `k1`/`b` today. `search_boolean_query_scored`,
 /// `search_term_query_scored_maxscore`, `search_boolean_query_scored_maxscore`,
 /// phrase queries, and `explain`/`explain_boolean` are all deliberately left
-/// hardcoded to the defaults in this task — threading custom `k1`/`b` through
-/// MAXSCORE pruning, multi-segment fan-out, and phrase scoring is a
-/// materially larger, riskier change than this task's scope.
+/// hardcoded to the defaults: threading custom `k1`/`b` through MAXSCORE
+/// pruning, multi-segment fan-out, and phrase scoring is a materially larger
+/// change.
 pub fn search_term_query_scored_with_similarity<C: ScoringCollector>(
     fields: &BlockTreeFields,
     doc_in: Option<&DocInput<'_>>,
@@ -2770,12 +2766,10 @@ pub fn search_term_query_scored_maxscore_with_stats<C: ScoringCollector>(
     // above may be the reader-wide value while `total_term_freq` is this
     // segment's, and mixing them makes the difference negative -- clamped to
     // 1, the bound collapses and the early exit fires on documents that should
-    // have been collected. Caught once by the benchmark's recall cross-check
-    // as a 16x "speedup" on a query whose hit set had silently changed. For a
-    // field indexed without frequencies `totalTermFreq` aliases `docFreq`, so
-    // this is exactly 1 -- which is what lets a keyword field's scan stop as
-    // soon as the top-k fills, where it used to read all 4,997,130 postings
-    // of `keyword:t0`.
+    // have been collected. For a field indexed without frequencies
+    // `totalTermFreq` aliases `docFreq`, so this is exactly 1 -- which is what
+    // lets a keyword field's scan stop as soon as the top-k fills instead of
+    // reading every posting.
     let max_freq = (stats.total_term_freq - stats.doc_freq as i64 + 1).max(1) as f32;
     // `BatchScoreBulkScorer`: a block of postings at a time, scored in one
     // vectorized pass, with `ImpactsDISI` skipping every block whose impacts
@@ -6202,12 +6196,12 @@ mod tests {
         }
     }
 
-    /// Task #199's end-to-end proof: a real query *string* (not a
+    /// End-to-end proof: a real query *string* (not a
     /// hand-built [`Clause::PointsRange`]) parsed via
     /// [`query_parser::parse_query`], resolved through
     /// [`search_boolean_query`] against a real `PointsInput` -- the full
-    /// query-string-to-results path this task wires up, matching this
-    /// module's own doc comment on [`Error::MissingPointsInput`].
+    /// query-string-to-results path, matching this module's own doc comment on
+    /// [`Error::MissingPointsInput`].
     #[test]
     fn points_range_query_string_matches_real_segment_end_to_end() {
         use lucene_codecs::points::{self, WritePointsField};
@@ -7460,7 +7454,7 @@ mod tests {
 
     #[test]
     fn boolean_minimum_should_match_zero_with_must_present_is_unchanged_regression() {
-        // Explicit regression test: `minimum_should_match == 0` (the default) must
+        // `minimum_should_match == 0` (the default) must
         // still leave `should` purely score-only once `must` is non-empty, exactly
         // as without `minimum_should_match`.
         let (fields, doc) = open_fixture();
@@ -10629,13 +10623,10 @@ mod tests {
 
     /// `search_boolean_query_scored_maxscore` is a delegate for
     /// `search_boolean_query_scored`, so it must agree with the plain scored
-    /// entry point on *every* shape -- not only on the ones the deleted body
-    /// used to decline. The two shapes that most directly pinned the deleted
-    /// body's unreachability are in the matrix: a clause naming an absent
-    /// field and a clause naming an absent term. The disjunction bulk scorer
-    /// *accepts* both (it drops the clause from the union and keeps going),
-    /// which is exactly why the deleted body -- which declined them -- could
-    /// never be reached for them either.
+    /// entry point on *every* shape. Two shapes in the matrix are
+    /// easy to miss: a clause naming an absent field and a clause naming an
+    /// absent term. The disjunction bulk scorer *accepts* both (it drops the
+    /// clause from the union and keeps going).
     #[test]
     fn boolean_maxscore_agrees_with_the_plain_scored_path_on_every_shape() {
         let (fields, doc) = open_fixture();

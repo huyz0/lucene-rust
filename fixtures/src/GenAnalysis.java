@@ -211,11 +211,10 @@ public class GenAnalysis {
     // Snowball English stemmer above. The word list covers the plural/-ed/-ing
     // vocabulary from Porter's own paper, every suffix family in Java's
     // step3/step4/step5 switches (including the `logi -> log` rule and the
-    // `bli -> ble` rule this port had wrong), the words where the first
+    // `bli -> ble` rule), the words where the first
     // matching suffix fails its `m()` test and Java stops rather than falling
     // through ("argument", "ization"), and the one- and two-character words
-    // Java's `k > k0 + 1` guard returns untouched (this port used to stem "s"
-    // to the empty string). "Cats"/"café" are there because Java's stemmer has
+    // Java's `k > k0 + 1` guard returns untouched. "Cats"/"café" are there because Java's stemmer has
     // no lowercase-ASCII precondition at all.
     try (Analyzer porter = new PorterAnalyzer()) {
       String[] words = {

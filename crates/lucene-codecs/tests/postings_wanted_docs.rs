@@ -307,8 +307,8 @@ fn occurrences_for_doc_matches_the_whole_term_reader_for_every_document() {
 
 /// A `wanted` entry the doc list does not have, and one that repeats or goes
 /// backwards, keeps its slot and yields nothing -- it must not panic (which
-/// is what indexing the prefix-sum array by a caller-supplied index used to
-/// do) and must not shift the other entries' answers.
+/// is what indexing a prefix-sum array by a caller-supplied index would do)
+/// and must not shift the other entries' answers.
 #[test]
 fn out_of_range_and_unsorted_wanted_entries_yield_empty_slots() {
     let docs: Vec<i32> = (0..10).collect();

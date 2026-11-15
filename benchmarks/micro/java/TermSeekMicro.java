@@ -16,10 +16,10 @@ import org.apache.lucene.util.BytesRefBuilder;
  * order (every 97th term of the widest field, shuffled by the same xorshift64 and truncated to
  * 2000) so the per-seek numbers are directly comparable.
  *
- * <p>It exists because the {@code c1-lazy-blocktree} batch replaced this port's
- * materialize-everything-at-open term dictionary with Lucene's own lazy {@code SegmentTermsEnum}
- * frame stack: that trades a 200x faster open for a slower first seek, and "slower" only means
- * something against what Lucene itself pays for the same work.
+ * <p>It exists because this port opens the term dictionary lazily, with Lucene's own {@code
+ * SegmentTermsEnum} frame stack, rather than materializing it at open: that trades a much faster
+ * open for a slower first seek, and "slower" only means something against what Lucene itself pays
+ * for the same work.
  *
  * <p>Emits TSV {@code case<TAB>ns_per_op<TAB>ops} on stdout, for cases {@code seek_hit},
  * {@code seek_miss} and {@code next_all}.

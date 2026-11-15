@@ -328,15 +328,14 @@ fn bench_doc_values_numeric_value(c: &mut Criterion) {
 /// Lucene's `IndexedDISI` is a forward-only iterator with a jump table and
 /// answers `advance(target)` in roughly constant time.
 ///
-/// Both shapes are measured. `decode_all` is what every sparse lookup used to
-/// do and is linear in `n`; `cursor` is `DisiCursor`, which walks at most one
-/// block header per 65,536 documents and should be flat. The contrast between
-/// the two curves is the finding and the fix in one chart. No Java counterpart:
-/// the point is the shape on this side, not a ratio.
+/// Both shapes are measured. `decode_all` is the linear-in-`n` alternative;
+/// `cursor` is `DisiCursor`, which walks at most one block header per 65,536
+/// documents and should be flat. No Java counterpart: the point is the shape
+/// on this side, not a ratio.
 fn bench_sparse_doc_values_lookup(c: &mut Criterion) {
     // `indexed_disi::write` never emits a DENSE rank table, so the matching
     // metadata byte is `0xFF` (Java's `denseRankPower == -1`). `0` is not a
-    // legal value for that byte and is now rejected.
+    // legal value for that byte and is rejected.
     const NO_RANK: u8 = 0xFF;
 
     let mut group = c.benchmark_group("indexed_disi/sparse_lookup");
@@ -802,15 +801,11 @@ fn bench_indexed_disi_cursor(c: &mut Criterion) {
 
 /// `NumericReader` over a **sparse** NUMERIC field, at three cardinalities.
 ///
-/// The reader used to decode the field's whole `IndexedDISI` doc-id list into a
-/// `Vec<i32>` at construction (4 bytes per present doc, plus the decode) so it
-/// could binary-search it. Java's `Lucene90DocValuesProducer` composes an
-/// `IndexedDISI` cursor with a `LongValues` and holds no per-doc array at all.
+/// The reader composes an `IndexedDISI` cursor with a `LongValues` and holds no
+/// per-doc array, like Java's `Lucene90DocValuesProducer`.
 ///
 /// Measured as a full forward walk including construction, which is what a sort
-/// or a facet count does: the `Vec` version pays its O(cardinality) decode once
-/// and then binary-searches, the cursor version pays nothing up front and walks.
-/// The field is constant-encoded (`bits_per_value == 0`) on purpose so that the
+/// or a facet count does. The field is constant-encoded (`bits_per_value == 0`) on purpose so that the
 /// value decode is free and what is left is the docs-with-field lookup.
 fn bench_sparse_numeric_reader(c: &mut Criterion) {
     let mut group = c.benchmark_group("doc_values/sparse_numeric_reader");

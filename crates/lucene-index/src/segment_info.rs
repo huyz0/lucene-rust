@@ -247,8 +247,7 @@ fn os_version() -> &'static str {
 /// `None` is not a synonym for any sentinel: `IndexSorter.LongSorter`
 /// pre-fills its comparison array with `missingValue` only when it is
 /// non-null, so a document with no value compares as **`0`**, which is
-/// neither first nor last. That case is exactly what this port used to
-/// refuse to open.
+/// neither first nor last.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NumericSortKey {
     /// `SortField.Type.INT`; `IndexSorter.IntSorter`, `Integer.compare`.
@@ -1846,8 +1845,7 @@ mod tests {
     }
 
     /// An arbitrary numeric missing value (Java allows any long) is carried
-    /// through, sentinel and all -- it used to be rejected because
-    /// `(first|last)` could not hold it.
+    /// through, sentinel and all, since `(first|last)` cannot hold it.
     #[test]
     fn an_arbitrary_numeric_missing_value_round_trips() {
         let mut si = sample_si();

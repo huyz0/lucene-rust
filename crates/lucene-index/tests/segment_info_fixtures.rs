@@ -153,7 +153,7 @@ fn wrong_segment_id_rejected() {
 /// A real-Lucene-written *index-sorted* `.si`. This is the only fixture that
 /// exercises `SortFieldProvider`'s byte layout (provider name string, then
 /// that provider's own bytestream) rather than the `.si` body's own fields --
-/// the encoding this port previously invented from scratch. Two sort fields
+/// the encoding a from-scratch port would get wrong. Two sort fields
 /// with opposite `reverse`/missing policies, so neither flag nor the priority
 /// order can be silently dropped.
 #[test]

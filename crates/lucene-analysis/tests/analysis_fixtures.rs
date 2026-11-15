@@ -556,18 +556,16 @@ fn synonym_graph_filter_matches_real_lucene() {
 // The offset **unit**.
 //
 // `OffsetAttribute` reports UTF-16 code-unit (Java `char`) indices into the
-// original text. This port used to emit UTF-8 **byte** offsets, and
-// `lucene-search`'s highlighter used to read Unicode **scalar** counts, so all
-// three units were in play at once. Every fixture case above is BMP-or-ASCII
-// enough that at most two of the three separate; the `utf16_*` cases below are
-// chosen so that all three differ, and they are compared **verbatim** -- there
-// is deliberately no conversion helper left in this file for a wrong unit to
-// hide behind.
+// original text. UTF-8 byte offsets and Unicode scalar counts are the two
+// wrong units. Every fixture case above is BMP-or-ASCII enough that at most
+// two of the three separate; the `utf16_*` cases below are chosen so that all
+// three differ, and they are compared **verbatim** -- there is deliberately
+// no conversion helper in this file for a wrong unit to hide behind.
 // ---------------------------------------------------------------------------
 
 /// The UTF-8 byte offset and the Unicode scalar index of the position that
-/// `utf16_offset` names in `text` -- the two units this port has previously
-/// mistaken for Lucene's. Used only by the negative controls below, to prove a
+/// `utf16_offset` names in `text` -- the two units that are easy to mistake
+/// for Lucene's. Used only by the negative controls below, to prove a
 /// case actually separates the three.
 fn other_units(text: &str, utf16_offset: i32) -> (i32, i32) {
     let (mut u16s, mut scalars, mut bytes) = (0i32, 0i32, 0i32);

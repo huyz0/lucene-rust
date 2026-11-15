@@ -659,8 +659,7 @@ pub struct FstMetadata {
 /// file into a `Vec<u8>`.
 ///
 /// What `FstBytes::Borrowed` adds on top is the missing piece for FSTs
-/// specifically: previously, the *only* way to construct an `Fst` was
-/// `Fst::read`, which unconditionally allocates a fresh `Vec<u8>` and copies
+/// specifically: `Fst::read` unconditionally allocates a fresh `Vec<u8>` and copies
 /// `num_bytes` of body into it (see `Fst::read`'s `Owned` path below) --
 /// *even if* the caller's `input` was itself already a zero-copy view over an
 /// `Input::Mapped` mmap. That copy is real, avoidable off-heap-storage cost:
@@ -678,12 +677,8 @@ pub struct FstMetadata {
 /// done. What's added here is the FST-level plumbing (a lifetime-generic
 /// `Fst<'a>` and a body representation that can be either owned or borrowed)
 /// so an `Fst` can be constructed *without* forcing a copy when the caller
-/// already holds zero-copy, mmap-backed bytes. If this port had no zero-copy
-/// `Directory` backend at all, the honest version of this task would be
-/// scoped down further to "borrowing an arbitrary caller-owned `&[u8]`,
-/// which happens not to be backed by mmap" -- that is not the case here,
-/// since `MmapDirectory` already exists and is exercised by
-/// `crates/lucene-store/src/directory.rs`'s own tests.
+/// already holds zero-copy, mmap-backed bytes (`MmapDirectory`, exercised by
+/// `crates/lucene-store/src/directory.rs`'s own tests).
 #[derive(Debug, Clone)]
 enum FstBytes<'a> {
     Owned(Vec<u8>),
@@ -3091,13 +3086,12 @@ impl<'f, 'a> FstEnum<'f, 'a> {
 /// Narrows a label-domain key back to bytes for the `BYTE1`-only public API
 /// (`FstEnum::seek_ceil`/`seek_floor`/`seek_exact`, `Iterator for FstEnum`).
 ///
-/// This used to be an `as u8` behind a `debug_assert`, and the assert was not
-/// idle: a `BYTE1` FST's *stored* labels are single bytes, but a
-/// direct-addressing or continuous node's labels are **not stored** -- they
-/// are `firstLabel + arcIdx` -- and a corrupt label range made that exceed
-/// 255, which a release build silently truncated (260 -> 4) into a plausible
-/// wrong key. The fix is at the two places the label is formed rather than
-/// here: `check_label_range` bounds `firstLabel + numArcs` by the
+/// A `BYTE1` FST's *stored* labels are single bytes, but a direct-addressing
+/// or continuous node's labels are **not stored** -- they are
+/// `firstLabel + arcIdx` -- and a corrupt label range could exceed 255, which
+/// an `as u8` would truncate (260 -> 4) into a plausible wrong key. The guard
+/// is at the two places the label is formed rather than here:
+/// `check_label_range` bounds `firstLabel + numArcs` by the
 /// `INPUT_TYPE`'s alphabet, and `bit_table_next_bit_set` refuses an index
 /// past `numArcs`. Every `arcIdx` is then in `0..numArcs`, so every label of a
 /// `BYTE1` FST is in `0..=255` and this narrowing is total -- and free, which
@@ -3789,9 +3783,8 @@ impl<'a> Fst<'a> {
 // Building a genuinely `BYTE4`-keyed FST variant -- widening `TrieNode`,
 // `build_node`'s arc-signature hashing, `read_label`/`find_target_arc`'s
 // direct-addressing and continuous-node arithmetic, etc., all to accept a
-// real 32-bit alphabet -- is a substantially larger slice than this task's
-// reasonable scope (it's effectively rebuilding the node/arc codec a second
-// time for a wider label width).
+// real 32-bit alphabet -- is substantially larger (it's effectively
+// rebuilding the node/arc codec a second time for a wider label width).
 //
 // **What's implemented here instead**: `IntsRefFstEnum` presents the real
 // `IntsRefFSTEnum` *API* (ordered enumeration + `seekCeil`/`seekFloor`/
@@ -3856,10 +3849,8 @@ pub fn encode_ints_key(key: &[i32]) -> Vec<u8> {
 ///
 /// Fallible, because the key is assembled from arc labels walked out of an
 /// FST body: enumerating a `BYTE1` FST (or a corrupt one) as `IntsRef` keys
-/// produces lengths that are not multiples of four. This used to be a
-/// `debug_assert`, which meant a release build silently dropped the trailing
-/// one to three bytes and returned a shorter key that looks entirely
-/// plausible -- a wrong answer, not a rejection.
+/// produces lengths that are not multiples of four, which is rejected rather
+/// than dropping the trailing one to three bytes into a plausible shorter key.
 pub fn decode_ints_key(bytes: &[u8]) -> Result<Vec<i32>> {
     if !bytes.len().is_multiple_of(4) {
         return Err(Error::Corrupt(format!(
@@ -4428,8 +4419,8 @@ mod tests {
     /// A direct-addressing or continuous node stores no labels: `read_arc`
     /// derives each one as `firstLabel + arcIdx`. A `BYTE1` FST whose label
     /// range runs past 255 therefore produces a label no byte key can hold --
-    /// which `labels_to_bytes` used to narrow with a bare `as u8`, turning
-    /// 260 into 4 and returning a plausible wrong key in release builds.
+    /// which `labels_to_bytes` must not narrow with a bare `as u8` (260 would
+    /// become 4, a plausible wrong key in release builds).
     #[test]
     fn a_label_range_outside_the_input_types_alphabet_is_rejected() {
         // `firstLabel = 250`, a 200-wide range: labels up to 449.
@@ -4765,10 +4756,9 @@ mod tests {
                 // enumeration (`FstEnum`) knows to keep advancing through
                 // the node instead of stopping after the first arc it
                 // reads. (Real Lucene-written binary-search nodes get this
-                // right by construction; this hand-built fixture previously
-                // set the bit on every slot, which `find_target_arc`'s
-                // direct binary-search jump never noticed but `FstEnum`'s
-                // incremental walk does.)
+                // right by construction; `find_target_arc`'s direct
+                // binary-search jump would not notice the bit on every slot,
+                // but `FstEnum`'s incremental walk does.)
                 flags |= BIT_LAST_ARC;
             }
             logical.push(flags);
@@ -5875,7 +5865,7 @@ mod tests {
 
     #[test]
     fn fst_enum_next_resumes_after_seek_following_full_exhaustion() {
-        // Regression test: `seek_ceil`/`seek_floor`/`seek_exact` must clear
+        // `seek_ceil`/`seek_floor`/`seek_exact` must clear
         // `done` (a Rust-only fused-iterator flag with no Java equivalent) so
         // that repositioning a fully-exhausted `FstEnum` and calling `next()`
         // again resumes ordered enumeration instead of short-circuiting.
@@ -6253,8 +6243,8 @@ mod tests {
         assert_eq!(decode_ints_key(&encoded).unwrap(), key);
         // A key whose length is not a multiple of four cannot have come from
         // `encode_ints_key`; it is what enumerating a `BYTE1` FST as
-        // `IntsRef` keys produces, and it used to be a `debug_assert` plus a
-        // `chunks_exact` that silently dropped the tail in release builds.
+        // `IntsRef` keys produces, and it must be an error rather than a
+        // silently truncated key.
         assert!(decode_ints_key(&encoded[..encoded.len() - 1]).is_err());
     }
 

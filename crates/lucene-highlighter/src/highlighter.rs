@@ -714,9 +714,8 @@ pub fn assemble_fragments(
     // scored, the best `maxPassages` are kept (its priority queue), and only
     // then are the survivors sorted back into document order for rendering
     // (`Arrays.sort(passages, passageSortComparator)`, whose default is by
-    // start offset). Truncating in document order instead -- which is what
-    // this function used to do -- silently drops the *best* passages whenever
-    // they happen to sit late in the text.
+    // start offset). Truncating in document order instead would silently drop
+    // the *best* passages whenever they happen to sit late in the text.
     //
     // Java reads each term's whole-document frequency off `OffsetsEnum.freq()`;
     // here it is the term's occurrence count across every span the caller
@@ -869,8 +868,7 @@ fn render_cluster(
     // them, and coalescing any run of matches that *overlap* into one
     // pre/post-wrapped span (`while (i + 1 < numMatches && matchStarts[i + 1]
     // < end) end = max(end, matchEnds[++i])`). Rendering back-to-front
-    // instead -- which is what this function used to do -- produces nested,
-    // interleaved markers for overlapping matches (e.g. a term and a longer
+    // instead produces nested, interleaved markers for overlapping matches (e.g. a term and a longer
     // term starting at the same offset), and cannot escape the text at all.
     let mut text = String::new();
     let mut pos = cluster.window_start;
@@ -1719,7 +1717,7 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
-    /// Regression test for a real bug: window arithmetic must add
+    /// Window arithmetic must add
     /// `window_chars` (a CHAR count) to a CHAR offset, not a byte offset --
     /// mixing the two units can push the raw window boundary to land in the
     /// middle of a multi-byte character whenever one falls within

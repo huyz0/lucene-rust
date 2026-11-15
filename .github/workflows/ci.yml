@@ -672,10 +672,9 @@ jobs:
         run: ./scripts/test-framework-stress.sh
 
   # ---------------------------------------------------------------------------
-  # liblucene_ffi, built once for the OpenSearch jobs. Each of the four x64
-  # ones used to compile the same release library (3.4 to 5.3 minutes apiece
-  # on 2026-11-14); they download this one. The FIPS variant is a different
-  # build and the arm64 plugin job builds its own.
+  # liblucene_ffi, built once for the OpenSearch jobs, which download it
+  # instead of each compiling the same release library. The FIPS variant is a
+  # different build and the arm64 plugin job builds its own.
   # ---------------------------------------------------------------------------
   ffi-lib:
     name: liblucene_ffi (x64, for the OpenSearch jobs)

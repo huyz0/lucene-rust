@@ -33,17 +33,14 @@ import java.util.TreeSet;
  * its entries are pointers to further-nested sub-blocks, `isLeafBlock ==
  * false`), not just a deeper `.tip` trie or more floor sub-blocks under one
  * node -- see `crates/lucene-codecs/src/blocktree.rs`'s module doc for the
- * three distinct "more than one block" mechanisms this format has, and why
- * this one is the one that was still unimplemented before this fixture
- * existed.
+ * three distinct "more than one block" mechanisms this format has.
  *
  * <p>{@code GenBlockTree}'s own "many" field (400 terms, `"term0000".."term0399"`,
  * a sequential zero-padded numeric suffix) already forces multiple `.tim`
  * blocks and a multi-child `.tip` trie, but never a non-leaf block: every
  * over-large group under that field's writer resolved via *floor* sub-blocks
  * (same trie node, several physical blocks) rather than a deeper, separately
- * unindexed sub-block. Empirically (see this class's git history / the task
- * that added it), forcing an actual non-leaf `.tim` block needs a term set
+ * unindexed sub-block. Empirically, forcing an actual non-leaf `.tim` block needs a term set
  * with genuinely irregular, deep branching -- a purely sequential numeric
  * suffix doesn't produce one no matter how large. 8000 pseudo-random
  * lowercase strings (4-12 bytes, drawn from a fixed-seed `java.util.Random`

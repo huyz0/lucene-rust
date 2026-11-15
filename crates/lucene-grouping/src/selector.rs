@@ -43,7 +43,7 @@ fn leaf_reader<'a>(
 /// the order first seen (`BytesRefHash`), and each segment maps its
 /// ordinals to them as it goes (`ordsToGroupIds`).
 ///
-/// Stage 3, same groups: the segment's ordinal map is a table indexed by
+/// The segment's ordinal map is a table indexed by
 /// ordinal (Java's `IntIntHashMap`), filled in the first pass as ordinals
 /// show up (or, once many have, by one forward walk of the dictionary)
 /// rather than by seeking every known term per segment.

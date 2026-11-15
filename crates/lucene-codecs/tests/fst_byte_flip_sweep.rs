@@ -191,8 +191,8 @@ fn every_single_byte_fst_corruption_is_an_error_or_a_clean_decode() {
     // and a flipped *output* byte a different but well-formed output -- both
     // are clean decodes of a different FST, not misses. The bar this sweep
     // enforces is the one that matters: nothing panics, nothing aborts,
-    // nothing fails to terminate. The rate is asserted only as a regression
-    // tripwire against the 37% measured at c31.
+    // nothing fails to terminate. The rate is asserted only as a tripwire
+    // against a drop from the rate measured when the sweep was written.
     assert!(
         total.0 * 10 > total.1 * 3,
         "only {}/{} flips rejected",

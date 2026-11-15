@@ -75,7 +75,6 @@ public final class ZstdBlockTreeTermsReader extends FieldsProducer {
   // Open input to the terms index file (_X.tip)
   final IndexInput indexIn;
 
-  // private static final boolean DEBUG = BlockTreeTermsWriter.DEBUG;
 
   // Reads the terms dict entries, to gather state to
   // produce DocsEnum on demand
@@ -254,11 +253,6 @@ public final class ZstdBlockTreeTermsReader extends FieldsProducer {
     fieldNames.sort(null);
     return Collections.unmodifiableList(fieldNames);
   }
-
-  // for debugging
-  // private static String toHex(int v) {
-  //   return "0x" + Integer.toHexString(v);
-  // }
 
   @Override
   public void close() throws IOException {

@@ -26,9 +26,7 @@ import java.util.Set;
  * updates</b> -- {@code IndexWriter.updateNumericDocValue} /
  * {@code updateBinaryDocValue}.
  *
- * <p>This port used to write a delta file of its own invention here, so an
- * index carrying a doc-values update was one real Lucene could not open at
- * all. The format is now Lucene's: the updated field's <b>whole column</b>
+ * <p>The format is Lucene's: the updated field's <b>whole column</b>
  * rewritten into a new generation of ordinary {@code Lucene90DocValuesFormat}
  * files ({@code _0_1_Lucene90_0.dvm/.dvd/.dvs}), a new {@code FieldInfos}
  * generation ({@code _0_1.fnm}) recording {@code FieldInfo.docValuesGen}, and

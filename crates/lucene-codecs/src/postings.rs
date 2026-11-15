@@ -2057,10 +2057,10 @@ impl SinkCursor {
 /// validation that `freqs` and `total_term_freq` agree.
 ///
 /// One pass over `freqs`, accumulating as it goes and emitting a range each
-/// time it reaches the next `wanted` index. The prefix-sum array this
-/// replaced was `docFreq + 1` entries long whatever the caller asked for --
-/// 20 MB for a five-million-document term, to answer a question about one
-/// document. Java needs neither: `.doc`'s skip data carries the `.pos` file
+/// time it reaches the next `wanted` index. A prefix-sum array would be
+/// `docFreq + 1` entries long whatever the caller asked for -- 20 MB for a
+/// five-million-document term, to answer a question about one document. Java
+/// needs neither: `.doc`'s skip data carries the `.pos` file
 /// pointers, so `advance` never sums a frequency at all (see
 /// [`walk_wanted_occurrences`]).
 ///
@@ -2068,8 +2068,7 @@ impl SinkCursor {
 /// entry before it (an unsorted or repeated `wanted`), gets an empty range at
 /// the current watermark: it keeps its slot in the result and contributes
 /// nothing. The alternative -- indexing a prefix-sum array by whatever the
-/// caller passed -- is an out-of-bounds panic on a caller's mistake, which is
-/// what this used to be.
+/// caller passed -- is an out-of-bounds panic on a caller's mistake.
 ///
 /// `freqs` is decoded from `.doc` and `n` comes from the term dictionary;
 /// nothing on the wire makes them agree, so their disagreement is a decode
@@ -2379,13 +2378,10 @@ fn refill_last_position_block(
 /// exactly, so its `.pos` is one full block and nothing else. Java writes
 /// `-1`, a file pointer no `.pos` position can equal, for the same reason.
 ///
-/// This is the field `b5` found being written as a constant `0`.
-/// Nothing in this port read it back
-/// then, because every position walk started at the term's `posStartFP` and
-/// counted occurrences. A walk that *jumps into the middle* of `.pos` has no
-/// occurrence count to derive the split from, so this is now the only thing
-/// that tells a full block from the tail -- exactly the role it has in
-/// `refillPositions`.
+/// A position walk from the term's `posStartFP` can count occurrences, but a
+/// walk that *jumps into the middle* of `.pos` has no occurrence count to
+/// derive the split from, so this is the only thing that tells a full block
+/// from the tail -- exactly the role it has in `refillPositions`.
 fn last_pos_block_fp(meta: TermMetadata, total_term_freq: i64) -> Option<u64> {
     last_pos_block_fp_for(meta, total_term_freq, BLOCK_SIZE as i64)
 }
@@ -2622,8 +2618,8 @@ fn walk_document_occurrences<S: OccurrenceSink>(
 /// [`read_occurrences_for_doc`] pays neither: `.doc`'s level-0/level-1 skip
 /// data carries the `.pos`/`.pay` file pointers, so it jumps straight to the
 /// block it needs. It answers about *one* document, which is what the
-/// highlighter asks and what the skip data can address; this batch form is
-/// still what phrase matching wants, because its `wanted` set is a large
+/// highlighter asks and what the skip data can address; the all-documents form
+/// is still what phrase matching wants, because its `wanted` set is a large
 /// fraction of the term's doc list and it has already decoded that list to
 /// intersect it.
 #[allow(clippy::too_many_arguments)]
@@ -2878,10 +2874,10 @@ pub fn read_positions_for_docs(
 ///
 /// This is what `PostingsEnum.advance(doc)` + `nextPosition()` /
 /// `startOffset()` / `endOffset()` / `getPayload()` gives Java's
-/// `PostingsOffsetStrategy`, and it exists because the only offset-carrying
-/// accessor this port had ([`read_positions`]) returns every document's
-/// offsets, so highlighting one document cost a full postings sweep plus a
-/// `Vec<Position>` per document in the term.
+/// `PostingsOffsetStrategy`, and it exists because the offset-carrying
+/// [`read_positions`] returns every document's offsets, so highlighting one
+/// document would cost a full postings sweep plus a `Vec<Position>` per
+/// document in the term.
 ///
 /// Same result shape and same `wanted` contract as
 /// [`read_positions_for_docs`]: `wanted[i]`'s occurrences are
@@ -4056,8 +4052,8 @@ fn decode_full_block_body(
             .for_util
             .decode(bits_per_value_byte as u32, r, doc_deltas)?;
         // Deltas to doc ids: a running sum over the block, in wrapping
-        // 32-bit arithmetic (`sum as i32` of the wide sum this used to keep,
-        // bit for bit), vectorized -- LLVM will not vectorize a scan on its
+        // 32-bit arithmetic (equal bit for bit to `sum as i32` of the wide
+        // sum), vectorized -- LLVM will not vectorize a scan on its
         // own, and it is what Lucene's `ForDeltaUtil` decode ends in. A
         // corrupt delta wraps rather than panics; `advance`'s post-refill
         // check against the block header catches the result.
@@ -4068,8 +4064,8 @@ fn decode_full_block_body(
         // Lucene keeps as a bit set with the first 256 bits on
         // (`docBitSet.set(0, BLOCK_SIZE)`) and answers `advance` from with
         // `nextSetBit`. The same here: a term in nearly every document is
-        // almost all such blocks, and expanding each into an array to scan
-        // measured 1.6x slower than Lucene on one.
+        // almost all such blocks, and expanding each into an array to scan is
+        // measurably slower.
         const WORDS: usize = BLOCK_SIZE as usize / 64;
         scratch.bitset[..WORDS].fill(u64::MAX);
         shape = BodyShape::Bits {
@@ -4130,9 +4126,8 @@ fn decode_full_block_body(
         let base = prev_doc_id.wrapping_add(1);
         // A well-formed block sets exactly `BLOCK_SIZE` bits (Lucene asserts
         // it). Anything else is rejected: fewer leaves the block short, and
-        // more used to be tolerated by the expansion (which stops at 256) but
-        // not by a kept bit set, where a docs-only `advance` would return the
-        // extra documents and a freqs cursor would fail its rank check -- three
+        // more would, in a kept bit set, make a docs-only `advance` return the
+        // extra documents while a freqs cursor fails its rank check -- three
         // answers for one corrupt block.
         // A plain sum, not a saturating one: at most 128 words of 64 bits is
         // 8192, and without the per-word overflow branch the popcounts
@@ -4195,9 +4190,8 @@ fn decode_full_block_body(
 /// `Lucene104PostingsReader.refillRemainder` does too -- it decodes into the
 /// enumeration's own `docBuffer`/`freqBuffer` -- and it matters here because a
 /// term with `docFreq < BLOCK_SIZE` is *entirely* a tail block, so a cursor
-/// over one of those (the common shape by a wide margin) used to pay two
-/// `Vec` allocations plus two 256-entry copies to hand the result back into
-/// the buffers it already owned.
+/// over one of those (the common shape by a wide margin) needs no `Vec`
+/// allocations or 256-entry copies to hand the result back.
 fn read_tail_block(
     r: &mut SliceInput,
     prev_doc_id: i32,
@@ -5028,12 +5022,9 @@ impl<'a> LazyDocsCursor<'a> {
     /// return this.doc = docBuffer[docBufferUpto++];
     /// ```
     ///
-    /// This used to delegate to `advance(doc_id + 1)`, which is correct but
-    /// pays `advance`'s `partition_point` -- a binary search over up to 256
-    /// entries, eight unpredictable branches, to find an offset that is always
-    /// exactly 1. It measured 14.5 ns per document against Lucene's 2.9 ns,
-    /// a 5x gap that did not move when the `ForUtil` kernel underneath it got
-    /// 3x faster, because block decode was never where the time went.
+    /// Delegating to `advance(doc_id + 1)` would be correct but pays
+    /// `advance`'s `partition_point` -- a binary search over up to 256 entries,
+    /// eight unpredictable branches, to find an offset that is always exactly 1.
     ///
     /// Falls back to `advance` at a block boundary and before the first call,
     /// which is where the state machine actually lives.
@@ -6860,7 +6851,7 @@ mod tests {
     use lucene_store::data_output::DataOutput;
 
     /// Run the existing nested oracle and the allocation-reduced decoder on
-    /// every valid and corrupt case below, including the old regression cases.
+    /// every valid and corrupt case below.
     fn read_positions_and_flat(
         pos: &PosInput<'_>,
         pay: Option<&PayInput<'_>>,
@@ -7988,9 +7979,8 @@ mod tests {
         // fixed-width header fields plus the metadata region --
         // `Lucene104PostingsWriter.flushDocBlock`'s `numSkipBytes =
         // level0Output.size()` sampled after the impacts/pos/pay region, then
-        // `+= scratchOutput.size()`. This helper used to write `body.len()`
-        // here, which is neither, and no reader noticed until
-        // `read_full_block_header` started checking the two agree.
+        // `+= scratchOutput.size()`. `body.len()` is neither, and
+        // `read_full_block_header` checks the two agree.
         let header_fields_len = 4; // vint15 docDelta + vlong15 blockLength
         out.write_vlong((meta_region.len() + header_fields_len) as i64);
         out.write_i16(BLOCK_SIZE as i16); // docDelta via writeVInt15
@@ -8639,8 +8629,8 @@ mod tests {
     fn a_level1_entry_that_disagrees_with_its_own_skip1_end_fp_is_rejected() {
         // The level-1 entry's `skip1EndFP` short is the byte length of that
         // entry's own metadata, read off the same file as the metadata it
-        // measures. Java asserts it; this port used to `debug_assert_eq!` it,
-        // i.e. panic in a debug build on a corrupt `.doc`. Build a valid
+        // measures. Java only asserts it; here a corrupt `.doc` must be a decode
+        // error, not a panic. Build a valid
         // `docFreq >= LEVEL1_NUM_DOCS` term's first level-1 entry, then
         // corrupt only that short.
         let id = [42u8; ID_LENGTH];
@@ -8794,7 +8784,7 @@ mod tests {
     /// off the end of the decoded block, `advance_shallow` returns early
     /// because the target is still within the *claimed* extent, and the tail
     /// path is entered with a whole block's worth of documents still
-    /// outstanding. Slicing the fixed 256-entry block array by that used to
+    /// outstanding. Slicing the fixed 256-entry block array by that must not
     /// panic; `Lucene104PostingsReader.refillRemainder` asserts the same
     /// bound.
     #[test]
@@ -8968,10 +8958,8 @@ mod tests {
         // the header claims one byte more than the body actually occupies, so
         // after decoding it the reader sits one byte short of where the header
         // says the block ends -- and every following block would decode as
-        // garbage. Java only `assert`s this; this port used to
-        // `debug_assert_eq!` it, i.e. panic in debug and silently continue in
-        // release. Both paths that decode a full block must now return a
-        // decode error instead.
+        // garbage. Java only `assert`s this; here both paths that decode a
+        // full block must return a decode error.
         let id = [42u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
@@ -9101,7 +9089,7 @@ mod tests {
         // header claims the block's last doc is 999 while the body decodes to
         // docs 0..255, so `advance_shallow` stops on the block (999 >= 500)
         // and the post-refill search for the first doc >= 500 finds nothing.
-        // That used to index one past the block buffer and panic.
+        // That must be a decode error, not an index one past the block buffer.
         let id = [42u8; ID_LENGTH];
         let (mut doc, footer) = header_and_footer(DOC_CODEC, &id);
         let doc_start_fp = doc.len() as u64;
@@ -10558,9 +10546,8 @@ mod tests {
         // to a different but self-consistent postings list -- flipping a
         // freq's fill value, or an impacts delta, is a wrong answer the
         // format has no way to notice, which is exactly what the checksum
-        // this sweep defeats exists for. c19/c25 measured 44/99 on `.tip`,
-        // 85/99 on `.nvm`, 18/99 on `.dvd` and 15/43 on `.tvd`, so a rate
-        // below 100% is the norm.
+        // that re-signing defeats exists for. Other files reject far fewer
+        // (on the order of 15-85%), so a rate below 100% is the norm.
         //
         // What this pins is that nothing *panics or aborts*, plus a floor so
         // a future change that stops bounding something fails loudly.
@@ -10636,9 +10623,8 @@ mod tests {
         // with offsets and no payloads: `.pay` carries only the two
         // offset-start-delta/offset-length PForUtil blocks (no payload-length
         // block, no payload bytes), matching `read_positions`'s `has_offsets`
-        // branch. This was previously untested at every level (fixture and
-        // unit) -- a mismatch in the payload/offset `.pay` cursor ordering
-        // would silently produce wrong offsets undetected.
+        // branch. A mismatch in the payload/offset `.pay` cursor ordering
+        // would silently produce wrong offsets.
         let id = [26u8; ID_LENGTH];
         let (mut pos, pos_footer) = pos_header_and_footer(&id);
         let pos_start_fp = pos.len() as u64;

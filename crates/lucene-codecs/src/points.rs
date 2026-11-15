@@ -671,8 +671,8 @@ impl<'d> PointsReader<'d> {
     /// - [`Relation::CellOutsideQuery`] -- the whole subtree is skipped
     ///   without reading a single one of its `.kdd` bytes (and, for a left
     ///   child, without parsing its packed-index bytes either: the
-    ///   `leftNumBytes` skip-ahead vint this port previously read and threw
-    ///   away is what makes the seek to the right sibling possible, exactly
+    ///   `leftNumBytes` skip-ahead vint is what makes the seek to the right
+    ///   sibling possible, exactly
     ///   as `BKDPointTree.pushRight`'s `rightNodePositions[level]` does).
     /// - [`Relation::CellInsideQuery`] -- only the leaf's doc-id block is
     ///   decoded (`visitDocIDs`/`addAll`); the packed values are never
@@ -693,9 +693,7 @@ impl<'d> PointsReader<'d> {
     /// coding against the last split value seen *in that dimension* along the
     /// current root path, with `negative_deltas` tracking left-vs-right
     /// exactly like `BKDReader.readNodeData` -- i.e. this is the read-side
-    /// inverse of `BKDWriter.recursePackIndex`, and the first thing in this module that
-    /// actually *uses* the reconstructed split values rather than skipping
-    /// past them.
+    /// inverse of `BKDWriter.recursePackIndex`.
     ///
     /// Both bounds slices passed to `compare` are `num_index_dims *
     /// bytes_per_dim` long (the non-indexed trailing data dimensions have no
@@ -2374,9 +2372,8 @@ impl LeafSink for Vec<Point> {
     }
 }
 
-/// A crossing leaf's points, streamed to the visitor. This used to decode the
-/// leaf into a `Vec<Point>` first -- one heap allocation *per point* for its
-/// packed value -- which made a small range query 2.4x slower than Lucene.
+/// A crossing leaf's points, streamed to the visitor without materialising a
+/// `Vec<Point>` first (one heap allocation per point for its packed value).
 struct VisitSink<'v, V>(&'v mut V);
 
 impl<V: IntersectVisitor> LeafSink for VisitSink<'_, V> {
@@ -5698,7 +5695,7 @@ mod config_validation_tests {
     }
 
     /// `BKDConfig`'s `maxPointsInLeafNode > ArrayUtil.MAX_ARRAY_LENGTH` guard,
-    /// the one this port had not reproduced. `maxPointsInLeafNode` sizes the
+    /// `maxPointsInLeafNode` sizes the
     /// per-leaf point buffer, so an absurd value is an allocation request the
     /// `.kdm` has no bytes to back.
     #[test]

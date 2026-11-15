@@ -204,8 +204,7 @@ impl<D: LiveDocsFormat> AssertingLiveDocsFormat<D> {
     // Java: AssertingLiveDocsFormat.check.
     fn check(bits: &FixedBitSet, max_doc: usize, expected: usize) {
         assert_eq!(bits.len(), max_doc);
-        // Stage 2: the 4096-bit scalar guard measured 4089.012 ns in Rust
-        // versus 2433.006 ns in Java (0.60x). Format I/O uses concrete,
+        // Format I/O uses concrete,
         // immutable FixedBitSet: get has no callbacks. Range popcounts mask
         // padding, so even dirty from_words input in release counts only the
         // logical bits that Java scans. Generic wrappers still delegate.

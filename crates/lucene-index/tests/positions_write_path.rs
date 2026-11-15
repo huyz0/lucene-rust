@@ -188,7 +188,7 @@ fn our_check_index_passes_over_a_writer_produced_positions_segment() {
 
 /// The checks above must actually **run**, not be skipped. A segment whose
 /// postings never reached the positional path would satisfy `all_passed()`
-/// vacuously, which is precisely the shape this batch exists to rule out. So
+/// vacuously, which is precisely the shape this test exists to rule out. So
 /// the positional, offset and term-vector cross-checks are each required by
 /// name.
 #[test]

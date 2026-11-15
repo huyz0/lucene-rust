@@ -183,9 +183,7 @@ CASES=(
   # the blocks' contiguity, not only on CheckIndex being clean.
   "lucene-index|write_block_segment_fixture|block-segment|VerifyBlockSegment"
   # And a segment whose doc-values have been *updated in place*
-  # (`updateNumericDocValue`/`updateBinaryDocValue`). This port used to write
-  # a delta file of its own invention here, so an index carrying a doc-values
-  # update was one real Lucene could not open at all. The format is now
+  # (`updateNumericDocValue`/`updateBinaryDocValue`). The format is
   # Lucene's -- the updated field's whole column rewritten into a
   # generation-suffixed `.dvm`/`.dvd`/`.dvs` plus a `FieldInfos` generation --
   # and four separate pieces of bookkeeping have to agree for a reader to find
