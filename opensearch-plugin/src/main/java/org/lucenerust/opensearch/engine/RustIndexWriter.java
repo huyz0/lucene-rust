@@ -877,6 +877,16 @@ final class RustIndexWriter implements DocumentIndexWriter {
     }
 
     /**
+     * {@code index.codec.stored_fields.recompress_on_merge: non_force}: forced merges (force merge,
+     * upgrade) copy stored-field chunks instead of recompressing them.
+     */
+    void setMergeLz4HcNonForce() throws IOException {
+        synchronized (lock) {
+            check(NativeBridge.writerSetMergeLz4HcNonForce(handle, true), "setting index.codec.stored_fields.recompress_on_merge");
+        }
+    }
+
+    /**
      * {@code index.knn.ivf.partition_min_vectors}: IVF fields clustered per partition of the
      * index sort's first field, {@code 0} off.
      */

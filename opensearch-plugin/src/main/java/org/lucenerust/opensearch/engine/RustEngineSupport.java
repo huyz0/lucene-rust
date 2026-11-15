@@ -149,20 +149,40 @@ public final class RustEngineSupport {
         default -> throw new IllegalArgumentException("[index.codec.terms_compression] must be [none] or [zstd], got [" + v + "]");
     }, Setting.Property.IndexScope);
 
+    static final String RECOMPRESS_NON_FORCE = "non_force";
+
     /**
      * Whether merges write {@code index.codec: default} stored fields with a high-compression LZ4
      * match finder: the same LZ4 format, which OpenSearch's own engine and stock Lucene read, about
-     * 8-33% smaller, and several times slower to compress. Flushes keep the fast compressor, and a
-     * segment already written this way is copied by later merges rather than compressed again. On
-     * by default: on 2M log events merged stored fields are 28% smaller (the index 16%) and fetches
-     * about 30% faster, for about 1.4 CPU-s more per million documents indexed; on text the
-     * stored fields are 9% smaller.
+     * 8-33% smaller, and several times slower to compress (about 35-45 MB/s against 90 MB/s and
+     * more for the fast one, and a stock merge copies chunks without compressing at all). Flushes
+     * keep the fast compressor, and a segment already written this way is copied by later merges
+     * rather than compressed again.
+     *
+     * <ul>
+     *   <li>{@code on} (also {@code true}): every merge. On 2M log events merged stored fields are
+     *       28% smaller (the index 16%) and fetches about 30% faster, for about 1.4 CPU-s more per
+     *       million documents indexed; but a force merge of 1M documents takes 3.6x as long.
+     *   <li>{@code non_force} (the default): every merge except an explicitly forced one (force
+     *       merge, upgrade), which copies the chunks like stock does.
+     *   <li>{@code off} (also {@code false}): never.
+     * </ul>
      */
-    public static final Setting<Boolean> MERGE_LZ4_HIGH_COMPRESSION = Setting.boolSetting(
+    public static final Setting<String> MERGE_LZ4_HIGH_COMPRESSION = new Setting<>(
         "index.codec.stored_fields.recompress_on_merge",
-        true,
+        RECOMPRESS_NON_FORCE,
+        v -> recompressOnMerge("index.codec.stored_fields.recompress_on_merge", v),
         Setting.Property.IndexScope
     );
+
+    private static String recompressOnMerge(String key, String v) {
+        return switch (v) {
+            case "on", "true" -> "on";
+            case "off", "false" -> "off";
+            case RECOMPRESS_NON_FORCE -> v;
+            default -> throw new IllegalArgumentException("[" + key + "] must be [off], [on] or [non_force], got [" + v + "]");
+        };
+    }
 
     /**
      * Whether the Rust engine writes its paged zstd stored fields (codec {@code
@@ -668,7 +688,7 @@ public final class RustEngineSupport {
             REALTIME_SEARCH.get(config.getIndexSettings().getSettings()),
             "true".equals(ADAPTIVE_DOC_VALUES.get(config.getIndexSettings().getSettings())),
             ZSTD_TERMS.get(config.getIndexSettings().getSettings()),
-            MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings()),
+            "off".equals(MERGE_LZ4_HIGH_COMPRESSION.get(config.getIndexSettings().getSettings())) == false,
             partitionField(config.getIndexSettings().getSettings()),
             knnIndex(config),
             config.getIndexSort(),
@@ -700,6 +720,9 @@ public final class RustEngineSupport {
                 SeqNoSettings.sentinels(indexSettings.getSettings())
             );
             refreshMergePolicy(writer, config);
+            if (RECOMPRESS_NON_FORCE.equals(MERGE_LZ4_HIGH_COMPRESSION.get(indexSettings.getSettings()))) {
+                writer.setMergeLz4HcNonForce();
+            }
             int ivfPartitionClusters = IVF_PARTITION_CLUSTERS.get(indexSettings.getSettings());
             if (ivfPartitionClusters > 0) {
                 writer.setIvfPartitionClusters(ivfPartitionClusters);
