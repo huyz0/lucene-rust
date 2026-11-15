@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 181;
+    public static final int EXPECTED_ABI_VERSION = 182;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -391,6 +391,10 @@ public final class NativeBridge {
         static final MethodHandle WRITER_SET_IVF_PARTITION_CLUSTERS = bind(
             "ffi_engine_writer_set_ivf_partition_clusters",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG)
+        );
+        static final MethodHandle WRITER_SET_MERGE_LZ4_HC_NON_FORCE = bind(
+            "ffi_engine_writer_set_merge_lz4_hc_non_force",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_BYTE)
         );
         static final MethodHandle WRITER_SET_BP_REORDER = bind(
             "ffi_engine_writer_set_bp_reorder",
@@ -3201,6 +3205,18 @@ public final class NativeBridge {
     public static int writerSetIvfPartitionClusters(long handle, long minVectors) {
         try {
             return (int) H.WRITER_SET_IVF_PARTITION_CLUSTERS.invokeExact(handle, minVectors);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * {@code index.codec.stored_fields.recompress_on_merge: non_force}: with recompression on,
+     * forced merges (force merge, upgrade) copy stored-field chunks instead of recompressing them.
+     */
+    public static int writerSetMergeLz4HcNonForce(long handle, boolean nonForce) {
+        try {
+            return (int) H.WRITER_SET_MERGE_LZ4_HC_NON_FORCE.invokeExact(handle, (byte) (nonForce ? 1 : 0));
         } catch (Throwable t) {
             throw rethrow(t);
         }
