@@ -14,7 +14,7 @@ CORPUS=/data/corpus BUILDS="main=/p/main.so,new=/p/new.so" benchmarks/native-nod
 
 `ab.sh` loads one force-merged index per side, then alternates stock and each build for
 `ROUNDS_AB` rounds (restarting the node each time) and prints the best median per shape.
-`MODE=knn` times `lucene`-engine HNSW k-NN instead (`NVEC` clustered random vectors of `DIM`, `DATA_DIR` apart from the search one).
+`MODE=knn` (one persistent socket, since urllib's connection per request costs more than a search) times `lucene`-engine HNSW k-NN instead (`NVEC` clustered random vectors of `DIM`, `DATA_DIR` apart from the search one).
 `MEM_LIMIT=2G` puts the node in a memory cgroup (cgroup v1, needs root): the page cache counts
 against it, so it is real memory pressure. `NODE_CPUS`, `HEAP`, `PORT`, `NODE_ARGS`, `SHAPES`
 (substrings), `ROUNDS`/`WARMUP` (requests per shape) are also read.
