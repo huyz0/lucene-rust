@@ -2,10 +2,10 @@
 //! to a flat program and run with explicit stacks on the heap, making the
 //! choices [`super`]'s module docs list for each construct.
 //!
-//! The tree used to be matched by continuation passing, each node calling
-//! the rest of the match as a closure, so a match's backtracking depth was
-//! native stack. Here the same choices are data: where that matcher called
-//! its continuation and went on to an alternative when it failed, the
+//! Matching the tree by continuation passing (each node calling the rest of
+//! the match as a closure) would make a match's backtracking depth native
+//! stack. Here the same choices are data: where such a matcher would call
+//! its continuation and go on to an alternative when it failed, the
 //! machine pushes an [`Entry`] -- the alternative, a capture to restore, a
 //! repetition's back-off position, a loop's failed-position memo to record
 //! -- and goes on; a failure pops entries until one resumes. A match's
