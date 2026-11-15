@@ -4,7 +4,7 @@ What the lucene-rust plugin does for an OpenSearch 3.9.0 cluster, in
 OpenSearch's terms: what runs in Rust, what OpenSearch still does itself, and
 what is not supported. Read this to decide whether the plugin fits a workload;
 [`operations.md`](operations.md) covers installing and running it, and
-[`parity.md`](parity.md) is the per-Lucene-file ledger for contributors.
+[`parity.md`](parity.md) is the per-Lucene-file ledger for contributors. [`compatibility.md`](compatibility.md) lists what is identical to stock, what is added and what deviates.
 
 Pinned versions: **OpenSearch 3.9.0** (Lucene 10.5.1), Linux x86_64 and
 aarch64.
@@ -117,9 +117,9 @@ it; a plugin's similarity or a refused script falls back (`field_similarity`), a
 | segment replication | ✅ | Rust primary; replicas run OpenSearch's `NRTReplicationEngine` |
 | mixed clusters (some nodes with `indices.engine.accelerated.node_enabled: false`) | ✅ | shards relocate and recover between the engines both ways |
 | field types | ✅ for what the accelerated writer accepts | tested as the field types OpenSearch's own REST YAML suites index, which pass with every index on the accelerated engine (`scripts/verify-opensearch.sh --engine --yaml`); a type those suites do not cover is not separately verified. Refused per document (400): term vectors, vector fields, `completion`, payloads, custom term frequencies, any other per-field postings or doc-values format |
-| index settings | | refused at creation: a codec other than `default`/`lucene_default`, index sorting on indices created before 3.2.0 or with realtime search, context-aware segments, remote-backed storage |
-| `index.merge.policy.*`, `index.merge_on_flush` | ✗ | the writer's own merge policy; merges run inside commits, not reported in `_stats` merges |
-| compound segments | ✗ | writes non-compound segments only (reads compound ones) |
+| index settings | | refused at creation: an `index.codec` other than `default`, `lucene_default`, `best_compression`, `zstd` and `zstd_no_dict`, `index.optimize_doc_id_lookup.fuzzy_set.enabled`, index sorting on indices created before 3.2.0 or with realtime search, context-aware segments, remote-backed storage |
+| `index.merge.policy.*` (tiered, `log_byte_size`), `index.merge.scheduler.*`, `index.merge_on_flush.*` | ✅ | merges run in the accelerated writer's threads and are reported to `_stats`, the indexing throttle and the flush after a big merge as OpenSearch's merge scheduler reports them |
+| `index.use_compound_file`, `index.compound_format` | ✅ | honoured, as stock's defaults |
 
 The engine's behaviour where it differs from OpenSearch's (refresh is a commit,
 segment stats, scores on update-heavy indices until a force merge) is in
