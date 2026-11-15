@@ -153,3 +153,33 @@ criterion = "0.5"
 # rule for writing an `#[allow]` that is allowed to stay.
 [workspace.lints.clippy]
 arithmetic_side_effects = "deny"
+
+# Tests run in the dev profile, and the clustering, graph-build, quantizer,
+# merge and FST-sweep tests spend their time in these crates' inner loops, so
+# unoptimised they set the suite's wall time. Optimising only the crates that
+# hold those loops cut the full suite from 10m22 to 4m28 on 4 cores for 2m40
+# more build time. Overflow checks and debug assertions stay on.
+[profile.dev.package.lucene-util]
+opt-level = 2
+[profile.dev.package.lucene-vector-quant]
+opt-level = 2
+[profile.dev.package.lucene-ivf]
+opt-level = 2
+[profile.dev.package.lucene-disk-hnsw]
+opt-level = 2
+[profile.dev.package.lucene-zstd]
+opt-level = 2
+[profile.dev.package.lucene-codecs]
+opt-level = 1
+[profile.dev.package.lucene-index]
+opt-level = 1
+[profile.dev.package.lucene-search]
+opt-level = 1
+[profile.dev.package.lucene-store]
+opt-level = 1
+[profile.dev.package.lucene-tensor]
+opt-level = 1
+[profile.dev.package.lucene-sparse]
+opt-level = 1
+[profile.dev.package.lucene-aggs]
+opt-level = 1
