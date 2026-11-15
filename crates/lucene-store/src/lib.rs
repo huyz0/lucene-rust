@@ -11,6 +11,7 @@ pub mod data_input;
 pub mod data_output;
 pub mod directory;
 pub mod error;
+mod fetch_budget;
 pub mod file_switch_directory;
 pub mod fs_lock_factory;
 pub mod index_output;
