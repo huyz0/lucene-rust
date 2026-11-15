@@ -1541,6 +1541,9 @@ struct Leaf<'a> {
     /// parent switching owners from document to document costs a lookup per
     /// switch, never a reset.
     term_buckets: Vec<(u32, u32)>,
+    /// Documents `terms` windows have read on this leaf: a large dictionary
+    /// is cached once they outnumber half its terms.
+    term_seen: usize,
     /// [`keyed_ord_cached`]'s recently placed `(owning bucket, key)`s.
     key_cache: KeyCache,
     /// A `date_histogram`'s buckets of owner 0 by position on the rounding's
@@ -1730,6 +1733,9 @@ struct CompositeLeaf<'a> {
 const NO_BUCKET: u32 = u32::MAX;
 /// Largest segment dictionary whose ordinals a `terms` window caches.
 const MAX_CACHED_TERMS: usize = 1 << 16;
+/// Largest dictionary cached once the windows read have paid for it
+/// (8 bytes a term).
+const MAX_PAID_CACHED_TERMS: usize = 1 << 22;
 
 /// One scored range of a segment: its matches ascending and their scores,
 /// and where the last lookup found its document (the pass visits them in
@@ -2166,6 +2172,7 @@ fn open_leaf<'a>(
         win_docs: Vec::new(),
         win_ords: Vec::new(),
         term_buckets: Vec::new(),
+        term_seen: 0,
         key_cache: KeyCache::default(),
         date_grid: None,
         grid_tried: false,
@@ -2864,6 +2871,24 @@ fn collect_window(
                     slot(states, owner as usize).many(ValueKind::Long, &[best]);
                 }
             }
+            /// `count`, `sum`, `avg` and `stats` of longs with one owning
+            /// bucket for the whole window: folded as integers and handed
+            /// over once (see [`metric_aggs::LongFold`]); `false` when the
+            /// state cannot take the fold exactly.
+            fn run_fold<S: MetricSlot>(
+                states: &mut Vec<S>,
+                leaf: &Leaf<'_>,
+                docs: &[i32],
+                owner: u32,
+            ) -> bool {
+                let mut fold = metric_aggs::LongFold::EMPTY;
+                leaf.each_prefetched(
+                    docs,
+                    #[inline(always)]
+                    |_, v| fold.push(v),
+                );
+                slot(states, owner as usize).fold_longs(&fold)
+            }
             let one_owner = owners
                 .first()
                 .filter(|&&o| owners.iter().all(|&x| x == o))
@@ -2871,6 +2896,7 @@ fn collect_window(
             with_metric_col!(states, st => match (*needs, *kind, one_owner) {
                 (NEED_MIN, ValueKind::Long, Some(o)) => run_extreme::<true, _>(st, leaf, docs, o),
                 (NEED_MAX, ValueKind::Long, Some(o)) => run_extreme::<false, _>(st, leaf, docs, o),
+                (_, ValueKind::Long, Some(o)) if run_fold(st, leaf, docs, o) => {}
                 _ => run(st, leaf, *kind, docs, owners),
             });
             return Ok(());
@@ -2936,7 +2962,9 @@ fn collect_window(
                 Col::Ords(_, map) => map,
                 _ => &[],
             };
-            let cache = map.len() <= MAX_CACHED_TERMS;
+            leaf.term_seen = leaf.term_seen.saturating_add(docs.len());
+            let cache = map.len() <= MAX_CACHED_TERMS
+                || (map.len() <= MAX_PAID_CACHED_TERMS && leaf.term_seen >= map.len() / 2);
             if cache && leaf.term_buckets.len() != map.len() {
                 leaf.term_buckets = vec![(NO_BUCKET, NO_BUCKET); map.len()];
             }
@@ -2946,8 +2974,13 @@ fn collect_window(
             );
             win_docs.clear();
             win_ords.clear();
-            win_docs.resize(docs.len(), 0);
-            win_ords.resize(docs.len(), 0);
+            // Only a node with sub-aggregations hands them the window's
+            // (document, bucket) pairs.
+            let subs = !node.subs().is_empty();
+            if subs {
+                win_docs.resize(docs.len(), 0);
+                win_ords.resize(docs.len(), 0);
+            }
             let mut kept = 0usize;
             let mut out = Ok(());
             let mut term_buckets = std::mem::take(&mut leaf.term_buckets);
@@ -2991,10 +3024,13 @@ fn collect_window(
                     if let Some(c) = counts.get_mut(ord as usize) {
                         *c += 1;
                     }
-                    if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept)) {
-                        *d = doc;
-                        *w = ord;
-                        kept += 1;
+                    if subs {
+                        if let (Some(d), Some(w)) = (win_docs.get_mut(kept), win_ords.get_mut(kept))
+                        {
+                            *d = doc;
+                            *w = ord;
+                            kept += 1;
+                        }
                     }
                 },
             );
@@ -6121,8 +6157,7 @@ fn finish(
                     }
                 }
                 let total: u64 = kept.iter().map(|k| k.1).sum();
-                kept.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
-                kept.truncate(*shard_size);
+                keep_best(&mut kept, *shard_size, *order);
                 let kept_docs: u64 = kept.iter().map(|k| k.1).sum();
                 kept.sort_unstable_by(|a, b| order.listed(a.0, b.0));
                 let mut list = Vec::with_capacity(kept.len());
@@ -6358,6 +6393,22 @@ fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
 /// best first, and the doc count of all of them: what sorting them all and
 /// keeping `n` keeps (`order` ranks distinct keys strictly), holding at
 /// most twice `n` at a time.
+/// Cuts `kept` to its `n` first buckets in `order`, in no particular order
+/// among themselves: a selection, not the sort of every bucket (`order` is a
+/// total order over distinct keys, so the same `n` buckets as a full sort).
+fn keep_best(kept: &mut Vec<(i64, u64, u32)>, n: usize, order: TermsOrder) {
+    if kept.len() <= n {
+        return;
+    }
+    match n.checked_sub(1) {
+        Some(last) => {
+            kept.select_nth_unstable_by(last, |a, b| order.compare((a.0, a.1), (b.0, b.1)));
+            kept.truncate(n);
+        }
+        None => kept.clear(),
+    }
+}
+
 fn top_buckets(
     buckets: impl Iterator<Item = (i64, u64, u32)>,
     n: usize,
@@ -6536,6 +6587,13 @@ mod tests {
             TermsOrder::KeyDesc,
         ] {
             for n in [0, 1, 10, 31, 32, 33, 100, 4999, 5000, 9000] {
+                let mut selected = buckets.clone();
+                keep_best(&mut selected, n, order);
+                selected.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
+                let mut sorted = buckets.clone();
+                sorted.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
+                sorted.truncate(n);
+                assert_eq!(selected, sorted, "keep_best {order:?} {n}");
                 let mut all = buckets.clone();
                 all.sort_unstable_by(|a, b| order.compare((a.0, a.1), (b.0, b.1)));
                 all.truncate(n);
@@ -6597,6 +6655,7 @@ mod tests {
             win_docs: Vec::new(),
             win_ords: Vec::new(),
             term_buckets: Vec::new(),
+            term_seen: 0,
             key_cache: KeyCache::default(),
             date_grid: None,
             grid_tried: false,
