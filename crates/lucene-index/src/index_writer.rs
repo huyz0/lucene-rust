@@ -5608,14 +5608,13 @@ pub struct IndexWriter<'d> {
 /// `PayloadAttribute`-setting `TokenFilter`, see
 /// [`crate::indexing_chain::PayloadSource`] for the borrowed form the invert
 /// pass consumes.
-/// `Send + Sync` is not decoration. `lucene-ffi`'s `WriterHandle` carries an
-/// `unsafe impl Send`/`Sync` whose whole justification is that `IndexWriter`
-/// "is a plain aggregate ... with no interior mutability at all"
-/// (`lucene-ffi/src/registry.rs`), which a caller-supplied closure could
-/// otherwise falsify by capturing an `Rc` or a `Cell` -- in a crate where
-/// `forbid(unsafe_code)` would not stop it. The bound keeps that argument true
-/// by construction, and costs nothing: every source here captures `Copy` data
-/// or nothing.
+/// `Send + Sync` is not decoration. `lucene-ffi`'s `WriterHandle` holds the
+/// writer in a registry shared across threads, and it is `Send + Sync` by the
+/// compiler's own derivation, not an `unsafe impl`. A caller-supplied closure
+/// capturing an `Rc` or a `Cell` would break that derivation, in a crate where
+/// `forbid(unsafe_code)` would not stop it. The bound keeps the derivation
+/// true by construction, and costs nothing: every source here captures `Copy`
+/// data or nothing.
 pub type BoxedPayloadSource = Box<dyn Fn(&PayloadContext<'_>) -> Option<Vec<u8>> + Send + Sync>;
 
 /// A [`BoxedPayloadSource`] once handed to a writer: shared, so the

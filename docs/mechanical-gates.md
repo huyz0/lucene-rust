@@ -1043,6 +1043,24 @@ fail** on both shapes: the attribute deleted from `lucene-misc`
 burn-down list (`has no unsafe left`). Blind to: `unsafe` produced by a macro
 body; an `#![forbid]` that sits in a module rather than `lib.rs`.
 
+## unsafe sites
+
+`unsafe-scoped` keeps `unsafe` in three crates, and a kernel that wins a
+benchmark may add `unsafe` there with no number to edit: the count over
+`crates/`, `benchmarks/` and `opensearch-plugin/` is only reported
+(`unsafe_sites` in the script's `--verbose` output). Soundness is argued at
+each site and enforced by the lints below and by miri.
+
+What each site must say is the clippy denies in `[workspace.lints]` (and the
+same three in `lucene-util`'s own manifest, which does not use the workspace
+table): `undocumented_unsafe_blocks` (a `// SAFETY:` comment directly above
+every block), `missing_safety_doc` (a `# Safety` section on every public
+`unsafe fn`) and `unsafe_op_in_unsafe_fn` (an `unsafe fn` body is not one big
+block). Unit-test modules of the three crates are exempt from the first: they
+call the `unsafe extern "C"` entry points with pointers they own.
+
+Blind to: `unsafe` produced by a macro body; whether any one site is sound.
+
 ## store-feature-off-lint
 
 `gate.sh`'s `cargo clippy -p lucene-store --lib -- -D warnings`. Since M14.h
