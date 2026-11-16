@@ -197,8 +197,9 @@ impl ExprLeaf {
     /// The value of variable `b` at `env.doc`.
     fn variable(&self, env: &mut ScoreEnv<'_>, b: &ExprBinding) -> Result<f64> {
         Ok(match b {
+            // A sort expression is given no scorer: its `_score` reads `0`.
             ExprBinding::Score => {
-                if self.spec.needs_score {
+                if self.spec.needs_score && !self.spec.sort {
                     env.score
                 } else {
                     0.0
