@@ -30,6 +30,7 @@ import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -52,8 +53,18 @@ final class NativeSelfTestSecurity {
 
     /** The rule a leaf masks fields with: this one masks nothing. */
     static final class Rule {
+        private final Set<String> masked;
+
+        Rule(Set<String> masked) {
+            this.masked = masked;
+        }
+
         boolean isAllowAll() {
-            return true;
+            return masked.isEmpty();
+        }
+
+        boolean isMasked(String field) {
+            return masked.contains(field);
         }
     }
 
@@ -61,18 +72,24 @@ final class NativeSelfTestSecurity {
     static final class HidingLeaf extends FilterLeafReader {
         // Found by name, as the security plugin's field is.
         @SuppressWarnings("unused")
-        private final Rule fmRule = new Rule();
+        private final Rule fmRule;
+        @SuppressWarnings("unused")
+        private final Set<String> metaFields = Set.of("_id");
         private final Set<String> hidden;
         private final FieldInfos infos;
         private final Bits live;
         private final int numDocs;
 
-        HidingLeaf(LeafReader in, Set<String> hidden, int modulus) {
+        HidingLeaf(LeafReader in, Set<String> hidden, Set<String> masked, int modulus) {
             super(in);
-            this.hidden = hidden;
+            this.fmRule = new Rule(masked);
+            // A masked field answers null for everything but its sorted values, which a mask would rewrite.
+            Set<String> gone = new HashSet<>(hidden);
+            gone.addAll(masked);
+            this.hidden = gone;
             List<FieldInfo> keep = new ArrayList<>();
             for (FieldInfo fi : in.getFieldInfos()) {
-                if (hidden.contains(fi.name) == false) {
+                if (hidden.contains(fi.name) == false || masked.contains(fi.name)) {
                     keep.add(fi);
                 }
             }
@@ -154,22 +171,28 @@ final class NativeSelfTestSecurity {
 
     static final class HidingReader extends FilterDirectoryReader {
         private final Set<String> hidden;
+        private final Set<String> masked;
         private final int modulus;
 
         HidingReader(DirectoryReader in, Set<String> hidden, int modulus) throws IOException {
+            this(in, hidden, Set.of(), modulus);
+        }
+
+        HidingReader(DirectoryReader in, Set<String> hidden, Set<String> masked, int modulus) throws IOException {
             super(in, new SubReaderWrapper() {
                 @Override
                 public LeafReader wrap(LeafReader reader) {
-                    return new HidingLeaf(reader, hidden, modulus);
+                    return new HidingLeaf(reader, hidden, masked, modulus);
                 }
             });
             this.hidden = hidden;
+            this.masked = masked;
             this.modulus = modulus;
         }
 
         @Override
         protected DirectoryReader doWrapDirectoryReader(DirectoryReader in) throws IOException {
-            return new HidingReader(in, hidden, modulus);
+            return new HidingReader(in, hidden, masked, modulus);
         }
 
         @Override
@@ -224,6 +247,24 @@ final class NativeSelfTestSecurity {
             check.accept(a.handle() != b.handle() && b.handle() != c.handle() && a.handle() != c.handle(), "security: views do not share a handle");
             check.accept(again.handle() == c.handle(), "security: an equal wrapper reuses its view");
             compared += queries.size() * 3;
+            // A masked field with no sorted values reads as null everywhere: hidden, native. One whose
+            // keyword values survive the mask stays on Lucene, which applies it.
+            DirectoryReader maskedPoints = new HidingReader(base, Set.of(), Set.of("n"), 0);
+            compare.run("security: masked field without values", maskedPoints, readers, queries);
+            NativeReaders.Acquired mp = readers.acquire(maskedPoints);
+            check.accept(mp.handle() != 0, "security: a masked field without sorted values opens natively, was " + mp.fallbackReason());
+            DirectoryReader maskedKeyword = new HidingReader(base, Set.of(), Set.of("kt"), 0);
+            NativeReaders.Acquired mk = readers.acquire(maskedKeyword);
+            check.accept(mk.handle() == 0 && "reader_not_standard".equals(mk.fallbackReason()), "security: masked keyword values stay on Lucene, was " + mk.fallbackReason());
+            // One user's reader is never served to another: the base, a role that hides `tag`, and
+            // a role that hides nothing share segments and cache key but not a handle or an answer.
+            NativeReaders.Acquired baseHandle = readers.acquire(base);
+            long[] seen = new long[1];
+            long[] hiddenSeen = new long[1];
+            check.accept(NativeBridge.docFreq(baseHandle.handle(), "tag".getBytes(StandardCharsets.UTF_8), "alpha".getBytes(StandardCharsets.UTF_8), seen) == NativeBridge.OK && seen[0] > 0, "security: the unwrapped reader sees tag");
+            check.accept(NativeBridge.docFreq(b.handle(), "tag".getBytes(StandardCharsets.UTF_8), "alpha".getBytes(StandardCharsets.UTF_8), hiddenSeen) == NativeBridge.OK && hiddenSeen[0] == 0, "security: the role hiding tag does not");
+            check.accept(readers.acquire(plain).handle() != baseHandle.handle() && b.handle() != baseHandle.handle(), "security: a wrapped reader never takes the base's handle");
+            check.accept(readers.acquire(base).handle() == baseHandle.handle() && readers.acquire(hiding).handle() == b.handle(), "security: acquiring in another order returns each its own");
             // A leaf the readers do not recognise stays on Lucene.
             NativeReaders strict = new NativeReaders(c2 -> c2.getName().startsWith("org.apache.lucene"), Set.of());
             NativeReaders.Acquired refused = strict.acquire(hiding);

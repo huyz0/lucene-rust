@@ -4241,7 +4241,22 @@ impl ScoringCollector for BulkLeaf<'_, '_> {
     /// scorers skip only what scores strictly less, as Lucene's
     /// `setMinCompetitiveScore(bottom)` means.
     fn min_competitive_score(&self) -> Option<f32> {
-        (self.tf.min_competitive_score > 0.0).then(|| self.tf.min_competitive_score.next_down())
+        if self.tf.min_competitive_score <= 0.0 {
+            return None;
+        }
+        // A page after a hit of a search ordered by the score alone (a scroll's later pages), with no total
+        // wanted: a later document that only ties the bottom loses on its higher id, so the scorer may stop
+        // at the next float up, as `PagingTopScoreDocCollector`'s `setMinCompetitiveScore(nextUp(bottom))`
+        // does. Without it a constant-score page after the first walks the whole index.
+        if self.tf.after.is_some()
+            && self.tf.comps.len() == 1
+            && self.tf.comps[0].field.ty == SortType::Score
+            && !self.tf.comps[0].field.reverse
+            && self.tf.threshold == self.tf.num_hits as u64
+        {
+            return Some(self.tf.min_competitive_score.next_up());
+        }
+        Some(self.tf.min_competitive_score.next_down())
     }
 
     fn score_mode(&self) -> ScoreMode {
