@@ -107,6 +107,10 @@ pub enum FieldKind {
     Boolean,
     /// `5`: a keyword's sorted set, as `Strings`.
     Keyword,
+    /// `6`: a millisecond date's epoch millis, as `Dates` in UTC.
+    Date,
+    /// `7`: a nanosecond date's epoch nanos, as `Dates` in UTC.
+    DateNanos,
     /// `254`: a mapped field the native runtime cannot read.
     Unsupported,
     /// `255`: no field of that name is mapped.
@@ -121,6 +125,7 @@ impl FieldKind {
             FieldKind::Double | FieldKind::Float | FieldKind::HalfFloat => Some(DocKind::Doubles),
             FieldKind::Boolean => Some(DocKind::Booleans),
             FieldKind::Keyword => Some(DocKind::Strings),
+            FieldKind::Date | FieldKind::DateNanos => Some(DocKind::Dates),
             FieldKind::Unsupported | FieldKind::Unmapped => None,
         }
     }
@@ -356,6 +361,8 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
             3 => FieldKind::HalfFloat,
             4 => FieldKind::Boolean,
             5 => FieldKind::Keyword,
+            6 => FieldKind::Date,
+            7 => FieldKind::DateNanos,
             254 => FieldKind::Unsupported,
             255 => FieldKind::Unmapped,
             other => {
@@ -832,7 +839,7 @@ pub struct Column {
 /// A numeric field's stored longs as its `ScriptDocValues` values' bits.
 pub fn decode_column(kind: FieldKind, vs: &mut [u64]) {
     match kind {
-        FieldKind::Long | FieldKind::Boolean => {}
+        FieldKind::Long | FieldKind::Boolean | FieldKind::Date | FieldKind::DateNanos => {}
         FieldKind::Double => {
             for v in vs {
                 *v = sortable_long_to_double(*v as i64).to_bits();
@@ -900,7 +907,7 @@ impl ScoreEnv<'_> {
                     }
                     cur.count = n;
                     let decode: fn(i64) -> i64 = match kind {
-                        FieldKind::Long => |v| v,
+                        FieldKind::Long | FieldKind::Date | FieldKind::DateNanos => |v| v,
                         FieldKind::Double => |v| sortable_long_to_double(v).to_bits() as i64,
                         FieldKind::Float => {
                             |v| f64::from(sortable_int_to_float(v as i32)).to_bits() as i64
@@ -911,7 +918,10 @@ impl ScoreEnv<'_> {
                         // `ScriptDocValues.Booleans`: `nextValue() == 1`.
                         _ => |v| i64::from(v == 1),
                     };
-                    if kind != FieldKind::Long {
+                    if !matches!(
+                        kind,
+                        FieldKind::Long | FieldKind::Date | FieldKind::DateNanos
+                    ) {
                         for v in &mut cur.items[..n] {
                             *v = decode(*v);
                         }
@@ -984,11 +994,32 @@ impl ScoreEnv<'_> {
     /// Value `index` of field `i` as a script value.
     pub fn boxed_item(&mut self, i: usize, index: i32) -> std::result::Result<Value, Throw> {
         let kind = self.kind(i)?;
+        if matches!(kind, FieldKind::Date | FieldKind::DateNanos) {
+            // `Dates.get` checks the document's count, not its array.
+            let n = self.load(i)?.count;
+            if n == 0 {
+                return Err(no_value());
+            }
+            match usize::try_from(index) {
+                Err(_) => return Err(out_of_bounds(index, n)),
+                Ok(x) if x >= n => {
+                    return Err(Throw::new(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!(
+                            "attempted to fetch the [{index}] date when there are only [{n}] dates."
+                        ),
+                    ))
+                }
+                Ok(_) => {}
+            }
+        }
         let v = self.item(i, index)?;
         Ok(match kind {
             FieldKind::Long => Value::Long(v),
             FieldKind::Boolean => Value::Bool(v != 0),
             FieldKind::Keyword => return self.term(i, v),
+            FieldKind::Date => lucene_painless::api::time::utc_from_millis(v)?,
+            FieldKind::DateNanos => lucene_painless::api::time::utc_from_nanos(v)?,
             _ => Value::Double(f64::from_bits(v as u64)),
         })
     }
@@ -1003,6 +1034,9 @@ impl ScoreEnv<'_> {
         // With no values Java throws before reading its array: no stale slots.
         let len = if n == 0 {
             0
+        } else if matches!(kind, FieldKind::Date | FieldKind::DateNanos) {
+            // `Dates` never reads past its count.
+            n
         } else {
             self.current[i].items.len()
         };
@@ -1020,6 +1054,7 @@ impl ScoreEnv<'_> {
             FieldKind::Long => DocKind::Longs,
             FieldKind::Boolean => DocKind::Booleans,
             FieldKind::Keyword => DocKind::Strings,
+            FieldKind::Date | FieldKind::DateNanos => DocKind::Dates,
             _ => DocKind::Doubles,
         };
         let v = DocValues::with_stale(doc_kind, items, stale);

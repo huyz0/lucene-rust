@@ -1243,10 +1243,10 @@ final class ExtendedEncoder {
 
     /** How a field reads in a js script's {@code doc}: as in Painless, and a millisecond date as its epoch millis. */
     private static byte jsFieldKind(MappedFieldType ft) {
-        if (ft instanceof org.opensearch.index.mapper.DateFieldMapper.DateFieldType d
-            && d.hasDocValues()
-            && d.resolution() == org.opensearch.index.mapper.DateFieldMapper.Resolution.MILLISECONDS) {
-            return PainlessScore.LONG;
+        if (ft instanceof org.opensearch.index.mapper.DateFieldMapper.DateFieldType d) {
+            return d.hasDocValues() && d.resolution() == org.opensearch.index.mapper.DateFieldMapper.Resolution.MILLISECONDS
+                ? PainlessScore.LONG
+                : PainlessScore.UNSUPPORTED;
         }
         return PainlessScore.fieldKind(ft);
     }

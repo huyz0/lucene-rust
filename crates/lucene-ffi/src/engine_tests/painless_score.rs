@@ -484,8 +484,6 @@ pub(crate) mod tests {
 
     /// Scripts the check leaves to Java, before any of them runs.
     const IN_JAVA: &[&str] = &[
-        // A date field's `JodaCompatibleZonedDateTime`.
-        "doc['d'].value.toInstant().toEpochMilli() / 1e12",
         // `_source`.
         "params._source.size()",
         // Streams.
