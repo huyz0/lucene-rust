@@ -195,6 +195,10 @@ jobs:
       - name: Java citations resolve against the pinned tree
         run: python3 scripts/check-java-refs.py
 
+      # Every request the plugin hands back to Lucene/Java names a reason; a new one fails here.
+      - name: No new Lucene fallbacks
+        run: python3 scripts/check-fallbacks.py
+
       # The licence audit: a dependency the shipped library links
       # must be under a licence recorded in docs/licences.md. `cargo metadata`
       # resolves every target's packages, so fetch them all first (wasm-only
