@@ -221,6 +221,13 @@ pub fn resolve_labels(
     // function's job is to label the counts it was given, and `check_index`
     // is what walks a dictionary to validate it), but it is a change in what
     // this call detects, not only in what it allocates.
+    if terms.mask.is_some() {
+        // The cursor reads the stored terms; the labels of a masked field are its masked ones.
+        return Err(lucene_codecs::doc_values::Error::from(
+            lucene_codecs::value_mask::masked_error("resolve_labels"),
+        )
+        .into());
+    }
     let mut cursor = terms_dict::TermsCursor::open(doc_values_data, terms)
         .map_err(lucene_codecs::doc_values::Error::from)?;
     let mut labelled = Vec::with_capacity(counts.len());
@@ -3403,6 +3410,7 @@ mod tests {
             addresses: None,
         };
         let terms = TermsDictEntry {
+            mask: None,
             terms_dict_size: 1,
             max_term_length: 8,
             // Coherent with the single 8-byte term above; this test asserts
