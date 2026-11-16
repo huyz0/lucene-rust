@@ -1700,11 +1700,13 @@ impl LeafFieldComparator for SortLeaf<'_> {
 /// number, a boolean as `1` or `0`, each element of an array or collection
 /// -- sorted as `Double.compare` orders them, as sortable longs.
 #[derive(Debug)]
-pub struct PainlessAggValues(pub Arc<Spec>);
+pub struct PainlessAggValues(pub Arc<Spec>, pub bool);
 
 impl PainlessAggValues {
-    /// The node's script ([`decode_spec`]'s layout), checked.
-    pub fn decode(c: &mut Cursor<'_>) -> std::result::Result<Self, Status> {
+    /// The node's script ([`decode_spec`]'s layout), checked. `long`: the
+    /// values read as longs (`ScriptLongValues`, a `value_type` of `long`),
+    /// not as doubles.
+    pub fn decode(c: &mut Cursor<'_>, long: bool) -> std::result::Result<Self, Status> {
         let spec = decode_spec(c)?;
         if !spec.agg {
             return Err(invalid(
@@ -1716,7 +1718,7 @@ impl PainlessAggValues {
                 "aggregation tree: painless script not checked: {r}"
             ))
         })?;
-        Ok(PainlessAggValues(Arc::new(spec)))
+        Ok(PainlessAggValues(Arc::new(spec), long))
     }
 }
 
@@ -1726,12 +1728,31 @@ impl lucene_aggs::bucket_aggs::ScriptValuesSource for PainlessAggValues {
         reader: &'a lucene_search::directory_reader::SegmentReader,
     ) -> Result<Box<dyn lucene_aggs::bucket_aggs::ScriptValues + 'a>> {
         let leaf = scripts(&self.0, reader, Leaf::Base(reader.doc_base), None)?;
-        Ok(Box::new(AggLeaf(leaf)))
+        Ok(Box::new(AggLeaf(leaf, self.1)))
     }
 }
 
-/// A [`PainlessAggValues`] on one segment.
-pub struct AggLeaf<'c>(pub ScriptScores<'c>);
+/// A [`PainlessAggValues`] on one segment; `.1`: its values are longs.
+pub struct AggLeaf<'c>(pub ScriptScores<'c>, pub bool);
+
+/// `ScriptLongValues`: a number's `longValue`, a boolean as `1` or `0`.
+pub fn agg_long(v: &Value) -> Result<i64> {
+    Ok(match v {
+        Value::Bool(b) => i64::from(*b),
+        Value::Byte(n) => i64::from(*n),
+        Value::Short(n) => i64::from(*n),
+        Value::Int(n) => i64::from(*n),
+        Value::Long(n) => *n,
+        Value::Float(n) => *n as i64,
+        Value::Double(n) => *n as i64,
+        other => {
+            return Err(Error::IllegalArgument(format!(
+            "{AGGREGATION_ERROR}Unsupported script value [{}], expected a number, date, or boolean",
+            other.java_to_string()
+        )))
+        }
+    })
+}
 
 /// `ScriptDoubleValues.toDoubleValue`.
 pub fn agg_double(v: &Value) -> Result<f64> {
@@ -1770,9 +1791,11 @@ impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
             _ => vec![v.clone()],
         };
         for item in &items {
-            out.push(lucene_util::numeric_utils::double_to_sortable_long(
-                agg_double(item)?,
-            ));
+            out.push(if self.1 {
+                agg_long(item)?
+            } else {
+                lucene_util::numeric_utils::double_to_sortable_long(agg_double(item)?)
+            });
         }
         out[from..].sort_unstable();
         Ok(())
