@@ -20,6 +20,7 @@ Each document: {"emb": vector, "tenant": "t<i % TENANTS>"}. Index `knn` has one 
 """
 import concurrent.futures
 import json
+import nodectl
 import os
 import subprocess
 import sys
@@ -56,8 +57,7 @@ def cpu_seconds():
 
 
 def memory(container):
-    out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", container],
-                         capture_output=True, text=True).stdout.strip()
+    out = f"{nodectl.rss(container) / 2**20:.1f}MiB"
     n = next(iter(req("GET", "/_nodes/stats/jvm")["nodes"].values()))
     return {"rss": out.split("/")[0].strip(), "heap_used_mb": round(n["jvm"]["mem"]["heap_used_in_bytes"] / 2**20)}
 

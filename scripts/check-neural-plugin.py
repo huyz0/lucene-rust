@@ -34,12 +34,14 @@ are compared:
   scripts/check-neural-plugin.py [--stock http://localhost:9200] [--keep]
                                  [--only analyze,ingest,neural,sparse,rerank,two_phase,warmup,settings,semantic,mmr]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import argparse, functools, glob, hashlib, importlib.util, json, os, re, shutil, subprocess, sys, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 VERSION = "3.9.0"
 OURS = ("neural-check-rust", 19241)
 STOCK = ("neural-check-stock", 19242)
@@ -946,17 +948,12 @@ def main():
     zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips_dir:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips_dir[0], docker_dir)
-    image = f"lucene-rust-opensearch:{VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     ml.start(OURS[0], OURS[1], image)
     if a.stock:
         stock = ml.Node(a.stock)
     else:
-        ml.start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{VERSION}")
+        ml.start(STOCK[0], STOCK[1], "stock")
         stock = ml.Node(f"http://localhost:{STOCK[1]}")
     ours = ml.Node(f"http://localhost:{OURS[1]}")
     zips = {name: golden.model_zip(name) for name in ("tiny-bert", golden.SPARSE, golden.CROSS)}
@@ -984,7 +981,8 @@ def main():
             sections[name]()
     finally:
         if not a.keep:
-            subprocess.run(["docker", "rm", "-f", OURS[0]] + ([] if a.stock else [STOCK[0]]), capture_output=True)
+            for _n in [OURS[0]] + ([] if a.stock else [STOCK[0]]):
+                nodectl.rm(_n)
     for f in c.failed:
         print("MISMATCH", f)
     print(f"check-neural-plugin: {c.rows - len(c.failed)}/{c.rows} rows match stock")

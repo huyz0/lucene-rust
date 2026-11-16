@@ -36,6 +36,7 @@ Standard library only.
 """
 import argparse
 import json
+import nodectl
 import random
 import subprocess
 import sys
@@ -803,10 +804,10 @@ def wait_green(index, timeout=180):
 
 def restart(container, kill):
     if kill:
-        subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
-        subprocess.run(["docker", "start", container], check=True, capture_output=True)
+        nodectl.kill(container)
+        nodectl.start(container, wait=False)
     else:
-        subprocess.run(["docker", "restart", container], check=True, capture_output=True)
+        nodectl.restart(container, wait=False)
     ok = wait_green(f"{JAVA},{RUST}", 300)
     check(ok, f"cluster green after {'SIGKILL' if kill else 'restart'}")
 
@@ -1085,8 +1086,8 @@ def derived_source(container):
         for i in range(1, 3000, 17):
             # Some of these were deleted above: a 404 on both.
             req("POST", f"/{idx}/_update/d{i}", {"doc": {"i": -i}}, ok=(200, 201, 404))
-    subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
-    subprocess.run(["docker", "start", container], check=True, capture_output=True)
+    nodectl.kill(container)
+    nodectl.start(container, wait=False)
     check(wait_green(f"{java},{rust}", 300), "derived source: green after SIGKILL")
     same("derived source, after SIGKILL")
     # Realtime search: buffered hits, never refreshed, rebuild their _source (and give their
@@ -1173,13 +1174,11 @@ def codecs(container):
         uuid = must("GET", f"/{idx}/_settings")[idx]["settings"]["index"]["uuid"]
         script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
                   f"for f in */index/segments_*; do grep -c -a '{codec}' \"$f\" || true; done")
-        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
-                             capture_output=True, text=True, errors="replace").stdout.split()
+        out = nodectl.exec_(container, script, errors="replace").stdout.split()
         check(len(out) == 2 and all(int(c) > 0 for c in out), f"{idx}: every shard's commit names {codec}: {out}")
         script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
                   f"for d in */index; do grep -l -a -- '{modes[idx]}' \"$d\"/*.si | wc -l; done")
-        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
-                             capture_output=True, text=True, errors="replace").stdout.split()
+        out = nodectl.exec_(container, script, errors="replace").stdout.split()
         check(len(out) == 2 and all(int(c) > 0 for c in out),
               f"{idx}: every shard's segment records stored fields mode {modes[idx]}: {out}")
     stats = must("GET", "/_plugins/lucene_rust/stats")
@@ -1335,8 +1334,7 @@ def encrypted(container):
         script = (f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid} && "
                   "for f in */index/*; do [ \"${f##*/}\" = write.lock ] && continue; "
                   "printf '%s %s\\n' \"$(head -c4 \"$f\")\" \"$f\"; done")
-        out = subprocess.run(["docker", "exec", container, "sh", "-c", script],
-                             capture_output=True, text=True, errors="replace").stdout.splitlines()
+        out = nodectl.exec_(container, script, errors="replace").stdout.splitlines()
         # Commit metadata (segments_N, .si) stays plaintext: OpenSearch's gateway reads it without
         # the store's directory (RustEncryptedDirectory.isCommitMetadata).
         def commit(line):
@@ -1347,8 +1345,8 @@ def encrypted(container):
     stats = must("GET", "/_plugins/lucene_rust/stats")
     check(stats.get("accelerated_errors", 0) == 0, f"no native errors on encrypted indices: {stats.get('accelerated_errors')}")
 
-    subprocess.run(["docker", "kill", "-s", "KILL", container], check=True, capture_output=True)
-    subprocess.run(["docker", "start", container], check=True, capture_output=True)
+    nodectl.kill(container)
+    nodectl.start(container, wait=False)
     check(wait_green("enc_plain,enc_java,enc_rust", 300), "encrypted indices green after SIGKILL")
     compare_searches("encrypted after SIGKILL, accelerated engine", scores=False, java="enc_plain", rust="enc_rust")
     for idx in ("enc_java", "enc_rust"):

@@ -36,13 +36,15 @@ finds or downloads its own the same way, unless --our-libtorch names one
   scripts/check-ml-plugin.py [--stock http://localhost:9200] [--libtorch DIR] [--our-libtorch DIR]
                              [--keep] [--proxy-truststore P12] [--only groups,sparse,encoding,similarity,asymmetric,torchscript,models,tasks,remote,pretrained,modelops,highlighter,agents]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import argparse, base64, glob, hashlib, http.server, importlib.util, io, json, os, shutil, subprocess, sys, threading, time, zipfile
 import struct, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 VERSION = "3.9.0"
 OURS = ("ml-check-rust", 19231)
 STOCK = ("ml-check-stock", 19232)
@@ -116,17 +118,19 @@ JAVA_EXTRA, MOUNT_EXTRA = "", ()
 
 
 def start(name, port, image, env=(), mounts=()):
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-    args = ["docker", "run", "-d", "--name", name, "--network", "host",
-            "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-            "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g" + JAVA_EXTRA,
-            "-e", f"http.port={port}", "-e", f"transport.port={port + 100}",
-            "-e", "cluster.routing.allocation.disk.threshold_enabled=false"]
-    for e in env:
-        args += ["-e", e]
-    for m in tuple(mounts) + MOUNT_EXTRA:
-        args += ["-v", m]
-    subprocess.run(args + [image], check=True, capture_output=True)
+    """Start node NAME on a nodectl variant (`plugin`, or `stock`). A mount `host:container[:ro]`
+    of the old container run is a path now: its container path in env and JVM flags becomes the host's."""
+    paths = {m.split(":")[1]: m.split(":")[0] for m in tuple(mounts) + MOUNT_EXTRA}
+
+    def real(text):
+        for container, host in paths.items():
+            text = text.replace(container, host)
+        return text
+    env = [real(e) for e in env]
+    nodectl.run(name, image, port, transport=port + 100, heap="1g",
+                settings=[e for e in env if "." in e.split("=")[0]],
+                env=[e for e in env if "." not in e.split("=")[0]],
+                java_opts=real(JAVA_EXTRA).split(), keep_java_tool_options=False, wait=False)
 
 
 def wait(node):
@@ -507,12 +511,7 @@ def main():
     zips_dir = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips_dir:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips_dir[0], docker_dir)
-    image = f"lucene-rust-opensearch:{VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     if a.our_libtorch:
         start(OURS[0], OURS[1], image, ("PYTORCH_LIBRARY_PATH=/opt/libtorch",),
               (f"{os.path.abspath(a.our_libtorch)}:/opt/libtorch",))
@@ -525,7 +524,7 @@ def main():
         if a.libtorch:
             env = ("PYTORCH_LIBRARY_PATH=/opt/libtorch", "PYTORCH_VERSION=2.5.1", "PYTORCH_FLAVOR=cpu")
             mounts = (f"{os.path.abspath(a.libtorch)}:/opt/libtorch",)
-        start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{VERSION}", env, mounts)
+        start(STOCK[0], STOCK[1], "stock", env, mounts)
         stock = Node(f"http://localhost:{STOCK[1]}")
     ours = Node(f"http://localhost:{OURS[1]}")
     zips = {name: golden.model_zip(name) for name, _ in golden.MODELS}
@@ -564,7 +563,8 @@ def main():
         for f in c.failed:
             print("MISMATCH", f)
         if not a.keep:
-            subprocess.run(["docker", "rm", "-f", OURS[0]] + ([] if a.stock else [STOCK[0]]), capture_output=True)
+            for _n in [OURS[0]] + ([] if a.stock else [STOCK[0]]):
+                nodectl.rm(_n)
     print(f"check-ml-plugin: {c.rows - len(c.failed)}/{c.rows} rows match stock")
     sys.exit(1 if c.failed else 0)
 

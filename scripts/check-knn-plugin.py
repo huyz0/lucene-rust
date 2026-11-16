@@ -77,12 +77,14 @@ Every search must run in Rust (the plugin's stats show no fallback).
 
   scripts/check-knn-plugin.py [--keep]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import base64, glob, json, math, os, random, shutil, struct, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 VERSION = "3.9.0"
 OURS, STOCK = ("knn-check-rust", 19221), ("knn-check-stock", 19222)
 DIM = 16
@@ -124,12 +126,8 @@ def req(port, method, path, body=None, ndjson=False, timeout=120, ok_errors=Fals
 
 
 def start(name, port, image):
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-    subprocess.run(["docker", "run", "-d", "--name", name, "-p", f"{port}:9200",
-                    "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
-                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false", image],
-                   check=True, capture_output=True)
+    """Start node NAME on a nodectl variant (`plugin`, or `stock`: OpenSearch as shipped)."""
+    nodectl.run(name, image, port, wait=False)
 
 
 def wait(port):
@@ -1284,14 +1282,9 @@ def main():
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     start(OURS[0], OURS[1], image)
-    start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{VERSION}")
+    start(STOCK[0], STOCK[1], "stock")
     failures = []
     try:
         wait(OURS[1])
@@ -1469,10 +1462,11 @@ def main():
         print(f"compared {script_check(failures)} script queries")
     finally:
         if failures:
-            logs = subprocess.run(["docker", "logs", OURS[0]], capture_output=True, text=True)
-            print("\n".join(l for l in (logs.stdout + logs.stderr).splitlines() if "WARN" in l or "ERROR" in l)[-5000:])
+            logs = nodectl.logs(OURS[0])
+            print("\n".join(l for l in logs.splitlines() if "WARN" in l or "ERROR" in l)[-5000:])
         if not keep:
-            subprocess.run(["docker", "rm", "-f", OURS[0], STOCK[0]], capture_output=True)
+            nodectl.rm(OURS[0])
+            nodectl.rm(STOCK[0])
     for f in failures:
         print("FAIL:", f)
     sys.exit(1 if failures else 0)
