@@ -356,14 +356,14 @@ fn a_fragment_outside_the_stored_text_is_an_error() {
     let e = fb
         .create_fragments_with(&r, 4, "tv", &list, 1, &pre, &post, &DefaultEncoder)
         .unwrap_err();
-    assert!(matches!(e, Error::IllegalArgument(_)), "{e}");
+    assert!(matches!(e, Error::StringIndexOutOfBounds(_)), "{e}");
     // the fragment fits, the phrase in it does not
     let mut list = FieldFragList::new(FragListKind::Simple);
     list.add(0, 10, &[far]);
     let e = fb
         .create_fragments_with(&r, 4, "tv", &list, 1, &pre, &post, &DefaultEncoder)
         .unwrap_err();
-    assert!(matches!(e, Error::IllegalArgument(_)), "{e}");
+    assert!(matches!(e, Error::StringIndexOutOfBounds(_)), "{e}");
     // a document without the field stored has no fragments
     let mut list = FieldFragList::new(FragListKind::Simple);
     list.add(0, 10, &[far]);
