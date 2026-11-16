@@ -3701,9 +3701,9 @@ fn open_str<'a>(
                 match &e.kind {
                     SortedSetKind::Single(se) => (
                         OrdColumn::Single(NumericReader::new(data, &se.ords)),
-                        Some(Dict::Dv(
+                        Some(Dict::Dv(Box::new(
                             TermsDict::open(data, &se.terms).map_err(store_err)?,
-                        )),
+                        ))),
                         WithValue::of(data, &se.ords),
                     ),
                     SortedSetKind::Multi { ords, terms } => (
@@ -3721,9 +3721,9 @@ fn open_str<'a>(
             } else if let Some(se) = meta.sorted_entry(num) {
                 (
                     OrdColumn::Single(NumericReader::new(data, &se.ords)),
-                    Some(Dict::Dv(
+                    Some(Dict::Dv(Box::new(
                         TermsDict::open(data, &se.terms).map_err(store_err)?,
-                    )),
+                    ))),
                     WithValue::of(data, &se.ords),
                 )
             } else if meta.numeric_entry(num).is_some()
