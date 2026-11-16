@@ -12,9 +12,10 @@ cd "$(dirname "$0")"
 source ./native-node.sh
 : "${BUILDS:?label=so,...}"; [ "${MODE:-search}" = knn ] || : "${CORPUS:?bulk dir}"
 TAG=${TAG:-ab}; ROUNDS_AB=${ROUNDS_AB:-4}; D=${DATA_DIR:-$NODE_HOME/data}; mkdir -p out
-MODE=${MODE:-search}   # search | knn (NVEC clustered vectors, DIM; `lucene`-engine HNSW)
+MODE=${MODE:-search}   # search | knn | taxis (taxis.py: NYC taxis shapes, CORPUS from `taxis.py prep`) (NVEC clustered vectors, DIM; `lucene`-engine HNSW)
 L=load; T=time; [ "$MODE" = knn ] && { L=knn-load; T=knn-time; }
-SETTINGS=${SETTINGS:-'{}'}; DRV="taskset -c ${DRIVER_CPU:-3} python3 ab.py"
+SETTINGS=${SETTINGS:-'{}'}; PYF=ab.py; [ "$MODE" = taxis ] && PYF=taxis.py
+DRV="taskset -c ${DRIVER_CPU:-3} python3 $PYF"
 IFS=, read -ra B <<< "$BUILDS"; first=${B[0]#*=}
 trap native_stop EXIT
 if [ -z "${SKIP_LOAD:-}" ]; then
@@ -29,4 +30,4 @@ for r in $(seq $ROUNDS_AB); do
   done
 done
 native_stop
-python3 ab.py report "out/$TAG-stock-r*.json" $(for b in "${B[@]}"; do echo "out/$TAG-${b%%=*}-r*.json"; done | tr "\n" " ")
+python3 $PYF report "out/$TAG-stock-r*.json" $(for b in "${B[@]}"; do echo "out/$TAG-${b%%=*}-r*.json"; done | tr "\n" " ")

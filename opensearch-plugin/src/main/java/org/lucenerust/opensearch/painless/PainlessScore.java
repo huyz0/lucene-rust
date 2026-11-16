@@ -428,6 +428,7 @@ public final class PainlessScore {
 
     /** Takes the node's Painless engine from {@code scripts}; without it every script runs in Java. */
     public static void initialize(ScriptService scripts) {
+        scriptService = scripts;
         try {
             Field f = ScriptService.class.getDeclaredField("engines");
             f.setAccessible(true);
@@ -437,6 +438,47 @@ public final class PainlessScore {
         } catch (ReflectiveOperationException | RuntimeException e) {
             engine = null;
         }
+    }
+
+    private static volatile ScriptService scriptService;
+
+    /**
+     * The stored script {@code id} as the node's script service holds it now (the one a request
+     * naming {@code id} compiles), or null when there is none or the service cannot be asked.
+     */
+    public static org.opensearch.script.StoredScriptSource stored(String id) {
+        ScriptService scripts = scriptService;
+        if (scripts == null || id == null) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Method m = ScriptService.class.getDeclaredMethod("getScriptFromClusterState", String.class);
+            m.setAccessible(true);
+            return (org.opensearch.script.StoredScriptSource) m.invoke(scripts, id);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * {@code script} as an inline script: itself, or for a stored script the lang, source and
+     * options its id names now; null for a stored script that cannot be read.
+     */
+    public static org.opensearch.script.Script inline(org.opensearch.script.Script script) {
+        if (script == null || script.getType() != org.opensearch.script.ScriptType.STORED) {
+            return script;
+        }
+        org.opensearch.script.StoredScriptSource source = stored(script.getIdOrCode());
+        if (source == null) {
+            return null;
+        }
+        return new org.opensearch.script.Script(
+            org.opensearch.script.ScriptType.INLINE,
+            source.getLang(),
+            source.getSource(),
+            source.getOptions(),
+            script.getParams()
+        );
     }
 
     /** Uses {@code e} as the node's engine, with its default compiler settings. */
@@ -611,7 +653,13 @@ public final class PainlessScore {
     private static void undefaultedScripts(Object value, String key, java.util.Set<String> out) {
         if (value instanceof Map<?, ?> m) {
             if (key != null && key.endsWith("script") && m.get("id") != null) {
-                out.add(null);
+                // A stored script compiles with its own options, which its source does not show.
+                org.opensearch.script.StoredScriptSource stored = stored(String.valueOf(m.get("id")));
+                if (stored == null) {
+                    out.add(null);
+                } else if (stored.getOptions().keySet().stream().anyMatch(k -> "content_type".equals(k) == false)) {
+                    out.add(stored.getSource());
+                }
             }
             if (m.get("source") instanceof String src && m.get("options") instanceof Map<?, ?> options
                 && options.keySet().stream().anyMatch(k -> "content_type".equals(k) == false)) {

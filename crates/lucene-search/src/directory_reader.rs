@@ -148,6 +148,9 @@ type FieldStats = HashMap<String, (i64, i64, i32)>;
 /// (re-)construct on demand -- see [`DirectoryReader::open_segments`].
 #[derive(Debug, Clone)]
 pub struct SegmentReader {
+    /// Identifies this segment's stored files among all readers in the process, for the per-thread
+    /// chunk cache of a run of nearby documents ([`Self::visit_stored_document`]).
+    stored_serial: u64,
     /// The files the segment's codec adds beside the native ones
     /// ([`lucene_codecs::codecs::CodecFormats::extra_files`]), by extension.
     codec_files: Arc<Vec<(&'static str, Arc<Input>)>>,
@@ -319,6 +322,171 @@ pub struct SegmentReader {
     /// `getReaderCacheHelper()`: this reader's own key -- a reopen that
     /// changes the live docs is a new reader with a new key.
     reader_cache: crate::reader::CacheHelper,
+    /// The numbers of the fields a reader view hides ([`Self::with_hidden_fields`]): their
+    /// postings, doc values, norms, points, vectors, term vectors and stored values are not
+    /// there for any read. `None` for a segment that hides nothing.
+    hidden: Option<Arc<std::collections::HashSet<i32>>>,
+    /// The fields whose keyword or binary doc values this reader shows through a mask
+    /// ([`Self::with_security_view`]), by field number. Their postings, points, norms and
+    /// vectors are not there; their stored values and doc values are, the latter masked.
+    masked: Option<Arc<std::collections::HashMap<i32, MaskedField>>>,
+}
+
+/// A masked field: the mask, and the doc-values metadata its entries carry it in, built when the
+/// field's doc values are first read.
+#[derive(Debug)]
+struct MaskedField {
+    mask: lucene_codecs::value_mask::SharedMask,
+    meta: OnceLock<Arc<DocValuesMeta>>,
+}
+
+/// OpenSearch's `_field_names` metadata field.
+const FIELD_NAMES_FIELD: &str = "_field_names";
+
+/// The `FieldInfo` the security plugin shows for a masked field: its doc values, and nothing
+/// that indexes it -- no postings, points, vectors, norms or term vectors -- so that every count
+/// shortcut agrees with the doc-values view.
+fn masked_field_info(
+    info: &lucene_codecs::field_infos::FieldInfo,
+) -> lucene_codecs::field_infos::FieldInfo {
+    use lucene_codecs::field_infos::{DocValuesSkipIndexType, IndexOptions};
+    let mut shown = info.clone();
+    shown.store_term_vectors = false;
+    shown.omit_norms = true;
+    shown.store_payloads = false;
+    shown.index_options = IndexOptions::None;
+    shown.doc_values_skip_index_type = DocValuesSkipIndexType::None;
+    shown.point_dimension_count = 0;
+    shown.point_index_dimension_count = 0;
+    shown.point_num_bytes = 0;
+    shown.vector_dimension = 0;
+    shown
+}
+
+/// `meta`'s entries for `field_number` with `mask` on each: the doc-values metadata a masked
+/// field is read through. The other fields' entries and the skip indexes are left out -- they
+/// are not what a reader of this field is handed.
+fn masked_meta(
+    meta: &DocValuesMeta,
+    field_number: i32,
+    mask: &lucene_codecs::value_mask::SharedMask,
+) -> DocValuesMeta {
+    let binary = meta
+        .binary
+        .iter()
+        .filter(|e| e.field_number == field_number)
+        .cloned()
+        .map(|mut e| {
+            e.mask = Some(Arc::clone(mask));
+            e
+        })
+        .collect();
+    let sorted = meta
+        .sorted
+        .iter()
+        .filter(|e| e.field_number == field_number)
+        .cloned()
+        .map(|mut e| {
+            e.terms.mask = Some(Arc::clone(mask));
+            e
+        })
+        .collect();
+    let sorted_set = meta
+        .sorted_set
+        .iter()
+        .filter(|e| e.field_number == field_number)
+        .cloned()
+        .map(|mut e| {
+            match &mut e.kind {
+                doc_values::SortedSetKind::Single(se) => se.terms.mask = Some(Arc::clone(mask)),
+                doc_values::SortedSetKind::Multi { terms, .. } => {
+                    terms.mask = Some(Arc::clone(mask));
+                }
+            }
+            e
+        })
+        .collect();
+    DocValuesMeta {
+        binary,
+        sorted,
+        sorted_set,
+        ..DocValuesMeta::default()
+    }
+}
+
+/// A stored-fields visitor that is never told about the fields a view hides
+/// ([`SegmentReader::with_hidden_fields`]): `StoredFieldVisitor.needsField` answers `NO` for them.
+struct VisibleFields<'v> {
+    inner: &'v mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    hidden: &'v std::collections::HashSet<i32>,
+}
+
+impl lucene_codecs::stored_fields::StoredFieldVisitor for VisibleFields<'_> {
+    fn needs_field(
+        &mut self,
+        field_number: i32,
+    ) -> lucene_codecs::stored_fields::Result<lucene_codecs::stored_fields::VisitStatus> {
+        if self.hidden.contains(&field_number) {
+            return Ok(lucene_codecs::stored_fields::VisitStatus::No);
+        }
+        self.inner.needs_field(field_number)
+    }
+    fn string_field(
+        &mut self,
+        field_number: i32,
+        value: &str,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.string_field(field_number, value)
+    }
+    fn binary_field(
+        &mut self,
+        field_number: i32,
+        value: &[u8],
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.binary_field(field_number, value)
+    }
+    fn int_field(
+        &mut self,
+        field_number: i32,
+        value: i32,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.int_field(field_number, value)
+    }
+    fn long_field(
+        &mut self,
+        field_number: i32,
+        value: i64,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.long_field(field_number, value)
+    }
+    fn float_field(
+        &mut self,
+        field_number: i32,
+        value: f32,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.float_field(field_number, value)
+    }
+    fn double_field(
+        &mut self,
+        field_number: i32,
+        value: f64,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.double_field(field_number, value)
+    }
+    fn document_size(&mut self, serialized_len: usize, num_stored_fields: i64) {
+        self.inner.document_size(serialized_len, num_stored_fields);
+    }
+    fn defer_values_from(&self) -> usize {
+        self.inner.defer_values_from()
+    }
+    fn deferred_field(
+        &mut self,
+        field_number: i32,
+        string: bool,
+        length: usize,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.inner.deferred_field(field_number, string, length)
+    }
 }
 
 /// A codec's data file, index or second data file, and metadata file, with
@@ -680,6 +848,175 @@ impl SegmentReader {
         reader
     }
 
+    /// Whether this reader hides the field numbered `field_number`
+    /// ([`Self::with_hidden_fields`]).
+    #[inline]
+    pub fn is_hidden(&self, field_number: i32) -> bool {
+        self.hidden
+            .as_ref()
+            .is_some_and(|h| h.contains(&field_number))
+    }
+
+    /// The numbers of the fields this reader hides, `None` when it hides none.
+    pub fn hidden_fields(&self) -> Option<&std::collections::HashSet<i32>> {
+        self.hidden.as_deref()
+    }
+
+    /// The points files' per-field metadata without the fields this reader hides.
+    fn open_points_meta(
+        &self,
+        kdm: &[u8],
+        kdi: &[u8],
+        kdd: &[u8],
+    ) -> std::result::Result<
+        Vec<(i32, lucene_codecs::points::PointsField)>,
+        lucene_codecs::points::Error,
+    > {
+        let mut meta = lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "")?;
+        if let Some(hidden) = &self.hidden {
+            meta.retain(|(number, _)| !hidden.contains(number));
+        }
+        Ok(meta)
+    }
+
+    /// This segment as a reader that does not show the fields `names` lists: a `FilterLeafReader`
+    /// whose `FieldInfos` lack them and whose terms, doc values, norms, points, vectors, term
+    /// vectors and stored fields answer `null` for them -- field-level security's view. The
+    /// core is shared; everything derived from it (the query cache, attachments, cache keys, skip
+    /// indexes, points metadata) starts empty, so nothing computed from a hidden field can be
+    /// read back through the view.
+    ///
+    /// # Errors
+    /// None today; the signature keeps room for a view that cannot be built.
+    pub fn with_hidden_fields(&self, names: &std::collections::HashSet<String>) -> Result<Self> {
+        self.with_security_view(names, &std::collections::HashMap::new())
+    }
+
+    /// [`Self::with_hidden_fields`], also showing the fields `masks` names through their masks:
+    /// field masking's view. A masked field keeps its stored values and its keyword or binary
+    /// doc values, and the doc values answer what the mask makes of the stored bytes
+    /// ([`lucene_codecs::value_mask`]); its postings, points, norms, vectors and skip index are
+    /// not there, as the security plugin's `FieldInfo` for it says. A name the segment has no
+    /// field for is ignored.
+    ///
+    /// # Errors
+    /// None today; the signature keeps room for a view that cannot be built.
+    pub fn with_security_view(
+        &self,
+        names: &std::collections::HashSet<String>,
+        masks: &std::collections::HashMap<String, lucene_codecs::value_mask::SharedMask>,
+    ) -> Result<Self> {
+        let numbers: std::collections::HashSet<i32> = self
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| names.contains(&f.name))
+            .map(|f| f.number)
+            .collect();
+        let masked: std::collections::HashMap<i32, MaskedField> = self
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| !numbers.contains(&f.number))
+            .filter_map(|f| {
+                masks.get(&f.name).map(|mask| {
+                    (
+                        f.number,
+                        MaskedField {
+                            mask: Arc::clone(mask),
+                            meta: OnceLock::new(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        if numbers.is_empty() && masked.is_empty() {
+            return Ok(self.clone_reader());
+        }
+        let mut reader = self.clone_reader();
+        reader.field_infos = Arc::new(FieldInfos {
+            fields: self
+                .field_infos
+                .fields
+                .iter()
+                .filter(|f| !numbers.contains(&f.number))
+                .map(|f| {
+                    if masked.contains_key(&f.number) {
+                        masked_field_info(f)
+                    } else {
+                        f.clone()
+                    }
+                })
+                .collect(),
+        });
+        // `_field_names` lists, per document, the fields it has a value for: the hidden ones' names
+        // are not found in it, as field-level security's reader filters them.
+        let listed: std::collections::HashSet<Vec<u8>> =
+            names.iter().map(|n| n.as_bytes().to_vec()).collect();
+        // A masked field has no postings; its name stays in `_field_names`, which its `exists`
+        // query reads.
+        let mut unindexed = names.clone();
+        unindexed.extend(masks.keys().cloned());
+        reader.fields = Arc::new(
+            self.fields
+                .without(&unindexed)
+                .without_terms(FIELD_NAMES_FIELD, listed),
+        );
+        let mut all = self.hidden.as_deref().cloned().unwrap_or_default();
+        all.extend(numbers);
+        reader.hidden = (!all.is_empty()).then(|| Arc::new(all));
+        if !masked.is_empty() {
+            let mut all = self
+                .masked
+                .as_deref()
+                .map(|m| {
+                    m.iter()
+                        .map(|(n, f)| {
+                            (
+                                *n,
+                                MaskedField {
+                                    mask: Arc::clone(&f.mask),
+                                    meta: OnceLock::new(),
+                                },
+                            )
+                        })
+                        .collect::<std::collections::HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+            all.extend(masked);
+            reader.masked = Some(Arc::new(all));
+        }
+        reader.attachments = Arc::default();
+        reader.query_cache = Arc::default();
+        reader.skip_indexes = Arc::default();
+        reader.points_meta = Arc::default();
+        reader.core_cache = crate::reader::CacheHelper::new();
+        reader.reader_cache = crate::reader::CacheHelper::new();
+        Ok(reader)
+    }
+
+    /// Whether this reader shows the field numbered `field_number` through a mask
+    /// ([`Self::with_security_view`]).
+    #[inline]
+    pub fn is_masked(&self, field_number: i32) -> bool {
+        self.masked
+            .as_ref()
+            .is_some_and(|m| m.contains_key(&field_number))
+    }
+
+    /// Whether any field of this reader is shown through a mask.
+    pub fn has_masked_fields(&self) -> bool {
+        self.masked.is_some()
+    }
+
+    /// Whether this reader has no index structures for the field numbered `field_number`: no
+    /// postings, points, norms, vectors or skip index. True for a hidden field and for a masked
+    /// one, which keeps only its stored values and its (masked) doc values.
+    #[inline]
+    pub(crate) fn hides_index(&self, field_number: i32) -> bool {
+        self.is_hidden(field_number) || self.is_masked(field_number)
+    }
+
     /// The core's query cache (and its decoded sort columns).
     pub(crate) fn query_cache(&self) -> &crate::SegmentQueryCache {
         &self.query_cache
@@ -736,6 +1073,7 @@ impl SegmentReader {
             None => (None, None, None),
         };
         let reader = SegmentReader {
+            stored_serial: next_stored_serial(),
             codec_files: Arc::default(),
             attachments: Arc::default(),
             simpletext: None,
@@ -783,6 +1121,8 @@ impl SegmentReader {
             lazy_doc_values: None,
             norms_meta,
             norms_data,
+            hidden: None,
+            masked: None,
         };
         Ok(reader.with_lazy_doc_values(lazy))
     }
@@ -1384,6 +1724,7 @@ impl SegmentReader {
         }
 
         Ok(SegmentReader {
+            stored_serial: next_stored_serial(),
             codec_files: Arc::new(codec_files),
             attachments: Arc::default(),
             simpletext: None,
@@ -1437,6 +1778,8 @@ impl SegmentReader {
             lazy_doc_values: None,
             norms_meta,
             norms_data,
+            hidden: None,
+            masked: None,
         })
     }
 
@@ -1489,7 +1832,7 @@ impl SegmentReader {
             return Ok(lucene_codecs::points::PointsReader::empty());
         };
         if self.points_meta.get().is_none() {
-            let parsed = lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "")?;
+            let parsed = self.open_points_meta(kdm, kdi, kdd)?;
             let _ = self.points_meta.set(parsed);
         }
         let meta = self.points_meta.get_or_init(Vec::new);
@@ -1602,6 +1945,9 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         if self.simpletext.is_some() {
             let reader = self.simpletext_flat_vectors()?;
             return Ok(reader.filter(|reader| reader.field(field_number).is_some()));
@@ -1656,6 +2002,9 @@ impl SegmentReader {
             Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'_>>,
         )>,
     > {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         if self.simpletext.is_some() {
             let reader = self.simpletext_flat_vectors()?;
             return Ok(reader
@@ -1690,6 +2039,9 @@ impl SegmentReader {
     /// # Errors
     /// IVF files that do not decode.
     pub fn ivf_for(&self, field_number: i32) -> crate::Result<Option<Arc<lucene_ivf::IvfReader>>> {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         // A field without per-field attributes (a codec whose format is the
         // IVF one itself) is in whichever instance's index holds it.
         let named = self.vectors_instance_of(field_number);
@@ -1733,6 +2085,9 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>> {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         let named = self.vectors_instance_of(field_number);
         for f in self
             .vectors
@@ -1773,6 +2128,9 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<Arc<lucene_disk_hnsw::DiskHnswReader>>> {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         let named = self.vectors_instance_of(field_number);
         for f in self
             .vectors
@@ -1816,6 +2174,9 @@ impl SegmentReader {
     ) -> crate::Result<
         Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'_>>,
     > {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         use lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader;
         let named = self.vectors_instance_of(field_number);
         for f in self
@@ -2050,9 +2411,56 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
-        f.reader_for(&self.segment_id, doc)?
-            .visit_document(doc, visitor)?;
+        let reader = f.reader_for(&self.segment_id, doc)?;
+        match &self.hidden {
+            None => self.visit_run(&reader, doc, visitor)?,
+            Some(hidden) => self.visit_run(
+                &reader,
+                doc,
+                &mut VisibleFields {
+                    inner: visitor,
+                    hidden,
+                },
+            )?,
+        }
         Ok(true)
+    }
+
+    /// `reader`'s document `doc`, from the thread's decompressed chunk when it has the document's, and
+    /// loading the chunk when this read follows a nearby earlier one (see [`SeqFetch`]).
+    fn visit_run(
+        &self,
+        reader: &lucene_codecs::stored_fields::StoredFieldsReader<'_>,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<()> {
+        let mut st = SEQ_FETCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        let result = (|| {
+            if st.serial != self.stored_serial {
+                st = SeqFetch {
+                    serial: self.stored_serial,
+                    last_doc: -1,
+                    chunk: None,
+                };
+            }
+            let near = st.last_doc >= 0 && doc > st.last_doc && doc - st.last_doc <= SEQ_FETCH_GAP;
+            st.last_doc = doc;
+            if st.chunk.as_ref().is_none_or(|c| !c.contains(doc)) {
+                st.chunk = if near {
+                    reader.read_small_chunk(doc, SEQ_FETCH_MAX_CHUNK)?
+                } else {
+                    None
+                };
+            }
+            if let Some((n, bytes)) = st.chunk.as_ref().and_then(|c| c.document(doc)) {
+                return Ok(lucene_codecs::stored_fields::visit_document(
+                    n, bytes, visitor,
+                )?);
+            }
+            Ok(reader.visit_document(doc, visitor)?)
+        })();
+        SEQ_FETCH.with(|s| *s.borrow_mut() = st);
+        result
     }
 
     /// [`Self::visit_stored_document`] with `_source` as OpenSearch reads it: in a segment that
@@ -2222,6 +2630,10 @@ impl SegmentReader {
     ) -> Option<lucene_index::concurrent_writer::KeywordRun<'_>> {
         let lazy = self.lazy_doc_values.as_ref()?;
         let info = self.field_infos.fields.iter().find(|f| f.name == field)?;
+        if self.is_masked(info.number) {
+            // The run is the field's values as they arrived: the masked field shows none of them.
+            return None;
+        }
         lazy.source.keyword_run(info.number)
     }
 
@@ -2234,7 +2646,30 @@ impl SegmentReader {
     /// and stay that way: a caller that has not been taught about generations
     /// keeps working for un-updated fields rather than silently reading a
     /// column that has been superseded for one field and not another.
+    ///
+    /// A masked field ([`Self::with_security_view`]) answers metadata whose terms dictionary and
+    /// binary entries carry the field's mask ([`lucene_codecs::value_mask`]): the readers that
+    /// open them show masked values, which is what makes this the one door a masked value goes
+    /// out of.
     pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
+        let (meta, data) = self.stored_doc_values_for_field(field_number)?;
+        match self.masked.as_deref().and_then(|m| m.get(&field_number)) {
+            None => Some((meta, data)),
+            Some(field) => {
+                let shown = field
+                    .meta
+                    .get_or_init(|| Arc::new(masked_meta(meta, field_number, &field.mask)));
+                Some((&**shown, data))
+            }
+        }
+    }
+
+    /// [`Self::doc_values_for_field`] as stored, whatever the mask. Private: only the masking
+    /// door above reads it.
+    fn stored_doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
+        if self.is_hidden(field_number) {
+            return None;
+        }
         if let Some(core) = &self.simpletext {
             return core
                 .search
@@ -2315,6 +2750,9 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<&doc_values::DocValuesSkipIndex>> {
+        if self.hides_index(field_number) {
+            return Ok(None);
+        }
         if self
             .field_infos
             .fields
@@ -2437,6 +2875,9 @@ impl SegmentReader {
     /// segment has no norms at all or this field omits them
     /// (`FieldInfo.omitNorms`).
     pub fn norms_entry(&self, field_number: i32) -> Option<&NormsEntry> {
+        if self.hides_index(field_number) {
+            return None;
+        }
         self.norms_meta.as_ref()?.entry(field_number)
     }
 
@@ -2707,7 +3148,7 @@ impl SegmentReader {
                 self.doc_values_skipper(field)?
                     .map(|skipper| skipper.global_doc_count())
             } else {
-                info.and_then(|fi| {
+                info.filter(|fi| !self.is_masked(fi.number)).and_then(|fi| {
                     self.doc_values_meta()
                         .and_then(|meta| meta.skipper_meta(fi.number))
                         .map(|skipper| skipper.doc_count)
@@ -2908,6 +3349,9 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> Option<&lucene_codecs::points::PointsField> {
+        if self.hides_index(field_number) {
+            return None;
+        }
         // The metadata `open_points` parses once per segment core, parsed
         // here on first use if no search has yet: a count is answered per
         // request, and parsing `.kdm` each time was most of it.
@@ -2915,8 +3359,7 @@ impl SegmentReader {
             let (kdm, kdi, kdd) = self.points_files()?;
             // No codec suffix, as `open_points` opens them:
             // `Lucene90PointsFormat` is not a per-field format.
-            let parsed =
-                lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "").ok()?;
+            let parsed = self.open_points_meta(kdm, kdi, kdd).ok()?;
             let _ = self.points_meta.set(parsed);
         }
         self.points_meta
@@ -3270,6 +3713,30 @@ struct StoredFiles {
 /// The largest `.fdt` chunk whose residency is checked before it is
 /// advised in ([`StoredFiles::will_need_chunk`]).
 const RESIDENT_CHECK_MAX: usize = 256 << 10;
+
+pub(crate) fn next_stored_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A thread's last stored-fields reads of one segment: the chunk decompressed whole once a read
+/// follows another one close behind it, as Java's sequential reader keeps its `BlockState`, so a
+/// fetch phase over hits in one chunk decompresses it once, not once per hit.
+#[derive(Default)]
+struct SeqFetch {
+    serial: u64,
+    last_doc: i32,
+    chunk: Option<lucene_codecs::stored_fields::DecompressedChunk>,
+}
+
+/// A read this close after the last one (documents ahead) is taken as a run through the chunk.
+const SEQ_FETCH_GAP: i32 = 8;
+/// Chunks over this many plain bytes are read by document, whatever the run.
+const SEQ_FETCH_MAX_CHUNK: usize = 1 << 20;
+
+thread_local! {
+    static SEQ_FETCH: std::cell::RefCell<SeqFetch> = std::cell::RefCell::new(SeqFetch::default());
+}
 
 /// How many recently prefetched chunks a thread remembers.
 const RECENT_CHUNK_SLOTS: usize = 16;
@@ -3851,6 +4318,53 @@ impl DirectoryReader {
         })
     }
 
+    /// This reader with each segment `i` hiding the fields `hidden[i]` names
+    /// ([`SegmentReader::with_hidden_fields`]), under a new cache key: what a search sees through
+    /// field-level security. Segments, doc bases and commit are the reader's own.
+    ///
+    /// # Errors
+    /// A `hidden` of another length than the reader's segment count.
+    pub fn with_hidden_fields(&self, hidden: &[std::collections::HashSet<String>]) -> Result<Self> {
+        self.with_security_view(hidden, &std::collections::HashMap::new())
+    }
+
+    /// [`Self::with_hidden_fields`], also showing the fields `masks` names through their masks
+    /// ([`SegmentReader::with_security_view`]): what a search sees through field masking.
+    ///
+    /// # Errors
+    /// A `hidden` of another length than the reader's segment count.
+    pub fn with_security_view(
+        &self,
+        hidden: &[std::collections::HashSet<String>],
+        masks: &std::collections::HashMap<String, lucene_codecs::value_mask::SharedMask>,
+    ) -> Result<Self> {
+        if hidden.len() != self.segments.len() {
+            return Err(Error::Store(lucene_store::Error::Corrupted(format!(
+                "{} hidden-field sets for {} segments",
+                hidden.len(),
+                self.segments.len()
+            ))));
+        }
+        let segments = self
+            .segments
+            .iter()
+            .zip(hidden)
+            .map(|(segment, names)| segment.with_security_view(names, masks))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DirectoryReader {
+            segment_infos: self.segment_infos.clone(),
+            segments,
+            global_ords: std::sync::Mutex::default(),
+            appended_ords: Arc::default(),
+            ords_cache: None,
+            norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
+            nrt_hold: self.nrt_hold.clone(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            soft_deletes: self.soft_deletes.clone(),
+        })
+    }
+
     pub(crate) fn with_segment_order(&self, order: &[usize]) -> Self {
         debug_assert_eq!(order.len(), self.segments.len());
         let mut doc_base = 0i32;
@@ -4145,9 +4659,9 @@ impl SegmentReader {
         let points = match self.search_points_files().map_err(open)? {
             Some((kdm, kdi, kdd)) => {
                 if self.points_meta.get().is_none() {
-                    let parsed =
-                        lucene_codecs::points::open_meta(kdm, kdi, kdd, &self.segment_id, "")
-                            .map_err(|e| open(e.into()))?;
+                    let parsed = self
+                        .open_points_meta(kdm, kdi, kdd)
+                        .map_err(|e| open(e.into()))?;
                     let _ = self.points_meta.set(parsed);
                 }
                 let meta = self.points_meta.get_or_init(Vec::new);
@@ -4205,8 +4719,7 @@ impl<'a> OpenedSegments<'a> {
             let opened = match r.search_points_files()? {
                 Some((kdm, kdi, kdd)) => {
                     if r.points_meta.get().is_none() {
-                        let parsed =
-                            lucene_codecs::points::open_meta(kdm, kdi, kdd, &r.segment_id, "")?;
+                        let parsed = r.open_points_meta(kdm, kdi, kdd)?;
                         // A race loses nothing: both parsed the same bytes.
                         let _ = r.points_meta.set(parsed);
                     }
@@ -4300,6 +4813,83 @@ mod tests {
         for pair in hits.windows(2) {
             assert!(pair[0].score >= pair[1].score);
         }
+    }
+
+    /// A visitor that fails the test if it is asked about, or handed, a hidden field.
+    struct Spy<'a> {
+        hidden: &'a std::collections::HashSet<i32>,
+        asked: usize,
+        saw: usize,
+    }
+
+    impl lucene_codecs::stored_fields::StoredFieldVisitor for Spy<'_> {
+        fn needs_field(
+            &mut self,
+            n: i32,
+        ) -> lucene_codecs::stored_fields::Result<lucene_codecs::stored_fields::VisitStatus>
+        {
+            assert!(!self.hidden.contains(&n), "asked about hidden field {n}");
+            self.asked += 1;
+            Ok(lucene_codecs::stored_fields::VisitStatus::Yes)
+        }
+        fn string_field(&mut self, n: i32, _: &str) -> lucene_codecs::stored_fields::Result<()> {
+            assert!(!self.hidden.contains(&n));
+            self.saw += 1;
+            Ok(())
+        }
+    }
+
+    /// A view hides every named field from postings, doc values, norms, points and stored
+    /// documents, shows the others as they were, and a hidden `_field_names` entry is not found.
+    #[test]
+    fn a_view_hides_fields_from_every_reader() {
+        let dir = FsDirectory::open(fixture_dir());
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let seg = &reader.segment_readers()[0];
+        let names: std::collections::HashSet<String> = seg
+            .field_infos
+            .fields
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(!names.is_empty());
+        // Nothing to hide: a plain clone with no hidden set.
+        let none = reader
+            .with_hidden_fields(&vec![std::collections::HashSet::new(); 1])
+            .unwrap();
+        assert!(none.segment_readers()[0].hidden_fields().is_none());
+        // A view is its own reader, whatever it hides.
+        let view = reader
+            .with_hidden_fields(std::slice::from_ref(&names))
+            .unwrap();
+        let v = &view.segment_readers()[0];
+        assert!(v.field_infos.fields.is_empty());
+        assert_eq!(v.hidden_fields().unwrap().len(), names.len());
+        for f in &seg.field_infos.fields {
+            assert!(v.is_hidden(f.number) && !seg.is_hidden(f.number));
+            assert!(v.doc_values_for_field(f.number).is_none());
+            assert!(v.norms_entry(f.number).is_none());
+        }
+        assert_eq!(view.doc_freq("body", b"cat").unwrap(), 0);
+        assert!(reader.doc_freq("body", b"cat").unwrap() > 0);
+        // Stored documents: the visitor is never offered a hidden field.
+        let hidden = v.hidden_fields().unwrap();
+        let mut spy = Spy {
+            hidden,
+            asked: 0,
+            saw: 0,
+        };
+        v.visit_stored_document(0, &mut spy).unwrap();
+        let mut plain = Spy {
+            hidden: &std::collections::HashSet::new(),
+            asked: 0,
+            saw: 0,
+        };
+        seg.visit_stored_document(0, &mut plain).unwrap();
+        assert_eq!(spy.asked, 0);
+        assert!(plain.asked >= spy.asked);
+        // Segment count mismatch is refused.
+        assert!(reader.with_hidden_fields(&[]).is_err());
     }
 
     /// `docFreq` is the number of documents holding the term (the fixture has

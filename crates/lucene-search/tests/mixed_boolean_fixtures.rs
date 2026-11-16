@@ -353,3 +353,77 @@ fn nested_disjunction_runs(m: &Manifest, count: usize) -> Vec<(String, String, B
 fn decode(hits: &[(i32, u32)]) -> Vec<(i32, f32)> {
     hits.iter().map(|&(d, b)| (d, f32::from_bits(b))).collect()
 }
+
+/// A profiled run collects what the search does -- the same hits, and with an exact count the
+/// same total -- and times every clause it built: the root, its children by path, each segment
+/// separately.
+#[test]
+fn profiled_run_collects_what_the_search_does_and_times_each_clause() {
+    use lucene_search::profile_search::{profile_query, Collect, Kind};
+
+    let m = Manifest::load();
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
+    let segments = opened.as_open_segments();
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .unwrap()
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let top_n: usize = m.get("top_n").parse().unwrap();
+    let threshold: u64 = m.get("threshold").parse().unwrap();
+    let count: usize = m.get("query_count").parse().unwrap();
+    let mut with_children = 0;
+    for i in 0..count {
+        let text = m.get(&format!("query.{i}")).to_string();
+        let clause = parse(&mut Tokens::new(&text)).rewrite();
+        let query = root(clause.clone());
+        for limit in [threshold, u64::MAX] {
+            let (hits, total) = search_boolean_query_multi_segment_maxscore_counting(
+                &segments, &query, &norms, top_n, limit,
+            )
+            .unwrap_or_else(|e| panic!("{text}: {e}"));
+            let profiled = profile_query(
+                &segments,
+                &Clause::Boolean(Box::new(query.clone())),
+                &norms,
+                Collect::TopScores {
+                    top_n,
+                    total_hits_threshold: limit,
+                },
+            )
+            .unwrap_or_else(|e| panic!("{text}: {e}"));
+            let got: Vec<(i32, u32)> = profiled
+                .hits
+                .iter()
+                .map(|h| (h.doc_id, h.score.to_bits()))
+                .collect();
+            let want: Vec<(i32, u32)> =
+                hits.iter().map(|h| (h.doc_id, h.score.to_bits())).collect();
+            assert_eq!(got, want, "{text} at {limit}: the profiled run's hits");
+            if limit == u64::MAX {
+                assert_eq!(profiled.total, total.value, "{text}: exact total");
+            }
+            // The root is built for each segment that has a scorer, and stepped.
+            let roots: Vec<_> = profiled
+                .nodes
+                .iter()
+                .filter(|n| n.path.is_empty())
+                .collect();
+            assert!(!roots.is_empty() || want.is_empty(), "{text}: a timed root");
+            for r in &roots {
+                assert!(r.timers[Kind::BuildScorer as usize].count() >= 1, "{text}");
+            }
+            if profiled.nodes.iter().any(|n| !n.path.is_empty()) {
+                with_children += 1;
+            }
+        }
+    }
+    assert!(
+        with_children > 0,
+        "some queries have clauses under the root"
+    );
+}

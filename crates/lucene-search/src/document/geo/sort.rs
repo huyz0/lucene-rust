@@ -954,6 +954,19 @@ impl FieldComparator for Comparator {
             _ => Ordering::Equal,
         }
     }
+
+    /// `LatLonPointDistanceComparator.compareTop`: the top value is a
+    /// distance in metres (the sort values a hit reports), compared with the
+    /// document's `haversin2` of its key.
+    fn compare_top(&self, top: &SortValue, v: &SortValue) -> Ordering {
+        match (&self.source, top, v) {
+            (Source::LatLon(_), SortValue::Long(top), SortValue::Long(key)) => {
+                let metres = haversin2(lucene_util::numeric_utils::sortable_long_to_double(*key));
+                top.cmp(&lucene_util::numeric_utils::double_to_sortable_long(metres))
+            }
+            _ => self.compare_values(top, v),
+        }
+    }
 }
 
 struct LeafComparator<'a> {
@@ -1093,13 +1106,18 @@ impl LeafFieldComparator for LeafComparator<'_> {
 /// `LatLonPointDVLeafFieldData` decodes it) against every origin, values
 /// outer and origins inner, each `SloppyMath.haversinMeters(origin, point)`
 /// divided by the unit's metres (`DistanceUnit.convert`), the lot sorted
-/// (`SortingNumericDoubleValues`), then the mode's pick. Only `GeoDistance.ARC`:
-/// `PLANE` goes through `Math.cos`, whose HotSpot intrinsic no portable
-/// code reproduces bit for bit, so the plugin leaves it to OpenSearch. The
-/// comparator is built with no field, so it never skips; nor does this.
+/// (`SortingNumericDoubleValues`), then the mode's pick. `GeoDistance.PLANE`
+/// when `plane` is set (see below). The comparator is built with no field, so it never skips; nor does this.
 ///
 /// A hit's value is `double_to_sortable_long` of the distance, compared as
 /// `Double.compare` compares the doubles (`search_after` included).
+///
+/// With `plane` set the distance is `GeoUtils.planeDistance` instead, and its
+/// `Math.cos` is `StrictMath.cos` (fdlibm): HotSpot's x86-64 intrinsic differs
+/// from it in the last bit for about 3.4% of arguments (and so does stock's
+/// interpreter from its compiled code), so a hit whose distances differ by one
+/// ulp between the two can order differently from a stock node running the
+/// intrinsic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenSearchGeoDistanceSort {
     /// `(lat, lon)` origins, at least one.
@@ -1107,6 +1125,16 @@ pub struct OpenSearchGeoDistanceSort {
     /// The unit's metres (`DistanceUnit.meters`; 1 for metres).
     pub unit_meters: f64,
     pub mode: DistanceMode,
+    /// `GeoDistance.PLANE` instead of `ARC`.
+    pub plane: bool,
+}
+
+/// `GeoUtils.planeDistance`, metres.
+fn plane_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    use lucene_spatial3d::{strict_cos, to_radians};
+    let x = to_radians(lon2 - lon1) * strict_cos(to_radians((lat2 + lat1) / 2.0));
+    let y = to_radians(lat2 - lat1);
+    (x * x + y * y).sqrt() * 6_371_008.771_4
 }
 
 /// OpenSearch's `MultiValueMode` over a document's sorted distances.
@@ -1132,8 +1160,12 @@ impl OpenSearchGeoDistanceSort {
             let lat = GeoEncodingUtils::decode_latitude(doc_value_high(e));
             let lon = GeoEncodingUtils::decode_longitude(doc_value_low(e));
             for &(o_lat, o_lon) in &self.origins {
-                scratch
-                    .push(sloppy_math::haversin_meters(o_lat, o_lon, lat, lon) / self.unit_meters);
+                let metres = if self.plane {
+                    plane_distance(o_lat, o_lon, lat, lon)
+                } else {
+                    sloppy_math::haversin_meters(o_lat, o_lon, lat, lon)
+                };
+                scratch.push(metres / self.unit_meters);
             }
         }
         // `Arrays.sort(double[])`: `Double.compare`'s order.
@@ -1381,6 +1413,7 @@ mod tests {
             origins: origins.clone(),
             unit_meters: 1000.0,
             mode,
+            plane: false,
         };
         let mut scratch = Vec::new();
         let at = |mode| sort(mode).value(&values, &mut Vec::new());
@@ -1403,6 +1436,7 @@ mod tests {
             origins: vec![(0.0, 0.0)],
             unit_meters: 1.0,
             mode: DistanceMode::Median,
+            plane: false,
         };
         assert_eq!(
             one.value(&values, &mut scratch),
@@ -1448,6 +1482,7 @@ mod tests {
             origins: vec![(0.0, 0.0)],
             unit_meters: 1.0,
             mode: DistanceMode::Min,
+            plane: false,
         };
         let src = sort.clone();
         let cmp = src.new_comparator("loc", 3, false);
@@ -1534,6 +1569,7 @@ mod tests {
             origins: vec![(10.0, 20.0), (-5.0, 170.0)],
             unit_meters: 1609.344,
             mode: DistanceMode::Avg,
+            plane: false,
         };
         let os = os.new_comparator("loc", 10, false);
         for cmp in [lucene, os] {

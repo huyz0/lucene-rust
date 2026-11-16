@@ -31,8 +31,8 @@ A request runs native when **all** of these hold:
   aggregations the native side plans (R5: the metrics, `terms`, the histograms,
   ranges, `filter(s)`, `global` and `cardinality`, nested in any combination), and
   `min_score`, `collapse` on a keyword or numeric field (`NativeCollapse`)
-  and `rescore` with `query` rescorers (`NativeRescore`) -- but
-  no `profile`, not `search_type=dfs_query_then_fetch`,
+  `rescore` with `query` rescorers (`NativeRescore`) and `profile` (`NativeProfile`) -- but
+  not `search_type=dfs_query_then_fetch`,
   and no other plugin replacing the top-docs collector. A `post_filter`
   searches the hits as `query AND filter` (the filter a non-scoring clause, as
   `FilteredCollector` leaves the query's score alone) and the aggregations as
@@ -207,8 +207,8 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `aggregations`, `collectors` | the request adds a collector the native side does not run |
 | `min_score` | `min_score` behind a scroll or `terminate_after` |
 | `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort over anything but a plain `TermQuery`, which alone the query cache never holds; a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
-| `sort_*`, `search_after`, `profile` | the request needs something the native top-hits path does not produce |
-| `sort_nested`, `sort_skipping` | a nested key, a `mode: sum` key, a `half_float` or `unsigned_long` key, or the `wildcard` field's key, on a shard with more documents than the total-hits threshold: their native comparators do not skip as Lucene's do past it |
+| `sort_*`, `search_after` | the request needs something the native top-hits path does not produce |
+| `sort_*_nested`, `sort_*_mode_MEDIAN` | a nested `unsigned_long` key; a `median` `unsigned_long` key |
 | `collapse_field`, `collapse_search_after`, `collapse_refused` | `collapse` on a field neither keyword nor numeric; `search_after` with a sort other than the collapse field alone (Lucene refuses it); a multi-valued collapse field (Lucene raises the error) |
 | `rescore`, `rescore_<reason>` | a rescorer other than OpenSearch's `query` one; a rescore query that falls back for `<reason>` |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
@@ -221,13 +221,13 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `boolean_msm_negative` | a `BooleanQuery` with a negative `minimumNumberShouldMatch` |
 | `points_width` | a points range beyond Lucene's own limits (16 dimensions, 16 bytes each); every numeric, `ip` and `geo_point` range is taken |
 | `search_after_geo` | `search_after` (or a sorted scroll's later page) on Lucene's own `_geo_distance` key: its `compareTop` compares metres where the native side holds the haversine sort keys, which no conversion maps back exactly |
-| `sort_geo_plane`, `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator with `distance_type: plane` (`Math.cos`'s HotSpot intrinsic, which no portable code reproduces bit for bit), a nested sort, field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
+| `sort_geo_nested`, `sort_geo_field_data`, `sort_geo_origins`, `sort_geo_reflect` | OpenSearch's `_geo_distance` comparator under a nested sort, field data other than a `geo_point`'s doc values, non-finite or more than 1,024 origins, or fields the plugin cannot read |
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
 | `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
 | `join_parents` | a block join whose parent filter is not a `QueryBitSetProducer` or OpenSearch's bit-set-cache producer |
 | `span_gap`, `span_<Class>` | a `span_near` with a `span_gap`; a span query class outside the encoded set (payload spans) |
 | `interval_<Class>`, `interval_scoring`, `interval_automaton` | an intervals source outside Lucene's own classes (OpenSearch's `script` filter), a payload-filtered term, another scoring function, a multi-term automaton past 65,536 states |
-| `function_score_min_score`, `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | `function_score` with `min_score`; a script function; a function over field data other than plain sorted-numeric doc values (keyword for `random_score`; not `half_float`, `unsigned_long` or `date_nanos`); another decay or function class (geo decays) |
+| `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | a script function that is not Painless or JavaScript; a function over field data of another plugin (keyword for `random_score`; the mapper types of other plugins); a decay class of another plugin or another function class |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
 | `phrase_positions` | a `PhraseQuery` whose terms are not at consecutive positions (the analyzer removed a stopword, leaving a gap) |
 | `field_similarity` | a field scores with a similarity the native side does not compute (a plugin's, or a `scripted` one whose script is not inline Painless or that the static check refuses), or `combined_fields` (BM25F) covers a field that is not default BM25 |
@@ -436,3 +436,38 @@ nodes.
   many large segments can hold more than that setting would allow.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
   OpenSearch 3.9.0 image has 2.34, and `verify-opensearch.sh` checks it).
+
+## Sorts where Lucene drops hits
+
+Lucene's numeric comparators skip documents with the field's points once the queue is full and more than
+`track_total_hits_threshold` (10,000) documents match. That is exact where the points hold the values the
+comparator sorts by. It is not for a `scaled_float` (its points are the scaled longs, read as doubles), a
+`mode: sum` key (a sum passes the values the points bound), and a nested key (the points are the children's):
+stock then returns top hits with documents missing, and which ones depends on the segment layout. The native
+path never skips for those keys, so its hits are the exact sort; `e2e/verify_sort_shapes.py` checks them
+against a brute-force oracle past the threshold, and against stock below it.
+
+## Profile
+
+A search with `profile: true` runs natively as any other, then the query is run once more
+single-threaded through the generic per-clause scorer tree with a timer around every clause
+(`lucene-search/src/exec/profile.rs`, `profile_search.rs`; `profile_blob` in `lucene-engine`). The
+timers are ports of OpenSearch's `Timer` (same sampling, so counts and timings mean what stock's
+do) over `build_scorer`, `next_doc`, `advance`, `match`, `score`, `shallow_advance`,
+`compute_max_score` and `set_min_competitive_score`, kept per clause path and segment.
+`NativeProfile` lays them into OpenSearch's own profile classes: the query tree
+(`QueryProfiler`, serial or concurrent per-slice breakdowns, with the `create_weight` time the
+encoding took), the post_filter's and each rescore query's tree, the collector tree (the shape
+OpenSearch builds, with the time the native calls took), the aggregators' timers (the native pass's
+time split over `build_leaf_collector`, `collect`, `post_collection` and `build_aggregation`, since
+it does not step them apart) and the fetch profile (OpenSearch's own). Differences from stock:
+
+- the query runs twice on a profiled request, so a profiled search costs about twice an unprofiled
+  one; with `profile` off nothing runs and no timer exists;
+- the replay does not skip by competitive score as the native pass does (a field-sorted search)
+  and its bulk scorers differ from Lucene's, so counts such as `next_doc` and `advance` follow
+  the native clause scorers rather than Lucene's;
+- the clauses OpenSearch lists under a multi-term query's rewrite (one `TermQuery` per matched term
+  and segment) and under a `function_score` have no native counterpart and show their
+  `create_weight` time only;
+- a hybrid query's profile is the hybrid root (built as slowly as its slowest sub-query, stepping through every sub-query's documents) over one replayed tree per sub-query, with the collector tree and the aggregators as for any search; its reference is the plugin's own Java hybrid path (`e2e/verify_profile_stock.py`, since a stock node has no neural-search).

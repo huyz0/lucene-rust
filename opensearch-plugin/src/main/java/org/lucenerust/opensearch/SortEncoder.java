@@ -70,6 +70,8 @@ public final class SortEncoder {
     static final byte UNSIGNED_LONG = 10;
     /** A Painless {@code _script} key of type {@code number} ({@link ExtendedEncoder#painlessSort}). */
     static final byte SCRIPT = 11;
+    /** A {@code scaled_float} field ({@code DoubleValuesComparatorSource} over its scaled longs). */
+    static final byte SCALED_FLOAT = 12;
     static final byte REVERSE = 1;
     static final byte MAX = 2;
     /** Key flags' mode field: OpenSearch's {@code MultiValueMode} for its own comparator sources. */
@@ -220,6 +222,9 @@ public final class SortEncoder {
                 } else if (mode != null) {
                     // What the comparator source hands its comparator: `missingObject`.
                     writeLong(out, comparable(type, mode.missing()));
+                    if (type == SCALED_FLOAT) {
+                        writeLong(out, Double.doubleToRawLongBits(mode.inverseScale()));
+                    }
                     if (mode.parents() != null) {
                         writeInt(out, mode.parents().length);
                         out.writeBytes(mode.parents());
@@ -242,12 +247,8 @@ public final class SortEncoder {
             out.write(1);
             writeInt(out, after.doc);
             for (int i = 0; i < fields.length; i++) {
-                if (GeoEncoder.luceneSort(fields[i])) {
-                    // LatLonPointDistanceComparator.compareTop compares metres,
-                    // not the sort keys the native side holds: such a page runs
-                    // on Lucene.
-                    return new Encoded(null, "search_after_geo");
-                }
+                // LatLonPointDistanceComparator.compareTop: the after value is the distance in
+                // metres, which the native comparator compares with each document's own.
                 if (type(unwrap(fields[i])) == STRING) {
                     // A missing term is a value of its own (TermOrdValComparator's null top).
                     if (after.fields[i] == null) {
@@ -283,6 +284,43 @@ public final class SortEncoder {
     }
 
     /**
+     * What Lucene's collector raises for a {@code search_after} it cannot take, or null when it
+     * takes it: no sort at all behind a {@code search_after} ({@code Sort must contain at least one
+     * field}), and a {@code null} after-value for a numeric key, which the comparator unboxes in
+     * {@code setTopValue} (the first such key in sort order; the other key kinds' errors are not
+     * reproduced here). Nothing is raised over a reader without segments, where no comparator is
+     * ever set up.
+     */
+    static RuntimeException searchAfterRefusal(Sort sort, FieldDoc after, int size, IndexReader reader) {
+        if (after == null || size == 0 || reader.leaves().isEmpty()) {
+            return null;
+        }
+        if (sort == null) {
+            return new IllegalArgumentException("Sort must contain at least one field.");
+        }
+        SortField[] fields = sort.getSort();
+        if (after.fields == null || after.fields.length != fields.length) {
+            return null;
+        }
+        for (int i = 0; i < fields.length; i++) {
+            if (after.fields[i] != null) {
+                continue;
+            }
+            String boxed = switch (type(unwrap(fields[i]))) {
+                case LONG -> "Long.longValue";
+                case INT, DOC -> "Integer.intValue";
+                case DOUBLE -> "Double.doubleValue";
+                case FLOAT, SCORE -> "Float.floatValue";
+                default -> null;
+            };
+            if (boxed != null) {
+                return new NullPointerException("Cannot invoke \"java.lang." + boxed + "()\" because \"value\" is null");
+            }
+        }
+        return null;
+    }
+
+    /**
      * Appends {@code f}, a {@code _geo_distance} key, as {@code decode_geo_sort} reads it; returns
      * the reason it cannot run natively, or null.
      */
@@ -305,7 +343,7 @@ public final class SortEncoder {
         writeInt(out, name.length);
         out.writeBytes(name);
         writeLong(out, 0);
-        out.write(geo.lucene() ? 0 : 1);
+        out.write(geo.lucene() ? 0 : geo.plane() ? 2 : 1);
         writeInt(out, geo.lats().length);
         for (int i = 0; i < geo.lats().length; i++) {
             writeLong(out, Double.doubleToRawLongBits(geo.lats()[i]));
@@ -363,7 +401,16 @@ public final class SortEncoder {
      * {@code sum}, {@code avg} and {@code median}: its blob type, its mode flags and the missing value
      * its comparator is given.
      */
-    record Mode(byte type, byte flags, Object missing, byte[] parents, byte[] children, int maxChildren, boolean unlikeSkipping) {}
+    record Mode(
+        byte type,
+        byte flags,
+        Object missing,
+        byte[] parents,
+        byte[] children,
+        int maxChildren,
+        boolean unlikeSkipping,
+        double inverseScale
+    ) {}
 
     private static final String SOURCES = "org.opensearch.index.fielddata.fieldcomparator.";
     private static final Field SORT_MODE = field(IndexFieldData.XFieldComparatorSource.class, "sortMode");
@@ -458,7 +505,7 @@ public final class SortEncoder {
                 return "noskip";
             }
             Object nested = NESTED.get(src);
-            if (nested != null && own) {
+            if (nested != null && type == UNSIGNED_LONG) {
                 return "nested";
             }
             byte[] parents = null;
@@ -506,8 +553,14 @@ public final class SortEncoder {
             // A scaled_float reports DOUBLE but stores its value times the scaling factor as a long:
             // the comparator's values (and the sort values it reports) are the scaled doubles, which
             // the native side does not divide out.
+            double inverseScale = 0;
             if (type == DOUBLE && ifd.getClass().getName().contains("ScaledFloat")) {
-                return "scaled_float";
+                Field factor = Reflect.declared(ifd.getClass(), "scalingFactor");
+                if (factor == null) {
+                    return "scaled_float";
+                }
+                inverseScale = 1d / factor.getDouble(ifd);
+                type = SCALED_FLOAT;
             }
             if (type == LONG) {
                 Field converter = Reflect.declared(src.getClass(), "converter");
@@ -538,8 +591,11 @@ public final class SortEncoder {
             // Where the native answer is Lucene's only while Lucene's comparator does not skip: a
             // nested key and a SUM (see above), and OpenSearch's own comparators, which skip with
             // points the native ones do not read.
-            boolean unlike = nested != null || flags == MODE_SUM || (own && skipping);
-            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()), parents, children, maxChildren, unlike);
+            // A scaled_float is exact natively whatever the mode: Lucene's comparator skips with the
+            // field's points, which hold the scaled longs it reads as doubles, so its own answer past
+            // the threshold drops documents that belong in the top hits.
+            boolean unlike = inverseScale == 0 && (nested != null);
+            return new Mode(type, flags, src.missingObject(MISSING.get(src), f.getReverse()), parents, children, maxChildren, unlike, inverseScale);
         } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
             return "error";
         }
@@ -583,27 +639,6 @@ public final class SortEncoder {
             }
         }
         return any ? out : null;
-    }
-
-    /**
-     * Why {@code fields} runs natively only where Lucene's comparators cannot skip (no more
-     * documents than the total-hits threshold), or null when it runs anywhere: {@code sort_nested}
-     * for a nested key ({@link #NESTED_KEY}), whose field's points are the children's; {@code
-     * sort_skipping} for a key whose native comparator does not skip as Lucene's does ({@link
-     * Mode#unlikeSkipping}, a {@code NonPruningSortField}).
-     */
-    static String skippingReason(SortField[] fields) {
-        String reason = null;
-        for (SortField f : fields) {
-            Mode m = mode(unwrap(f));
-            if (m != null && m.parents() != null) {
-                return "sort_nested";
-            }
-            if ((m != null && m.unlikeSkipping()) || unwrap(f) != f) {
-                reason = "sort_skipping";
-            }
-        }
-        return reason;
     }
 
     /**
@@ -679,7 +714,7 @@ public final class SortEncoder {
             case SCORE -> Float.floatToIntBits(((Number) v).floatValue());
             case DOC, INT -> ((Number) v).intValue();
             case LONG -> ((Number) v).longValue();
-            case DOUBLE, GEO, SCRIPT -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
+            case DOUBLE, SCALED_FLOAT, GEO, SCRIPT -> NumericUtils.doubleToSortableLong(((Number) v).doubleValue());
             case FLOAT, HALF_FLOAT -> NumericUtils.floatToSortableInt(((Number) v).floatValue());
             case SHARD_DOC, UNSIGNED_LONG -> ((Number) v).longValue();
             default -> throw new IllegalArgumentException("sort type " + type);
@@ -692,7 +727,7 @@ public final class SortEncoder {
             case SCORE -> Float.intBitsToFloat((int) v);
             case DOC, INT -> (int) v;
             case LONG -> v;
-            case DOUBLE, SCRIPT -> NumericUtils.sortableLongToDouble(v);
+            case DOUBLE, SCALED_FLOAT, SCRIPT -> NumericUtils.sortableLongToDouble(v);
             case FLOAT, HALF_FLOAT -> NumericUtils.sortableIntToFloat((int) v);
             case SHARD_DOC -> v;
             case UNSIGNED_LONG -> new java.math.BigInteger(Long.toUnsignedString(v));

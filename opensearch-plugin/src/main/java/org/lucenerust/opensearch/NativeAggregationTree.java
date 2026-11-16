@@ -36,6 +36,7 @@ import org.opensearch.search.aggregations.bucket.terms.LongTerms;
 import org.opensearch.search.aggregations.bucket.terms.StringTerms;
 import org.opensearch.search.aggregations.metrics.AbstractHyperLogLogPlusPlus;
 import org.opensearch.search.aggregations.support.CoreValuesSourceType;
+import org.opensearch.search.aggregations.support.ValuesSource;
 import org.opensearch.search.aggregations.support.ValuesSourceConfig;
 import org.opensearch.search.internal.SearchContext;
 
@@ -89,6 +90,8 @@ public final class NativeAggregationTree {
     static final byte REVERSE_NESTED = 16;
     /** A metric over a Painless script's values ({@link ScriptMetricNode}). */
     static final byte SCRIPT_METRIC = 18;
+    /** A prefix: the next node reads a Painless script's values ({@code AGG_SCRIPT_VALUES}). */
+    static final byte SCRIPT_VALUES = 19;
     /** {@code date_histogram} unit codes, in the order {@code agg_tree.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -117,6 +120,10 @@ public final class NativeAggregationTree {
         final List<Node> subs;
         /** The field's {@code missing} value in its column's encoding ({@link #missing}), or null. */
         Long missing;
+        /** A Painless script's spec whose values replace the field's, or null. */
+        byte[] script;
+        /** The script's values are longs ({@code ScriptLongValues}), not doubles. */
+        boolean scriptLong;
 
         Node(AggregatorBase agg, List<Node> subs) {
             this.agg = agg;
@@ -130,6 +137,11 @@ public final class NativeAggregationTree {
             if (missing != null) {
                 out.write(MISSING);
                 writeLong(out, missing);
+            }
+            if (script != null) {
+                out.write(SCRIPT_VALUES);
+                out.write(scriptLong ? 1 : 0);
+                out.writeBytes(script);
             }
             write(out);
         }
@@ -209,6 +221,9 @@ public final class NativeAggregationTree {
         void write(ByteArrayOutputStream out) {
             out.write(METRIC);
             out.write(metric.valueKind());
+            if (metric.valueKind() == NativeAggregations.SCALED) {
+                writeLong(out, Double.doubleToRawLongBits(metric.scale()));
+            }
             out.write(metric.source());
             out.write(metric.needs());
             writeString(out, metric.field());
@@ -486,8 +501,11 @@ public final class NativeAggregationTree {
         final double offset;
         final DoubleBounds hardBounds;
 
-        HistogramNode(AggregatorBase agg, List<Node> subs, String field, byte valueKind, double interval, double offset, DoubleBounds hard) {
+        final double scale;
+
+        HistogramNode(AggregatorBase agg, List<Node> subs, String field, byte valueKind, double scale, double interval, double offset, DoubleBounds hard) {
             super(agg, subs);
+            this.scale = scale;
             this.field = field;
             this.valueKind = valueKind;
             this.interval = interval;
@@ -500,6 +518,9 @@ public final class NativeAggregationTree {
             out.write(HISTOGRAM);
             writeString(out, field);
             out.write(valueKind);
+            if (valueKind == NativeAggregations.SCALED) {
+                writeLong(out, Double.doubleToRawLongBits(scale));
+            }
             writeLong(out, Double.doubleToRawLongBits(interval));
             writeLong(out, Double.doubleToRawLongBits(offset));
             Double min = hardBounds == null ? null : hardBounds.getMin();
@@ -1120,17 +1141,115 @@ public final class NativeAggregationTree {
      * A numeric metric over a script alone ({@code ValuesSource.Numeric.Script}) whose Painless
      * script the native runtime runs, or null.
      */
-    private static Node scriptMetric(AggregatorFactory f, AggregatorBase agg, List<Node> subs, ValuesSourceConfig config)
+    private static Node scriptMetric(SearchContext ctx, AggregatorFactory f, AggregatorBase agg, List<Node> subs, ValuesSourceConfig config)
         throws IllegalAccessException {
-        if (subs.isEmpty() == false || config.missing() != null || config.valueSourceType() != CoreValuesSourceType.NUMERIC) {
+        if (subs.isEmpty() == false
+            || (config.valueSourceType() != CoreValuesSourceType.NUMERIC && config.valueSourceType() != CoreValuesSourceType.DATE)) {
             return null;
+        }
+        Long missing = null;
+        if (config.missing() != null) {
+            missing = missing(ctx, config, NativeAggregations.DOUBLE);
+            if (missing == null) {
+                return null;
+            }
         }
         NativeAggregations.Metric m = NativeAggregations.scriptMetric(f, config);
         if (m == null) {
             return null;
         }
         ByteArrayOutputStream script = new ByteArrayOutputStream();
-        return ExtendedEncoder.painlessAggregation(config.script(), script) == null ? new ScriptMetricNode(agg, m, script.toByteArray()) : null;
+        if (ExtendedEncoder.painlessAggregation(config.script(), script) != null) {
+            return null;
+        }
+        Node n = new ScriptMetricNode(agg, m, script.toByteArray());
+        n.missing = missing;
+        return n;
+    }
+
+    /**
+     * A bucket aggregation over a numeric script's values ({@code ValuesSource.Numeric.Script}) the
+     * native runtime runs: {@code terms} (long or double keys as the script's {@code value_type}
+     * says), {@code histogram}, {@code date_histogram} and the ranges. Null for another
+     * aggregation, or a script that stays in Java.
+     */
+    private static Node scriptValuesNode(
+        SearchContext ctx,
+        AggregatorFactory f,
+        AggregatorBase agg,
+        List<Node> subs,
+        ValuesSourceConfig config,
+        String factory,
+        String aggClass
+    ) throws Exception {
+        if ((config.valueSourceType() != CoreValuesSourceType.NUMERIC && config.valueSourceType() != CoreValuesSourceType.DATE)
+            || config.getValuesSource() instanceof ValuesSource.Numeric == false) {
+            return null;
+        }
+        boolean floating = ((ValuesSource.Numeric) config.getValuesSource()).isFloatingPoint();
+        Node n;
+        boolean longs = false;
+        switch (factory) {
+            case TERMS_FACTORY: {
+                if (aggClass.equals(AGGS + "bucket.terms.NumericTermsAggregator") == false || NativeAggregations.hasIncludeExclude(f)) {
+                    return null;
+                }
+                NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
+                if (t == null || t.thresholds().getMinDocCount() == 0) {
+                    return null;
+                }
+                longs = floating == false;
+                n = new NumericTermsNode(agg, subs, t, longs ? NativeAggregations.LONG : NativeAggregations.DOUBLE);
+                break;
+            }
+            case AGGS + "bucket.histogram.HistogramAggregatorFactory":
+                if (aggClass.equals(AGGS + "bucket.histogram.NumericHistogramAggregator") == false) {
+                    return null;
+                }
+                n = new HistogramNode(
+                    agg,
+                    subs,
+                    "",
+                    NativeAggregations.DOUBLE,
+                    0,
+                    (double) get(agg, "interval"),
+                    (double) get(agg, "offset"),
+                    (DoubleBounds) get(agg, "hardBounds")
+                );
+                break;
+            case AGGS + "bucket.histogram.DateHistogramAggregatorFactory":
+                if (aggClass.equals(AGGS + "bucket.histogram.DateHistogramAggregator") == false) {
+                    return null;
+                }
+                longs = true;
+                n = dateHistogram(agg, subs, "", (Rounding) get(agg, "rounding"), (LongBounds) get(agg, "hardBounds"));
+                break;
+            case AGGS + "bucket.range.RangeAggregatorFactory":
+            case AGGS + "bucket.range.DateRangeAggregatorFactory":
+                if (aggClass.equals(AGGS + "bucket.range.RangeAggregator") == false) {
+                    return null;
+                }
+                n = new RangeNode(agg, subs, "", NativeAggregations.DOUBLE, (RangeAggregator.Range[]) get(agg, "ranges"));
+                break;
+            default:
+                return null;
+        }
+        if (n == null) {
+            return null;
+        }
+        if (config.missing() != null) {
+            n.missing = missing(ctx, config, longs ? NativeAggregations.LONG : NativeAggregations.DOUBLE);
+            if (n.missing == null) {
+                return null;
+            }
+        }
+        ByteArrayOutputStream spec = new ByteArrayOutputStream();
+        if (ExtendedEncoder.painlessAggregation(config.script(), spec) != null) {
+            return null;
+        }
+        n.script = spec.toByteArray();
+        n.scriptLong = longs;
+        return n;
     }
 
     /** One factory and the aggregator built from it, or null when either is not supported. */
@@ -1259,7 +1378,8 @@ public final class NativeAggregationTree {
         // The values-source aggregations: a mapped field, no script or missing value.
         ValuesSourceConfig config = (ValuesSourceConfig) CONFIG.get(f);
         if (config != null && config.script() != null && config.fieldContext() == null) {
-            return scriptMetric(f, agg, subs, config);
+            Node scripted = scriptValuesNode(ctx, f, agg, subs, config, factory, aggClass);
+            return scripted != null ? scripted : scriptMetric(ctx, f, agg, subs, config);
         }
         if (config == null || config.script() != null || config.fieldContext() == null) {
             return null;
@@ -1382,14 +1502,16 @@ public final class NativeAggregationTree {
                 return new CardinalityNode(agg, field, kind, (int) get(agg, "precision"));
             }
             case AGGS + "bucket.histogram.HistogramAggregatorFactory": {
-                if (valueKind < 0 || aggClass.equals(AGGS + "bucket.histogram.NumericHistogramAggregator") == false) {
+                byte histogramKind = NativeAggregations.valueKindWide(type);
+                if (histogramKind < 0 || aggClass.equals(AGGS + "bucket.histogram.NumericHistogramAggregator") == false) {
                     return null;
                 }
                 return new HistogramNode(
                     agg,
                     subs,
                     field,
-                    valueKind,
+                    histogramKind,
+                    NativeAggregations.scale(type),
                     (double) get(agg, "interval"),
                     (double) get(agg, "offset"),
                     (DoubleBounds) get(agg, "hardBounds")
@@ -1414,7 +1536,7 @@ public final class NativeAggregationTree {
                 break;
         }
         // A metric: NativeAggregations' own, with the points shortcut only at the top level.
-        NativeAggregations.Metric m = NativeAggregations.metric(ctx, f, config, top);
+        NativeAggregations.Metric m = NativeAggregations.metric(ctx, f, config, top, true);
         return m == null || subs.isEmpty() == false ? null : new MetricNode(agg, m);
     }
 

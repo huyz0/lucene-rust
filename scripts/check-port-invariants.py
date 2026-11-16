@@ -1108,6 +1108,50 @@ def rule_unsafe_scoped(files, problems, stats):
             )
 
 
+# A masked field's keyword or binary doc values keep their raw ordinals and
+# bytes, and only the value that leaves the engine is masked. The mask is
+# attached to the doc-values entry, so `TermsDict::lookup_ord` and
+# `BinaryReader::value_ref` are the doors that mask. The APIs below read raw
+# term bytes and bypass that door, so every production use must be listed
+# here with the reason it cannot emit the bytes.
+
+RAW_TERM_APIS = re.compile(
+    r"raw_term_at\(|\.raw_term\(\)|TermsCursor::open\(|decode_all_terms\(|SubstringIndex::new\("
+)
+RAW_TERM_ALLOWED = {
+    "crates/lucene-aggs/src/bucket_aggs.rs": "binary search of a raw bound (missing, after) against raw terms; nothing is emitted",
+    "crates/lucene-search/src/exec/ranges.rs": "range and prefix comparison over raw terms, like a TermsEnum seek",
+    "crates/lucene-search/src/global_ords.rs": "builds the ordinal map over raw terms; emitted keys come from lookup_ord",
+    "crates/lucene-facet/src/sortedset.rs": "builds the ordinal map over raw terms; labels come from lookup_ord",
+    "crates/lucene-facet/src/lib.rs": "resolve_labels refuses a masked dictionary before opening the cursor",
+    "crates/lucene-grouping/src/selector.rs": "walks only a dictionary without a mask",
+    "crates/lucene-search/src/reader/segment.rs": "substring index is refused when the entry carries a mask",
+    "crates/lucene-monitor/src/persist.rs": "reads the monitor's own query ids, never user fields",
+}
+RAW_TERM_SKIP = ("crates/lucene-codecs/", "crates/lucene-index/", "crates/lucene-test-framework/", "crates/lucene-store/")
+
+
+def rule_raw_term_choke_point(files, problems, stats):
+    for rel, lines in files:
+        rel = rel.replace(os.sep, "/")
+        if rel.startswith(RAW_TERM_SKIP):
+            continue
+        hits = [k for k, l in enumerate(blank_cfg_test(lines)) if RAW_TERM_APIS.search(strip_comment(l))]
+        if not hits:
+            continue
+        stats["raw_term_sites"] += len(hits)
+        if rel not in RAW_TERM_ALLOWED:
+            problems.append(
+                f"{rel}:{hits[0] + 1}: reads raw term bytes outside the masking choke point. "
+                "Use TermsDict::lookup_ord or BinaryReader::value_ref, or list the file in "
+                "RAW_TERM_ALLOWED with the reason it cannot emit them. "
+                "(docs/mechanical-gates.md#raw-term-choke-point)"
+            )
+    for rel in RAW_TERM_ALLOWED:
+        if not os.path.isfile(os.path.join(ROOT, rel)):
+            problems.append(f"{rel}: listed in RAW_TERM_ALLOWED but missing")
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -1125,6 +1169,7 @@ RULES = (
     ("test-framework-dev-only", rule_test_framework_dev_only),
     ("bench-not-asserting", rule_bench_not_asserting),
     ("unsafe-scoped", rule_unsafe_scoped),
+    ("raw-term-choke-point", rule_raw_term_choke_point),
 )
 
 
@@ -1155,6 +1200,7 @@ def main(argv):
         "test_framework_edges": 0,
         "bench_feature_lists": 0,
         "unsafe_crates_checked": 0,
+        "raw_term_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1180,6 +1226,7 @@ def main(argv):
         print(f"lucene-test-framework edges         : {stats['test_framework_edges']}")
         print(f"bench-runner feature lists          : {stats['bench_feature_lists']}")
         print(f"crates checked for forbid(unsafe)   : {stats['unsafe_crates_checked']}")
+        print(f"raw term reads (all allow-listed)   : {stats['raw_term_sites']}")
 
     if problems:
         for p in problems:

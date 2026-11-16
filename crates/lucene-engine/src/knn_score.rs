@@ -21,8 +21,8 @@
 //! |---|---|
 //! | sub-query | a node |
 //! | `field` | string |
-//! | `space` | `u8`: `0` l2, `1` cosinesimil, `2` innerproduct, `3` l1, `4` linf, `5` hamming |
-//! | `data_type` | `u8`: `0` float, `1` byte or binary, `2` half_float |
+//! | `space` | `u8`: `0` l2, `1` cosinesimil, `2` innerproduct, `3` l1, `4` linf, `5` hamming, `6` hammingbit |
+//! | `data_type` | `u8`: `0` float, `1` byte or binary, `2` half_float, `3` long (hammingbit only; the target is 8 big-endian bytes) |
 //! | `half_cosine` | `u8`: `1` scores cosine as `(1 + cos) / 2` (indexes created on 2.19 or later) |
 //! | target | `u8` `0` then `i32` count and that many `f32`, or `1` then bytes |
 //! | formula | `u8`: `0` `knn_score`'s, `1` a Painless script's ([`crate::knn_painless`], which follows) |
@@ -39,7 +39,7 @@ use lucene_codecs::vectors::{
 use lucene_search::extended_query::ExtendedQuery;
 use lucene_search::function::FunctionScoreQuery;
 use lucene_search::query::Clause;
-use lucene_search::reader::doc_values::get_binary;
+use lucene_search::reader::doc_values::{get_binary, get_sorted_numeric};
 use lucene_search::reader::BinaryDocValues;
 use lucene_search::values_source::{
     BoxDoubleValues, DoubleValues, DoubleValuesSource, ValuesContext,
@@ -53,6 +53,9 @@ use crate::status::Status;
 
 pub const NODE_KNN_SCORE: u8 = 42;
 
+/// `hammingbit`'s space number on the wire (`KnnScoringScriptEngine.HAMMING_BIT_CODE`).
+const HAMMING_BIT_CODE: u8 = 6;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Space {
     L2,
@@ -61,6 +64,10 @@ enum Space {
     L1,
     LInf,
     Hamming,
+    /// The `hammingbit` space over a `long` or a `binary` field: the bits in
+    /// which the value and the query differ, as numbers (a `BigInteger`'s
+    /// `xor`, right aligned).
+    HammingBit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,6 +75,8 @@ enum DataType {
     Float,
     Byte,
     HalfFloat,
+    /// A `long` field's doc values (with `hammingbit`, the target 8 bytes).
+    Long,
 }
 
 #[derive(Debug, Clone)]
@@ -106,9 +115,10 @@ pub fn decode(
         3 => Space::L1,
         4 => Space::LInf,
         5 => Space::Hamming,
+        HAMMING_BIT_CODE => Space::HammingBit,
         other => {
             return Err(invalid(format!(
-                "query tree: knn_score space {other} (expected 0..=5)"
+                "query tree: knn_score space {other} (expected 0..=6)"
             )))
         }
     };
@@ -116,9 +126,10 @@ pub fn decode(
         0 => DataType::Float,
         1 => DataType::Byte,
         2 => DataType::HalfFloat,
+        3 => DataType::Long,
         other => {
             return Err(invalid(format!(
-                "query tree: knn_score data type {other} (expected 0..=2)"
+                "query tree: knn_score data type {other} (expected 0..=3)"
             )))
         }
     };
@@ -157,6 +168,16 @@ pub fn decode(
         }
     };
     let floats = matches!(target, Target::Floats(_));
+    // `hammingbit` reads a long or a binary field, any other space a vector.
+    let hamming_bit = space == Space::HammingBit;
+    let long = data_type == DataType::Long;
+    if long && !(hamming_bit && matches!(&target, Target::Bytes(b) if b.len() == 8))
+        || hamming_bit && (floats || painless.is_some() || !(long || data_type == DataType::Byte))
+    {
+        return Err(invalid(
+            "query tree: knn_score hammingbit target does not match the field's data type",
+        ));
+    }
     if painless
         .as_ref()
         .is_some_and(|p| p.needs_float_target() && data_type == DataType::Byte)
@@ -165,7 +186,7 @@ pub fn decode(
             "query tree: painless cosineSimilarity with a norm over a byte field",
         ));
     }
-    if floats == (data_type == DataType::Byte) || (space == Space::Hamming && floats) {
+    if !long && (floats == (data_type == DataType::Byte) || (space == Space::Hamming && floats)) {
         return Err(invalid(
             "query tree: knn_score target does not match the field's data type",
         ));
@@ -255,7 +276,7 @@ impl KnnScoreSource {
                     1.0 + cos
                 }
             }
-            Space::Hamming => 0.0,
+            Space::Hamming | Space::HammingBit => 0.0,
         }
     }
 
@@ -277,8 +298,49 @@ impl KnnScoreSource {
                 1.0 + (f64::from(sum) / (f64::from(n1) * f64::from(n2)).sqrt()) as f32
             }
             Space::Hamming => 1.0 / (1.0 + xor_bit_count(q, v) as f32),
+            Space::HammingBit => 1.0 / (1.0 + hamming_bit_bytes(q, v) as f32),
         }
     }
+}
+
+/// The bits in which two big-endian unsigned numbers differ (`new
+/// BigInteger(1, q).xor(new BigInteger(1, v)).bitCount()`): aligned at their
+/// low ends, the longer one's extra high bytes counting whole.
+fn hamming_bit_bytes(q: &[u8], v: &[u8]) -> u32 {
+    let (long, short) = if q.len() >= v.len() { (q, v) } else { (v, q) };
+    let split = long.len().saturating_sub(short.len());
+    let (high, low) = long.split_at(split);
+    let high: u32 = high.iter().map(|b| b.count_ones()).sum();
+    let low: u32 = low
+        .iter()
+        .zip(short)
+        .map(|(a, b)| (a ^ b).count_ones())
+        .sum();
+    high.saturating_add(low)
+}
+
+/// The first value of a `binary` field's doc value (`CustomBinaryDocValuesField`:
+/// the count, then each value's length and bytes, sorted), as `doc[field]`'s
+/// `getValue()` reads it; `None` for no value or one the encoding does not hold.
+fn first_binary_value(raw: &[u8]) -> Option<&[u8]> {
+    fn vint(raw: &[u8], at: &mut usize) -> Option<usize> {
+        let mut value = 0usize;
+        for shift in (0..35).step_by(7) {
+            let b = *raw.get(*at)?;
+            *at = at.checked_add(1)?;
+            value |= usize::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                return Some(value);
+            }
+        }
+        None
+    }
+    let mut at = 0;
+    if vint(raw, &mut at)? == 0 {
+        return None;
+    }
+    let len = vint(raw, &mut at)?;
+    raw.get(at..at.checked_add(len)?)
 }
 
 /// A leaf's values: the documents with a vector, ascending, and how to score one.
@@ -325,6 +387,28 @@ impl DoubleValuesSource for KnnScoreSource {
             return Ok(none(me));
         };
         let number = info.number;
+        if self.data_type == DataType::Long {
+            let Target::Bytes(q) = &self.target else {
+                return Ok(none(me));
+            };
+            let q = i64::from_be_bytes(
+                q[..8]
+                    .try_into()
+                    .map_err(|_| Error::IllegalState("hammingbit target is not 8 bytes".into()))?,
+            );
+            let mut values = get_sorted_numeric(reader, &self.field)?;
+            return Ok(Box::new(Scores {
+                next: Box::new(move |doc| {
+                    if !values.advance_exact(doc)? || values.doc_value_count() == 0 {
+                        return me.missing(doc);
+                    }
+                    // `ScriptDocValues.Longs.getValue()`: the smallest value.
+                    let bits = (q ^ values.next_value()?).count_ones();
+                    Ok(Some(1.0 / (1.0 + bits as f32)))
+                }),
+                value: 0.0,
+            }));
+        }
         if info.vector_dimension > 0 {
             let Some((flat, _)) = reader.knn_vectors_for(number)? else {
                 return Ok(none(me));
@@ -374,6 +458,13 @@ impl DoubleValuesSource for KnnScoreSource {
                     return me.missing(doc);
                 }
                 let raw = dv.binary_value();
+                if me.space == Space::HammingBit {
+                    // `doc[field].getValue()`: the first of the field's values.
+                    let (Target::Bytes(q), Some(v)) = (&target, first_binary_value(raw)) else {
+                        return me.missing(doc);
+                    };
+                    return me.bytes(q, v);
+                }
                 match (&target, data_type) {
                     (Target::Bytes(q), _) => me.bytes(q, raw),
                     (Target::Floats(q), DataType::HalfFloat) => {
@@ -456,6 +547,25 @@ impl Ordinals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hamming_bit_aligns_at_the_low_end() {
+        // BigInteger(1, {1, 0xff}) xor BigInteger(1, {0xff}): 0x01 and 0x00 high byte, 0xff ^ 0xff.
+        assert_eq!(hamming_bit_bytes(&[1, 0xff], &[0xff]), 1);
+        assert_eq!(hamming_bit_bytes(&[0xff], &[1, 0xff]), 1);
+        assert_eq!(hamming_bit_bytes(&[0xf0, 0x0f], &[0x0f, 0xf0]), 16);
+        assert_eq!(hamming_bit_bytes(&[], &[0xff, 0x01]), 9);
+    }
+
+    #[test]
+    fn first_binary_value_reads_the_custom_encoding() {
+        // count 2, then (len 2, "ab"), (len 1, "z").
+        let raw = [2u8, 2, b'a', b'b', 1, b'z'];
+        assert_eq!(first_binary_value(&raw), Some(&b"ab"[..]));
+        assert_eq!(first_binary_value(&[0]), None);
+        assert_eq!(first_binary_value(&[1, 5, 1]), None);
+        assert_eq!(first_binary_value(&[]), None);
+    }
     use crate::query_blob::test_support::Blob;
 
     fn node(space: u8, data_type: u8, target: Blob) -> Blob {
@@ -498,6 +608,19 @@ mod tests {
         let bytes = Blob::default().u8(1).bytes(&[1, 2]);
         assert!(decoded(&node(0, 0, floats.clone())).is_ok());
         assert!(decoded(&node(5, 1, bytes.clone())).is_ok());
+        let long = Blob::default().u8(1).bytes(&[0, 0, 0, 0, 0, 0, 0, 5]);
+        assert!(
+            decoded(&node(6, 3, long.clone())).is_ok(),
+            "hammingbit over a long"
+        );
+        assert!(
+            decoded(&node(6, 1, bytes.clone())).is_ok(),
+            "hammingbit over binary"
+        );
+        assert!(
+            decoded(&node(6, 3, bytes.clone())).is_err(),
+            "a long target is 8 bytes"
+        );
         assert!(decoded(&node(6, 0, floats.clone())).is_err(), "space");
         assert!(decoded(&node(0, 3, floats.clone())).is_err(), "data type");
         assert!(

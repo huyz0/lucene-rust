@@ -125,7 +125,6 @@ public final class NativeSelfTest {
     /** Whether {@link #randomSort} may draw {@code _geo_distance} keys (the geo index is being searched). */
     private static boolean geoSorts;
     private static int geoSortPages;
-    private static int geoAfterFallbacks;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -153,6 +152,12 @@ public final class NativeSelfTest {
         if ("leaves".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
+            System.exit(failures > 0 ? 1 : 0);
+        }
+        // SELFTEST_ONLY=security: NativeSelfTestSecurity alone.
+        if ("security".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (security only): %d checks, %d failures%n", checks, failures);
             System.exit(failures > 0 ? 1 : 0);
         }
         // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
@@ -189,6 +194,8 @@ public final class NativeSelfTest {
         geo(new Random(13));
         }
         NativeSelfTestExtended.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSecurity.compared >= 120, "security view queries compared: " + NativeSelfTestSecurity.compared);
         NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
@@ -246,10 +253,9 @@ public final class NativeSelfTest {
         check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
         System.out.printf("NativeSelfTest: %d of %d backward-codecs fixture indexes compared natively%n", bwcCompared, bwc);
         System.out.printf(
-            "NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key (%d search_after pages left to Lucene)%n",
+            "NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key%n",
             geoEncoded,
-            geoSortPages,
-            geoAfterFallbacks
+            geoSortPages
         );
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
@@ -261,7 +267,6 @@ public final class NativeSelfTest {
         check(pointsCompared >= 50, "queries holding an int, float or ip range or a point set compared: " + pointsCompared);
         check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
         check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
-        check(geoAfterFallbacks >= 10, "Lucene geo-distance pages after a hit, left to Lucene: " + geoAfterFallbacks);
         System.out.printf(
             "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score, %d behind min_score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
             checks,
@@ -453,7 +458,7 @@ public final class NativeSelfTest {
         }
     }
 
-    private static void check(boolean ok, String what) {
+    static void check(boolean ok, String what) {
         checks++;
         if (ok == false) {
             failures++;
@@ -523,15 +528,15 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(new ConstantScoreQuery(t), f -> true).blob() != null, "constant score encodes");
         Query wrappedWildcard = new ConstantScoreQuery(new WildcardQuery(new Term("body", "a*b")));
         check(
-            "clause_WildcardQuery".equals(QueryEncoder.encode(wrappedWildcard, f -> true).fallbackReason()),
-            "wrapped wildcard falls back"
+            QueryEncoder.encode(wrappedWildcard, f -> true).blob() != null,
+            "a wildcard under a constant score encodes"
         );
         check("field_similarity".equals(QueryEncoder.encode(t, f -> false).fallbackReason()), "rejected field falls back");
         check(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).blob() != null, "match_all encodes");
         Query phrase = new BooleanQuery.Builder().add(t, Occur.MUST).add(new PhraseQuery("body", "a", "b"), Occur.SHOULD).build();
         check(QueryEncoder.encode(phrase, f -> true).blob() != null, "a phrase clause encodes");
         Query gap = new PhraseQuery.Builder().add(new Term("body", "a"), 0).add(new Term("body", "b"), 2).build();
-        check("phrase_positions".equals(QueryEncoder.encode(gap, f -> true).fallbackReason()), "a phrase with a gap falls back");
+        check(QueryEncoder.encode(gap, f -> true).blob() != null, "a phrase with a gap encodes");
         Query negative = new BooleanQuery.Builder().add(t, Occur.MUST_NOT).build();
         check(QueryEncoder.encode(negative, f -> true).blob() != null, "pure negative encodes (and matches nothing)");
         Query t2 = new TermQuery(new Term("body", "b"));
@@ -547,10 +552,27 @@ public final class NativeSelfTest {
             "msm 2 is fast"
         );
         check(QueryEncoder.isFast(new DisjunctionMaxQuery(List.of(t, t2), 0.3f)), "dismax is fast");
-        check(QueryEncoder.isFast(wrappedWildcard) == false, "a wildcard is not encodable yet");
         check(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).blob() != null, "empty encodes (and matches nothing)");
         check(
-            "query_WildcardQuery".equals(QueryEncoder.encode(new WildcardQuery(new Term("body", "a*b")), f -> true).fallbackReason()),
+            "query_NativeSelfTest".equals(QueryEncoder.encode(new Query() {
+                @Override
+                public String toString(String field) {
+                    return "unknown";
+                }
+
+                @Override
+                public void visit(org.apache.lucene.search.QueryVisitor visitor) {}
+
+                @Override
+                public boolean equals(Object o) {
+                    return this == o;
+                }
+
+                @Override
+                public int hashCode() {
+                    return 1;
+                }
+            }, f -> true).fallbackReason()),
             "an unsupported root reports query_, not clause_"
         );
         check(
@@ -621,16 +643,18 @@ public final class NativeSelfTest {
             "search_after_fields".equals(SortEncoder.encode(new Sort(SortField.FIELD_DOC), new FieldDoc(1, 0f, new Object[0])).fallbackReason()),
             "search_after with the wrong arity falls back"
         );
-        // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
-        BooleanQuery.Builder atCap = new BooleanQuery.Builder();
-        for (int i = 0; i < 1023; i++) {
-            atCap.add(new TermQuery(new Term("body", "t" + i)), Occur.SHOULD);
+        // The native decoder's depth bound: 128 levels encode, a 129th falls back by name.
+        Query deep = new TermQuery(new Term("body", "t"));
+        for (int i = 0; i < 100; i++) {
+            deep = new BooleanQuery.Builder().add(deep, Occur.MUST).build();
         }
-        check(QueryEncoder.encode(atCap.build(), f -> true).blob() != null, "1024 nodes encode");
-        atCap.add(new TermQuery(new Term("body", "t1023")), Occur.SHOULD);
+        check(QueryEncoder.encode(deep, f -> true).blob() != null, "100 nested booleans encode");
+        for (int i = 0; i < 40; i++) {
+            deep = new BooleanQuery.Builder().add(deep, Occur.MUST).build();
+        }
         check(
-            "query_too_large".equals(QueryEncoder.encode(atCap.build(), f -> true).fallbackReason()),
-            "1025 nodes fall back as query_too_large, not a native error"
+            "query_too_deep".equals(QueryEncoder.encode(deep, f -> true).fallbackReason()),
+            "140 nested booleans fall back as query_too_deep, not a native error"
         );
     }
 
@@ -658,7 +682,26 @@ public final class NativeSelfTest {
                 case 3 -> r.nextInt(3) == 0 ? MatchAllDocsQuery.INSTANCE : t;
                 // Phrases need positions: `body` only (`tag` is a keyword).
                 case 4 -> new PhraseQuery(r.nextInt(3) == 0 ? r.nextInt(3) : 0, "body", word(r), word(r));
-                case 5 -> r.nextInt(2) == 0 ? new PhraseQuery("body", word(r), word(r), word(r)) : t;
+                case 5 -> switch (r.nextInt(4)) {
+                    case 0 -> new PhraseQuery("body", word(r), word(r), word(r));
+                    // A stopword removed between terms leaves a gap in the positions.
+                    case 1 -> {
+                        PhraseQuery.Builder b = new PhraseQuery.Builder().setSlop(r.nextInt(3) == 0 ? r.nextInt(3) : 0);
+                        int pos = r.nextInt(2);
+                        for (int i = 0, n = 2 + r.nextInt(3); i < n; i++) {
+                            b.add(new Term("body", word(r)), pos);
+                            pos += 1 + (r.nextInt(3) == 0 ? 1 + r.nextInt(2) : 0);
+                        }
+                        yield b.build();
+                    }
+                    case 2 -> {
+                        org.apache.lucene.search.MultiPhraseQuery.Builder b = new org.apache.lucene.search.MultiPhraseQuery.Builder().setSlop(r.nextInt(3));
+                        b.add(new Term[] { new Term("body", word(r)), new Term("body", word(r)) });
+                        b.add(new Term[] { new Term("body", word(r)) }, 1 + r.nextInt(2));
+                        yield b.build();
+                    }
+                    default -> t;
+                };
                 // The multi-term family, rewritten by the searcher to its constant-score wrapper.
                 case 8 -> {
                     long a = r.nextInt(400), b = a + r.nextInt(200);
@@ -888,7 +931,7 @@ public final class NativeSelfTest {
         }
         NativeAggregations.Plan plan = new NativeAggregations.Plan(
             java.util.stream.IntStream.range(0, AGG_FIELDS.length)
-                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31, 0.0))
+                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31, 0.0, 0.0))
                 .toList()
         );
         long[] counts = new long[AGG_FIELDS.length];
@@ -1074,23 +1117,34 @@ public final class NativeSelfTest {
                     continue fields;
                 }
             }
+            // Buckets are told apart and ranked by the stored value, as OpenSearch's global ordinals
+            // do, and listed by what the reader shows for it: a masked field's value is its mask.
             java.util.TreeMap<BytesRef, Long> counts = new java.util.TreeMap<>();
+            java.util.Map<BytesRef, BytesRef> shown = new java.util.HashMap<>();
             searcher.search(query, new org.apache.lucene.search.CollectorManager<org.apache.lucene.search.SimpleCollector, Void>() {
                 @Override
                 public org.apache.lucene.search.SimpleCollector newCollector() {
                     return new org.apache.lucene.search.SimpleCollector() {
                         org.apache.lucene.index.SortedSetDocValues dv;
+                        org.apache.lucene.index.SortedSetDocValues stored;
 
                         @Override
                         protected void doSetNextReader(org.apache.lucene.index.LeafReaderContext context) throws java.io.IOException {
                             dv = org.apache.lucene.index.DocValues.getSortedSet(context.reader(), field);
+                            stored = org.apache.lucene.index.DocValues.getSortedSet(
+                                org.apache.lucene.index.FilterLeafReader.unwrap(context.reader()),
+                                field
+                            );
                         }
 
                         @Override
                         public void collect(int doc) throws java.io.IOException {
                             if (dv.advanceExact(doc)) {
                                 for (int i = 0; i < dv.docValueCount(); i++) {
-                                    counts.merge(BytesRef.deepCopyOf(dv.lookupOrd(dv.nextOrd())), 1L, Long::sum);
+                                    long ord = dv.nextOrd();
+                                    BytesRef raw = BytesRef.deepCopyOf(stored.lookupOrd(ord));
+                                    counts.merge(raw, 1L, Long::sum);
+                                    shown.putIfAbsent(raw, BytesRef.deepCopyOf(dv.lookupOrd(ord)));
                                 }
                             }
                         }
@@ -1114,7 +1168,7 @@ public final class NativeSelfTest {
                 java.util.TreeMap<BytesRef, Long> kept = new java.util.TreeMap<>();
                 for (int i = 0; i < ranked.size(); i++) {
                     if (i < shardSize) {
-                        kept.put(ranked.get(i).getKey(), ranked.get(i).getValue());
+                        kept.put(shown.get(ranked.get(i).getKey()), ranked.get(i).getValue());
                     } else {
                         wantOther += ranked.get(i).getValue();
                     }
@@ -1217,13 +1271,6 @@ public final class NativeSelfTest {
                 SortEncoder.Encoded enc = SortEncoder.encode(sort, after, track);
                 String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
                     + (track ? " tracking the max score" : "") + (min != null ? " min_score " + min : "");
-                if (after != null && Arrays.stream(sort.getSort()).anyMatch(GeoEncoder::luceneSort)) {
-                    // LatLonPointDistanceComparator.compareTop compares metres:
-                    // Lucene runs the page.
-                    check("search_after_geo".equals(enc.fallbackReason()), what + ": falls back as search_after_geo, not " + enc.fallbackReason());
-                    geoAfterFallbacks++;
-                    break;
-                }
                 if (Arrays.stream(sort.getSort()).anyMatch(k -> SortEncoder.type(k) == SortEncoder.GEO)) {
                     geoSortPages++;
                 }
@@ -2058,8 +2105,8 @@ public final class NativeSelfTest {
         geoSorts = true;
         Random sr = new Random(3);
         check(
-            "sort_geo_plane".equals(SortEncoder.encode(new Sort(openSearchGeoSort(sr, false, org.opensearch.common.geo.GeoDistance.PLANE)), null).fallbackReason()),
-            "a PLANE _geo_distance falls back"
+            SortEncoder.encode(new Sort(openSearchGeoSort(sr, false, org.opensearch.common.geo.GeoDistance.PLANE)), null).blob() != null,
+            "a PLANE _geo_distance encodes"
         );
         check(SortEncoder.encode(new Sort(openSearchGeoSort(sr, true)), null).blob() != null, "an ARC _geo_distance encodes");
         check(

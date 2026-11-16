@@ -207,6 +207,8 @@ pub const SPAN_NOT: u8 = 5;
 pub const SPAN_CONTAINING: u8 = 6;
 pub const SPAN_WITHIN: u8 = 7;
 pub const SPAN_FIELD_MASKING: u8 = 8;
+pub const SPAN_GAP: u8 = 9;
+pub const SPAN_NO_MATCH: u8 = 10;
 
 /// One span query, a tag and its payload:
 ///
@@ -221,6 +223,8 @@ pub const SPAN_FIELD_MASKING: u8 = 8;
 /// | `6` | big, little | `SpanContainingQuery` |
 /// | `7` | big, little | `SpanWithinQuery` |
 /// | `8` | `field`, clause | `FieldMaskingSpanQuery` |
+/// | `9` | `field`, `width: i32` | `SpanNearQuery`'s gap clause |
+/// | `10` | `field` | `SpanMatchNoDocsQuery` |
 ///
 /// Clauses of different fields are refused, as Java's constructors refuse
 /// them.
@@ -278,9 +282,14 @@ pub fn decode_span(
             let field = utf8(c.bytes()?)?.to_string();
             SpanNode::field_masking(decode_span(c, depth.saturating_add(1), nodes)?, field)
         }
+        SPAN_GAP => {
+            let field = utf8(c.bytes()?)?.to_string();
+            SpanNode::gap(field, c.i32()?)
+        }
+        SPAN_NO_MATCH => SpanNode::no_match(utf8(c.bytes()?)?.to_string()),
         other => {
             return Err(invalid(format!(
-                "query tree: unknown span tag {other} (expected 0..={SPAN_FIELD_MASKING})"
+                "query tree: unknown span tag {other} (expected 0..={SPAN_NO_MATCH})"
             )))
         }
     })
@@ -318,7 +327,7 @@ pub const AUTOMATON_NORMAL: u8 = 3;
 
 /// The most states a transferred automaton may have (Lucene's default
 /// determinization work limit is 10 000 states' worth of effort).
-pub const MAX_AUTOMATON_STATES: usize = 1 << 16;
+pub const MAX_AUTOMATON_STATES: usize = 1 << 20;
 
 /// One `IntervalsSource`, as the Java object it was read from -- each tag one
 /// class, its fields in order (`count: i32` before a list, at least one):
@@ -535,7 +544,8 @@ pub fn decode_compiled_automaton(c: &mut Cursor<'_>) -> Result<Automaton, Status
         }
         AUTOMATON_NORMAL => {
             let states = c.length()?;
-            if states == 0 || states > MAX_AUTOMATON_STATES {
+            // Each state is at least its accept byte and transition count on the wire.
+            if states == 0 || states > MAX_AUTOMATON_STATES || states > c.remaining() / 5 {
                 return Err(invalid(format!(
                     "query tree: an automaton of {states} states"
                 )));

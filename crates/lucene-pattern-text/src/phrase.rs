@@ -43,6 +43,10 @@ use crate::format::{decode_args, join, VARIABLE};
 /// tokenizer do not, and need [`PatternPhraseSource::whole_messages_only`].
 pub type Tokenizer = dyn Fn(&str, &mut Vec<(i32, String)>) + Send + Sync;
 
+/// Whether a message's tokens hold a phrase that [`PhraseTokens`] cannot
+/// say (slop, a prefix): the phrase query run over the message.
+pub type Positional = dyn Fn(&[(i32, String)]) -> bool + Send + Sync;
+
 /// A phrase's analyzed terms by position, relative to the first: each
 /// position matches any of its terms (stacked synonyms), as Lucene's
 /// `MultiPhraseQuery` does.
@@ -129,6 +133,20 @@ pub fn pattern_phrase_query(
     Clause::Boolean(Box::new(q))
 }
 
+/// [`pattern_phrase_query`] for a phrase with slop or a prefix: the
+/// `approximation` (its terms, filter-only) and the verifier.
+pub fn pattern_positional_query(approximation: Clause, verifier: PatternPhraseSource) -> Clause {
+    let mut q = BooleanQuery::new();
+    q.filter.push(approximation);
+    q.filter
+        .push(Clause::from(FunctionMatchQuery::with_match_cost(
+            Arc::new(verifier),
+            Arc::new(|v: f64| v != 0.0),
+            MATCH_COST,
+        )));
+    Clause::Boolean(Box::new(q))
+}
+
 /// The verifier's `TwoPhaseIterator.matchCost()`: a doc-values read, and for
 /// some documents a stored-fields read and an analysis.
 const MATCH_COST: f32 = 100.0;
@@ -137,6 +155,8 @@ const MATCH_COST: f32 = 100.0;
 pub struct PatternPhraseSource {
     field: String,
     phrase: PhraseTokens,
+    /// A phrase with slop or a prefix: decided by running it over the tokens.
+    positional: Option<(Arc<Positional>, String)>,
     tokenizer: Arc<Tokenizer>,
     analyzer_key: String,
     template_parts: bool,
@@ -162,9 +182,37 @@ impl PatternPhraseSource {
         Self {
             field: field.into(),
             phrase,
+            positional: None,
             tokenizer,
             analyzer_key: analyzer_key.into(),
             template_parts: true,
+        }
+    }
+
+    /// The verifier of a phrase with slop or a prefix: `positional` decides
+    /// a message's tokens, `description` names the phrase. A template's
+    /// static text never decides it, only a template without variables.
+    pub fn positional(
+        field: impl Into<String>,
+        description: impl Into<String>,
+        positional: Arc<Positional>,
+        tokenizer: Arc<Tokenizer>,
+        analyzer_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            phrase: PhraseTokens::new(Vec::new()),
+            positional: Some((positional, description.into())),
+            tokenizer,
+            analyzer_key: analyzer_key.into(),
+            template_parts: false,
+        }
+    }
+
+    fn holds(&self, tokens: &[(i32, String)]) -> bool {
+        match &self.positional {
+            Some((p, _)) => p(tokens),
+            None => self.phrase.found_in(tokens),
         }
     }
 
@@ -183,13 +231,13 @@ impl PatternPhraseSource {
         if !template.contains(VARIABLE) {
             tokens.clear();
             (self.tokenizer)(template, tokens);
-            return Some(self.phrase.found_in(tokens));
+            return Some(self.holds(tokens));
         }
         if self.template_parts {
             for part in template.split(VARIABLE) {
                 tokens.clear();
                 (self.tokenizer)(part, tokens);
-                if self.phrase.found_in(tokens) {
+                if self.holds(tokens) {
                     return Some(true);
                 }
             }
@@ -237,11 +285,17 @@ impl DoubleValuesSource for PatternPhraseSource {
     }
 
     fn describe(&self) -> String {
+        if let Some((_, d)) = &self.positional {
+            return format!("pattern_phrase({}:{d})", self.field);
+        }
         let terms: Vec<String> = self.phrase.positions().map(|t| t.join("|")).collect();
         format!("pattern_phrase({}:\"{}\")", self.field, terms.join(" "))
     }
 
     fn equality_key(&self) -> String {
+        if let Some((_, d)) = &self.positional {
+            return format!("pattern_phrase({}:{d},{})", self.field, self.analyzer_key);
+        }
         let terms: Vec<String> = self
             .phrase
             .positions
@@ -263,6 +317,7 @@ impl PatternPhraseSource {
         Arc::new(PatternPhraseSource {
             field: self.field.clone(),
             phrase: self.phrase.clone(),
+            positional: self.positional.clone(),
             tokenizer: Arc::clone(&self.tokenizer),
             analyzer_key: self.analyzer_key.clone(),
             template_parts: self.template_parts,
@@ -352,7 +407,7 @@ fn verify(
     *message = join(template, &args).map_err(corrupt)?;
     tokens.clear();
     (source.tokenizer)(message, tokens);
-    Ok(source.phrase.found_in(tokens))
+    Ok(source.holds(tokens))
 }
 
 impl DoubleValues for Values<'_> {
