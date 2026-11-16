@@ -715,6 +715,8 @@ fn visit_span_node(node: &crate::spans::SpanNode, clause: &Clause, visitor: &mut
         N::PayloadScore(p) => with_sub(visitor, Occur::Must, clause, &mut |v| {
             visit_span_node(&p.inner, &sub(&p.inner), v);
         }),
+        // `SpanGapQuery.visit` and `SpanMatchNoDocsQuery.visit`: a leaf
+        N::Gap { .. } | N::NoMatch { .. } => visitor.visit_leaf(clause),
     }
 }
 

@@ -2,7 +2,7 @@
 """Writes the Seismic sparse fixture: indexes made by OpenSearch's neural-search
 plugin (its `lucene` engine), plus the hits neural_sparse queries return on them.
 
-Needs Docker. Runs opensearchproject/opensearch:VERSION, indexes seeded random
+Runs the stock OpenSearch VERSION distribution as a plain process (opensearch-plugin/e2e/nodectl.py), indexes seeded random
 sparse vectors into two indexes (two flushed segments; the same docs force-merged
 to one), runs a set of queries, then copies each shard's Lucene directory to
 fixtures/data/seismic/<index>/ and the queries with their hits to
@@ -11,6 +11,9 @@ fixtures/data/seismic/expected.json.
   scripts/gen-seismic-fixture.py            # VERSION defaults to 3.9.0
 """
 import json, os, random, shutil, subprocess, sys, time, urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402
 
 VERSION = os.environ.get("VERSION", "3.9.0")
 PORT = 19201
@@ -47,11 +50,7 @@ def main():
              "emb": vector(rng, rng.randint(10, 60))} for i in range(DOCS)]
     queries = [vector(rng, rng.randint(5, 40)) for _ in range(12)]
 
-    subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
-    subprocess.run(["docker", "run", "-d", "--name", NAME, "-p", f"{PORT}:9200",
-                    "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
-                    f"opensearchproject/opensearch:{VERSION}"], check=True)
+    nodectl.run(NAME, "stock", PORT, wait=False, version=VERSION)
     for _ in range(120):
         try:
             if req("GET", "/_cluster/health")["status"] in ("green", "yellow"):
@@ -104,8 +103,8 @@ def main():
     for index in expected["indexes"]:
         uuid = req("GET", f"/{index}/_settings")[index]["settings"]["index"]["uuid"]
         req("POST", f"/{index}/_flush")
-        src = f"/usr/share/opensearch/data/nodes/0/indices/{uuid}/0/index"
-        subprocess.run(["docker", "cp", f"{NAME}:{src}", os.path.join(OUT, index)], check=True)
+        src = os.path.join(nodectl.data_dir(NAME), "nodes", "0", "indices", uuid, "0", "index")
+        shutil.copytree(src, os.path.join(OUT, index))
         for f in os.listdir(os.path.join(OUT, index)):
             if f == "write.lock":
                 os.remove(os.path.join(OUT, index, f))
@@ -113,7 +112,7 @@ def main():
         json.dump(expected, f, indent=1, sort_keys=True)
         f.write("\n")
     write_tsv(expected, os.path.join(OUT, "expected.tsv"))
-    subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
+    nodectl.rm(NAME)
 
 
 def write_tsv(expected, path):

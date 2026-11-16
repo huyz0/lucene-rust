@@ -740,6 +740,24 @@ fn compare_keys(sources: &[CompositeSource], a: &[KeyPart], b: &[KeyPart]) -> st
 }
 
 impl AggNode {
+    /// Whether this is a `composite` that reads a numeric or date first
+    /// source sorted from its points on some segment.
+    pub fn composite_reads_points(&self) -> bool {
+        match self {
+            AggNode::Composite {
+                sources,
+                sorted_lead,
+                ..
+            } => {
+                sorted_lead.iter().any(|&b| b)
+                    && sources.first().is_some_and(|s| {
+                        matches!(s.values, CompositeValues::Long | CompositeValues::Date(_))
+                    })
+            }
+            _ => false,
+        }
+    }
+
     /// The node's `missing` value, if it has one.
     fn missing(&self) -> Option<i64> {
         match self {
@@ -1158,6 +1176,7 @@ enum MetricCol {
     Count(Vec<metric_aggs::Count>),
     Min(Vec<metric_aggs::MinOf>),
     Max(Vec<metric_aggs::MaxOf>),
+    Extended(Vec<metric_aggs::Extended>),
 }
 
 /// `$body` with `$f` converting a stored long of `$kind` to its double:
@@ -1190,6 +1209,7 @@ macro_rules! with_metric_col {
             MetricCol::Count($v) => $body,
             MetricCol::Min($v) => $body,
             MetricCol::Max($v) => $body,
+            MetricCol::Extended($v) => $body,
         }
     };
 }
@@ -1198,8 +1218,9 @@ impl MetricCol {
     /// The form keeping the parts `needs` names, as `collect_needs` reads
     /// them: a mix it does not single out keeps every part.
     fn for_needs(needs: u8) -> Self {
-        use metric_aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
+        use metric_aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SQ, NEED_SUM};
         match needs {
+            n if n & NEED_SQ != 0 => Self::Extended(Vec::new()),
             NEED_MIN => Self::Min(Vec::new()),
             NEED_MAX => Self::Max(Vec::new()),
             NEED_COUNT => Self::Count(Vec::new()),
@@ -3832,7 +3853,7 @@ fn collect_composite_sorted(
             ..
         },
         State::Composite(st),
-    ) = (node, state)
+    ) = (node, &mut *state)
     else {
         return Ok(false);
     };
@@ -3842,6 +3863,12 @@ fn collect_composite_sorted(
     let Some(first) = sources.first() else {
         return Ok(false);
     };
+    if matches!(
+        first.values,
+        CompositeValues::Long | CompositeValues::Date(_)
+    ) {
+        return collect_composite_points(node, state, leaf, seg);
+    }
     // `checkIfSortedDocsIsApplicable`: ascending, and a missing bucket only
     // past an `after` and sorted first.
     if !c.sorted_lead
@@ -3914,8 +3941,16 @@ fn collect_composite_sorted(
                 }
             }
         }
+        // A lone source without sub-aggregations: once the term's bucket is
+        // placed, its other documents only add to its count.
+        let lone = sources.len() == 1 && subs.is_empty();
+        let mut placed_bucket: Option<u32> = None;
         for doc in docs {
             if !live.is_none_or(|l| l.get_doc(doc)) {
+                continue;
+            }
+            if let (true, Some(b)) = (lone, placed_bucket) {
+                *slot(&mut st.docs, b as usize) += 1;
                 continue;
             }
             let offered = match second {
@@ -3948,12 +3983,238 @@ fn collect_composite_sorted(
                 if hopeless {
                     break;
                 }
+                if lone && n == 1 {
+                    let key = [Some(first.key(map, ord as i64)?)];
+                    placed_bucket = st
+                        .index
+                        .get(&key[..])
+                        .copied()
+                        .filter(|&b| !st.keys[b as usize].is_empty());
+                }
             }
         }
         // `processBucket`: `queue.isFull() && hasCollected && none competitive`.
         if collected && placed == 0 && ord != from && st.worst.is_some() {
             break;
         }
+    }
+    Ok(true)
+}
+
+/// What [`collect_composite_points`]' walk of a field's points does with each
+/// run of equal values: the buckets it groups them in, ascending, handed to
+/// `flush` one at a time. `flush` answers whether the walk is over.
+struct SortedPoints<'f> {
+    decode: PointDecode,
+    /// The bucket of a value.
+    bucket: &'f dyn Fn(i64) -> Result<i64>,
+    /// Values below it are not read (`after`'s).
+    lower: Option<i64>,
+    current: Option<i64>,
+    docs: Vec<i32>,
+    /// Receives a bucket's documents, ascending and distinct.
+    flush: &'f mut dyn FnMut(i64, &[i32]) -> Result<bool>,
+    done: bool,
+    error: Option<lucene_search::Error>,
+}
+
+impl SortedPoints<'_> {
+    fn add(&mut self, doc: i32, value: i64) {
+        if self.done || self.error.is_some() || self.lower.is_some_and(|l| value < l) {
+            return;
+        }
+        let b = match (self.bucket)(value) {
+            Ok(b) => b,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        if self.current != Some(b) {
+            self.finish();
+            self.current = Some(b);
+        }
+        self.docs.push(doc);
+    }
+
+    /// Hands the current bucket over.
+    fn finish(&mut self) {
+        let Some(b) = self.current.take() else {
+            return;
+        };
+        if self.done || self.error.is_some() {
+            self.docs.clear();
+            return;
+        }
+        self.docs.sort_unstable();
+        self.docs.dedup();
+        match (self.flush)(b, &self.docs) {
+            Ok(over) => self.done = over,
+            Err(e) => self.error = Some(e),
+        }
+        self.docs.clear();
+    }
+}
+
+impl lucene_codecs::points::IntersectVisitor for SortedPoints<'_> {
+    fn compare(&mut self, min: &[u8], max: &[u8]) -> lucene_codecs::points::Relation {
+        use lucene_codecs::points::Relation;
+        let _ = min;
+        if self.done || self.error.is_some() {
+            return Relation::CellOutsideQuery;
+        }
+        match (self.lower, self.decode.decode(max)) {
+            (Some(l), Some(m)) if m < l => Relation::CellOutsideQuery,
+            _ => Relation::CellCrossesQuery,
+        }
+    }
+
+    fn visit(&mut self, _doc_id: i32) {}
+
+    fn visit_with_value(&mut self, doc_id: i32, packed: &[u8]) {
+        if let Some(v) = self.decode.decode(packed) {
+            self.add(doc_id, v);
+        }
+    }
+
+    fn visit_run(&mut self, doc_ids: &[i32], packed: &[u8]) {
+        if let Some(v) = self.decode.decode(packed) {
+            for &d in doc_ids {
+                self.add(d, v);
+            }
+        }
+    }
+}
+
+/// [`collect_composite_sorted`] for a numeric or date first source:
+/// `PointsSortedDocsProducer`, which reads the field's points in value order,
+/// settles each bucket's documents (those of its values, ascending) with
+/// `processBucket`, and stops at the first bucket that placed nothing once
+/// the queue is full. Returns whether the segment was collected.
+fn collect_composite_points(
+    node: &AggNode,
+    state: &mut State,
+    leaf: &mut Leaf<'_>,
+    seg: &OpenSegment<'_>,
+) -> Result<bool> {
+    let (
+        AggNode::Composite {
+            sources,
+            size,
+            subs,
+            ..
+        },
+        State::Composite(st),
+    ) = (node, state)
+    else {
+        return Ok(false);
+    };
+    let Some(c) = leaf.composite.as_deref_mut() else {
+        return Ok(false);
+    };
+    let Some(first) = sources.first() else {
+        return Ok(false);
+    };
+    if !c.sorted_lead
+        || first.reverse
+        || (first.missing_bucket
+            && (c.after.is_none() || matches!(first.missing_order, MissingOrder::Last)))
+        || !leaf.subs.iter().all(any_order)
+    {
+        return Ok(false);
+    }
+    let Some(points) = seg.points else {
+        return Ok(false);
+    };
+    let Some(num) = points.field_number(&first.field) else {
+        return Ok(false);
+    };
+    let Some(pf) = points.reader.field(num) else {
+        return Ok(false);
+    };
+    let Some(decode) = PointDecode::of(ValueKind::Long, pf.bytes_per_dim) else {
+        return Ok(false);
+    };
+    if pf.num_dims != 1 {
+        return Ok(false);
+    }
+    // `after`'s value: nothing below it is read, and its own bucket never
+    // ends the walk.
+    let after = match c.after.as_ref().and_then(|a| a.first()) {
+        Some(AfterPart::Exact(v) | AfterPart::Before(v)) => Some(*v),
+        Some(AfterPart::Missing) | None => None,
+    };
+    for l in c.sources.iter_mut().chain(leaf.subs.iter_mut()) {
+        l.drop_prefetch();
+    }
+    let live = seg.live_docs;
+    let bucket = |v: i64| first.key(&[], v);
+    let mut table: Vec<u32> = Vec::new();
+    let mut flush = |b: i64, docs: &[i32]| -> Result<bool> {
+        let (mut collected, mut placed) = (false, 0usize);
+        // Two keyword sources, the second single-valued: the pair pass of
+        // the sorted keyword read, its table settled per bucket.
+        let second = match (sources.as_slice(), c.sources.as_slice()) {
+            ([_, s1], [_, l1])
+                if s1.values == CompositeValues::Keyword
+                    && matches!(l1.col, Col::Ords(Ords::Single(_), _))
+                    && l1.missing.is_none() =>
+            {
+                Some(s1)
+            }
+            _ => None,
+        };
+        table.clear();
+        if second.is_some() {
+            if let Col::Ords(_, m) = &c.sources[1].col {
+                if m.len() <= MAX_TABULATED_ORDS {
+                    table.resize(m.len(), PAIR_UNSEEN);
+                }
+            }
+        }
+        for &doc in docs {
+            if !live.is_none_or(|l| l.get_doc(doc)) {
+                continue;
+            }
+            let offered = match second {
+                Some(s1) => collect_sorted_pair(
+                    sources,
+                    s1,
+                    *size,
+                    subs,
+                    st,
+                    c,
+                    &mut leaf.subs,
+                    doc,
+                    b,
+                    &mut table,
+                )?,
+                None => {
+                    collect_composite(sources, *size, subs, st, c, &mut leaf.subs, doc, Some(b))?
+                }
+            };
+            if let Some(n) = offered {
+                collected = true;
+                placed += n;
+            }
+        }
+        // `processBucket`: `queue.isFull() && hasCollected && none competitive`.
+        Ok(collected && placed == 0 && after != Some(b) && st.worst.is_some())
+    };
+    let mut visitor = SortedPoints {
+        decode,
+        bucket: &bucket,
+        lower: after,
+        current: None,
+        docs: Vec::new(),
+        flush: &mut flush,
+        done: false,
+        error: None,
+    };
+    points.reader.intersect(num, &mut visitor)?;
+    visitor.finish();
+    if let Some(e) = visitor.error {
+        return Err(e);
     }
     Ok(true)
 }
@@ -9164,6 +9425,118 @@ mod tests {
             panic!()
         };
         assert_eq!(buckets.len(), 3);
+    }
+
+    /// A numeric first source read sorted from its points (stopping once the
+    /// queue is full and a bucket places nothing) lists what the document
+    /// pass lists, paged with `after`, with a keyword second source, a
+    /// sub-aggregation, a multi-valued first field and deleted documents.
+    #[test]
+    fn composite_sorted_points_lead_keeps_the_document_pass_buckets() {
+        use lucene_index::document::{
+            Document, KeywordField, LongPoint, SortedNumericDocValuesField, Store,
+        };
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::merge_policy::upgrade::LATEST;
+
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        {
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", LATEST).unwrap();
+            for i in 0..600i64 {
+                let mut d = Document::new();
+                let lead = (i * 7919) % 53 - 20;
+                for v in if i % 11 == 0 {
+                    vec![lead, lead + 3]
+                } else {
+                    vec![lead]
+                } {
+                    d.add(LongPoint::new("lead", &[v]).unwrap());
+                    d.add(SortedNumericDocValuesField::new("lead", v));
+                }
+                if i % 13 != 0 {
+                    d.add(KeywordField::new(
+                        "second",
+                        format!("k{}", i % 5),
+                        Store::No,
+                    ));
+                }
+                d.add(SortedNumericDocValuesField::new("m", i));
+                w.add_fields_document(&d).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let sources = |second: bool| {
+            let mut v = vec![CompositeSource {
+                field: "lead".to_string(),
+                values: CompositeValues::Long,
+                reverse: false,
+                missing_bucket: false,
+                missing_order: MissingOrder::Default,
+            }];
+            if second {
+                v.push(CompositeSource {
+                    field: "second".to_string(),
+                    values: CompositeValues::Keyword,
+                    reverse: false,
+                    missing_bucket: false,
+                    missing_order: MissingOrder::Default,
+                });
+            }
+            v
+        };
+        let sub = AggNode::Metric {
+            script: None,
+            missing: None,
+            field: "m".to_string(),
+            kind: ValueKind::Long,
+            source: Source::DocValues,
+            needs: 0xff,
+        };
+        for second in [false, true] {
+            for size in [1, 3, 10, 40, 1 << 20] {
+                let mut after: Option<Vec<CompositeAfter>> = None;
+                for _ in 0..6 {
+                    let got = |sorted: bool| {
+                        let node = AggNode::Composite {
+                            sources: sources(second),
+                            size,
+                            after: after.clone(),
+                            sorted_lead: vec![sorted],
+                            subs: vec![sub.clone()],
+                        };
+                        run(&reader, &all(), &[node], &whole(&reader))
+                            .unwrap()
+                            .remove(0)
+                            .remove(0)
+                    };
+                    let (want, sorted) = (got(false), got(true));
+                    // Counts differ for a document with two leading values: both
+                    // passes count it once per distinct value, as OpenSearch does.
+                    assert_eq!(
+                        format!("{sorted:?}"),
+                        format!("{want:?}"),
+                        "second {second} size {size}"
+                    );
+                    let AggResult::Composite { buckets, .. } = want else {
+                        panic!("{want:?}")
+                    };
+                    let Some(last) = buckets.last() else {
+                        break;
+                    };
+                    after = Some(
+                        last.0
+                            .iter()
+                            .map(|v| match v {
+                                CompositeKeyValue::Long(l) => CompositeAfter::Value(*l),
+                                CompositeKeyValue::Term(t) => CompositeAfter::Term(t.clone()),
+                                v => panic!("{v:?}"),
+                            })
+                            .collect(),
+                    );
+                }
+            }
+        }
     }
 
     /// The two-keyword window pass collects what the document pass does, for

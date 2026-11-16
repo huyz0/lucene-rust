@@ -13,13 +13,14 @@ dataset's ground truth, and mean and p99 latency as the client sees it
       [--mappings hnsw,ivf,ivf-f32] [--nprobes 0,32] [--keep]
 
 `<prefix>` names `.base.fbin`, `.query.fbin` and `.gt.ibin` as
-`benchmarks/ivf/prepare.py` writes them. Needs Docker and the plugin zip in
+`benchmarks/ivf/prepare.py` writes them. Needs the plugin zip (the node is a plain process, no Docker) in
 opensearch-plugin/build/distributions (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import glob, importlib.util, json, os, shutil, struct, subprocess, sys, time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
 import benchhttp as bh  # noqa: E402
+import nodectl  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
@@ -74,18 +75,7 @@ def main():
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{ck.VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
-    subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
-    subprocess.run(["docker", "run", "-d", "--name", NODE[0], "-p", f"{NODE[1]}:9200",
-                    "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g",
-                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false", image],
-                   check=True, capture_output=True)
+    nodectl.run(NODE[0], "plugin", NODE[1], heap="2g", wait=False)
     port = NODE[1]
     print(f"# {prefix}: {n} x {dim}, {nq} queries, merge {merge}", file=sys.stderr)
     print("mapping,setting,load_s,docs_per_s,merge_s,store_mb,segments,recall@10,mean_ms,p99_ms,took_mean_ms")
@@ -138,7 +128,7 @@ def main():
                 ck.req(port, "DELETE", f"/{index}")
     finally:
         if "--keep" not in args:
-            subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
+            nodectl.rm(NODE[0])
 
 
 if __name__ == "__main__":

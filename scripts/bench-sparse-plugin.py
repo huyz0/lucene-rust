@@ -10,7 +10,7 @@ recall@10 against the exact top 10 computed here with numpy.
   scripts/bench-sparse-plugin.py [--docs N] [--queries N] [--merged] [--keep]
 
 --merged also force-merges each index to one segment and measures again.
-Needs Docker, numpy and the plugin zip (see check-sparse-plugin.py).
+Needs numpy and the plugin zip (see check-sparse-plugin.py).
 """
 import argparse, importlib.util, json, os, random, statistics, sys, time
 
@@ -137,7 +137,7 @@ def main():
             check.req(port, "GET", "/_cluster/health")
     except Exception:
         sys.argv = [sys.argv[0], "--keep"]
-        image = f"lucene-rust-opensearch:{check.VERSION}"
+        image = "plugin"
         check.start(check.OURS[0], check.OURS[1], image)
         check.start(check.STOCK[0], check.STOCK[1], f"opensearchproject/opensearch:{check.VERSION}")
         for _, port in nodes.values():
@@ -172,7 +172,8 @@ def main():
     print(f"indexing plugin/stock {rate['plugin'] / rate['stock']:.2f}x")
     if not a.keep:
         import subprocess
-        subprocess.run(["docker", "rm", "-f", check.OURS[0], check.STOCK[0]], capture_output=True)
+        check.nodectl.rm(check.OURS[0])
+        check.nodectl.rm(check.STOCK[0])
 
 
 if __name__ == "__main__":

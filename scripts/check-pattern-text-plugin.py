@@ -20,12 +20,14 @@ the same messages:
 
   scripts/check-pattern-text-plugin.py [--keep]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import glob, json, os, shutil, subprocess, sys, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 VERSION = "3.9.0"
 NAME, PORT = "pattern-text-check-rust", 19217
 DOCS = 3000
@@ -80,12 +82,7 @@ def must(method, path, body=None, ndjson=False):
 
 
 def start(image, heap="1g"):
-    subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
-    subprocess.run(["docker", "run", "-d", "--name", NAME, "-p", f"{PORT}:9200",
-                    "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", f"OPENSEARCH_JAVA_OPTS=-Xms{heap} -Xmx{heap}",
-                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false", image],
-                   check=True, capture_output=True)
+    nodectl.run(NAME, image, PORT, heap=heap, wait=False)
     for _ in range(150):
         try:
             if must("GET", "/_cluster/health")["status"] in ("green", "yellow"):
@@ -97,21 +94,15 @@ def start(image, heap="1g"):
 
 
 def build_image():
-    """The pinned OpenSearch image with the built plugin installed."""
+    """The nodectl variant of the pinned OpenSearch with the built plugin installed."""
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
-    return image
+    return "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
 
 
 def stop():
-    subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
+    nodectl.rm(NAME)
 
 
 def index(name, engine, field_type, docs, deleted):
@@ -236,8 +227,8 @@ def main():
             print(f"size {name}: {size} bytes")
     finally:
         if failures:
-            logs = subprocess.run(["docker", "logs", NAME], capture_output=True, text=True)
-            print("\n".join(l for l in (logs.stdout + logs.stderr).splitlines() if "WARN" in l or "ERROR" in l)[-5000:])
+            logs = nodectl.logs(NAME)
+            print("\n".join(l for l in logs.splitlines() if "WARN" in l or "ERROR" in l)[-5000:])
         if not keep:
             stop()
     for f in failures[:40]:

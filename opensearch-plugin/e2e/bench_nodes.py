@@ -20,6 +20,7 @@ import bisect
 import concurrent.futures
 import glob
 import json
+import nodectl
 import os
 import random
 import statistics
@@ -132,6 +133,11 @@ def shapes():
         ("composite category+tag", {"size": 0, "aggs": {"a": {"composite": {"size": 100, "sources": [{"c": {"terms": {"field": "category"}}}, {"t": {"terms": {"field": "tag"}}}]}}}}),
         ("composite category+tag > avg price", {"size": 0, "aggs": {"a": {"composite": {"size": 100, "sources": [{"c": {"terms": {"field": "category"}}}, {"t": {"terms": {"field": "tag"}}}]}, "aggs": {"p": {"avg": {"field": "price"}}}}}}),
         ("composite category+tag, filtered", {"size": 0, "query": {"match": {"body": "t8"}}, "aggs": {"a": {"composite": {"size": 100, "sources": [{"c": {"terms": {"field": "category"}}}, {"t": {"terms": {"field": "tag"}}}]}}}}),
+        ("composite tag+category (first field > size)", {"size": 0, "aggs": {"a": {"composite": {"size": 100, "sources": [{"t": {"terms": {"field": "tag"}}}, {"c": {"terms": {"field": "category"}}}]}}}}),
+        ("composite category+tag, size 10", {"size": 0, "aggs": {"a": {"composite": {"size": 10, "sources": [{"c": {"terms": {"field": "category"}}}, {"t": {"terms": {"field": "tag"}}}]}}}}),
+        ("composite num+category (long first)", {"size": 0, "aggs": {"a": {"composite": {"size": 100, "sources": [{"n": {"terms": {"field": "num"}}}, {"c": {"terms": {"field": "category"}}}]}}}}),
+        ("composite ts day+category (date first)", {"size": 0, "aggs": {"a": {"composite": {"size": 100, "sources": [{"d": {"date_histogram": {"field": "ts", "calendar_interval": "day"}}}, {"c": {"terms": {"field": "category"}}}]}}}}),
+        ("composite tag+category after", {"size": 0, "aggs": {"a": {"composite": {"size": 100, "after": {"t": "g3", "c": "c20"}, "sources": [{"t": {"terms": {"field": "tag"}}}, {"c": {"terms": {"field": "category"}}}]}}}}),
         ("terms agg on tag, filtered", {"size": 0, "query": {"match": {"body": "t8"}}, "aggs": {"a": {"terms": {"field": "tag", "size": 20}}}}),
         ("date_histogram by month", {"size": 0, "aggs": {"a": {"date_histogram": {"field": "ts", "calendar_interval": "month"}}}}),
         ("stats on price", {"size": 0, "aggs": {"a": {"stats": {"field": "price"}}}}),
@@ -141,13 +147,11 @@ def shapes():
 
 
 def docker_mem(container):
-    if container == "native":  # a node started by benchmarks/native-node/native-node.sh: no container
+    if container == "native":  # a node started by benchmarks/native-node/native-node.sh
         pid = subprocess.run(["pgrep", "-f", "org.opensearch.bootstrap.OpenSearch"], capture_output=True, text=True).stdout.split()[0]
         kb = int(subprocess.run(["ps", "-o", "rss=", "-p", pid], capture_output=True, text=True).stdout)
         return f"{kb / 2**10:.1f}MiB"
-    out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", container],
-                         capture_output=True, text=True).stdout.strip()
-    return out.split("/")[0].strip()
+    return f"{nodectl.rss(container) / 2**20:.1f}MiB"  # a node started by nodectl
 
 
 def jvm_heap():

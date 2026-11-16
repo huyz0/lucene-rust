@@ -136,6 +136,124 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
     })
 }
 
+/// Opens a view of the reader `base` names: its segments, each hiding the fields the `hidden`
+/// blob lists for it, and masked with these live docs -- what a search sees through a reader
+/// wrapper that filters fields and documents (the security plugin's field- and document-level
+/// security). Nothing is read from disk. `base` stays open and independent: closing either leaves
+/// the other searchable.
+///
+/// `hidden` holds, for each of the `segment_count` segments in order, a little-endian `u32` count
+/// of names, then each name as a little-endian `u32` byte length and its UTF-8 bytes; a name the
+/// segment has no field for is ignored. `expected_max_docs`, `live_words` and `live_word_counts`
+/// are [`ffi_open_jvm_reader`]'s.
+///
+/// # Safety
+/// `hidden` must be valid for `hidden_len` bytes, `expected_max_docs` and (when non-null)
+/// `live_word_counts` for `segment_count` elements each, `live_words` for the sum of
+/// `live_word_counts` `u64`s, and `out_handle` for one `u64` write.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_open_jvm_reader_view(
+    base: u64,
+    hidden: *const u8,
+    hidden_len: usize,
+    expected_max_docs: *const i32,
+    segment_count: usize,
+    live_words: *const u64,
+    live_word_counts: *const usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(|| {
+        if out_handle.is_null() || (expected_max_docs.is_null() && segment_count > 0) {
+            return Err(FfiStatus::NullPointer);
+        }
+        // SAFETY: caller contract.
+        let hidden_bytes = unsafe { bytes_from_raw(hidden, hidden_len)? };
+        let hidden_sets = parse_hidden_fields(hidden_bytes, segment_count)?;
+        let (expected, counts): (&[i32], Option<&[usize]>) = if segment_count == 0 {
+            (&[], None)
+        } else {
+            // SAFETY: caller contract, non-null checked above / here.
+            unsafe {
+                (
+                    std::slice::from_raw_parts(expected_max_docs, segment_count),
+                    (!live_word_counts.is_null())
+                        .then(|| std::slice::from_raw_parts(live_word_counts, segment_count)),
+                )
+            }
+        };
+        let total_words = counts
+            .unwrap_or(&[])
+            .iter()
+            .try_fold(0usize, |acc, &c| acc.checked_add(c))
+            .ok_or_else(|| {
+                set_last_error("live-docs word counts overflow");
+                FfiStatus::InvalidArgument
+            })?;
+        if total_words > 0 && live_words.is_null() {
+            return Err(FfiStatus::NullPointer);
+        }
+        let words: &[u64] = if total_words == 0 {
+            &[]
+        } else {
+            // SAFETY: caller contract: `live_words` holds the sum of the counts.
+            unsafe { std::slice::from_raw_parts(live_words, total_words) }
+        };
+        let base = lookup(
+            base,
+            "ffi_open_jvm_reader_view: unknown or already-closed base handle",
+        )?;
+        let opened =
+            lucene_engine::reader_handle::open_view(&base, &hidden_sets, expected, counts, words)?;
+        let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(opened))?;
+        // SAFETY: caller contract.
+        unsafe { *out_handle = handle };
+        Ok(())
+    })
+}
+
+/// [`ffi_open_jvm_reader_view`]'s `hidden` blob: per segment, the names of its hidden fields.
+fn parse_hidden_fields(
+    bytes: &[u8],
+    segment_count: usize,
+) -> Result<Vec<std::collections::HashSet<String>>, FfiStatus> {
+    fn bad(what: &str) -> FfiStatus {
+        set_last_error(format!("the hidden-fields blob is malformed: {what}"));
+        FfiStatus::InvalidArgument
+    }
+    fn u32_at(bytes: &[u8], at: &mut usize) -> Result<usize, FfiStatus> {
+        let end = at.checked_add(4).ok_or_else(|| bad("offset"))?;
+        let raw: [u8; 4] = bytes
+            .get(*at..end)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| bad("truncated"))?;
+        *at = end;
+        usize::try_from(u32::from_le_bytes(raw)).map_err(|_| bad("length"))
+    }
+    let mut at = 0usize;
+    let mut sets = Vec::new();
+    for _ in 0..segment_count {
+        let n = u32_at(bytes, &mut at)?;
+        let mut set = std::collections::HashSet::new();
+        for _ in 0..n {
+            let len = u32_at(bytes, &mut at)?;
+            let end = at.checked_add(len).ok_or_else(|| bad("name length"))?;
+            let name = bytes.get(at..end).ok_or_else(|| bad("truncated name"))?;
+            set.insert(
+                std::str::from_utf8(name)
+                    .map_err(|_| bad("a name that is not UTF-8"))?
+                    .to_owned(),
+            );
+            at = end;
+        }
+        sets.push(set);
+    }
+    if at != bytes.len() {
+        return Err(bad("bytes after the last segment"));
+    }
+    Ok(sets)
+}
+
 /// A shared reference to an open handle, taken under a read lock held only
 /// for the lookup.
 pub(crate) fn lookup(handle: u64, missing: &str) -> Result<Arc<JvmReaderHandle>, FfiStatus> {
@@ -3996,7 +4114,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(hits.iter().all(|&(_, s)| s == 2.0));
-        let long: Vec<&str> = (0..1100).map(|_| "t").collect();
+        let long: Vec<&str> = (0..(1usize << 20) + 1).map(|_| "t").collect();
         assert_eq!(
             decode_query(&tree(N::Ts("body", long))).map(|_| ()),
             Err(FfiStatus::InvalidArgument),
@@ -4043,7 +4161,7 @@ pub(crate) mod tests {
             invalid,
             "negative slop"
         );
-        let long: Vec<(i32, &str)> = (0..1100).map(|i| (i, "t")).collect();
+        let long: Vec<(i32, &str)> = (0..(1i32 << 20) + 1).map(|i| (i, "t")).collect();
         assert_eq!(
             status(&tree(N::P("body", 0, long))),
             invalid,
@@ -4177,8 +4295,8 @@ pub(crate) mod tests {
             invalid,
             "tie breaker above 1"
         );
-        // The Java encoder's `MAX_DEPTH`: the root at depth 0, so 32 levels
-        // decode and a 33rd does not.
+        // The Java encoder's `MAX_DEPTH`: the root at depth 0, so 128 levels
+        // decode and a 129th does not.
         let chain = |levels: usize| {
             let mut n = N::All;
             for _ in 1..levels {
@@ -4186,12 +4304,12 @@ pub(crate) mod tests {
             }
             tree(n)
         };
-        assert_eq!(status(&chain(32)), Ok(()), "32 levels");
-        assert_eq!(status(&chain(33)), invalid, "33 levels is too deep");
-        // And its `MAX_NODES`: 1024 nodes decode, 1025 do not.
+        assert_eq!(status(&chain(128)), Ok(()), "128 levels");
+        assert_eq!(status(&chain(129)), invalid, "129 levels is too deep");
+        // And its `MAX_NODES`: 1 << 20 nodes decode, one more does not.
         let wide = |nodes: usize| tree(N::B(0, (1..nodes).map(|_| (2, N::All)).collect()));
-        assert_eq!(status(&wide(1024)), Ok(()), "1024 nodes");
-        assert_eq!(status(&wide(1025)), invalid, "1025 nodes");
+        assert_eq!(status(&wide(1 << 20)), Ok(()), "1 << 20 nodes");
+        assert_eq!(status(&wide((1 << 20) + 1)), invalid, "one node too many");
         let mut negative_msm = vec![QUERY_TREE, NODE_BOOLEAN];
         negative_msm.extend_from_slice(&(-1i32).to_le_bytes());
         assert_eq!(
@@ -4479,5 +4597,193 @@ pub(crate) mod tests {
         };
         assert_eq!(rc, FfiStatus::NullPointer.code());
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+    /// `hidden[i]`'s names for segment `i` in [`ffi_open_jvm_reader_view`]'s blob layout.
+    fn hidden_blob(hidden: &[&[&str]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for names in hidden {
+            out.extend_from_slice(&(names.len() as u32).to_le_bytes());
+            for name in *names {
+                out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                out.extend_from_slice(name.as_bytes());
+            }
+        }
+        out
+    }
+
+    /// A view over `base` hiding `names` in every segment, `live[i]` the live words of segment `i`
+    /// (none: no deletions).
+    fn open_view_over(base: u64, names: &[&str], live: Option<&[Vec<u64>]>) -> Result<u64, i32> {
+        let b = lookup(base, "base").unwrap();
+        let max_docs: Vec<i32> = b
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.max_doc)
+            .collect();
+        let hidden = hidden_blob(&vec![names; max_docs.len()]);
+        // No live docs given: the base's own, as the plugin passes a leaf's live docs.
+        let own: Vec<Vec<u64>> = b
+            .live_docs
+            .iter()
+            .map(|l| l.as_ref().map_or(Vec::new(), |l| l.words().to_vec()))
+            .collect();
+        let live = live.unwrap_or(&own);
+        let counts: Vec<usize> = live.iter().map(Vec::len).collect();
+        let words: Vec<u64> = live.concat();
+        let mut handle = 0u64;
+        let rc = unsafe {
+            ffi_open_jvm_reader_view(
+                base,
+                hidden.as_ptr(),
+                hidden.len(),
+                max_docs.as_ptr(),
+                max_docs.len(),
+                if words.is_empty() {
+                    std::ptr::null()
+                } else {
+                    words.as_ptr()
+                },
+                counts.as_ptr(),
+                &mut handle,
+            )
+        };
+        if rc == 0 {
+            Ok(handle)
+        } else {
+            Err(rc)
+        }
+    }
+
+    /// A view hides a field from every kind of read: its terms, its statistics and a sort on its
+    /// doc values answer as if the segment never had it, the other fields are unchanged, and
+    /// neither handle disturbs the other.
+    #[test]
+    fn a_view_hides_fields_from_postings_and_doc_values() {
+        let base = open_fixture("sorted_search_index");
+        let q = term_blob("body", "w0");
+        let (_, all) = run(base, &q, 10, true).unwrap();
+        assert!(all > 10);
+        assert!(doc_freq(base, b"body", b"w0").unwrap() > 0);
+
+        let view = open_view_over(base, &["body"], None).unwrap();
+        assert_eq!(run(view, &q, 10, true).unwrap(), (Vec::new(), 0));
+        assert_eq!(doc_freq(view, b"body", b"w0").unwrap(), 0);
+        // Another field of the same view is intact, and the base still sees `body`.
+        let (_, on_l) = run(view, &tree(N::All), 0, true).unwrap();
+        let (_, on_l_base) = run(base, &tree(N::All), 0, true).unwrap();
+        assert_eq!(on_l, on_l_base);
+        assert_eq!(run(base, &q, 10, true).unwrap().1, all);
+
+        // A sort on a hidden field has no values: documents come in index order.
+        let by_l = sort_blob(&[(SORT_LONG, 0, "l", 0)], None);
+        let hidden_l = open_view_over(base, &["l"], None).unwrap();
+        let sorted = |h: u64| {
+            run_sorted(h, &term_blob("body", "w0"), &by_l, 10, i64::MAX)
+                .unwrap()
+                .0
+        };
+        let keys = |h: u64| sorted(h).into_iter().map(|(_, k)| k).collect::<Vec<_>>();
+        let on_view = keys(hidden_l);
+        assert!(on_view.windows(2).all(|w| w[0] == w[1]), "{on_view:?}");
+        assert_ne!(keys(base), on_view, "the base sorts by the field's values");
+
+        // Closing the base leaves the view searchable: it holds the segments itself.
+        assert_eq!(ffi_close_jvm_reader(base), 0);
+        assert_eq!(
+            run(hidden_l, &term_blob("body", "w0"), 10, true).unwrap().1,
+            all
+        );
+        assert_eq!(ffi_close_jvm_reader(view), 0);
+        assert_eq!(ffi_close_jvm_reader(hidden_l), 0);
+    }
+
+    /// A view's live docs replace the base's, as an opened reader's do, and are validated the same.
+    #[test]
+    fn a_view_masks_documents_with_its_own_live_docs() {
+        let base = open_fixture("sorted_search_index");
+        let b = lookup(base, "base").unwrap();
+        let sizes: Vec<usize> = b
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| bits2words(s.max_doc as usize))
+            .collect();
+        let q = tree(N::All);
+        let (_, total) = run(base, &q, 0, true).unwrap();
+        let none: Vec<Vec<u64>> = sizes.iter().map(|&n| vec![0u64; n]).collect();
+        let view = open_view_over(base, &[], Some(&none)).unwrap();
+        assert_eq!(run(view, &q, 0, true).unwrap().1, 0);
+        // One document live in the first segment.
+        let mut one = none.clone();
+        one[0][0] = 1;
+        let single = open_view_over(base, &[], Some(&one)).unwrap();
+        assert_eq!(run(single, &q, 5, true).unwrap().0.len(), 1);
+        // Bits past maxDoc are refused, as for an opened reader.
+        let mut past = none.clone();
+        let last = past.len() - 1;
+        let tail = past[last].len() - 1;
+        past[last][tail] = u64::MAX;
+        let max_doc = b.reader.segment_readers()[last].max_doc as usize;
+        if !max_doc.is_multiple_of(64) {
+            assert!(open_view_over(base, &[], Some(&past)).is_err());
+        }
+        assert!(total > 0);
+        for h in [view, single, base] {
+            assert_eq!(ffi_close_jvm_reader(h), 0);
+        }
+    }
+
+    /// A malformed hidden-fields blob, a closed base and a different segment list are refused.
+    #[test]
+    fn a_view_refuses_bad_arguments() {
+        let base = open_fixture("sorted_search_index");
+        let b = lookup(base, "base").unwrap();
+        let max_docs: Vec<i32> = b
+            .reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.max_doc)
+            .collect();
+        let mut out = 0u64;
+        let open = |blob: &[u8], max: &[i32], base: u64, out: &mut u64| unsafe {
+            ffi_open_jvm_reader_view(
+                base,
+                blob.as_ptr(),
+                blob.len(),
+                max.as_ptr(),
+                max.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                out,
+            )
+        };
+        let good = hidden_blob(&vec![&["x"][..]; max_docs.len()]);
+        assert_eq!(open(&good, &max_docs, base, &mut out), 0);
+        assert_eq!(ffi_close_jvm_reader(out), 0);
+        let invalid = FfiStatus::InvalidArgument.code();
+        // Truncated, trailing bytes, a name that is not UTF-8, a count with no names behind it.
+        assert_eq!(
+            open(&good[..good.len() - 1], &max_docs, base, &mut out),
+            invalid
+        );
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert_eq!(open(&trailing, &max_docs, base, &mut out), invalid);
+        let mut bad_utf8 = hidden_blob(&vec![&["a"][..]; max_docs.len()]);
+        bad_utf8[8] = 0xff;
+        assert_eq!(open(&bad_utf8, &max_docs, base, &mut out), invalid);
+        let mut lying = vec![0u8; 0];
+        lying.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(open(&lying, &max_docs, base, &mut out), invalid);
+        // Another segment list than the base's.
+        let mut other = max_docs.clone();
+        other[0] += 1;
+        assert_eq!(open(&good, &other, base, &mut out), invalid);
+        assert_eq!(
+            open(&good, &max_docs, u64::MAX, &mut out),
+            FfiStatus::InvalidHandle.code()
+        );
+        assert_eq!(ffi_close_jvm_reader(base), 0);
     }
 }

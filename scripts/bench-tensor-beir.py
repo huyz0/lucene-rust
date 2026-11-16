@@ -17,7 +17,7 @@ and prints nDCG@10 and recall@100 against the qrels, with client latency p50 / p
 
 <data dir> holds `<dataset>.docs`, `<dataset>.queries` and `<dataset>.qrels`
 (encode.py's mvbench files) and `<dataset>/corpus.jsonl`, `<dataset>/queries.jsonl`
-(the BEIR download). Needs Docker, numpy, and the plugin zip.
+(the BEIR download). Needs numpy, and the plugin zip.
 """
 import json, math, os, struct, sys, time
 

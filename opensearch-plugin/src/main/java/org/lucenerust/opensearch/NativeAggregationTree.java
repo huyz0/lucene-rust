@@ -772,6 +772,78 @@ public final class NativeAggregationTree {
         }
     }
 
+    /** A weight's query with an approximation unwrapped to the range it approximates (exact when it does not stop early). */
+    private static Query exact(Query q) {
+        return q instanceof org.opensearch.search.approximate.ApproximatePointRangeQuery a ? a.pointRangeQuery : q;
+    }
+
+    /** {@code adjacency_matrix}: {@link FiltersNode}'s buckets (keys, then pairs) built as its non-empty buckets. */
+    static final class AdjacencyNode extends FixedNode {
+        final byte[][] filters;
+        final String[] names;
+
+        AdjacencyNode(AggregatorBase agg, List<Node> subs, byte[][] filters, String[] names) {
+            super(agg, subs, filters.length);
+            this.filters = filters;
+            this.names = names;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(FILTERS);
+            NativeAggregations.writeInt(out, filters.length);
+            for (byte[] f : filters) {
+                NativeAggregations.writeInt(out, f.length);
+                out.writeBytes(f);
+            }
+            out.write(0);
+            writeSubs(out);
+        }
+
+        @Override
+        InternalAggregation build(long[] docs, List<InternalAggregations> subs) {
+            // Empty buckets are not returned (AdjacencyMatrixAggregator.buildAggregations).
+            List<org.opensearch.search.aggregations.bucket.adjacency.InternalAdjacencyMatrix.InternalBucket> buckets = new ArrayList<>();
+            for (int i = 0; i < names.length; i++) {
+                if (docs[i] > 0) {
+                    buckets.add(
+                        new org.opensearch.search.aggregations.bucket.adjacency.InternalAdjacencyMatrix.InternalBucket(
+                            names[i],
+                            docs[i],
+                            subs.get(i)
+                        )
+                    );
+                }
+            }
+            return new org.opensearch.search.aggregations.bucket.adjacency.InternalAdjacencyMatrix(agg.name(), buckets, agg.metadata());
+        }
+    }
+
+    /** {@code missing}: {@link FiltersNode}'s one filter, built as an {@code InternalMissing}. */
+    static final class MissingNode extends FixedNode {
+        final byte[] filter;
+
+        MissingNode(AggregatorBase agg, List<Node> subs, byte[] filter) {
+            super(agg, subs, 1);
+            this.filter = filter;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(FILTERS);
+            NativeAggregations.writeInt(out, 1);
+            NativeAggregations.writeInt(out, filter.length);
+            out.writeBytes(filter);
+            out.write(0);
+            writeSubs(out);
+        }
+
+        @Override
+        InternalAggregation build(long[] docs, List<InternalAggregations> subs) throws ReflectiveOperationException {
+            return MISSING_CTOR.newInstance(agg.name(), docs[0], subs.get(0), agg.metadata());
+        }
+    }
+
     /** A {@code top_hits} anywhere in {@code nodes}: it reads scores. */
     private static boolean scored(List<Node> nodes) {
         for (Node n : nodes) {
@@ -915,6 +987,44 @@ public final class NativeAggregationTree {
             }
             return InternalAggregations.from(all);
         }
+    }
+
+    /** The aggregations the native planner has a node for (a shape inside one may still not be). */
+    private static final java.util.Set<String> PLANNED = java.util.Set.of(
+        "AvgAggregatorFactory", "ExtendedStatsAggregatorFactory", "MaxAggregatorFactory", "MinAggregatorFactory", "StatsAggregatorFactory", "SumAggregatorFactory",
+        "ValueCountAggregatorFactory", "CompositeAggregationFactory", "FilterAggregatorFactory", "FiltersAggregatorFactory",
+        "GlobalAggregatorFactory", "DateHistogramAggregatorFactory", "HistogramAggregatorFactory", "NestedAggregatorFactory",
+        "ReverseNestedAggregatorFactory", "DateRangeAggregatorFactory", "RangeAggregatorFactory", "SignificantTermsAggregatorFactory",
+        "SignificantTextAggregatorFactory", "MissingAggregatorFactory", "AdjacencyMatrixAggregatorFactory", "TermsAggregatorFactory", "CardinalityAggregatorFactory", "PercentileRanksAggregatorFactory",
+        "PercentilesAggregatorFactory", "MedianAbsoluteDeviationAggregatorFactory", "TopHitsAggregatorFactory"
+    );
+
+    /**
+     * The fallback reason for aggregations the native planner does not take: the first aggregation
+     * type in the tree it has no node for ({@code aggregation_ExtendedStats}), or
+     * {@code aggregation_shape} when every type is planned but a shape inside one is not.
+     */
+    static String unsupportedReason(SearchContext ctx) {
+        try {
+            String found = firstUnplanned(ctx.aggregations().factories().getFactories());
+            return found == null ? "aggregation_shape" : "aggregation_" + found;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return "aggregation_shape";
+        }
+    }
+
+    private static String firstUnplanned(AggregatorFactory[] factories) throws IllegalAccessException {
+        for (AggregatorFactory f : factories) {
+            String name = f.getClass().getSimpleName();
+            if (PLANNED.contains(name) == false) {
+                return name.replace("AggregatorFactory", "").replace("AggregationFactory", "");
+            }
+            String sub = SUB_FACTORIES == null ? null : firstUnplanned(((AggregatorFactories) SUB_FACTORIES.get(f)).getFactories());
+            if (sub != null) {
+                return sub;
+            }
+        }
+        return null;
     }
 
     /**
@@ -1064,6 +1174,67 @@ public final class NativeAggregationTree {
                 return top ? NativeComposite.node(ctx, agg, subs) : null;
             case AGGS + "bucket.terms.SignificantTextAggregatorFactory":
                 return NativeSignificantTerms.textNode(ctx, f, agg, subs);
+            case AGGS + "bucket.adjacency.AdjacencyMatrixAggregatorFactory": {
+                // Filters over each key, then over each pair of keys (a document in both is collected into
+                // the pair's bucket), the way AdjacencyMatrixAggregator collects.
+                if (agg.getClass().getName().equals(AGGS + "bucket.adjacency.AdjacencyMatrixAggregator") == false) {
+                    return null;
+                }
+                String[] keys = (String[]) declared(f, "keys");
+                org.apache.lucene.search.Weight[] weights = (org.apache.lucene.search.Weight[]) declared(f, "weights");
+                boolean onlyIntersecting = (boolean) declared(f, "showOnlyIntersecting");
+                String separator = (String) declared(f, "separator");
+                List<String> names = new ArrayList<>();
+                List<byte[]> blobs = new ArrayList<>();
+                if (onlyIntersecting == false) {
+                    for (int i = 0; i < keys.length; i++) {
+                        byte[] q = filterBlob(ctx, exact(weights[i].getQuery()), fieldOk);
+                        if (q == null) {
+                            return null;
+                        }
+                        names.add(keys[i]);
+                        blobs.add(q);
+                    }
+                }
+                for (int i = 0; i < keys.length; i++) {
+                    for (int j = i + 1; j < keys.length; j++) {
+                        org.apache.lucene.search.BooleanQuery.Builder both = new org.apache.lucene.search.BooleanQuery.Builder();
+                        both.add(exact(weights[i].getQuery()), org.apache.lucene.search.BooleanClause.Occur.FILTER);
+                        both.add(exact(weights[j].getQuery()), org.apache.lucene.search.BooleanClause.Occur.FILTER);
+                        byte[] q = filterBlob(ctx, both.build(), fieldOk);
+                        if (q == null) {
+                            return null;
+                        }
+                        names.add(keys[i] + separator + keys[j]);
+                        blobs.add(q);
+                    }
+                }
+                if (blobs.isEmpty()) {
+                    return null;
+                }
+                return new AdjacencyNode(agg, subs, blobs.toArray(new byte[0][]), names.toArray(new String[0]));
+            }
+            case AGGS + "bucket.missing.MissingAggregatorFactory": {
+                // The documents with no doc value in the field: a one-bucket filter over "field does
+                // not exist", read from the same doc values the aggregator reads.
+                ValuesSourceConfig mc = (ValuesSourceConfig) CONFIG.get(f);
+                if (mc == null || mc.script() != null
+                    || agg.getClass().getName().equals(AGGS + "bucket.missing.MissingAggregator") == false) {
+                    return null;
+                }
+                org.apache.lucene.search.BooleanQuery.Builder b = new org.apache.lucene.search.BooleanQuery.Builder();
+                b.add(new MatchAllDocsQuery(), org.apache.lucene.search.BooleanClause.Occur.MUST);
+                if (mc.fieldContext() != null) {
+                    if (mc.fieldContext().fieldType().hasDocValues() == false) {
+                        return null;
+                    }
+                    b.add(new org.apache.lucene.search.FieldExistsQuery(mc.fieldContext().field()), org.apache.lucene.search.BooleanClause.Occur.MUST_NOT);
+                } else if (mc.hasValues()) {
+                    return null;
+                }
+                byte[] q = filterBlob(ctx, b.build(), fieldOk);
+                return q == null ? null : new MissingNode(agg, subs, q);
+            }
             case AGGS + "bucket.filter.FilterAggregatorFactory": {
                 byte[] q = filterBlob(ctx, (Query) declared(f, "filter"), fieldOk);
                 return q == null ? null : new FiltersNode(agg, subs, new byte[][] { q }, false);
@@ -1198,6 +1369,7 @@ public final class NativeAggregationTree {
                 return NativeSignificantTerms.node(ctx, f, agg, type, field, valueKind, subs);
             case AGGS + "metrics.PercentilesAggregatorFactory":
             case AGGS + "metrics.PercentileRanksAggregatorFactory":
+            case AGGS + "metrics.MedianAbsoluteDeviationAggregatorFactory":
                 return NativePercentiles.node(agg, field, valueKind);
             case AGGS + "metrics.CardinalityAggregatorFactory": {
                 if (missing || aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {
@@ -1422,6 +1594,13 @@ public final class NativeAggregationTree {
         InternalAggregations.class,
         Map.class
     );
+    private static final Constructor<InternalAggregation> MISSING_CTOR = ctor(
+        AGGS + "bucket.missing.InternalMissing",
+        String.class,
+        long.class,
+        InternalAggregations.class,
+        Map.class
+    );
     private static final Constructor<InternalAggregation> GLOBAL_CTOR = ctor(
         AGGS + "bucket.global.InternalGlobal",
         String.class,
@@ -1468,6 +1647,7 @@ public final class NativeAggregationTree {
         LongBounds.class
     );
     private static final boolean CTORS_OK = FILTER_CTOR != null
+        && MISSING_CTOR != null
         && GLOBAL_CTOR != null
         && CARDINALITY_CTOR != null
         && DATE_HISTOGRAM_CTOR != null
