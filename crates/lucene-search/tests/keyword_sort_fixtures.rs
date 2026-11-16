@@ -170,6 +170,7 @@ fn sort(spec: &str) -> Vec<SortField> {
             SortField {
                 nested: None,
                 rewritten: None,
+                convert: lucene_search::top_field::ChildConvert::None,
                 field: p[0].to_string(),
                 ty,
                 selector: if p[2] == "max" {
