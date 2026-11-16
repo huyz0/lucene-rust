@@ -159,6 +159,25 @@ def _keys(node):
         yield from _keys(c)
 
 
+def hybrid_row(plugin):
+    """A hybrid query: the stock node has no neural-search, so the reference is the plugin's own
+    Java path (`index.search.accelerated: false`), the port of neural-search's profile."""
+    body = {"profile": True, "size": 3, "query": {"hybrid": {"queries": [
+        {"match": {"msg": "alpha"}}, {"term": {"tag": "a"}}]}}}
+    plugin("PUT", f"/{INDEX}/_settings", {"index.search.accelerated": False})
+    java = plugin("POST", f"/{INDEX}/_search", body)
+    plugin("PUT", f"/{INDEX}/_settings", {"index.search.accelerated": True})
+    before = plugin("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"]
+    native = plugin("POST", f"/{INDEX}/_search", body)
+    ran = plugin("GET", "/_plugins/lucene_rust/stats")["accelerated_queries"] - before
+    check(ran == 1, "hybrid profile ran natively")
+    check([h["_id"] for h in java["hits"]["hits"]] == [h["_id"] for h in native["hits"]["hits"]], "hybrid: hits")
+    sa = structure(java["profile"], "hybrid (java)", True)
+    sb = structure(native["profile"], "hybrid (native)", True)
+    check(sa == sb, f"hybrid: trees differ\n  java  : {sa}\n  native: {sb}")
+    print(("ok   " if sa == sb else "FAIL ") + "hybrid")
+
+
 def main():
     plugin, stock = requester(PLUGIN), requester(STOCK)
     load(plugin)
@@ -176,6 +195,7 @@ def main():
         check(sa["aggs"] == sb["aggs"], f"{name}: aggregators\n  stock : {sa['aggs']}\n  plugin: {sb['aggs']}")
         check(sa["fetch"] == sb["fetch"], f"{name}: fetch\n  stock : {sa['fetch']}\n  plugin: {sb['fetch']}")
         print(("ok   " if not any(f.startswith(name) for f in FAILURES) else "FAIL ") + name)
+    hybrid_row(plugin)
     after = plugin("GET", "/_plugins/lucene_rust/stats")
     native = after["accelerated_queries"] - before["accelerated_queries"]
     check(native >= len(ROWS) - 2, f"profiled rows ran natively: {native} of {len(ROWS)}; fallbacks {after['fallbacks']}")

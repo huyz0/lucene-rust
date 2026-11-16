@@ -5276,7 +5276,7 @@ mod tests {
             i64::from(lucene_util::half_float::half_float_to_sortable_short(2.25)),
         ];
         ChildConvert::HalfFloat.apply(&mut h);
-        assert_eq!(h.map(|x| sortable_int_to_float(x)), [-1.5, 2.25]);
+        assert_eq!(h.map(sortable_int_to_float), [-1.5, 2.25]);
     }
 
     #[test]
