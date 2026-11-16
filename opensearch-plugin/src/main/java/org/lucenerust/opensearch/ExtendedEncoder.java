@@ -548,7 +548,7 @@ final class ExtendedEncoder {
     }
 
     /** At most this many states of a multi-term source's automaton are sent (the native limit). */
-    private static final int MAX_AUTOMATON_STATES = 1 << 16;
+    private static final int MAX_AUTOMATON_STATES = 1 << 20;
 
     /**
      * Writes {@code c} as {@code decode_compiled_automaton} in {@code nodes.rs} reads it: its
