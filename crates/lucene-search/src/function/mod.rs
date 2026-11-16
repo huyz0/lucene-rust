@@ -1340,7 +1340,12 @@ pub(crate) enum FunctionSource<'q> {
     Value(&'q Arc<dyn ValueSource>),
     /// A `FunctionScoreQuery`'s or `FunctionMatchQuery`'s
     /// `source.rewrite(searcher)`.
-    Double(&'q Arc<dyn crate::values_source::DoubleValuesSource>),
+    /// The second is the wrapped query of a `min_score`d function score:
+    /// scored even where the search takes no scores.
+    Double(
+        &'q Arc<dyn crate::values_source::DoubleValuesSource>,
+        Option<&'q crate::query::Clause>,
+    ),
 }
 
 impl<'q> FunctionSource<'q> {
@@ -1348,7 +1353,11 @@ impl<'q> FunctionSource<'q> {
     pub(crate) fn queries(&self) -> Vec<&'q crate::query::Clause> {
         match self {
             FunctionSource::Value(s) => s.queries(),
-            FunctionSource::Double(s) => s.queries(),
+            FunctionSource::Double(s, scored) => {
+                let mut queries = s.queries();
+                queries.extend(scored);
+                queries
+            }
         }
     }
 }
@@ -1387,8 +1396,11 @@ fn collect_clause<'q>(c: &'q crate::query::Clause, out: &mut Vec<FunctionSource<
             let own = match e.as_ref() {
                 ExtendedQuery::Function(q) => Some(FunctionSource::Value(&q.source)),
                 ExtendedQuery::FunctionRange(q) => Some(FunctionSource::Value(&q.source)),
-                ExtendedQuery::FunctionScore(q) => Some(FunctionSource::Double(&q.source)),
-                ExtendedQuery::FunctionMatch(q) => Some(FunctionSource::Double(&q.source)),
+                ExtendedQuery::FunctionScore(q) => Some(FunctionSource::Double(
+                    &q.source,
+                    q.min_score.map(|_| q.in_query.as_ref()),
+                )),
+                ExtendedQuery::FunctionMatch(q) => Some(FunctionSource::Double(&q.source, None)),
                 _ => None,
             };
             // The queries this clause's function scores may hold functions
@@ -1487,7 +1499,7 @@ pub(crate) fn prepare_functions(
                     slot.insert(Arc::new(FunctionContext::create(s.as_ref(), &top)?));
                 }
             }
-            FunctionSource::Double(s) => {
+            FunctionSource::Double(s, _) => {
                 let key = source_key(s.as_ref());
                 if let std::collections::hash_map::Entry::Vacant(slot) = out.sources.entry(key) {
                     // A source that does not rewrite is recorded as itself:

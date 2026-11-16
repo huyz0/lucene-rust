@@ -233,7 +233,7 @@ final class NativeSelfTestExtended {
             .build();
         check.accept("span_gap".equals(QueryEncoder.encode(gap, any).fallbackReason()), "a span_near with a gap falls back");
         Query minScore = new FunctionScoreQuery(MatchAllDocsQuery.INSTANCE, new WeightFactorFunction(2f), CombineFunction.MULTIPLY, 1f, Float.MAX_VALUE);
-        check.accept("function_score_min_score".equals(QueryEncoder.encode(minScore, any).fallbackReason()), "a function_score min_score falls back");
+        check.accept(QueryEncoder.encode(minScore, any).fallbackReason() == null, "a function_score min_score is encoded");
     }
 
     /** {@code NativeSelfTest.compare}. */
@@ -455,7 +455,9 @@ final class NativeSelfTestExtended {
             FunctionScoreQuery.ScoreMode mode = FunctionScoreQuery.ScoreMode.values()[r.nextInt(6)];
             CombineFunction combine = CombineFunction.values()[r.nextInt(CombineFunction.values().length)];
             float maxBoost = r.nextBoolean() ? Float.MAX_VALUE : 0.5f + r.nextInt(4);
-            Query q = new FunctionScoreQuery(sub, mode, functions, combine, null, maxBoost);
+            // A min_score keeps the documents scoring at least that.
+            Float minScore = r.nextInt(4) == 0 ? Float.valueOf(0.25f * r.nextInt(12)) : null;
+            Query q = new FunctionScoreQuery(sub, mode, functions, combine, minScore, maxBoost);
             return r.nextInt(4) == 0 ? new BoostQuery(q, 2.5f) : q;
         } catch (Exception e) {
             throw new AssertionError(e);
