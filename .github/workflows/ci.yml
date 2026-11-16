@@ -188,6 +188,11 @@ jobs:
       - name: No dev-process notes in code comments
         run: python3 scripts/check-dev-notes.py
 
+      # A source file over 3,000 production lines is listed with its size and
+      # may not grow. See docs/mechanical-gates.md#file-size.
+      - name: Source files stay review-sized
+        run: python3 scripts/check-file-size.py
+
       # Needs the pinned Java tree, which CI does not check out; the script
       # skips cleanly when it is absent, so this is a no-op there and a real
       # check locally and in the container. Listed anyway so the step cannot
