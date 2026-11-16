@@ -190,6 +190,13 @@ pub trait FieldComparator: Send + Sync {
     fn leaf<'a>(&self, ctx: LeafCtx<'a>) -> Result<Box<dyn LeafFieldComparator + 'a>>;
     /// `compareValues(first, second)`.
     fn compare_values(&self, a: &SortValue, b: &SortValue) -> std::cmp::Ordering;
+    /// `compareTop`'s comparison of the search-after value `top` with a
+    /// document's value `v`, where the comparator compares them in a form
+    /// of its own (`LatLonPointDistanceComparator` holds the distance in
+    /// metres as its top value, not the sort key it computes per document).
+    fn compare_top(&self, top: &SortValue, v: &SortValue) -> std::cmp::Ordering {
+        self.compare_values(top, v)
+    }
     /// Whether values are bytes ([`FieldDoc::terms`]) rather than longs
     /// ([`FieldDoc::values`]).
     fn values_are_bytes(&self) -> bool {
@@ -3691,7 +3698,7 @@ impl<'a> Leaf<'a> {
                     let v = self.custom_value(i, doc, scorer)?;
                     let cs = c.custom.as_ref().ok_or(SortError::NoKeys)?;
                     match &cs.top {
-                        Some(top) => c.mul * cs.cmp.compare_values(top, &v) as i32,
+                        Some(top) => c.mul * cs.cmp.compare_top(top, &v) as i32,
                         None => 0,
                     }
                 }

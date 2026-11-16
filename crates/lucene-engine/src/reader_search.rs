@@ -75,7 +75,7 @@ pub const SORT_SCRIPT: u8 = 11;
 pub const SORT_SCALED_FLOAT: u8 = 12;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
-pub const MAX_GEO_ORIGINS: usize = 1024;
+pub const MAX_GEO_ORIGINS: usize = 1 << 20;
 /// Sort-key flags.
 pub const SORT_REVERSE: u8 = 1;
 pub const SORT_MAX: u8 = 2;
@@ -182,8 +182,6 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
         )));
     }
     let mut keys = Vec::new();
-    // Per key: a geo-distance key in Lucene's own comparator.
-    let mut lucene_geo = Vec::new();
     for _ in 0..n {
         let ty = c.u8()?;
         let flags = c.u8()?;
@@ -201,7 +199,6 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
                 Arc::new(source),
                 flags & SORT_REVERSE != 0,
             ));
-            lucene_geo.push(false);
             continue;
         }
         // A nested `half_float` or `scaled_float` key is a `Float` or `Double` key whose
@@ -215,7 +212,6 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             )
         {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
-            lucene_geo.push(false);
             continue;
         }
         let wire_ty = ty;
@@ -229,9 +225,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             SORT_SCALED_FLOAT => SortType::Double,
             SORT_STRING => SortType::String,
             SORT_GEO_DISTANCE => {
-                let (key, lucene) = decode_geo_sort(&mut c, flags)?;
-                keys.push(key);
-                lucene_geo.push(lucene);
+                keys.push(decode_geo_sort(&mut c, flags)?.0);
                 continue;
             }
             other => return Err(bad(format!("sort blob: unknown key type {other}"))),
@@ -307,7 +301,6 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             nested,
             rewritten: None,
         });
-        lucene_geo.push(false);
     }
     let after = match c.u8()? {
         0 => None,
@@ -315,15 +308,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             let doc = c.i32()?;
             let mut values = Vec::new();
             let mut terms = Vec::new();
-            for (k, &lucene) in keys.iter().zip(&lucene_geo) {
-                if lucene {
-                    // `LatLonPointDistanceComparator.compareTop` compares
-                    // metres, not the sort keys this side holds: the JVM
-                    // runs such a page itself.
-                    return Err(bad(
-                        "sort blob: search_after on Lucene's geo-distance key".to_string()
-                    ));
-                }
+            for k in &keys {
                 if k.ty != SortType::String {
                     values.push(c.i64()?);
                     terms.push(None);

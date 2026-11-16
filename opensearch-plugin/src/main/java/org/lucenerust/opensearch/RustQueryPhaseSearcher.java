@@ -244,6 +244,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             ? null
             : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
+        if (reason == null || "search_after".equals(reason)) {
+            // A request Lucene's collector refuses: its error, as QueryPhase raises it.
+            RuntimeException refused = SortEncoder.searchAfterRefusal(ctx.sort() == null ? null : ctx.sort().sort, ctx.searchAfter(), ctx.size(), searcher.getIndexReader());
+            if (refused != null) {
+                throw new QueryPhaseExecutionException(ctx.shardTarget(), "Failed to execute main query", refused);
+            }
+        }
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
         // collector in its FilteredCollector): the hits search "query AND filter", the filter a

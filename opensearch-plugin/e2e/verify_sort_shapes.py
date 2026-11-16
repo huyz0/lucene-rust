@@ -271,6 +271,11 @@ def main():
                   f"plugin={a['hits'][k] if k is not None else None} stock={b['hits'][k] if k is not None else None}")
     for label, sort, query in [
         ("walk sf desc", [{"sf": {"order": "desc"}}, TIE], None),
+        ("walk geo asc m", [{"_geo_distance": {"loc": [10.5, 20.5], "order": "asc", "unit": "m"}}, TIE], None),
+        ("walk geo asc km", [{"_geo_distance": {"loc": {"lat": -30.0, "lon": 100.0}, "order": "asc", "unit": "km"}}, TIE], None),
+        ("walk geo desc", [{"_geo_distance": {"loc": [10.5, 20.5], "order": "desc", "unit": "m"}}, TIE], None),
+        ("walk geo multi max", [{"_geo_distance": {"locs": [10.5, 20.5], "order": "asc", "mode": "max", "unit": "m"}}, TIE], None),
+        ("walk geo two keys", [{"_geo_distance": {"loc": [0.5, 0.5], "order": "asc", "unit": "m"}}, {"kw": "asc"}, TIE], None),
         ("walk sfm avg", [{"sfm": {"order": "asc", "mode": "avg"}}, TIE], None),
     ]:
         if args.only and args.only not in label:
@@ -280,6 +285,24 @@ def main():
         if pe != se or ps != ss:
             bad += 1
             print(f"{label}: plugin err={pe} n={len(ps)} stock err={se} n={len(ss)}")
+    # Requests Lucene's collector refuses: the same error from both nodes.
+    refused = [
+        ("search_after null on a long", {"size": 2, "sort": [{"n": "asc"}], "search_after": [None]}),
+        ("search_after null on a double", {"size": 2, "sort": [{"d": "desc"}, TIE], "search_after": [None, 5]}),
+        ("search_after null after a keyword", {"size": 2, "sort": [{"kw": "asc"}, {"n": "asc"}], "search_after": ["a", None]}),
+        ("search_after null on the score", {"size": 2, "sort": ["_score", {"n": "asc"}], "search_after": [None, 5]}),
+        ("search_after without a sort", {"size": 2, "query": {"match": {"title": "alpha"}}, "search_after": [1.5, 3]}),
+    ]
+    for name, body in refused:
+        if args.only and args.only not in name:
+            continue
+        total += 1
+        sp, rp = plugin.req("POST", f"/{INDEX}/_search", body)
+        ss, rs = stock.req("POST", f"/{INDEX}/_search", body)
+        err = lambda r: json.dumps(r.get("error", {}).get("root_cause")) + json.dumps(r.get("error", {}).get("caused_by", {}).get("type"))
+        if sp != ss or err(rp) != err(rs):
+            bad += 1
+            print(f"{name}: plugin {sp} {err(rp)[:160]} stock {ss} {err(rs)[:160]}")
     after = fallbacks(plugin)
     new = {k: after[k] - before.get(k, 0) for k in after if after[k] - before.get(k, 0) > 0}
     print(f"searches checked: {total}, mismatches: {bad}, new plugin fallbacks: {json.dumps(new)}")

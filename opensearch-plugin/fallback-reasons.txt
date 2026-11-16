@@ -122,7 +122,6 @@ script_score_script  # ExtendedEncoder.java
 scroll_after  # RustQueryPhaseSearcher.java
 search_after  # RustQueryPhaseSearcher.java
 search_after_fields  # SortEncoder.java
-search_after_geo  # SortEncoder.java
 search_after_null  # SortEncoder.java
 search_after_type  # SortEncoder.java
 segment_infos_write  # NativeReaders.java

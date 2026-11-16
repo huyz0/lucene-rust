@@ -247,12 +247,8 @@ public final class SortEncoder {
             out.write(1);
             writeInt(out, after.doc);
             for (int i = 0; i < fields.length; i++) {
-                if (GeoEncoder.luceneSort(fields[i])) {
-                    // LatLonPointDistanceComparator.compareTop compares metres,
-                    // not the sort keys the native side holds: such a page runs
-                    // on Lucene.
-                    return new Encoded(null, "search_after_geo");
-                }
+                // LatLonPointDistanceComparator.compareTop: the after value is the distance in
+                // metres, which the native comparator compares with each document's own.
                 if (type(unwrap(fields[i])) == STRING) {
                     // A missing term is a value of its own (TermOrdValComparator's null top).
                     if (after.fields[i] == null) {
@@ -285,6 +281,43 @@ public final class SortEncoder {
             out.write(indexSorted, 0, indexSorted.length);
         }
         return new Encoded(out.toByteArray(), null);
+    }
+
+    /**
+     * What Lucene's collector raises for a {@code search_after} it cannot take, or null when it
+     * takes it: no sort at all behind a {@code search_after} ({@code Sort must contain at least one
+     * field}), and a {@code null} after-value for a numeric key, which the comparator unboxes in
+     * {@code setTopValue} (the first such key in sort order; the other key kinds' errors are not
+     * reproduced here). Nothing is raised over a reader without segments, where no comparator is
+     * ever set up.
+     */
+    static RuntimeException searchAfterRefusal(Sort sort, FieldDoc after, int size, IndexReader reader) {
+        if (after == null || size == 0 || reader.leaves().isEmpty()) {
+            return null;
+        }
+        if (sort == null) {
+            return new IllegalArgumentException("Sort must contain at least one field.");
+        }
+        SortField[] fields = sort.getSort();
+        if (after.fields == null || after.fields.length != fields.length) {
+            return null;
+        }
+        for (int i = 0; i < fields.length; i++) {
+            if (after.fields[i] != null) {
+                continue;
+            }
+            String boxed = switch (type(unwrap(fields[i]))) {
+                case LONG -> "Long.longValue";
+                case INT, DOC -> "Integer.intValue";
+                case DOUBLE -> "Double.doubleValue";
+                case FLOAT, SCORE -> "Float.floatValue";
+                default -> null;
+            };
+            if (boxed != null) {
+                return new NullPointerException("Cannot invoke \"java.lang." + boxed + "()\" because \"value\" is null");
+            }
+        }
+        return null;
     }
 
     /**
