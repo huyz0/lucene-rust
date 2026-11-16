@@ -5968,7 +5968,7 @@ fn encode_point(
         FieldValue::Float(_) => return Err(shape("Float")),
         FieldValue::Double(_) => return Err(shape("Double")),
         FieldValue::Binary(_) => return Err(shape("Binary")),
-        FieldValue::String(_) => return Err(shape("String")),
+        FieldValue::String(_) | FieldValue::Shared(_) => return Err(shape("String")),
     }
     Ok(())
 }
@@ -10151,8 +10151,8 @@ impl IndexWriter<'_> {
         for (field_number, field_name) in wanted {
             for (doc_id, doc) in docs.iter().enumerate() {
                 for f in doc.fields.iter().filter(|f| f.field_number == field_number) {
-                    if let FieldValue::String(text) = &f.value {
-                        triples.push((doc_id as i32, field_name, text.as_str()));
+                    if let Some(text) = f.value.as_text() {
+                        triples.push((doc_id as i32, field_name, text));
                     }
                 }
             }
@@ -10417,11 +10417,12 @@ impl IndexWriter<'_> {
                     config.index_options,
                     docs.len(),
                     |doc_id, values: &mut Vec<&str>| {
-                        values.extend(docs[doc_id].fields.iter().filter_map(|f| match &f.value {
-                            FieldValue::String(text) if f.field_number == config.field_number => {
-                                Some(text.as_str())
+                        values.extend(docs[doc_id].fields.iter().filter_map(|f| {
+                            if f.field_number == config.field_number {
+                                f.value.as_text()
+                            } else {
+                                None
                             }
-                            _ => None,
                         }));
                     },
                     analyzer,
@@ -10460,7 +10461,7 @@ impl IndexWriter<'_> {
                             .fields
                             .iter()
                             .find(|f| f.field_number == config.field_number)
-                            .is_some_and(|f| matches!(f.value, FieldValue::String(_)));
+                            .is_some_and(|f| f.value.as_text().is_some());
                         if !first_is_string {
                             return Ok(None);
                         }
@@ -10722,7 +10723,9 @@ impl IndexWriter<'_> {
                             .iter()
                             .find(|f| f.field_number == config.field_number)
                             .and_then(|f| match &f.value {
-                                FieldValue::String(_) => Some((0u32, 0u32, 0u32)),
+                                FieldValue::String(_) | FieldValue::Shared(_) => {
+                                    Some((0u32, 0u32, 0u32))
+                                }
                                 _ => None,
                             })
                     })
@@ -11173,6 +11176,7 @@ impl IndexWriter<'_> {
             };
             let value = match &field.value {
                 FieldValue::String(s) => s.as_bytes().to_vec(),
+                FieldValue::Shared(s) => s.as_bytes().to_vec(),
                 FieldValue::Binary(b) => b.clone(),
                 other => {
                     return Err(Error::NonBinaryDocValue(
@@ -11248,6 +11252,7 @@ impl IndexWriter<'_> {
             {
                 let value = match &field.value {
                     FieldValue::String(s) => s.as_bytes().to_vec(),
+                    FieldValue::Shared(s) => s.as_bytes().to_vec(),
                     FieldValue::Binary(b) => b.clone(),
                     other => {
                         return Err(Error::NonBinaryDocValue(
@@ -14343,6 +14348,7 @@ pub(crate) fn document_ram_bytes(doc: &Document) -> usize {
             .iter()
             .map(|f| match &f.value {
                 FieldValue::String(s) => s.capacity(),
+                FieldValue::Shared(s) => s.len(),
                 FieldValue::Binary(b) => b.capacity(),
                 FieldValue::Int(_)
                 | FieldValue::Long(_)
@@ -14437,7 +14443,7 @@ fn write_file(dir: &dyn Directory, name: &str, bytes: &[u8]) -> Result<()> {
 /// [`FieldValue`] that isn't [`FieldValue::Int`]/[`FieldValue::Long`].
 fn field_value_kind(value: &FieldValue) -> &'static str {
     match value {
-        FieldValue::String(_) => "String",
+        FieldValue::String(_) | FieldValue::Shared(_) => "String",
         FieldValue::Binary(_) => "Binary",
         FieldValue::Int(_) => "Int",
         FieldValue::Long(_) => "Long",

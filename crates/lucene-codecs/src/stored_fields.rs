@@ -164,11 +164,27 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
     String(String),
+    /// A string value shared with its caller rather than copied: written
+    /// exactly as [`Self::String`] of the same text, and never produced by a
+    /// reader. Rust-only; it keeps a large stored text from being copied
+    /// once more on the way to the writer.
+    Shared(std::sync::Arc<str>),
     Binary(Vec<u8>),
     Int(i32),
     Long(i64),
     Float(f32),
     Double(f64),
+}
+
+impl FieldValue {
+    /// The text of a [`Self::String`] or [`Self::Shared`] value.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            FieldValue::String(s) => Some(s),
+            FieldValue::Shared(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2751,6 +2767,7 @@ impl StoredFieldsWriter {
             && self.captured.is_none()
             && doc.fields.iter().any(|f| match &f.value {
                 FieldValue::String(s) => s.len() >= self.chunk_size,
+                FieldValue::Shared(s) => s.len() >= self.chunk_size,
                 FieldValue::Binary(b) => b.len() >= self.chunk_size,
                 _ => false,
             })
@@ -2795,7 +2812,7 @@ impl StoredFieldsWriter {
         for f in &doc.fields {
             field.clear();
             let bits = match &f.value {
-                FieldValue::String(_) => TYPE_STRING,
+                FieldValue::String(_) | FieldValue::Shared(_) => TYPE_STRING,
                 FieldValue::Binary(_) => TYPE_BYTE_ARR,
                 FieldValue::Int(_) => TYPE_NUMERIC_INT,
                 FieldValue::Float(_) => TYPE_NUMERIC_FLOAT,
@@ -2804,7 +2821,8 @@ impl StoredFieldsWriter {
             };
             field.write_vlong(((f.field_number as i64) << TYPE_BITS) | bits);
             match &f.value {
-                FieldValue::String(text) => {
+                FieldValue::String(_) | FieldValue::Shared(_) => {
+                    let text = f.value.as_text().unwrap_or_default();
                     field.write_vint(text.len() as i32);
                     self.put_slices(&mut slice, compression, &field, &mut streamed);
                     self.put_slices(&mut slice, compression, text.as_bytes(), &mut streamed);
@@ -3322,7 +3340,7 @@ fn serialized_doc_len(doc: &Document) -> usize {
     let mut total = 0usize;
     for field in &doc.fields {
         let bits = match &field.value {
-            FieldValue::String(_) => TYPE_STRING,
+            FieldValue::String(_) | FieldValue::Shared(_) => TYPE_STRING,
             FieldValue::Binary(_) => TYPE_BYTE_ARR,
             FieldValue::Int(_) => TYPE_NUMERIC_INT,
             FieldValue::Float(_) => TYPE_NUMERIC_FLOAT,
@@ -3333,11 +3351,13 @@ fn serialized_doc_len(doc: &Document) -> usize {
         small.write_vlong(((field.field_number as i64) << TYPE_BITS) | bits);
         match &field.value {
             FieldValue::String(s) => small.write_vint(s.len() as i32),
+            FieldValue::Shared(s) => small.write_vint(s.len() as i32),
             FieldValue::Binary(b) => small.write_vint(b.len() as i32),
             other => write_field(&mut small, other),
         }
         let contents = match &field.value {
             FieldValue::String(s) => s.len(),
+            FieldValue::Shared(s) => s.len(),
             FieldValue::Binary(b) => b.len(),
             _ => 0,
         };
@@ -3357,7 +3377,7 @@ fn serialized_doc_len(doc: &Document) -> usize {
 fn serialize_doc_into(doc: &Document, out: &mut Vec<u8>) {
     for field in &doc.fields {
         let bits = match &field.value {
-            FieldValue::String(_) => TYPE_STRING,
+            FieldValue::String(_) | FieldValue::Shared(_) => TYPE_STRING,
             FieldValue::Binary(_) => TYPE_BYTE_ARR,
             FieldValue::Int(_) => TYPE_NUMERIC_INT,
             FieldValue::Float(_) => TYPE_NUMERIC_FLOAT,
@@ -3379,6 +3399,7 @@ fn write_field(out: &mut Vec<u8>, value: &FieldValue) {
             out.write_bytes(b);
         }
         FieldValue::String(s) => out.write_string(s),
+        FieldValue::Shared(s) => out.write_string(s),
         FieldValue::Int(v) => write_zint(out, *v),
         FieldValue::Float(v) => write_zfloat(out, *v),
         FieldValue::Long(v) => write_tlong(out, *v),
@@ -7026,6 +7047,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `doc` with every string value held as a [`FieldValue::Shared`].
+    fn shared_copy(doc: &Document) -> Document {
+        Document {
+            fields: doc
+                .fields
+                .iter()
+                .map(|f| StoredField {
+                    field_number: f.field_number,
+                    value: match &f.value {
+                        FieldValue::String(s) => FieldValue::Shared(std::sync::Arc::from(&**s)),
+                        other => other.clone(),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_shared_value_writes_the_bytes_its_string_writes() {
+        for mode in [
+            Mode::BestSpeed,
+            Mode::BestCompression,
+            Mode::Zstd(ZstdMode::zstd(3)),
+        ] {
+            let chunk = mode.chunk_size() as usize;
+            // Buffered ones, an outsized one that streams, and one on each
+            // side of the size that streams.
+            let docs = [
+                outsized_doc(30, 1),
+                outsized_doc(2 * chunk + 100, 2),
+                outsized_doc(chunk, 3),
+                outsized_doc(5 * chunk + 9, 4),
+                outsized_doc(12, 5),
+            ];
+            let mut shared = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+            let mut owned = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+            for doc in &docs {
+                let copy = shared_copy(doc);
+                assert_ne!(&copy, doc, "the copy holds shared values");
+                shared.add_document(&copy);
+                owned.add_document(doc);
+            }
+            let mut alone = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+            alone.add_document(&shared_copy(&outsized_doc(5 * chunk + 9, 4)));
+            assert!(
+                alone.chunk_buf.capacity() < 2 * chunk,
+                "a shared outsized value streams too: {} bytes held",
+                alone.chunk_buf.capacity()
+            );
+            assert_eq!(shared.finish(), owned.finish(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_shared_value_reads_back_as_the_string_it_wrote() {
+        let doc = outsized_doc(70_000, 8);
+        let mut w = StoredFieldsWriter::new(Mode::BestSpeed, &[3; ID_LENGTH], "");
+        w.add_document(&shared_copy(&doc));
+        let (fdt, fdx, fdm) = w.finish();
+        let reader = open(&fdt, &fdx, &fdm, &[3; ID_LENGTH], "").expect("the segment opens");
+        assert_eq!(reader.document(0).unwrap(), doc);
+        assert_eq!(FieldValue::Shared("é".into()).as_text(), Some("é"));
+        assert_eq!(FieldValue::Int(1).as_text(), None);
     }
 
     #[test]

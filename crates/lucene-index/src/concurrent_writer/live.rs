@@ -694,6 +694,7 @@ impl LiveDocValue {
         };
         let bytes = |v: &FieldValue| match v {
             FieldValue::String(s) => Some(s.as_bytes().to_vec()),
+            FieldValue::Shared(s) => Some(s.as_bytes().to_vec()),
             FieldValue::Binary(b) => Some(b.clone()),
             _ => None,
         };
@@ -1189,6 +1190,7 @@ impl StoredArena {
                 FieldValue::Double(v) => (DOUBLE, &v.to_bits().to_le_bytes()),
                 FieldValue::Binary(b) => (BINARY, b.as_slice()),
                 FieldValue::String(s) => (STRING, s.as_bytes()),
+                FieldValue::Shared(s) => (STRING, s.as_bytes()),
             };
             out.push(tag);
             out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());

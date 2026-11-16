@@ -277,6 +277,7 @@ impl Search<'_, '_, '_> {
             .filter(|f| f.field_number == number)
             .find_map(|f| match f.value {
                 FieldValue::String(s) => Some(s),
+                FieldValue::Shared(s) => Some(s.to_string()),
                 FieldValue::Int(v) => Some(v.to_string()),
                 FieldValue::Long(v) => Some(v.to_string()),
                 FieldValue::Float(v) => Some(java_float_string(v)),

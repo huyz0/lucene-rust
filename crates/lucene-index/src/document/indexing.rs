@@ -1193,7 +1193,7 @@ impl IndexWriter<'_> {
                 // UTF-16 never needs more units than UTF-8 needs bytes, so
                 // only a string whose byte length is over the limit can be
                 // over it in UTF-16 units: skip the O(len) count otherwise.
-                if let StoredValue::String(s) = &value {
+                if let Some(s) = value.as_text() {
                     if s.len() > MAX_STORED_STRING_LENGTH {
                         check_stored_string(name, s.encode_utf16().count()).map_err(doc_error)?;
                     }
