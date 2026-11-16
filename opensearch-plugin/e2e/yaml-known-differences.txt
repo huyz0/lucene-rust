@@ -1,0 +1,11 @@
+# YAML tests that fail on the plugin and pass on stock, by design. One test per line, exactly as
+# JUnit prints it; a line starting with # is a note. scripts/verify-opensearch.sh drops these from
+# the plugin's failure list before comparing, and fails if one of them no longer fails (a stale
+# entry is a claim that stopped being true).
+#
+# The native terms aggregation reads a keyword field's ordinals from the segment's doc values and
+# never builds OpenSearch's heap-resident global ordinals, so `indices.stats` reports no fielddata
+# memory afterwards. The test asserts exactly that memory (> 0) after an explicit
+# `execution_hint: global_ordinals`. Not loading them is the point of the native path (bounded
+# memory, no first-query cost); search results are identical. Approved by the repository owner.
+test {yaml=search.aggregation/20_terms/Global ordinals are loaded with the global_ordinals execution hint}(org.lucenerust.opensearch.LuceneRustYamlIT)
