@@ -231,6 +231,11 @@ pub struct FlushedSegment {
 /// does `si.addFile(fileName)` before encoding and every consumer that walks
 /// `SegmentInfo.files` -- `IndexFileDeleter`, `CheckIndex`,
 /// `checksum_verify` -- reference-counts from exactly that set.
+///
+/// A non-compound call whose documents hold at least
+/// [`stored_fields::SPILL_BYTES`] of stored values streams the `.fdt` to its
+/// file as it compresses (the bytes are the same); a compound call packs it
+/// from memory.
 #[allow(clippy::too_many_arguments)]
 pub fn write_stored_only_segment_files(
     dir: &dyn Directory,
@@ -316,6 +321,58 @@ pub(crate) fn build_native_stored_fields(
         writer.add_document(doc);
     }
     Some(writer.finish())
+}
+
+/// [`build_native_stored_fields`] for a flush that writes the `.fdt` itself:
+/// when `docs` hold at least [`stored_fields::SPILL_BYTES`] of stored values,
+/// the writer streams the `.fdt` to `fdt_name` in `dir` as it compresses, so
+/// a flush of a few very large stored values holds about a chunk of
+/// compressed bytes instead of the whole file. The bytes written are the
+/// ones the buffered path writes; the returned `.fdt` is then empty, as
+/// [`StoredFieldsBytes`] says an empty one is already in its file.
+///
+/// # Errors
+/// Creating or closing the `.fdt`.
+pub(crate) fn build_native_stored_fields_to(
+    dir: &dyn Directory,
+    fdt_name: &str,
+    docs: &[Document],
+    segment_id: &[u8; ID_LENGTH],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+) -> Result<Option<StoredFieldsBytes>> {
+    if stored_bytes(docs) < stored_fields::SPILL_BYTES
+        || codec.is_some_and(|codec| codec.stored_fields_writer_factory().is_some())
+    {
+        return Ok(build_native_stored_fields(docs, segment_id, codec));
+    }
+    let mode = codec.map_or(stored_fields::Mode::BestSpeed, |codec| {
+        codec.stored_fields_mode()
+    });
+    let mut writer =
+        stored_fields::StoredFieldsWriter::new(mode, segment_id, mode.segment_suffix());
+    writer.stream_to(dir.create_output(fdt_name)?);
+    for doc in docs {
+        writer.add_document(doc);
+    }
+    let (out, fdx, fdm) = writer.finish_streamed();
+    if let Some(out) = out {
+        out.close()?;
+    }
+    Ok(Some((Vec::new(), fdx, fdm)))
+}
+
+/// The bytes of the string and binary values `docs` store, saturating.
+fn stored_bytes(docs: &[Document]) -> usize {
+    use stored_fields::FieldValue;
+    docs.iter()
+        .flat_map(|doc| &doc.fields)
+        .map(|f| match &f.value {
+            FieldValue::String(s) => s.len(),
+            FieldValue::Shared(s) => s.len(),
+            FieldValue::Binary(b) => b.len(),
+            _ => 0,
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 /// The `.si` attribute a segment whose `BEST_SPEED` stored fields were all
@@ -410,8 +467,14 @@ fn write_stored_only_segment_files_inner(
             },
         )?;
         None
+    } else if let Some(prebuilt) = prebuilt {
+        Some(prebuilt)
+    } else if use_compound_file {
+        // The compound file packs the `.fdt` from memory.
+        build_native_stored_fields(docs, &segment_id, codec)
     } else {
-        prebuilt.or_else(|| build_native_stored_fields(docs, &segment_id, codec))
+        let fdt_name = crate::index_writer::segment_file_name(segment_name, suffix, "fdt");
+        build_native_stored_fields_to(dir, &fdt_name, docs, &segment_id, codec)?
     };
     let fnm = field_infos::write(fields, &segment_id, "");
 
@@ -1070,6 +1133,123 @@ mod tests {
     }
 
     use lucene_util::test_support::TempDir;
+
+    #[test]
+    fn a_flush_with_large_stored_values_streams_the_fdt_the_buffered_path_writes() {
+        let big = |seed: u32, len: usize| {
+            let mut x = seed.max(1);
+            let text: String = (0..len)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    char::from(b'a' + (x % 26) as u8)
+                })
+                .collect();
+            Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String(text),
+                }],
+            }
+        };
+        let id = [7u8; ID_LENGTH];
+        // Small ones, then ones past the spill size, one of them shared.
+        let mut docs = vec![big(1, 40), big(2, 300_000), big(3, 1_500_000), big(4, 9)];
+        docs.push(Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::Shared(std::sync::Arc::from("shared text ".repeat(200_000))),
+            }],
+        });
+        let root = TempDir::new("flush-stored-spill");
+        let dir = FsDirectory::open(root.path());
+        let reference = build_native_stored_fields(&docs, &id, None).expect("native writer");
+        let spilled = build_native_stored_fields_to(&dir, "s.fdt", &docs, &id, None)
+            .unwrap()
+            .expect("native writer");
+        assert!(spilled.0.is_empty(), "the .fdt went to its file");
+        assert_eq!(spilled.1, reference.1, ".fdx");
+        assert_eq!(spilled.2, reference.2, ".fdm");
+        assert_eq!(
+            std::fs::read(root.path().join("s.fdt")).unwrap(),
+            reference.0,
+            ".fdt on disk equals the buffered one"
+        );
+    }
+
+    #[test]
+    fn a_spilling_flush_lists_and_writes_the_files_a_buffered_one_does() {
+        let docs: Vec<Document> = [40usize, 1_300_000, 1_900_000]
+            .iter()
+            .map(|&n| Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("abcdefghij".repeat(n / 10)),
+                }],
+            })
+            .collect();
+        let id = [9u8; ID_LENGTH];
+        let reference = build_native_stored_fields(&docs, &id, None).expect("native writer");
+        let flush = |name: &str, compound: bool| {
+            let root = TempDir::new(name);
+            let dir = FsDirectory::open(root.path());
+            let flushed = write_stored_only_segment_files(
+                &dir,
+                "_0",
+                id,
+                "Lucene104",
+                version(),
+                &[stored_only_field("f", 0)],
+                &docs,
+                compound,
+                false,
+            )
+            .unwrap();
+            (root, flushed.info.files)
+        };
+        let (root, files) = flush("flush-spill-files", false);
+        for ext in ["fdt", "fdx", "fdm", "fnm", "si"] {
+            assert!(
+                files.iter().any(|f| f.ends_with(&format!(".{ext}"))),
+                "{ext} is listed: {files:?}"
+            );
+        }
+        let fdt = files.iter().find(|f| f.ends_with(".fdt")).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join(fdt)).unwrap(),
+            reference.0,
+            "the spilled .fdt is the buffered one"
+        );
+        // A compound flush packs the .fdt from memory: no standalone file.
+        let (root, files) = flush("flush-spill-compound", true);
+        assert!(files.iter().all(|f| !f.ends_with(".fdt")), "{files:?}");
+        assert!(!root.path().join("_0.fdt").exists());
+        assert!(root.path().join("_0.cfs").exists());
+    }
+
+    #[test]
+    fn a_flush_with_small_stored_values_keeps_the_fdt_in_memory() {
+        let docs = vec![Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String("small".into()),
+            }],
+        }];
+        let root = TempDir::new("flush-stored-small");
+        let dir = FsDirectory::open(root.path());
+        let built = build_native_stored_fields_to(&dir, "s.fdt", &docs, &[7; ID_LENGTH], None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !built.0.is_empty(),
+            "nothing is spilled below the spill size"
+        );
+        assert!(
+            !root.path().join("s.fdt").exists(),
+            "no file is created for a small flush"
+        );
+    }
 
     /// A scratch directory that removes itself when the test ends -- unless the
     /// test is panicking, in which case its bytes stay for inspection.
