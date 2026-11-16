@@ -530,7 +530,7 @@ final class ExtendedEncoder {
     }
 
     /** At most this many copies in a repeating source ({@code MAX_CLAUSE_COUNT} natively). */
-    private static final int MAX_REPEATS = 1024;
+    private static final int MAX_REPEATS = 1 << 20;
 
     private static String pair(int tag, Object a, Object b, ByteArrayOutputStream out) throws ReflectiveOperationException {
         out.write(tag);

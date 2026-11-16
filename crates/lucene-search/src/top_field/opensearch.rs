@@ -112,10 +112,41 @@ impl FieldComparatorSource for UnsignedLongSort {
     }
 }
 
+/// `DoubleValuesComparatorSource` over a `scaled_float` field with no nested
+/// path: the field's values are longs (the value times the scaling factor,
+/// rounded), read as doubles by multiplying with the inverse of the factor
+/// (`ScaledFloatLeafFieldData`), `MultiValueMode`'s pick over those doubles,
+/// `missing` for a document without one. A hit's value is
+/// `double_to_sortable_long` of that double, compared as `Double.compare`
+/// compares the doubles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScaledFloatSort {
+    /// `Min`, `Max`, `Sum`, `Avg` or `Median`.
+    pub selector: Selector,
+    /// `missingObject(missingValue, reversed)`.
+    pub missing: f64,
+    /// `1d / scalingFactor`.
+    pub inverse: f64,
+}
+
+impl FieldComparatorSource for ScaledFloatSort {
+    fn new_comparator(&self, field: &str, _: usize, _: bool) -> Box<dyn FieldComparator> {
+        Box::new(Comparator {
+            field: field.to_string(),
+            pick: Pick::Scaled(*self),
+        })
+    }
+
+    fn value_string(&self, value: i64) -> String {
+        crate::function::java_double(lucene_util::numeric_utils::sortable_long_to_double(value))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Pick {
     HalfFloat(HalfFloatSort),
     Unsigned(UnsignedLongSort),
+    Scaled(ScaledFloatSort),
 }
 
 impl Pick {
@@ -132,6 +163,17 @@ impl Pick {
                 s.selector
                     .pick(SortType::Float, scratch)
                     .unwrap_or_else(|| i64::from(float_to_sortable_int(s.missing)))
+            }
+            Pick::Scaled(s) => {
+                scratch.clear();
+                scratch.extend(values.iter().map(|&v| {
+                    lucene_util::numeric_utils::double_to_sortable_long(v as f64 * s.inverse)
+                }));
+                s.selector
+                    .pick(SortType::Double, scratch)
+                    .unwrap_or_else(|| {
+                        lucene_util::numeric_utils::double_to_sortable_long(s.missing)
+                    })
             }
             Pick::Unsigned(s) => {
                 if values.is_empty() {
@@ -337,6 +379,43 @@ mod tests {
 
     fn docs(hits: &[FieldDoc]) -> Vec<i32> {
         hits.iter().map(|h| h.doc).collect()
+    }
+
+    #[test]
+    fn scaled_float_picks_the_scaled_doubles() {
+        use lucene_util::numeric_utils::{double_to_sortable_long, sortable_long_to_double};
+        let inverse = 1.0 / 100.0;
+        let mut scratch = Vec::new();
+        let pick = |selector, values: &[i64], scratch: &mut Vec<i64>| {
+            let s = ScaledFloatSort {
+                selector,
+                missing: f64::INFINITY,
+                inverse,
+            };
+            sortable_long_to_double(Pick::Scaled(s).value(values, scratch))
+        };
+        let values = [-250, 100, 350];
+        assert_eq!(pick(Selector::Min, &values, &mut scratch), -250.0 * inverse);
+        assert_eq!(pick(Selector::Max, &values, &mut scratch), 350.0 * inverse);
+        let sum = (-250.0 * inverse + 100.0 * inverse) + 350.0 * inverse;
+        assert_eq!(pick(Selector::Sum, &values, &mut scratch), sum);
+        assert_eq!(pick(Selector::Avg, &values, &mut scratch), sum / 3.0);
+        assert_eq!(
+            pick(Selector::Median, &values, &mut scratch),
+            100.0 * inverse
+        );
+        assert_eq!(
+            pick(Selector::Median, &[100, 200], &mut scratch),
+            (100.0 * inverse + 200.0 * inverse) / 2.0
+        );
+        // No value: the missing one, infinity here.
+        assert_eq!(pick(Selector::Min, &[], &mut scratch), f64::INFINITY);
+        let source = ScaledFloatSort {
+            selector: Selector::Min,
+            missing: 0.0,
+            inverse,
+        };
+        assert_eq!(source.value_string(double_to_sortable_long(2.5)), "2.5");
     }
 
     #[test]

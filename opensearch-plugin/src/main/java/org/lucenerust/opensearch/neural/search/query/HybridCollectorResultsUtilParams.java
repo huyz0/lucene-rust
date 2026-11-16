@@ -22,6 +22,7 @@ public class HybridCollectorResultsUtilParams {
     private final boolean isCollapseEnabled;
     private SortField[] sortFields = null;
     private final List<RescoreContext> rescoreContexts;
+    private final boolean rescoredNatively;
     private SortAndFormats sortAndFormats = null;
     private DocValueFormat[] docValueFormats = null;
     private static final SortField[] DEFAULT_SORT_FIELDS = new SortField[] {new SortField(null, SortField.Type.SCORE)};
@@ -42,6 +43,7 @@ public class HybridCollectorResultsUtilParams {
             this.sortFields = DEFAULT_SORT_FIELDS;
         }
         this.rescoreContexts = searchContext.rescore();
+        this.rescoredNatively = builder.rescoredNatively;
     }
 
     private void setSortEnabledParameters() {
@@ -56,6 +58,13 @@ public class HybridCollectorResultsUtilParams {
      */
     public static class Builder {
         private SearchContext searchContext;
+        private boolean rescoredNatively;
+
+        /** The sub-queries' hits were rescored before they reached the result util. */
+        public Builder rescoredNatively(boolean rescoredNatively) {
+            this.rescoredNatively = rescoredNatively;
+            return this;
+        }
 
         public Builder searchContext(SearchContext searchContext) {
             this.searchContext = searchContext;
@@ -100,6 +109,11 @@ public class HybridCollectorResultsUtilParams {
     @java.lang.SuppressWarnings("all")
     public List<RescoreContext> getRescoreContexts() {
         return this.rescoreContexts;
+    }
+
+    /** Whether the hits arrive rescored already, so the result util must not rescore them. */
+    public boolean isRescoredNatively() {
+        return this.rescoredNatively;
     }
 
     @java.lang.SuppressWarnings("all")

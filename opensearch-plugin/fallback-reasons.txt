@@ -67,16 +67,6 @@ highlight_locale  # NativeFvhHighlighter.java
 highlight_lone_surrogate  # NativeFvhHighlighter.java
 highlight_nested_  # QueryEncoder.java
 highlight_reader  # NativeFvhHighlighter.java
-hybrid_aggregations  # NativeHybrid.java
-hybrid_collapse  # NativeHybrid.java
-hybrid_no_hits  # RustQueryPhaseSearcher.java
-hybrid_post_filter  # NativeHybrid.java
-hybrid_rescore  # NativeHybrid.java
-hybrid_search_after  # NativeHybrid.java
-hybrid_sort  # NativeHybrid.java
-hybrid_sub_queries  # NativeHybrid.java
-hybrid_terminate_after  # NativeHybrid.java
-hybrid_wrapped  # NativeHybrid.java
 interval_  # ExtendedEncoder.java
 interval_options  # ExtendedEncoder.java
 interval_painless  # ExtendedEncoder.java
@@ -97,7 +87,6 @@ noskip  # SortEncoder.java
 pattern_phrase_  # ExtendedEncoder.java
 points_width  # GeoEncoder.java
 postings_format  # NativeReaders.java
-profile  # NativeHybrid.java, RustQueryPhaseSearcher.java
 query_too_deep  # QueryEncoder.java
 query_too_large  # QueryEncoder.java
 reader_closed  # NativeReaders.java
@@ -116,7 +105,6 @@ script_score_script  # ExtendedEncoder.java
 scroll_after  # RustQueryPhaseSearcher.java
 search_after  # RustQueryPhaseSearcher.java
 search_after_fields  # SortEncoder.java
-search_after_geo  # SortEncoder.java
 search_after_null  # SortEncoder.java
 search_after_type  # SortEncoder.java
 segment_infos_write  # NativeReaders.java
@@ -128,12 +116,10 @@ sort_geo_origins  # GeoEncoder.java
 sort_geo_plane  # GeoEncoder.java
 sort_geo_reflect  # GeoEncoder.java
 sort_keys  # SortEncoder.java
-sort_nested  # SortEncoder.java
 sort_script  # ExtendedEncoder.java
 sort_script_nested  # SortEncoder.java
 sort_script_options  # ExtendedEncoder.java
 sort_script_score  # ExtendedEncoder.java
-sort_skipping  # SortEncoder.java
 sort_unoptimized  # SortEncoder.java
 span_  # ExtendedEncoder.java
 substring_regexp_flags  # ExtendedEncoder.java
