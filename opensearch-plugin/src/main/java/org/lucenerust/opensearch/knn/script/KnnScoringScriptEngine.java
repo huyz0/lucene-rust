@@ -38,6 +38,8 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
     public static final String NAME = "knn";
     public static final String SCRIPT_SOURCE = "knn_score";
     public static final String HAMMING_BIT = "hammingbit";
+    /** {@code hammingbit} in {@code knn_score.rs}'s space numbers (after {@link #SPACES}). */
+    private static final byte HAMMING_BIT_CODE = 6;
 
     @Override
     public String getType() {
@@ -106,7 +108,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
             this.prepared = prepared;
         }
 
-        /** The script as a native search scores it, or {@code null} for {@code hammingbit}. */
+        /** The script as a native search scores it, or {@code null} for {@code hammingbit} over a field without doc values, which fails. */
         public Native nativeSpec() {
             return prepared.nativeSpec();
         }
@@ -149,7 +151,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
     static Prepared scorer(String space, Object query, MappedFieldType fieldType) {
         String s = space.toLowerCase(Locale.ROOT);
         if (s.equals(HAMMING_BIT)) {
-            return new Prepared(hammingBit(query, fieldType), null);
+            return hammingBit(query, fieldType);
         }
         return switch (s) {
             case "hamming" -> vectorSpace(query, fieldType, "hamming", Set.of("binary"), null, (q, v) -> 1 / (1 + KnnScoring.hammingBit(q, v)));
@@ -310,7 +312,7 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
     }
 
     /** {@code KNNScoringSpace.HammingBit}: a {@code long} field, or a {@code binary} one with a base64 query. */
-    private static Scorer hammingBit(Object query, MappedFieldType fieldType) {
+    private static Prepared hammingBit(Object query, MappedFieldType fieldType) {
         if (fieldType instanceof NumberFieldMapper.NumberFieldType n && n.numericType() == NumberFieldMapper.NumberType.LONG.numericType()) {
             long q;
             if (query instanceof Integer i) {
@@ -320,14 +322,24 @@ public final class KnnScoringScriptEngine implements ScriptEngine {
             } else {
                 throw new IllegalArgumentException("Object cannot be parsed as a Long.");
             }
-            return values -> 1.0f / (1 + KnnScoring.hammingBit(q, ((ScriptDocValues.Longs) values).getValue()));
+            Scorer scorer = values -> 1.0f / (1 + KnnScoring.hammingBit(q, ((ScriptDocValues.Longs) values).getValue()));
+            // Without doc values the script fails in Java, as `doc[field]` does.
+            Native spec = fieldType.hasDocValues()
+                ? new Native(fieldType.name(), HAMMING_BIT_CODE, (byte) 3, false, null, java.nio.ByteBuffer.allocate(8).putLong(q).array())
+                : null;
+            return new Prepared(scorer, spec);
         }
         if (fieldType instanceof BinaryFieldMapper.BinaryFieldType) {
-            BigInteger q = new BigInteger(1, Base64.getDecoder().decode((String) query));
-            return values -> {
+            byte[] decoded = Base64.getDecoder().decode((String) query);
+            BigInteger q = new BigInteger(1, decoded);
+            Scorer scorer = values -> {
                 BytesRef b = ((ScriptDocValues.BytesRefs) values).getValue();
                 return 1.0f / (1 + KnnScoring.hammingBit(q, new BigInteger(1, Arrays.copyOfRange(b.bytes, b.offset, b.offset + b.length))));
             };
+            Native spec = fieldType.hasDocValues()
+                ? new Native(fieldType.name(), HAMMING_BIT_CODE, (byte) 1, false, null, decoded)
+                : null;
+            return new Prepared(scorer, spec);
         }
         throw new IllegalArgumentException("Incompatible field_type for hammingbit space. The field type must of type long or binary.");
     }

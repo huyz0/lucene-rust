@@ -2588,10 +2588,7 @@ pub fn search_live(
         s.similarity = sim.map(|p| p as &dyn Similarity);
     }
 
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let extra = |field: &str| {
         let mut found = None;
         for l in live {

@@ -1285,6 +1285,27 @@ pub fn queries_stats(
 pub(crate) struct FunctionStats {
     contexts: HashMap<usize, Arc<FunctionContext>>,
     sources: HashMap<usize, Arc<dyn crate::values_source::DoubleValuesSource>>,
+    /// The reader-wide average length of each field the queries a function
+    /// scores read, for the norms a search that takes no scores still scores
+    /// those queries with.
+    avg_lengths: Vec<(String, f32)>,
+}
+
+impl FunctionStats {
+    /// The fields the function queries' scored queries read, with their
+    /// reader-wide average lengths.
+    pub(crate) fn avg_lengths(&self) -> &[(String, f32)] {
+        &self.avg_lengths
+    }
+
+    /// `field`'s reader-wide average length, if a function query's scored
+    /// query reads it.
+    pub(crate) fn avg_length(&self, field: &str) -> Option<f32> {
+        self.avg_lengths
+            .iter()
+            .find(|(f, _)| f == field)
+            .map(|(_, avg)| *avg)
+    }
 }
 
 impl fmt::Debug for FunctionStats {
@@ -1340,7 +1361,12 @@ pub(crate) enum FunctionSource<'q> {
     Value(&'q Arc<dyn ValueSource>),
     /// A `FunctionScoreQuery`'s or `FunctionMatchQuery`'s
     /// `source.rewrite(searcher)`.
-    Double(&'q Arc<dyn crate::values_source::DoubleValuesSource>),
+    /// The second is the wrapped query of a `min_score`d function score:
+    /// scored even where the search takes no scores.
+    Double(
+        &'q Arc<dyn crate::values_source::DoubleValuesSource>,
+        Option<&'q crate::query::Clause>,
+    ),
 }
 
 impl<'q> FunctionSource<'q> {
@@ -1348,7 +1374,11 @@ impl<'q> FunctionSource<'q> {
     pub(crate) fn queries(&self) -> Vec<&'q crate::query::Clause> {
         match self {
             FunctionSource::Value(s) => s.queries(),
-            FunctionSource::Double(s) => s.queries(),
+            FunctionSource::Double(s, scored) => {
+                let mut queries = s.queries();
+                queries.extend(scored);
+                queries
+            }
         }
     }
 }
@@ -1387,8 +1417,11 @@ fn collect_clause<'q>(c: &'q crate::query::Clause, out: &mut Vec<FunctionSource<
             let own = match e.as_ref() {
                 ExtendedQuery::Function(q) => Some(FunctionSource::Value(&q.source)),
                 ExtendedQuery::FunctionRange(q) => Some(FunctionSource::Value(&q.source)),
-                ExtendedQuery::FunctionScore(q) => Some(FunctionSource::Double(&q.source)),
-                ExtendedQuery::FunctionMatch(q) => Some(FunctionSource::Double(&q.source)),
+                ExtendedQuery::FunctionScore(q) => Some(FunctionSource::Double(
+                    &q.source,
+                    q.min_score.map(|_| q.in_query.as_ref()),
+                )),
+                ExtendedQuery::FunctionMatch(q) => Some(FunctionSource::Double(&q.source, None)),
                 _ => None,
             };
             // The queries this clause's function scores may hold functions
@@ -1409,6 +1442,15 @@ fn collect_clause<'q>(c: &'q crate::query::Clause, out: &mut Vec<FunctionSource<
     }
 }
 
+/// Whether a `min_score`d function score sits anywhere in `query`.
+pub(crate) fn holds_min_score(query: &crate::query::BooleanQuery) -> bool {
+    let mut functions = Vec::new();
+    collect_functions(query, &mut functions);
+    functions
+        .iter()
+        .any(|f| matches!(f, FunctionSource::Double(_, Some(_))))
+}
+
 /// The norms of `fields` in every segment, each field's built with its
 /// reader-wide average length (as `DirectoryReader::field_norms_by_field`
 /// builds a searcher's).
@@ -1416,20 +1458,7 @@ fn segment_norms<'a>(
     segments: &[crate::multi_segment::OpenSegment<'a>],
     fields: &[String],
 ) -> Result<Vec<HashMap<String, crate::FieldNorms<'a>>>> {
-    let mut avgs = Vec::new();
-    for f in fields {
-        let (mut stf, mut dc, mut seen) = (0i64, 0i64, false);
-        for seg in segments {
-            if let Some((s, d)) = seg.reader.map(|r| r.field_stats(f)).transpose()?.flatten() {
-                stf = stf.saturating_add(s);
-                dc = dc.saturating_add(i64::from(d));
-                seen = true;
-            }
-        }
-        if seen {
-            avgs.push((f.clone(), crate::field_norms::avg_field_length(stf, dc)));
-        }
-    }
+    let avgs = reader_avg_lengths(segments, fields)?;
     segments
         .iter()
         .map(|seg| {
@@ -1444,6 +1473,28 @@ fn segment_norms<'a>(
             Ok(m)
         })
         .collect()
+}
+
+/// Each of `fields` the reader holds, with its reader-wide average length.
+fn reader_avg_lengths(
+    segments: &[crate::multi_segment::OpenSegment<'_>],
+    fields: &[String],
+) -> Result<Vec<(String, f32)>> {
+    let mut avgs = Vec::new();
+    for f in fields {
+        let (mut stf, mut dc, mut seen) = (0i64, 0i64, false);
+        for seg in segments {
+            if let Some((s, d)) = seg.reader.map(|r| r.field_stats(f)).transpose()?.flatten() {
+                stf = stf.saturating_add(s);
+                dc = dc.saturating_add(i64::from(d));
+                seen = true;
+            }
+        }
+        if seen {
+            avgs.push((f.clone(), crate::field_norms::avg_field_length(stf, dc)));
+        }
+    }
+    Ok(avgs)
 }
 
 /// The statistics pass's function step: every function query's
@@ -1471,6 +1522,7 @@ pub(crate) fn prepare_functions(
     }
     terms.sort();
     terms.dedup();
+    out.avg_lengths = reader_avg_lengths(segments, &terms)?;
     let norms = segment_norms(segments, &terms)?;
     let top = TopLevel {
         leaves: segments
@@ -1487,7 +1539,7 @@ pub(crate) fn prepare_functions(
                     slot.insert(Arc::new(FunctionContext::create(s.as_ref(), &top)?));
                 }
             }
-            FunctionSource::Double(s) => {
+            FunctionSource::Double(s, _) => {
                 let key = source_key(s.as_ref());
                 if let std::collections::hash_map::Entry::Vacant(slot) = out.sources.entry(key) {
                     // A source that does not rewrite is recorded as itself:

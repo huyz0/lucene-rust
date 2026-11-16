@@ -56,8 +56,20 @@ pub fn double_to_string(v: f64) -> String {
             "0.0".into()
         };
     }
-    // Rust's `{:e}` is the shortest round-tripping digits.
+    // Rust's `{:e}` is the shortest round-tripping digits, but on a tie
+    // between two of them it rounds up where Java takes the even one: the
+    // exact decimal expansion rounded to that many digits (half to even)
+    // is Java's choice whenever it reads back as `v`.
     let mut sci = format!("{v:e}");
+    let shortest_digits = sci
+        .split_once('e')
+        .map_or(0, |(m, _)| m.chars().filter(char::is_ascii_digit).count());
+    if shortest_digits > 1 {
+        let exact = format!("{v:.prec$e}", prec = shortest_digits - 1);
+        if exact.parse::<f64>().is_ok_and(|r| r == v) {
+            sci = exact;
+        }
+    }
     let (mant, exp) = sci
         .split_once('e')
         .map(|(m, e)| (m.to_string(), e.parse::<i32>().unwrap_or(0)))
