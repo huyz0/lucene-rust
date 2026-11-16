@@ -7,7 +7,7 @@
 /// stale `.so` must not get as far as reading an index.
 ///
 /// Bump it on any change a Java caller could observe.
-pub const JVM_ABI_VERSION: u32 = 183;
+pub const JVM_ABI_VERSION: u32 = 186;
 
 /// [`JVM_ABI_VERSION`], for the plugin's load-time handshake.
 #[no_mangle]

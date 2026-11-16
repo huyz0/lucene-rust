@@ -519,6 +519,7 @@ impl SegmentReader {
             stored: None,
             norms_meta: None,
             norms_data: None,
+            hidden: None,
             term_vectors: None,
             term_vectors_meta: Arc::default(),
             vectors: Vec::new(),
