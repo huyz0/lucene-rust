@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -317,13 +318,16 @@ public final class NativeReaders {
         for (int i = 0; i < hidden.length; i++) {
             LeafReader top = outer.get(i).reader();
             LeafReader bottom = inner.get(i).reader();
+            Set<String> maskedHere = new java.util.HashSet<>();
             for (LeafReader layer = top; layer != bottom;) {
                 if (viewLeaves.contains(layer.getClass().getName()) == false) {
                     return "reader_not_standard";
                 }
-                if (maskingFree(layer) == false) {
+                Set<String> masked = maskedFields(layer, bottom);
+                if (masked == null) {
                     return "reader_not_standard";
                 }
+                maskedHere.addAll(masked);
                 layer = ((FilterLeafReader) layer).getDelegate();
                 if (layer instanceof FilterLeafReader == false && layer != bottom) {
                     return "reader_not_standard";
@@ -334,7 +338,10 @@ public final class NativeReaders {
             List<String> gone = new ArrayList<>();
             for (FieldInfo fi : all) {
                 FieldInfo seen = shown.fieldInfo(fi.name);
-                if (seen == null) {
+                if (maskedHere.contains(fi.name)) {
+                    // Every read of it answers null in the wrapper: nothing is left of it to search.
+                    gone.add(fi.name);
+                } else if (seen == null) {
                     gone.add(fi.name);
                 } else if (sameShape(fi, seen) == false) {
                     return "reader_not_standard";
@@ -382,28 +389,55 @@ public final class NativeReaders {
     }
 
     /**
-     * Whether the security plugin's leaf {@code layer} masks no field: its field-masking rule allows
-     * everything. The rule is private to that plugin, so a plugin version that moved it reads as
-     * masking -- the search then runs on Lucene's reader, which applies the mask.
+     * The fields the security plugin's leaf {@code layer} masks over {@code bottom}, or null when
+     * the native side cannot stand in for the mask. A masked field answers null for its postings,
+     * points, norms, vectors and numeric values, so it is hidden like a field its role may not see;
+     * one whose keyword or binary doc values survive, shown through the mask, is not -- those
+     * values are hashed where they are read, which only the plugin's own reader does. The rule is
+     * private to that plugin, so a version that moved it reads as masking those too.
      */
-    private static boolean maskingFree(LeafReader layer) {
+    private static Set<String> maskedFields(LeafReader layer, LeafReader bottom) {
         try {
             java.lang.reflect.Field field = layer.getClass().getDeclaredField("fmRule");
             field.setAccessible(true);
             Object rule = field.get(layer);
-            for (Class<?> c = rule.getClass(); c != null; c = c.getSuperclass()) {
-                try {
-                    java.lang.reflect.Method m = c.getDeclaredMethod("isAllowAll");
-                    m.setAccessible(true);
-                    return Boolean.TRUE.equals(m.invoke(rule));
-                } catch (NoSuchMethodException e) {
-                    // The superclass declares it.
+            if (Boolean.TRUE.equals(call(rule, "isAllowAll"))) {
+                return Set.of();
+            }
+            java.lang.reflect.Field metaField = layer.getClass().getDeclaredField("metaFields");
+            metaField.setAccessible(true);
+            Set<?> meta = (Set<?>) metaField.get(layer);
+            Set<String> masked = new java.util.HashSet<>();
+            for (FieldInfo fi : bottom.getFieldInfos()) {
+                if (meta.contains(fi.name) || Boolean.TRUE.equals(call(rule, "isMasked", fi.name)) == false) {
+                    continue;
+                }
+                switch (fi.getDocValuesType()) {
+                    case BINARY, SORTED, SORTED_SET -> {
+                        return null;
+                    }
+                    default -> masked.add(fi.name);
                 }
             }
-            return false;
+            return masked;
         } catch (ReflectiveOperationException | RuntimeException e) {
-            return false;
+            return null;
         }
+    }
+
+    private static Object call(Object target, String name, String... args) throws ReflectiveOperationException {
+        Class<?>[] types = new Class<?>[args.length];
+        java.util.Arrays.fill(types, String.class);
+        for (Class<?> c = target.getClass(); c != null; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Method m = c.getDeclaredMethod(name, types);
+                m.setAccessible(true);
+                return m.invoke(target, (Object[]) args);
+            } catch (NoSuchMethodException e) {
+                // The superclass declares it.
+            }
+        }
+        throw new NoSuchMethodException(name);
     }
 
     /**
