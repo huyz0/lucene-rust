@@ -2075,6 +2075,9 @@ pub struct StoredFieldsWriter {
     /// [`Mode::ZstdPaged`]'s chunk under construction, encoded here first so
     /// the writer can see whether it fits the current page.
     page_chunk: Vec<u8>,
+    /// The slice [`Self::add_document`] fills while it streams an outsized
+    /// document, kept for its capacity.
+    slice_buf: Vec<u8>,
     /// The chunks written since [`Self::capture_chunks`], while it is on.
     captured: Option<Vec<WrittenChunk>>,
     /// [`Self::set_zstd_dictionary`] gave the chunks a dictionary, which a
@@ -2281,6 +2284,7 @@ impl StoredFieldsWriter {
                 scratch
             },
             page_chunk: Vec::new(),
+            slice_buf: Vec::new(),
             captured: None,
             has_dictionary: false,
         }
@@ -2709,7 +2713,20 @@ impl StoredFieldsWriter {
     }
 
     /// VISITOR path: serialize and buffer one parsed document.
+    ///
+    /// A document with a value of `chunk_size` bytes or more that serializes
+    /// to at least twice that is written straight to the `.fdt`, one
+    /// `chunk_size` slice at a time, instead of being copied whole into the
+    /// chunk buffer and compressed from there: the bytes are the ones the
+    /// buffered path writes (the chunk is `sliced` either way), and the
+    /// writer holds one slice rather than a copy of the document.
     pub fn add_document(&mut self, doc: &Document) {
+        if self.can_stream(doc) {
+            if let Some(length) = self.streamed_len(doc) {
+                self.add_streamed(doc, length);
+                return;
+            }
+        }
         let doc_start = self.chunk_buf.len();
         serialize_doc_into(doc, &mut self.chunk_buf);
         // ARITH: `serialize_doc_into` only appends, so the buffer is at least
@@ -2717,6 +2734,116 @@ impl StoredFieldsWriter {
         #[allow(clippy::arithmetic_side_effects)]
         let length = (self.chunk_buf.len() - doc_start) as i64;
         self.finish_document(doc.fields.len() as i64, length);
+    }
+
+    /// Whether `doc` may take [`Self::add_streamed`]: some value is at least
+    /// `chunk_size` long (a cheap test that leaves ordinary documents on the
+    /// buffered path), and nothing needs the chunk's bytes whole.
+    fn can_stream(&self, doc: &Document) -> bool {
+        !matches!(self.mode, Mode::ZstdPaged(_))
+            && self.captured.is_none()
+            && doc.fields.iter().any(|f| match &f.value {
+                FieldValue::String(s) => s.len() >= self.chunk_size,
+                FieldValue::Binary(b) => b.len() >= self.chunk_size,
+                _ => false,
+            })
+    }
+
+    /// `doc`'s serialized length when it is at least twice `chunk_size` and
+    /// fits the chunk's `int` length, else `None`.
+    fn streamed_len(&self, doc: &Document) -> Option<usize> {
+        let length = serialized_doc_len(doc);
+        // ARITH: `chunk_size` is a positive `i32` (`new`).
+        #[allow(clippy::arithmetic_side_effects)]
+        let twice = 2 * self.chunk_size;
+        (length >= twice && i32::try_from(length).is_ok()).then_some(length)
+    }
+
+    /// [`Self::add_document`] for a document of `length` serialized bytes:
+    /// closes the chunk it would have closed (the buffered documents, then
+    /// this one), writing its header and then its payload slice by slice.
+    fn add_streamed(&mut self, doc: &Document, length: usize) {
+        self.num_stored_fields.push(doc.fields.len() as i64);
+        self.lengths.push(length as i64);
+        let chunk_docs = self.lengths.len();
+        let compression = self.mode.compression();
+        self.fdt.write_vint(self.doc_base);
+        // A chunk of twice `chunk_size` or more is `sliced` (bit 0), and it
+        // closed on its size, so it is not dirty (bit 1).
+        self.fdt.write_vint(((chunk_docs as i32) << 2) | 1);
+        if chunk_docs == 1 {
+            self.fdt.write_vint(self.num_stored_fields[0] as i32);
+            self.fdt.write_vint(self.lengths[0] as i32);
+        } else {
+            write_bulk_ints(&mut self.fdt, &self.num_stored_fields);
+            write_bulk_ints(&mut self.fdt, &self.lengths);
+        }
+        let mut slice = std::mem::take(&mut self.slice_buf);
+        slice.clear();
+        let buffered = std::mem::take(&mut self.chunk_buf);
+        self.put_slices(&mut slice, compression, &buffered);
+        self.chunk_buf = buffered;
+        let mut field = Vec::new();
+        for f in &doc.fields {
+            field.clear();
+            let bits = match &f.value {
+                FieldValue::String(_) => TYPE_STRING,
+                FieldValue::Binary(_) => TYPE_BYTE_ARR,
+                FieldValue::Int(_) => TYPE_NUMERIC_INT,
+                FieldValue::Float(_) => TYPE_NUMERIC_FLOAT,
+                FieldValue::Long(_) => TYPE_NUMERIC_LONG,
+                FieldValue::Double(_) => TYPE_NUMERIC_DOUBLE,
+            };
+            field.write_vlong(((f.field_number as i64) << TYPE_BITS) | bits);
+            match &f.value {
+                FieldValue::String(text) => {
+                    field.write_vint(text.len() as i32);
+                    self.put_slices(&mut slice, compression, &field);
+                    self.put_slices(&mut slice, compression, text.as_bytes());
+                }
+                FieldValue::Binary(bytes) => {
+                    field.write_vint(bytes.len() as i32);
+                    self.put_slices(&mut slice, compression, &field);
+                    self.put_slices(&mut slice, compression, bytes);
+                }
+                other => {
+                    write_field(&mut field, other);
+                    self.put_slices(&mut slice, compression, &field);
+                }
+            }
+        }
+        if !slice.is_empty() {
+            self.scratch.compress(compression, &slice, &mut self.fdt);
+        }
+        slice.clear();
+        self.slice_buf = slice;
+        self.advance_doc_base(chunk_docs);
+        self.chunk_buf.clear();
+        self.lengths.clear();
+        self.num_stored_fields.clear();
+        self.record_chunk();
+    }
+
+    /// Appends `bytes` to the payload being sliced: each time `slice` holds
+    /// `chunk_size` bytes and more follow, it is compressed to the `.fdt` as
+    /// one unit (what `payload.chunks(chunk_size)` yields), and the `.fdt`
+    /// spills to its output once it holds [`STREAM_BYTES`].
+    fn put_slices(&mut self, slice: &mut Vec<u8>, compression: Compression, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            if slice.len() == self.chunk_size {
+                self.scratch.compress(compression, slice, &mut self.fdt);
+                slice.clear();
+                if self.fdt.len() >= STREAM_BYTES {
+                    self.spill_fdt();
+                }
+            }
+            // ARITH: `slice.len() < chunk_size` here, so the room is positive.
+            #[allow(clippy::arithmetic_side_effects)]
+            let room = self.chunk_size - slice.len();
+            let (now, rest) = bytes.split_at(room.min(bytes.len()));
+            slice.extend_from_slice(now);
+            bytes = rest;
+        }
     }
 
     /// DOC path (`copyOneDoc`): buffer one document's already-serialized
@@ -3159,6 +3286,43 @@ fn write_bulk_ints(out: &mut Vec<u8>, values: &[i64]) {
             _ => unreachable!("bpv is always 8, 16, or 32"),
         }
     }
+}
+
+/// How many bytes [`serialize_doc_into`] appends for `doc`, counted without
+/// appending a string's or a byte array's contents.
+fn serialized_doc_len(doc: &Document) -> usize {
+    let mut small = Vec::new();
+    let mut total = 0usize;
+    for field in &doc.fields {
+        let bits = match &field.value {
+            FieldValue::String(_) => TYPE_STRING,
+            FieldValue::Binary(_) => TYPE_BYTE_ARR,
+            FieldValue::Int(_) => TYPE_NUMERIC_INT,
+            FieldValue::Float(_) => TYPE_NUMERIC_FLOAT,
+            FieldValue::Long(_) => TYPE_NUMERIC_LONG,
+            FieldValue::Double(_) => TYPE_NUMERIC_DOUBLE,
+        };
+        small.clear();
+        small.write_vlong(((field.field_number as i64) << TYPE_BITS) | bits);
+        match &field.value {
+            FieldValue::String(s) => small.write_vint(s.len() as i32),
+            FieldValue::Binary(b) => small.write_vint(b.len() as i32),
+            other => write_field(&mut small, other),
+        }
+        let contents = match &field.value {
+            FieldValue::String(s) => s.len(),
+            FieldValue::Binary(b) => b.len(),
+            _ => 0,
+        };
+        // ARITH: a document's serialized length is a `usize` the caller
+        // bounds to `i32` before using it (`streamed_len`); the sums here
+        // are of in-memory buffers, so they stay under `isize::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            total += small.len() + contents;
+        }
+    }
+    total
 }
 
 /// Appends one document's `infoAndBits`/value pairs to the chunk buffer --
@@ -6709,5 +6873,135 @@ mod tests {
         bytes.extend_from_slice(&[0u8; 10]);
         let mut v = DocumentVisitor::all();
         assert!(visit_document(1, &bytes, &mut v).is_err());
+    }
+
+    /// A document with `text_len` text bytes among small fields, and a
+    /// pseudo-random (so barely compressible) body.
+    fn outsized_doc(text_len: usize, seed: u32) -> Document {
+        let mut x = seed.max(1);
+        let text: String = (0..text_len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                char::from(b'a' + (x % 26) as u8)
+            })
+            .collect();
+        Document {
+            fields: vec![
+                StoredField {
+                    field_number: 0,
+                    value: FieldValue::Int(7),
+                },
+                StoredField {
+                    field_number: 1,
+                    value: FieldValue::String(text),
+                },
+                StoredField {
+                    field_number: 2,
+                    value: FieldValue::Binary(vec![9; 70]),
+                },
+                StoredField {
+                    field_number: 3,
+                    value: FieldValue::Double(2.5),
+                },
+            ],
+        }
+    }
+
+    /// What the buffered path writes for `docs`: each document serialized
+    /// whole and handed over as bytes, so none takes the streamed path.
+    fn buffered_bytes(mode: Mode, docs: &[Document]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut w = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+        for doc in docs {
+            let mut bytes = Vec::new();
+            serialize_doc_into(doc, &mut bytes);
+            w.add_serialized_document(doc.fields.len() as i64, &bytes);
+        }
+        w.finish()
+    }
+
+    #[test]
+    fn an_outsized_document_streams_the_bytes_the_buffered_path_writes() {
+        for mode in [Mode::BestSpeed, Mode::BestCompression] {
+            let chunk = mode.chunk_size() as usize;
+            let small = |n: usize| outsized_doc(n, 5 + n as u32);
+            // Alone, behind buffered documents, between two outsized ones,
+            // on the exact multiple of a slice, and one byte over it.
+            // The flag says every outsized document is past twice a slice,
+            // so none may grow the chunk buffer.
+            let cases: Vec<(bool, Vec<Document>)> = vec![
+                (true, vec![small(2 * chunk + 100)]),
+                (
+                    true,
+                    vec![small(40), small(50), small(2 * chunk + 100), small(60)],
+                ),
+                (
+                    true,
+                    vec![small(3 * chunk), small(2 * chunk + 1), small(10)],
+                ),
+                (false, vec![small(chunk + chunk / 2), small(2 * chunk + 7)]),
+                (
+                    false,
+                    vec![
+                        small(10),
+                        small(2 * chunk),
+                        small(chunk - 1),
+                        small(chunk + 3),
+                    ],
+                ),
+                (true, vec![small(7 * chunk + 123)]),
+            ];
+            for (all_streamed, docs) in cases {
+                let mut w = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+                for doc in &docs {
+                    w.add_document(doc);
+                }
+                let held = w.chunk_buf.capacity();
+                assert!(
+                    !all_streamed || held < 2 * chunk,
+                    "the chunk buffer grew to {held} bytes for {mode:?}: not streamed"
+                );
+                assert_eq!(
+                    w.finish(),
+                    buffered_bytes(mode, &docs),
+                    "{mode:?}, documents {:?}",
+                    docs.iter().map(serialized_doc_len).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_streamed_document_reads_back() {
+        let mode = Mode::BestSpeed;
+        let chunk = mode.chunk_size() as usize;
+        let docs = [outsized_doc(30, 1), outsized_doc(5 * chunk + 9, 2)];
+        let mut w = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+        for doc in &docs {
+            w.add_document(doc);
+        }
+        let (fdt, fdx, fdm) = w.finish();
+        let reader = open(&fdt, &fdx, &fdm, &[3; ID_LENGTH], "").expect("the segment opens");
+        assert_eq!(reader.document(0).unwrap(), docs[0]);
+        assert_eq!(reader.document(1).unwrap(), docs[1]);
+    }
+
+    #[test]
+    fn a_streamed_document_spills_the_fdt_as_it_goes() {
+        let dir = std::env::temp_dir().join(format!("sf-stream-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mode = Mode::BestSpeed;
+        let docs = [outsized_doc(3_000_000, 3)];
+        let mut w = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
+        let out = FsIndexOutput::create(&dir, "x.fdt").expect("an output");
+        w.stream_to(out);
+        w.add_document(&docs[0]);
+        let peak = w.buffered_fdt_bytes();
+        assert!(
+            peak < 4 * STREAM_BYTES,
+            "the .fdt held {peak} bytes after one outsized document"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
