@@ -1243,10 +1243,10 @@ final class ExtendedEncoder {
 
     /** How a field reads in a js script's {@code doc}: as in Painless, and a millisecond date as its epoch millis. */
     private static byte jsFieldKind(MappedFieldType ft) {
-        if (ft instanceof org.opensearch.index.mapper.DateFieldMapper.DateFieldType d
-            && d.hasDocValues()
-            && d.resolution() == org.opensearch.index.mapper.DateFieldMapper.Resolution.MILLISECONDS) {
-            return PainlessScore.LONG;
+        if (ft instanceof org.opensearch.index.mapper.DateFieldMapper.DateFieldType d) {
+            return d.hasDocValues() && d.resolution() == org.opensearch.index.mapper.DateFieldMapper.Resolution.MILLISECONDS
+                ? PainlessScore.LONG
+                : PainlessScore.UNSUPPORTED;
         }
         return PainlessScore.fieldKind(ft);
     }
@@ -1555,6 +1555,10 @@ final class ExtendedEncoder {
             }
             String dataClass = data.getClass().getName();
             byte[] numeric = null;
+            if (dataClass.equals("org.opensearch.index.mapper.IdFieldMapper$IdFieldType$1$1")) {
+                out.write(3);
+                return null;
+            }
             if (dataClass.equals("org.opensearch.index.fielddata.plain.SortedSetOrdinalsIndexFieldData")) {
                 out.write(1);
             } else if ((numeric = scoreNumeric(data)) != null) {
