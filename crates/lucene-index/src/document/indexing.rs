@@ -21,6 +21,7 @@
 //! they stay in Java's `FieldInfos`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 use lucene_codecs::field_infos::FieldInfo;
@@ -673,10 +674,41 @@ impl InvertState {
         text: &str,
         analyzed: bool,
     ) -> super::Result<()> {
-        use lucene_analysis::TokenStream;
         let analysis = |e: lucene_analysis::AnalysisError| illegal(e.to_string());
         // dropped unclosed on an error, the stream closes itself
-        let mut ts = analyzer.token_stream(field, text).map_err(analysis)?;
+        let ts = analyzer.token_stream(field, text).map_err(analysis)?;
+        self.invert_stream(sink, doc, field, analyzer, ts, analyzed)
+    }
+
+    /// [`Self::invert_analyzed`] over shared text: the stream reads the
+    /// caller's bytes, which are not copied.
+    fn invert_analyzed_shared(
+        &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
+        field: &str,
+        analyzer: &Analyzer,
+        text: &Arc<str>,
+        analyzed: bool,
+    ) -> super::Result<()> {
+        let analysis = |e: lucene_analysis::AnalysisError| illegal(e.to_string());
+        let ts = analyzer
+            .token_stream_shared(field, text)
+            .map_err(analysis)?;
+        self.invert_stream(sink, doc, field, analyzer, ts, analyzed)
+    }
+
+    fn invert_stream(
+        &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
+        field: &str,
+        analyzer: &Analyzer,
+        mut ts: lucene_analysis::AnalyzerTokenStream<'_>,
+        analyzed: bool,
+    ) -> super::Result<()> {
+        use lucene_analysis::TokenStream;
+        let analysis = |e: lucene_analysis::AnalysisError| illegal(e.to_string());
         ts.reset().map_err(analysis)?;
         while ts.increment_token().map_err(analysis)? {
             let a = ts.attributes();
@@ -1128,7 +1160,13 @@ impl IndexWriter<'_> {
                     }
                     InvertableType::TokenStream => {
                         let analyzed = ft.tokenized();
-                        if let Some(text) = field.analyzed_text() {
+                        if let Some(text) = field.analyzed_shared() {
+                            state
+                                .invert_analyzed_shared(
+                                    sink, doc_id, name, &analyzer, text, analyzed,
+                                )
+                                .map_err(doc_error)?;
+                        } else if let Some(text) = field.analyzed_text() {
                             state
                                 .invert_analyzed(sink, doc_id, name, &analyzer, text, analyzed)
                                 .map_err(doc_error)?;

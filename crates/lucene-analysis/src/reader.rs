@@ -7,6 +7,8 @@
 //! exactly, and a [`CharFilter`]'s offset corrections are expressed in the
 //! same code units Java's are.
 
+use std::sync::Arc;
+
 use crate::AnalysisError;
 
 /// Java's `java.io.Reader`, as analysis uses it: a source of UTF-16 code
@@ -79,7 +81,7 @@ const RECYCLED_CAPACITY: usize = 1 << 16;
 /// for the next call, as a Java `String`'s `char`s would.
 #[derive(Debug, Clone, Default)]
 pub struct StrReader {
-    text: String,
+    text: ReaderText,
     /// Byte position of the next unread `char`.
     pos: usize,
     /// A low surrogate owed from a supplementary character split across two
@@ -87,10 +89,43 @@ pub struct StrReader {
     pending_low: Option<u16>,
 }
 
+/// The text a [`StrReader`] reads: its own, or one shared with the caller so a
+/// document of hundreds of MiB is not copied to be analyzed.
+#[derive(Debug, Clone)]
+enum ReaderText {
+    Owned(String),
+    Shared(Arc<str>),
+}
+
+impl Default for ReaderText {
+    fn default() -> Self {
+        ReaderText::Owned(String::new())
+    }
+}
+
+impl ReaderText {
+    fn as_str(&self) -> &str {
+        match self {
+            ReaderText::Owned(s) => s,
+            ReaderText::Shared(s) => s,
+        }
+    }
+}
+
 impl StrReader {
     pub fn new(text: impl Into<String>) -> Self {
         StrReader {
-            text: text.into(),
+            text: ReaderText::Owned(text.into()),
+            pos: 0,
+            pending_low: None,
+        }
+    }
+
+    /// A reader over text the caller keeps: the `Arc` is cloned, the bytes are
+    /// not. Not recycled, since it holds no allocation of its own.
+    pub fn shared(text: Arc<str>) -> Self {
+        StrReader {
+            text: ReaderText::Shared(text),
             pos: 0,
             pending_low: None,
         }
@@ -98,8 +133,12 @@ impl StrReader {
 
     /// `ReusableStringReader.setValue`: reuse this reader's allocation.
     pub fn set_value(&mut self, text: &str) {
-        self.text.clear();
-        self.text.push_str(text);
+        if let ReaderText::Owned(s) = &mut self.text {
+            s.clear();
+            s.push_str(text);
+        } else {
+            self.text = ReaderText::Owned(text.to_owned());
+        }
         self.pos = 0;
         self.pending_low = None;
     }
@@ -131,7 +170,11 @@ impl CharReader for UnitsReader {
 impl CharReader for StrReader {
     fn recycle(self: Box<Self>) -> Option<Box<StrReader>> {
         // a reader that held a huge document is not kept
-        (self.text.capacity() <= RECYCLED_CAPACITY).then_some(self)
+        match &self.text {
+            ReaderText::Owned(s) => (s.capacity() <= RECYCLED_CAPACITY).then_some(self),
+            // holds the caller's text, no allocation of its own to reuse
+            ReaderText::Shared(_) => None,
+        }
     }
 
     fn whole_text(&self) -> Option<&str> {
@@ -147,7 +190,7 @@ impl CharReader for StrReader {
             buf[0] = low;
             n = 1;
         }
-        let bytes = self.text.as_bytes();
+        let bytes = self.text.as_str().as_bytes();
         // ASCII run: one unit per byte (a loop the compiler vectorizes).
         let avail = (buf.len() - n).min(bytes.len() - self.pos);
         let src = &bytes[self.pos..self.pos + avail];
@@ -287,6 +330,28 @@ mod tests {
         assert_eq!(r.whole_text(), None);
         r.close().unwrap();
         assert_eq!(r.correct_offset(7), 7);
+    }
+
+    #[test]
+    fn shared_str_reader_matches_the_owned_one_and_never_copies_the_text() {
+        let text = "ab é 😀x 世界 👨‍👩‍👧";
+        let want: Vec<u16> = text.encode_utf16().collect();
+        let shared: Arc<str> = Arc::from(text);
+        for chunk in 1..8 {
+            let mut r = StrReader::shared(Arc::clone(&shared));
+            assert_eq!(drain(&mut r, chunk), want, "chunk {chunk}");
+        }
+        let mut r = StrReader::shared(Arc::clone(&shared));
+        assert_eq!(r.whole_text(), Some(text));
+        // the reader holds a clone of the Arc, not a copy of the bytes
+        assert!(std::ptr::eq(r.whole_text().unwrap(), &*shared));
+        assert_eq!(Arc::strong_count(&shared), 2);
+        // a reused reader converts to owned text on `set_value`
+        r.set_value("zz");
+        assert_eq!(Arc::strong_count(&shared), 1);
+        assert_eq!(r.whole_text(), Some("zz"));
+        assert_eq!(drain(&mut r, 3), vec![b'z' as u16; 2]);
+        assert_eq!(r.whole_text(), None);
     }
 
     /// Doubles every `a`; corrects offsets past each inserted unit.
