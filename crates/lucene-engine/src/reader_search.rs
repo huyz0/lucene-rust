@@ -1631,11 +1631,22 @@ pub const MAX_HYBRID_QUERIES: usize = 16;
 /// what falls below it). [`HybridCollector`] replays exactly that.
 ///
 /// The blob: `count: u8` sub-queries, each a request blob ([`decode_request`],
-/// `len: i32` first) with no `min_score`; `top_n: i32`; the slices
-/// ([`decode_slices`], none meaning one slice over every segment).
+/// `len: i32` first) with no `min_score`; `top_n: i32` (0 keeps no hits, and
+/// still counts); the slices ([`decode_slices`], none meaning one slice over
+/// every segment); `flags: u8` ([`HYBRID_RETURN_DOCS`], [`HYBRID_POST_FILTER`]);
+/// with [`HYBRID_POST_FILTER`], the filter's request blob (`len: i32` first).
 ///
-/// The answer, little-endian: `slices: i32`, then per slice `total: i64` and
-/// per sub-query `hits: i32` and per hit `doc: i32` and `score` (`f32` bits).
+/// A post filter (`FilteredCollector` around the hybrid collector) lets only
+/// the documents it matches reach the top-docs collector: the count and the
+/// hits are the filtered ones, the thresholds rise on those alone, and the
+/// documents listed by [`HYBRID_RETURN_DOCS`] (an aggregation's) are all the
+/// bulk scorer's.
+///
+/// The answer, little-endian: `slices: i32`, then per slice `total: i64`, the
+/// best score collected (`f32` bits, 0 when none) and per sub-query `hits: i32` and per hit `doc: i32` and `score` (`f32` bits);
+/// with [`HYBRID_RETURN_DOCS`], then the slice's counted documents: `n: i32`,
+/// each `doc: i32` and the sum of its sub-queries' scores (`f32` bits), what
+/// `HybridSubQueryScorer.score()` gives an aggregator.
 pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, Status> {
     let bad = |m: String| {
         set_last_error(format!("hybrid blob: {m}"));
@@ -1662,16 +1673,28 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         subs.push(boolean_of(&query));
     }
     let top_n = usize::try_from(c.i32()?).map_err(|_| bad("negative top_n".into()))?;
-    if top_n == 0 {
-        return Err(bad("top_n must be at least 1".into()));
-    }
     let slices = decode_slices(&mut c, &bad)?;
+    let flags = c.u8()?;
+    if flags & !(HYBRID_RETURN_DOCS | HYBRID_POST_FILTER) != 0 {
+        return Err(bad(format!("unknown flags {flags:#x}")));
+    }
+    let return_docs = flags & HYBRID_RETURN_DOCS != 0;
+    let post_filter = if flags & HYBRID_POST_FILTER != 0 {
+        let (query, min_score, _) = decode_request(c.bytes()?)?;
+        if min_score.is_some() {
+            return Err(bad("a post filter with min_score".into()));
+        }
+        Some(boolean_of(&query))
+    } else {
+        None
+    };
     if c.remaining() != 0 {
         return Err(bad(format!("{} trailing bytes", c.remaining())));
     }
     let union = BooleanQuery {
         should: subs
             .iter()
+            .chain(post_filter.iter())
             .map(|q| Clause::Boolean(Box::new(q.clone())))
             .collect(),
         ..Default::default()
@@ -1726,6 +1749,11 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         .map(|q| lucene_search::multi_segment::PreparedBoolean::new(&segments, q))
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
+    let filter = post_filter
+        .as_ref()
+        .map(|q| lucene_search::multi_segment::PreparedBoolean::new(&segments, q))
+        .transpose()
+        .map_err(map_search_error)?;
     let mut out = Vec::new();
     out.extend_from_slice(
         &i32::try_from(slices.len())
@@ -1734,6 +1762,9 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
     );
     for slice in &slices {
         let mut collector = HybridCollector::new(prepared.len(), top_n);
+        if return_docs {
+            collector.docs = Some(Vec::new());
+        }
         for &s in slice {
             let seg = &segments[s];
             let scored = prepared
@@ -1741,9 +1772,27 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
                 .map(|p| p.score_all(seg, norms[s]))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_search_error)?;
-            collector.segment(&scored, seg.doc_base);
+            let accepted = match &filter {
+                None => None,
+                Some(f) => {
+                    let hits = f.score_all(seg, norms[s]).map_err(map_search_error)?;
+                    // The hits ascend: the last one bounds the bitset.
+                    let words = hits
+                        .last()
+                        .map_or(0, |h| usize::try_from(h.doc_id).unwrap_or(0) / 64 + 1);
+                    let mut bits = vec![0u64; words]; // alloc-ok: one bit per document up to the filter's last match
+                    for hit in hits {
+                        let d = usize::try_from(hit.doc_id).unwrap_or(0);
+                        bits[d / 64] |= 1 << (d % 64);
+                    }
+                    Some(bits)
+                }
+            };
+            collector.segment(&scored, seg.doc_base, accepted.as_deref());
         }
         out.extend_from_slice(&collector.total.to_le_bytes());
+        out.extend_from_slice(&collector.max_score.to_bits().to_le_bytes());
+        let counted = collector.docs.take();
         for queue in collector.queues {
             let hits = queue.into_sorted();
             out.extend_from_slice(&i32::try_from(hits.len()).unwrap_or(i32::MAX).to_le_bytes());
@@ -1752,9 +1801,22 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
                 out.extend_from_slice(&hit.score.to_bits().to_le_bytes());
             }
         }
+        if let Some(docs) = counted {
+            out.extend_from_slice(&i32::try_from(docs.len()).unwrap_or(i32::MAX).to_le_bytes());
+            for (doc, score) in docs {
+                out.extend_from_slice(&doc.to_le_bytes());
+                out.extend_from_slice(&score.to_bits().to_le_bytes());
+            }
+        }
     }
     similarity_checked(sim.as_ref(), Ok(out))
 }
+
+/// A hybrid blob's flag: the answer also lists each slice's counted documents
+/// (the ones an aggregation over the hybrid query sees).
+pub const HYBRID_RETURN_DOCS: u8 = 1;
+/// A hybrid blob's flag: a post filter's request blob follows the flags.
+pub const HYBRID_POST_FILTER: u8 = 2;
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
 pub const HYBRID_WINDOW: i32 = 1 << 12;
@@ -1800,6 +1862,10 @@ impl HitQueue {
     /// `insertWithOverflow`: the hit pushed out (the new one when it does not
     /// beat the worst), or `None` while the queue fills.
     pub fn insert_with_overflow(&mut self, hit: HybridHit) -> Option<HybridHit> {
+        if self.size == 0 {
+            // Lucene's queue of no room turns every new entry away.
+            return Some(hit);
+        }
         if self.heap.len() < self.size {
             self.heap.push(std::cmp::Reverse(hit));
             return None;
@@ -1826,6 +1892,10 @@ pub struct HybridCollector {
     pub total: i64,
     /// One window's scores per sub-query, 0 where it did not compete.
     pub window: Vec<Vec<f32>>,
+    /// Each counted document with the sum of its sub-queries' scores, when asked for.
+    pub docs: Option<Vec<(i32, f32)>>,
+    /// The best score any sub-query gave a collected document (the collector's `maxScore`).
+    pub max_score: f32,
 }
 
 impl HybridCollector {
@@ -1834,12 +1904,22 @@ impl HybridCollector {
             queues: (0..subs).map(|_| HitQueue::new(top_n)).collect(),
             total: 0,
             window: vec![vec![0.0; HYBRID_WINDOW as usize]; subs], // alloc-ok: at most MAX_HYBRID_QUERIES windows of a fixed size
+            docs: None,
+            max_score: 0.0,
         }
     }
 
     /// One segment: each sub-query's matches with their scores, ascending by
     /// segment-local doc ID.
-    pub fn segment(&mut self, scored: &[Vec<lucene_search::collector::ScoreDoc>], doc_base: i32) {
+    ///
+    /// `accepted` is the post filter's bitset over the segment's documents:
+    /// only those it holds reach the queues and the count.
+    pub fn segment(
+        &mut self,
+        scored: &[Vec<lucene_search::collector::ScoreDoc>],
+        doc_base: i32,
+        accepted: Option<&[u64]>,
+    ) {
         // The segment's own HybridSubQueryScorer: thresholds start at 0.
         let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
         let mut next = vec![0usize; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
@@ -1873,13 +1953,34 @@ impl HybridCollector {
                         .saturating_mul(64)
                         .saturating_add(bits.trailing_zeros() as usize);
                     *bits &= bits.wrapping_sub(1);
-                    self.total = self.total.saturating_add(1);
                     let doc = doc_base.wrapping_add(base).wrapping_add(d as i32);
+                    if let Some(docs) = self.docs.as_mut() {
+                        // `HybridSubQueryScorer.score()`: the sub-queries' scores summed in order.
+                        let mut sum = 0.0f32;
+                        for window in &self.window {
+                            sum += window[d];
+                        }
+                        docs.push((doc, sum));
+                    }
+                    if let Some(filter) = accepted {
+                        let local = usize::try_from(base).unwrap_or(0).saturating_add(d);
+                        if filter
+                            .get(local / 64)
+                            .is_none_or(|w| w >> (local % 64) & 1 == 0)
+                        {
+                            for window in &mut self.window {
+                                window[d] = 0.0;
+                            }
+                            continue;
+                        }
+                    }
+                    self.total = self.total.saturating_add(1);
                     for (q, queue) in self.queues.iter_mut().enumerate() {
                         let score = std::mem::take(&mut self.window[q][d]);
                         if score <= 0.0 {
                             continue;
                         }
+                        self.max_score = self.max_score.max(score);
                         if let Some(out) = queue.insert_with_overflow(HybridHit { score, doc }) {
                             min_scores[q] = min_scores[q].max(out.score);
                         }

@@ -78,13 +78,14 @@ def setup_big(port):
     rng = random.Random(11)
     ck.req(port, "PUT", "/hb", {"settings": {"index": {"knn": True, "number_of_shards": 1, "number_of_replicas": 0,
                                                        "refresh_interval": -1}},
-                                "mappings": {"properties": {"t": {"type": "text"}, "v": {"type": "knn_vector", "dimension": 4,
+                                "mappings": {"properties": {"t": {"type": "text"}, "n": {"type": "integer"}, "tag": {"type": "keyword"},
+                                             "v": {"type": "knn_vector", "dimension": 4,
                                              "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}}}}})
     for start in range(0, BIG, 5000):
         lines = []
         for i in range(start, start + 5000):
             lines.append(json.dumps({"index": {"_id": str(i)}}))
-            lines.append(json.dumps({"t": " ".join(rng.choices(WORDS[:40], k=6)),
+            lines.append(json.dumps({"t": " ".join(rng.choices(WORDS[:40], k=6)), "n": i % 1000, "tag": f"g{i % 7}",
                                      "v": [round(rng.uniform(-1, 1), 4) for _ in range(4)]}))
         ck.req(port, "POST", "/hb/_bulk", "\n".join(lines) + "\n", ndjson=True)
         ck.req(port, "POST", "/hb/_refresh")
@@ -98,6 +99,15 @@ def big_searches():
         {"query": hybrid(m, k, pagination_depth=40), "from": 20, "size": 10},
         {"query": hybrid(m, {"match": {"t": "w5"}}, k), "size": 25},
         {"query": hybrid(m, k), "size": 0, "track_total_hits": True},
+        # Past the first window, where the aggregations and the post filter see what the bulk
+        # scorer's thresholds let through.
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "size": 5, "track_total_hits": True,
+         "aggs": {"c": {"value_count": {"field": "n"}}, "mx": {"max": {"field": "n"}}, "tags": {"terms": {"field": "tag"}}}},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 5, "post_filter": {"range": {"n": {"lt": 300}}},
+         "aggs": {"c": {"value_count": {"field": "n"}}, "tags": {"terms": {"field": "tag"}}}},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 5, "post_filter": {"range": {"n": {"lt": 300}}}},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 0, "aggs": {"c": {"value_count": {"field": "n"}}, "top": {"top_hits": {"size": 2, "_source": False}}}},
+        {"query": hybrid(m, k, pagination_depth=0)},
     )]
 
 
@@ -163,6 +173,18 @@ def searches():
         {"query": hybrid(MATCH, KNN), "aggs": {"tags": {"terms": {"field": "tag"}}, "avg_n": {"avg": {"field": "n"}}}},
         {"query": hybrid(MATCH, KNN), "post_filter": {"term": {"tag": "g1"}}},
         {"query": hybrid(MATCH, KNN), "min_score": 0.4},
+        {"query": hybrid(MATCH, KNN), "post_filter": {"term": {"tag": "g1"}},
+         "aggs": {"tags": {"terms": {"field": "tag"}}, "avg_n": {"avg": {"field": "n"}}}},
+        {"query": hybrid(MATCH, KNN), "size": 0,
+         "aggs": {"tags": {"terms": {"field": "tag"}}, "h": {"histogram": {"field": "n", "interval": 100}}}},
+        {"query": hybrid(MATCH, KNN), "aggs": {"all": {"global": {}, "aggs": {"m": {"max": {"field": "n"}}}}}},
+        {"query": hybrid(MATCH, KNN), "aggs": {"t": {"terms": {"field": "tag"}, "aggs": {"a": {"avg": {"field": "n"}}}}}},
+        {"query": hybrid(MATCH, KNN), "aggs": {"top": {"top_hits": {"size": 2, "_source": False}}}},
+        {"query": hybrid(MATCH, KNN), "size": 8,
+         "rescore": {"query": {"rescore_query": {"match": {"t": "w1"}}, "query_weight": 0, "rescore_query_weight": 10}}},
+        {"query": hybrid(MATCH, KNN), "size": 8, "rescore": {"window_size": 3, "query": {"rescore_query": {"term": {"tag": "g3"}}}}},
+        {"query": hybrid(MATCH, KNN), "size": 0, "post_filter": {"term": {"tag": "g1"}}},
+        {"query": hybrid(MATCH, KNN, pagination_depth=0)},
     ]
     out = []
     for p in ("minmax", "minmax_w", "minmax_lb", "l2_geo", "z_arith", "minmax_harm", "rrf", "rrf_k"):
@@ -378,8 +400,7 @@ def main():
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         # What the native hybrid shard phase leaves to Java: the hybrid collectors' other modes.
-        java = {"hybrid_aggregations", "hybrid_collapse", "hybrid_no_hits", "hybrid_post_filter", "hybrid_rescore",
-                "hybrid_sort"}
+        java = {"hybrid_collapse", "hybrid_sort"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
         print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")

@@ -13,6 +13,8 @@ import org.lucenerust.opensearch.neural.search.collector.HybridSearchCollector;
 import org.lucenerust.opensearch.neural.search.query.HybridCollectorManager;
 import org.lucenerust.opensearch.neural.search.query.HybridCollectorResultsUtilParams;
 import org.lucenerust.opensearch.neural.search.query.util.HybridSearchCollectorResultUtil;
+import org.opensearch.search.aggregations.GlobalAggCollectorManager;
+import org.opensearch.search.aggregations.NonGlobalAggCollectorManager;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.query.QueryCollectorContext;
@@ -31,30 +33,46 @@ import java.util.List;
  * the collectors' results, so the shard answers with stock's delimited top docs.
  */
 final class NativeHybrid {
-    /** The most sub-queries a hybrid blob holds ({@code MAX_HYBRID_QUERIES} in Rust). */
-    static final int MAX_SUB_QUERIES = 16;
+    /** {@code HYBRID_RETURN_DOCS} in {@code reader_search.rs}. */
+    static final int RETURN_DOCS = 1;
+    /** {@code HYBRID_POST_FILTER} in {@code reader_search.rs}. */
+    static final int POST_FILTER = 2;
 
     private NativeHybrid() {}
 
     /**
      * Why {@code query} cannot run natively, or null when it can: only a plain hybrid query (no
-     * DLS wrapper, no nesting) collected by score, with nothing but its own collector.
+     * DLS wrapper, no nesting) collected by score, with no collector but its own, a post filter's
+     * and the aggregations'. A hybrid query has at most {@link
+     * org.lucenerust.opensearch.neural.query.HybridQueryBuilder#MAX_NUMBER_OF_SUB_QUERIES}
+     * sub-queries, and HybridAggregationProcessor leaves {@code min_score} at -Infinity, whose
+     * collector keeps everything.
      */
-    static String ineligible(SearchContext ctx, Query query, LinkedList<QueryCollectorContext> collectors, boolean hasFilterCollector) {
+    static String ineligible(
+        SearchContext ctx,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean nativeAggs
+    ) {
         if (query instanceof HybridQuery == false) return "hybrid_wrapped";
-        if (((HybridQuery) query).getSubQueries().size() > MAX_SUB_QUERIES) return "hybrid_sub_queries";
-        if (ctx.queryCollectorManagers().isEmpty() == false) return "hybrid_aggregations";
+        if (ctx.queryCollectorManagers().isEmpty() == false
+            && (nativeAggs == false
+                || ctx.queryCollectorManagers()
+                    .keySet()
+                    .stream()
+                    .anyMatch(k -> k != NonGlobalAggCollectorManager.class && k != GlobalAggCollectorManager.class))) {
+            return NativeAggregationTree.unsupportedReason(ctx);
+        }
         if (ctx.sort() != null) return "hybrid_sort";
         if (ctx.collapse() != null) return "hybrid_collapse";
-        if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) return "hybrid_rescore";
         if (ctx.searchAfter() != null || ctx.scrollContext() != null) return "hybrid_search_after";
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "hybrid_terminate_after";
-        if (ctx.parsedPostFilter() != null) return "hybrid_post_filter";
         if (ctx.getProfilers() != null) return "profile";
-        // HybridAggregationProcessor leaves min_score at -Infinity, whose collector keeps everything.
         boolean minScore = ctx.minimumScore() != null;
-        if (minScore && ctx.minimumScore() != Float.NEGATIVE_INFINITY) return "min_score";
-        if (collectors.size() != (minScore ? 1 : 0) || hasFilterCollector != minScore) return "collectors";
+        boolean postFilter = ctx.parsedPostFilter() != null;
+        if (collectors.size() > (nativeAggs ? 1 : 0) + (postFilter ? 1 : 0) + (minScore ? 1 : 0)
+            || hasFilterCollector != (postFilter || minScore)) return "collectors";
         if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
         return null;
     }
@@ -63,7 +81,7 @@ final class NativeHybrid {
      * The request blob: the sub-query count, each sub-query's blob (length first) behind the
      * similarities, the hits each sub-query keeps, and the slices.
      */
-    static byte[] blob(List<byte[]> subQueries, int topN, int[][] slices) {
+    static byte[] blob(List<byte[]> subQueries, int topN, int[][] slices, boolean returnDocs, byte[] postFilter) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write(subQueries.size());
         for (byte[] sub : subQueries) {
@@ -72,6 +90,11 @@ final class NativeHybrid {
         }
         NativeAggregations.writeInt(out, topN);
         NativeAggregations.writeSlices(out, slices);
+        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0));
+        if (postFilter != null) {
+            NativeAggregations.writeInt(out, postFilter.length);
+            out.writeBytes(postFilter);
+        }
         return out.toByteArray();
     }
 
@@ -80,36 +103,101 @@ final class NativeHybrid {
         return ((HybridCollectorManager) HybridCollectorManager.createHybridCollectorManager(ctx, query)).getNumHits();
     }
 
+    /** The native answer read: each slice's collected results, and the documents they counted. */
+    record Answer(List<Collected> slices, ScoreDoc[] counted) {}
+
     /**
-     * Stores the native answer as {@code HybridCollectorManager.reduce} stores its collectors': each
-     * slice's results formatted, then merged into the query result in slice order.
+     * Reads the native answer. With {@code returnDocs}, the documents the slices counted come with
+     * it, each with its sub-queries' scores summed (what an aggregation's scorer reads).
      */
-    static void store(SearchContext ctx, byte[] answer, int subQueries) throws java.io.IOException {
+    static Answer read(byte[] answer, int subQueries, boolean returnDocs) {
         ByteBuffer in = ByteBuffer.wrap(answer).order(ByteOrder.LITTLE_ENDIAN);
+        List<Collected> collected = new ArrayList<>();
+        List<ScoreDoc[]> counted = new ArrayList<>();
         int slices = in.getInt();
-        HybridCollectorResultsUtilParams params = new HybridCollectorResultsUtilParams.Builder().searchContext(ctx).build();
         for (int s = 0; s < slices; s++) {
             long total = in.getLong();
+            float maxScore = Float.intBitsToFloat(in.getInt());
             List<TopDocs> perQuery = new ArrayList<>(subQueries);
-            float maxScore = 0.0f;
             for (int q = 0; q < subQueries; q++) {
                 int n = in.getInt();
                 ScoreDoc[] hits = new ScoreDoc[n];
                 for (int i = 0; i < n; i++) {
                     hits[i] = new ScoreDoc(in.getInt(), Float.intBitsToFloat(in.getInt()));
-                    maxScore = Math.max(maxScore, hits[i].score);
                 }
                 perQuery.add(new TopDocs(new TotalHits(n, TotalHits.Relation.EQUAL_TO), hits));
             }
             // A collector that saw no document has no per-query lists at all.
-            Collected collected = new Collected(total == 0 ? List.of() : perQuery, (int) Math.min(total, Integer.MAX_VALUE), maxScore);
+            collected.add(new Collected(total == 0 ? List.of() : perQuery, (int) Math.min(total, Integer.MAX_VALUE), maxScore));
+            if (returnDocs) {
+                ScoreDoc[] docs = new ScoreDoc[in.getInt()];
+                for (int i = 0; i < docs.length; i++) {
+                    docs[i] = new ScoreDoc(in.getInt(), Float.intBitsToFloat(in.getInt()));
+                }
+                counted.add(docs);
+            }
+        }
+        return new Answer(collected, counted.stream().flatMap(java.util.Arrays::stream).toArray(ScoreDoc[]::new));
+    }
+
+    /**
+     * Rescores each sub-query's hits of each slice by every rescorer, as {@code
+     * HybridSearchCollectorResultUtil} rescores them with Lucene's {@code QueryRescorer}: each list
+     * apart, the window its first hits. Null when done, else the reason it cannot be.
+     */
+    static String rescore(Answer answer, long handle, List<NativeRescore> rescores) {
+        for (int s = 0; s < answer.slices().size(); s++) {
+            Collected collected = answer.slices().get(s);
+            List<TopDocs> rescored = new ArrayList<>(collected.topDocs().size());
+            for (TopDocs top : collected.topDocs()) {
+                int n = top.scoreDocs.length;
+                if (n == 0) {
+                    rescored.add(top);
+                    continue;
+                }
+                int[] docs = new int[n];
+                float[] scores = new float[n];
+                for (int i = 0; i < n; i++) {
+                    docs[i] = top.scoreDocs[i].doc;
+                    scores[i] = top.scoreDocs[i].score;
+                }
+                for (NativeRescore r : rescores) {
+                    java.util.Set<Integer> window = new java.util.HashSet<>();
+                    for (int i = 0; i < Math.min(n, r.window()); i++) {
+                        window.add(docs[i]);
+                    }
+                    int rc = NativeBridge.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
+                    if (rc != NativeBridge.OK) {
+                        NativeMemory.check(rc);
+                        return "native_error";
+                    }
+                    r.context().setRescoredDocs(java.util.Collections.unmodifiableSet(window));
+                }
+                ScoreDoc[] hits = new ScoreDoc[n];
+                for (int i = 0; i < n; i++) {
+                    hits[i] = new ScoreDoc(docs[i], scores[i]);
+                }
+                rescored.add(new TopDocs(top.totalHits, hits));
+            }
+            answer.slices().set(s, new Collected(rescored, collected.getTotalHits(), collected.getMaxScore()));
+        }
+        return null;
+    }
+
+    /**
+     * Stores the native answer as {@code HybridCollectorManager.reduce} stores its collectors': each
+     * slice's results formatted, then merged into the query result in slice order.
+     */
+    static void store(SearchContext ctx, Answer answer, boolean rescored) throws java.io.IOException {
+        HybridCollectorResultsUtilParams params = new HybridCollectorResultsUtilParams.Builder().searchContext(ctx).rescoredNatively(rescored).build();
+        for (Collected collected : answer.slices()) {
             HybridSearchCollectorResultUtil util = new HybridSearchCollectorResultUtil(params, collected);
             util.reduceCollectorResults(ctx.queryResult(), util.getTopDocsAndMaxScore());
         }
     }
 
     /** One slice's collected results, standing in for its {@code HybridTopScoreDocCollector}. */
-    private record Collected(List<TopDocs> topDocs, int getTotalHits, float getMaxScore) implements HybridSearchCollector {
+    record Collected(List<TopDocs> topDocs, int getTotalHits, float getMaxScore) implements HybridSearchCollector {
         @Override
         public org.apache.lucene.search.LeafCollector getLeafCollector(org.apache.lucene.index.LeafReaderContext context) {
             throw new UnsupportedOperationException();

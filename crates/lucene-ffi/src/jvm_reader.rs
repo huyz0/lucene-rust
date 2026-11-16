@@ -1191,6 +1191,10 @@ pub(crate) mod tests {
 
     /// A hybrid blob over `subs` keeping `top_n`, with `slices` (none = one).
     fn hybrid_blob(subs: &[Vec<u8>], top_n: i32, slices: &[&[i32]]) -> Vec<u8> {
+        hybrid_blob_flags(subs, top_n, slices, 0)
+    }
+
+    fn hybrid_blob_flags(subs: &[Vec<u8>], top_n: i32, slices: &[&[i32]], flags: u8) -> Vec<u8> {
         let mut b = vec![subs.len() as u8];
         for q in subs {
             b.extend_from_slice(&(q.len() as i32).to_le_bytes());
@@ -1204,6 +1208,7 @@ pub(crate) mod tests {
                 b.extend_from_slice(&s.to_le_bytes());
             }
         }
+        b.push(flags);
         b
     }
 
@@ -1218,6 +1223,7 @@ pub(crate) mod tests {
         let mut res = Vec::new();
         for _ in 0..slices {
             let total = c.i64().unwrap();
+            c.i32().unwrap();
             let mut per = Vec::new();
             for _ in 0..subs {
                 let n = c.i32().unwrap();
@@ -1249,7 +1255,7 @@ pub(crate) mod tests {
             vec![sd(2, 0.0)],
         ];
         let mut c = HybridCollector::new(2, 1);
-        c.segment(&scored, 10);
+        c.segment(&scored, 10, None);
         // Window 0: docs 0 and 1 (threshold 0), 1 pushes 0 out (threshold
         // 1.0). Window 1: 4096 and 4097 beat 1.0, 4098 does not.
         assert_eq!(c.total, 4);
@@ -1264,8 +1270,8 @@ pub(crate) mod tests {
         assert!(c.queues[0].heap.is_empty());
         // The next segment starts from threshold 0 again, the queue kept.
         let mut c = HybridCollector::new(1, 1);
-        c.segment(&[vec![sd(0, 5.0)]], 0);
-        c.segment(&[vec![sd(0, 1.0)]], 1);
+        c.segment(&[vec![sd(0, 5.0)]], 0, None);
+        c.segment(&[vec![sd(0, 1.0)]], 1, None);
         assert_eq!(c.total, 2);
         let hits = c.queues.remove(0).into_sorted();
         assert_eq!((hits[0].doc, hits[0].score), (0, 5.0));
@@ -1306,12 +1312,12 @@ pub(crate) mod tests {
             assert_eq!(&got, want);
         }
         assert!(two[0].1.iter().flatten().all(|&(d, _)| d >= 4));
-        // Refused: no sub-query, no hits kept, a segment in two slices,
+        // Refused: no sub-query, a segment in two slices, an unknown flag,
         // trailing bytes.
         for bad in [
             hybrid_blob(&[], 2, &[]),
-            hybrid_blob(&subs, 0, &[]),
             hybrid_blob(&subs, 2, &[&[0], &[0, 1]]),
+            hybrid_blob_flags(&subs, 2, &[], 0x80),
             [hybrid_blob(&subs, 2, &[]), vec![0]].concat(),
         ] {
             assert_eq!(
@@ -1319,6 +1325,79 @@ pub(crate) mod tests {
                 Some(FfiStatus::InvalidArgument)
             );
         }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
+    fn a_hybrid_search_with_no_room_still_counts_and_lists_the_counted_documents() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let kept = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        );
+        let none = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 0, &[])).unwrap(),
+            2,
+        );
+        assert_eq!(none.len(), 1);
+        assert!(none[0].1.iter().all(Vec::is_empty));
+        // No room: every score is turned away, so the thresholds rise at once and
+        // the count can only be below the union's.
+        assert!(none[0].0 > 0 && none[0].0 <= kept[0].0);
+        // With the documents: after the hits, `n` and each counted document with the
+        // sum of its scores.
+        let out = search_hybrid_blobs(h, &hybrid_blob_flags(&subs, 100, &[], 1)).unwrap();
+        let mut c = Cursor::new(&out);
+        assert_eq!(c.i32().unwrap(), 1);
+        let total = c.i64().unwrap();
+        c.i32().unwrap();
+        let mut sums = std::collections::BTreeMap::new();
+        for hits in &kept[0].1 {
+            for &(d, s) in hits {
+                *sums.entry(d).or_insert(0.0f32) += s;
+            }
+        }
+        for _ in 0..2 {
+            let n = c.i32().unwrap();
+            for _ in 0..n {
+                c.i32().unwrap();
+                c.i32().unwrap();
+            }
+        }
+        let n = c.i32().unwrap();
+        assert_eq!(i64::from(n), total);
+        for _ in 0..n {
+            let d = c.i32().unwrap();
+            let s = f32::from_bits(c.i32().unwrap() as u32);
+            assert_eq!(sums[&d], s);
+        }
+        assert_eq!(c.remaining(), 0);
+        // A post filter narrows the count and the hits, not the listed documents.
+        let filter = term_blob("body", "dog");
+        let mut blob = hybrid_blob_flags(&subs, 100, &[], 3);
+        blob.extend_from_slice(&(filter.len() as i32).to_le_bytes());
+        blob.extend_from_slice(&filter);
+        let out = search_hybrid_blobs(h, &blob).unwrap();
+        let mut c = Cursor::new(&out);
+        assert_eq!(c.i32().unwrap(), 1);
+        let filtered_total = c.i64().unwrap();
+        c.i32().unwrap();
+        let dogs: std::collections::BTreeSet<i32> = run_limit(h, &filter, 100, i64::MAX)
+            .unwrap()
+            .0
+            .iter()
+            .map(|&(d, _)| d)
+            .collect();
+        assert_eq!(filtered_total, dogs.len() as i64);
+        for hits in 0..2 {
+            let n = c.i32().unwrap();
+            for _ in 0..n {
+                assert!(dogs.contains(&c.i32().unwrap()), "sub-query {hits}");
+                c.i32().unwrap();
+            }
+        }
+        assert_eq!(i64::from(c.i32().unwrap()), total);
         assert_eq!(ffi_close_jvm_reader(h), 0);
     }
 
