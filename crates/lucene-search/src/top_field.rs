@@ -673,6 +673,9 @@ pub struct SortField {
     /// The `_id` field: no doc values, its terms are read back from the postings and decoded
     /// to the id strings, which sort as bytes (OpenSearch sorts it through uninverted fielddata).
     pub uninverted: bool,
+    /// `NonPruningSortField`: the comparator builds no competitive iterator, whatever the field
+    /// indexes (a `wildcard` field's postings hold its ngrams, not the values it sorts by).
+    pub no_pruning: bool,
 }
 
 impl SortField {
@@ -698,6 +701,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -712,6 +716,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -746,6 +751,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -761,6 +767,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -795,6 +802,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 }
@@ -1200,7 +1208,7 @@ impl TopField {
                 } else {
                     Pruning::GreaterThanOrEqualTo
                 };
-                if f.point_bytes().is_none() && f.ty != SortType::String {
+                if f.no_pruning || (f.point_bytes().is_none() && f.ty != SortType::String) {
                     pruning = Pruning::None;
                 }
                 let strs = (f.ty == SortType::String).then(|| {
