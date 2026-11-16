@@ -65,6 +65,10 @@ pub enum ValueKind {
     Double,
     /// `float`: `NumericUtils.sortableIntToFloat`, widened.
     Float,
+    /// `half_float`: `HalfFloatPoint.sortableShortToHalfFloat`, widened.
+    HalfFloat,
+    /// `scaled_float`: the stored long times the inverse of the scaling factor (its bits, a `f64`).
+    Scaled(u64),
 }
 
 /// Where a field's per-document minimum or maximum comes from.
@@ -570,7 +574,34 @@ pub(crate) fn to_double(kind: ValueKind, v: i64) -> f64 {
         ValueKind::Long => v as f64,
         ValueKind::Double => sortable_long_to_double(v),
         ValueKind::Float => f64::from(sortable_int_to_float(v as i32)),
+        ValueKind::HalfFloat => f64::from(half_to_f32(sortable_short_to_half_bits(v as i16))),
+        // `ScaledFloatFieldMapper`'s values: `longValue * (1 / scalingFactor)`.
+        ValueKind::Scaled(bits) => v as f64 * (1.0 / f64::from_bits(bits)),
     }
+}
+
+/// `HalfFloatPoint.sortableShortToHalfFloat`.
+fn sortable_short_to_half_bits(s: i16) -> u16 {
+    (s ^ ((s >> 15) & 0x7fff)) as u16
+}
+
+/// An IEEE 754 binary16 as `f32` (`Float.float16ToFloat`).
+fn half_to_f32(h: u16) -> f32 {
+    let sign = u32::from(h >> 15) << 31;
+    let exp = u32::from((h >> 10) & 0x1f);
+    let man = u32::from(h & 0x3ff);
+    let bits = match (exp, man) {
+        (0, 0) => sign,
+        (0, m) => {
+            // A subnormal: normalise.
+            let shift = m.leading_zeros() - 21;
+            sign | ((113 - shift) << 23) | (((m << shift) & 0x3ff) << 13)
+        }
+        (0x1f, 0) => sign | 0x7f80_0000,
+        (0x1f, m) => sign | 0x7fc0_0000 | (m << 13),
+        (e, m) => sign | ((e + 112) << 23) | (m << 13),
+    };
+    f32::from_bits(bits)
 }
 
 /// `MinAggregator.MAX_BKD_LOOKUPS`: deleted points `findLeafMinValue` walks
@@ -651,6 +682,8 @@ fn decode_point(kind: ValueKind, packed: &[u8]) -> Option<f64> {
         return Some(match kind {
             ValueKind::Long => v as f64,
             ValueKind::Double | ValueKind::Float => sortable_long_to_double(v),
+            // The stored longs (not points) of these kinds are read elsewhere.
+            ValueKind::HalfFloat | ValueKind::Scaled(_) => return None,
         });
     }
     let b = <[u8; 4]>::try_from(packed).ok()?;
@@ -658,6 +691,7 @@ fn decode_point(kind: ValueKind, packed: &[u8]) -> Option<f64> {
     Some(match kind {
         ValueKind::Long => f64::from(v),
         ValueKind::Double | ValueKind::Float => f64::from(sortable_int_to_float(v)),
+        ValueKind::HalfFloat | ValueKind::Scaled(_) => return None,
     })
 }
 
@@ -1438,6 +1472,33 @@ fn fold<const N: u8>(
 
 #[cfg(test)]
 mod tests {
+
+    /// `half_float` stores `HalfFloatPoint.halfFloatToSortableShort`; `scaled_float` the rounded product.
+    #[test]
+    fn half_float_and_scaled_float_values_decode_to_the_doubles_java_reads() {
+        // sortable short of a half float: positive as is, negative flips the low 15 bits.
+        let sortable = |h: u16| i64::from((h as i16) ^ (((h as i16) >> 15) & 0x7fff));
+        for (bits, want) in [
+            (0x0000u16, 0.0),
+            (0x3c00, 1.0),
+            (0xbc00, -1.0),
+            (0x4900, 10.0),
+            (0xc500, -5.0),
+            (0x0001, 5.960464477539063e-8),
+            (0x7bff, 65504.0),
+            (0xfbff, -65504.0),
+            (0x7c00, f64::INFINITY),
+        ] {
+            assert_eq!(
+                to_double(ValueKind::HalfFloat, sortable(bits)),
+                want,
+                "{bits:#06x}"
+            );
+        }
+        let kind = ValueKind::Scaled(100f64.to_bits());
+        assert_eq!(to_double(kind, 1234), 12.34);
+        assert_eq!(to_double(kind, -5), -0.05);
+    }
     use super::*;
 
     /// `NumericUtils.doubleToSortableLong`: how a `double` field stores `d`.

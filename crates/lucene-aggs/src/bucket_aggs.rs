@@ -1196,6 +1196,14 @@ macro_rules! with_to_double {
                 let $f = |v: i64| metric_aggs::to_double(ValueKind::Float, v);
                 $body
             }
+            ValueKind::HalfFloat => {
+                let $f = |v: i64| metric_aggs::to_double(ValueKind::HalfFloat, v);
+                $body
+            }
+            ValueKind::Scaled(bits) => {
+                let $f = move |v: i64| metric_aggs::to_double(ValueKind::Scaled(bits), v);
+                $body
+            }
         }
     };
 }
@@ -2913,6 +2921,12 @@ fn collect_window(
                     }),
                     ValueKind::Float => go(states, leaf, docs, owners, |v| {
                         metric_aggs::to_double(ValueKind::Float, v)
+                    }),
+                    ValueKind::HalfFloat => go(states, leaf, docs, owners, |v| {
+                        metric_aggs::to_double(ValueKind::HalfFloat, v)
+                    }),
+                    ValueKind::Scaled(bits) => go(states, leaf, docs, owners, move |v| {
+                        metric_aggs::to_double(ValueKind::Scaled(bits), v)
                     }),
                 }
             }
