@@ -1,5 +1,9 @@
 //! lucene-util: low-level primitives shared across the port. See /PLAN.md.
 
+// Unit tests call `unsafe` entry points with pointers they own; the contract
+// is stated once on each function, not repeated at every call.
+#![cfg_attr(test, allow(clippy::undocumented_unsafe_blocks))]
+
 pub mod automaton;
 pub mod base36;
 pub mod bit_util;

@@ -1108,6 +1108,36 @@ def rule_unsafe_scoped(files, problems, stats):
             )
 
 
+# The number of `unsafe` sites in the repo, reported and never enforced.
+# `unsafe-scoped` above keeps `unsafe` in three crates, and the clippy denies
+# in `[workspace.lints]` require a `// SAFETY:` comment on every block and a
+# `# Safety` section on every public `unsafe fn`; a kernel that wins a
+# benchmark adds sites with no number to edit.
+
+UNSAFE_ROOTS = ("crates", "benchmarks", "opensearch-plugin")
+
+
+def unsafe_site_counts():
+    """`{relative path: unsafe sites}` over every Rust file of the repo."""
+    counts = {}
+    for top in UNSAFE_ROOTS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, top)):
+            dirnames[:] = [d for d in dirnames if d not in ("target", ".git", "node_modules")]
+            for name in filenames:
+                if not name.endswith(".rs"):
+                    continue
+                path = os.path.join(dirpath, name)
+                with open(path, encoding="utf-8") as fh:
+                    n = sum(1 for line in fh if UNSAFE_USE.search(strip_comment(line)))
+                if n:
+                    counts[os.path.relpath(path, ROOT).replace(os.sep, "/")] = n
+    return dict(sorted(counts.items()))
+
+
+def rule_unsafe_sites(files, problems, stats):
+    stats["unsafe_sites"] = sum(unsafe_site_counts().values())
+
+
 # A masked field's keyword or binary doc values keep their raw ordinals and
 # bytes, and only the value that leaves the engine is masked. The mask is
 # attached to the doc-values entry, so `TermsDict::lookup_ord` and
@@ -1169,6 +1199,7 @@ RULES = (
     ("test-framework-dev-only", rule_test_framework_dev_only),
     ("bench-not-asserting", rule_bench_not_asserting),
     ("unsafe-scoped", rule_unsafe_scoped),
+    ("unsafe-sites", rule_unsafe_sites),
     ("raw-term-choke-point", rule_raw_term_choke_point),
 )
 
@@ -1201,6 +1232,7 @@ def main(argv):
         "bench_feature_lists": 0,
         "unsafe_crates_checked": 0,
         "raw_term_sites": 0,
+        "unsafe_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1227,6 +1259,7 @@ def main(argv):
         print(f"bench-runner feature lists          : {stats['bench_feature_lists']}")
         print(f"crates checked for forbid(unsafe)   : {stats['unsafe_crates_checked']}")
         print(f"raw term reads (all allow-listed)   : {stats['raw_term_sites']}")
+        print(f"unsafe sites (reported only)        : {stats['unsafe_sites']}")
 
     if problems:
         for p in problems:

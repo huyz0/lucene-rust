@@ -163,7 +163,7 @@ pub trait Quantizer: Send + Sync + std::fmt::Debug {
 }
 
 /// A query prepared against a [`Quantizer`]'s codes.
-pub trait QueryScorer {
+pub trait QueryScorer: Send {
     /// Targets the codes encoded relative to `centroid`.
     fn set_centroid(&mut self, centroid: &[f32]);
 

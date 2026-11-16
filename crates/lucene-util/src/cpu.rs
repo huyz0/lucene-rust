@@ -33,6 +33,8 @@ struct Features {
     level: Level,
     /// AVX-512 VPOPCNTDQ as well as [`Level::Avx512`].
     popcount: bool,
+    /// AVX-512 VNNI as well as [`Level::Avx512`].
+    vnni: bool,
 }
 
 fn features() -> Features {
@@ -58,6 +60,7 @@ fn detect() -> Features {
         Features {
             level: if avx512 { Level::Avx512 } else { base },
             popcount: avx512 && std::arch::is_x86_feature_detected!("avx512vpopcntdq"),
+            vnni: avx512 && std::arch::is_x86_feature_detected!("avx512vnni"),
         }
     }
     #[cfg(target_arch = "aarch64")]
@@ -65,6 +68,7 @@ fn detect() -> Features {
         Features {
             level: Level::Neon,
             popcount: false,
+            vnni: false,
         }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -72,6 +76,7 @@ fn detect() -> Features {
         Features {
             level: Level::Scalar,
             popcount: false,
+            vnni: false,
         }
     }
 }
@@ -95,6 +100,7 @@ fn resolve(detected: Features, cap: Option<&str>) -> Features {
     Features {
         level,
         popcount: detected.popcount && level == Level::Avx512,
+        vnni: detected.vnni && level == Level::Avx512,
     }
 }
 
@@ -109,6 +115,13 @@ pub fn level() -> Level {
 #[inline]
 pub fn avx512_popcount() -> bool {
     features().popcount
+}
+
+/// Whether AVX-512 VNNI may be used: 64 byte products summed into 32-bit
+/// lanes per instruction.
+#[inline]
+pub fn avx512_vnni() -> bool {
+    features().vnni
 }
 
 /// The CPU features the build's baseline was compiled to require and that
@@ -204,6 +217,7 @@ mod tests {
     const ALL: Features = Features {
         level: Level::Avx512,
         popcount: true,
+        vnni: true,
     };
 
     #[test]
@@ -219,6 +233,7 @@ mod tests {
         let base = Features {
             level: Level::Avx2,
             popcount: false,
+            vnni: false,
         };
         let r = resolve(base, Some("avx512"));
         assert_eq!((r.level, r.popcount), (Level::Avx2, false));
@@ -280,6 +295,7 @@ mod tests {
     fn the_process_level_is_stable_and_consistent() {
         assert_eq!(level(), level());
         assert!(!avx512_popcount() || level() == Level::Avx512);
+        assert!(!avx512_vnni() || level() == Level::Avx512);
         assert!(level() <= detect().level);
     }
 }
