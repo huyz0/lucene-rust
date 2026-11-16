@@ -294,6 +294,19 @@ encoder does not send (`highlight_<Class>`), a needed analyzer cannot be describ
 (the analyzer's reason), or the highlighter is switched off
 (`index.highlight.accelerated: false`).
 
+`index.highlight.accelerated_extended` (dynamic, default `false`) adds the cases
+OpenSearch's highlighters kept before they were ported: a realtime view, a
+derived field, a Thai locale, text with an unpaired surrogate, `more_like_this`
+and an out-of-order `bool` on `plain`, and every request or hit OpenSearch
+refuses (whose exception the native side then throws). Off, those fall back as
+before, under `highlight_live_view`, `highlight_derived_field`,
+`highlight_locale`, `highlight_lone_surrogate`, `highlight_MoreLikeThisQuery`,
+`highlight_clause_order`, `highlight_fvh_hit`, `highlight_plain_hit`, and the
+option reasons (`highlight_fragmenter`, `highlight_boundary_scanner`,
+`highlight_fragment_size`, `highlight_fragment_offset`,
+`highlight_max_analyzer_offset`, `highlight_fvh_term_vectors`,
+`highlight_fvh_reflection`).
+
 A search that reads a realtime view highlights through a native reader over
 the view's buffers written as segments (`LiveView.fullReader`, built once
 per view), which numbers the hits' documents as the view does; the field

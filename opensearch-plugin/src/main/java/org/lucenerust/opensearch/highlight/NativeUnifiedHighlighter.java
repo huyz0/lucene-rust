@@ -229,11 +229,19 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
 
     /** {@code UnifiedHighlighter.buildHighlighter}'s inputs as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) {
+        boolean extended = ExtendedHighlighting.on(fieldContext);
+        // A realtime view adds the writer's buffers as leaves the native reader does not hold.
+        if (extended == false && LiveDirectoryReader.baseOf(fieldContext.hitContext.topLevelReader()) != null) {
+            return new Prepared(null, 0, "highlight_live_view");
+        }
         // Opened here when the query phase did not (a query it ran on Lucene): the hits were
         // searched on this reader, so later searches of it read through the same handle.
         long handle = readers.acquire(fieldContext.hitContext.topLevelReader()).handle();
         if (handle == 0) {
             return new Prepared(null, 0, "highlight_reader");
+        }
+        if (extended == false && fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
+            return new Prepared(null, 0, "highlight_derived_field");
         }
         // A realtime view adds the writer's buffers as leaves after the reader's: the handle that
         // reads them as segments numbers the hits' documents as the view does.
@@ -256,6 +264,9 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         // The JDK's break rules are the same for every locale but Thai (a dictionary); the
         // no-match summary cuts at a word boundary of that locale on every path.
         boolean thai = "th".equals(locale.getLanguage());
+        if (thai && extended == false) {
+            return new Prepared(null, 0, "highlight_locale");
+        }
         if (thai) {
             ThaiWords.install();
         }
@@ -275,6 +286,10 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
                     breaks = 3;
                     break;
                 default:
+                    if (extended == false) {
+                        // OpenSearch refuses it; its highlighter says so.
+                        return new Prepared(null, 0, "highlight_boundary_scanner");
+                    }
                     throw new IllegalArgumentException("Invalid boundary scanner type: " + type);
             }
             maxPassages = numberOfFragments;
@@ -315,7 +330,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         if (offsetSource == OffsetSource.ANALYSIS && specFields.contains(fieldContext.fieldName) == false) {
             return new Prepared(null, 0, undescribed);
         }
-        QueryEncoder.Encoded query = QueryEncoder.encodeForHighlight(fieldContext.query);
+        QueryEncoder.Encoded query = QueryEncoder.encodeForHighlight(fieldContext.query, ExtendedHighlighting.on(fieldContext));
         if (query.blob() == null) {
             return new Prepared(null, 0, query.fallbackReason());
         }

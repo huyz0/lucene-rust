@@ -170,11 +170,21 @@ public final class QueryEncoder {
      * #HIGHLIGHT_CLASSES}); any other falls the field back to OpenSearch's highlighter.
      */
     public static Encoded encodeForHighlight(Query query) {
+        return encodeForHighlight(query, false);
+    }
+
+    /** Whether the highlighter query being encoded may use the encodings of {@code index.highlight.accelerated_extended}. */
+    private static final ThreadLocal<Boolean> EXTENDED = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /** As {@link #encodeForHighlight(Query)}; {@code extended} also writes the shapes that setting adds. */
+    public static Encoded encodeForHighlight(Query query, boolean extended) {
         HIGHLIGHT.set(Boolean.TRUE);
+        EXTENDED.set(extended);
         try {
             return encodeRoot(query, field -> true);
         } finally {
             HIGHLIGHT.set(Boolean.FALSE);
+            EXTENDED.set(Boolean.FALSE);
         }
     }
 
@@ -187,10 +197,10 @@ public final class QueryEncoder {
      * it holds, and a {@link FuzzyQuery} is sent as itself ({@code NODE_FUZZY}), as each term it
      * expands to is weighted by its similarity.
      */
-    public static Encoded encodeForPlainHighlight(Query query) {
+    public static Encoded encodeForPlainHighlight(Query query, boolean extended) {
         PLAIN.set(Boolean.TRUE);
         try {
-            return encodeForHighlight(query);
+            return encodeForHighlight(query, extended);
         } finally {
             PLAIN.set(Boolean.FALSE);
         }
@@ -590,13 +600,13 @@ public final class QueryEncoder {
             String reason = node(fs.getWrappedQuery(), out, fieldOk, depth + 1, nodes);
             return reason == null ? "" : reason;
         }
-        if (PLAIN.get() == false && q instanceof ApproximateScoreQuery) {
+        if (EXTENDED.get() && PLAIN.get() == false && q instanceof ApproximateScoreQuery) {
             // Its visit reaches the approximation query too, a leaf the highlighter does not
             // recognize (which keeps a field from the no-op strategy and moves postings
             // offsets to analysis): what that visit does is sent, not the query it wraps.
             return visited(q, out, fieldOk, depth, nodes);
         }
-        if (PLAIN.get() && q instanceof org.opensearch.common.lucene.search.MoreLikeThisQuery mlt) {
+        if (EXTENDED.get() && PLAIN.get() && q instanceof org.opensearch.common.lucene.search.MoreLikeThisQuery mlt) {
             return MoreLikeThisEncoder.write(mlt, out);
         }
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
@@ -873,6 +883,9 @@ public final class QueryEncoder {
                 return "boolean_msm_negative";
             }
             if (PLAIN.get() && inExtractorOrder(bq) == false) {
+                if (EXTENDED.get() == false) {
+                    return "highlight_clause_order";
+                }
                 // The plain highlighter's extractor reads a bool query's clauses in the order they
                 // were added, whatever their occurrence, and skips the prohibited ones: the native
                 // reader walks musts, then shoulds, then filters, so the clauses go as musts in

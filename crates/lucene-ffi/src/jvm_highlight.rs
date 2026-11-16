@@ -357,12 +357,13 @@ pub(crate) fn highlight(
         if p.needs_analyzer {
             return Ok(vec![STATUS_NEEDS_ANALYZER]);
         }
+        // the highlighter refuses the option before it looks at the query
+        if p.offset_limit.is_some_and(|l| l > p.max_analyzed_offset) {
+            return Ok(vec![STATUS_OFFSET_LIMIT]);
+        }
         // CustomUnifiedHighlighter.highlightField
         if p.highlighter.is_noop() && p.no_match_size_is_zero() {
             return Ok(vec![STATUS_NOOP]);
-        }
-        if p.offset_limit.is_some_and(|l| l > p.max_analyzed_offset) {
-            return Ok(vec![STATUS_OFFSET_LIMIT]);
         }
         let too_long = i32::try_from(content.len()).map_or(true, |n| n > p.max_analyzed_offset);
         if p.analysis && too_long && p.offset_limit.is_none() {

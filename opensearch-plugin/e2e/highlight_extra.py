@@ -8,6 +8,9 @@ A row prints a difference, or nothing; the exit status is the number of differen
 plugin's stats then show the highlight fallbacks: none of the cases here may add one."""
 import json
 import os
+
+# HL_EXTENDED=0 runs the plugin with index.highlight.accelerated_extended off (its default)
+EXTENDED = {"index.highlight.accelerated_extended": True} if os.environ.get("HL_EXTENDED", "1") != "0" else {}
 import random
 import sys
 
@@ -116,7 +119,7 @@ def load():
             S.delete(f"{base}/{name}")
             live = name in LIVE
             extra = LIVE_SETTINGS if live and base == PLUGIN else {"refresh_interval": -1} if live else {}
-            body = {"settings": {"number_of_shards": 1, "number_of_replicas": 0, **settings, **extra}, "mappings": mapping}
+            body = {"settings": {"number_of_shards": 1, "number_of_replicas": 0, **settings, **extra, **(EXTENDED if base == PLUGIN else {})}, "mappings": mapping}
             r = S.put(f"{base}/{name}", json=body)
             assert r.ok, r.text
             half = len(docs) // 2 if live else len(docs)

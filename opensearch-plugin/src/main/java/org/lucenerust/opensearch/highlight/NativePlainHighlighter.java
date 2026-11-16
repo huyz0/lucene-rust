@@ -100,6 +100,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         if (prepared.fallback != null) {
             return super.highlight(fieldContext);
         }
+        boolean extended = ExtendedHighlighting.on(fieldContext);
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
         FetchSubPhase.HitContext hitContext = fieldContext.hitContext;
         MappedFieldType fieldType = fieldContext.fieldType;
@@ -118,6 +119,10 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             if (fieldMaxAnalyzedOffset != null && textLength > fieldMaxAnalyzedOffset) {
                 text = text.substring(0, fieldMaxAnalyzedOffset);
             } else if (textLength > maxAnalyzedOffset) {
+                if (extended == false) {
+                    // OpenSearch's highlighter refuses the hit, and says so.
+                    return super.highlight(fieldContext);
+                }
                 throw new IllegalArgumentException(
                     "The length of ["
                         + fieldContext.fieldName
@@ -136,6 +141,14 @@ public final class NativePlainHighlighter extends PlainHighlighter {
                         + "with unified or fvh highlighter is recommended!"
                 );
             }
+            if (extended == false && hasLoneSurrogate(text)) {
+                // Java's analysis reads a lone surrogate in ways the native text cannot mirror;
+                // the span fragmenter carries its state from hit to hit, so the rest of the hits
+                // are OpenSearch's too.
+                prepared.fallback = "highlight_lone_surrogate";
+                stats.fallback(prepared.fallback);
+                return super.highlight(fieldContext);
+            }
             values.add(text);
         }
         int noMatchSize = options.noMatchSize();
@@ -152,6 +165,12 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         }
         ByteBuffer b = ByteBuffer.wrap(out[0]).order(ByteOrder.LITTLE_ENDIAN);
         int status = b.get();
+        if (status == STATUS_THROWS && extended == false) {
+            // a hit OpenSearch's highlighter throws on: its answer, the rest of the hits with it
+            prepared.fallback = "highlight_plain_hit";
+            stats.fallback(prepared.fallback);
+            return super.highlight(fieldContext);
+        }
         if (status == STATUS_THROWS) {
             // a hit OpenSearch's highlighter throws on: so does the request
             throw HighlightErrors.thrown(b, true);
@@ -198,10 +217,35 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         return null;
     }
 
+    /** Whether {@code text} holds a surrogate that is not half of a pair. */
+    static boolean hasLoneSurrogate(String text) {
+        for (int i = 0, n = text.length(); i < n; i++) {
+            char c = text.charAt(i);
+            if (Character.isSurrogate(c)) {
+                if (Character.isHighSurrogate(c) && i + 1 < n && Character.isLowSurrogate(text.charAt(i + 1))) {
+                    i++;
+                } else {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /** {@code PlainHighlighter.highlight}'s highlighter as a native request, or a fallback reason. */
     private Prepared prepare(FieldHighlightContext fieldContext) {
+        boolean extended = ExtendedHighlighting.on(fieldContext);
+        if (extended == false && fieldContext.context.getQueryShardContext().resolveDerivedFieldType(fieldContext.fieldName) != null) {
+            return new Prepared(null, "highlight_derived_field");
+        }
         SearchHighlightContext.FieldOptions options = fieldContext.field.fieldOptions();
         Integer fieldMaxAnalyzedOffset = options.maxAnalyzerOffset();
+        if (extended == false
+            && fieldMaxAnalyzedOffset != null
+            && fieldMaxAnalyzedOffset > fieldContext.context.getIndexSettings().getHighlightMaxAnalyzedOffset()) {
+            // OpenSearch's highlighter refuses it, and says so.
+            return new Prepared(null, "highlight_max_analyzer_offset");
+        }
         byte fragmenter;
         if (options.numberOfFragments() == 0) {
             fragmenter = 0;
@@ -209,6 +253,9 @@ public final class NativePlainHighlighter extends PlainHighlighter {
             fragmenter = 1;
         } else if ("simple".equals(options.fragmenter())) {
             fragmenter = 2;
+        } else if (extended == false) {
+            // OpenSearch's highlighter refuses it, and says so.
+            return new Prepared(null, "highlight_fragmenter");
         } else {
             throw new IllegalArgumentException(
                 "unknown fragmenter option [" + options.fragmenter() + "] for the field [" + fieldContext.fieldName + "]"
@@ -233,7 +280,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         if (spec.ok() == false) {
             return new Prepared(null, "highlight_" + spec.reason());
         }
-        QueryEncoder.Encoded query = QueryEncoder.encodeForPlainHighlight(fieldContext.query);
+        QueryEncoder.Encoded query = QueryEncoder.encodeForPlainHighlight(fieldContext.query, ExtendedHighlighting.on(fieldContext));
         if (query.blob() == null) {
             return new Prepared(null, query.fallbackReason());
         }
