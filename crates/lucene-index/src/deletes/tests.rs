@@ -60,7 +60,7 @@ fn copy_failures_before_creation_preserve_unowned_destination() {
         output.write_bytes(bytes);
         output.close().unwrap();
     }
-    let tracked = LiveDocsOutputs::new(&dir);
+    let tracked = CreatedOutputs::new(&dir);
     for source in ["source", "missing"] {
         assert!(tracked.copy_from(&dir, source, "occupied").is_err());
         assert_eq!(&*dir.open("occupied").unwrap(), &[8, 5]);
@@ -149,7 +149,7 @@ fn failed_copy_cleans_its_partial_output_and_retains_failed_cleanup_for_retry() 
                 fail_write,
                 fail_delete: std::sync::atomic::AtomicBool::new(fail_delete),
             };
-            let tracked = LiveDocsOutputs::new(&dir);
+            let tracked = CreatedOutputs::new(&dir);
             let error = tracked.copy_from(&source, "source", "dest").unwrap_err();
             assert_eq!(
                 error.to_string(),
@@ -188,7 +188,7 @@ fn tracked_outputs_forward_directory_policy_and_track_successful_changes() {
     use lucene_store::{DataOutput, Directory, IndexOutput};
     let tmp = lucene_util::test_support::TempDir::new("live-docs-output-tracking");
     let dir = FsDirectory::open(&tmp);
-    let tracked = LiveDocsOutputs::new(&dir);
+    let tracked = CreatedOutputs::new(&dir);
     let mut output = tracked.create_output("original").unwrap();
     output.write_bytes(&[1, 2, 3]);
     output.close().unwrap();
@@ -234,7 +234,7 @@ fn tracked_outputs_forward_directory_policy_and_track_successful_changes() {
     );
 
     let memory = lucene_store::ByteBuffersDirectory::new();
-    let tracked = LiveDocsOutputs::new(&memory);
+    let tracked = CreatedOutputs::new(&memory);
     memory.create_output("occupied").unwrap().close().unwrap();
     assert!(tracked.create_output("occupied").is_err());
     assert!(tracked.files().is_empty());
