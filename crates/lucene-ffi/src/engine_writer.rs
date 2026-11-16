@@ -4677,6 +4677,10 @@ mod tests {
             let reader = open_reader(&tmp, gen);
             // Odd rounds fill one buffer, even rounds several.
             let threads = if round % 2 == 1 { 1 } else { 2 + round % 3 };
+            // Several buffers, whatever the threads' scheduling: a thread that finishes before
+            // the next starts would otherwise leave every document in the first slot, and the
+            // round would no longer cover a buffer grown since the view.
+            lookup(h).unwrap().writer().set_rotate_slots(threads > 1);
             add_from(threads, 30, "b");
             let (mut view, mut ptr, mut len) = (0u64, std::ptr::null_mut(), 0usize);
             // SAFETY: live out-pointers.
