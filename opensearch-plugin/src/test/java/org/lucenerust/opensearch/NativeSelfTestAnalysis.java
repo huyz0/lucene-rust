@@ -388,6 +388,21 @@ final class NativeSelfTestAnalysis {
                 .build()
         );
         m.put(
+            "fixed shingles",
+            b().withTokenizer("standard").addTokenFilter("fixedShingle", "shingleSize", "2", "tokenSeparator", "~", "fillerToken", "?").build()
+        );
+        m.put(
+            "fixed shingles after stop words",
+            b().withTokenizer("standard").addTokenFilter("stop", "words", "common.txt").addTokenFilter("fixedShingle", "shingleSize", "3").build()
+        );
+        m.put(
+            "fixed shingles around a graph",
+            b().withTokenizer("whitespace")
+                .addTokenFilter("wordDelimiterGraph", "catenateWords", "1", "preserveOriginal", "1")
+                .addTokenFilter("fixedShingle", "shingleSize", "2")
+                .build()
+        );
+        m.put(
             "capitalization",
             b().withTokenizer("whitespace")
                 .addTokenFilter("capitalization", "keep", "the,of", "keepIgnoreCase", "true", "okPrefix", "mc,mac", "onlyFirstWord", "false", "minWordLength", "2", "maxWordCount", "9", "maxTokenLength", "20")
@@ -492,11 +507,6 @@ final class NativeSelfTestAnalysis {
         m.put(
             "hunspell without its files",
             Map.entry(hunspell(false, true, dictionary(utf8(EN_AFF), List.of(utf8(EN_DIC)), false, false), true, false), "analysis_hunspell")
-        );
-        // The port carries Lucene's GITHUB#16577 fix for FixedShingleFilter; the bundled 10.5.1 does not have it.
-        m.put(
-            "fixed shingles",
-            Map.entry(b().withTokenizer("standard").addTokenFilter("fixedShingle", "shingleSize", "2").build(), "analysis_FixedShingleFilter")
         );
         return m;
     }

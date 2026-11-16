@@ -699,6 +699,13 @@ fn required_ranges(query: &BooleanQuery) -> Vec<&PointsRangeQuery> {
             Clause::Boolean(b) => boolean(b, out),
             Clause::ConstantScore(c) => clause(&c.inner, out),
             Clause::Boost(b) => clause(&b.inner, out),
+            // What OpenSearch builds for a range on an indexed field with doc values: both sides
+            // match the same documents.
+            Clause::Extended(e) => {
+                if let ExtendedQuery::IndexOrDocValues(q) = &**e {
+                    clause(&q.index_query, out);
+                }
+            }
             _ => {}
         }
     }

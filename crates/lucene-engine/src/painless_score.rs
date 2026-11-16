@@ -1751,7 +1751,10 @@ impl FieldComparator for SortComparator {
         }
     }
 
-    fn needs_scores(&self) -> bool {
+    // Lucene's `SortField.needsScores` is false for a custom comparator: a
+    // script reading `_score` sees what the search's scorers return without
+    // scoring, as OpenSearch's does.
+    fn reads_unscored_scorer(&self) -> bool {
         self.0.needs_score
     }
 }
