@@ -1106,7 +1106,9 @@ pub fn aggregate_tree_blobs_cached(
         || tree
             .nodes
             .iter()
-            .any(|n| matches!(n, AggNode::DateHistogram { .. } | AggNode::Range { .. }));
+            .any(|n| matches!(n, AggNode::DateHistogram { .. } | AggNode::Range { .. }))
+        // A composite led by a numeric or date source reads it sorted from the points.
+        || tree.nodes.iter().any(AggNode::composite_reads_points);
     if points {
         opened.open_points().map_err(|e| {
             set_last_error(format!("opening segment points: {e}"));

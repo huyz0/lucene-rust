@@ -3,7 +3,6 @@
  */
 package org.lucenerust.opensearch;
 
-import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BoostQuery;
@@ -105,15 +104,6 @@ final class NativeComposite {
             if (p != null) {
                 // A range query on that field also bounds the values the points read sees.
                 if (p.getClass().getSimpleName().equals("PointsSortedDocsProducer") && unwrap(ctx.query()) instanceof PointRangeQuery) {
-                    return null;
-                }
-                // The sorted read stops once the queue is full and the first source's values pass
-                // its worst key: past `size` distinct values it visits only the documents of the
-                // first ones, where the native pass reads every document. A keyword's values are
-                // counted; a points field's are not, so it stays on Lucene.
-                if (allShapes == false
-                    && (p.getClass().getSimpleName().equals("PointsSortedDocsProducer")
-                        || DocValues.getSortedSet(leaves.get(i).reader(), configs[0].fieldType().name()).getValueCount() > size)) {
                     return null;
                 }
                 sortedLead[i] = true;
