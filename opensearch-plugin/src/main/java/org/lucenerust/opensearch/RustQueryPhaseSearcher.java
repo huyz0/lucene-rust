@@ -239,6 +239,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
         NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
+        if (aggs != null && termsFromDocFreqs(ctx, searcher, query, aggs, collectors, hasFilterCollector)) {
+            stats.nativeQuery();
+            stats.nativeTime(System.nanoTime() - start);
+            return false;
+        }
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
@@ -481,6 +486,60 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /**
+     * A match-all {@code size: 0} search whose only aggregation is a plain keyword {@code terms}
+     * ({@link TermsDocFreqShortcut}): its buckets from the segments' term document frequencies and
+     * its total from {@code numDocs}, as OpenSearch answers it. False, with nothing stored, for any
+     * other request.
+     */
+    private boolean termsFromDocFreqs(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        NativeAggregations.Plan aggs,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector
+    ) {
+        if (aggs.entries().size() != 1 || aggs.terms().size() != 1 || ctx.size() != 0 || ctx.from() != 0 || ctx.sort() != null
+            || ctx.searchAfter() != null || ctx.scrollContext() != null || ctx.collapse() != null || ctx.parsedPostFilter() != null
+            || ctx.minimumScore() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER || hasFilterCollector
+            || ctx.isCancelled() || unwrapShortcut(query).getClass() != MatchAllDocsQuery.class
+            || NativeRescore.applies(ctx) || flags(ctx).enabled() == false
+            || LiveDirectoryReader.find(searcher.getIndexReader()) != null
+            || ineligible(ctx, collectors, hasFilterCollector, true) != null) {
+            return false;
+        }
+        int[][] slices = NativeAggregations.slices(ctx);
+        if (slices == null) {
+            return false;
+        }
+        NativeAggregations.Terms terms = aggs.terms().get(0);
+        byte[] result;
+        try {
+            result = TermsDocFreqShortcut.result(searcher.getIndexReader(), terms.field(), terms.thresholds().getShardSize(), slices);
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+        if (result == null) {
+            return false;
+        }
+        InternalAggregations built = aggs.build(slices, new long[0], new double[0], result, ctx.partialOnShard());
+        NativeAggregations.consumeBuckets(ctx, built);
+        int shortcut;
+        try {
+            shortcut = ctx.trackTotalHitsUpTo() == SearchContext.TRACK_TOTAL_HITS_DISABLED
+                ? -1
+                : shortcutTotalHitCount(searcher.getIndexReader(), query, 0L);
+        } catch (IOException e) {
+            shortcut = -1;
+        }
+        if (searchUnsorted(ctx, 0L, null, 0, 0, shortcut, null, null, null) != null) {
+            return false;
+        }
+        ctx.queryResult().aggregations(built);
+        return true;
     }
 
     /** How long a search Lucene answers waits for a buffer being flushed to be published. */
