@@ -2078,6 +2078,9 @@ pub struct StoredFieldsWriter {
     /// The slice [`Self::add_document`] fills while it streams an outsized
     /// document, kept for its capacity.
     slice_buf: Vec<u8>,
+    /// The most `.fdt` bytes held at once while streaming a document.
+    #[cfg(test)]
+    fdt_high_water: usize,
     /// The chunks written since [`Self::capture_chunks`], while it is on.
     captured: Option<Vec<WrittenChunk>>,
     /// [`Self::set_zstd_dictionary`] gave the chunks a dictionary, which a
@@ -2285,6 +2288,8 @@ impl StoredFieldsWriter {
             },
             page_chunk: Vec::new(),
             slice_buf: Vec::new(),
+            #[cfg(test)]
+            fdt_high_water: 0,
             captured: None,
             has_dictionary: false,
         }
@@ -2619,8 +2624,10 @@ impl StoredFieldsWriter {
         self.docs_values.push(self.doc_base as i64);
         self.start_pointers_values.push(self.fdt_pointer());
         if let Some(captured) = self.captured.as_mut() {
-            // The chunk starts after what was spilled: spills happen only
-            // here, after a whole chunk.
+            // The chunk starts after what was spilled. Spills land here,
+            // after a whole chunk, except for a streamed outsized document
+            // (`add_streamed`), which spills inside its chunk: it is never
+            // taken while chunks are captured (`can_stream`).
             let from = u64::try_from(chunk_start)
                 .unwrap_or(0)
                 .saturating_sub(self.fdt_spilled);
@@ -2781,7 +2788,8 @@ impl StoredFieldsWriter {
         let mut slice = std::mem::take(&mut self.slice_buf);
         slice.clear();
         let buffered = std::mem::take(&mut self.chunk_buf);
-        self.put_slices(&mut slice, compression, &buffered);
+        let mut streamed = 0usize;
+        self.put_slices(&mut slice, compression, &buffered, &mut 0);
         self.chunk_buf = buffered;
         let mut field = Vec::new();
         for f in &doc.fields {
@@ -2798,23 +2806,27 @@ impl StoredFieldsWriter {
             match &f.value {
                 FieldValue::String(text) => {
                     field.write_vint(text.len() as i32);
-                    self.put_slices(&mut slice, compression, &field);
-                    self.put_slices(&mut slice, compression, text.as_bytes());
+                    self.put_slices(&mut slice, compression, &field, &mut streamed);
+                    self.put_slices(&mut slice, compression, text.as_bytes(), &mut streamed);
                 }
                 FieldValue::Binary(bytes) => {
                     field.write_vint(bytes.len() as i32);
-                    self.put_slices(&mut slice, compression, &field);
-                    self.put_slices(&mut slice, compression, bytes);
+                    self.put_slices(&mut slice, compression, &field, &mut streamed);
+                    self.put_slices(&mut slice, compression, bytes, &mut streamed);
                 }
                 other => {
                     write_field(&mut field, other);
-                    self.put_slices(&mut slice, compression, &field);
+                    self.put_slices(&mut slice, compression, &field, &mut streamed);
                 }
             }
         }
         if !slice.is_empty() {
             self.scratch.compress(compression, &slice, &mut self.fdt);
         }
+        debug_assert_eq!(
+            streamed, length,
+            "the streamed bytes are the counted length"
+        );
         slice.clear();
         self.slice_buf = slice;
         self.advance_doc_base(chunk_docs);
@@ -2828,11 +2840,26 @@ impl StoredFieldsWriter {
     /// `chunk_size` bytes and more follow, it is compressed to the `.fdt` as
     /// one unit (what `payload.chunks(chunk_size)` yields), and the `.fdt`
     /// spills to its output once it holds [`STREAM_BYTES`].
-    fn put_slices(&mut self, slice: &mut Vec<u8>, compression: Compression, mut bytes: &[u8]) {
+    fn put_slices(
+        &mut self,
+        slice: &mut Vec<u8>,
+        compression: Compression,
+        mut bytes: &[u8],
+        counted: &mut usize,
+    ) {
+        // ARITH: an in-memory byte count.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            *counted += bytes.len();
+        }
         while !bytes.is_empty() {
             if slice.len() == self.chunk_size {
                 self.scratch.compress(compression, slice, &mut self.fdt);
                 slice.clear();
+                #[cfg(test)]
+                {
+                    self.fdt_high_water = self.fdt_high_water.max(self.fdt.len());
+                }
                 if self.fdt.len() >= STREAM_BYTES {
                     self.spill_fdt();
                 }
@@ -6923,9 +6950,25 @@ mod tests {
 
     #[test]
     fn an_outsized_document_streams_the_bytes_the_buffered_path_writes() {
-        for mode in [Mode::BestSpeed, Mode::BestCompression] {
+        for mode in [
+            Mode::BestSpeed,
+            Mode::BestCompression,
+            Mode::Zstd(ZstdMode::zstd(3)),
+        ] {
             let chunk = mode.chunk_size() as usize;
             let small = |n: usize| outsized_doc(n, 5 + n as u32);
+            // A document whose whole serialization is `total` bytes.
+            let exactly = |total: usize| {
+                let overhead = serialized_doc_len(&outsized_doc(0, 1));
+                outsized_doc(total - overhead, 9)
+            };
+            let max_docs = mode.max_docs_per_chunk() as usize;
+            let tiny = || Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::Int(1),
+                }],
+            };
             // Alone, behind buffered documents, between two outsized ones,
             // on the exact multiple of a slice, and one byte over it.
             // The flag says every outsized document is past twice a slice,
@@ -6951,6 +6994,19 @@ mod tests {
                     ],
                 ),
                 (true, vec![small(7 * chunk + 123)]),
+                // The payload lands on a whole number of slices.
+                (true, vec![exactly(2 * chunk)]),
+                (true, vec![exactly(3 * chunk), exactly(2 * chunk + 1)]),
+                (true, vec![exactly(4 * chunk - 1), small(20)]),
+                // One document short of the document-count trigger, and then
+                // the outsized document that closes the chunk on its size.
+                (
+                    true,
+                    std::iter::repeat_with(tiny)
+                        .take(max_docs - 1)
+                        .chain([small(2 * chunk + 5)])
+                        .collect(),
+                ),
             ];
             for (all_streamed, docs) in cases {
                 let mut w = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
@@ -6989,19 +7045,27 @@ mod tests {
 
     #[test]
     fn a_streamed_document_spills_the_fdt_as_it_goes() {
-        let dir = std::env::temp_dir().join(format!("sf-stream-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let root = lucene_util::test_support::TempDir::new("stored-stream");
+        use lucene_store::Directory;
+        let dir = lucene_store::FsDirectory::open(root.path());
         let mode = Mode::BestSpeed;
-        let docs = [outsized_doc(3_000_000, 3)];
+        let docs = [outsized_doc(50, 4), outsized_doc(3_000_000, 3)];
         let mut w = StoredFieldsWriter::new(mode, &[3; ID_LENGTH], "");
-        let out = FsIndexOutput::create(&dir, "x.fdt").expect("an output");
-        w.stream_to(out);
-        w.add_document(&docs[0]);
-        let peak = w.buffered_fdt_bytes();
+        w.stream_to(dir.create_output("x.fdt").unwrap());
+        for doc in &docs {
+            w.add_document(doc);
+        }
+        // Compressed output is held a slice's worth at a time, not whole:
+        // the data barely compresses, so ~3 MB would be held without spills.
+        let held = w.fdt_high_water;
         assert!(
-            peak < 4 * STREAM_BYTES,
-            "the .fdt held {peak} bytes after one outsized document"
+            held < 2 * STREAM_BYTES + 2 * mode.chunk_size() as usize,
+            "the .fdt held {held} bytes at once"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let (out, fdx, fdm) = w.finish_streamed();
+        out.expect("streamed").close().unwrap();
+        let (fdt_ref, fdx_ref, fdm_ref) = buffered_bytes(mode, &docs);
+        assert!(dir.open("x.fdt").unwrap().as_ref() == fdt_ref.as_slice());
+        assert_eq!((fdx, fdm), (fdx_ref, fdm_ref));
     }
 }
