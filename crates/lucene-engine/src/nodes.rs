@@ -327,7 +327,7 @@ pub const AUTOMATON_NORMAL: u8 = 3;
 
 /// The most states a transferred automaton may have (Lucene's default
 /// determinization work limit is 10 000 states' worth of effort).
-pub const MAX_AUTOMATON_STATES: usize = 1 << 16;
+pub const MAX_AUTOMATON_STATES: usize = 1 << 20;
 
 /// One `IntervalsSource`, as the Java object it was read from -- each tag one
 /// class, its fields in order (`count: i32` before a list, at least one):
@@ -544,7 +544,8 @@ pub fn decode_compiled_automaton(c: &mut Cursor<'_>) -> Result<Automaton, Status
         }
         AUTOMATON_NORMAL => {
             let states = c.length()?;
-            if states == 0 || states > MAX_AUTOMATON_STATES {
+            // Each state is at least its accept byte and transition count on the wire.
+            if states == 0 || states > MAX_AUTOMATON_STATES || states > c.remaining() / 5 {
                 return Err(invalid(format!(
                     "query tree: an automaton of {states} states"
                 )));
