@@ -1509,6 +1509,57 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_collapsing_hybrid_search_counts_to_its_threshold_and_groups_the_documents_without_a_value() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let run = |threshold: i64| {
+            let sort = sort_blob(&[(SORT_SCORE, 0, "", 0)], None);
+            let mut blob = hybrid_blob_flags(&subs, 100, &[], 4 | 16);
+            blob.extend_from_slice(&threshold.to_le_bytes());
+            blob.extend_from_slice(&(sort.len() as i32).to_le_bytes());
+            blob.extend_from_slice(&sort);
+            blob.extend_from_slice(&7i32.to_le_bytes());
+            blob.extend_from_slice(b"nofield");
+            blob.extend_from_slice(&[0]);
+            let out = search_hybrid_blobs(h, &blob);
+            let out = out.unwrap();
+            let mut c = Cursor::new(&out);
+            assert_eq!(c.i32().unwrap(), 1);
+            let total = c.i64().unwrap();
+            c.i32().unwrap();
+            let gte = c.u8().unwrap();
+            let mut per = Vec::new();
+            for _ in 0..2 {
+                let n = c.i32().unwrap();
+                for _ in 0..n {
+                    c.i32().unwrap();
+                    c.i32().unwrap();
+                    c.i64().unwrap();
+                    assert_eq!(c.u8().unwrap(), 0, "a document without a value");
+                }
+                assert_eq!(c.i32().unwrap(), 0);
+                per.push((n, c.i32().unwrap()));
+            }
+            assert_eq!(c.remaining(), 0);
+            (total, gte, per)
+        };
+        let all = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        )[0]
+            .0;
+        let (total, gte, per) = run(i64::MAX);
+        assert_eq!((total, gte), (all, 0));
+        assert!(per.iter().all(|&(n, collected)| n == collected));
+        // The document that reaches the threshold is counted and not collected; so is the
+        // first one of each later segment.
+        let (total, gte, per) = run(3);
+        assert_eq!((total, gte), (4, 1));
+        assert!(per.iter().all(|&(n, collected)| n == collected && n <= 2));
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
     fn a_nested_key_carries_its_filters_and_runs_over_a_handle() {
         let nested_key = |ty: u8, flags: u8| {
             let mut b = vec![2u8, ty, flags | SORT_NESTED];

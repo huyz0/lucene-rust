@@ -1675,7 +1675,7 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
     let top_n = usize::try_from(c.i32()?).map_err(|_| bad("negative top_n".into()))?;
     let slices = decode_slices(&mut c, &bad)?;
     let flags = c.u8()?;
-    if flags & !(HYBRID_RETURN_DOCS | HYBRID_POST_FILTER | HYBRID_SORT | HYBRID_TERMINATE) != 0 {
+    if flags & !(HYBRID_RETURN_DOCS | HYBRID_POST_FILTER | HYBRID_SORT | HYBRID_TERMINATE | HYBRID_COLLAPSE) != 0 {
         return Err(bad(format!("unknown flags {flags:#x}")));
     }
     let return_docs = flags & HYBRID_RETURN_DOCS != 0;
@@ -1698,6 +1698,22 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         let early = keys[0].ty == SortType::Doc && !keys[0].reverse
             || index_sorted.first() == Some(&Some(0));
         Some((keys, after, early, threshold))
+    } else {
+        None
+    };
+    let collapse = if flags & HYBRID_COLLAPSE != 0 {
+        if sort.is_none() {
+            return Err(bad("a collapse without its sort".into()));
+        }
+        let field = std::str::from_utf8(c.bytes()?)
+            .map_err(|_| bad("a collapse field that is not UTF-8".into()))?
+            .to_string();
+        let kind = match c.u8()? {
+            0 => lucene_search::top_field::CollapseKind::Numeric,
+            1 => lucene_search::top_field::CollapseKind::Keyword,
+            k => return Err(bad(format!("collapse kind {k}"))),
+        };
+        Some((field, kind))
     } else {
         None
     };
@@ -1793,6 +1809,7 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
                     *early,
                     *threshold,
                     &hits_seen,
+                    collapse.clone(),
                 )
                 .map_err(map_search_error)?,
             ),
@@ -1859,18 +1876,39 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
             Some(mut sc) => {
                 out.extend_from_slice(&sc.total.to_le_bytes());
                 out.extend_from_slice(&sc.max_score.to_bits().to_le_bytes());
+                if collapse.is_some() {
+                    out.push(u8::from(sc.threshold_reached()));
+                }
                 counted = sc.docs.take();
                 let keys = sc.keys;
-                for hits in sc.into_hits() {
+                let collected = sc.collected();
+                for (q, hits) in sc.into_hits().into_iter().enumerate() {
                     out.extend_from_slice(
                         &i32::try_from(hits.len()).unwrap_or(i32::MAX).to_le_bytes(),
                     );
-                    let docs: Vec<FieldDoc> = hits.iter().map(|(_, d)| d.clone()).collect();
-                    for (score, hit) in &hits {
+                    let docs: Vec<FieldDoc> = hits.iter().map(|(_, d, _)| d.clone()).collect();
+                    for (score, hit, group) in &hits {
                         out.extend_from_slice(&hit.doc.to_le_bytes());
                         out.extend_from_slice(&score.to_bits().to_le_bytes());
                         for v in &hit.values {
                             out.extend_from_slice(&v.to_le_bytes());
+                        }
+                        if collapse.is_some() {
+                            use lucene_search::top_field::CollapseValue;
+                            match group {
+                                CollapseValue::Missing => out.push(0),
+                                CollapseValue::Long(v) => {
+                                    out.push(1);
+                                    out.extend_from_slice(&v.to_le_bytes());
+                                }
+                                CollapseValue::Bytes(b) => {
+                                    out.push(2);
+                                    out.extend_from_slice(
+                                        &i32::try_from(b.len()).unwrap_or(i32::MAX).to_le_bytes(),
+                                    );
+                                    out.extend_from_slice(b);
+                                }
+                            }
                         }
                     }
                     let terms = encode_terms(keys, &docs)?;
@@ -1878,6 +1916,9 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
                         &i32::try_from(terms.len()).unwrap_or(i32::MAX).to_le_bytes(),
                     );
                     out.extend_from_slice(&terms);
+                    if collapse.is_some() {
+                        out.extend_from_slice(&collected[q].to_le_bytes());
+                    }
                 }
             }
         }
@@ -1909,6 +1950,12 @@ pub const HYBRID_SORT: u8 = 4;
 /// A hybrid blob's flag: `terminate_after: i64` follows (after the sort's); the answer
 /// ends with `terminated: u8`.
 pub const HYBRID_TERMINATE: u8 = 8;
+/// A hybrid blob's flag, with [`HYBRID_SORT`]: the hits are neural-search's collapsing
+/// collector's, `field: len-prefixed UTF-8` and `kind: u8` (0 numeric, 1 keyword) after
+/// the sort's. The answer adds per slice `threshold_reached: u8` after the max score and, per
+/// hit, its group value (`0` missing; `1` and an `i64`; `2`, `len: i32` and the term) after
+/// its sort values, and per sub-query the documents it collected (`i32`) after its terms.
+pub const HYBRID_COLLAPSE: u8 = 16;
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
 pub const HYBRID_WINDOW: i32 = 1 << 12;
@@ -2203,6 +2250,20 @@ pub struct HybridSortCollector<'a> {
     pub hits: &'a std::cell::Cell<i64>,
     /// The room of each queue: 0 keeps no hit.
     top_n: usize,
+    /// `HybridCollapsingTopDocsCollector` rather than the sorted collectors.
+    collapse: Option<HybridCollapse>,
+}
+
+/// What the collapsing collector keeps beside the sorted queues.
+struct HybridCollapse {
+    field: String,
+    kind: lucene_search::top_field::CollapseKind,
+    /// Per sub-query, each slot's group value.
+    groups: Vec<Vec<lucene_search::top_field::CollapseValue>>,
+    /// Per sub-query, the documents it collected (`collectedHitsPerSubQuery`).
+    collected: Vec<i32>,
+    /// The hit count reached the threshold (`GREATER_THAN_OR_EQUAL_TO`).
+    gte: bool,
 }
 
 impl<'a> HybridSortCollector<'a> {
@@ -2218,6 +2279,7 @@ impl<'a> HybridSortCollector<'a> {
         early: bool,
         threshold: i64,
         hits: &'a std::cell::Cell<i64>,
+        collapse: Option<(String, lucene_search::top_field::CollapseKind)>,
     ) -> Result<Self, lucene_search::Error> {
         let queues = (0..subs)
             .map(|_| lucene_search::top_field::HybridSortQueue::new(keys, top_n, after))
@@ -2236,6 +2298,13 @@ impl<'a> HybridSortCollector<'a> {
             threshold,
             hits,
             top_n,
+            collapse: collapse.map(|(field, kind)| HybridCollapse {
+                field,
+                kind,
+                groups: vec![Vec::new(); subs], // alloc-ok: one list per sub-query, at most MAX_HYBRID_QUERIES
+                collected: vec![0; subs], // alloc-ok: one count per sub-query
+                gte: false,
+            }),
         })
     }
 
@@ -2261,6 +2330,12 @@ impl<'a> HybridSortCollector<'a> {
             .iter_mut()
             .map(|q| q.leaf(reader, seg))
             .collect::<Result<Vec<_>, _>>()?;
+        let mut group = match &self.collapse {
+            Some(c) => Some(lucene_search::top_field::HybridGroup::open(
+                reader, &c.field, c.kind,
+            )?),
+            None => None,
+        };
         // Shared by the sub-queries' collection of one segment (`collectedAllCompetitiveHits`).
         let mut collected_all = false;
         let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
@@ -2269,7 +2344,7 @@ impl<'a> HybridSortCollector<'a> {
             scored,
             &mut window,
             &mut min_scores,
-            &mut |local, d, window, _| -> Result<bool, lucene_search::Error> {
+            &mut |local, d, window, min_scores| -> Result<bool, lucene_search::Error> {
                 let doc = doc_base.wrapping_add(local);
                 let passes = accepted.is_none_or(|filter| {
                     let at = usize::try_from(local).unwrap_or(0);
@@ -2288,6 +2363,42 @@ impl<'a> HybridSortCollector<'a> {
                     docs.push((doc, sum));
                 }
                 if !passes {
+                    return Ok(true);
+                }
+                if let (Some(group), Some(c)) = (group.as_mut(), self.collapse.as_mut()) {
+                    // `HybridCollapsingTopDocsCollector.collect`: the group first, then the
+                    // count -- the document that reaches the threshold ends the segment
+                    // uncollected -- and every sub-query's queue.
+                    group.advance(local)?;
+                    self.total = self.total.saturating_add(1);
+                    self.hits.set(self.hits.get().saturating_add(1));
+                    if self.hits.get() >= self.threshold {
+                        c.gte = true;
+                        return Ok(false);
+                    }
+                    for q in 0..self.queues.len() {
+                        let score = window[q][d];
+                        if score == 0.0 || (self.by_score && score < 0.0) {
+                            continue;
+                        }
+                        c.collected[q] = c.collected[q].saturating_add(1);
+                        self.max_score = self.max_score.max(score);
+                        if let HybridCollected::Entered { slot, new } =
+                            self.queues[q].collect(&mut leaves[q], local, score)?
+                        {
+                            let value = group.value()?;
+                            if new {
+                                self.slot_scores[q].push(score);
+                                c.groups[q].push(value);
+                            } else {
+                                let evicted = std::mem::replace(&mut self.slot_scores[q][slot], score);
+                                c.groups[q][slot] = value;
+                                if self.by_score {
+                                    min_scores[q] = min_scores[q].max(evicted);
+                                }
+                            }
+                        }
+                    }
                     return Ok(true);
                 }
                 self.total = self.total.saturating_add(1);
@@ -2318,11 +2429,11 @@ impl<'a> HybridSortCollector<'a> {
                             }
                             return Ok(true);
                         }
-                        HybridCollected::Entered { new_slot } => {
+                        HybridCollected::Entered { slot: _, new } => {
                             if self.paging {
                                 self.max_score = self.max_score.max(score);
                             }
-                            if new_slot.is_some() {
+                            if new {
                                 self.slot_scores[q].push(score);
                             }
                         }
@@ -2339,21 +2450,44 @@ impl<'a> HybridSortCollector<'a> {
         Ok(())
     }
 
-    /// Each sub-query's hits, best first, with the score stored in the slot that holds it.
-    pub fn into_hits(self) -> Vec<Vec<(f32, FieldDoc)>> {
+    /// Whether a collapsing collector reached its hit threshold.
+    pub fn threshold_reached(&self) -> bool {
+        self.collapse.as_ref().is_some_and(|c| c.gte)
+    }
+
+    /// Each sub-query's documents the collapsing collector counted.
+    pub fn collected(&self) -> Vec<i32> {
+        self.collapse
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.collected.clone())
+    }
+
+    /// Each sub-query's hits, best first, with the score stored in the slot that holds it and,
+    /// for a collapsing collector, the slot's group value.
+    pub fn into_hits(
+        self,
+    ) -> Vec<Vec<(f32, FieldDoc, lucene_search::top_field::CollapseValue)>> {
         let _ = self.keys;
         let keep = self.top_n > 0;
+        let mut groups = self.collapse.map(|c| c.groups);
         self.queues
             .into_iter()
             .zip(self.slot_scores)
-            .map(|(queue, scores)| {
+            .enumerate()
+            .map(|(q, (queue, scores))| {
                 if !keep {
                     return Vec::new();
                 }
                 queue
                     .into_hits()
                     .into_iter()
-                    .map(|(slot, hit)| (scores[slot], hit))
+                    .map(|(slot, hit)| {
+                        let group = groups.as_mut().map_or(
+                            lucene_search::top_field::CollapseValue::Missing,
+                            |g| g[q][slot].clone(),
+                        );
+                        (scores[slot], hit, group)
+                    })
                     .collect()
             })
             .collect()

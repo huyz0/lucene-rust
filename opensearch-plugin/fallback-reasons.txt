@@ -69,7 +69,6 @@ highlight_locale  # NativeFvhHighlighter.java
 highlight_lone_surrogate  # NativeFvhHighlighter.java
 highlight_nested_  # QueryEncoder.java
 highlight_reader  # NativeFvhHighlighter.java
-hybrid_collapse  # NativeHybrid.java
 hybrid_wrapped  # NativeHybrid.java
 interval_  # ExtendedEncoder.java
 interval_options  # ExtendedEncoder.java

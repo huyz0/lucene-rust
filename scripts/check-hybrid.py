@@ -232,7 +232,19 @@ def searches():
             ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 10, "post_filter": {"term": {"tag": "g1"}}, "sort": [{"n": "asc"}],
                         "aggs": {"c": {"value_count": {"field": "n"}}}}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10}),
-            ("rrf", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10})]
+            ("rrf", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "n"}, "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "desc"}], "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "asc"}, {"_doc": "asc"}], "size": 6}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"_score": "asc"}], "size": 6}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 0, "track_total_hits": True}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10, "track_total_hits": False}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10, "post_filter": {"range": {"n": {"gte": 300}}},
+                        "aggs": {"tags": {"terms": {"field": "tag"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "terminate_after": 20, "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=30), "collapse": {"field": "tag"}, "from": 3, "size": 4}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "t"}, "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "asc"}], "search_after": [10], "size": 5})]
     return out
 
 
@@ -446,7 +458,7 @@ def main():
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         # What the native hybrid shard phase leaves to Java: the hybrid collectors' other modes.
-        java = {"hybrid_collapse"}
+        java = set()
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
         print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")

@@ -14,6 +14,9 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BoostQuery;
+import org.opensearch.index.mapper.KeywordFieldMapper;
+import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.index.mapper.NumberFieldMapper;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
@@ -585,11 +588,36 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
         int topN = NativeHybrid.numHits(ctx, hybrid);
         // The hits sorted: by the request's sort, after the search_after document when there is one.
+        // A collapse (HybridCollectorFactory) is sorted by the request's sort or the score, ignores
+        // search_after, and groups by a keyword or number field.
         SortField[] sortFields = null;
         byte[] sortBlob = null;
-        if (ctx.sort() != null) {
-            FieldDoc after = ctx.searchAfter();
-            sortFields = ctx.sort().sort.getSort();
+        byte[] collapseBlob = null;
+        String collapseField = null;
+        if (ctx.collapse() != null) {
+            MappedFieldType type = ctx.collapse().getFieldType();
+            byte kind;
+            if (type instanceof KeywordFieldMapper.KeywordFieldType) {
+                kind = NativeCollapse.KEYWORD;
+            } else if (type instanceof NumberFieldMapper.NumberFieldType) {
+                kind = NativeCollapse.NUMERIC;
+            } else {
+                throw new IllegalStateException(
+                    "unknown type for collapse field " + ctx.collapse().getFieldName() + ", only keywords and numbers are accepted"
+                );
+            }
+            collapseField = ctx.collapse().getFieldName();
+            java.io.ByteArrayOutputStream blob = new java.io.ByteArrayOutputStream();
+            byte[] name = type.name().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            NativeAggregations.writeInt(blob, name.length);
+            blob.writeBytes(name);
+            blob.write(kind);
+            collapseBlob = blob.toByteArray();
+        }
+        if (ctx.sort() != null || collapseBlob != null) {
+            Sort keys = ctx.sort() != null ? ctx.sort().sort : new Sort(new SortField(null, SortField.Type.SCORE));
+            sortFields = keys.getSort();
+            FieldDoc after = collapseBlob != null ? null : ctx.searchAfter();
             if (after != null) {
                 if (after.fields == null) {
                     throw new IllegalArgumentException("after.fields wasn't set; you must pass fillFields=true for the previous search");
@@ -600,7 +628,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     );
                 }
             }
-            Sort keys = ctx.sort().sort;
             byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), keys);
             SortEncoder.Encoded sorted = ExtendedEncoder.withFieldTypes(
                 ctx.mapperService()::fieldType,
@@ -615,13 +642,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int rc;
         NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_hybrid_search");
         try {
-            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
+            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, collapseBlob, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
                 return "native_error";
             }
-            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, NativeHybrid.terminates(ctx));
+            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, collapseField, NativeHybrid.terminates(ctx));
             InternalAggregations[] aggOut = new InternalAggregations[1];
             InternalAggregations aggResult = null;
             if (aggregating) {

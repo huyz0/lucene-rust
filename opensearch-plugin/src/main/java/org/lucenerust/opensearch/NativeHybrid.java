@@ -7,6 +7,7 @@ import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopFieldDocs;
+import org.apache.lucene.search.grouping.CollapseTopFieldDocs;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.TopDocs;
@@ -44,6 +45,8 @@ final class NativeHybrid {
     static final int SORT = 4;
     /** {@code HYBRID_TERMINATE} in {@code reader_search.rs}. */
     static final int TERMINATE = 8;
+    /** {@code HYBRID_COLLAPSE} in {@code reader_search.rs}. */
+    static final int COLLAPSE = 16;
 
     private NativeHybrid() {}
 
@@ -80,7 +83,6 @@ final class NativeHybrid {
             // HybridCollectorManager.createHybridCollectorManager's own refusal.
             throw new IllegalArgumentException("Scroll operation is not supported in hybrid query");
         }
-        if (ctx.collapse() != null) return "hybrid_collapse";
         if (ctx.getProfilers() != null) return "profile";
         boolean minScore = ctx.minimumScore() != null;
         boolean postFilter = ctx.parsedPostFilter() != null;
@@ -102,6 +104,7 @@ final class NativeHybrid {
         byte[] postFilter,
         byte[] sort,
         long threshold,
+        byte[] collapse,
         long terminateAfter
     ) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -112,7 +115,7 @@ final class NativeHybrid {
         }
         NativeAggregations.writeInt(out, topN);
         NativeAggregations.writeSlices(out, slices);
-        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0) | (sort != null ? SORT : 0) | (terminateAfter >= 0 ? TERMINATE : 0));
+        out.write((returnDocs ? RETURN_DOCS : 0) | (postFilter != null ? POST_FILTER : 0) | (sort != null ? SORT : 0) | (collapse != null ? COLLAPSE : 0) | (terminateAfter >= 0 ? TERMINATE : 0));
         if (postFilter != null) {
             NativeAggregations.writeInt(out, postFilter.length);
             out.writeBytes(postFilter);
@@ -122,6 +125,9 @@ final class NativeHybrid {
             NativeAggregations.writeInt(out, (int) (threshold >>> 32));
             NativeAggregations.writeInt(out, sort.length);
             out.writeBytes(sort);
+        }
+        if (collapse != null) {
+            out.writeBytes(collapse);
         }
         if (terminateAfter >= 0) {
             NativeAggregations.writeInt(out, (int) terminateAfter);
@@ -142,7 +148,7 @@ final class NativeHybrid {
      * Reads the native answer. With {@code returnDocs}, the documents the slices counted come with
      * it, each with its sub-queries' scores summed (what an aggregation's scorer reads).
      */
-    static Answer read(byte[] answer, int subQueries, boolean returnDocs, SortField[] sort, boolean terminates) {
+    static Answer read(byte[] answer, int subQueries, boolean returnDocs, SortField[] sort, String collapseField, boolean terminates) {
         ByteBuffer in = ByteBuffer.wrap(answer).order(ByteOrder.LITTLE_ENDIAN);
         List<Collected> collected = new ArrayList<>();
         List<ScoreDoc[]> counted = new ArrayList<>();
@@ -150,9 +156,14 @@ final class NativeHybrid {
         for (int s = 0; s < slices; s++) {
             long total = in.getLong();
             float maxScore = Float.intBitsToFloat(in.getInt());
+            boolean thresholdReached = collapseField != null && in.get() != 0;
             List<TopDocs> perQuery = new ArrayList<>(subQueries);
             for (int q = 0; q < subQueries; q++) {
                 int n = in.getInt();
+                if (collapseField != null) {
+                    perQuery.add(readCollapsed(in, n, sort, collapseField, thresholdReached));
+                    continue;
+                }
                 if (sort != null) {
                     perQuery.add(readSorted(in, n, sort));
                     continue;
@@ -202,6 +213,49 @@ final class NativeHybrid {
             hits[i].score = scores[i];
         }
         return new TopFieldDocs(new TotalHits(n, TotalHits.Relation.EQUAL_TO), hits, sort);
+    }
+
+    /**
+     * One sub-query's hits of the collapsing collector: {@code HybridCollapsingTopDocsCollector.topDocs}'s
+     * {@code CollapseTopFieldDocs}, each hit with its group value.
+     */
+    private static TopDocs readCollapsed(ByteBuffer in, int n, SortField[] sort, String field, boolean thresholdReached) {
+        int[] docs = new int[n];
+        float[] scores = new float[n];
+        long[] values = new long[n * sort.length];
+        Object[] groups = new Object[n];
+        for (int i = 0; i < n; i++) {
+            docs[i] = in.getInt();
+            scores[i] = Float.intBitsToFloat(in.getInt());
+            for (int k = 0; k < sort.length; k++) {
+                values[i * sort.length + k] = in.getLong();
+            }
+            groups[i] = switch (in.get()) {
+                case 0 -> null;
+                case 1 -> in.getLong();
+                default -> {
+                    byte[] term = new byte[in.getInt()];
+                    in.get(term);
+                    yield new org.apache.lucene.util.BytesRef(term);
+                }
+            };
+        }
+        byte[] terms = new byte[in.getInt()];
+        in.get(terms);
+        int collected = in.getInt();
+        TotalHits.Relation relation = thresholdReached ? TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO : TotalHits.Relation.EQUAL_TO;
+        if (n == 0 && collected > 0) {
+            // No room: the collector's queue has no slot for the first hit (neural-search's own failure).
+            throw new ArrayIndexOutOfBoundsException("Index 0 out of bounds for length 0");
+        }
+        if (n == 0) {
+            return new CollapseTopFieldDocs(field, new TotalHits(0, relation), new FieldDoc[0], sort, new Object[0]);
+        }
+        FieldDoc[] hits = SortEncoder.hits(sort, n, docs, values, terms);
+        for (int i = 0; i < n; i++) {
+            hits[i].score = scores[i];
+        }
+        return new CollapseTopFieldDocs(field, new TotalHits(collected, relation), hits, sort, groups);
     }
 
     /**

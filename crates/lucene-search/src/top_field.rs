@@ -100,7 +100,7 @@ mod opensearch;
 pub(crate) use collapse::GroupColumn;
 pub use collapse::{
     search_collapsed, search_collapsed_until, CollapseKind, CollapseTopDocs, CollapseValue,
-    MULTI_VALUED,
+    HybridGroup, MULTI_VALUED,
 };
 pub use opensearch::{HalfFloatSort, ShardDocSort, UnsignedLongSort};
 
@@ -1373,8 +1373,9 @@ pub struct HybridSortLeaf<'a>(Leaf<'a>);
 /// What [`HybridSortQueue::collect`] did with a document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HybridCollected {
-    /// It took a new slot of the queue (`slot`), or replaced the bottom one's document.
-    Entered { new_slot: Option<usize> },
+    /// It took a new slot of the queue (`new`), or replaced the bottom one's document; `slot`
+    /// is the slot it holds.
+    Entered { slot: usize, new: bool },
     /// The queue is full and the document does not beat its bottom, or a
     /// `search_after` value ranks it on an earlier page.
     Skipped,
@@ -1428,6 +1429,7 @@ impl HybridSortQueue {
     ) -> Result<HybridCollected> {
         let leaf = &mut leaf.0;
         let full = self.tf.queue_full;
+        let bottom = self.tf.queue.top().map_or(0, |e| e.slot);
         leaf.score = score;
         leaf.score_doc = doc;
         let before = self.tf.entered;
@@ -1435,12 +1437,15 @@ impl HybridSortQueue {
         if self.tf.entered == before {
             return Ok(HybridCollected::Skipped);
         }
-        let new_slot = (!full).then(|| {
-            let slot = self.added;
-            self.added += 1;
-            slot
-        });
-        Ok(HybridCollected::Entered { new_slot })
+        if full {
+            return Ok(HybridCollected::Entered {
+                slot: bottom,
+                new: false,
+            });
+        }
+        let slot = self.added;
+        self.added += 1;
+        Ok(HybridCollected::Entered { slot, new: true })
     }
 
     /// The end of `leaf`'s segment (its keyword keys read their terms).
