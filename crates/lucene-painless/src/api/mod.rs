@@ -20,6 +20,7 @@ pub mod objects;
 pub mod regex;
 pub mod score;
 pub mod string;
+pub mod time;
 
 use std::rc::Rc;
 
@@ -66,6 +67,7 @@ pub fn static_method(class: &str, name: &str, arity: usize) -> Option<ApiFn> {
         }
         "java.lang.System" => objects::system_lookup(name, arity),
         score::UTILS => score::static_lookup(name, arity),
+        c if c.starts_with("java.time.") => time::static_lookup(c, name, arity),
         _ => None,
     }
 }
@@ -125,7 +127,7 @@ pub fn static_field(class: &str, name: &str) -> Option<Value> {
             crate::value::MapKind::Immutable,
             crate::jmap::JMap::new(crate::jmap::Order::Hash),
         ),
-        _ => return None,
+        _ => return time::static_field(class, name),
     })
 }
 
@@ -151,6 +153,9 @@ pub fn resolve_class(name: &str) -> String {
         "Math" | "String" | "Integer" | "Long" | "Short" | "Byte" | "Double" | "Float"
         | "Boolean" | "Character" | "Object" | "StringBuilder" | "CharSequence" | "Comparable"
         | "Number" | "StrictMath" | "System" => format!("java.lang.{name}"),
+        "ZonedDateTime" | "Instant" | "Duration" | "DayOfWeek" | "Month" | "ZoneOffset"
+        | "ZoneId" => format!("java.time.{name}"),
+        "ChronoUnit" | "ChronoField" => format!("java.time.temporal.{name}"),
         "ArrayList" | "LinkedList" | "HashMap" | "TreeMap" | "LinkedHashMap" | "HashSet"
         | "TreeSet" | "LinkedHashSet" | "List" | "Map" | "Set" | "Collections" | "Arrays"
         | "Objects" | "Collection" | "Comparator" | "Optional" | "Iterator" => {

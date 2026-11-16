@@ -161,7 +161,36 @@ const NATIVE: &[Sample] = &[
         "org.opensearch.index.fielddata.ScriptDocValues$Strings",
         || DocValues::value(DocKind::Strings, vec![Value::str("a")]),
     ),
+    (
+        "org.opensearch.index.fielddata.ScriptDocValues$Dates",
+        || {
+            DocValues::value(
+                DocKind::Dates,
+                vec![crate::api::time::sample("java.time.ZonedDateTime").expect("a sample")],
+            )
+        },
+    ),
+    ("java.time.ZonedDateTime", || {
+        sample_time("java.time.ZonedDateTime")
+    }),
+    ("java.time.Instant", || sample_time("java.time.Instant")),
+    ("java.time.Duration", || sample_time("java.time.Duration")),
+    ("java.time.DayOfWeek", || sample_time("java.time.DayOfWeek")),
+    ("java.time.Month", || sample_time("java.time.Month")),
+    ("java.time.ZoneOffset", || {
+        sample_time("java.time.ZoneOffset")
+    }),
+    ("java.time.temporal.ChronoUnit", || {
+        sample_time("java.time.temporal.ChronoUnit")
+    }),
+    ("java.time.temporal.ChronoField", || {
+        sample_time("java.time.temporal.ChronoField")
+    }),
 ];
+
+fn sample_time(class: &str) -> Value {
+    crate::api::time::sample(class).expect("a sample")
+}
 
 fn list(kind: ListKind) -> Value {
     Value::list(kind, vec![Value::Int(1)])
