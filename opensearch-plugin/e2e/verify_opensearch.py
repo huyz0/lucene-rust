@@ -526,14 +526,14 @@ def matrix():
     # composite (CompositeAggregator), top level: keyword, numeric, histogram and date_histogram
     # sources, either order, missing buckets, after keys, sub-aggregations. A lead source read
     # through its points (match_all on mi) counts a document once per distinct value.
-    add("agg composite keyword", {"size": 0, "aggs": {"c": {"composite": {"sources": [{"t": {"terms": {"field": "tag"}}}]}}}}, "slow_agg")
+    add("agg composite keyword", {"size": 0, "aggs": {"c": {"composite": {"sources": [{"t": {"terms": {"field": "tag"}}}]}}}}, "native")
     add("agg composite two keywords", {"size": 0, "query": {"match": {"body": "beta"}}, "aggs": {"c": {"composite": {"size": 20, "sources": [{"t": {"terms": {"field": "tag"}}}, {"m": {"terms": {"field": "mtag", "order": "desc", "missing_bucket": True}}}]}}}}, "native")
     add("agg composite missing first", {"size": 0, "aggs": {"c": {"composite": {"size": 8, "sources": [{"m": {"terms": {"field": "mtag", "missing_bucket": True, "missing_order": "first"}}}]}}}}, "native")
     add("agg composite missing last desc", {"size": 0, "aggs": {"c": {"composite": {"size": 8, "sources": [{"m": {"terms": {"field": "mtag", "order": "desc", "missing_bucket": True, "missing_order": "last"}}}]}}}}, "native")
     # No more terms than `size`: the sorted read cannot stop early, so native runs it.
     add("agg composite keyword under size", {"size": 0, "aggs": {"c": {"composite": {"size": 40, "sources": [{"t": {"terms": {"field": "tag"}}}]}, "aggs": {"m": {"min": {"field": "n"}}}}}}, "native")
-    add("agg composite after", {"size": 0, "aggs": {"c": {"composite": {"size": 4, "sources": [{"t": {"terms": {"field": "tag"}}}], "after": {"t": "gamma"}}}}}, "slow_agg")
-    add("agg composite after absent term", {"size": 0, "aggs": {"c": {"composite": {"size": 4, "sources": [{"t": {"terms": {"field": "tag"}}}, {"m": {"terms": {"field": "mtag"}}}], "after": {"t": "gb", "m": "zz"}}}}}, "slow_agg")
+    add("agg composite after", {"size": 0, "aggs": {"c": {"composite": {"size": 4, "sources": [{"t": {"terms": {"field": "tag"}}}], "after": {"t": "gamma"}}}}}, "native")
+    add("agg composite after absent term", {"size": 0, "aggs": {"c": {"composite": {"size": 4, "sources": [{"t": {"terms": {"field": "tag"}}}, {"m": {"terms": {"field": "mtag"}}}], "after": {"t": "gb", "m": "zz"}}}}}, "native")
     add("agg composite after missing", {"size": 0, "aggs": {"c": {"composite": {"size": 5, "sources": [{"m": {"terms": {"field": "mtag", "missing_bucket": True}}}], "after": {"m": None}}}}}, "native")
     add("agg composite long", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"c": {"composite": {"size": 10, "sources": [{"n": {"terms": {"field": "n"}}}], "after": {"n": 100}}}}}, "either")
     add("agg composite multi-valued points lead", {"size": 0, "aggs": {"c": {"composite": {"size": 50, "sources": [{"i": {"terms": {"field": "mi"}}}]}}}}, "native")
@@ -551,7 +551,7 @@ def matrix():
     # terms doc count on a reader without deletions; size 0 then reports terminated_early.
     add("exists total with agg", {"size": 0, "query": {"exists": {"field": "mi"}}, "aggs": {"m": {"max": {"field": "n"}}}}, "native")
     add("exists total exact", {"size": 3, "track_total_hits": True, "query": {"exists": {"field": "mtag"}}}, "either")
-    add("agg composite with terms beside", {"size": 0, "aggs": {"c": {"composite": {"size": 3, "sources": [{"t": {"terms": {"field": "tag"}}}]}}, "k": {"terms": {"field": "mtag", "size": 3}}}}, "slow_agg")
+    add("agg composite with terms beside", {"size": 0, "aggs": {"c": {"composite": {"size": 3, "sources": [{"t": {"terms": {"field": "tag"}}}]}}, "k": {"terms": {"field": "mtag", "size": 3}}}}, "native")
     add("agg composite ip", {"size": 0, "aggs": {"c": {"composite": {"sources": [{"a": {"terms": {"field": "addr"}}}]}}}}, "aggregations")
     add("agg percentiles", {"size": 0, "aggs": {"p": {"percentiles": {"field": "price"}}}}, "native")
     add("agg percentiles long keyed false", {"size": 0, "query": {"match": {"body": "gamma"}}, "aggs": {"p": {"percentiles": {"field": "n", "percents": [1, 33.3, 50, 99.9], "keyed": False}}}}, "native")
@@ -916,6 +916,10 @@ def run_matrix_rows(index, shards, label, shapes, index_sorted, rows):
             # An aggregation OpenSearch answers faster (an early-terminating sorted read, the
             # filter rewrite): native only under accelerated_shapes: all.
             expect = "native" if shapes == "all" else "aggregations"
+        if expect == "aggregations":
+            # A type or shape with no native node: the reason names the type (aggregation_<type>)
+            # or the shape (aggregation_shape).
+            expect = "aggregation*"
         if expect == "dfs_multi":
             # OpenSearch runs a one-shard dfs search as query_then_fetch
             # (TransportSearchAction), so only a multi-shard index gets the dfs phase.

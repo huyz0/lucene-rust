@@ -15,6 +15,7 @@ use lucene_util::test_support::TempDir;
 
 use crate::collector::TotalHitsRelation;
 use crate::directory_reader::DirectoryReader;
+use crate::extended_query::{ExtendedQuery, IndexOrDocValuesQuery, NumericDocValuesRangeQuery};
 use crate::query::{BooleanQuery, Clause, MatchAllDocsQuery, PointsRangeQuery, TermQuery};
 use crate::top_field::{search_sorted, FieldDoc, Selector, SortField, SortType, TopFieldDocs};
 
@@ -136,6 +137,20 @@ fn queries() -> Vec<(&'static str, BooleanQuery)> {
             "range",
             BooleanQuery {
                 filter: vec![range()],
+                ..Default::default()
+            },
+        ),
+        (
+            "range as IndexOrDocValues",
+            BooleanQuery {
+                filter: vec![Clause::Extended(Box::new(ExtendedQuery::IndexOrDocValues(
+                    IndexOrDocValuesQuery::new(
+                        range(),
+                        Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(
+                            NumericDocValuesRangeQuery::new("t", 900, 2600),
+                        ))),
+                    ),
+                )))],
                 ..Default::default()
             },
         ),
