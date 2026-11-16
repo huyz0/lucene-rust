@@ -11,7 +11,6 @@ analysis_hunspell  # AnalyzerSpec.java
 analysis_japanese_dictionary  # AnalyzerSpec.java
 analysis_japanese_user_dictionary  # AnalyzerSpec.java
 analysis_korean_dictionary  # AnalyzerSpec.java
-analysis_korean_tags  # AnalyzerSpec.java
 analysis_korean_user_dictionary  # AnalyzerSpec.java
 analysis_pattern_flags  # AnalyzerSpec.java
 analysis_reflect  # AnalyzerSpec.java
