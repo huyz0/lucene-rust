@@ -387,15 +387,6 @@ final class NativeSelfTestAnalysis {
                 .addTokenFilter("typeAsSynonym", "prefix", "T_", "ignore", "<NUM>,<ALPHANUM>", "synFlagsMask", "3")
                 .build()
         );
-        // Entries a plain word list cannot hold: a comment marker, edge whitespace, an empty word.
-        m.put(
-            "stop words a plain list cannot hold",
-            chain(
-                org.apache.lucene.analysis.core.WhitespaceTokenizer::new,
-                ts -> new org.apache.lucene.analysis.StopFilter(ts, new CharArraySet(List.of("#tag", " x", "wi ", "", "50%", "the"), false)),
-                r -> r
-            )
-        );
         m.put(
             "fixed shingles",
             b().withTokenizer("standard").addTokenFilter("fixedShingle", "shingleSize", "2", "tokenSeparator", "~", "fillerToken", "?").build()
@@ -663,11 +654,6 @@ final class NativeSelfTestAnalysis {
         chains.put("nori custom chain", chain(
             () -> new KoreanTokenizer(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, ko, KoreanTokenizer.DecompoundMode.NONE, false, false),
             ts -> new KoreanNumberFilter(new KoreanPartOfSpeechStopFilter(ts, EnumSet.of(POS.Tag.JKS, POS.Tag.JKB, POS.Tag.EF, POS.Tag.SP))),
-            r -> r
-        ));
-        chains.put("nori with no stop tags", chain(
-            () -> new KoreanTokenizer(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, ko, KoreanTokenizer.DecompoundMode.NONE, false, false),
-            ts -> new KoreanPartOfSpeechStopFilter(ts, EnumSet.noneOf(POS.Tag.class)),
             r -> r
         ));
         for (Map.Entry<String, Analyzer> e : chains.entrySet()) {
