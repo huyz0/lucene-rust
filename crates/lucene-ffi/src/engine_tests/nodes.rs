@@ -664,6 +664,15 @@ pub(crate) mod tests {
             intervals(mt(Blob::default().u8(9))),
             "unknown automaton type 9",
         );
+        // A state count the bytes cannot hold, and one past the bound.
+        bad(
+            intervals(mt(Blob::default().u8(AUTOMATON_NORMAL).i32(1 << 19))),
+            "automaton of 524288 states",
+        );
+        bad(
+            intervals(mt(Blob::default().u8(AUTOMATON_NORMAL).i32((1 << 20) + 1))),
+            "states",
+        );
         bad(
             intervals(mt(Blob::default().u8(AUTOMATON_NORMAL).i32(0))),
             "automaton of 0 states",
