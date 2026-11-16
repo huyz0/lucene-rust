@@ -1662,3 +1662,33 @@ fn a_flush_after_an_inconsistent_schema_keeps_the_accepted_documents() {
         );
     }
 }
+
+#[test]
+fn a_shared_text_field_answers_every_accessor_as_an_owned_one_does() {
+    let analyzer = Analyzer::standard(None);
+    let text: Arc<str> = Arc::from("Quick Fox 世界");
+    let shared = TextField::new_shared("t", Arc::clone(&text), Store::Yes);
+    let owned = TextField::new("t", "Quick Fox 世界", Store::Yes);
+    assert_eq!(shared.string_value(), owned.string_value());
+    assert_eq!(shared.stored_value(), owned.stored_value());
+    assert_eq!(
+        shared
+            .token_stream(&analyzer)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .len(),
+        owned.token_stream(&analyzer).unwrap().unwrap().tokens.len()
+    );
+    assert!(std::ptr::eq(
+        shared.analyzed_shared().unwrap().as_ref(),
+        text.as_ref()
+    ));
+    assert!(owned.analyzed_shared().is_none());
+    // text set afterwards replaces the share with an owned string
+    let mut shared = shared;
+    shared.set_string_value("zz").unwrap();
+    assert_eq!(shared.string_value().as_deref(), Some("zz"));
+    assert!(shared.analyzed_shared().is_none());
+    assert_eq!(Arc::strong_count(&text), 1);
+}
