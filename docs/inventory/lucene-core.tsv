@@ -1070,7 +1070,7 @@ util/bkd/BKDWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::BkdWriter
 util/bkd/DocIdsWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::write_doc_ids
 util/bkd/HeapPointReader	ported	crates/lucene-codecs/src/bkd_writer.rs::HeapPoints
 util/bkd/HeapPointWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::HeapPoints
-util/bkd/MutablePointTreeReaderUtils	ported	crates/lucene-codecs/src/points.rs::compute_leaf_plan
+util/bkd/MutablePointTreeReaderUtils	ported	crates/lucene-codecs/src/bkd_writer.rs::partition_tree
 util/bkd/OfflinePointReader	ported	crates/lucene-codecs/src/bkd_writer.rs::OfflinePoints
 util/bkd/OfflinePointWriter	ported	crates/lucene-codecs/src/bkd_writer.rs::OfflinePoints
 util/bkd/PointReader	not-needed	interface over heap/offline point buffers
