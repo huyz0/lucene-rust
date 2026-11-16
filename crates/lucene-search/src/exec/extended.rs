@@ -604,58 +604,84 @@ pub(crate) fn eager_phrase<'a>(
     // positions decoded.
     #[cfg(test)]
     EAGER_PHRASES.with(|n| n.set(n.get() + 1));
-    let mut sources: Vec<Vec<super::span::LeafPositions<'a>>> = Vec::with_capacity(slots.len());
-    for alts in slots {
-        let mut slot = Vec::with_capacity(alts.len());
-        for t in alts {
-            slot.push(super::span::LeafPositions::open(ctx, pos_in, field, t)?);
+    if slop == 0 {
+        if let Some(wide) = single_wide_slot(slots) {
+            return per_alternative_phrase(
+                ctx, pos_in, field, slots, wide, offsets, repeats, scorer, mode,
+            );
         }
-        sources.push(slot);
     }
+    let mut sources = open_unions(ctx, pos_in, field, slots)?;
     let mut norms = norms_cursor(ctx, field);
     let mut scratch = sloppy_phrase::SloppyScratch::default();
     let mut shifted = Vec::new();
     let mut merged = Vec::new();
     let mut positions: Vec<Vec<i32>> = vec![Vec::new(); slots.len()];
+    let (mut order, mut freqs, mut starts): (Vec<usize>, Vec<u64>, Vec<i32>) =
+        (Vec::new(), Vec::new(), Vec::new());
     let (mut docs, mut scores) = (Vec::new(), Vec::new());
     let mut doc = phrase_approximation(&mut sources, 0)?;
     while doc != NO_MORE_DOCS {
         if ctx.live_docs.is_none_or(|l| l.get_doc(doc)) {
-            for (buf, slot) in positions.iter_mut().zip(&mut sources) {
-                buf.clear();
-                let mut split = 0;
-                for (k, alt) in slot.iter_mut().enumerate() {
-                    if k == 1 {
-                        split = buf.len();
-                    }
-                    alt.positions_at(doc, buf)?;
-                }
+            for u in sources.iter_mut() {
+                u.collect(doc);
+            }
+            // An exact phrase reads the slots rarest-in-this-document first and
+            // gives up as soon as no start position survives, so the
+            // positions of the others (a frequent lead term, a prefix's many
+            // alternatives) are never decoded for a document that fails.
+            let exact = slop == 0 && sources.len() > 1;
+            order.clear();
+            order.extend(0..sources.len());
+            if exact {
+                freqs.clear();
+                freqs.extend(sources.iter().map(|u| u.freq(doc)));
+                order.sort_by_key(|&k| freqs[k]);
+            }
+            let mut survives = true;
+            for (n, &k) in order.iter().enumerate() {
+                let buf = &mut positions[k];
+                let split = sources[k].positions(doc, buf)?;
                 // Sorted and **not** deduplicated, as `UnionPostingsEnum`'s
                 // `PositionsQueue` yields them (see
-                // `crate::multi_phrase_slot_positions`): two alternatives'
-                // ascending runs merged, more sorted.
-                match slot.len() {
+                // `crate::multi_phrase_slot_positions`): the alternatives'
+                // ascending runs merged.
+                match sources[k].on.len() {
                     0 | 1 => {}
                     2 => merge_runs(buf, split, &mut merged),
                     _ => buf.sort_unstable(),
                 }
+                if exact {
+                    if n == 0 {
+                        starts.clear();
+                        starts.extend(buf.iter().map(|&p| p.wrapping_sub(offsets[k])));
+                    } else {
+                        keep_starts(&mut starts, buf, offsets[k]);
+                    }
+                    if starts.is_empty() {
+                        survives = false;
+                        break;
+                    }
+                }
             }
-            let freq = phrase_freq_at(
-                &positions,
-                offsets,
-                repeats,
-                slop,
-                &mut scratch,
-                &mut shifted,
-            );
-            if freq != 0.0 {
-                docs.push(doc);
-                if mode.needs_scores() {
-                    let norm = match norms.as_mut() {
-                        Some(n) => n.norm_long(doc)?.unwrap_or(1),
-                        None => 1,
-                    };
-                    scores.push(scorer.score(freq, norm));
+            if survives {
+                let freq = phrase_freq_at(
+                    &positions,
+                    offsets,
+                    repeats,
+                    slop,
+                    &mut scratch,
+                    &mut shifted,
+                );
+                if freq != 0.0 {
+                    docs.push(doc);
+                    if mode.needs_scores() {
+                        let norm = match norms.as_mut() {
+                            Some(n) => n.norm_long(doc)?.unwrap_or(1),
+                            None => 1,
+                        };
+                        scores.push(scorer.score(freq, norm));
+                    }
                 }
             }
         }
@@ -665,6 +691,150 @@ pub(crate) fn eager_phrase<'a>(
         return Ok(None);
     }
     Ok(Some(Box::new(DocList::new(docs, scores))))
+}
+
+/// The one slot of an exact phrase that has several alternatives (a prefix
+/// expanded to its terms), when the other slots are single terms none of
+/// the alternatives repeats: then the phrase's matches are disjoint per
+/// alternative, and its frequency in a document is the sum of the
+/// plain phrases' frequencies.
+fn single_wide_slot(slots: &[Vec<Vec<u8>>]) -> Option<usize> {
+    if slots.len() < 2 {
+        return None;
+    }
+    let mut wide = None;
+    for (k, alts) in slots.iter().enumerate() {
+        if alts.len() > 1 {
+            wide.replace(k).is_none().then_some(())?;
+        }
+    }
+    let wide = wide?;
+    if slots[wide].len() < 8 {
+        return None;
+    }
+    let others: Vec<&Vec<u8>> = slots
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| k != wide)
+        .flat_map(|(_, a)| a.iter())
+        .collect();
+    let mut distinct: Vec<&Vec<u8>> = slots[wide].iter().collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    (distinct.len() == slots[wide].len() && slots[wide].iter().all(|t| !others.contains(&t)))
+        .then_some(wide)
+}
+
+/// [`eager_phrase`] for [`single_wide_slot`]: each alternative as an ordinary
+/// exact phrase led by its own (small) postings, the results merged by
+/// document. A prefix's alternatives together cover far more documents than
+/// any one, and a union over all of them pays per document for every
+/// alternative on it.
+#[allow(clippy::too_many_arguments)]
+fn per_alternative_phrase<'a>(
+    ctx: &LeafContext<'a>,
+    pos_in: &lucene_codecs::postings::PosInput<'a>,
+    field: &str,
+    slots: &[Vec<Vec<u8>>],
+    wide: usize,
+    offsets: &[i32],
+    repeats: &sloppy_phrase::PhraseRepeats,
+    scorer: &Arc<dyn SimScorer>,
+    mode: Mode,
+) -> Result<Option<BoxScorer<'a>>> {
+    let mut found: Vec<(i32, f32)> = Vec::new();
+    let mut scratch = sloppy_phrase::SloppyScratch::default();
+    let mut shifted = Vec::new();
+    let mut positions: Vec<Vec<i32>> = vec![Vec::new(); slots.len()];
+    let mut starts = Vec::new();
+    for alt in &slots[wide] {
+        let mut lead = super::span::LeafPositions::open(ctx, pos_in, field, alt)?;
+        let mut rest: Vec<(usize, super::span::LeafPositions<'a>)> = Vec::new();
+        for (k, a) in slots.iter().enumerate() {
+            if k != wide {
+                rest.push((
+                    k,
+                    super::span::LeafPositions::open(ctx, pos_in, field, &a[0])?,
+                ));
+            }
+        }
+        let mut doc = lead.advance(0)?;
+        'docs: while doc != NO_MORE_DOCS {
+            if ctx.live_docs.is_none_or(|l| l.get_doc(doc)) {
+                for (_, r) in rest.iter_mut() {
+                    let d = r.advance(doc)?;
+                    if d == NO_MORE_DOCS {
+                        break 'docs;
+                    }
+                    if d != doc {
+                        doc = lead.advance(d)?;
+                        continue 'docs;
+                    }
+                }
+                positions[wide].clear();
+                lead.positions_at(doc, &mut positions[wide])?;
+                starts.clear();
+                starts.extend(
+                    positions[wide]
+                        .iter()
+                        .map(|&p| p.wrapping_sub(offsets[wide])),
+                );
+                for (k, r) in rest.iter_mut() {
+                    positions[*k].clear();
+                    r.positions_at(doc, &mut positions[*k])?;
+                    keep_starts(&mut starts, &positions[*k], offsets[*k]);
+                    if starts.is_empty() {
+                        break;
+                    }
+                }
+                if !starts.is_empty() {
+                    let freq =
+                        phrase_freq_at(&positions, offsets, repeats, 0, &mut scratch, &mut shifted);
+                    if freq != 0.0 {
+                        found.push((doc, freq));
+                    }
+                }
+            }
+            doc = lead.advance(doc.saturating_add(1))?;
+        }
+    }
+    if found.is_empty() {
+        return Ok(None);
+    }
+    found.sort_unstable_by_key(|&(d, _)| d);
+    let mut norms = norms_cursor(ctx, field);
+    let (mut docs, mut scores) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < found.len() {
+        let doc = found[i].0;
+        let mut freq = 0.0f32;
+        while i < found.len() && found[i].0 == doc {
+            freq += found[i].1;
+            i += 1;
+        }
+        docs.push(doc);
+        if mode.needs_scores() {
+            let norm = match norms.as_mut() {
+                Some(n) => n.norm_long(doc)?.unwrap_or(1),
+                None => 1,
+            };
+            scores.push(scorer.score(freq, norm));
+        }
+    }
+    Ok(Some(Box::new(DocList::new(docs, scores))))
+}
+
+/// The start positions in `starts` (ascending) that a slot with the sorted
+/// `positions` and `offset` still lines up with.
+fn keep_starts(starts: &mut Vec<i32>, positions: &[i32], offset: i32) {
+    let mut at = 0;
+    starts.retain(|&s| {
+        let want = s.wrapping_add(offset);
+        while at < positions.len() && positions[at] < want {
+            at += 1;
+        }
+        at < positions.len() && positions[at] == want
+    });
 }
 
 /// `buf[..split]` and `buf[split..]`, each ascending, merged into one
@@ -690,21 +860,117 @@ fn merge_runs(buf: &mut Vec<i32>, split: usize, scratch: &mut Vec<i32>) {
     std::mem::swap(buf, scratch);
 }
 
+/// `UnionPostingsEnum`: one position's alternative terms, a heap on their
+/// current documents so that advancing touches only the alternatives behind
+/// the target, however many a prefix expanded to.
+struct Union<'a> {
+    alts: Vec<super::span::LeafPositions<'a>>,
+    heap: std::collections::BinaryHeap<std::cmp::Reverse<(i32, usize)>>,
+    /// The alternatives [`Self::collect`] took off the heap for a document.
+    on: Vec<usize>,
+    on_doc: i32,
+}
+
+impl<'a> Union<'a> {
+    fn new(mut alts: Vec<super::span::LeafPositions<'a>>) -> Result<Self> {
+        let mut heap = std::collections::BinaryHeap::with_capacity(alts.len());
+        for (i, alt) in alts.iter_mut().enumerate() {
+            let d = alt.advance(0)?;
+            if d != NO_MORE_DOCS {
+                heap.push(std::cmp::Reverse((d, i)));
+            }
+        }
+        Ok(Union {
+            alts,
+            heap,
+            on: Vec::new(),
+            on_doc: -1,
+        })
+    }
+
+    /// The first document at or after `target` any alternative is on.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        for i in self.on.drain(..) {
+            // `on_doc < target` is the caller's contract; the alternatives
+            // are put back behind it by the loop below.
+            self.heap.push(std::cmp::Reverse((self.on_doc, i)));
+        }
+        while let Some(&std::cmp::Reverse((d, i))) = self.heap.peek() {
+            if d >= target {
+                return Ok(d);
+            }
+            self.heap.pop();
+            let nd = self.alts[i].advance(target)?;
+            if nd != NO_MORE_DOCS {
+                self.heap.push(std::cmp::Reverse((nd, i)));
+            }
+        }
+        Ok(NO_MORE_DOCS)
+    }
+
+    /// Takes the alternatives on `doc` (the document [`Self::advance`]
+    /// returned) off the heap.
+    fn collect(&mut self, doc: i32) {
+        self.on_doc = doc;
+        while let Some(&std::cmp::Reverse((d, i))) = self.heap.peek() {
+            if d != doc {
+                break;
+            }
+            self.heap.pop();
+            self.on.push(i);
+        }
+    }
+
+    /// The summed frequency of the collected alternatives.
+    fn freq(&self, doc: i32) -> u64 {
+        self.on
+            .iter()
+            .fold(0u64, |n, &i| n.saturating_add(self.alts[i].freq_at(doc)))
+    }
+
+    /// The collected alternatives' positions appended to `buf` (cleared
+    /// first), alternative after alternative in term order; the length of the
+    /// first run when there are two.
+    fn positions(&mut self, doc: i32, buf: &mut Vec<i32>) -> Result<usize> {
+        buf.clear();
+        self.on.sort_unstable();
+        let mut split = 0;
+        for (n, &i) in self.on.iter().enumerate() {
+            if n == 1 {
+                split = buf.len();
+            }
+            self.alts[i].positions_at(doc, buf)?;
+        }
+        Ok(split)
+    }
+}
+
+fn open_unions<'a>(
+    ctx: &LeafContext<'a>,
+    pos_in: &lucene_codecs::postings::PosInput<'a>,
+    field: &str,
+    slots: &[Vec<Vec<u8>>],
+) -> Result<Vec<Union<'a>>> {
+    let mut sources = Vec::with_capacity(slots.len());
+    for alts in slots {
+        let mut slot = Vec::with_capacity(alts.len());
+        for t in alts {
+            slot.push(super::span::LeafPositions::open(ctx, pos_in, field, t)?);
+        }
+        sources.push(Union::new(slot)?);
+    }
+    Ok(sources)
+}
+
 /// The phrase's approximation advanced to `target`: the first document at
 /// or after it on which some alternative of every position is
 /// (`ConjunctionDISI` over `UnionPostingsEnum`s).
-fn phrase_approximation(
-    slots: &mut [Vec<super::span::LeafPositions<'_>>],
-    target: i32,
-) -> Result<i32> {
+fn phrase_approximation(slots: &mut [Union<'_>], target: i32) -> Result<i32> {
     let mut target = target;
     loop {
         let mut max = target;
         for slot in slots.iter_mut() {
-            let mut min = NO_MORE_DOCS;
-            for alt in slot.iter_mut() {
-                min = min.min(alt.advance(target)?);
-            }
+            let min = slot.advance(target)?;
             if min == NO_MORE_DOCS {
                 return Ok(NO_MORE_DOCS);
             }
@@ -730,14 +996,7 @@ pub(crate) fn multi_phrase_approximation_on(
     let Some(pos_in) = ctx.pos_in else {
         return Err(crate::Error::MissingPosInput);
     };
-    let mut sources = Vec::with_capacity(q.term_arrays.len());
-    for alts in &q.term_arrays {
-        let mut slot = Vec::with_capacity(alts.len());
-        for t in alts {
-            slot.push(super::span::LeafPositions::open(ctx, pos_in, &q.field, t)?);
-        }
-        sources.push(slot);
-    }
+    let mut sources = open_unions(ctx, pos_in, &q.field, &q.term_arrays)?;
     Ok(phrase_approximation(&mut sources, doc)? == doc)
 }
 
@@ -3061,6 +3320,74 @@ mod tests {
             EAGER_PHRASES.with(std::cell::Cell::get) > eager_before,
             "the pulsed singleton's phrases resolve up front"
         );
+    }
+
+    /// A multi-phrase with one wide position (a prefix's expansion) matches
+    /// exactly the documents its alternatives' plain phrases do together.
+    #[test]
+    fn a_wide_position_is_the_union_of_its_plain_phrases() {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/spans/index"
+        ));
+        let reader =
+            crate::directory_reader::DirectoryReader::open(&lucene_store::FsDirectory::open(dir))
+                .unwrap();
+        let opened = reader.open_segments().unwrap();
+        let docs_of = |ctx: &LeafContext<'_>, q: &Clause| {
+            let mut out = Vec::new();
+            if let Some(mut s) = build::build(ctx, q, 1.0, Mode::Complete, false).unwrap() {
+                loop {
+                    let d = super::super::exact_next(&mut *s).unwrap();
+                    if d == NO_MORE_DOCS {
+                        break;
+                    }
+                    out.push(d);
+                }
+            }
+            out
+        };
+        let words = [
+            "apple", "ape", "bank", "band", "cat", "car", "dog", "egg", "fig", "zeta", "nope",
+        ];
+        let mut matched = 0;
+        for seg in &opened.as_open_segments() {
+            let ctx = LeafContext {
+                fields: seg.fields,
+                doc_in: seg.doc_in,
+                pos_in: seg.pos_in,
+                pay_in: seg.pay_in,
+                live_docs: None,
+                points: None,
+                norms: None,
+                global: None,
+                max_doc: seg.max_doc,
+                cache: None,
+                reader: seg.reader,
+                similarity: seg.similarity,
+            };
+            for lead in words {
+                for gap in [1, 2] {
+                    let wide = Clause::MultiPhrase(
+                        MultiPhraseQuery::with_positions(
+                            "body",
+                            [(vec![lead], 0), (words.to_vec(), gap)],
+                        )
+                        .unwrap(),
+                    );
+                    let mut want = Vec::new();
+                    for w in words {
+                        let q = PhraseQuery::with_positions("body", [(lead, 0), (w, gap)]).unwrap();
+                        want.extend(docs_of(&ctx, &Clause::Phrase(q)));
+                    }
+                    want.sort_unstable();
+                    want.dedup();
+                    matched += want.len();
+                    assert_eq!(docs_of(&ctx, &wide), want, "{lead} +{gap}");
+                }
+            }
+        }
+        assert!(matched > 0, "some phrase matches");
     }
 
     /// The term-statistics queries over a segment without their field have
