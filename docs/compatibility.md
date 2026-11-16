@@ -93,7 +93,7 @@ for the accelerated engine refuses those documents one by one.
 | `index.store.read_mode` | `mmap` | stock's IO |
 | `indices.store.page_cache.size` | 1 GB | a cap, filled only by `page_cache` and encrypted shards |
 | `indices.aggregation_segment_cache.size` | 256 MB | a cap for opt-in indices |
-| `indices.fetch.accelerated_reader` | `true` (`false` with the security plugin) | the security plugin keeps the one reader-wrapper slot |
+| `indices.fetch.accelerated_reader` | `true` | with the security plugin installed, stored fields are read natively beneath its field- and document-level security, which still filters and masks what is returned |
 | `indices.logs_preset.enabled` | `true` | registers component templates only |
 | `index.testing.fault_injection` | `false` | tests only: a document with a `__lucene_rust_panic` field panics the writer when on |
 

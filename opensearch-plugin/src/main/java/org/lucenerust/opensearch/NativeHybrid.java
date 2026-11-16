@@ -37,8 +37,9 @@ final class NativeHybrid {
     private NativeHybrid() {}
 
     /**
-     * Why {@code query} cannot run natively, or null when it can: only a plain hybrid query (no
-     * DLS wrapper, no nesting) collected by score, with nothing but its own collector.
+     * Why {@code query} cannot run natively, or null when it can: only a hybrid query (its
+     * wrapper already extracted) collected by score, with nothing but its own collector. Any other
+     * query is one neural-search rejects or turns into a plain boolean query.
      */
     static String ineligible(SearchContext ctx, Query query, LinkedList<QueryCollectorContext> collectors, boolean hasFilterCollector) {
         if (query instanceof HybridQuery == false) return "hybrid_wrapped";
