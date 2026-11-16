@@ -23,6 +23,7 @@ pub(crate) mod tests {
             .str("message")
             .bytes(&standard())
             .u8(template_parts)
+            .u8(0)
             .i32(phrase.len() as i32);
         for (p, terms) in phrase {
             b = b.i32(*p).i32(terms.len() as i32);

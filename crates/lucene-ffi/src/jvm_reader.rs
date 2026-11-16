@@ -4114,7 +4114,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(hits.iter().all(|&(_, s)| s == 2.0));
-        let long: Vec<&str> = (0..1100).map(|_| "t").collect();
+        let long: Vec<&str> = (0..(1usize << 20) + 1).map(|_| "t").collect();
         assert_eq!(
             decode_query(&tree(N::Ts("body", long))).map(|_| ()),
             Err(FfiStatus::InvalidArgument),
@@ -4161,7 +4161,7 @@ pub(crate) mod tests {
             invalid,
             "negative slop"
         );
-        let long: Vec<(i32, &str)> = (0..1100).map(|i| (i, "t")).collect();
+        let long: Vec<(i32, &str)> = (0..(1i32 << 20) + 1).map(|i| (i, "t")).collect();
         assert_eq!(
             status(&tree(N::P("body", 0, long))),
             invalid,
@@ -4295,8 +4295,8 @@ pub(crate) mod tests {
             invalid,
             "tie breaker above 1"
         );
-        // The Java encoder's `MAX_DEPTH`: the root at depth 0, so 32 levels
-        // decode and a 33rd does not.
+        // The Java encoder's `MAX_DEPTH`: the root at depth 0, so 128 levels
+        // decode and a 129th does not.
         let chain = |levels: usize| {
             let mut n = N::All;
             for _ in 1..levels {
@@ -4304,12 +4304,12 @@ pub(crate) mod tests {
             }
             tree(n)
         };
-        assert_eq!(status(&chain(32)), Ok(()), "32 levels");
-        assert_eq!(status(&chain(33)), invalid, "33 levels is too deep");
-        // And its `MAX_NODES`: 1024 nodes decode, 1025 do not.
+        assert_eq!(status(&chain(128)), Ok(()), "128 levels");
+        assert_eq!(status(&chain(129)), invalid, "129 levels is too deep");
+        // And its `MAX_NODES`: 1 << 20 nodes decode, one more does not.
         let wide = |nodes: usize| tree(N::B(0, (1..nodes).map(|_| (2, N::All)).collect()));
-        assert_eq!(status(&wide(1024)), Ok(()), "1024 nodes");
-        assert_eq!(status(&wide(1025)), invalid, "1025 nodes");
+        assert_eq!(status(&wide(1 << 20)), Ok(()), "1 << 20 nodes");
+        assert_eq!(status(&wide((1 << 20) + 1)), invalid, "one node too many");
         let mut negative_msm = vec![QUERY_TREE, NODE_BOOLEAN];
         negative_msm.extend_from_slice(&(-1i32).to_le_bytes());
         assert_eq!(
