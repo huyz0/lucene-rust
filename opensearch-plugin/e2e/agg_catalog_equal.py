@@ -89,6 +89,20 @@ def aggs():
     for m in ["sum", "avg", "min", "max", "stats", "extended_stats"]:
         out["%s script" % m] = {"a": {m: {"script": dbl}}}
     out["sum script long type"] = {"a": {"sum": {"script": sc("doc['d'].size() == 0 ? null : doc['d'].value", ), "missing": 1}}}
+    vp = sc("_value * params.m + 1", m=3)
+    ve = {"source": "_value * 3 + 1", "lang": "expression"}
+    for fld in ["d", "n", "f", "i"]:
+        for m in ["sum", "avg", "min", "max", "stats", "extended_stats"]:
+            out["%s field %s _value painless" % (m, fld)] = {"a": {m: {"field": fld, "script": vp}}}
+        out["sum field %s _value expression" % fld] = {"a": {"sum": {"field": fld, "script": ve}}}
+        out["stats field %s _value expression" % fld] = {"a": {"stats": {"field": fld, "script": ve}}}
+    out["sum _value missing"] = {"a": {"sum": {"field": "n", "script": vp, "missing": 5}}}
+    out["terms field _value"] = {"a": {"terms": {"field": "n", "script": sc("_value % params.m", m=7), "size": 20}}}
+    out["terms field _value double"] = {"a": {"terms": {"field": "d", "script": sc("Math.floor(_value / params.m)", m=100), "size": 20}}}
+    out["histogram field _value"] = {"a": {"histogram": {"field": "n", "script": sc("_value / params.m", m=2), "interval": 500}, "aggs": {"x": {"max": {"field": "n"}}}}}
+    out["range field _value"] = {"a": {"range": {"field": "d", "script": sc("_value * params.m", m=2), "ranges": [{"to": 0}, {"from": 0, "to": 800}, {"from": 800}]}}}
+    out["histogram field _value expression"] = {"a": {"histogram": {"field": "f", "script": ve, "interval": 20}}}
+    out["_value without a field"] = {"a": {"sum": {"script": sc("_value == null ? 4 : 5")}}}
     return out
 
 
