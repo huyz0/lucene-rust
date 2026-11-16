@@ -265,6 +265,8 @@ public class RustSearchPlugin extends Plugin implements
     private final String libraryPath;
     private final boolean nodeEngineEnabled;
     private final boolean fetchWrapper;
+    /** Whether stored fields are read natively at all ({@link #NODE_FETCH_WRAPPER}): through the index's wrapper, or the engine's searchers. */
+    private final boolean nativeFetch;
     private final LocalKeySource.Config localKey;
     /**
      * Whether the stock k-NN plugin is installed beside this one: it then owns {@code knn_vector},
@@ -304,9 +306,20 @@ public class RustSearchPlugin extends Plugin implements
         this.nodeEngineEnabled = NODE_ENGINE_ENABLED.get(settings);
         org.lucenerust.opensearch.engine.RustEngineSupport.readFollowerEngine(settings);
         boolean security = Files.isDirectory(pluginDir().resolveSibling("opensearch-security"));
-        this.fetchWrapper = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : security == false;
-        if (security && fetchWrapper == false) {
-            logger.info("lucene-rust: the security plugin is installed; stored fields are read by Lucene");
+        this.nativeFetch = NODE_FETCH_WRAPPER.exists(settings) ? NODE_FETCH_WRAPPER.get(settings) : true;
+        // The index's one reader wrapper is the security plugin's when it is installed: stored
+        // fields are then read natively one layer lower, in the engine's searchers, under it.
+        this.fetchWrapper = nativeFetch && security == false;
+        if (nativeFetch) {
+            org.lucenerust.opensearch.engine.EngineFetchLayer.install(
+                (indexSettings, reader) -> NativeStoredFieldsReader.wrap(
+                    reader,
+                    readers,
+                    stats,
+                    () -> indexSettings.getValue(FETCH_ENABLED),
+                    indexSettings.isDerivedSourceEnabled()
+                )
+            );
         }
         RustIndexerFactory.verify();
         // The keystore is only open during startup.
@@ -498,14 +511,23 @@ public class RustSearchPlugin extends Plugin implements
         // phase's, the get API's -- reads stored fields natively while
         // index.fetch.accelerated is on, and with Lucene otherwise
         // (either way timed, SearchStats.fetchTime).
-        if (fetchWrapper) {
+        if (nativeFetch) {
             FetchFlag flag = new FetchFlag(FETCH_ENABLED.get(indexModule.getSettings()));
             indexModule.addSettingsUpdateConsumer(FETCH_ENABLED, flag::set);
-            try {
-                indexModule.setReaderWrapper(indexService -> {
-                    boolean derivedSource = indexService.getIndexSettings().isDerivedSourceEnabled();
-                    return reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled, derivedSource);
-                });
+            if (fetchWrapper) {
+                try {
+                    indexModule.setReaderWrapper(indexService -> {
+                        boolean derivedSource = indexService.getIndexSettings().isDerivedSourceEnabled();
+                        return reader -> NativeStoredFieldsReader.wrap(reader, readers, stats, flag::enabled, derivedSource);
+                    });
+                    org.lucenerust.opensearch.engine.EngineFetchLayer.exempt(indexModule.getIndex().getUUID());
+                } catch (SetOnce.AlreadySetException e) {
+                    // Another plugin wrapped the index's readers first: its wrapper stays, and the
+                    // engine's searchers read stored fields natively under it.
+                    logger.info("lucene-rust: [{}] already has a reader wrapper; stored fields are read natively under it", indexModule.getIndex());
+                }
+            }
+            {
                 // The fetch phase reads its hits one at a time; announcing them first lets a
                 // segment read by range fetch their stored fields together.
                 indexModule.addSearchOperationListener(new SearchOperationListener() {
@@ -554,10 +576,6 @@ public class RustSearchPlugin extends Plugin implements
                         }
                     }
                 });
-            } catch (SetOnce.AlreadySetException e) {
-                // Another plugin wrapped the index's readers first: its wrapper
-                // stays, Lucene reads.
-                logger.warn("lucene-rust: [{}] already has a reader wrapper; stored fields are read by Lucene", indexModule.getIndex());
             }
         }
     }

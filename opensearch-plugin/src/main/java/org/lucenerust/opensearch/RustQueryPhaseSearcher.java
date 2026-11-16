@@ -14,6 +14,9 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BoostQuery;
+import org.opensearch.index.mapper.KeywordFieldMapper;
+import org.opensearch.index.mapper.MappedFieldType;
+import org.opensearch.index.mapper.NumberFieldMapper;
 import org.apache.lucene.search.ConstantScoreQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
@@ -140,7 +143,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
     /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
-    private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
+    private final org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher hybrid =
+        new org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher();
     private final NativeReaders readers;
     private final SearchStats stats;
 
@@ -208,8 +212,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
+        // As HybridQueryPhaseSearcher: the hybrid query out of its filters and DLS rules; a collapse's
+        // inner hits fan out to a plain bool query, searched as any other.
+        Query phaseQuery = hybrid.phaseQuery(ctx, query);
+        if (phaseQuery instanceof HybridQuery == false) {
+            return searchPlain(ctx, searcher, phaseQuery, collectors, hasFilterCollector, hasTimeout);
+        }
         long nativeStart = System.nanoTime();
-        String why = searchHybrid(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        String why = searchHybrid(ctx, searcher, phaseQuery, collectors, hasFilterCollector, hasTimeout);
         if (why == null) {
             stats.nativeQuery();
             stats.nativeTime(System.nanoTime() - nativeStart);
@@ -632,7 +642,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasTimeout
     ) throws IOException {
         if (flags(ctx).enabled() == false) return "disabled";
-        String reason = NativeHybrid.ineligible(ctx, query, collectors, hasFilterCollector);
+        // The aggregations as the plain path plans them; they run over the documents the hybrid
+        // collection counted.
+        NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
+        NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty()
+            ? null
+            : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
+        String reason = NativeHybrid.ineligible(ctx, query, collectors, hasFilterCollector, aggs != null || tree != null);
         if (reason != null) return reason;
         HybridQuery hybrid = (HybridQuery) query;
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
@@ -640,33 +656,189 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int[][] slices = NativeAggregations.slices(ctx);
         if (slices == null) return "intra_segment";
         if (LiveDirectoryReader.find(searcher.getIndexReader()) != null) return "realtime_view";
-        NativeHybrid.Encoded enc = NativeHybrid.encode(hybrid, new SimilarityEncoder(searcher.getSimilarity()), searcher, flags(ctx).allShapes());
+        SimilarityEncoder similarities = new SimilarityEncoder(searcher.getSimilarity());
+        // The post filter is rewritten as QueryPhase rewrites it; an approximate range in it matches
+        // only the first documents it visits, which the native engine would not reproduce.
+        Query postFilter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
+        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) return "approximate";
+        NativeHybrid.Encoded enc = ExtendedEncoder.withFieldTypes(
+            ctx.mapperService()::fieldType,
+            () -> NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes())
+        );
         if (enc.fallbackReason() != null) return enc.fallbackReason();
+        byte[] filterBlob = null;
+        if (postFilter != null) {
+            Query filter = postFilter;
+            QueryEncoder.Encoded encoded = ExtendedEncoder.withFieldTypes(
+                ctx.mapperService()::fieldType,
+                () -> QueryEncoder.encode(filter, similarities, searcher.getTopReaderContext())
+            );
+            if (encoded.fallbackReason() != null) return encoded.fallbackReason();
+            filterBlob = similarities.prefix(encoded.blob());
+        }
+        // The rescore queries (HybridSearchCollectorResultUtil rescores each sub-query's hits), encoded
+        // before anything runs.
+        List<NativeRescore> rescores = null;
+        if (ctx.rescore() != null && ctx.rescore().isEmpty() == false) {
+            if (NativeRescore.supported(ctx) == false) return "rescore";
+            rescores = new ArrayList<>();
+            reason = NativeRescore.encode(ctx, searcher, new SimilarityEncoder(searcher.getSimilarity()), rescores);
+            if (reason != null) return reason;
+        }
         NativeReaders.Acquired acquired = readers.acquire(searcher.getIndexReader());
         if (acquired.fallbackReason() != null) return acquired.fallbackReason();
         if (ctx.isCancelled()) return "cancelled";
         if (hasTimeout && deadlinePassed(ctx)) return "timeout";
         // HybridCollectorManager's own checks and sizes (pagination_depth, from on one shard).
         int topN = NativeHybrid.numHits(ctx, hybrid);
-        if (topN <= 0) return "hybrid_no_hits";
+        // The hits sorted: by the request's sort, after the search_after document when there is one.
+        // A collapse (HybridCollectorFactory) is sorted by the request's sort or the score, ignores
+        // search_after, and groups by a keyword or number field.
+        SortField[] sortFields = null;
+        byte[] sortBlob = null;
+        byte[] collapseBlob = null;
+        String collapseField = null;
+        if (ctx.collapse() != null) {
+            MappedFieldType type = ctx.collapse().getFieldType();
+            byte kind;
+            if (type instanceof KeywordFieldMapper.KeywordFieldType) {
+                kind = NativeCollapse.KEYWORD;
+            } else if (type instanceof NumberFieldMapper.NumberFieldType) {
+                kind = NativeCollapse.NUMERIC;
+            } else {
+                throw new IllegalStateException(
+                    "unknown type for collapse field " + ctx.collapse().getFieldName() + ", only keywords and numbers are accepted"
+                );
+            }
+            collapseField = ctx.collapse().getFieldName();
+            java.io.ByteArrayOutputStream blob = new java.io.ByteArrayOutputStream();
+            byte[] name = type.name().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            NativeAggregations.writeInt(blob, name.length);
+            blob.writeBytes(name);
+            blob.write(kind);
+            collapseBlob = blob.toByteArray();
+        }
+        if (ctx.sort() != null || collapseBlob != null) {
+            Sort keys = ctx.sort() != null ? ctx.sort().sort : new Sort(new SortField(null, SortField.Type.SCORE));
+            sortFields = keys.getSort();
+            FieldDoc after = collapseBlob != null ? null : ctx.searchAfter();
+            if (after != null) {
+                if (after.fields == null) {
+                    throw new IllegalArgumentException("after.fields wasn't set; you must pass fillFields=true for the previous search");
+                }
+                if (after.fields.length != sortFields.length) {
+                    throw new IllegalArgumentException(
+                        "after.fields has " + after.fields.length + " values but sort has " + sortFields.length
+                    );
+                }
+            }
+            byte[] indexSorted = SortEncoder.indexSorted(searcher.getIndexReader(), keys);
+            SortEncoder.Encoded sorted = ExtendedEncoder.withFieldTypes(
+                ctx.mapperService()::fieldType,
+                () -> SortEncoder.encode(keys, after, false, new int[0][], 0, false, indexSorted)
+            );
+            if (sorted.fallbackReason() != null) return sorted.fallbackReason();
+            sortBlob = sorted.blob();
+        }
+        long threshold = Math.max(topN, ctx.trackTotalHitsUpTo());
+        boolean aggregating = aggs != null || tree != null;
         byte[][] out = new byte[1][];
         int rc;
         NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_hybrid_search");
         try {
-            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices), out);
+            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, collapseBlob, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
             NativeMemory.check(rc);
+            if (rc != NativeBridge.OK) {
+                logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
+            NativeHybrid.Answer answer = NativeHybrid.read(out[0], enc.blobs().size(), aggregating, sortFields, collapseField, NativeHybrid.terminates(ctx));
+            InternalAggregations[] aggOut = new InternalAggregations[1];
+            InternalAggregations aggResult = null;
+            if (aggregating) {
+                String failed = hybridAggregations(ctx, searcher, acquired.handle(), similarities, answer.counted(), aggs, tree, slices, aggOut);
+                if (failed != null) return failed;
+                aggResult = aggOut[0];
+            }
+            // A sorted result is never rescored (the result util's sorted branch).
+            if (rescores != null && sortFields == null) {
+                reason = NativeHybrid.rescore(answer, acquired.handle(), rescores);
+                if (reason != null) return reason;
+            }
+            NativeHybrid.store(ctx, answer, rescores != null && sortFields == null);
+            if (aggResult != null) {
+                ctx.queryResult().aggregations(aggResult);
+                if (tree != null && tree.global().isEmpty() == false) {
+                    ctx.queryCollectorManagers().remove(GlobalAggCollectorManager.class);
+                }
+            }
         } finally {
             memory.close();
             stats.nativeMemory(memory.peak());
         }
-        if (rc != NativeBridge.OK) {
-            logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
-            return "native_error";
-        }
-        NativeHybrid.store(ctx, out[0], enc.blobs().size());
         if (memory.timedOut() || hasTimeout && deadlinePassed(ctx)) {
             timedOut(ctx);
         }
+        return null;
+    }
+
+    /**
+     * The aggregations over the documents the hybrid collection counted (what the aggregators
+     * see: the bulk scorer's windows, not the post filter's), each scored with its sub-queries'
+     * scores summed. The result in {@code out[0]}, or the reason it cannot be had.
+     */
+    private String hybridAggregations(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        long handle,
+        SimilarityEncoder similarities,
+        ScoreDoc[] counted,
+        NativeAggregations.Plan aggs,
+        NativeAggregationTree.Tree tree,
+        int[][] slices,
+        InternalAggregations[] out
+    ) throws IOException {
+        QueryEncoder.Encoded docs = QueryEncoder.encode(KnnHitsQuery.of(searcher.getIndexReader(), counted), similarities, searcher.getTopReaderContext());
+        if (docs.fallbackReason() != null) return docs.fallbackReason();
+        byte[] blob = docs.blob();
+        if (aggs != null) {
+            int states = aggs.metrics().size() * Math.max(1, slices.length);
+            long[] aggCounts = new long[states];
+            double[] aggValues = new double[states * NativeAggregations.VALUES];
+            byte[][] terms = new byte[1][];
+            int rc = NativeBridge.aggregate(
+                handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, -1, new long[] { -1, 0, 0 },
+                new long[searcher.getIndexReader().leaves().size()]
+            );
+            if (rc != NativeBridge.OK) {
+                NativeMemory.check(rc);
+                stats.nativeError();
+                logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+                return "native_error";
+            }
+            out[0] = aggs.build(slices, aggCounts, aggValues, terms[0], ctx.partialOnShard());
+            NativeAggregations.consumeBuckets(ctx, out[0]);
+            return null;
+        }
+        byte[][] result = new byte[1][];
+        int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), false, result);
+        if (rc != NativeBridge.OK) {
+            NativeAggregations.checkBuckets(ctx, rc);
+            NativeMemory.check(rc);
+            stats.nativeError();
+            logger.warn("lucene-rust: native aggregation failed ({}), re-running on Lucene: {}", rc, NativeBridge.lastError());
+            return "native_error";
+        }
+        try {
+            out[0] = tree.build(result[0], slices, ctx.partialOnShard());
+        } catch (JavaRefuses e) {
+            return "aggregations";
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            stats.nativeError();
+            logger.warn("lucene-rust: building native aggregation results failed, re-running on Lucene", e);
+            return "native_error";
+        }
+        NativeAggregations.consumeBuckets(ctx, out[0]);
         return null;
     }
 

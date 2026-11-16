@@ -52,15 +52,22 @@ public class HybridQueryPhaseSearcher extends QueryPhaseSearcherWrapper {
      * @throws IOException
      */
     public boolean searchWith(final SearchContext searchContext, final ContextIndexSearcher searcher, final Query query, final LinkedList<QueryCollectorContext> collectors, final boolean hasFilterCollector, final boolean hasTimeout) throws IOException {
-        Query phaseQuery;
-        if (isHybridQuery(query, searchContext) == false) {
-            phaseQuery = validateAndTransformQuery(searchContext, query);
-        } else {
-            validateHybridQuerySearchType(searchContext.searchType());
-            phaseQuery = extractHybridQuery(searchContext, query);
-            validateHybridQuery((HybridQuery) phaseQuery);
-        }
+        Query phaseQuery = phaseQuery(searchContext, query);
         return super.searchWith(searchContext, searcher, phaseQuery, collectors, hasFilterCollector, hasTimeout);
+    }
+
+    /**
+     * The query the shard phase runs: the hybrid query unwrapped from its filters and DLS rules, or
+     * the query itself (a plain one, or the bool query a collapse's inner hits fan out to).
+     */
+    public Query phaseQuery(final SearchContext searchContext, final Query query) {
+        if (isHybridQuery(query, searchContext) == false) {
+            return validateAndTransformQuery(searchContext, query);
+        }
+        validateHybridQuerySearchType(searchContext.searchType());
+        Query phaseQuery = extractHybridQuery(searchContext, query);
+        validateHybridQuery((HybridQuery) phaseQuery);
+        return phaseQuery;
     }
 
     /**
