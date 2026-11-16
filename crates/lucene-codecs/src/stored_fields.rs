@@ -167,7 +167,8 @@ pub enum FieldValue {
     /// A string value shared with its caller rather than copied: written
     /// exactly as [`Self::String`] of the same text, and never produced by a
     /// reader. Rust-only; it keeps a large stored text from being copied
-    /// once more on the way to the writer.
+    /// once more on the way to the writer. It is not `==` to a
+    /// [`Self::String`] of the same text (compare [`Self::as_text`]).
     Shared(std::sync::Arc<str>),
     Binary(Vec<u8>),
     Int(i32),
@@ -2821,8 +2822,12 @@ impl StoredFieldsWriter {
             };
             field.write_vlong(((f.field_number as i64) << TYPE_BITS) | bits);
             match &f.value {
-                FieldValue::String(_) | FieldValue::Shared(_) => {
-                    let text = f.value.as_text().unwrap_or_default();
+                FieldValue::String(text) => {
+                    field.write_vint(text.len() as i32);
+                    self.put_slices(&mut slice, compression, &field, &mut streamed);
+                    self.put_slices(&mut slice, compression, text.as_bytes(), &mut streamed);
+                }
+                FieldValue::Shared(text) => {
                     field.write_vint(text.len() as i32);
                     self.put_slices(&mut slice, compression, &field, &mut streamed);
                     self.put_slices(&mut slice, compression, text.as_bytes(), &mut streamed);
