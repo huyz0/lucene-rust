@@ -638,16 +638,18 @@ public final class NativeSelfTest {
             "search_after_fields".equals(SortEncoder.encode(new Sort(SortField.FIELD_DOC), new FieldDoc(1, 0f, new Object[0])).fallbackReason()),
             "search_after with the wrong arity falls back"
         );
-        // The native decoder's node cap, 1024 nodes: a boolean of 1023 terms is 1024.
-        BooleanQuery.Builder atCap = new BooleanQuery.Builder();
-        for (int i = 0; i < 1023; i++) {
-            atCap.add(new TermQuery(new Term("body", "t" + i)), Occur.SHOULD);
+        // The native decoder's depth bound: 128 levels encode, a 129th falls back by name.
+        Query deep = new TermQuery(new Term("body", "t"));
+        for (int i = 0; i < 100; i++) {
+            deep = new BooleanQuery.Builder().add(deep, Occur.MUST).build();
         }
-        check(QueryEncoder.encode(atCap.build(), f -> true).blob() != null, "1024 nodes encode");
-        atCap.add(new TermQuery(new Term("body", "t1023")), Occur.SHOULD);
+        check(QueryEncoder.encode(deep, f -> true).blob() != null, "100 nested booleans encode");
+        for (int i = 0; i < 40; i++) {
+            deep = new BooleanQuery.Builder().add(deep, Occur.MUST).build();
+        }
         check(
-            "query_too_large".equals(QueryEncoder.encode(atCap.build(), f -> true).fallbackReason()),
-            "1025 nodes fall back as query_too_large, not a native error"
+            "query_too_deep".equals(QueryEncoder.encode(deep, f -> true).fallbackReason()),
+            "140 nested booleans fall back as query_too_deep, not a native error"
         );
     }
 
