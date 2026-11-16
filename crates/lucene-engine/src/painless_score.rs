@@ -142,6 +142,12 @@ pub struct PainlessScoreSource(pub Arc<Spec>);
 /// The context byte's flag for a JavaScript script.
 pub const JS_SCRIPT: u8 = 0x80;
 
+/// The context byte's flag for a Lucene expression (`lang: expression`).
+pub const EXPR_SCRIPT: u8 = 0x40;
+
+mod expr;
+pub use expr::{ExprBinding, ExprSource, Mode};
+
 /// A JavaScript script, as V8 runs it.
 #[derive(Debug)]
 pub struct JsSource {
@@ -224,6 +230,8 @@ pub struct Spec {
     pub fields: Vec<FieldSpec>,
     /// A JavaScript script: `script` is then empty.
     pub js: Option<JsSource>,
+    /// A Lucene expression: `script` is then empty.
+    pub expr: Option<ExprSource>,
 }
 
 pub fn decode(
@@ -274,7 +282,11 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
     let (mut similarity, mut similarity_weight) = (false, false);
     let context = c.u8()?;
     let is_js = context & JS_SCRIPT != 0;
-    let (needs_score, filter) = match context & !JS_SCRIPT {
+    let is_expr = context & EXPR_SCRIPT != 0;
+    if is_js && is_expr {
+        return Err(invalid("query tree: a script is both js and an expression"));
+    }
+    let (needs_score, filter) = match context & !(JS_SCRIPT | EXPR_SCRIPT) {
         0 => (false, false),
         1 => (true, false),
         2 => (false, true),
@@ -313,7 +325,7 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
         }
     };
     let ir_blob = c.bytes()?.to_vec(); // alloc-ok: the script, bounded by the blob
-    let script = if is_js {
+    let script = if is_js || is_expr {
         ir::Script {
             functions: Vec::new(),
             classes: ir::ClassTable::default(),
@@ -366,6 +378,13 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
     } else {
         None
     };
+    let expr = if is_expr {
+        let source = String::from_utf8(ir_blob.clone())
+            .map_err(|_| invalid("query tree: expression source is not UTF-8"))?;
+        Some(ExprSource::decode(&source, fields.len(), c)?)
+    } else {
+        None
+    };
     Ok(Spec {
         script,
         ir_blob,
@@ -385,6 +404,7 @@ pub fn decode_spec(c: &mut Cursor<'_>) -> std::result::Result<Spec, Status> {
         script_id_at,
         fields,
         js,
+        expr,
     })
 }
 
@@ -558,9 +578,10 @@ impl Spec {
             .map(|f| format!("{}:{:?}", f.name, f.kind))
             .collect();
         format!(
-            "{name}(ir={}, js={:?}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
+            "{name}(ir={}, js={:?}, expr={:?}, params={}, needs_score={}, filter={}, index={}, shard={}, fields=[{}])",
             hex(&self.ir_blob),
             self.js.as_ref().map(|j| j.limits),
+            self.expr.as_ref().map(ExprSource::key),
             hex(&self.params_blob),
             self.needs_score,
             self.filter,
@@ -624,6 +645,15 @@ impl Spec {
     /// [`lucene_painless::check`] on the program each segment runs; for a
     /// JavaScript script, whether this library runs it and V8 compiles it.
     pub fn check(&self) -> std::result::Result<(), Refused> {
+        if self.expr.is_some() {
+            if self.interval || self.similarity || self.similarity_weight {
+                return Err(Refused(
+                    "expressions run in the score, filter, sort, aggregation and terms_set contexts"
+                        .to_string(),
+                ));
+            }
+            return Ok(());
+        }
         if let Some(js) = &self.js {
             if self.interval || self.similarity || self.similarity_weight {
                 return Err(Refused(
@@ -1201,6 +1231,8 @@ pub struct ScriptScores<'c> {
     /// A JavaScript script's run on this segment.
     #[cfg(feature = "js")]
     js: Option<js::JsLeaf>,
+    /// An expression's run on this segment.
+    expr: Option<expr::ExprLeaf>,
 }
 
 impl ScriptScores<'_> {
@@ -1217,6 +1249,9 @@ impl ScriptScores<'_> {
 
     /// What the script returns for the current document.
     pub fn run_object(&mut self) -> Result<Value> {
+        if let Some(e) = &self.expr {
+            return e.run_value(&mut self.env).map(Value::Double);
+        }
         #[cfg(feature = "js")]
         if let Some(js) = &self.js {
             return js.run_object(&mut self.env);
@@ -1246,6 +1281,9 @@ impl ScriptScores<'_> {
 
     /// What the script returns for the current document, as a `double`.
     pub fn run_value(&mut self) -> Result<f64> {
+        if let Some(e) = &self.expr {
+            return e.run_value(&mut self.env);
+        }
         #[cfg(feature = "js")]
         if let Some(js) = &self.js {
             return js.run_value(&mut self.env);
@@ -1373,6 +1411,9 @@ impl DoubleValues for ScriptScores<'_> {
         out: &mut [f64],
         has: &mut [bool],
     ) -> Result<()> {
+        if let Some(e) = &self.expr {
+            return e.fill_batch(&mut self.env, docs, scores, out, has);
+        }
         #[cfg(feature = "js")]
         if let Some(js) = &self.js {
             return js.fill_batch(&mut self.env, docs, scores, out, has);
@@ -1438,6 +1479,9 @@ pub fn scripts<'c>(
     leaf: Leaf,
     scores: Option<BoxDoubleValues<'c>>,
 ) -> Result<ScriptScores<'c>> {
+    if spec.expr.is_some() {
+        return expr_scripts(spec, reader, leaf, scores);
+    }
     if spec.js.is_some() {
         return js_scripts(spec, reader, leaf, scores);
     }
@@ -1480,6 +1524,31 @@ pub fn scripts<'c>(
         value: 0.0,
         #[cfg(feature = "js")]
         js: None,
+        expr: None,
+    })
+}
+
+/// An expression ready to run on segment `leaf`.
+fn expr_scripts<'c>(
+    spec: &Arc<Spec>,
+    reader: &'c lucene_search::directory_reader::SegmentReader,
+    leaf: Leaf,
+    scores: Option<BoxDoubleValues<'c>>,
+) -> Result<ScriptScores<'c>> {
+    let env = score_env(Arc::clone(spec), reader, leaf, Value::Null, Value::Null);
+    Ok(ScriptScores {
+        typed: None,
+        pool: Vec::new(),
+        columns: BatchRegs::default(),
+        bindings: Vec::new(),
+        prog: Rc::new(Program::default()),
+        env,
+        args: Vec::new(),
+        scores,
+        value: 0.0,
+        #[cfg(feature = "js")]
+        js: None,
+        expr: Some(expr::ExprLeaf::new(spec)),
     })
 }
 
@@ -1512,6 +1581,7 @@ fn js_scripts<'c>(
             scores,
             value: 0.0,
             js: Some(js::JsLeaf::new(spec, next_scorer_id())),
+            expr: None,
         })
     }
 }

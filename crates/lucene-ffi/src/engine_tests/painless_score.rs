@@ -1124,6 +1124,7 @@ pub(crate) mod bench {
                 script_id_at: 0,
                 fields,
                 js: None,
+                expr: None,
             }));
             let n = seg.max_doc;
             let mut best = f64::MAX;
