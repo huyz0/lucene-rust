@@ -373,8 +373,19 @@ public final class NativeAggregations {
      * shard, so a sum's rounding depends on the slices; the native pass reproduces them.
      */
     static int[][] slices(SearchContext ctx) {
+        // A time-series shard sorted by its timestamp ascending: ContextIndexSearcher visits each
+        // slice's segments last first (a search that is not concurrent is one slice of every segment).
+        boolean reversed = ctx.shouldUseTimeSeriesDescSortOptimization();
         if (ctx.shouldUseConcurrentSearch() == false) {
-            return new int[0][];
+            if (reversed == false) {
+                return new int[0][];
+            }
+            int leaves = ctx.searcher().getIndexReader().leaves().size();
+            int[] all = new int[leaves];
+            for (int i = 0; i < leaves; i++) {
+                all[i] = leaves - 1 - i;
+            }
+            return new int[][] { all };
         }
         IndexSearcher.LeafSlice[] leafSlices = ctx.searcher().getSlices();
         int[][] out = new int[leafSlices.length][];
@@ -386,6 +397,13 @@ public final class NativeAggregations {
                     return null;
                 }
                 out[s][p] = parts[p].ctx.ord;
+            }
+            if (reversed) {
+                for (int i = 0, j = out[s].length - 1; i < j; i++, j--) {
+                    int t = out[s][i];
+                    out[s][i] = out[s][j];
+                    out[s][j] = t;
+                }
             }
         }
         return out;

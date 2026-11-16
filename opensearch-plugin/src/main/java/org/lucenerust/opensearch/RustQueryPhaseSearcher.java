@@ -279,7 +279,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // filter narrower than the range, which the native engine would not
             // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
-            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) {
+            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
                 reason = "approximate";
             }
             if (reason == null && postFilter != null) {
@@ -563,7 +563,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // The post filter is rewritten as QueryPhase rewrites it; an approximate range in it matches
         // only the first documents it visits, which the native engine would not reproduce.
         Query postFilter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
-        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) return "approximate";
+        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) return "approximate";
         NativeHybrid.Encoded enc = ExtendedEncoder.withFieldTypes(
             ctx.mapperService()::fieldType,
             () -> NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes())
@@ -971,9 +971,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         if (ctx.getProfilers() != null) return "profile";
         // A shard with an @timestamp field sorted by it ascending: ContextIndexSearcher visits
-        // each slice's segments last first, which breaks sort ties and orders an aggregation's sums
-        // differently from the native pass (ascending); stay on OpenSearch's.
-        if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
+        // each slice's segments last first: NativeAggregations.slices hands the native pass that order.
+        // terminate_after cuts the segments in index order, which the reversed visit does not.
+        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminating) return "time_series_order";
         // dfs_query_then_fetch scores with statistics aggregated across shards
         // (ContextIndexSearcher.setAggregatedDfs); the native engine only knows this shard's.
         if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";

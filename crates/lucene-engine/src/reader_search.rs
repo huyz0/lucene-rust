@@ -1702,9 +1702,8 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
             return Err(bad("a sorted hybrid search with terminate_after".into()));
         }
         // `searchSortPartOfIndexSort`: the first segment decides.
-        let early = keys[0].ty == SortType::Doc && !keys[0].reverse
-            || index_sorted.first() == Some(&Some(0));
-        Some((keys, after, early, threshold))
+        let doc_first = keys[0].ty == SortType::Doc && !keys[0].reverse;
+        Some((keys, after, (doc_first, index_sorted), threshold))
     } else {
         None
     };
@@ -1807,13 +1806,17 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         let mut plain = HybridCollector::new(prepared.len(), top_n);
         let mut sorted = match &sort {
             None => None,
-            Some((keys, after, early, threshold)) => Some(
+            Some((keys, after, (doc_first, index_sorted), threshold)) => Some(
                 HybridSortCollector::new(
                     prepared.len(),
                     top_n,
                     keys,
                     after.as_ref(),
-                    *early,
+                    // `searchSortPartOfIndexSort`: the slice's first segment decides.
+                    *doc_first
+                        || slice
+                            .first()
+                            .is_some_and(|&s| index_sorted.get(s) == Some(&Some(0))),
                     *threshold,
                     &hits_seen,
                     collapse.clone(),
