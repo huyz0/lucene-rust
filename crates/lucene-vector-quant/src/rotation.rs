@@ -50,27 +50,65 @@ const HEADER_BYTES: usize = 13;
 pub fn fwht(x: &mut [f32]) {
     let n = x.len();
     assert!(n.is_power_of_two(), "length {n} is not a power of two");
-    if n >= 2 {
-        butterflies_of::<1>(x);
+    if n < 8 {
+        if n >= 2 {
+            butterflies(x, 1);
+        }
+        if n >= 4 {
+            butterflies(x, 2);
+        }
+        return;
     }
-    if n >= 4 {
-        butterflies_of::<2>(x);
+    first_three_stages(x);
+    // Two stages per pass over the data where two remain: the pass is
+    // bound by loads and stores, and the sums are the same ones in the same
+    // order as two single-stage passes, so the result is bit-identical.
+    let mut h = 8usize;
+    while h.saturating_mul(2) < n {
+        butterflies_radix4(x, h);
+        h = h.saturating_mul(4);
     }
-    if n >= 8 {
-        butterflies_of::<4>(x);
-    }
-    let mut h = 8;
-    while h < n {
+    if h < n {
         butterflies(x, h);
-        h = h.saturating_mul(2);
     }
 }
 
-/// One butterfly stage of half-width `H`, known at compile time so the
-/// short stages unroll.
-#[inline]
-fn butterflies_of<const H: usize>(x: &mut [f32]) {
-    butterflies(x, H);
+/// The stages of half-width 1, 2 and 4: an 8-point transform of each run of
+/// eight, held in registers.
+#[inline(always)]
+fn first_three_stages(x: &mut [f32]) {
+    for c in x.as_chunks_mut::<8>().0 {
+        let a = [
+            c[0] + c[1],
+            c[0] - c[1],
+            c[2] + c[3],
+            c[2] - c[3],
+            c[4] + c[5],
+            c[4] - c[5],
+            c[6] + c[7],
+            c[6] - c[7],
+        ];
+        let b = [
+            a[0] + a[2],
+            a[1] + a[3],
+            a[0] - a[2],
+            a[1] - a[3],
+            a[4] + a[6],
+            a[5] + a[7],
+            a[4] - a[6],
+            a[5] - a[7],
+        ];
+        *c = [
+            b[0] + b[4],
+            b[1] + b[5],
+            b[2] + b[6],
+            b[3] + b[7],
+            b[0] - b[4],
+            b[1] - b[5],
+            b[2] - b[6],
+            b[3] - b[7],
+        ];
+    }
 }
 
 /// One butterfly stage: within each run of `2h`, `(a, b)` becomes
@@ -83,6 +121,31 @@ fn butterflies(x: &mut [f32], h: usize) {
             let (p, q) = (*u, *v);
             *u = p + q;
             *v = p - q;
+        }
+    }
+}
+
+/// The stages of half-width `h` and `2h` in one pass: within each run of
+/// `4h`, the quarters `(a, b, c, d)` become `(a + b + c + d, a - b + c - d,
+/// a + b - c - d, a - b - c + d)`, summed as the two stages sum them.
+#[inline(always)]
+fn butterflies_radix4(x: &mut [f32], h: usize) {
+    for run in x.chunks_exact_mut(h.saturating_mul(4)) {
+        let (ab, cd) = run.split_at_mut(h.saturating_mul(2));
+        let (a, b) = ab.split_at_mut(h);
+        let (c, d) = cd.split_at_mut(h);
+        for (((a, b), c), d) in a
+            .iter_mut()
+            .zip(b.iter_mut())
+            .zip(c.iter_mut())
+            .zip(d.iter_mut())
+        {
+            let (t0, t1) = (*a + *b, *a - *b);
+            let (t2, t3) = (*c + *d, *c - *d);
+            *a = t0 + t2;
+            *b = t1 + t3;
+            *c = t0 - t2;
+            *d = t1 - t3;
         }
     }
 }
@@ -626,6 +689,31 @@ mod tests {
 
     fn rot_bbq() -> RotatedFactory {
         RotatedFactory::new(Arc::new(OsqFactory::bbq()))
+    }
+
+    #[test]
+    fn fwht_equals_one_stage_per_pass_bit_for_bit() {
+        let mut state = 7u64;
+        for n in [1usize, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048] {
+            let x: Vec<f32> = (0..n)
+                .map(|_| (split_mix(&mut state) >> 40) as f32 / (1u64 << 24) as f32 - 0.5)
+                .collect();
+            let mut fused = x.clone();
+            fwht(&mut fused);
+            let mut staged = x;
+            let mut h = 1;
+            while h < n {
+                butterflies(&mut staged, h);
+                h *= 2;
+            }
+            assert!(
+                fused
+                    .iter()
+                    .zip(&staged)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "n = {n}"
+            );
+        }
     }
 
     #[test]

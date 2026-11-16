@@ -32,14 +32,6 @@ impl Drop for WriterHandle {
     }
 }
 
-// SAFETY: `WriterHandle` is `!Send`/`!Sync` only because of the erased
-// `dyn Directory` borrow. The writer's shared state is behind its own locks
-// (`lucene-index` forbids unsafe code), and the borrowed directory is the
-// `Send + Sync` one boxed in this struct.
-unsafe impl Send for WriterHandle {}
-// SAFETY: as for `Send` above.
-unsafe impl Sync for WriterHandle {}
-
 pub use lucene_engine::reader_handle::JvmReaderHandle;
 
 pub(crate) use lucene_engine::registry::engine_writers;
@@ -47,6 +39,14 @@ pub(crate) use lucene_engine::registry::engine_writers;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The registry shares handles across threads with no `unsafe impl`, so
+    /// the compiler must derive both traits from the fields.
+    #[test]
+    fn a_writer_handle_is_send_and_sync_by_derivation() {
+        fn both<T: Send + Sync>() {}
+        both::<WriterHandle>();
+    }
     use std::sync::{OnceLock, RwLock};
 
     /// [`lock_recovering`] must hand back the inner value after a writer

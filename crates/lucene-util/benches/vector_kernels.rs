@@ -14,7 +14,7 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use lucene_util::simd;
+use lucene_util::{simd, vector_util};
 
 fn floats(n: usize, seed: u64) -> Vec<f32> {
     let mut s = seed;
@@ -134,5 +134,49 @@ fn bench_gather(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_similarity, bench_probe_setup, bench_gather);
+/// The byte-vector kernels the 7- and 8-bit quantized formats score with,
+/// against their scalar specifications. `LUCENE_RUST_SIMD=avx2` caps the
+/// run at the build baseline, so the same bench shows what AVX-512 VNNI adds.
+fn bench_bytes(c: &mut Criterion) {
+    let mut g = c.benchmark_group("bytes");
+    for dim in [128usize, 384, 768, 1536] {
+        let a: Vec<u8> = floats(dim, 3)
+            .iter()
+            .map(|f| (f * 100.0) as i8 as u8)
+            .collect();
+        let b: Vec<u8> = floats(dim, 4)
+            .iter()
+            .map(|f| (f * 100.0) as i8 as u8)
+            .collect();
+        g.throughput(Throughput::Bytes(dim as u64));
+        g.bench_function(format!("dot_i8/{dim}"), |x| {
+            x.iter(|| vector_util::dot_product_i8(black_box(&a), black_box(&b)))
+        });
+        g.bench_function(format!("dot_i8_scalar/{dim}"), |x| {
+            x.iter(|| vector_util::dot_product_i8_scalar(black_box(&a), black_box(&b)))
+        });
+        g.bench_function(format!("dot_u8/{dim}"), |x| {
+            x.iter(|| vector_util::uint8_dot_product(black_box(&a), black_box(&b)))
+        });
+        g.bench_function(format!("l2_i8/{dim}"), |x| {
+            x.iter(|| vector_util::square_distance_i8(black_box(&a), black_box(&b)))
+        });
+        g.bench_function(format!("l2_u8/{dim}"), |x| {
+            x.iter(|| vector_util::uint8_square_distance(black_box(&a), black_box(&b)))
+        });
+        let q: Vec<u8> = a.iter().map(|v| v & 0x7f).collect();
+        g.bench_function(format!("dot_u7_i8/{dim}"), |x| {
+            x.iter(|| simd::dot_u7_i8(black_box(&q), black_box(&b)))
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_similarity,
+    bench_probe_setup,
+    bench_gather,
+    bench_bytes
+);
 criterion_main!(benches);

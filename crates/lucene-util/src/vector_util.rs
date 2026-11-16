@@ -71,6 +71,11 @@ pub fn dot_product_i8(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
+        if a.len() >= VNNI_MIN_LEN && crate::cpu::avx512_vnni() {
+            // SAFETY: `avx512_vnni` says AVX-512F, BW and VNNI are present;
+            // lengths are equal.
+            return unsafe { vnni::dot_i8(a, b) };
+        }
         // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
         unsafe { byte_kernel_avx2::<true, false>(a, b) }
     }
@@ -93,6 +98,11 @@ pub fn uint8_dot_product(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
+        if a.len() >= VNNI_MIN_LEN && crate::cpu::avx512_vnni() {
+            // SAFETY: `avx512_vnni` says AVX-512F, BW and VNNI are present;
+            // lengths are equal.
+            return unsafe { vnni::dot_u8(a, b) };
+        }
         // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
         unsafe { byte_kernel_avx2::<false, false>(a, b) }
     }
@@ -174,6 +184,210 @@ unsafe fn byte_kernel_avx2<const SIGNED: bool, const SQUARE: bool>(a: &[u8], b: 
         i += 1;
     }
     total
+}
+
+/// The shortest vector the AVX-512 VNNI byte kernels take. Below it the
+/// kernels' fixed cost (a masked tail, the cross-lane reduction) is no better
+/// than the AVX2 loop's: measured at 128 bytes it is slower, at 384 it is 2x
+/// faster.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+const VNNI_MIN_LEN: usize = 256;
+
+/// The byte dot products on AVX-512 VNNI: `vpdpbusd` multiplies 64 unsigned
+/// bytes by 64 signed bytes and adds each group of four products into a
+/// 32-bit lane. Neither input is both signed and unsigned, so each kernel
+/// shifts one side by 128 and removes the shift afterwards with a second
+/// `vpdpbusd` against a constant; the lane sums wrap as the scalar
+/// specifications' `wrapping_add` does, and integer sums do not depend on
+/// order, so the results are equal to theirs.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+mod vnni {
+    use std::arch::x86_64::*;
+
+    /// # Safety
+    ///
+    /// AVX-512F, AVX-512BW and AVX-512 VNNI must be available, and
+    /// `a.len() == b.len()`.
+    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+    pub(super) unsafe fn dot_i8(a: &[u8], b: &[u8]) -> i32 {
+        let n = a.len().min(b.len());
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let bias = _mm512_set1_epi8(i8::MIN);
+        // `sum((a ^ 0x80) * b) - sum(0x80 * b)`, with `a ^ 0x80 = a + 128`
+        // read as unsigned.
+        let (mut acc0, mut acc1) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let (mut shift0, mut shift1) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let mut i = 0;
+        while i + 128 <= n {
+            // SAFETY: `i + 128 <= n <= a.len(), b.len()`.
+            let (x0, y0, x1, y1) = unsafe {
+                (
+                    _mm512_loadu_si512(pa.add(i).cast()),
+                    _mm512_loadu_si512(pb.add(i).cast()),
+                    _mm512_loadu_si512(pa.add(i + 64).cast()),
+                    _mm512_loadu_si512(pb.add(i + 64).cast()),
+                )
+            };
+            acc0 = _mm512_dpbusd_epi32(acc0, _mm512_xor_si512(x0, bias), y0);
+            acc1 = _mm512_dpbusd_epi32(acc1, _mm512_xor_si512(x1, bias), y1);
+            shift0 = _mm512_dpbusd_epi32(shift0, bias, y0);
+            shift1 = _mm512_dpbusd_epi32(shift1, bias, y1);
+            i += 128;
+        }
+        if i + 64 <= n {
+            // SAFETY: `i + 64 <= n`.
+            let (x, y) = unsafe {
+                (
+                    _mm512_loadu_si512(pa.add(i).cast()),
+                    _mm512_loadu_si512(pb.add(i).cast()),
+                )
+            };
+            acc0 = _mm512_dpbusd_epi32(acc0, _mm512_xor_si512(x, bias), y);
+            shift0 = _mm512_dpbusd_epi32(shift0, bias, y);
+            i += 64;
+        }
+        if i < n {
+            let mask = (1u64 << (n - i)) - 1;
+            // SAFETY: the mask covers only the `n - i < 64` bytes that remain;
+            // masked-off bytes are not read and come back zero, so they add
+            // nothing to either sum (`y` is zero there).
+            let (x, y) = unsafe {
+                (
+                    _mm512_maskz_loadu_epi8(mask, pa.add(i).cast()),
+                    _mm512_maskz_loadu_epi8(mask, pb.add(i).cast()),
+                )
+            };
+            acc0 = _mm512_dpbusd_epi32(acc0, _mm512_xor_si512(x, bias), y);
+            shift0 = _mm512_dpbusd_epi32(shift0, bias, y);
+        }
+        let acc = _mm512_sub_epi32(
+            _mm512_add_epi32(acc0, acc1),
+            _mm512_add_epi32(shift0, shift1),
+        );
+        _mm512_reduce_add_epi32(acc)
+    }
+
+    /// # Safety
+    ///
+    /// As [`dot_i8`].
+    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+    pub(super) unsafe fn dot_u8(a: &[u8], b: &[u8]) -> i32 {
+        let n = a.len().min(b.len());
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let bias = _mm512_set1_epi8(i8::MIN);
+        let ones = _mm512_set1_epi8(1);
+        // `b ^ 0x80 = b - 128` read as signed, so
+        // `sum(a * b) = sum(a * (b ^ 0x80)) + 128 * sum(a)`.
+        let (mut acc0, mut acc1) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let (mut sum0, mut sum1) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let mut i = 0;
+        while i + 128 <= n {
+            // SAFETY: `i + 128 <= n <= a.len(), b.len()`.
+            let (x0, y0, x1, y1) = unsafe {
+                (
+                    _mm512_loadu_si512(pa.add(i).cast()),
+                    _mm512_loadu_si512(pb.add(i).cast()),
+                    _mm512_loadu_si512(pa.add(i + 64).cast()),
+                    _mm512_loadu_si512(pb.add(i + 64).cast()),
+                )
+            };
+            acc0 = _mm512_dpbusd_epi32(acc0, x0, _mm512_xor_si512(y0, bias));
+            acc1 = _mm512_dpbusd_epi32(acc1, x1, _mm512_xor_si512(y1, bias));
+            sum0 = _mm512_dpbusd_epi32(sum0, x0, ones);
+            sum1 = _mm512_dpbusd_epi32(sum1, x1, ones);
+            i += 128;
+        }
+        if i + 64 <= n {
+            // SAFETY: `i + 64 <= n`.
+            let (x, y) = unsafe {
+                (
+                    _mm512_loadu_si512(pa.add(i).cast()),
+                    _mm512_loadu_si512(pb.add(i).cast()),
+                )
+            };
+            acc0 = _mm512_dpbusd_epi32(acc0, x, _mm512_xor_si512(y, bias));
+            sum0 = _mm512_dpbusd_epi32(sum0, x, ones);
+            i += 64;
+        }
+        if i < n {
+            let mask = (1u64 << (n - i)) - 1;
+            // SAFETY: the mask covers only the `n - i < 64` bytes that remain;
+            // masked-off bytes come back zero, so `x` is zero there and the
+            // shifted `y` adds nothing to either sum.
+            let (x, y) = unsafe {
+                (
+                    _mm512_maskz_loadu_epi8(mask, pa.add(i).cast()),
+                    _mm512_maskz_loadu_epi8(mask, pb.add(i).cast()),
+                )
+            };
+            acc0 = _mm512_dpbusd_epi32(acc0, x, _mm512_xor_si512(y, bias));
+            sum0 = _mm512_dpbusd_epi32(sum0, x, ones);
+        }
+        let dot = _mm512_add_epi32(acc0, acc1);
+        let sum = _mm512_slli_epi32::<7>(_mm512_add_epi32(sum0, sum1));
+        _mm512_reduce_add_epi32(_mm512_add_epi32(dot, sum))
+    }
+
+    /// The squared distance, `SIGNED` for `i8` and unsigned otherwise. The
+    /// absolute byte difference is formed once (`max - min` on unsigned
+    /// bytes; signed bytes are first shifted by 128, which leaves their
+    /// differences alone), widened to 16 bits and squared pairwise by
+    /// `vpdpwssd`. A difference is at most 255, so a pair of squares sums to
+    /// below 2^31.
+    ///
+    /// # Safety
+    ///
+    /// As [`dot_i8`].
+    #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+    pub(super) unsafe fn square_distance<const SIGNED: bool>(a: &[u8], b: &[u8]) -> i32 {
+        let n = a.len().min(b.len());
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let bias = _mm512_set1_epi8(i8::MIN);
+        let zero = _mm512_setzero_si512();
+        let load = |x: __m512i, y: __m512i| {
+            let (x, y) = if SIGNED {
+                (_mm512_xor_si512(x, bias), _mm512_xor_si512(y, bias))
+            } else {
+                (x, y)
+            };
+            _mm512_sub_epi8(_mm512_max_epu8(x, y), _mm512_min_epu8(x, y))
+        };
+        let (mut acc0, mut acc1) = (_mm512_setzero_si512(), _mm512_setzero_si512());
+        let mut i = 0;
+        while i + 64 <= n {
+            // SAFETY: `i + 64 <= n <= a.len(), b.len()`.
+            let (x, y) = unsafe {
+                (
+                    _mm512_loadu_si512(pa.add(i).cast()),
+                    _mm512_loadu_si512(pb.add(i).cast()),
+                )
+            };
+            let d = load(x, y);
+            let lo = _mm512_unpacklo_epi8(d, zero);
+            let hi = _mm512_unpackhi_epi8(d, zero);
+            acc0 = _mm512_dpwssd_epi32(acc0, lo, lo);
+            acc1 = _mm512_dpwssd_epi32(acc1, hi, hi);
+            i += 64;
+        }
+        if i < n {
+            let mask = (1u64 << (n - i)) - 1;
+            // SAFETY: the mask covers only the `n - i < 64` bytes that remain;
+            // masked-off bytes come back zero in both vectors (so their
+            // difference, once biased alike, is zero).
+            let (x, y) = unsafe {
+                (
+                    _mm512_maskz_loadu_epi8(mask, pa.add(i).cast()),
+                    _mm512_maskz_loadu_epi8(mask, pb.add(i).cast()),
+                )
+            };
+            let d = load(x, y);
+            let lo = _mm512_unpacklo_epi8(d, zero);
+            let hi = _mm512_unpackhi_epi8(d, zero);
+            acc0 = _mm512_dpwssd_epi32(acc0, lo, lo);
+            acc1 = _mm512_dpwssd_epi32(acc1, hi, hi);
+        }
+        _mm512_reduce_add_epi32(_mm512_add_epi32(acc0, acc1))
+    }
 }
 
 /// `VectorUtil.int4DotProduct`: both vectors unpacked, one 4-bit value per
@@ -275,6 +489,11 @@ pub fn square_distance_i8(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
+        if a.len() >= VNNI_MIN_LEN && crate::cpu::avx512_vnni() {
+            // SAFETY: `avx512_vnni` says AVX-512F, BW and VNNI are present;
+            // lengths are equal.
+            return unsafe { vnni::square_distance::<true>(a, b) };
+        }
         // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
         unsafe { byte_kernel_avx2::<true, true>(a, b) }
     }
@@ -422,6 +641,11 @@ pub fn uint8_square_distance(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
+        if a.len() >= VNNI_MIN_LEN && crate::cpu::avx512_vnni() {
+            // SAFETY: `avx512_vnni` says AVX-512F, BW and VNNI are present;
+            // lengths are equal.
+            return unsafe { vnni::square_distance::<false>(a, b) };
+        }
         // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
         unsafe { byte_kernel_avx2::<false, true>(a, b) }
     }
@@ -729,7 +953,7 @@ mod tests {
         /// around the 32-byte step (tails included) and over all byte values.
         #[test]
         fn byte_kernels_match_their_scalar_specifications(
-            pairs in proptest::collection::vec((proptest::prelude::any::<u8>(), proptest::prelude::any::<u8>()), 0..200),
+            pairs in proptest::collection::vec((proptest::prelude::any::<u8>(), proptest::prelude::any::<u8>()), 0..700),
         ) {
             let (a, b): (Vec<u8>, Vec<u8>) = pairs.into_iter().unzip();
             proptest::prop_assert_eq!(dot_product_i8(&a, &b), dot_product_i8_scalar(&a, &b));
