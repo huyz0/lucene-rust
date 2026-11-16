@@ -146,6 +146,8 @@ final class NativeSelfTestAnalysis {
     static Map<String, Analyzer> analyzers() throws Exception {
         Map<String, Analyzer> m = new LinkedHashMap<>();
         m.put("standard", new StandardAnalyzer());
+        // Lucene's own ThaiTokenizer: the native one takes its word boundaries from this JVM's iterator.
+        m.put("thai", new ThaiAnalyzer());
         m.put("thai_dictionary", new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet()));
         m.put("thai_dictionary, html strip, no stop words", new Analyzer() {
             @Override
@@ -501,8 +503,6 @@ final class NativeSelfTestAnalysis {
     /** Analyzers that must stay in Java, with the reason they must give. */
     static Map<String, Map.Entry<Analyzer, String>> refused() throws Exception {
         Map<String, Map.Entry<Analyzer, String>> m = new LinkedHashMap<>();
-        // The Rust port has no dictionary segmentation for Thai.
-        m.put("thai", Map.entry(new ThaiAnalyzer(), "analysis_ThaiTokenizer"));
         // A dictionary with no known files (a plugin's own, say).
         m.put(
             "hunspell without its files",
@@ -746,6 +746,7 @@ final class NativeSelfTestAnalysis {
             described++;
             List<String> texts = new ArrayList<>(AnalyzerSpec.PROBES);
             for (int i = 0; i < 60; i++) texts.add(randomText(r));
+            texts.addAll(List.of(THAI));
             for (String text : texts) {
                 AnalyzerSpec.Tokens java = AnalyzerSpec.java(a, "body", text);
                 AnalyzerSpec.Tokens rust = AnalyzerSpec.rust(spec.blob(), "body", text);
