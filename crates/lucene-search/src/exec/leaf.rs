@@ -127,6 +127,17 @@ impl Scorer for TermScorer<'_> {
     fn constant_scores(&self) -> bool {
         self.leg.is_constant()
     }
+
+    /// The rest of the postings block below `up_to` (no frequency or norm
+    /// read for a score).
+    fn next_docs_unscored(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        self.leg.next_docs_unscored(up_to, live_docs, out)
+    }
 }
 
 /// `ConstantScoreScorer`: the wrapped scorer's matches, each scoring `score`.

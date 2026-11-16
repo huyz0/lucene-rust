@@ -773,12 +773,18 @@ final class ExtendedEncoder {
     private static final ThreadLocal<Function<String, MappedFieldType>> FIELD_TYPES = new ThreadLocal<>();
 
     /** Runs {@code encode} with {@code fieldTypes} as the index's field types. */
-    static <T> T withFieldTypes(Function<String, MappedFieldType> fieldTypes, java.util.function.Supplier<T> encode) {
+    static <T> T withFieldTypes(
+        Function<String, MappedFieldType> fieldTypes,
+        org.opensearch.search.internal.SearchContext ctx,
+        java.util.function.Supplier<T> encode
+    ) {
         Function<String, MappedFieldType> previous = FIELD_TYPES.get();
         FIELD_TYPES.set(fieldTypes);
+        ExtendedScripts.set(ExtendedScripts.ENABLED.get(ctx.getQueryShardContext().getIndexSettings().getSettings()));
         try {
             return encode.get();
         } finally {
+            ExtendedScripts.clear();
             if (previous == null) {
                 FIELD_TYPES.remove();
             } else {
@@ -1150,6 +1156,11 @@ final class ExtendedEncoder {
             MappedFieldType ft = types.apply(compiled.docFields().get(i));
             kinds[i] = PainlessScore.fieldKind(ft);
             names[i] = ft == null ? compiled.docFields().get(i) : ft.name();
+            if ((kinds[i] == PainlessScore.DATE || kinds[i] == PainlessScore.DATE_NANOS) && ExtendedScripts.on() == false) {
+                // Dates reach the script as ZonedDateTime through `def` calls: 2 to 5 times slower than
+                // OpenSearch's own Painless on a whole-index scan.
+                return "script_date_values";
+            }
         }
         // The whole script checked before anything runs: one the native runtime would not run
         // exactly as Painless does stays in Java, never tried natively first.
@@ -1307,6 +1318,10 @@ final class ExtendedEncoder {
         Function<String, MappedFieldType> types = FIELD_TYPES.get();
         if (types == null) {
             return reason;
+        }
+        if (context != PainlessScore.AGGREGATION && context != PainlessScore.TERMS_SET && ExtendedScripts.on() == false) {
+            // One value read per document costs more here than in Lucene's expression engine.
+            return "script_expression_per_document";
         }
         try {
             Object expr = field(factory, "exprScript");
@@ -1556,6 +1571,10 @@ final class ExtendedEncoder {
             String dataClass = data.getClass().getName();
             byte[] numeric = null;
             if (dataClass.equals("org.opensearch.index.mapper.IdFieldMapper$IdFieldType$1$1")) {
+                if (ExtendedScripts.on() == false) {
+                    // The stored `_id` of every scored document is decompressed: twice stock's time.
+                    return "random_score_id";
+                }
                 out.write(3);
                 return null;
             }
@@ -1642,8 +1661,8 @@ final class ExtendedEncoder {
                 return "function_score_script";
             }
             Object prepared = painless(script, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE, "function_score");
-            if (prepared instanceof String) {
-                return "function_score_script";
+            if (prepared instanceof String why) {
+                return "script_date_values".equals(why) ? why : "function_score_script";
             }
             out.write(5);
             painlessScoreSpec(out, (Painless) prepared, factory, (String) field(f, "indexName"), (int) field(f, "shardId"), (org.opensearch.Version) field(f, "indexVersion"));

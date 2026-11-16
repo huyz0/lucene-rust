@@ -220,6 +220,17 @@ pub(crate) trait Scorer {
     ) -> Result<()> {
         docs_and_scores_one_by_one(self, up_to, live_docs, out)
     }
+    /// [`Self::next_docs_and_scores`] for a caller that never reads the
+    /// scores (a scorer built without scores): the batch's documents, each
+    /// scored `0`, without asking the scorer for any score.
+    fn next_docs_unscored(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        docs_one_by_one(self, up_to, live_docs, out)
+    }
     /// [`Self::next_docs_and_scores`] in the batches Lucene's scorer fills
     /// (`Scorer.nextDocsAndScores`' 64 live matches, unless Lucene's class
     /// overrides it), for a caller whose results depend on where batches
@@ -285,6 +296,32 @@ pub(crate) fn docs_and_scores_one_by_one<S: Scorer + ?Sized>(
         if live_docs.is_none_or(|l| l.get_doc(doc)) {
             out.docs.push(doc);
             out.scores.push(s.score()?);
+        }
+        doc = s.next_doc()?;
+        if s.two_phase() {
+            while doc != NO_MORE_DOCS && !s.matches()? {
+                doc = s.next_doc()?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`Scorer::next_docs_unscored`]'s default: the matches of the exact
+/// iterator, no score read.
+pub(crate) fn docs_one_by_one<S: Scorer + ?Sized>(
+    s: &mut S,
+    up_to: i32,
+    live_docs: Option<&FixedBitSet>,
+    out: &mut crate::bulk_scorer::DocScores,
+) -> Result<()> {
+    out.docs.clear();
+    out.scores.clear();
+    let mut doc = s.doc_id();
+    while doc < up_to && out.docs.len() < NEXT_DOCS_BATCH {
+        if live_docs.is_none_or(|l| l.get_doc(doc)) {
+            out.docs.push(doc);
+            out.scores.push(0.0);
         }
         doc = s.next_doc()?;
         if s.two_phase() {
