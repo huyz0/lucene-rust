@@ -754,7 +754,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 || ctx.queryCollectorManagers()
                     .keySet()
                     .stream()
-                    .anyMatch(k -> k != NonGlobalAggCollectorManager.class && k != GlobalAggCollectorManager.class))) return "aggregations";
+                    .anyMatch(k -> k != NonGlobalAggCollectorManager.class && k != GlobalAggCollectorManager.class))) {
+            return NativeAggregationTree.unsupportedReason(ctx);
+        }
         boolean minScore = ctx.minimumScore() != null;
         // min_score natively by score or behind a sort (MinimumScoreCollector around the sort's
         // collector: no competitive iterator); behind a scroll's later pages or terminate_after it
