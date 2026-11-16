@@ -445,7 +445,19 @@ comparator sorts by. It is not for a `scaled_float` (its points are the scaled l
 `mode: sum` key (a sum passes the values the points bound), and a nested key (the points are the children's):
 stock then returns top hits with documents missing, and which ones depends on the segment layout. The native
 path never skips for those keys, so its hits are the exact sort; `e2e/verify_sort_shapes.py` checks them
-against a brute-force oracle past the threshold, and against stock below it.
+against a brute-force oracle past the threshold, and against stock below it. A `half_float` and a `scaled_float`
+key (least or greatest value) skips with the field's points converted to the key they sort by, exactly: a
+`half_float` match-all top 10 over a million documents takes as long as a `float` one
+(`e2e/bench_sort_shapes.py` fails when a shape is slower than twice stock).
+
+## `_id` sort
+
+`_id` has no doc values: OpenSearch sorts it through field data uninverted from its terms, decoded to the id
+strings (`Uid.decodeId`) and compared as bytes. The native side does the same: it reads the segment's `_id`
+terms and postings once, decodes and sorts the ids, and keeps each document's rank (a few tens of MB per
+million documents, charged to the sort-column budget; a segment whose ids do not fit runs on stock). Over a
+million documents a top 10 takes 6 ms against stock's 135 ms, and 26 ms against 218 ms with `search_after`;
+`e2e/verify_id_sort.py` compares ids of every encoding (numeric, UTF-8, generated) with stock.
 
 ## Profile
 
