@@ -5184,6 +5184,10 @@ struct CountInBuckets<'b> {
     /// in order, so the next value nearly always falls in the same bucket.
     last: Option<(usize, i64, i64)>,
     counts: Vec<u64>,
+    /// Only values in `lo..=hi` count: a points range query on the same field
+    /// ahead of the histogram (OpenSearch's filter rewrite combines the two).
+    lo: i64,
+    hi: i64,
 }
 
 impl CountInBuckets<'_> {
@@ -5227,11 +5231,11 @@ impl lucene_codecs::points::IntersectVisitor for CountInBuckets<'_> {
             return Relation::CellCrossesQuery;
         };
         let below = |v: i64| self.starts.first().is_none_or(|&s| v < s);
-        if below(b) || a >= self.end {
+        if below(b) || a >= self.end || b < self.lo || a > self.hi {
             return Relation::CellOutsideQuery;
         }
         match (self.bucket_of(a), self.bucket_of(b)) {
-            (Some(x), Some(y)) if x == y => {
+            (Some(x), Some(y)) if x == y && a >= self.lo && b <= self.hi => {
                 self.current = Some(x);
                 Relation::CellInsideQuery
             }
@@ -5255,6 +5259,7 @@ impl lucene_codecs::points::IntersectVisitor for CountInBuckets<'_> {
         let bucket = self
             .decode
             .decode(packed)
+            .filter(|v| (self.lo..=self.hi).contains(v))
             .and_then(|v| self.value_bucket(v));
         self.add(bucket, 1);
     }
@@ -5263,6 +5268,7 @@ impl lucene_codecs::points::IntersectVisitor for CountInBuckets<'_> {
         let bucket = self
             .decode
             .decode(packed)
+            .filter(|v| (self.lo..=self.hi).contains(v))
             .and_then(|v| self.value_bucket(v));
         self.add(bucket, doc_ids.len() as u64);
     }
@@ -5335,10 +5341,20 @@ fn countable_points<'s>(
 /// from a segment's points -- valid when every document of the segment is a
 /// match (the caller's check) and the field has one point per document, so
 /// that the points hold each document's one value. `None` otherwise.
-fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<PointCounts>> {
+fn count_from_points(
+    node: &AggNode,
+    seg: &OpenSegment<'_>,
+    clip: Option<(i64, i64)>,
+) -> Result<Option<PointCounts>> {
     let Some((reader, num, pf, decode, kind)) = countable_points(node, seg) else {
         return Ok(None);
     };
+    // A clip (a points range on the histogram's own field) applies to a
+    // `date_histogram` over eight-byte points only.
+    if clip.is_some() && (!matches!(node, AggNode::DateHistogram { .. }) || pf.bytes_per_dim != 8) {
+        return Ok(None);
+    }
+    let (clip_lo, clip_hi) = clip.unwrap_or((i64::MIN, i64::MAX));
     let count = |side: &dyn Fn(i64) -> std::cmp::Ordering| -> Result<u64> {
         let mut v = CountIn {
             decode,
@@ -5369,6 +5385,7 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
             // Only buckets that `hard_bounds` keep: those starting below the
             // lower bound are dropped below, those at or past the upper one
             // never built, and cells outside them never decoded.
+            let (min, max) = (min.max(clip_lo), max.min(clip_hi));
             let first = hard_bounds.0.map_or(min, |m| min.max(m));
             let mut starts = Vec::new();
             let mut end = i64::MIN;
@@ -5400,6 +5417,8 @@ fn count_from_points(node: &AggNode, seg: &OpenSegment<'_>) -> Result<Option<Poi
                 current: None,
                 last: None,
                 counts: vec![0; starts.len()],
+                lo: clip_lo,
+                hi: clip_hi,
             };
             reader.count_points(num, &mut v)?;
             let out = starts
@@ -5456,6 +5475,23 @@ fn apply_counts(state: &mut State, counts: PointCounts) {
             }
         }
         _ => {}
+    }
+}
+
+/// The points range a clause is: itself, or the index side of an `IndexOrDocValuesQuery` (what
+/// OpenSearch builds for a range on an indexed date or number; both sides match the same documents).
+fn points_range_of(
+    clause: &lucene_search::query::Clause,
+) -> Option<&lucene_search::query::PointsRangeQuery> {
+    use lucene_search::extended_query::ExtendedQuery;
+    use lucene_search::query::Clause;
+    match clause {
+        Clause::PointsRange(q) => Some(q),
+        Clause::Extended(e) => match &**e {
+            ExtendedQuery::IndexOrDocValues(q) => points_range_of(&q.index_query),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -5588,6 +5624,37 @@ pub fn aggregate_tree_cached(
             scores: needs_scores.then_some(scored_chunk),
             doc_base: bases.get(i).copied().unwrap_or(0),
         };
+        // OpenSearch's filter rewrite with a points range on the histogram's own field ahead of it (a
+        // date_histogram under a range query on that date): counted from the points, clipped to the
+        // range, with no pass over the matches. Every node must count, on a whole segment without deletions.
+        if scoring.is_none()
+            && live.is_none()
+            && matches!(parts, [(0, hi, _)] if *hi >= reader.max_doc)
+        {
+            if let Some(q) = points_range_of(&clause) {
+                let mut counted = Vec::with_capacity(nodes.len());
+                for n in nodes {
+                    let on_field =
+                        matches!(n, AggNode::DateHistogram { field, .. } if *field == q.field);
+                    match if on_field {
+                        count_from_points(n, seg, Some((q.min, q.max)))?
+                    } else {
+                        None
+                    } {
+                        Some(c) => counted.push(c),
+                        None => break,
+                    }
+                }
+                if counted.len() == nodes.len() {
+                    if let [(_, _, states)] = parts {
+                        for (st, c) in states.iter_mut().zip(counted) {
+                            apply_counts(st, c);
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let matched = match scoring {
             Some(_) if needs_scores => Matches::Scored,
             Some((m, g)) => {
@@ -5713,7 +5780,7 @@ pub fn aggregate_tree_cached(
             let all = whole && scoring.is_none() && matches!(matched, Matches::All);
             if all && seg.live_docs.is_none() {
                 for ((n, s), l) in nodes.iter().zip(states.iter_mut()).zip(&mut leaves) {
-                    if let Some(counts) = count_from_points(n, seg)? {
+                    if let Some(counts) = count_from_points(n, seg, None)? {
                         apply_counts(s, counts);
                         l.done = true;
                     }
@@ -7837,7 +7904,7 @@ mod tests {
             let segments = plain.as_open_segments();
             // No points opened for the segment at all.
             let r = range("d", ValueKind::Double, vec![]);
-            assert!(count_from_points(&r, &segments[0]).unwrap().is_none());
+            assert!(count_from_points(&r, &segments[0], None).unwrap().is_none());
         }
         plain.open_points().unwrap();
         let segments = plain.as_open_segments();
@@ -7872,10 +7939,13 @@ mod tests {
             range("d", ValueKind::Float, vec![]),
         ];
         for node in &declined {
-            assert!(count_from_points(node, seg).unwrap().is_none(), "{node:?}");
+            assert!(
+                count_from_points(node, seg, None).unwrap().is_none(),
+                "{node:?}"
+            );
         }
         assert!(
-            count_from_points(&range("d", ValueKind::Double, vec![]), seg)
+            count_from_points(&range("d", ValueKind::Double, vec![]), seg, None)
                 .unwrap()
                 .is_some()
         );
@@ -8207,7 +8277,8 @@ mod tests {
                     }
                     *want.entry(k).or_default() += 1;
                 }
-                let Some(PointCounts::Keyed(got)) = count_from_points(&node, &segments[0]).unwrap()
+                let Some(PointCounts::Keyed(got)) =
+                    count_from_points(&node, &segments[0], None).unwrap()
                 else {
                     panic!("interval {interval}: not counted from the points")
                 };
@@ -8215,6 +8286,39 @@ mod tests {
                     got,
                     want.into_iter().collect::<Vec<_>>(),
                     "interval {interval} bounds {bounds:?}"
+                );
+            }
+            // Under a points range on the same field: only the values it holds count.
+            let node = AggNode::DateHistogram {
+                missing: None,
+                field: "ts".to_string(),
+                rounding,
+                hard_bounds: (None, None),
+                subs: vec![],
+            };
+            for clip in [
+                (0i64, 5_000i64),
+                (1234, 1234),
+                (-50, 30_000),
+                (7_001, 7_999),
+                (i64::MIN, 4_321),
+                (9_000, i64::MAX),
+                (60_000, 70_000),
+            ] {
+                let mut want: std::collections::BTreeMap<i64, u64> =
+                    std::collections::BTreeMap::new();
+                for &v in values.iter().filter(|&&v| v >= clip.0 && v <= clip.1) {
+                    *want.entry(rounding.round(v)).or_default() += 1;
+                }
+                let Some(PointCounts::Keyed(got)) =
+                    count_from_points(&node, &segments[0], Some(clip)).unwrap()
+                else {
+                    panic!("interval {interval} clip {clip:?}: not counted from the points")
+                };
+                assert_eq!(
+                    got,
+                    want.into_iter().collect::<Vec<_>>(),
+                    "interval {interval} clip {clip:?}"
                 );
             }
         }
@@ -8274,7 +8378,8 @@ mod tests {
                     }
                     *want.entry(k).or_default() += 1;
                 }
-                let Some(PointCounts::Keyed(got)) = count_from_points(&node, &segments[0]).unwrap()
+                let Some(PointCounts::Keyed(got)) =
+                    count_from_points(&node, &segments[0], None).unwrap()
                 else {
                     panic!("zone {zone_ms}: not counted from the points")
                 };
