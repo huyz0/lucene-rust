@@ -348,8 +348,8 @@ public final class SortEncoder {
             } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
                 return "sort_geo_nested";
             }
-            if (parts instanceof String reason) {
-                return "sort_geo_" + reason;
+            if (parts instanceof String) {
+                return "sort_geo_nested";
             }
         }
         byte flags = (byte) ((f.getReverse() ? REVERSE : 0) | mode | (parts != null ? NESTED_KEY : 0));
