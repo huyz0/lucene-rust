@@ -83,6 +83,8 @@ public final class SortEncoder {
      * max_children} follow its missing value.
      */
     static final byte NESTED_KEY = 16;
+    /** Key flag on a keyword key: the field's terms are read back from its postings (the {@code _id} field). */
+    static final byte UNINVERTED_KEY = 32;
     /** Blob options: track the max score over every match (track_scores). */
     static final byte TRACK_MAX_SCORE = 1;
     static final byte TERMINATE_AFTER = 2;
@@ -209,6 +211,9 @@ public final class SortEncoder {
             if (f instanceof SortedSetSortField ss && ss.getSelector() == SortedSetSelector.Type.MAX) {
                 flags |= MAX;
             }
+            if (type == STRING && idSort(f)) {
+                flags |= UNINVERTED_KEY;
+            }
             out.write(type);
             out.write(flags);
             if (type != SCORE && type != DOC) {
@@ -221,7 +226,10 @@ public final class SortEncoder {
                     writeLong(out, missing == SortField.STRING_LAST ? 1 : 0);
                 } else if (mode != null) {
                     // What the comparator source hands its comparator: `missingObject`.
-                    writeLong(out, comparable(type, mode.missing()));
+                    long missingBits = comparable(type, mode.missing());
+                    // A nested unsigned_long key's values cross with the sign bit flipped, so the
+                    // native side orders them as signed longs.
+                    writeLong(out, type == UNSIGNED_LONG && mode.parents() != null ? missingBits ^ Long.MIN_VALUE : missingBits);
                     if (type == SCALED_FLOAT) {
                         writeLong(out, Double.doubleToRawLongBits(mode.inverseScale()));
                     }
@@ -265,7 +273,9 @@ public final class SortEncoder {
                 if (after.fields[i] == null) {
                     return new Encoded(null, "search_after_null");
                 }
-                writeLong(out, comparable(type(unwrap(fields[i])), after.fields[i]));
+                SortField key = unwrap(fields[i]);
+                long bits = comparable(type(key), after.fields[i]);
+                writeLong(out, unsignedNested(key) ? bits ^ Long.MIN_VALUE : bits);
             }
         }
         out.write(
@@ -336,21 +346,60 @@ public final class SortEncoder {
             case AVG -> MODE_AVG;
             case MEDIAN -> MODE_MEDIAN;
         };
-        byte flags = (byte) ((f.getReverse() ? REVERSE : 0) | mode);
+        Object parts = null;
+        if (geo.nested() != null) {
+            try {
+                parts = nestedParts(geo.nested());
+            } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
+                return "sort_geo_nested";
+            }
+            if (parts instanceof String) {
+                return "sort_geo_nested";
+            }
+        }
+        byte flags = (byte) ((f.getReverse() ? REVERSE : 0) | mode | (parts != null ? NESTED_KEY : 0));
         out.write(GEO);
         out.write(flags);
         byte[] name = geo.field().getBytes(StandardCharsets.UTF_8);
         writeInt(out, name.length);
         out.writeBytes(name);
         writeLong(out, 0);
-        out.write(geo.lucene() ? 0 : 1);
+        out.write(geo.lucene() ? 0 : geo.plane() ? 2 : 1);
         writeInt(out, geo.lats().length);
         for (int i = 0; i < geo.lats().length; i++) {
             writeLong(out, Double.doubleToRawLongBits(geo.lats()[i]));
             writeLong(out, Double.doubleToRawLongBits(geo.lons()[i]));
         }
         writeLong(out, Double.doubleToRawLongBits(geo.unitMeters()));
+        if (parts != null) {
+            Object[] p = (Object[]) parts;
+            writeInt(out, ((byte[]) p[0]).length);
+            out.writeBytes((byte[]) p[0]);
+            writeInt(out, ((byte[]) p[1]).length);
+            out.writeBytes((byte[]) p[1]);
+            writeInt(out, (Integer) p[2]);
+        }
         return null;
+    }
+
+    /**
+     * Whether {@code f} sorts the {@code _id} field the way OpenSearch does, with the terms of its
+     * uninverted fielddata ({@code BytesRefFieldComparatorSource}, no nested path): every document
+     * has one id, so a mode and a missing value pick nothing.
+     */
+    static boolean idSort(SortField f) {
+        if (f.getClass() != SortField.class || f.getType() != SortField.Type.CUSTOM || !"_id".equals(f.getField())) {
+            return false;
+        }
+        Object src = f.getComparatorSource();
+        if (src == null || !src.getClass().getName().equals(SOURCES + "BytesRefFieldComparatorSource")) {
+            return false;
+        }
+        try {
+            return NESTED != null && NESTED.get(src) == null;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
     }
 
     /** The blob type of {@code f}, or -1 when it has none. */
@@ -366,6 +415,9 @@ public final class SortEncoder {
                 case CUSTOM -> {
                     if (shardKeyPrefix(f) != null) {
                         yield SHARD_DOC;
+                    }
+                    if (idSort(f)) {
+                        yield STRING;
                     }
                     if (numberSortScript(f) != null) {
                         yield SCRIPT;
@@ -505,34 +557,18 @@ public final class SortEncoder {
                 return "noskip";
             }
             Object nested = NESTED.get(src);
-            if (nested != null && type == UNSIGNED_LONG) {
-                return "nested";
-            }
             byte[] parents = null;
             byte[] children = null;
             int maxChildren = Integer.MAX_VALUE;
             if (nested != null) {
-                // XFieldComparatorSource.Nested: the root documents' BitSetProducer (the query
-                // it wraps), the inner query, the searcher that rewrites it, max_children.
-                if (!(nested instanceof IndexFieldData.XFieldComparatorSource.Nested n)) {
-                    return "nested";
+                Object parts = nestedParts(nested);
+                if (parts instanceof String reason) {
+                    return reason;
                 }
-                Object producer = NativeAggregationTree.get(n, "rootFilter");
-                org.apache.lucene.search.IndexSearcher searcher = (org.apache.lucene.search.IndexSearcher) NativeAggregationTree.get(
-                    n,
-                    "searcher"
-                );
-                if (!(NativeAggregationTree.get(producer, "query") instanceof org.apache.lucene.search.Query parentQuery)) {
-                    return "nested_parents";
-                }
-                parents = QueryEncoder.encode(searcher.rewrite(parentQuery), field -> true).blob();
-                children = QueryEncoder.encode(searcher.rewrite(n.getInnerQuery()), field -> true).blob();
-                if (parents == null || children == null) {
-                    return "nested_query";
-                }
-                if (n.getNestedSort() != null) {
-                    maxChildren = n.getNestedSort().getMaxChildren();
-                }
+                Object[] p = (Object[]) parts;
+                parents = (byte[]) p[0];
+                children = (byte[]) p[1];
+                maxChildren = (Integer) p[2];
             }
             Field data = Reflect.declared(src.getClass(), "indexFieldData");
             if (data == null || !(data.get(src) instanceof IndexNumericFieldData ifd)) {
@@ -571,15 +607,10 @@ public final class SortEncoder {
             byte flags = switch (((Enum<?>) SORT_MODE.get(src)).name()) {
                 case "MIN" -> 0;
                 case "MAX" -> MAX;
-                // A SUM's comparator skips with the points of the single values, which a sum can
-                // pass, so which documents it keeps depends on where skipping starts: it runs
-                // natively only where Lucene's does not skip ({@link #unlikeSkipping}). An average
-                // or median lies between a document's least and greatest value, so the same
-                // skipping is exact for them, and the native answer is Lucene's.
                 case "SUM" -> MODE_SUM;
                 case "AVG" -> MODE_AVG;
-                // MultiValueMode.MEDIAN has no nested pick, nor an unsigned one here.
-                case "MEDIAN" -> nested != null || type == UNSIGNED_LONG ? -1 : MODE_MEDIAN;
+                // MultiValueMode.MEDIAN has no nested pick.
+                case "MEDIAN" -> nested != null ? -1 : MODE_MEDIAN;
                 default -> -1;
             };
             if (flags < 0) {
@@ -599,6 +630,30 @@ public final class SortEncoder {
         } catch (ReflectiveOperationException | RuntimeException | java.io.IOException e) {
             return "error";
         }
+    }
+
+    /**
+     * A nested key's root filter and inner query as query blobs, and its {@code max_children}, as
+     * {@code Object[] {byte[], byte[], Integer}}; or the reason they cannot run natively.
+     */
+    static Object nestedParts(Object nested) throws ReflectiveOperationException, java.io.IOException {
+        // XFieldComparatorSource.Nested: the root documents' BitSetProducer (the query it wraps),
+        // the inner query, the searcher that rewrites it, max_children.
+        if (!(nested instanceof IndexFieldData.XFieldComparatorSource.Nested n)) {
+            return "nested";
+        }
+        Object producer = NativeAggregationTree.get(n, "rootFilter");
+        org.apache.lucene.search.IndexSearcher searcher = (org.apache.lucene.search.IndexSearcher) NativeAggregationTree.get(n, "searcher");
+        if (!(NativeAggregationTree.get(producer, "query") instanceof org.apache.lucene.search.Query parentQuery)) {
+            return "nested_parents";
+        }
+        byte[] parents = QueryEncoder.encode(searcher.rewrite(parentQuery), field -> true).blob();
+        byte[] children = QueryEncoder.encode(searcher.rewrite(n.getInnerQuery()), field -> true).blob();
+        if (parents == null || children == null) {
+            return "nested_query";
+        }
+        int maxChildren = n.getNestedSort() != null ? n.getNestedSort().getMaxChildren() : Integer.MAX_VALUE;
+        return new Object[] { parents, children, maxChildren };
     }
 
     private static Field field(Class<?> c, String name) {
@@ -708,6 +763,12 @@ public final class SortEncoder {
         return hits;
     }
 
+    /** Whether {@code f} is a nested {@code unsigned_long} key, whose native values have the sign bit flipped. */
+    static boolean unsignedNested(SortField f) {
+        Mode mode = type(f) == UNSIGNED_LONG ? mode(f) : null;
+        return mode != null && mode.parents() != null;
+    }
+
     /** A sort value as the native side compares it. */
     static long comparable(byte type, Object v) {
         return switch (type) {
@@ -730,7 +791,7 @@ public final class SortEncoder {
             case DOUBLE, SCALED_FLOAT, SCRIPT -> NumericUtils.sortableLongToDouble(v);
             case FLOAT, HALF_FLOAT -> NumericUtils.sortableIntToFloat((int) v);
             case SHARD_DOC -> v;
-            case UNSIGNED_LONG -> new java.math.BigInteger(Long.toUnsignedString(v));
+            case UNSIGNED_LONG -> new java.math.BigInteger(Long.toUnsignedString(unsignedNested(f) ? v ^ Long.MIN_VALUE : v));
             // Lucene's comparator holds the haversine sort key and reports its distance.
             case GEO -> GeoEncoder.luceneSort(f)
                 ? GeoEncoder.haversin2(NumericUtils.sortableLongToDouble(v))

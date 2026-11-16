@@ -48,6 +48,8 @@ def aggs():
     out = {}
     for fld in ["k", "n", "d", "ts", "t_none", "ip"]:
         out["missing " + fld] = {"a": {"missing": {"field": fld}}}
+    for fld in ["k", "n", "ts", "t_none"]:
+        out["missing param " + fld] = {"a": {"missing": {"field": fld, "missing": "1" if fld in ("n", "ts") else "x"}, "aggs": {"s": {"sum": {"field": "d"}}}}}
     out["missing + subs"] = {"a": {"missing": {"field": "k"}, "aggs": {"s": {"sum": {"field": "d"}}, "t": {"terms": {"field": "g"}}}}}
     out["missing under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"m": {"missing": {"field": "n"}}}}}
     for fld in ["n", "d", "f", "i", "ts"]:
@@ -64,6 +66,43 @@ def aggs():
     out["adjacency_matrix sep"] = {"a": {"adjacency_matrix": {"filters": flt, "separator": "|"}, "aggs": {"s": {"sum": {"field": "d"}}, "x": {"extended_stats": {"field": "f"}}}}}
     out["adjacency_matrix only"] = {"a": {"adjacency_matrix": {"filters": flt, "show_only_intersecting": True}}}
     out["adjacency under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"m": {"adjacency_matrix": {"filters": {"x": {"term": {"t": "w1"}}, "y": {"exists": {"field": "n"}}}}}}}}
+    def sc(src, **params):
+        return {"source": src, "lang": "painless", "params": params}
+
+    dbl = sc("doc['d'].size() == 0 ? null : doc['d'].value * params.m", m=2)
+    lng = sc("doc['n'].size() == 0 ? null : doc['n'].value % params.m", m=7)
+    arr = sc("doc['i'].size() == 0 ? null : [doc['i'].value, doc['i'].value + params.a]", a=1)
+    out["terms script long"] = {"a": {"terms": {"script": lng, "value_type": "long", "size": 50}}}
+    out["terms script long order key"] = {"a": {"terms": {"script": lng, "value_type": "long", "size": 5, "order": {"_key": "desc"}}}}
+    out["terms script double"] = {"a": {"terms": {"script": dbl, "value_type": "double", "size": 10}}}
+    out["terms script array"] = {"a": {"terms": {"script": arr, "value_type": "long", "size": 200}}}
+    out["terms script subs"] = {"a": {"terms": {"script": lng, "value_type": "long"}, "aggs": {"s": {"max": {"field": "d"}}, "e": {"extended_stats": {"field": "f"}}}}}
+    out["terms script missing"] = {"a": {"terms": {"script": lng, "value_type": "long", "missing": 99}}}
+    out["histogram script"] = {"a": {"histogram": {"script": dbl, "interval": 250}}}
+    out["histogram script subs"] = {"a": {"histogram": {"script": lng, "interval": 2}, "aggs": {"s": {"min": {"field": "d"}}}}}
+    out["histogram script bounds"] = {"a": {"histogram": {"script": dbl, "interval": 100, "min_doc_count": 0, "extended_bounds": {"min": -200, "max": 2200}}}}
+    out["range script"] = {"a": {"range": {"script": dbl, "ranges": [{"to": 0}, {"from": 0, "to": 500}, {"from": 500}]}}}
+    out["range script subs"] = {"a": {"range": {"script": lng, "ranges": [{"to": 3}, {"from": 3}]}, "aggs": {"s": {"max": {"field": "d"}}}}}
+    out["date_histogram script"] = {"a": {"date_histogram": {"script": sc("doc['n'].size() == 0 ? null : 1700000000000L + doc['n'].value * 3600000L"), "calendar_interval": "day"}}}
+    out["date_histogram script fixed"] = {"a": {"date_histogram": {"script": sc("doc['n'].size() == 0 ? null : 1700000000000L + doc['n'].value * 60000L + params.o", o=3600000), "fixed_interval": "6h"}, "aggs": {"c": {"sum": {"field": "n"}}}}}
+    out["terms script under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"t": {"terms": {"script": lng, "value_type": "long", "size": 3}}}}}
+    for m in ["sum", "avg", "min", "max", "stats", "extended_stats"]:
+        out["%s script" % m] = {"a": {m: {"script": dbl}}}
+    out["sum script long type"] = {"a": {"sum": {"script": sc("doc['d'].size() == 0 ? null : doc['d'].value", ), "missing": 1}}}
+    vp = sc("_value * params.m + 1", m=3)
+    ve = {"source": "_value * 3 + 1", "lang": "expression"}
+    for fld in ["d", "n", "f", "i"]:
+        for m in ["sum", "avg", "min", "max", "stats", "extended_stats"]:
+            out["%s field %s _value painless" % (m, fld)] = {"a": {m: {"field": fld, "script": vp}}}
+        out["sum field %s _value expression" % fld] = {"a": {"sum": {"field": fld, "script": ve}}}
+        out["stats field %s _value expression" % fld] = {"a": {"stats": {"field": fld, "script": ve}}}
+    out["sum _value missing"] = {"a": {"sum": {"field": "n", "script": vp, "missing": 5}}}
+    out["terms field _value"] = {"a": {"terms": {"field": "n", "script": sc("_value % params.m", m=7), "size": 20}}}
+    out["terms field _value double"] = {"a": {"terms": {"field": "d", "script": sc("Math.floor(_value / params.m)", m=100), "size": 20}}}
+    out["histogram field _value"] = {"a": {"histogram": {"field": "n", "script": sc("_value / params.m", m=2), "interval": 500}, "aggs": {"x": {"max": {"field": "n"}}}}}
+    out["range field _value"] = {"a": {"range": {"field": "d", "script": sc("_value * params.m", m=2), "ranges": [{"to": 0}, {"from": 0, "to": 800}, {"from": 800}]}}}
+    out["histogram field _value expression"] = {"a": {"histogram": {"field": "f", "script": ve, "interval": 20}}}
+    out["_value without a field"] = {"a": {"sum": {"script": sc("_value == null ? 4 : 5")}}}
     return out
 
 

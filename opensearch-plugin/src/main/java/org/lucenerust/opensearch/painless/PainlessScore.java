@@ -35,6 +35,7 @@ import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
+import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.query.IntervalFilterScript;
 import org.opensearch.search.aggregations.AggregationExecutionException;
 import org.opensearch.index.mapper.KeywordFieldMapper;
@@ -65,7 +66,7 @@ import org.opensearch.index.similarity.ScriptedSimilarity;
 public final class PainlessScore {
 
     /** What a field reads as in a script's {@code doc}, in the native node's numbering. */
-    public static final byte LONG = 0, DOUBLE = 1, FLOAT = 2, HALF_FLOAT = 3, BOOLEAN = 4, KEYWORD = 5, UNSUPPORTED = (byte) 254,
+    public static final byte LONG = 0, DOUBLE = 1, FLOAT = 2, HALF_FLOAT = 3, BOOLEAN = 4, KEYWORD = 5, DATE = 6, DATE_NANOS = 7, UNSUPPORTED = (byte) 254,
         UNMAPPED = (byte) 255;
 
     /** Scripts kept compiled; past this many the cache starts over. */
@@ -101,10 +102,10 @@ public final class PainlessScore {
 
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
-     * a number sort script, an aggregation script, a {@code terms_set} minimum, an
+     * a number sort script (and one reading {@code _score}), an aggregation script, a {@code terms_set} minimum, an
      * {@code intervals} filter script, a scripted similarity's script and its weight script.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, SORT_WITH_SCORE = 4, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
         SIMILARITY = 8, SIMILARITY_WEIGHT = 9;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
@@ -159,6 +160,12 @@ public final class PainlessScore {
         @Override
         public ScriptException rethrown(Object s, int doc, float score) {
             NumberSortScript script = (NumberSortScript) s;
+            script.setScorer(new org.apache.lucene.search.Scorable() {
+                @Override
+                public float score() {
+                    return score;
+                }
+            });
             script.setDocument(doc);
             try {
                 script.execute();
@@ -428,6 +435,7 @@ public final class PainlessScore {
 
     /** Takes the node's Painless engine from {@code scripts}; without it every script runs in Java. */
     public static void initialize(ScriptService scripts) {
+        scriptService = scripts;
         try {
             Field f = ScriptService.class.getDeclaredField("engines");
             f.setAccessible(true);
@@ -437,6 +445,47 @@ public final class PainlessScore {
         } catch (ReflectiveOperationException | RuntimeException e) {
             engine = null;
         }
+    }
+
+    private static volatile ScriptService scriptService;
+
+    /**
+     * The stored script {@code id} as the node's script service holds it now (the one a request
+     * naming {@code id} compiles), or null when there is none or the service cannot be asked.
+     */
+    public static org.opensearch.script.StoredScriptSource stored(String id) {
+        ScriptService scripts = scriptService;
+        if (scripts == null || id == null) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Method m = ScriptService.class.getDeclaredMethod("getScriptFromClusterState", String.class);
+            m.setAccessible(true);
+            return (org.opensearch.script.StoredScriptSource) m.invoke(scripts, id);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * {@code script} as an inline script: itself, or for a stored script the lang, source and
+     * options its id names now; null for a stored script that cannot be read.
+     */
+    public static org.opensearch.script.Script inline(org.opensearch.script.Script script) {
+        if (script == null || script.getType() != org.opensearch.script.ScriptType.STORED) {
+            return script;
+        }
+        org.opensearch.script.StoredScriptSource source = stored(script.getIdOrCode());
+        if (source == null) {
+            return null;
+        }
+        return new org.opensearch.script.Script(
+            org.opensearch.script.ScriptType.INLINE,
+            source.getLang(),
+            source.getSource(),
+            source.getOptions(),
+            script.getParams()
+        );
     }
 
     /** Uses {@code e} as the node's engine, with its default compiler settings. */
@@ -611,7 +660,13 @@ public final class PainlessScore {
     private static void undefaultedScripts(Object value, String key, java.util.Set<String> out) {
         if (value instanceof Map<?, ?> m) {
             if (key != null && key.endsWith("script") && m.get("id") != null) {
-                out.add(null);
+                // A stored script compiles with its own options, which its source does not show.
+                org.opensearch.script.StoredScriptSource stored = stored(String.valueOf(m.get("id")));
+                if (stored == null) {
+                    out.add(null);
+                } else if (stored.getOptions().keySet().stream().anyMatch(k -> "content_type".equals(k) == false)) {
+                    out.add(stored.getSource());
+                }
             }
             if (m.get("source") instanceof String src && m.get("options") instanceof Map<?, ?> options
                 && options.keySet().stream().anyMatch(k -> "content_type".equals(k) == false)) {
@@ -874,7 +929,7 @@ public final class PainlessScore {
 
     /**
      * How a field reads in {@code doc}: as {@code ScriptDocValues.Longs}, {@code Doubles}, {@code
-     * Booleans} or {@code Strings} from its doc values, else {@link #UNSUPPORTED} (mapped, read in
+     * Booleans}, {@code Strings} or {@code Dates} from its doc values, else {@link #UNSUPPORTED} (mapped, read in
      * Java) or {@link #UNMAPPED}.
      */
     public static byte fieldKind(MappedFieldType ft) {
@@ -892,6 +947,9 @@ public final class PainlessScore {
                 case HALF_FLOAT -> HALF_FLOAT;
                 default -> UNSUPPORTED;
             };
+        }
+        if (ft.getClass() == DateFieldMapper.DateFieldType.class) {
+            return ((DateFieldMapper.DateFieldType) ft).resolution() == DateFieldMapper.Resolution.NANOSECONDS ? DATE_NANOS : DATE;
         }
         if (ft.getClass() == BooleanFieldMapper.BooleanFieldType.class) {
             return BOOLEAN;

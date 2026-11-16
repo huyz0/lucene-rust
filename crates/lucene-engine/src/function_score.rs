@@ -57,6 +57,7 @@ use crate::painless_score::{opensearch_error, score_error, LeafScript, ScriptFun
 use crate::query_blob::{decode_node, hex, Cursor};
 use crate::status::Status;
 use lucene_painless::number::double_to_string;
+use lucene_util::geo::GeoEncodingUtils;
 
 /// `CombineFunction`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,6 +136,16 @@ pub enum Numeric {
     Double,
     /// `float`: `NumericUtils.sortableIntToFloat`, widened.
     Float,
+    /// `half_float`: `HalfFloatPoint.sortableShortToHalfFloat`, widened.
+    HalfFloat,
+    /// `unsigned_long`: the long's bits as an unsigned number
+    /// (`Numbers.unsignedLongToDouble`).
+    UnsignedLong,
+    /// `date_nanos`: the nanoseconds as milliseconds (`DateUtils.toMilliSeconds`).
+    Nanos,
+    /// `scaled_float`: the long times the inverse of the scaling factor
+    /// (`1d / scalingFactor`, the field data's own).
+    Scaled(f64),
 }
 
 impl Numeric {
@@ -146,8 +157,55 @@ impl Numeric {
                 let i = v as i32;
                 f64::from(f32::from_bits((i ^ ((i >> 31) & i32::MAX)) as u32))
             }
+            Numeric::HalfFloat => {
+                // `sortableShortToHalfFloat((short) v)`, then `Float.float16ToFloat`.
+                let bits = v as i16;
+                f64::from(half_to_f32((bits ^ ((bits >> 15) & 0x7fff)) as u16))
+            }
+            Numeric::UnsignedLong => {
+                if v >= 0 {
+                    v as f64
+                } else {
+                    // `(double) ((v >>> 1) | (v & 1)) * 2.0`: round to odd, then double.
+                    let u = v as u64;
+                    ((u >> 1) | (u & 1)) as i64 as f64 * 2.0
+                }
+            }
+            Numeric::Nanos => v.div_euclid(1_000_000) as f64,
+            Numeric::Scaled(inverse) => v as f64 * inverse,
         }
     }
+
+    /// The text `FieldData.toString` makes of the value `v` reads as (what
+    /// `random_score` hashes): `Long.toString` of an integral value, an
+    /// unsigned one in decimal, `Double.toString` of a floating one's double.
+    pub fn text(self, v: i64) -> String {
+        match self {
+            Numeric::Long => v.to_string(),
+            Numeric::Nanos => v.div_euclid(1_000_000).to_string(),
+            Numeric::UnsignedLong => (v as u64).to_string(),
+            _ => double_to_string(self.decode(v)),
+        }
+    }
+}
+
+/// `Float.float16ToFloat`: an IEEE half as a float.
+fn half_to_f32(h: u16) -> f32 {
+    let sign = u32::from(h >> 15) << 31;
+    let exp = u32::from((h >> 10) & 0x1f);
+    let frac = u32::from(h & 0x3ff);
+    let bits = match (exp, frac) {
+        (0, 0) => sign,
+        (0, f) => {
+            // A subnormal: normalise it.
+            let shift = f.leading_zeros().saturating_sub(21);
+            let f = (f << shift) & 0x3ff;
+            sign | (113u32.saturating_sub(shift) << 23) | (f << 13)
+        }
+        (0x1f, f) => sign | 0x7f80_0000 | (f << 13),
+        (e, f) => sign | (e.wrapping_add(112) << 23) | (f << 13),
+    };
+    f32::from_bits(bits)
 }
 
 /// `FieldValueFactorFunction.Modifier`.
@@ -235,12 +293,14 @@ impl MultiValue {
 pub enum RandomField {
     /// No field: the document's index-wide ID.
     DocId,
+    /// The `_id` field data: the document's `_id` term, as the index encodes it.
+    Id,
     /// A keyword's first (smallest) term.
     Keyword(String),
-    /// An integral numeric, boolean or date field (`LeafLongFieldData`):
-    /// its values as `Long.toString` prints them, the bytewise smallest
-    /// string hashed (`FieldData.toString` sorts them as bytes).
-    Long(String),
+    /// A numeric, boolean or date field: its values as `FieldData.toString`
+    /// prints them ([`Numeric::text`]), the bytewise smallest string hashed
+    /// (it sorts them as bytes).
+    Numeric(String, Numeric),
 }
 
 /// One `ScoreFunction`.
@@ -276,6 +336,18 @@ pub enum Function {
         offset: f64,
         mode: MultiValue,
     },
+    /// `DecayFunctionBuilder.GeoFieldDataScoreFunction`: the distance in
+    /// meters (`SloppyMath.haversinMeters`) from the origin to each
+    /// `geo_point` value.
+    GeoDecay {
+        decay: Decay,
+        field: String,
+        origin_lat: f64,
+        origin_lon: f64,
+        scale: f64,
+        offset: f64,
+        mode: MultiValue,
+    },
     /// `ScriptScoreFunction` over a Painless script the native runtime runs.
     Script(Arc<ScriptFunction>),
 }
@@ -292,9 +364,11 @@ impl Function {
     pub fn fields<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Function::Weight { inner, .. } => inner.fields(out),
-            Function::FieldValue { field, .. } | Function::Decay { field, .. } => out.push(field),
+            Function::FieldValue { field, .. }
+            | Function::Decay { field, .. }
+            | Function::GeoDecay { field, .. } => out.push(field),
             Function::Random {
-                field: RandomField::Keyword(f) | RandomField::Long(f),
+                field: RandomField::Keyword(f) | RandomField::Numeric(f, _),
                 ..
             } => out.push(f),
             Function::Script(s) => out.extend(s.fields()),
@@ -336,6 +410,7 @@ pub const FUNCTION_FIELD_VALUE: u8 = 2;
 pub const FUNCTION_RANDOM: u8 = 3;
 pub const FUNCTION_DECAY: u8 = 4;
 pub const FUNCTION_SCRIPT: u8 = 5;
+pub const FUNCTION_GEO_DECAY: u8 = 6;
 
 /// The node (kind `24`, its byte read at `start`).
 pub fn decode(
@@ -434,9 +509,41 @@ pub fn numeric(c: &mut Cursor<'_>) -> std::result::Result<Numeric, Status> {
         0 => Numeric::Long,
         1 => Numeric::Double,
         2 => Numeric::Float,
+        3 => Numeric::HalfFloat,
+        4 => Numeric::UnsignedLong,
+        5 => Numeric::Nanos,
+        6 => Numeric::Scaled(c.f64()?),
         other => {
             return Err(invalid(format!(
-                "query tree: unknown numeric field type {other} (expected 0..=2)"
+                "query tree: unknown numeric field type {other} (expected 0..=6)"
+            )))
+        }
+    })
+}
+
+fn decay(c: &mut Cursor<'_>) -> std::result::Result<Decay, Status> {
+    Ok(match c.u8()? {
+        0 => Decay::Gauss,
+        1 => Decay::Exp,
+        2 => Decay::Linear,
+        other => {
+            return Err(invalid(format!(
+                "query tree: unknown decay function {other} (expected 0..=3)"
+            )))
+        }
+    })
+}
+
+fn multi_value(c: &mut Cursor<'_>) -> std::result::Result<MultiValue, Status> {
+    Ok(match c.u8()? {
+        0 => MultiValue::Sum,
+        1 => MultiValue::Avg,
+        2 => MultiValue::Median,
+        3 => MultiValue::Min,
+        4 => MultiValue::Max,
+        other => {
+            return Err(invalid(format!(
+                "query tree: unknown multi-value mode {other} (expected 0..=4)"
             )))
         }
     })
@@ -448,10 +555,11 @@ pub fn numeric(c: &mut Cursor<'_>) -> std::result::Result<Numeric, Status> {
 /// |---|---|---|
 /// | `0` | nothing | `ScoreOne` (`weight` alone) |
 /// | `1` | `weight: f32`, the inner function (not another weight) | `WeightFactorFunction` |
-/// | `2` | `field` (its doc values), `name` (the requested name, in errors), `numeric: u8` (`0` long, `1` double, `2` float), `factor: f32`, `modifier: u8` (`Modifier`'s ordinal), `has_missing: u8`, `missing: f64` | `FieldValueFactorFunction` |
-/// | `3` | `salted_seed: i32`, `kind: u8` (`0` doc ID, `1` keyword + `field`, `2` long + `field`) | `RandomScoreFunction` |
+/// | `2` | `field` (its doc values), `name` (the requested name, in errors), `numeric: u8` (`0` long, `1` double, `2` float, `3` half float, `4` unsigned long, `5` date nanos, `6` scaled float and then the inverse scaling factor, an `f64`), `factor: f32`, `modifier: u8` (`Modifier`'s ordinal), `has_missing: u8`, `missing: f64` | `FieldValueFactorFunction` |
+/// | `3` | `salted_seed: i32`, `kind: u8` (`0` doc ID, `1` keyword + `field`, `2` numeric + `field` and a `numeric` as in tag `2`) | `RandomScoreFunction` |
 /// | `4` | `decay: u8` (`0` gauss, `1` exp, `2` linear), `field`, `numeric: u8`, `origin`, `scale` (processed), `offset` (`f64`), `mode: u8` (`MultiValueMode`'s ordinal) | a numeric or date decay function |
 /// | `5` | a Painless score script, checked ([`ScriptFunction::decode`]) | `ScriptScoreFunction` |
+/// | `6` | `decay: u8`, `field`, `origin_lat`, `origin_lon`, `scale` (processed), `offset` (`f64`), `mode: u8` | a `geo_point` decay function |
 pub fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<Function, Status> {
     Ok(match c.u8()? {
         FUNCTION_ONE => Function::One,
@@ -500,46 +608,45 @@ pub fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<
             let field = match c.u8()? {
                 0 => RandomField::DocId,
                 1 => RandomField::Keyword(field(c)?),
-                2 => RandomField::Long(field(c)?),
+                2 => {
+                    let field = field(c)?;
+                    RandomField::Numeric(field, numeric(c)?)
+                }
+                3 => RandomField::Id,
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown random score field kind {other} (expected 0..=2)"
+                        "query tree: unknown random score field kind {other} (expected 0..=3)"
                     )))
                 }
             };
             Function::Random { salted_seed, field }
         }
         FUNCTION_DECAY => {
-            let decay = match c.u8()? {
-                0 => Decay::Gauss,
-                1 => Decay::Exp,
-                2 => Decay::Linear,
-                other => {
-                    return Err(invalid(format!(
-                        "query tree: unknown decay function {other} (expected 0..=2)"
-                    )))
-                }
-            };
+            let decay = decay(c)?;
             let field = field(c)?;
             let numeric = numeric(c)?;
             let (origin, scale, offset) = (c.f64()?, c.f64()?, c.f64()?);
-            let mode = match c.u8()? {
-                0 => MultiValue::Sum,
-                1 => MultiValue::Avg,
-                2 => MultiValue::Median,
-                3 => MultiValue::Min,
-                4 => MultiValue::Max,
-                other => {
-                    return Err(invalid(format!(
-                        "query tree: unknown multi-value mode {other} (expected 0..=4)"
-                    )))
-                }
-            };
+            let mode = multi_value(c)?;
             Function::Decay {
                 decay,
                 field,
                 numeric,
                 origin,
+                scale,
+                offset,
+                mode,
+            }
+        }
+        FUNCTION_GEO_DECAY => {
+            let decay = decay(c)?;
+            let field = field(c)?;
+            let (origin_lat, origin_lon, scale, offset) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
+            let mode = multi_value(c)?;
+            Function::GeoDecay {
+                decay,
+                field,
+                origin_lat,
+                origin_lon,
                 scale,
                 offset,
                 mode,
@@ -673,8 +780,14 @@ pub enum LeafFunction<'c> {
         values: Box<dyn SortedSetDocValues + 'c>,
         salted_seed: i32,
     },
-    RandomLong {
+    RandomId {
+        reader: &'c lucene_search::directory_reader::SegmentReader,
+        field_number: Option<i32>,
+        salted_seed: i32,
+    },
+    RandomNumeric {
         values: Box<dyn SortedNumericDocValues + 'c>,
+        numeric: Numeric,
         salted_seed: i32,
     },
     Decay {
@@ -682,6 +795,16 @@ pub enum LeafFunction<'c> {
         decay: Decay,
         numeric: Numeric,
         origin: f64,
+        scale: f64,
+        offset: f64,
+        mode: MultiValue,
+        distances: Vec<f64>,
+    },
+    GeoDecay {
+        values: Box<dyn SortedNumericDocValues + 'c>,
+        decay: Decay,
+        origin_lat: f64,
+        origin_lon: f64,
         scale: f64,
         offset: f64,
         mode: MultiValue,
@@ -728,6 +851,17 @@ impl<'c> LeafFunction<'c> {
             },
             Function::Random {
                 salted_seed,
+                field: RandomField::Id,
+            } => LeafFunction::RandomId {
+                reader,
+                field_number: reader
+                    .field_infos()
+                    .field_by_name(crate::writer::ID_FIELD)
+                    .map(|i| i.number),
+                salted_seed: *salted_seed,
+            },
+            Function::Random {
+                salted_seed,
                 field: RandomField::Keyword(field),
             } => LeafFunction::RandomKeyword {
                 values: get_sorted_set(reader, field)?,
@@ -735,9 +869,10 @@ impl<'c> LeafFunction<'c> {
             },
             Function::Random {
                 salted_seed,
-                field: RandomField::Long(field),
-            } => LeafFunction::RandomLong {
+                field: RandomField::Numeric(field, numeric),
+            } => LeafFunction::RandomNumeric {
                 values: get_sorted_numeric(reader, field)?,
+                numeric: *numeric,
                 salted_seed: *salted_seed,
             },
             Function::Decay {
@@ -753,6 +888,24 @@ impl<'c> LeafFunction<'c> {
                 decay: *decay,
                 numeric: *numeric,
                 origin: *origin,
+                scale: *scale,
+                offset: *offset,
+                mode: *mode,
+                distances: Vec::new(),
+            },
+            Function::GeoDecay {
+                decay,
+                field,
+                origin_lat,
+                origin_lon,
+                scale,
+                offset,
+                mode,
+            } => LeafFunction::GeoDecay {
+                values: get_sorted_numeric(reader, field)?,
+                decay: *decay,
+                origin_lat: *origin_lat,
+                origin_lon: *origin_lon,
                 scale: *scale,
                 offset: *offset,
                 mode: *mode,
@@ -816,6 +969,27 @@ impl<'c> LeafFunction<'c> {
                 doc_base,
                 salted_seed,
             } => random(mix(doc_base.wrapping_add(doc), *salted_seed)),
+            LeafFunction::RandomId {
+                reader,
+                field_number,
+                salted_seed,
+            } => random(match field_number {
+                Some(number) => {
+                    let mut id = IdVisitor {
+                        number: *number,
+                        value: None,
+                    };
+                    let _ = reader.visit_stored_document(doc, &mut id)?;
+                    match id.value {
+                        Some(term) => lucene_util::string_helper::murmurhash3_x86_32(
+                            &decode_uid(&term),
+                            *salted_seed,
+                        ),
+                        None => *salted_seed,
+                    }
+                }
+                None => *salted_seed,
+            }),
             LeafFunction::RandomKeyword {
                 values,
                 salted_seed,
@@ -826,16 +1000,17 @@ impl<'c> LeafFunction<'c> {
             } else {
                 *salted_seed
             }),
-            LeafFunction::RandomLong {
+            LeafFunction::RandomNumeric {
                 values,
+                numeric,
                 salted_seed,
             } => random(if values.advance_exact(doc)? {
-                // `FieldData.toString`: every value as `Long.toString`, sorted
-                // as bytes (`SortingBinaryDocValues`) -- the first is the
-                // bytewise smallest string, not the smallest number.
+                // `FieldData.toString`: every value as text, sorted as bytes
+                // (`SortingBinaryDocValues`) -- the first is the bytewise
+                // smallest string, not the smallest number.
                 let mut first: Option<String> = None;
                 for _ in 0..values.doc_value_count() {
-                    let text = values.next_value()?.to_string();
+                    let text = numeric.text(values.next_value()?);
                     if first
                         .as_ref()
                         .is_none_or(|f| text.as_bytes() < f.as_bytes())
@@ -877,6 +1052,43 @@ impl<'c> LeafFunction<'c> {
                     0.0
                 };
                 decay.evaluate(distance, scale)
+            }
+            LeafFunction::GeoDecay {
+                values,
+                decay,
+                origin_lat,
+                origin_lon,
+                scale,
+                offset,
+                mode,
+                distances,
+            } => {
+                // `GeoFieldDataScoreFunction`: each point's meters from the
+                // origin, less the offset, at least `0`; no value is `0`.
+                let distance = if values.advance_exact(doc)? {
+                    distances.clear();
+                    for _ in 0..values.doc_value_count() {
+                        let encoded = values.next_value()?;
+                        let lat = GeoEncodingUtils::decode_latitude((encoded >> 32) as i32);
+                        let lon = GeoEncodingUtils::decode_longitude(encoded as i32);
+                        let meters = lucene_util::sloppy_math::haversin_meters(
+                            *origin_lat,
+                            *origin_lon,
+                            lat,
+                            lon,
+                        );
+                        distances.push(java_max(0.0, meters - *offset));
+                    }
+                    distances.sort_by(f64::total_cmp);
+                    if distances.is_empty() {
+                        0.0
+                    } else {
+                        mode.pick(distances)
+                    }
+                } else {
+                    0.0
+                };
+                decay.evaluate(distance, *scale)
             }
         })
     }
@@ -1018,5 +1230,142 @@ impl DoubleValues for FunctionScoreValues<'_> {
 
     fn double_value(&mut self) -> Result<f64> {
         Ok(self.value)
+    }
+}
+
+#[cfg(test)]
+mod numeric_tests {
+    use super::*;
+
+    #[test]
+    fn half_floats_decode_like_java() {
+        // `HalfFloatPoint.halfFloatToSortableShort(1.5f)`: 0x3e00; a negative flips its low bits.
+        assert_eq!(Numeric::HalfFloat.decode(0x3e00), 1.5);
+        assert_eq!(
+            Numeric::HalfFloat.decode(i64::from(0x3e00i16 ^ 0x7fffu16 as i16 | i16::MIN)),
+            -1.5
+        );
+        assert_eq!(Numeric::HalfFloat.decode(0), 0.0);
+        // The smallest subnormal, 2^-24.
+        assert_eq!(Numeric::HalfFloat.decode(1), 2.0f64.powi(-24));
+        assert_eq!(Numeric::HalfFloat.decode(0x7c00), f64::INFINITY);
+    }
+
+    #[test]
+    fn unsigned_longs_round_to_odd_then_double() {
+        assert_eq!(Numeric::UnsignedLong.decode(5), 5.0);
+        assert_eq!(
+            Numeric::UnsignedLong.decode(-1),
+            18_446_744_073_709_551_616.0
+        );
+        assert_eq!(
+            Numeric::UnsignedLong.decode(i64::MIN),
+            9_223_372_036_854_775_808.0
+        );
+    }
+
+    #[test]
+    fn float_text_is_the_double_of_the_float() {
+        for (v, text) in [
+            (89.22f32, "89.22000122070312"),
+            (84.22, "84.22000122070312"),
+            (3.5, "3.5"),
+        ] {
+            assert_eq!(Numeric::Float.text(i64::from(v.to_bits() as i32)), text);
+        }
+    }
+
+    #[test]
+    fn nanos_scaled_and_text() {
+        assert_eq!(Numeric::Nanos.decode(1_500_000_999), 1500.0);
+        assert_eq!(Numeric::Scaled(0.01).decode(250), 2.5);
+        assert_eq!(Numeric::Long.text(-7), "-7");
+        assert_eq!(Numeric::UnsignedLong.text(-1), "18446744073709551615");
+        assert_eq!(Numeric::Nanos.text(2_000_000), "2");
+        assert_eq!(Numeric::Double.text(1.5f64.to_bits() as i64), "1.5");
+    }
+}
+
+/// The `_id` stored field's bytes: the term the index holds for the document.
+struct IdVisitor {
+    number: i32,
+    value: Option<Vec<u8>>,
+}
+
+impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor {
+    fn needs_field(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<lucene_codecs::stored_fields::VisitStatus> {
+        use lucene_codecs::stored_fields::VisitStatus;
+        Ok(if number == self.number {
+            VisitStatus::Yes
+        } else if self.value.is_some() {
+            VisitStatus::Stop
+        } else {
+            VisitStatus::No
+        })
+    }
+
+    fn binary_field(
+        &mut self,
+        _number: i32,
+        value: &[u8],
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.value = Some(value.to_vec());
+        Ok(())
+    }
+}
+
+/// `Uid.decodeId`, as the bytes `new BytesRef(String)` makes of its text: a leading `0xFF` marks
+/// UTF-8 text, `0xFE` digits packed two to a byte (a trailing `0xF` nibble pads), anything else
+/// URL-safe unpadded Base64 of the bytes (after a `0xFD` escape byte, which is dropped).
+fn decode_uid(id: &[u8]) -> Vec<u8> {
+    match id.split_first() {
+        None => Vec::new(),
+        Some((0xFF, text)) => String::from_utf8_lossy(text).into_owned().into_bytes(),
+        Some((0xFE, packed)) => {
+            let mut out = Vec::with_capacity(packed.len().saturating_mul(2));
+            let mut rest = packed.iter();
+            while let Some(b) = rest.next() {
+                out.push(b'0'.wrapping_add(b >> 4));
+                if rest.len() == 0 && b & 15 == 15 {
+                    break;
+                }
+                out.push(b'0'.wrapping_add(b & 15));
+            }
+            out
+        }
+        Some((first, tail)) => {
+            let raw = if *first == 0xFD { tail } else { id };
+            const A: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = Vec::with_capacity(raw.len().div_ceil(3).saturating_mul(4));
+            for chunk in raw.chunks(3) {
+                let mut n = 0u32;
+                for b in chunk {
+                    n = n << 8 | u32::from(*b);
+                }
+                n <<= 8u32.wrapping_mul(3u32.wrapping_sub(chunk.len() as u32));
+                for k in 0..=chunk.len() as u32 {
+                    out.push(A[(n >> 18u32.wrapping_sub(6u32.wrapping_mul(k)) & 63) as usize]);
+                }
+            }
+            out
+        }
+    }
+}
+
+#[cfg(test)]
+mod uid_tests {
+    use super::decode_uid;
+
+    #[test]
+    fn decodes_the_three_encodings() {
+        assert_eq!(decode_uid(&[0xFF, b'a', b'b']), b"ab");
+        assert_eq!(decode_uid(&[0xFE, 0x12, 0x3F]), b"123");
+        assert_eq!(decode_uid(&[0xFE, 0x12, 0x34]), b"1234");
+        assert_eq!(decode_uid(&[0x01, 0x02, 0x03, 0x04]), b"AQIDBA");
+        assert_eq!(decode_uid(&[0xFD, 0xFF, 0xFE]), b"__4");
     }
 }

@@ -255,7 +255,7 @@ public final class QueryEncoder {
     /** {@code NODE_MULTI_PHRASE_PREFIX} in {@code queries.rs}: {@code match_phrase_prefix}, for the highlighter. */
     private static final byte NODE_MULTI_PHRASE_PREFIX = 52;
     /** {@code NODE_MORE_LIKE_THIS} in {@code queries.rs}: {@code more_like_this}, for the plain highlighter. */
-    static final byte NODE_MORE_LIKE_THIS_KIND = 56;
+    static final byte NODE_MORE_LIKE_THIS_KIND = 57;
 
     /** Whether {@code q} holds a phrase or span query: their positions are what the highlighter's phrase helper reads. */
     private static boolean hasPositional(Query q) {

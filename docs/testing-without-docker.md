@@ -111,6 +111,9 @@ Windows hosts showed 2-3x.
 - Linux only (x64 and arm64). On Windows use WSL2.
 - A node needs 1.1 GB of anonymous memory with a 512 MB heap and about 1.6 GB with 1 GB, so a
   `MEM_LIMIT` below that gets the JVM OOM-killed (`nodectl.py oom NAME` says so).
+- Where egress goes through a TLS-intercepting proxy, `check-ml-plugin.py` and `check-neural-plugin.py` need
+  `KEEP_JAVA_TOOL_OPTIONS=1`: the stock node's DJL downloads libtorch, and the node gets the proxy and truststore
+  `-D` flags of the shell's `JAVA_TOOL_OPTIONS`.
 - Nothing is isolated beyond what `--cpus` and `--mem-limit` give: ports `9200-9203`, `9240-9262`,
   `9270` and `19200+` are used by the scripts, one run at a time per box.
 - The tarball is the release artifact, not the Docker image: `config/` differs slightly (security

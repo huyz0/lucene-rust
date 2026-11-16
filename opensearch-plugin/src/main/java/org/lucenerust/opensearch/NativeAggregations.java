@@ -467,10 +467,11 @@ public final class NativeAggregations {
     @SuppressWarnings("unchecked")
     static Metric scriptMetric(AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
         Kind kind = kind(f);
-        if (kind == null || kind == Kind.EXTENDED) {
+        if (kind == null) {
             return null;
         }
-        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), 0, 0);
+        double sigma = kind == Kind.EXTENDED ? (double) declared(f, "sigma") : 0;
+        return new Metric(f.name(), kind, config.fieldContext() == null ? "" : config.fieldContext().field(), DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), sigma, 0);
     }
 
     /**
@@ -594,7 +595,7 @@ public final class NativeAggregations {
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> metadata = (Map<String, Object>) METADATA.get(f);
-        return new Terms(f.name(), config.fieldContext().field(), config.format(), metadata, order, thresholds, showError);
+        return new Terms(f.name(), config.fieldContext() == null ? "" : config.fieldContext().field(), config.format(), metadata, order, thresholds, showError);
     }
 
     /** A private field of {@code f}'s own class, or null when it has none. */

@@ -88,7 +88,7 @@ fn the_terms_dictionary_answers_lookups_as_lucene_does() {
             let ord: i64 = p.next().unwrap().parse().unwrap();
             let (data, entry) = terms_entry(&reader, seg, field);
             let mut dict = TermsDict::open(data, entry).unwrap();
-            assert_eq!(dict.seek_ord(ord).unwrap(), unhex(v).as_slice(), "{k}");
+            assert_eq!(dict.lookup_ord(ord).unwrap(), unhex(v).as_slice(), "{k}");
             checked += 1;
         }
     }
@@ -141,7 +141,7 @@ fn the_terms_dictionary_answers_lookups_as_lucene_does() {
         }
         if let Some(sampled) = ords.get(&id) {
             let (ord, term) = &sampled[n % sampled.len()];
-            let got = dict.seek_ord(*ord).unwrap();
+            let got = dict.lookup_ord(*ord).unwrap();
             if got != term.as_slice() {
                 failures.push(format!("seg {seg} {field} ord {ord}: got {got:?}"));
             }
@@ -170,6 +170,8 @@ fn sort(spec: &str) -> Vec<SortField> {
             SortField {
                 nested: None,
                 rewritten: None,
+                convert: lucene_search::top_field::ChildConvert::None,
+                uninverted: false,
                 field: p[0].to_string(),
                 ty,
                 selector: if p[2] == "max" {
@@ -384,11 +386,11 @@ fn the_terms_dictionary_reports_what_it_cannot_answer() {
     let mut dict = TermsDict::open(data, entry).unwrap();
     assert_eq!(dict.ord(), -1, "before any seek");
     let size = dict.size();
-    let last = dict.seek_ord(size - 1).unwrap().to_vec();
-    assert_eq!((dict.ord(), dict.term()), (size - 1, last.as_slice()));
+    let last = dict.lookup_ord(size - 1).unwrap().to_vec();
+    assert_eq!((dict.ord(), dict.raw_term()), (size - 1, last.as_slice()));
     // An ordinal outside the dictionary is an error, not a term.
-    assert!(dict.seek_ord(-1).is_err());
-    assert!(dict.seek_ord(size).is_err());
+    assert!(dict.lookup_ord(-1).is_err());
+    assert!(dict.lookup_ord(size).is_err());
     // Past the last term: the end, and an insertion point after every ordinal.
     let mut past = last.clone();
     past.push(0xff);

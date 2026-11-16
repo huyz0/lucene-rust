@@ -1661,7 +1661,7 @@ pub(crate) fn doc_values_rewrite<'a>(
     // count. The same ordinals either way, so the same matches.
     let mut collected: Vec<i64> = Vec::new();
     while ord < size {
-        let term = dict.seek_ord(ord).map_err(store)?;
+        let term = dict.raw_term_at(ord).map_err(store)?;
         if !within(term) {
             break;
         }

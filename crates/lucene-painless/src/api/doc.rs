@@ -84,6 +84,8 @@ pub enum DocKind {
     Booleans,
     /// `ScriptDocValues.Strings`: keyword.
     Strings,
+    /// `ScriptDocValues.Dates`: `ZonedDateTime`s in UTC.
+    Dates,
 }
 
 impl DocKind {
@@ -93,6 +95,7 @@ impl DocKind {
             DocKind::Doubles => "org.opensearch.index.fielddata.ScriptDocValues$Doubles",
             DocKind::Booleans => "org.opensearch.index.fielddata.ScriptDocValues$Booleans",
             DocKind::Strings => "org.opensearch.index.fielddata.ScriptDocValues$Strings",
+            DocKind::Dates => "org.opensearch.index.fielddata.ScriptDocValues$Dates",
         }
     }
 }
@@ -122,6 +125,23 @@ impl DocValues {
         let i = int_arg(index)?;
         if self.items.is_empty() {
             return Err(Throw::new("java.lang.IllegalStateException", NO_VALUE));
+        }
+        if self.kind == DocKind::Dates {
+            // `Dates.get` checks the document's count before it reads the
+            // array.
+            let n = self.items.len();
+            return match usize::try_from(i) {
+                Ok(x) if x < n => Ok(self.items[x].clone()),
+                Ok(_) => Err(Throw::new(
+                    "java.lang.IndexOutOfBoundsException",
+                    format!("attempted to fetch the [{i}] date when there are only [{n}] dates."),
+                )),
+                Err(_) => Err(Throw::index(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    i64::from(i),
+                    n,
+                )),
+            };
         }
         // Java reads its reused array past the document's values: a stale
         // value of an earlier document, or an index error.

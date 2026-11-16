@@ -61,8 +61,10 @@ pub const SORT_SHARD_DOC: u8 = 8;
 /// [`SORT_NESTED`], the field, then the missing float as its sortable int
 /// (`i64`).
 pub const SORT_HALF_FLOAT: u8 = 9;
-/// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
-/// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
+/// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but the
+/// missing value is the unsigned long's bits. A nested one (flag
+/// [`SORT_NESTED`]) crosses with its missing value, `search_after` values and
+/// hit values at their bits with the sign bit flipped.
 pub const SORT_UNSIGNED_LONG: u8 = 10;
 /// A Painless `_script` key of type `number`
 /// ([`crate::painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
@@ -90,6 +92,9 @@ pub const SORT_MODE_MEDIAN: u8 = 12;
 /// root filter and the inner query (query blobs, `len: i32` each) and
 /// `max_children: i32`.
 pub const SORT_NESTED: u8 = 16;
+/// Key flag on a keyword key ([`SORT_STRING`]): the field has no doc values, its terms are
+/// read back from the postings (`_id`).
+pub const SORT_UNINVERTED: u8 = 32;
 /// Sort-blob options: track the max score over every match.
 pub const SORT_TRACK_MAX_SCORE: u8 = 1;
 /// Sort-blob options: `terminate_after`, its count (`i32`, at least 1)
@@ -184,7 +189,11 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
     let mut keys = Vec::new();
     for _ in 0..n {
         let ty = c.u8()?;
-        let flags = c.u8()?;
+        let mut flags = c.u8()?;
+        let uninverted = ty == SORT_STRING && flags & SORT_UNINVERTED != 0;
+        if uninverted {
+            flags &= !SORT_UNINVERTED;
+        }
         if flags & !(SORT_REVERSE | SORT_MAX | SORT_MODE_MASK | SORT_NESTED) != 0 {
             return Err(bad(format!("sort blob: unknown flags {flags:#x}")));
         }
@@ -201,16 +210,12 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             ));
             continue;
         }
-        // A nested `half_float` or `scaled_float` key is a `Float` or `Double` key whose
-        // child values are converted as they are read.
-        let nested_converted =
-            flags & SORT_NESTED != 0 && matches!(ty, SORT_HALF_FLOAT | SORT_SCALED_FLOAT);
-        if !nested_converted
-            && matches!(
-                ty,
-                SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG | SORT_SCALED_FLOAT
-            )
-        {
+        // A nested `half_float`, `scaled_float` or `unsigned_long` key is a `Float`, `Double`
+        // or `Long` key whose child values are converted as they are read.
+        // Without a nested path, a `half_float` or `scaled_float` key is read the same way, so it
+        // skips with the field's points as any numeric key does.
+        let nested_converted = flags & SORT_NESTED != 0 && ty == SORT_UNSIGNED_LONG;
+        if !nested_converted && matches!(ty, SORT_SHARD_DOC | SORT_UNSIGNED_LONG) {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
             continue;
         }
@@ -218,7 +223,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
-            SORT_LONG => SortType::Long,
+            SORT_LONG | SORT_UNSIGNED_LONG => SortType::Long,
             SORT_INT => SortType::Int,
             SORT_DOUBLE => SortType::Double,
             SORT_FLOAT | SORT_HALF_FLOAT => SortType::Float,
@@ -254,6 +259,8 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
                 ChildConvert::ScaledFloat { inverse }
             }
             SORT_HALF_FLOAT => ChildConvert::HalfFloat,
+            // The key's values (and its missing value, as sent) have the sign bit flipped.
+            SORT_UNSIGNED_LONG => ChildConvert::Unsigned,
             _ => ChildConvert::None,
         };
         let numeric = matches!(
@@ -284,7 +291,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             let children = boolean_of(&decode_query(c.bytes()?)?);
             let max_children = c.i32()?;
             Some(Arc::new(NestedSort {
-                convert,
+                convert: convert.clone(),
                 parents,
                 children,
                 max_children,
@@ -298,8 +305,14 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             reverse: flags & SORT_REVERSE != 0,
             selector,
             missing,
+            convert: if nested.is_none() {
+                convert
+            } else {
+                lucene_search::top_field::ChildConvert::None
+            },
             nested,
             rewritten: None,
+            uninverted,
         });
     }
     let after = match c.u8()? {
@@ -388,7 +401,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
 
 /// The flags a geo-distance key may carry: [`SORT_REVERSE`], [`SORT_MAX`]
 /// and a mode.
-pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
+pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK | SORT_NESTED;
 
 /// A [`SORT_GEO_DISTANCE`] key, after its type and flags: the field
 /// (`len: i32`, UTF-8), the missing value (`i64`, unused: missing documents
@@ -399,6 +412,7 @@ pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// |---|---|---|
 /// | `0` | `LatLonPointSortField` (`LatLonDocValuesField.newDistanceSort`): one origin, metres, ascending, no mode | the haversine sort key (`haversin2` of it is the distance) |
 /// | `1` | OpenSearch's `GeoDistanceSortBuilder` comparator ([`OpenSearchGeoDistanceSort`](lucene_search::document::geo::OpenSearchGeoDistanceSort)): `ARC`, any origins, unit, mode (flags as a numeric key's) and order | the distance in the unit |
+/// | `2` | the same with `GeoDistance.PLANE` (`GeoUtils.planeDistance`, `StrictMath.cos`) | the distance in the unit |
 ///
 /// Each value crosses as `double_to_sortable_long` of the double. Returns
 /// the key, and whether it is Lucene's comparator (which takes no
@@ -428,7 +442,7 @@ pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<S
         (0, true) => Selector::Max,
         (SORT_MODE_SUM, false) => Selector::Sum,
         (SORT_MODE_AVG, false) => Selector::Avg,
-        (SORT_MODE_MEDIAN, false) if ty != SORT_UNSIGNED_LONG => Selector::Median,
+        (SORT_MODE_MEDIAN, false) => Selector::Median,
         _ => return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}"))),
     };
     if flags & SORT_NESTED != 0 {
@@ -506,6 +520,55 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
         )));
     }
     let reverse = flags & SORT_REVERSE != 0;
+    if flags & SORT_NESTED != 0 {
+        // OpenSearch's comparator under a nested sort: the children's distances picked per
+        // root. `MultiValueMode.MEDIAN` has no nested pick.
+        let selector = match (flags & SORT_MODE_MASK, flags & SORT_MAX != 0) {
+            (0, false) => Selector::Min,
+            (0, true) => Selector::Max,
+            (SORT_MODE_SUM, false) => Selector::Sum,
+            (SORT_MODE_AVG, false) => Selector::Avg,
+            _ => {
+                return Err(invalid(format!(
+                    "sort blob: nested geo-distance flags {flags:#x}"
+                )))
+            }
+        };
+        if comparator != 1 && comparator != 2 {
+            return Err(invalid(format!(
+                "sort blob: nested geo-distance comparator {comparator} (want 1 or 2)"
+            )));
+        }
+        let parents = boolean_of(&decode_query(c.bytes()?)?);
+        let children = boolean_of(&decode_query(c.bytes()?)?);
+        let max_children = c.i32()?;
+        let sort = OpenSearchGeoDistanceSort {
+            origins,
+            unit_meters,
+            mode: DistanceMode::Min,
+            plane: comparator == 2,
+        };
+        return Ok((
+            SortField {
+                field: field.to_string(),
+                ty: SortType::Double,
+                reverse,
+                selector,
+                // `replaceMissing(+Infinity)`, whatever the order.
+                missing: lucene_util::numeric_utils::double_to_sortable_long(f64::INFINITY),
+                nested: Some(Arc::new(NestedSort {
+                    convert: ChildConvert::Geo(Arc::new(sort)),
+                    parents,
+                    children,
+                    max_children,
+                })),
+                rewritten: None,
+                convert: lucene_search::top_field::ChildConvert::None,
+                uninverted: false,
+            },
+            false,
+        ));
+    }
     let source: std::sync::Arc<dyn lucene_search::top_field::FieldComparatorSource> =
         match comparator {
             0 => {
@@ -522,7 +585,7 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     .map_err(|e| invalid(format!("sort blob: {e}")))?
                     .comparator_source()
             }
-            1 => {
+            1 | 2 => {
                 let mode = match flags & SORT_MODE_MASK {
                     0 if flags & SORT_MAX != 0 => DistanceMode::Max,
                     0 => DistanceMode::Min,
@@ -537,11 +600,12 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     origins,
                     unit_meters,
                     mode,
+                    plane: comparator == 2,
                 })
             }
             other => {
                 return Err(invalid(format!(
-                    "sort blob: geo-distance comparator {other} (want 0 or 1)"
+                    "sort blob: geo-distance comparator {other} (want 0, 1 or 2)"
                 )))
             }
         };
@@ -737,13 +801,18 @@ pub fn search_collapsed_blobs(
         JvmQuery::Boolean(b) => b,
     };
     let needs_scores = track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
-    let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if needs_scores {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if needs_scores {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -905,10 +974,7 @@ pub fn rescore_hits(
         },
         JvmQuery::Boolean(b) => b,
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let owned = h
         .reader
         .field_norms_by_field(&fields)
@@ -1202,14 +1268,27 @@ pub fn aggregate_counting_blobs_seen(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
-    // min_score scores the query: its fields' norms.
-    let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if min_score.is_some() {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    // min_score scores the query: its fields' norms.
+    let q = if min_score.is_some() {
+        q
+    } else {
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if min_score.is_some() {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1340,12 +1419,9 @@ pub fn count_terminates_blobs(
         slices
     };
     let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+        crate::clauses::norm_field_names(&q)
     } else {
-        Vec::new()
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1453,13 +1529,18 @@ pub fn search_sorted(
     }
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
-    let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if needs_scores {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if needs_scores {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1612,10 +1693,7 @@ pub fn search(
                     .map_err(map_search_error)?
             }
             JvmQuery::Boolean(q) => {
-                let fields: Vec<String> = crate::clauses::clause_field_names(q)
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect();
+                let fields: Vec<String> = crate::clauses::norm_field_names(q);
                 let owned = h
                     .reader
                     .field_norms_by_field(&fields)
@@ -1773,10 +1851,7 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
             .collect(),
         ..Default::default()
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&union)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&union);
     let union_query = JvmQuery::Boolean(union);
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -2576,10 +2651,7 @@ pub fn search_min_score(
         })
         .collect();
     let q = boolean_of(query);
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let owned = h
         .reader
         .field_norms_by_field(&fields)

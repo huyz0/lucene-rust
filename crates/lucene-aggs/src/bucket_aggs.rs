@@ -407,6 +407,12 @@ impl TermsOrder {
 pub trait ScriptValuesSource: Send + Sync + std::fmt::Debug {
     /// The values on one segment.
     fn open<'a>(&self, reader: &'a SegmentReader) -> Result<Box<dyn ScriptValues + 'a>>;
+
+    /// The kind of the node's field when the script maps its values
+    /// (`_value`) instead of replacing them.
+    fn input_kind(&self) -> Option<ValueKind> {
+        None
+    }
 }
 
 /// A [`ScriptValuesSource`] on one segment.
@@ -414,6 +420,11 @@ pub trait ScriptValues {
     /// Appends `doc`'s values to `out`, ascending, in the node's value
     /// kind's encoding (none: the document has no value).
     fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()>;
+
+    /// Appends the script's result for each of `doc`'s field `inputs`, each
+    /// the script's `_value` (`ValuesSource.Numeric.WithScript`), ascending,
+    /// in the node's value kind's encoding.
+    fn mapped(&mut self, doc: i32, inputs: &[f64], out: &mut Vec<i64>) -> Result<()>;
 }
 
 /// One aggregation of a request, with its sub-aggregations.
@@ -541,6 +552,9 @@ pub enum AggNode {
         kind: ValueKind,
         shard_size: usize,
         order: TermsOrder,
+        /// A script's values in place of `field`'s, in the node's value
+        /// encoding.
+        script: Option<Arc<dyn ScriptValuesSource>>,
         subs: Vec<AggNode>,
     },
     Histogram {
@@ -553,6 +567,9 @@ pub enum AggNode {
         offset: f64,
         /// `hard_bounds`, each end optional.
         hard_bounds: (Option<f64>, Option<f64>),
+        /// A script's values in place of `field`'s, in the node's value
+        /// encoding.
+        script: Option<Arc<dyn ScriptValuesSource>>,
         subs: Vec<AggNode>,
     },
     DateHistogram {
@@ -562,6 +579,9 @@ pub enum AggNode {
         missing: Option<i64>,
         rounding: DateRounding,
         hard_bounds: (Option<i64>, Option<i64>),
+        /// A script's values in place of `field`'s, in the node's value
+        /// encoding.
+        script: Option<Arc<dyn ScriptValuesSource>>,
         subs: Vec<AggNode>,
     },
     /// The ranges as `(from, to)`, in `RangeAggregator`'s (sorted) order.
@@ -572,6 +592,9 @@ pub enum AggNode {
         missing: Option<i64>,
         kind: ValueKind,
         ranges: Vec<(f64, f64)>,
+        /// A script's values in place of `field`'s, in the node's value
+        /// encoding.
+        script: Option<Arc<dyn ScriptValuesSource>>,
         subs: Vec<AggNode>,
     },
     /// `filters` (`other` adds the bucket for documents matching none);
@@ -1844,6 +1867,8 @@ enum Col<'a> {
     Scores(&'a RefCell<ScoredChunk>, i32),
     /// A script's values.
     Script(Box<dyn ScriptValues + 'a>),
+    /// A script mapping a field's values.
+    Mapped(Box<MappedCol<'a>>),
     None,
 }
 
@@ -2076,6 +2101,25 @@ impl Leaf<'_> {
             }
             Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
             Col::Script(s) => s.values(doc, &mut self.buf)?,
+            Col::Mapped(m) => {
+                let m = &mut **m;
+                m.raw.clear();
+                match &mut m.values {
+                    Values::Absent => {}
+                    Values::Single(r) => {
+                        if let Some(v) = r.value(doc)? {
+                            m.raw.push(v);
+                        }
+                    }
+                    Values::Multi(r) => r.values(doc, &mut m.raw)?,
+                }
+                m.input.clear();
+                m.input
+                    .extend(m.raw.iter().map(|&v| metric_aggs::to_double(m.kind, v)));
+                if !m.input.is_empty() {
+                    m.script.mapped(doc, &m.input, &mut self.buf)?;
+                }
+            }
             Col::Filters(_) | Col::Scores(..) | Col::None => {}
         }
         if self.buf.is_empty() {
@@ -2102,6 +2146,57 @@ struct SegmentView<'s, 'a> {
     doc_base: i32,
 }
 
+/// The column of a node whose script maps its field's values (`_value`).
+fn mapped_col<'a>(node: &AggNode, reader: &'a SegmentReader) -> Result<Option<Col<'a>>> {
+    let (field, script) = match node {
+        AggNode::Metric {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::NumericTerms {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::Histogram {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::DateHistogram {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::Range {
+            field,
+            script: Some(script),
+            ..
+        } => (field, script),
+        _ => return Ok(None),
+    };
+    let Some(kind) = script.input_kind() else {
+        return Ok(None);
+    };
+    Ok(Some(Col::Mapped(Box::new(MappedCol {
+        values: metric_aggs::open_values(reader, field)?,
+        script: script.open(reader)?,
+        kind,
+        raw: Vec::new(),
+        input: Vec::new(),
+    }))))
+}
+
+/// A field's values and the script that maps each (`_value`).
+struct MappedCol<'a> {
+    values: Values<'a>,
+    script: Box<dyn ScriptValues + 'a>,
+    kind: ValueKind,
+    raw: Vec<i64>,
+    input: Vec<f64>,
+}
+
 fn open_leaf<'a>(
     node: &AggNode,
     view: &SegmentView<'a, 'a>,
@@ -2109,83 +2204,104 @@ fn open_leaf<'a>(
     state: &mut State,
 ) -> Result<Leaf<'a>> {
     let reader = view.reader;
-    let col = match node {
-        AggNode::Metric {
-            script: Some(script),
-            ..
-        } => Col::Script(script.open(reader)?),
-        AggNode::Metric {
-            field,
-            kind,
-            source,
-            ..
-        } => {
-            // The points shortcut (a top-level `min`/`max` over a match-all)
-            // answers the segment without visiting a document.
-            let bound = if view.top && *source != Source::DocValues && node.missing().is_none() {
-                let spec = metric_aggs::MetricSpec {
-                    field: field.clone(),
-                    kind: *kind,
-                    source: *source,
-                    needs: metric_aggs::NEED_ALL,
+    let col = if let Some(mapped) = mapped_col(node, reader)? {
+        mapped
+    } else {
+        match node {
+            AggNode::Metric {
+                script: Some(script),
+                ..
+            }
+            | AggNode::NumericTerms {
+                script: Some(script),
+                ..
+            }
+            | AggNode::Histogram {
+                script: Some(script),
+                ..
+            }
+            | AggNode::DateHistogram {
+                script: Some(script),
+                ..
+            }
+            | AggNode::Range {
+                script: Some(script),
+                ..
+            } => Col::Script(script.open(reader)?),
+            AggNode::Metric {
+                field,
+                kind,
+                source,
+                ..
+            } => {
+                // The points shortcut (a top-level `min`/`max` over a match-all)
+                // answers the segment without visiting a document.
+                let bound = if view.top && *source != Source::DocValues && node.missing().is_none()
+                {
+                    let spec = metric_aggs::MetricSpec {
+                        field: field.clone(),
+                        kind: *kind,
+                        source: *source,
+                        needs: metric_aggs::NEED_ALL,
+                    };
+                    metric_aggs::leaf_point_bound(view.seg, &spec)?
+                } else {
+                    None
                 };
-                metric_aggs::leaf_point_bound(view.seg, &spec)?
-            } else {
-                None
-            };
-            if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
-                let is_min = *source == Source::PointsMin;
-                with_metric_col!(states, st => metric_aggs::MetricSlot::bound(slot(st, 0), is_min, v));
+                if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
+                    let is_min = *source == Source::PointsMin;
+                    with_metric_col!(states, st => metric_aggs::MetricSlot::bound(slot(st, 0), is_min, v));
+                }
+                Col::Values(metric_aggs::open_values(reader, field)?, bound.is_some())
             }
-            Col::Values(metric_aggs::open_values(reader, field)?, bound.is_some())
-        }
-        AggNode::SignificantTerms { text: Some(_), .. } => Col::None,
-        AggNode::Cardinality {
-            field,
-            kind: CardinalityKind::Keyword,
-            ..
-        }
-        | AggNode::Terms { field, .. }
-        | AggNode::SignificantTerms {
-            field,
-            numeric: false,
-            ..
-        } => {
-            let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
-            Col::Ords(lucene_search::global_ords::open_ords(reader, field)?.0, map)
-        }
-        AggNode::Cardinality { field, .. }
-        | AggNode::Percentiles { field, .. }
-        | AggNode::SignificantTerms { field, .. }
-        | AggNode::NumericTerms { field, .. }
-        | AggNode::Histogram { field, .. }
-        | AggNode::DateHistogram { field, .. }
-        | AggNode::Range { field, .. } => {
-            Col::Values(metric_aggs::open_values(reader, field)?, false)
-        }
-        AggNode::Filters { filters, .. } => {
-            let mut bits = Vec::with_capacity(filters.len());
-            for f in filters {
-                bits.push(filter_bits(view.seg, f, globals)?);
+            AggNode::SignificantTerms { text: Some(_), .. } => Col::None,
+            AggNode::Cardinality {
+                field,
+                kind: CardinalityKind::Keyword,
+                ..
             }
-            Col::Filters(bits)
-        }
-        AggNode::SortedTopHits { .. } => match view.scores {
-            Some(chunk) => Col::Scores(chunk, view.doc_base),
-            None => Col::None,
-        },
-        AggNode::TopHits { .. } => match view.scores {
-            Some(chunk) => Col::Scores(chunk, view.doc_base),
-            None => {
-                return Err(lucene_search::Error::TermsAggType(
-                    "top_hits without scores".to_string(),
-                ))
+            | AggNode::Terms { field, .. }
+            | AggNode::SignificantTerms {
+                field,
+                numeric: false,
+                ..
+            } => {
+                let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
+                Col::Ords(lucene_search::global_ords::open_ords(reader, field)?.0, map)
             }
-        },
-        AggNode::Global { .. }
-        | AggNode::Nested { .. }
-        | AggNode::ReverseNested { .. }
-        | AggNode::Composite { .. } => Col::None,
+            AggNode::Cardinality { field, .. }
+            | AggNode::Percentiles { field, .. }
+            | AggNode::SignificantTerms { field, .. }
+            | AggNode::NumericTerms { field, .. }
+            | AggNode::Histogram { field, .. }
+            | AggNode::DateHistogram { field, .. }
+            | AggNode::Range { field, .. } => {
+                Col::Values(metric_aggs::open_values(reader, field)?, false)
+            }
+            AggNode::Filters { filters, .. } => {
+                let mut bits = Vec::with_capacity(filters.len());
+                for f in filters {
+                    bits.push(filter_bits(view.seg, f, globals)?);
+                }
+                Col::Filters(bits)
+            }
+            AggNode::SortedTopHits { .. } => match view.scores {
+                Some(chunk) => Col::Scores(chunk, view.doc_base),
+                None => Col::None,
+            },
+            AggNode::TopHits { .. } => match view.scores {
+                Some(chunk) => Col::Scores(chunk, view.doc_base),
+                None => {
+                    return Err(lucene_search::Error::TermsAggType(
+                        "top_hits without scores".to_string(),
+                    ))
+                }
+            },
+            AggNode::Global { .. }
+            | AggNode::Nested { .. }
+            | AggNode::ReverseNested { .. }
+            | AggNode::Composite { .. } => Col::None,
+        }
     };
     let mut subs = Vec::with_capacity(node.subs().len());
     let sub_view = SegmentView {
@@ -2336,6 +2452,7 @@ fn composite_leaf<'a>(
                 subs: Vec::new(),
             },
             _ => AggNode::NumericTerms {
+                script: None,
                 field: s.field.clone(),
                 missing: None,
                 kind: ValueKind::Long,
@@ -3916,7 +4033,7 @@ fn collect_composite_sorted(
     let mut table: Vec<u32> = Vec::new();
     for ord in from..map.len() {
         let term = dict
-            .seek_ord(ord as i64)
+            .lookup_ord(ord as i64)
             .map_err(|e| lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
         let docs = terms
             .postings_with_flags(
@@ -4315,7 +4432,7 @@ fn any_order(l: &Leaf<'_>) -> bool {
         && l.text.is_none()
         && l.filter.is_none()
         && l.composite.is_none()
-        && !matches!(l.col, Col::Script(_) | Col::Scores(..))
+        && !matches!(l.col, Col::Script(_) | Col::Mapped(_) | Col::Scores(..))
         && l.subs.iter().all(any_order)
 }
 
@@ -5584,6 +5701,7 @@ fn countable_points<'s>(
             field,
             subs,
             missing: None,
+            script: None,
             ..
         } if subs.is_empty() => (field, ValueKind::Long),
         AggNode::Range {
@@ -5592,6 +5710,7 @@ fn countable_points<'s>(
             subs,
             ranges,
             missing: None,
+            script: None,
         } if subs.is_empty() && ranges.iter().all(|r| !r.0.is_nan() && !r.1.is_nan()) => {
             (field, *kind)
         }
@@ -6385,12 +6504,37 @@ impl<'r> TermLookup<'r> {
         self.with_term(global, field, g, <[u8]>::to_vec)
     }
 
-    /// `f` of global ordinal `g`'s term, read in place.
+    /// `f` of global ordinal `g`'s term as the field shows it (`lookupOrd`: masked, when the
+    /// field is), read in place. For everything that is emitted, hashed or compared the way
+    /// Lucene compares looked-up values.
     fn with_term<T>(
         &mut self,
         global: &GlobalOrds,
         field: &str,
         g: i64,
+        f: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T> {
+        self.read_term(global, field, g, false, f)
+    }
+
+    /// `f` of global ordinal `g`'s term as stored, whatever the mask: what `lookupTerm` and a
+    /// `TermsEnum` compare by. Never for emitting.
+    fn with_raw_term<T>(
+        &mut self,
+        global: &GlobalOrds,
+        field: &str,
+        g: i64,
+        f: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T> {
+        self.read_term(global, field, g, true, f)
+    }
+
+    fn read_term<T>(
+        &mut self,
+        global: &GlobalOrds,
+        field: &str,
+        g: i64,
+        raw: bool,
         f: impl FnOnce(&[u8]) -> T,
     ) -> Result<T> {
         let (Some(seg), Some(ord)) = (global.first_segment(g), global.first_segment_ord(g)) else {
@@ -6418,9 +6562,12 @@ impl<'r> TermLookup<'r> {
                 "{field}: segment {seg} has no dictionary"
             )));
         };
-        Ok(f(dict.seek_ord(ord).map_err(|e| {
-            lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e))
-        })?))
+        let to_error = |e| lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e));
+        Ok(f(if raw {
+            dict.raw_term_at(ord).map_err(to_error)?
+        } else {
+            dict.lookup_ord(ord).map_err(to_error)?
+        }))
     }
 }
 
@@ -6476,7 +6623,7 @@ fn resolve_missing(
         let mut found = None;
         while low < high {
             let mid = low + (high - low) / 2;
-            match lookup.with_term(g, field, mid, |t| t.cmp(term))? {
+            match lookup.with_raw_term(g, field, mid, |t| t.cmp(term))? {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid,
                 std::cmp::Ordering::Equal => {
@@ -7435,6 +7582,7 @@ mod tests {
             needs: metric_aggs::NEED_COUNT | metric_aggs::NEED_SUM,
         };
         let terms = |kind, subs: &Vec<AggNode>| AggNode::NumericTerms {
+            script: None,
             field: "f".into(),
             missing: None,
             kind,
@@ -7443,6 +7591,7 @@ mod tests {
             subs: subs.clone(),
         };
         let histogram = |kind, interval, hard_bounds, subs: &Vec<AggNode>| AggNode::Histogram {
+            script: None,
             field: "f".into(),
             missing: None,
             kind,
@@ -7452,6 +7601,7 @@ mod tests {
             subs: subs.clone(),
         };
         let range = |kind, ranges: Vec<(f64, f64)>, subs: &Vec<AggNode>| AggNode::Range {
+            script: None,
             field: "f".into(),
             missing: None,
             kind,
@@ -8098,6 +8248,7 @@ mod tests {
                     ranked.sort_by_key(|k| k.0);
                 }
                 let node = AggNode::NumericTerms {
+                    script: None,
                     missing: None,
                     field: field.to_string(),
                     kind,
@@ -8132,6 +8283,7 @@ mod tests {
                 // Without sub-aggregations a multi-valued window counts
                 // straight from the values read ahead: the same buckets.
                 let bare = AggNode::NumericTerms {
+                    script: None,
                     missing: None,
                     field: field.to_string(),
                     kind,
@@ -8168,6 +8320,7 @@ mod tests {
     fn counting_from_points_declines_what_it_cannot_count_exactly() {
         let reader = fixture("metric_aggs_index");
         let range = |field: &str, kind, subs: Vec<AggNode>| AggNode::Range {
+            script: None,
             missing: None,
             field: field.to_string(),
             kind,
@@ -8201,6 +8354,7 @@ mod tests {
                 vec![AggNode::Global { subs: vec![] }],
             ),
             AggNode::Range {
+                script: None,
                 missing: None,
                 field: "d".to_string(),
                 kind: ValueKind::Double,
@@ -8305,6 +8459,7 @@ mod tests {
     fn a_pass_over_the_bucket_limit_stops_before_building_results() {
         let reader = fixture("metric_aggs_index");
         let histogram = |subs| AggNode::Histogram {
+            script: None,
             missing: None,
             field: "i".to_string(),
             kind: ValueKind::Long,
@@ -8317,6 +8472,7 @@ mod tests {
             histogram(Vec::new()),
             histogram(vec![metric("ml", ValueKind::Long)]),
             AggNode::Range {
+                script: None,
                 missing: None,
                 field: "i".to_string(),
                 kind: ValueKind::Long,
@@ -8370,6 +8526,7 @@ mod tests {
                 (1e9, 0.0, (None, None)),
             ] {
                 let node = AggNode::Histogram {
+                    script: None,
                     missing: None,
                     field: field.to_string(),
                     kind,
@@ -8466,6 +8623,7 @@ mod tests {
                 .flat_map(|r| [(r, vec![]), (r, vec![metric(field, kind)])])
             {
                 let node = AggNode::Range {
+                    script: None,
                     missing: None,
                     field: field.to_string(),
                     kind,
@@ -8537,6 +8695,7 @@ mod tests {
             };
             for bounds in [(None, None), (Some(0), Some(20_000))] {
                 let node = AggNode::DateHistogram {
+                    script: None,
                     missing: None,
                     field: "ts".to_string(),
                     rounding,
@@ -8565,6 +8724,7 @@ mod tests {
             }
             // Under a points range on the same field: only the values it holds count.
             let node = AggNode::DateHistogram {
+                script: None,
                 missing: None,
                 field: "ts".to_string(),
                 rounding,
@@ -8638,6 +8798,7 @@ mod tests {
             let mid = rounding.round(values[5000]);
             for bounds in [(None, None), (Some(mid), Some(mid + 90 * DAY))] {
                 let node = AggNode::DateHistogram {
+                    script: None,
                     missing: None,
                     field: "ts".to_string(),
                     rounding,
@@ -8694,6 +8855,7 @@ mod tests {
                         vec![metric("d", ValueKind::Double)]
                     };
                     let node = AggNode::DateHistogram {
+                        script: None,
                         missing: None,
                         field: field.to_string(),
                         rounding,
@@ -8743,6 +8905,7 @@ mod tests {
             offset: 3,
         };
         let date = |field: &str, subs| AggNode::DateHistogram {
+            script: None,
             missing: None,
             field: field.to_string(),
             rounding,
@@ -8750,6 +8913,7 @@ mod tests {
             subs,
         };
         let histogram = |field: &str, kind, subs| AggNode::Histogram {
+            script: None,
             missing: None,
             field: field.to_string(),
             kind,
@@ -8797,6 +8961,7 @@ mod tests {
             ),
             histogram("md", ValueKind::Double, vec![metric("i", ValueKind::Long)]),
             AggNode::Range {
+                script: None,
                 missing: None,
                 field: "d".to_string(),
                 kind: ValueKind::Double,
@@ -9120,6 +9285,7 @@ mod tests {
             want.sort_unstable();
             for subs in [Vec::new(), vec![all()]] {
                 let node = AggNode::NumericTerms {
+                    script: None,
                     field: field.to_string(),
                     missing: Some(missing),
                     kind,

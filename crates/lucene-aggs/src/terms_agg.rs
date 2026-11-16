@@ -607,7 +607,7 @@ fn select_global(
         let Some(dict) = dicts[seg].as_mut() else {
             continue;
         };
-        buckets.push((dict.seek_ord(ord).map_err(store_err)?.to_vec(), n));
+        buckets.push((dict.lookup_ord(ord).map_err(store_err)?.to_vec(), n));
     }
     Ok(TermsResult {
         buckets,

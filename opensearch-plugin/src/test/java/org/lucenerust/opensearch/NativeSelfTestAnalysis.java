@@ -146,6 +146,8 @@ final class NativeSelfTestAnalysis {
     static Map<String, Analyzer> analyzers() throws Exception {
         Map<String, Analyzer> m = new LinkedHashMap<>();
         m.put("standard", new StandardAnalyzer());
+        // Lucene's own ThaiTokenizer: the native one takes its word boundaries from this JVM's iterator.
+        m.put("thai", new ThaiAnalyzer());
         m.put("thai_dictionary", new RustAnalysis.RustAnalyzer(RustAnalysis.THAI, ThaiAnalyzer.getDefaultStopSet()));
         m.put("thai_dictionary, html strip, no stop words", new Analyzer() {
             @Override
@@ -387,6 +389,30 @@ final class NativeSelfTestAnalysis {
                 .addTokenFilter("typeAsSynonym", "prefix", "T_", "ignore", "<NUM>,<ALPHANUM>", "synFlagsMask", "3")
                 .build()
         );
+        // Entries a plain word list cannot hold: a comment marker, edge whitespace, an empty word.
+        m.put(
+            "stop words a plain list cannot hold",
+            chain(
+                org.apache.lucene.analysis.core.WhitespaceTokenizer::new,
+                ts -> new org.apache.lucene.analysis.StopFilter(ts, new CharArraySet(List.of("#tag", " x", "wi ", "", "50%", "the"), false)),
+                r -> r
+            )
+        );
+        m.put(
+            "fixed shingles",
+            b().withTokenizer("standard").addTokenFilter("fixedShingle", "shingleSize", "2", "tokenSeparator", "~", "fillerToken", "?").build()
+        );
+        m.put(
+            "fixed shingles after stop words",
+            b().withTokenizer("standard").addTokenFilter("stop", "words", "common.txt").addTokenFilter("fixedShingle", "shingleSize", "3").build()
+        );
+        m.put(
+            "fixed shingles around a graph",
+            b().withTokenizer("whitespace")
+                .addTokenFilter("wordDelimiterGraph", "catenateWords", "1", "preserveOriginal", "1")
+                .addTokenFilter("fixedShingle", "shingleSize", "2")
+                .build()
+        );
         m.put(
             "capitalization",
             b().withTokenizer("whitespace")
@@ -486,17 +512,10 @@ final class NativeSelfTestAnalysis {
     /** Analyzers that must stay in Java, with the reason they must give. */
     static Map<String, Map.Entry<Analyzer, String>> refused() throws Exception {
         Map<String, Map.Entry<Analyzer, String>> m = new LinkedHashMap<>();
-        // The Rust port has no dictionary segmentation for Thai.
-        m.put("thai", Map.entry(new ThaiAnalyzer(), "analysis_ThaiTokenizer"));
         // A dictionary with no known files (a plugin's own, say).
         m.put(
             "hunspell without its files",
             Map.entry(hunspell(false, true, dictionary(utf8(EN_AFF), List.of(utf8(EN_DIC)), false, false), true, false), "analysis_hunspell")
-        );
-        // The port carries Lucene's GITHUB#16577 fix for FixedShingleFilter; the bundled 10.5.1 does not have it.
-        m.put(
-            "fixed shingles",
-            Map.entry(b().withTokenizer("standard").addTokenFilter("fixedShingle", "shingleSize", "2").build(), "analysis_FixedShingleFilter")
         );
         return m;
     }
@@ -646,6 +665,11 @@ final class NativeSelfTestAnalysis {
             ts -> new KoreanNumberFilter(new KoreanPartOfSpeechStopFilter(ts, EnumSet.of(POS.Tag.JKS, POS.Tag.JKB, POS.Tag.EF, POS.Tag.SP))),
             r -> r
         ));
+        chains.put("nori with no stop tags", chain(
+            () -> new KoreanTokenizer(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, ko, KoreanTokenizer.DecompoundMode.NONE, false, false),
+            ts -> new KoreanPartOfSpeechStopFilter(ts, EnumSet.noneOf(POS.Tag.class)),
+            r -> r
+        ));
         for (Map.Entry<String, Analyzer> e : chains.entrySet()) {
             AnalyzerSpec.Spec spec = AnalyzerSpec.describeUnchecked(e.getValue(), "body");
             check.accept(spec.ok(), "kuromoji/nori chain described: " + e.getKey() + " (" + spec.reason() + ")");
@@ -736,6 +760,7 @@ final class NativeSelfTestAnalysis {
             described++;
             List<String> texts = new ArrayList<>(AnalyzerSpec.PROBES);
             for (int i = 0; i < 60; i++) texts.add(randomText(r));
+            texts.addAll(List.of(THAI));
             for (String text : texts) {
                 AnalyzerSpec.Tokens java = AnalyzerSpec.java(a, "body", text);
                 AnalyzerSpec.Tokens rust = AnalyzerSpec.rust(spec.blob(), "body", text);

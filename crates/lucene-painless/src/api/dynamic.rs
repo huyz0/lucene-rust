@@ -109,19 +109,33 @@ pub fn brace_store(vm: &mut Vm, args: &[Value]) -> Result<Value, Throw> {
     }
 }
 
-fn getter_names(name: &str) -> [String; 2] {
-    // The getters scripts read most, without formatting their names.
-    match name {
-        "value" => return ["getValue".into(), "isValue".into()],
-        "values" => return ["getValues".into(), "isValues".into()],
-        _ => {}
+/// `get<Name>` and `is<Name>` for a property `name`, built in a stack buffer when the name is
+/// short ASCII (every property a script reads), so a getter call allocates nothing.
+fn with_getter_names<T>(name: &str, f: impl FnOnce(&str, &str) -> T) -> T {
+    const MAX: usize = 48;
+    let b = name.as_bytes();
+    if !b.is_empty() && b.len() <= MAX && b[0].is_ascii() && name.is_ascii() {
+        let mut get = [0u8; MAX + 3];
+        let mut is = [0u8; MAX + 2];
+        get[..3].copy_from_slice(b"get");
+        is[..2].copy_from_slice(b"is");
+        get[3..3 + b.len()].copy_from_slice(b);
+        is[2..2 + b.len()].copy_from_slice(b);
+        get[3] = b[0].to_ascii_uppercase();
+        is[2] = b[0].to_ascii_uppercase();
+        if let (Ok(g), Ok(i)) = (
+            std::str::from_utf8(&get[..3 + b.len()]),
+            std::str::from_utf8(&is[..2 + b.len()]),
+        ) {
+            return f(g, i);
+        }
     }
     let mut c = name.chars();
     let cap = match c.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
     };
-    [format!("get{cap}"), format!("is{cap}")]
+    f(&format!("get{cap}"), &format!("is{cap}"))
 }
 
 /// `receiver.name` on a `def` receiver, as `Def.lookupGetter` resolves it:
@@ -165,8 +179,9 @@ pub fn try_getter(vm: &mut Vm, recv: &Value, name: &str) -> Option<Result<Value,
             return Some(r);
         }
     }
-    let [get, is] = getter_names(name);
-    try_call(vm, recv, &get, &[]).or_else(|| try_call(vm, recv, &is, &[]))
+    with_getter_names(name, |get, is| {
+        try_call(vm, recv, get, &[]).or_else(|| try_call(vm, recv, is, &[]))
+    })
 }
 
 /// A public field of a host object (`ZonedDateTime` has none; doc values

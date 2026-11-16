@@ -236,7 +236,7 @@ fn built_lane(lane: usize) {
     // Lower than the fixture corpus's rate by construction: this FST's body
     // is mostly 400 terms' worth of label and output *payload*, where a flip
     // is a different well-formed key or output rather than a structural
-    // error. Tripwire against the 12.9% measured at c31 over the whole buffer;
+    // error. Tripwire against the 12.9% measured over the whole buffer;
     // a lane of it sees 3.5% to 22% (offsets of one residue line up with the
     // record layout), so the per-lane bar is lower.
     assert!(

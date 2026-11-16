@@ -36,6 +36,7 @@ import org.opensearch.search.aggregations.bucket.terms.LongTerms;
 import org.opensearch.search.aggregations.bucket.terms.StringTerms;
 import org.opensearch.search.aggregations.metrics.AbstractHyperLogLogPlusPlus;
 import org.opensearch.search.aggregations.support.CoreValuesSourceType;
+import org.opensearch.search.aggregations.support.ValuesSource;
 import org.opensearch.search.aggregations.support.ValuesSourceConfig;
 import org.opensearch.search.internal.SearchContext;
 
@@ -89,6 +90,8 @@ public final class NativeAggregationTree {
     static final byte REVERSE_NESTED = 16;
     /** A metric over a Painless script's values ({@link ScriptMetricNode}). */
     static final byte SCRIPT_METRIC = 18;
+    /** A prefix: the next node reads a Painless script's values ({@code AGG_SCRIPT_VALUES}). */
+    static final byte SCRIPT_VALUES = 19;
     /** {@code date_histogram} unit codes, in the order {@code agg_tree.rs} lists them. */
     private static final Rounding.DateTimeUnit[] UNITS = {
         Rounding.DateTimeUnit.WEEK_OF_WEEKYEAR,
@@ -117,6 +120,14 @@ public final class NativeAggregationTree {
         final List<Node> subs;
         /** The field's {@code missing} value in its column's encoding ({@link #missing}), or null. */
         Long missing;
+        /** A Painless script's spec whose values replace the field's, or null. */
+        byte[] script;
+        /** The script's values are longs ({@code ScriptLongValues}), not doubles. */
+        boolean scriptLong;
+        /** The script maps the values of a field of this kind ({@code _value}); -1: it replaces them. */
+        byte scriptInput = -1;
+        /** The scaling factor of a scaled_float {@link #scriptInput}. */
+        double scriptScale;
 
         Node(AggregatorBase agg, List<Node> subs) {
             this.agg = agg;
@@ -130,6 +141,19 @@ public final class NativeAggregationTree {
             if (missing != null) {
                 out.write(MISSING);
                 writeLong(out, missing);
+            }
+            if (script != null) {
+                out.write(SCRIPT_VALUES);
+                if (scriptInput >= 0) {
+                    out.write(2);
+                    out.write(scriptInput);
+                    if (scriptInput == NativeAggregations.SCALED) {
+                        writeLong(out, Double.doubleToRawLongBits(scriptScale));
+                    }
+                } else {
+                    out.write(scriptLong ? 1 : 0);
+                }
+                out.writeBytes(script);
             }
             write(out);
         }
@@ -1129,17 +1153,146 @@ public final class NativeAggregationTree {
      * A numeric metric over a script alone ({@code ValuesSource.Numeric.Script}) whose Painless
      * script the native runtime runs, or null.
      */
-    private static Node scriptMetric(AggregatorFactory f, AggregatorBase agg, List<Node> subs, ValuesSourceConfig config)
+    private static Node scriptMetric(SearchContext ctx, AggregatorFactory f, AggregatorBase agg, List<Node> subs, ValuesSourceConfig config)
         throws IllegalAccessException {
-        if (subs.isEmpty() == false || config.missing() != null || config.valueSourceType() != CoreValuesSourceType.NUMERIC) {
+        if (subs.isEmpty() == false
+            || (config.valueSourceType() != CoreValuesSourceType.NUMERIC && config.valueSourceType() != CoreValuesSourceType.DATE)
+            || config.getValuesSource() instanceof ValuesSource.Numeric == false) {
             return null;
+        }
+        Long missing = null;
+        if (config.missing() != null) {
+            missing = missing(ctx, config, NativeAggregations.DOUBLE);
+            if (missing == null) {
+                return null;
+            }
         }
         NativeAggregations.Metric m = NativeAggregations.scriptMetric(f, config);
         if (m == null) {
             return null;
         }
         ByteArrayOutputStream script = new ByteArrayOutputStream();
-        return ExtendedEncoder.painlessAggregation(config.script(), script) == null ? new ScriptMetricNode(agg, m, script.toByteArray()) : null;
+        if (ExtendedEncoder.painlessAggregation(config.script(), script) != null) {
+            return null;
+        }
+        Node n;
+        if (config.fieldContext() != null) {
+            // A field's values mapped through `_value`: the field's metric over the script's doubles.
+            MappedFieldType type = config.fieldContext().fieldType();
+            byte input = NativeAggregations.valueKindWide(type);
+            if (input < 0 || ((ValuesSource.Numeric) config.getValuesSource()).isFloatingPoint() == false) {
+                return null;
+            }
+            n = new MetricNode(agg, m);
+            n.script = script.toByteArray();
+            n.scriptInput = input;
+            n.scriptScale = NativeAggregations.scale(type);
+        } else {
+            n = new ScriptMetricNode(agg, m, script.toByteArray());
+        }
+        n.missing = missing;
+        return n;
+    }
+
+    /**
+     * A bucket aggregation over a numeric script's values ({@code ValuesSource.Numeric.Script}) the
+     * native runtime runs: {@code terms} (long or double keys as the script's {@code value_type}
+     * says), {@code histogram}, {@code date_histogram} and the ranges. Null for another
+     * aggregation, or a script that stays in Java.
+     */
+    private static Node scriptValuesNode(
+        SearchContext ctx,
+        AggregatorFactory f,
+        AggregatorBase agg,
+        List<Node> subs,
+        ValuesSourceConfig config,
+        String factory,
+        String aggClass
+    ) throws Exception {
+        if ((config.valueSourceType() != CoreValuesSourceType.NUMERIC && config.valueSourceType() != CoreValuesSourceType.DATE)
+            || config.getValuesSource() instanceof ValuesSource.Numeric == false) {
+            return null;
+        }
+        boolean floating = ((ValuesSource.Numeric) config.getValuesSource()).isFloatingPoint();
+        // A script beside a field maps the field's values through `_value`.
+        boolean over = config.fieldContext() != null;
+        String field = over ? config.fieldContext().field() : "";
+        byte input = -1;
+        double inputScale = 0;
+        if (over) {
+            MappedFieldType type = config.fieldContext().fieldType();
+            input = NativeAggregations.valueKindWide(type);
+            inputScale = NativeAggregations.scale(type);
+            // The mapped values are doubles (WithScript.isFloatingPoint); a date_histogram reads longs.
+            if (input < 0 || floating == false || factory.equals(AGGS + "bucket.histogram.DateHistogramAggregatorFactory")) {
+                return null;
+            }
+        }
+        Node n;
+        boolean longs = false;
+        switch (factory) {
+            case TERMS_FACTORY: {
+                if (aggClass.equals(AGGS + "bucket.terms.NumericTermsAggregator") == false || NativeAggregations.hasIncludeExclude(f)) {
+                    return null;
+                }
+                NativeAggregations.Terms t = NativeAggregations.termsSpec(ctx, f, config);
+                if (t == null || t.thresholds().getMinDocCount() == 0) {
+                    return null;
+                }
+                longs = floating == false;
+                n = new NumericTermsNode(agg, subs, t, longs ? NativeAggregations.LONG : NativeAggregations.DOUBLE);
+                break;
+            }
+            case AGGS + "bucket.histogram.HistogramAggregatorFactory":
+                if (aggClass.equals(AGGS + "bucket.histogram.NumericHistogramAggregator") == false) {
+                    return null;
+                }
+                n = new HistogramNode(
+                    agg,
+                    subs,
+                    field,
+                    NativeAggregations.DOUBLE,
+                    0,
+                    (double) get(agg, "interval"),
+                    (double) get(agg, "offset"),
+                    (DoubleBounds) get(agg, "hardBounds")
+                );
+                break;
+            case AGGS + "bucket.histogram.DateHistogramAggregatorFactory":
+                if (aggClass.equals(AGGS + "bucket.histogram.DateHistogramAggregator") == false) {
+                    return null;
+                }
+                longs = true;
+                n = dateHistogram(agg, subs, field, (Rounding) get(agg, "rounding"), (LongBounds) get(agg, "hardBounds"));
+                break;
+            case AGGS + "bucket.range.RangeAggregatorFactory":
+            case AGGS + "bucket.range.DateRangeAggregatorFactory":
+                if (aggClass.equals(AGGS + "bucket.range.RangeAggregator") == false) {
+                    return null;
+                }
+                n = new RangeNode(agg, subs, field, NativeAggregations.DOUBLE, (RangeAggregator.Range[]) get(agg, "ranges"));
+                break;
+            default:
+                return null;
+        }
+        if (n == null) {
+            return null;
+        }
+        if (config.missing() != null) {
+            n.missing = missing(ctx, config, longs ? NativeAggregations.LONG : NativeAggregations.DOUBLE);
+            if (n.missing == null) {
+                return null;
+            }
+        }
+        ByteArrayOutputStream spec = new ByteArrayOutputStream();
+        if (ExtendedEncoder.painlessAggregation(config.script(), spec) != null) {
+            return null;
+        }
+        n.script = spec.toByteArray();
+        n.scriptLong = longs;
+        n.scriptInput = input;
+        n.scriptScale = inputScale;
+        return n;
     }
 
     /** One factory and the aggregator built from it, or null when either is not supported. */
@@ -1231,6 +1384,12 @@ public final class NativeAggregationTree {
                     || agg.getClass().getName().equals(AGGS + "bucket.missing.MissingAggregator") == false) {
                     return null;
                 }
+                if (mc.missing() != null) {
+                    // A `missing` value (MissingValues.replaceMissing) gives every document a value:
+                    // no document is missing.
+                    byte[] none = filterBlob(ctx, new org.apache.lucene.search.MatchNoDocsQuery(), fieldOk);
+                    return none == null ? null : new MissingNode(agg, subs, none);
+                }
                 org.apache.lucene.search.BooleanQuery.Builder b = new org.apache.lucene.search.BooleanQuery.Builder();
                 b.add(new MatchAllDocsQuery(), org.apache.lucene.search.BooleanClause.Occur.MUST);
                 if (mc.fieldContext() != null) {
@@ -1268,7 +1427,12 @@ public final class NativeAggregationTree {
         // The values-source aggregations: a mapped field, no script or missing value.
         ValuesSourceConfig config = (ValuesSourceConfig) CONFIG.get(f);
         if (config != null && config.script() != null && config.fieldContext() == null) {
-            return scriptMetric(f, agg, subs, config);
+            Node scripted = scriptValuesNode(ctx, f, agg, subs, config, factory, aggClass);
+            return scripted != null ? scripted : scriptMetric(ctx, f, agg, subs, config);
+        }
+        if (config != null && config.script() != null && config.fieldContext() != null) {
+            Node scripted = scriptValuesNode(ctx, f, agg, subs, config, factory, aggClass);
+            return scripted != null ? scripted : scriptMetric(ctx, f, agg, subs, config);
         }
         if (config == null || config.script() != null || config.fieldContext() == null) {
             return null;

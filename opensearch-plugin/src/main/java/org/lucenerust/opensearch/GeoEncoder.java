@@ -246,16 +246,14 @@ final class GeoEncoder {
      * LatLonPointSortField}, else OpenSearch's comparator with its origins, unit (metres per unit)
      * and mode.
      */
-    record Sort(boolean lucene, String field, double[] lats, double[] lons, double unitMeters, MultiValueMode mode) {}
+    record Sort(boolean lucene, String field, double[] lats, double[] lons, double unitMeters, MultiValueMode mode, boolean plane, Object nested) {}
 
     /** At most this many origins ({@code MAX_GEO_ORIGINS} in {@code reader_search.rs}). */
     static final int MAX_ORIGINS = 1 << 20;
 
     /**
      * {@code f}'s geo sort, or the reason it cannot run natively ({@code String}); null when {@code f}
-     * is no geo sort. OpenSearch's comparator is taken when it is not nested, measures {@code ARC}
-     * (not {@code PLANE}: {@code Math.cos} is a HotSpot intrinsic no portable code matches bit for
-     * bit), reads a {@code geo_point}'s own doc values, and has finite origins.
+     * is no geo sort. OpenSearch's comparator is taken when it is not nested, reads a {@code geo_point}'s own doc values, and has finite origins.
      */
     static Object sort(SortField f) {
         try {
@@ -265,13 +263,14 @@ final class GeoEncoder {
                 if (lat == null || lon == null) {
                     return "sort_geo_reflect";
                 }
-                return new Sort(true, f.getField(), new double[] { lat.getDouble(f) }, new double[] { lon.getDouble(f) }, 1.0, MultiValueMode.MIN);
+                return new Sort(true, f.getField(), new double[] { lat.getDouble(f) }, new double[] { lon.getDouble(f) }, 1.0, MultiValueMode.MIN, false, null);
             }
             if (openSearchSort(f) == false) {
                 return null;
             }
             IndexFieldData.XFieldComparatorSource src = (IndexFieldData.XFieldComparatorSource) f.getComparatorSource();
-            if (src.nested() != null) {
+            // MultiValueMode.MEDIAN has no nested pick: OpenSearch raises there, in Java.
+            if (src.nested() != null && src.sortMode() == MultiValueMode.MEDIAN) {
                 return "sort_geo_nested";
             }
             Class<?> c = src.getClass();
@@ -282,9 +281,6 @@ final class GeoEncoder {
                 return "sort_geo_reflect";
             }
             GeoDistanceSortBuilder b = (GeoDistanceSortBuilder) builder.get(src);
-            if (b.geoDistance() != GeoDistance.ARC) {
-                return "sort_geo_plane";
-            }
             if (!(data.get(src) instanceof LatLonPointIndexFieldData ifd)) {
                 return "sort_geo_field_data";
             }
@@ -300,7 +296,7 @@ final class GeoEncoder {
                     return "sort_geo_origins";
                 }
             }
-            return new Sort(false, ifd.getFieldName(), lats, lons, b.unit().toMeters(1.0), src.sortMode());
+            return new Sort(false, ifd.getFieldName(), lats, lons, b.unit().toMeters(1.0), src.sortMode(), b.geoDistance() == GeoDistance.PLANE, src.nested());
         } catch (ReflectiveOperationException | RuntimeException e) {
             return "sort_geo_reflect";
         }

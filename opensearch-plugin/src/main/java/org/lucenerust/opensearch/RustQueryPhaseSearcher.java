@@ -252,6 +252,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // Aggregations OpenSearch's DefaultAggregationProcessor.preProcess registered (their one
         // collector context is the one in "collectors"), when all of them run natively.
         NativeAggregations.Plan aggs = ctx.queryCollectorManagers().isEmpty() ? null : NativeAggregations.plan(ctx);
+        if (aggs != null && termsFromDocFreqs(ctx, searcher, query, aggs, collectors, hasFilterCollector)) {
+            stats.nativeQuery();
+            stats.nativeTime(System.nanoTime() - start);
+            return false;
+        }
         // Anything else -- bucket aggregations, sub-aggregations, global -- as a native tree.
         NativeAggregationTree.Tree tree = aggs != null || ctx.queryCollectorManagers().isEmpty() || flags(ctx).enabled() == false
             ? null
@@ -441,9 +446,10 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                         // Everything else reads the buffers written as segments, one per leaf of the
                         // view: aggregations, sorts, collapse, rescore, and what the plain path's
                         // buffers cannot answer.
-                        if (ctx.mapperService().hasNested()) {
+                        if (ctx.mapperService().hasNested() || ctx.explain()) {
                             // The fetch phase finds a buffered hit's root document by doc values the
-                            // view's leaves read only from the buffers given to Lucene as segments.
+                            // view's leaves read only from the buffers given to Lucene as segments,
+                            // and explains a hit by their postings.
                             readByLucene(ctx, searcher, live);
                         }
                         long[] whole = new long[1];
@@ -509,6 +515,60 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    /**
+     * A match-all {@code size: 0} search whose only aggregation is a plain keyword {@code terms}
+     * ({@link TermsDocFreqShortcut}): its buckets from the segments' term document frequencies and
+     * its total from {@code numDocs}, as OpenSearch answers it. False, with nothing stored, for any
+     * other request.
+     */
+    private boolean termsFromDocFreqs(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        NativeAggregations.Plan aggs,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector
+    ) {
+        if (aggs.entries().size() != 1 || aggs.terms().size() != 1 || ctx.size() != 0 || ctx.from() != 0 || ctx.sort() != null
+            || ctx.searchAfter() != null || ctx.scrollContext() != null || ctx.collapse() != null || ctx.parsedPostFilter() != null
+            || ctx.minimumScore() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER || hasFilterCollector
+            || ctx.isCancelled() || NativeProfile.requested(ctx) || unwrapShortcut(query).getClass() != MatchAllDocsQuery.class
+            || NativeRescore.applies(ctx) || flags(ctx).enabled() == false
+            || LiveDirectoryReader.find(searcher.getIndexReader()) != null
+            || ineligible(ctx, collectors, hasFilterCollector, true) != null) {
+            return false;
+        }
+        int[][] slices = NativeAggregations.slices(ctx);
+        if (slices == null) {
+            return false;
+        }
+        NativeAggregations.Terms terms = aggs.terms().get(0);
+        byte[] result;
+        try {
+            result = TermsDocFreqShortcut.result(searcher.getIndexReader(), terms.field(), terms.thresholds().getShardSize(), slices);
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+        if (result == null) {
+            return false;
+        }
+        InternalAggregations built = aggs.build(slices, new long[0], new double[0], result, ctx.partialOnShard());
+        NativeAggregations.consumeBuckets(ctx, built);
+        int shortcut;
+        try {
+            shortcut = ctx.trackTotalHitsUpTo() == SearchContext.TRACK_TOTAL_HITS_DISABLED
+                ? -1
+                : shortcutTotalHitCount(searcher.getIndexReader(), query, 0L);
+        } catch (IOException e) {
+            shortcut = -1;
+        }
+        if (searchUnsorted(ctx, 0L, null, 0, 0, shortcut, null, null, null) != null) {
+            return false;
+        }
+        ctx.queryResult().aggregations(built);
+        return true;
     }
 
     private static SimilarityEncoder similarities(ContextIndexSearcher searcher) {
@@ -937,12 +997,11 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     /**
      * Why a search cannot read the writer's buffered documents, or null when it can: what the
-     * buffers do not hold for the fetch phase (versions, highlighting, scripts), a query that
+     * buffers do not hold for the fetch phase (highlighting, scripts), a query that
      * was expanded or given term statistics over the reader's terms alone (a multi-term query under
      * a scoring rewrite, a fuzzy query, a blended {@code multi_match}), or nested k-NN hits.
      */
     static String liveIneligible(SearchContext ctx) {
-        if (ctx.version() || ctx.seqNoAndPrimaryTerm() || ctx.explain()) return "fetch_metadata";
         if (ctx.highlight() != null || ctx.hasScriptFields() || ctx.innerHits() != null
             && ctx.innerHits().getInnerHits().isEmpty() == false) return "fetch_doc_values";
         // Nested k-NN hits are found over the view's own vectors, which keep no parent filter.
@@ -1021,7 +1080,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      */
     private static boolean plainIneligible(SearchContext ctx) {
         return ctx.minimumScore() != null || ctx.size() == 0 && ctx.shouldUseConcurrentSearch()
-            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested();
+            || ctx.scrollContext() != null || ctx.searchAfter() != null || ctx.mapperService().hasNested()
+            // An explanation is Lucene's, over the postings of the buffers written as segments.
+            || ctx.explain();
     }
 
     /**

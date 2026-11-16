@@ -139,7 +139,7 @@ def main():
         sys.argv = [sys.argv[0], "--keep"]
         image = "plugin"
         check.start(check.OURS[0], check.OURS[1], image)
-        check.start(check.STOCK[0], check.STOCK[1], f"opensearchproject/opensearch:{check.VERSION}")
+        check.start(check.STOCK[0], check.STOCK[1], "stock")
         for _, port in nodes.values():
             check.wait(port)
 

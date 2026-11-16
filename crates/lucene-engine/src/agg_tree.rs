@@ -151,6 +151,9 @@ pub const AGG_REVERSE_NESTED: u8 = 16;
 pub const AGG_SIGNIFICANT_TEXT: u8 = 17;
 /// A metric over a Painless script's values ([`crate::painless_score::PainlessAggValues`]).
 pub const AGG_SCRIPT_METRIC: u8 = 18;
+/// A prefix: the next node reads a Painless script's values (a long-valued
+/// one when the byte after it is `1`) in place of its field's.
+pub const AGG_SCRIPT_VALUES: u8 = 19;
 /// The most source fields a `significant_text` may read.
 pub const MAX_SOURCE_FIELDS: i32 = 1024;
 /// The largest t-digest compression a tree may ask for: a digest holds
@@ -310,35 +313,72 @@ pub fn nodes(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<Vec<
 }
 
 pub fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNode, Status> {
-    let kind = c.u8()?;
-    if kind != AGG_MISSING {
-        return node_of(kind, c, depth, count);
-    }
-    let value = c.i64()?;
-    let mut n = match c.u8()? {
-        AGG_MISSING => return Err(bad("aggregation tree: missing twice".to_string())),
-        k => node_of(k, c, depth, count)?,
+    // The prefixes, each once and in either order, then the node.
+    let mut value = None;
+    let mut script = None;
+    let kind = loop {
+        match c.u8()? {
+            AGG_MISSING if value.is_none() => value = Some(c.i64()?),
+            AGG_SCRIPT_VALUES if script.is_none() => {
+                let (long, input) = match c.u8()? {
+                    0 => (false, None),
+                    1 => (true, None),
+                    2 => (false, Some(wide_value_kind(c)?)),
+                    other => {
+                        return Err(bad(format!("aggregation tree: script values mode {other}")))
+                    }
+                };
+                script = Some(Arc::new(crate::painless_score::PainlessAggValues::decode(
+                    c, long, input,
+                )?));
+            }
+            AGG_MISSING | AGG_SCRIPT_VALUES => {
+                return Err(bad("aggregation tree: prefix twice".to_string()))
+            }
+            k => break k,
+        }
     };
-    match &mut n {
-        AggNode::Metric {
-            missing,
-            source: Source::DocValues,
-            ..
+    let mut n = node_of(kind, c, depth, count)?;
+    if let Some(value) = value {
+        match &mut n {
+            AggNode::Metric {
+                missing,
+                source: Source::DocValues,
+                ..
+            }
+            | AggNode::Percentiles { missing, .. }
+            | AggNode::NumericTerms { missing, .. }
+            | AggNode::SignificantTerms {
+                missing,
+                numeric: true,
+                ..
+            }
+            | AggNode::Histogram { missing, .. }
+            | AggNode::DateHistogram { missing, .. }
+            | AggNode::Range { missing, .. } => *missing = Some(value),
+            _ => {
+                return Err(bad(
+                    "aggregation tree: missing before a node without one".to_string()
+                ))
+            }
         }
-        | AggNode::Percentiles { missing, .. }
-        | AggNode::NumericTerms { missing, .. }
-        | AggNode::SignificantTerms {
-            missing,
-            numeric: true,
-            ..
-        }
-        | AggNode::Histogram { missing, .. }
-        | AggNode::DateHistogram { missing, .. }
-        | AggNode::Range { missing, .. } => *missing = Some(value),
-        _ => {
-            return Err(bad(
-                "aggregation tree: missing before a node without one".to_string()
-            ))
+    }
+    if let Some(values) = script {
+        match &mut n {
+            AggNode::Metric {
+                script: slot,
+                source: Source::DocValues,
+                ..
+            }
+            | AggNode::NumericTerms { script: slot, .. }
+            | AggNode::Histogram { script: slot, .. }
+            | AggNode::DateHistogram { script: slot, .. }
+            | AggNode::Range { script: slot, .. } => *slot = Some(values),
+            _ => {
+                return Err(bad(
+                    "aggregation tree: script values before a node without a script".to_string(),
+                ))
+            }
         }
     }
     Ok(n)
@@ -378,10 +418,10 @@ pub fn node_of(
         }
         AGG_SCRIPT_METRIC => {
             let needs = c.u8()?;
-            if needs == 0 || needs & !lucene_aggs::metric_aggs::NEED_ALL != 0 {
+            if !lucene_aggs::metric_aggs::valid_needs(needs) {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
-            let values = crate::painless_score::PainlessAggValues::decode(c)?;
+            let values = crate::painless_score::PainlessAggValues::decode(c, false, None)?;
             AggNode::Metric {
                 missing: None,
                 field: String::new(),
@@ -580,6 +620,7 @@ pub fn node_of(
             let kind = value_kind(c.u8()?)?;
             let shard_size = shard_size(c)?;
             AggNode::NumericTerms {
+                script: None,
                 missing: None,
                 field,
                 kind,
@@ -609,6 +650,7 @@ pub fn node_of(
                 None
             };
             AggNode::Histogram {
+                script: None,
                 missing: None,
                 field,
                 kind,
@@ -625,6 +667,7 @@ pub fn node_of(
             let min = if flags & 1 != 0 { Some(c.i64()?) } else { None };
             let max = if flags & 2 != 0 { Some(c.i64()?) } else { None };
             AggNode::DateHistogram {
+                script: None,
                 missing: None,
                 field,
                 rounding,
@@ -728,6 +771,7 @@ pub fn node_of(
                 ranges.push((f64_of(c)?, f64_of(c)?));
             }
             AggNode::Range {
+                script: None,
                 missing: None,
                 field,
                 kind,
@@ -1172,13 +1216,19 @@ pub fn aggregate_tree_blobs_cached(
         .global
         .as_ref()
         .is_some_and(|(_, g)| g.iter().any(AggNode::needs_scores));
+    let q = if min_score.is_some() || main_scores {
+        q
+    } else {
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
     let mut norm_fields: Vec<String> = Vec::new();
     if min_score.is_some() || main_scores {
-        norm_fields.extend(
-            crate::clauses::clause_field_names(&q)
-                .into_iter()
-                .map(str::to_string),
-        );
+        norm_fields.extend(crate::clauses::norm_field_names(&q));
+    } else {
+        norm_fields.extend(crate::clauses::min_score_field_names(&q));
     }
     if let (true, Some(gq)) = (global_scores, global_query) {
         for f in crate::clauses::clause_field_names(gq) {

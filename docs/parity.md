@@ -53,7 +53,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 35 |
 | [util-geo.md](parity/util-geo.md) | `lucene-util` geo: encodings, tessellator, polygons, distance (M9 T9.1) | 11 |
 | [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums, pluggable stores and encryption, page cache | 31 |
-| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written, and OpenSearch custom-codecs' zstd stored fields | 87 |
+| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written, and OpenSearch custom-codecs' zstd stored fields | 88 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 19 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 19 |
 | [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 23 |
@@ -66,7 +66,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 29 |
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
 | [expressions.md](parity/expressions.md) | `lucene-expressions`: JavaScript expressions as `DoubleValuesSource`s (M14 T14.2) | 6 |
-| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter, scripted similarity scripts over them; opt-in `js` scripts | 13 |
+| [painless.md](parity/painless.md) | `lucene-painless`: OpenSearch Painless scripts run natively (IR compiler, VM, runtime library, typed and batch machines) and `script_score`, `function_score`, `script` queries, script sorts, metric aggregation scripts, `terms_set` minimum and `intervals` filter, scripted similarity scripts over them; opt-in `js` scripts | 15 |
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [sandbox.md](parity/sandbox.md) | `lucene-sandbox` (M14.f): half-float, big-integer and bounding-box points, nearest neighbours, multi-range point and doc-values queries, combined-field, covering, term-automaton and phrase-wildcard queries, the large-hits collector and the collector profilers, `PayloadSpanUtil`, `MergeOnFlushMergePolicy`, the `IDVersion` postings format, k-means clustering, the facet package (collectors, cutters, recorders, builders, orchestrators, histograms) | 19 |
@@ -98,8 +98,8 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [analysis-icu.md](parity/analysis-icu.md) | `lucene-analysis-icu` (M12 T12.4): the ICU4J runtime port, normalization, folding, `ICUTokenizer`, collation keys, transliteration, the break rule compiler, character names | 16 |
 | [analysis-opennlp.md](parity/analysis-opennlp.md) | `lucene-analysis-opennlp` (M12 T12.5): the OpenNLP 2.5.3 runtime port (models, maxent/perceptron, beam search, the six tools), `OpenNLPTokenizer` and the POS, chunker and lemmatizer filters | 14 |
 | [analysis-lang-modules.md](parity/analysis-lang-modules.md) | The M12 language modules: `lucene-analysis-phonetic` (with Commons Codec), Stempel (with Egothor), Morfologik, `lucene-analysis`' `morph` base, Kuromoji, Nori, SmartCN | 20 |
-| [ffi.md](parity/ffi.md) | `lucene-ffi` and `lucene-engine`: handles, errors, statuses and the analysis entry points | 14 |
-| [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (the `unified`, `plain` and `fvh` highlighters native as `accelerated_unified`, `accelerated_plain`, `accelerated_fvh`; suggesters stay OpenSearch's) | 22 |
+| [ffi.md](parity/ffi.md) | `lucene-ffi` and `lucene-engine`: handles, errors, statuses and the analysis entry points | 15 |
+| [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (the `unified`, `plain` and `fvh` highlighters native as `accelerated_unified`, `accelerated_plain`, `accelerated_fvh`; suggesters stay OpenSearch's) | 24 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |
 | [engine.md](parity/engine.md) | The OpenSearch engine (M5): writer features it needed | 17 |
 

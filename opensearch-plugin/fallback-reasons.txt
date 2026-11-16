@@ -11,7 +11,6 @@ analysis_hunspell  # AnalyzerSpec.java
 analysis_japanese_dictionary  # AnalyzerSpec.java
 analysis_japanese_user_dictionary  # AnalyzerSpec.java
 analysis_korean_dictionary  # AnalyzerSpec.java
-analysis_korean_tags  # AnalyzerSpec.java
 analysis_korean_user_dictionary  # AnalyzerSpec.java
 analysis_pattern_flags  # AnalyzerSpec.java
 analysis_reflect  # AnalyzerSpec.java
@@ -44,12 +43,10 @@ disabled  # RustQueryPhaseSearcher.java
 error  # SortEncoder.java
 extended_reflect  # ExtendedEncoder.java
 fetch_doc_values  # RustQueryPhaseSearcher.java
-fetch_metadata  # RustQueryPhaseSearcher.java
 field_similarity  # ExtendedEncoder.java, QueryEncoder.java
 function_score_  # ExtendedEncoder.java
 function_score_decay  # ExtendedEncoder.java
 function_score_field_data  # ExtendedEncoder.java
-function_score_min_score  # ExtendedEncoder.java
 function_score_script  # ExtendedEncoder.java
 fuzzy_automaton  # QueryEncoder.java
 geo_geometry  # GeoEncoder.java
@@ -107,7 +104,6 @@ rescore_query  # NativeRescore.java
 scaled_float  # SortEncoder.java
 script_query_script  # ExtendedEncoder.java
 script_score_hammingbit  # ExtendedEncoder.java
-script_score_min_score  # ExtendedEncoder.java
 script_score_script  # ExtendedEncoder.java
 scroll_after  # RustQueryPhaseSearcher.java
 search_after  # RustQueryPhaseSearcher.java
@@ -120,13 +116,11 @@ sort_  # SortEncoder.java
 sort_geo_field_data  # GeoEncoder.java
 sort_geo_nested  # GeoEncoder.java
 sort_geo_origins  # GeoEncoder.java
-sort_geo_plane  # GeoEncoder.java
 sort_geo_reflect  # GeoEncoder.java
 sort_keys  # SortEncoder.java
 sort_script  # ExtendedEncoder.java
 sort_script_nested  # SortEncoder.java
 sort_script_options  # ExtendedEncoder.java
-sort_script_score  # ExtendedEncoder.java
 sort_unoptimized  # SortEncoder.java
 span_  # ExtendedEncoder.java
 substring_regexp_flags  # ExtendedEncoder.java

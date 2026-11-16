@@ -43,6 +43,7 @@ use lucene_search::extended_query::{
     MultiTermSource, NumericDocValuesRangeQuery, RewriteMethod, SubstringKind, SubstringQuery,
     SynonymQuery, VisitEvent, VisitRecord,
 };
+use lucene_search::function::FunctionScoreQuery;
 use lucene_search::query::{BooleanQuery, Clause, FieldExistsQuery, PointsRangeQuery};
 use lucene_search::reader::doc_values::get_sorted_numeric;
 use lucene_search::reader::SortedNumericDocValues;
@@ -129,10 +130,14 @@ pub const NODE_VISIT_ONLY: u8 = 54;
 /// `MUST`, 1 `FILTER`, 2 `SHOULD`, 3 `MUST_NOT`) and a record; a query
 /// handed over whole, a node.
 pub const NODE_VISITED: u8 = 55;
+/// OpenSearch's `min_score` of a `function_score` or `script_score`
+/// (`MinScoreScorer`): `min_score: f32`, then the scored query (a node): only
+/// its documents that score at least `min_score` match.
+pub const NODE_MIN_SCORE: u8 = 56;
 /// OpenSearch's `MoreLikeThisQuery` for the plain highlighter, which rewrites it over the
 /// highlighted text: `boost: u8`, `boost_factor: f32` bits, `parts: i32` of (`groups: i32` of
 /// (`field`, `limit: i32`, `candidates: i32` of (`word: bytes`, `score: f32` bits))).
-pub const NODE_MORE_LIKE_THIS: u8 = 56;
+pub const NODE_MORE_LIKE_THIS: u8 = 57;
 pub const NODE_LAST: u8 = NODE_MORE_LIKE_THIS;
 
 pub const VISIT_TERMS: u8 = 0;
@@ -488,6 +493,24 @@ pub fn decode(
                 clause = clause.with_filter(filter);
             }
             return Ok(clause.into());
+        }
+        NODE_MIN_SCORE => {
+            let min = f32(c)?;
+            let scored = crate::query_blob::decode_node(c, depth.saturating_add(1), nodes)?;
+            let query = match scored {
+                Clause::Extended(e) => match *e {
+                    ExtendedQuery::FunctionScore(q) => q,
+                    other => FunctionScoreQuery::new(
+                        Clause::Extended(Box::new(other)),
+                        lucene_search::values_source::scores(),
+                    ),
+                },
+                // A `function_score` with no functions scores as its wrapped query.
+                other => FunctionScoreQuery::new(other, lucene_search::values_source::scores()),
+            };
+            return Ok(Clause::Extended(Box::new(ExtendedQuery::FunctionScore(
+                query.with_min_score(min),
+            ))));
         }
         NODE_KNN_SCORE => return crate::knn_score::decode(c, depth, nodes),
         NODE_PAINLESS_SCORE => return crate::painless_score::decode(c, depth, nodes),
