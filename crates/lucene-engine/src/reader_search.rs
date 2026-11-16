@@ -399,6 +399,7 @@ pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// |---|---|---|
 /// | `0` | `LatLonPointSortField` (`LatLonDocValuesField.newDistanceSort`): one origin, metres, ascending, no mode | the haversine sort key (`haversin2` of it is the distance) |
 /// | `1` | OpenSearch's `GeoDistanceSortBuilder` comparator ([`OpenSearchGeoDistanceSort`](lucene_search::document::geo::OpenSearchGeoDistanceSort)): `ARC`, any origins, unit, mode (flags as a numeric key's) and order | the distance in the unit |
+/// | `2` | the same with `GeoDistance.PLANE` (`GeoUtils.planeDistance`, `StrictMath.cos`) | the distance in the unit |
 ///
 /// Each value crosses as `double_to_sortable_long` of the double. Returns
 /// the key, and whether it is Lucene's comparator (which takes no
@@ -522,7 +523,7 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     .map_err(|e| invalid(format!("sort blob: {e}")))?
                     .comparator_source()
             }
-            1 => {
+            1 | 2 => {
                 let mode = match flags & SORT_MODE_MASK {
                     0 if flags & SORT_MAX != 0 => DistanceMode::Max,
                     0 => DistanceMode::Min,
@@ -537,11 +538,12 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     origins,
                     unit_meters,
                     mode,
+                    plane: comparator == 2,
                 })
             }
             other => {
                 return Err(invalid(format!(
-                    "sort blob: geo-distance comparator {other} (want 0 or 1)"
+                    "sort blob: geo-distance comparator {other} (want 0, 1 or 2)"
                 )))
             }
         };

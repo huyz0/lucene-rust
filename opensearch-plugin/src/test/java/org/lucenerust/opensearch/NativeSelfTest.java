@@ -125,7 +125,6 @@ public final class NativeSelfTest {
     /** Whether {@link #randomSort} may draw {@code _geo_distance} keys (the geo index is being searched). */
     private static boolean geoSorts;
     private static int geoSortPages;
-    private static int geoAfterFallbacks;
 
     public static void main(String[] args) throws Exception {
         NativeLibrary.load(Path.of("."));
@@ -254,10 +253,9 @@ public final class NativeSelfTest {
         check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
         System.out.printf("NativeSelfTest: %d of %d backward-codecs fixture indexes compared natively%n", bwcCompared, bwc);
         System.out.printf(
-            "NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key (%d search_after pages left to Lucene)%n",
+            "NativeSelfTest: %d geo queries encoded and compared; %d sorted pages with a _geo_distance key%n",
             geoEncoded,
-            geoSortPages,
-            geoAfterFallbacks
+            geoSortPages
         );
         check(trackedPages >= 20, "sorted pages tracking the max score: " + trackedPages);
         check(sortedMinScoreChecks >= 20, "sorted pages behind min_score: " + sortedMinScoreChecks);
@@ -269,7 +267,6 @@ public final class NativeSelfTest {
         check(pointsCompared >= 50, "queries holding an int, float or ip range or a point set compared: " + pointsCompared);
         check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
         check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
-        check(geoAfterFallbacks >= 10, "Lucene geo-distance pages after a hit, left to Lucene: " + geoAfterFallbacks);
         System.out.printf(
             "NativeSelfTest: %d checks, %d failures; %d of %d compared scores bit-exact; %d sorted pages compared (%d tracking the max score, %d behind min_score); %d aggregations, %d terms; %d terminate_after; %d min_score%n",
             checks,
@@ -1263,13 +1260,6 @@ public final class NativeSelfTest {
                 SortEncoder.Encoded enc = SortEncoder.encode(sort, after, track);
                 String what = where + ": " + query + " sorted " + sort + " top" + topN + " threshold " + threshold + " page " + page
                     + (track ? " tracking the max score" : "") + (min != null ? " min_score " + min : "");
-                if (after != null && Arrays.stream(sort.getSort()).anyMatch(GeoEncoder::luceneSort)) {
-                    // LatLonPointDistanceComparator.compareTop compares metres:
-                    // Lucene runs the page.
-                    check("search_after_geo".equals(enc.fallbackReason()), what + ": falls back as search_after_geo, not " + enc.fallbackReason());
-                    geoAfterFallbacks++;
-                    break;
-                }
                 if (Arrays.stream(sort.getSort()).anyMatch(k -> SortEncoder.type(k) == SortEncoder.GEO)) {
                     geoSortPages++;
                 }
@@ -2104,8 +2094,8 @@ public final class NativeSelfTest {
         geoSorts = true;
         Random sr = new Random(3);
         check(
-            "sort_geo_plane".equals(SortEncoder.encode(new Sort(openSearchGeoSort(sr, false, org.opensearch.common.geo.GeoDistance.PLANE)), null).fallbackReason()),
-            "a PLANE _geo_distance falls back"
+            SortEncoder.encode(new Sort(openSearchGeoSort(sr, false, org.opensearch.common.geo.GeoDistance.PLANE)), null).blob() != null,
+            "a PLANE _geo_distance encodes"
         );
         check(SortEncoder.encode(new Sort(openSearchGeoSort(sr, true)), null).blob() != null, "an ARC _geo_distance encodes");
         check(
