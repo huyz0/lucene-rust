@@ -48,6 +48,8 @@ def aggs():
     out = {}
     for fld in ["k", "n", "d", "ts", "t_none", "ip"]:
         out["missing " + fld] = {"a": {"missing": {"field": fld}}}
+    for fld in ["k", "n", "ts", "t_none"]:
+        out["missing param " + fld] = {"a": {"missing": {"field": fld, "missing": "1" if fld in ("n", "ts") else "x"}, "aggs": {"s": {"sum": {"field": "d"}}}}}
     out["missing + subs"] = {"a": {"missing": {"field": "k"}, "aggs": {"s": {"sum": {"field": "d"}}, "t": {"terms": {"field": "g"}}}}}
     out["missing under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"m": {"missing": {"field": "n"}}}}}
     for fld in ["n", "d", "f", "i", "ts"]:
