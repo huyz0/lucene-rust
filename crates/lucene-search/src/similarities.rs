@@ -2297,7 +2297,11 @@ impl Similarity for PerFieldSimilarity {
     }
 
     fn is_default_bm25(&self) -> bool {
-        self.default.is_default_bm25() && self.fields.values().all(|s| s.is_default_bm25())
+        // The fast path scores with the norms' own average length; statistics a source
+        // supplies (an aggregated DFS) change it, so those scores go through the scorer.
+        self.statistics.is_none()
+            && self.default.is_default_bm25()
+            && self.fields.values().all(|s| s.is_default_bm25())
     }
 
     fn as_tfidf(&self, field: &str) -> Option<&dyn TfIdfSimilarity> {
@@ -2334,6 +2338,37 @@ impl Similarity for PerFieldSimilarity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source that answers with the statistics it is given back.
+    struct Echo;
+
+    impl crate::index_searcher::StatisticsSource for Echo {
+        fn term_statistics(
+            &self,
+            _field: &str,
+            _term: &[u8],
+            local: TermStatistics,
+        ) -> crate::Result<TermStatistics> {
+            Ok(local)
+        }
+
+        fn collection_statistics(
+            &self,
+            _field: &str,
+            local: Option<CollectionStatistics>,
+        ) -> crate::Result<Option<CollectionStatistics>> {
+            Ok(local)
+        }
+    }
+
+    /// The BM25 fast path scores with the norms' own average length, so a per-field
+    /// similarity that replaces the statistics (an aggregated DFS) is not it.
+    #[test]
+    fn a_statistics_source_leaves_the_default_bm25_fast_path() {
+        let plain = PerFieldSimilarity::new(Arc::new(Bm25Similarity::default()));
+        assert!(plain.is_default_bm25());
+        assert!(!plain.with_statistics(Arc::new(Echo)).is_default_bm25());
+    }
 
     fn coll() -> CollectionStatistics {
         CollectionStatistics::new(100, 90, 5000, 900).unwrap()
