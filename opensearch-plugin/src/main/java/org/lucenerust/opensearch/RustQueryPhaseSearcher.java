@@ -142,7 +142,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
 
     private final QueryPhaseSearcher fallback = new QueryPhaseSearcherWrapper();
     /** neural-search's searcher, for a query with a {@code hybrid} query anywhere in it. */
-    private final QueryPhaseSearcher hybrid = new HybridQueryPhaseSearcher();
+    private final org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher hybrid =
+        new org.lucenerust.opensearch.neural.search.query.HybridQueryPhaseSearcher();
     private final NativeReaders readers;
     private final SearchStats stats;
 
@@ -208,8 +209,14 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasFilterCollector,
         boolean hasTimeout
     ) throws IOException {
+        // As HybridQueryPhaseSearcher: the hybrid query out of its filters and DLS rules; a collapse's
+        // inner hits fan out to a plain bool query, searched as any other.
+        Query phaseQuery = hybrid.phaseQuery(ctx, query);
+        if (phaseQuery instanceof HybridQuery == false) {
+            return searchPlain(ctx, searcher, phaseQuery, collectors, hasFilterCollector, hasTimeout);
+        }
         long nativeStart = System.nanoTime();
-        String why = searchHybrid(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
+        String why = searchHybrid(ctx, searcher, phaseQuery, collectors, hasFilterCollector, hasTimeout);
         if (why == null) {
             stats.nativeQuery();
             stats.nativeTime(System.nanoTime() - nativeStart);

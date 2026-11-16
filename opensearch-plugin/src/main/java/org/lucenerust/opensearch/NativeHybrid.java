@@ -70,7 +70,6 @@ final class NativeHybrid {
         boolean hasFilterCollector,
         boolean nativeAggs
     ) {
-        if (query instanceof HybridQuery == false) return "hybrid_wrapped";
         if (ctx.queryCollectorManagers().isEmpty() == false
             && (nativeAggs == false
                 || ctx.queryCollectorManagers()

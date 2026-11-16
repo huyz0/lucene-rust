@@ -65,6 +65,9 @@ def setup(port, rust, index="h"):
             lines.append(json.dumps(all_docs[i]))
         ck.req(port, "POST", f"/{index}/_bulk", "\n".join(lines) + "\n", ndjson=True)
         ck.req(port, "POST", f"/{index}/_refresh")
+    # An alias with a filter wraps the hybrid query in a bool query with the filter.
+    ck.req(port, "POST", "/_aliases", {"actions": [{"add": {"index": index, "alias": f"{index}_a",
+                                                         "filter": {"range": {"n": {"gte": 100}}}}}]})
     for name, body in PIPELINES.items():
         ck.req(port, "PUT", f"/_search/pipeline/{name}", body)
 
@@ -120,6 +123,17 @@ def big_searches():
         {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"n": "asc"}], "size": 5, "post_filter": {"range": {"n": {"lt": 300}}},
          "aggs": {"c": {"value_count": {"field": "n"}}}},
     )]
+
+
+def alias_searches():
+    """(pipeline, body) pairs run through the filtered alias."""
+    return [("minmax", {"query": hybrid(MATCH, KNN)}),
+            ("rrf", {"query": hybrid(MATCH, KNN), "size": 20}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "size": 8}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 6}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "aggs": {"tags": {"terms": {"field": "tag"}}},
+                        "post_filter": {"term": {"tag": "g2"}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "size": 0, "track_total_hits": True})]
 
 
 def norm(technique, combination="arithmetic_mean", **extra):
@@ -243,6 +257,9 @@ def searches():
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "terminate_after": 20, "size": 10}),
             ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=30), "collapse": {"field": "tag"}, "from": 3, "size": 4}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "t"}, "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag", "inner_hits": {"name": "grp", "size": 2}}, "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag", "inner_hits": {"name": "grp", "size": 2, "sort": [{"n": "asc"}]}},
+                        "sort": [{"n": "desc"}], "size": 4}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "asc"}], "search_after": [10], "size": 5})]
     return out
 
@@ -256,6 +273,10 @@ def answer(port, pipeline, body, explain=False, index="h"):
     hits = r["hits"]
     out = {"total": hits.get("total"), "max_score": hits.get("max_score"),
            "hits": [(h["_id"], h.get("_score"), h.get("sort"), (h.get("fields") or {}).get("tag")) for h in hits["hits"]]}
+    inner = [{name: [(x["_id"], x.get("_score")) for x in v["hits"]["hits"]] for name, v in h["inner_hits"].items()}
+             for h in hits["hits"] if "inner_hits" in h]
+    if inner:
+        out["inner_hits"] = inner
     if "aggregations" in r:
         out["aggregations"] = r["aggregations"]
     if "terminated_early" in r:
@@ -302,6 +323,8 @@ def compare(pipeline, body, failures, explain=False, ours="h", stock="h"):
         failures.append(f"{label}: hits\n  ours  {o['hits'][:12]}\n  stock {s['hits'][:12]}")
     if o.get("terminated_early") != s.get("terminated_early"):
         failures.append(f"{label}: terminated_early ours {o.get('terminated_early')}, stock {s.get('terminated_early')}")
+    if not close(o.get("inner_hits"), s.get("inner_hits")):
+        failures.append(f"{label}: inner_hits ours {o.get('inner_hits')}, stock {s.get('inner_hits')}")
     if not close(o.get("aggregations"), s.get("aggregations")):
         failures.append(f"{label}: aggregations ours {o.get('aggregations')}, stock {s.get('aggregations')}")
     if explain and not close(o["explanations"], s["explanations"]):
@@ -431,6 +454,8 @@ def main():
         for pipeline, body in runs:
             compare(pipeline, body, failures)
         compare("explain", {"query": hybrid(MATCH, KNN), "size": 5}, failures, explain=True)
+        for pipeline, body in alias_searches():
+            compare(pipeline, body, failures, ours="h_a", stock="h_a")
         for pipeline, body in ERRORS:
             compare(pipeline, body, failures)
         setup_big(OURS[1])
@@ -457,7 +482,8 @@ def main():
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         # What the native hybrid shard phase leaves to Java: the hybrid collectors' other modes.
-        java = set()
+        # Sorting by _id reads the field data of the _id terms: not a doc-values sort, so not a hybrid matter.
+        java = {"sort_SortField_CUSTOM_BytesRefFieldComparatorSource"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
         print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")
