@@ -32,48 +32,44 @@ stock reads them again in place (stock -> plugin -> stock).
 
   scripts/check-knn-upgrade.py [--keep]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import glob, importlib.util, json, os, random, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 _spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
 ck = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ck)
 
 NODE = ("knn-upgrade", 19223)
-DATA, REPO = "knn-upgrade-data", "knn-upgrade-repo"
+# The node's data and snapshot repository: plain directories (nodectl.NODE_HOME/data/...).
+DATA = os.path.join(nodectl.NODE_HOME, "data", "knn-upgrade-data")
+REPO = os.path.join(nodectl.NODE_HOME, "data", "knn-upgrade-repo")
 DELETED = 40
 ADDED = 120
-STOCK_IMAGE = f"opensearchproject/opensearch:{ck.VERSION}"
+STOCK_IMAGE = "stock"  # the nodectl variant: OpenSearch as shipped
 
 
 def start(image, *env):
-    subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
-    subprocess.run(["docker", "run", "-d", "--name", NODE[0], "-p", f"{NODE[1]}:9200",
-                    "-v", f"{DATA}:/usr/share/opensearch/data", "-v", f"{REPO}:/usr/share/opensearch/repo",
-                    "-e", "path.repo=/usr/share/opensearch/repo",
-                    "-e", "discovery.type=single-node", "-e", "DISABLE_SECURITY_PLUGIN=true",
-                    "-e", "DISABLE_INSTALL_DEMO_CONFIG=true", "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
-                    "-e", "cluster.routing.allocation.disk.threshold_enabled=false",
-                    *[a for e in env for a in ("-e", e)], image],
-                   check=True, capture_output=True)
+    nodectl.run(NODE[0], image, NODE[1], data=DATA, wait=False,
+                settings=[f"path.repo={REPO}", *env])
     ck.wait(NODE[1])
 
 
 def stop():
-    subprocess.run(["docker", "stop", "-t", "60", NODE[0]], check=True, capture_output=True)
+    nodectl.stop(NODE[0], timeout=60)
 
 
 def fresh_volumes():
-    subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
+    nodectl.rm(NODE[0])
     for v in (DATA, REPO):
-        subprocess.run(["docker", "volume", "rm", "-f", v], capture_output=True)
-        subprocess.run(["docker", "volume", "create", v], check=True, capture_output=True)
-    # The image runs as uid 1000; a new volume's root is root's.
-    subprocess.run(["docker", "run", "--rm", "-u", "0", "-v", f"{REPO}:/repo", "--entrypoint", "chown",
-                    STOCK_IMAGE, "1000:1000", "/repo"], check=True, capture_output=True)
+        shutil.rmtree(v, ignore_errors=True)
+        os.makedirs(v)
+    if os.getuid() == 0:  # the node runs as an unprivileged user
+        subprocess.run(["chown", "-R", nodectl.NODE_USER, REPO], check=True)
 
 
 def queries(t):
@@ -277,12 +273,7 @@ def main():
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{ck.VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
 
     failures = []
     try:
@@ -344,13 +335,13 @@ def main():
         print(f"  {n} queries compared, {m} sources")
     finally:
         if failures:
-            logs = subprocess.run(["docker", "logs", NODE[0]], capture_output=True, text=True)
-            print("\n".join(l for l in (logs.stdout + logs.stderr).splitlines()
+            logs = nodectl.logs(NODE[0])
+            print("\n".join(l for l in logs.splitlines()
                             if "WARN" in l or "ERROR" in l or "Exception" in l)[-6000:])
         if not keep:
-            subprocess.run(["docker", "rm", "-f", NODE[0]], capture_output=True)
+            nodectl.rm(NODE[0])
             for v in (DATA, REPO):
-                subprocess.run(["docker", "volume", "rm", "-f", v], capture_output=True)
+                shutil.rmtree(v, ignore_errors=True)
     for f in failures:
         print("FAIL:", f)
     sys.exit(1 if failures else 0)

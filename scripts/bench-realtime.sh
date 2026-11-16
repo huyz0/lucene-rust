@@ -12,7 +12,7 @@
 #
 #   scripts/bench-realtime.sh [DOCS] [OUT_DIR]     # default 1000000, target/bench-realtime
 #
-# Needs what scripts/bench-opensearch.sh needs. HEAP (default 2g), CLIENTS
+# Needs what scripts/bench-opensearch.sh needs (nodes are plain processes, no Docker). HEAP (default 2g), CLIENTS
 # (default 4) bulk clients, PROBE_EVERY (default 0.2) seconds between probes.
 # BENCH_ENV (NAME=value pairs, space-separated) is passed to the node, and its log is kept
 # beside the results.
@@ -22,8 +22,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 DOCS="${1:-1000000}"
 OUT="${2:-target/bench-realtime}"
-VERSION=3.9.0
-IMAGE="lucene-rust-opensearch:${VERSION}"
+REPO_ROOT="$PWD"
+source scripts/lib-nodes.sh
 HEAP="${HEAP:-2g}"
 PORT=9251
 mkdir -p "$OUT"
@@ -36,38 +36,29 @@ fi
 
 scripts/opensearch-dist.sh
 gradle --no-daemon -q -p opensearch-plugin bundlePlugin
-rm -f opensearch-plugin/docker/*.zip
-cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/docker/
-docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
-printf 'FROM opensearchproject/opensearch:%s\nRUN rm -rf /usr/share/opensearch/plugins/*\n' "$VERSION" \
-    | docker build -q -t "opensearch-stock-min:${VERSION}" - >/dev/null
+nodectl dist plugin >/dev/null
+nodectl dist stock-min >/dev/null
 
 BENCH_ENV_ARGS=()
 for e in ${BENCH_ENV:-}; do BENCH_ENV_ARGS+=(-e "$e"); done
 CONFIGS="${CONFIGS:-stock plugin realtime realtime-30s}"
-bench() { # name image label settings [docker-run args...]
+bench() { # name variant label settings [-e setting=value ...]
     [[ " $CONFIGS " == *" $3 "* ]] || return 0
-    docker rm -f "$1" >/dev/null 2>&1 || true
-    docker run -d --name "$1" -p "$PORT:9200" "${@:5}" "${BENCH_ENV_ARGS[@]}" \
-        -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
-        -e cluster.routing.allocation.disk.threshold_enabled=false \
-        -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms$HEAP -Xmx$HEAP" \
-        "$2" >/dev/null
-    for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
+    os_up "$1" "$2" "$PORT" "${@:5}" ${BENCH_ENV_ARGS[@]+"${BENCH_ENV_ARGS[@]}"}
     python3 opensearch-plugin/e2e/bench_nodes.py visibility "http://localhost:$PORT" "$1" "$OUT/corpus-$DOCS" "$3" \
-        "$OUT/$3-$DOCS.json" "$4" || { docker logs "$1" >"$OUT/$3-$DOCS.log" 2>&1; return 1; }
-    docker logs "$1" >"$OUT/$3-$DOCS.log" 2>&1
-    docker rm -f "$1" >/dev/null
+        "$OUT/$3-$DOCS.json" "$4" || { nodectl logs "$1" >"$OUT/$3-$DOCS.log" 2>&1; return 1; }
+    nodectl logs "$1" >"$OUT/$3-$DOCS.log" 2>&1
+    os_down "$1"
 }
-trap 'docker rm -f bench-rt >/dev/null 2>&1 || true' EXIT
-bench bench-rt "opensearch-stock-min:${VERSION}" stock '{"refresh_interval": "1s"}'
-bench bench-rt "$IMAGE" plugin '{"refresh_interval": "1s"}' -e indices.engine.accelerated.default=true
-bench bench-rt "$IMAGE" realtime '{"refresh_interval": "1s", "index.search.realtime.enabled": true}' \
+trap 'os_down bench-rt' EXIT
+bench bench-rt stock-min stock '{"refresh_interval": "1s"}'
+bench bench-rt plugin plugin '{"refresh_interval": "1s"}' -e indices.engine.accelerated.default=true
+bench bench-rt plugin realtime '{"refresh_interval": "1s", "index.search.realtime.enabled": true}' \
     -e indices.engine.accelerated.default=true
-bench bench-rt "$IMAGE" realtime-strict '{"refresh_interval": "1s", "index.search.realtime.enabled": true, "index.search.realtime.max_staleness": "0ms"}' \
+bench bench-rt plugin realtime-strict '{"refresh_interval": "1s", "index.search.realtime.enabled": true, "index.search.realtime.max_staleness": "0ms"}' \
     -e indices.engine.accelerated.default=true
-bench bench-rt "$IMAGE" realtime-stale '{"refresh_interval": "1s", "index.search.realtime.enabled": true, "index.search.realtime.max_staleness": "'"${STALENESS:-20ms}"'"}' \
+bench bench-rt plugin realtime-stale '{"refresh_interval": "1s", "index.search.realtime.enabled": true, "index.search.realtime.max_staleness": "'"${STALENESS:-20ms}"'"}' \
     -e indices.engine.accelerated.default=true
-bench bench-rt "$IMAGE" realtime-30s '{"refresh_interval": "30s", "index.search.realtime.enabled": true}' \
+bench bench-rt plugin realtime-30s '{"refresh_interval": "30s", "index.search.realtime.enabled": true}' \
     -e indices.engine.accelerated.default=true
 echo "bench-realtime: results in $OUT/*-$DOCS.json"

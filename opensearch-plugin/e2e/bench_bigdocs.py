@@ -5,12 +5,13 @@ Usage:
   bench_bigdocs.py BASE CONTAINER LABEL OUT SETTINGS_JSON
 
 The index has FIELDS fields besides `body`: a third keyword, a third long, a
-third text. `body` is a text field of about SIZE_MB of Zipf words. Docker RSS
+third text. `body` is a text field of about SIZE_MB of Zipf words. Node RSS
 is sampled every 0.2 s (open files every 1 s) while the documents are sent (peak and last), then
 after a refresh. A search for a rare term in the last document checks that
 the documents were indexed."""
 import concurrent.futures
 import json
+import nodectl
 import os
 import random
 import subprocess
@@ -34,8 +35,7 @@ def req(base, method, path, body=None, ndjson=False):
 
 
 def mem_bytes(container):
-    out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", container],
-                         capture_output=True, text=True).stdout.split("/")[0].strip()
+    out = f"{nodectl.rss(container) / 2**20:.1f}MiB"
     units = {"KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "B": 1}
     for u, m in units.items():
         if out.endswith(u):
@@ -44,12 +44,7 @@ def mem_bytes(container):
 
 
 def open_files(container):
-    top = subprocess.run(["docker", "top", container, "-o", "pid,args"], capture_output=True, text=True).stdout
-    pids = [l.split()[0] for l in top.splitlines()[1:] if "org.opensearch.bootstrap" in l]
-    try:
-        return len(os.listdir("/proc/%s/fd" % pids[0])) if pids else 0
-    except OSError:
-        return 0
+    return nodectl.open_files(container)
 
 
 def breaker_bytes(base):

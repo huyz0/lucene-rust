@@ -24,7 +24,7 @@ turns them all on.
 |---|---|---|
 | (always) | every change | `checks` |
 | `rust` | `crates/`, `fixtures/`, `scripts/`, `benchmarks/rust-runner/`, the root manifest, toolchain, `.cargo/`, `.config/nextest.toml`, `ci.yml` | `gate (x64)`, `gate (arm64)`, `lucene-search in release`, `write-path`, `fuzz` |
-| `plugin` | the `rust` paths except the benchmarks, plus `opensearch-plugin/`, `docker/` | `opensearch plugin`, `opensearch engine`, `opensearch 2.x upgrade` |
+| `plugin` | the `rust` paths except the benchmarks, plus `opensearch-plugin/`, `docker/` (the optional capped test container) | `opensearch plugin`, `opensearch engine`, `opensearch 2.x upgrade` |
 | `fixtures` | `fixtures/`, `scripts/`, `crates/lucene-analysis/`, `crates/lucene-test-framework/`, `ci.yml` | `fixtures are Java-produced` |
 | `snowball` | `crates/lucene-util/`, `crates/lucene-analysis/`, `scripts/`, the root files | `snowball vocabularies` |
 
