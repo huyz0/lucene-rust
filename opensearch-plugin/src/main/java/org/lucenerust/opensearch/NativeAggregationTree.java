@@ -1337,9 +1337,15 @@ public final class NativeAggregationTree {
                 // The documents with no doc value in the field: a one-bucket filter over "field does
                 // not exist", read from the same doc values the aggregator reads.
                 ValuesSourceConfig mc = (ValuesSourceConfig) CONFIG.get(f);
-                if (mc == null || mc.script() != null || mc.missing() != null
+                if (mc == null || mc.script() != null
                     || agg.getClass().getName().equals(AGGS + "bucket.missing.MissingAggregator") == false) {
                     return null;
+                }
+                if (mc.missing() != null) {
+                    // A `missing` value (MissingValues.replaceMissing) gives every document a value:
+                    // no document is missing.
+                    byte[] none = filterBlob(ctx, new org.apache.lucene.search.MatchNoDocsQuery(), fieldOk);
+                    return none == null ? null : new MissingNode(agg, subs, none);
                 }
                 org.apache.lucene.search.BooleanQuery.Builder b = new org.apache.lucene.search.BooleanQuery.Builder();
                 b.add(new MatchAllDocsQuery(), org.apache.lucene.search.BooleanClause.Occur.MUST);
