@@ -61,7 +61,9 @@ impl JvmReaderHandle {
                 .zip(&self.live_docs)
                 .enumerate()
                 .map(|(i, (r, live))| {
-                    (i < self.cacheable).then(|| {
+                    // A masked segment's partial results hold what the mask made of its values:
+                    // they are not the segment's, and no other view's.
+                    (i < self.cacheable && !r.has_masked_fields()).then(|| {
                         lucene_aggs::bucket_aggs::segment_cache::SegmentIdentity::of(
                             r,
                             live.as_ref(),
@@ -163,13 +165,16 @@ fn live_masks(
 }
 
 /// A view of the reader `base` holds: the same segments with each one hiding the fields
-/// `hidden[i]` names ([`lucene_search::directory_reader::SegmentReader::with_hidden_fields`]) and
+/// `hidden[i]` names ([`lucene_search::directory_reader::SegmentReader::with_hidden_fields`]),
+/// showing the fields `masks` names through their masks
+/// ([`lucene_search::directory_reader::SegmentReader::with_security_view`]) and
 /// masked with the live docs of this call -- what a search sees through a wrapper that filters
 /// fields and documents (field- and document-level security). Nothing is read from disk, the
 /// segments are `base`'s; `expected`, `counts` and `words` are [`open_reader`]'s.
 pub fn open_view(
     base: &JvmReaderHandle,
     hidden: &[std::collections::HashSet<String>],
+    masks: &std::collections::HashMap<String, lucene_codecs::value_mask::SharedMask>,
     expected: &[i32],
     counts: Option<&[usize]>,
     words: &[u64],
@@ -187,7 +192,7 @@ pub fn open_view(
         ));
         return Err(Status::InvalidArgument);
     }
-    let reader = base.reader.with_hidden_fields(hidden).map_err(|e| {
+    let reader = base.reader.with_security_view(hidden, masks).map_err(|e| {
         set_last_error(format!("hiding fields of the JVM reader's segments: {e}"));
         Status::InvalidArgument
     })?;

@@ -323,7 +323,7 @@ fn streamed_labels(
             .get_mut(seg)
             .and_then(Option::as_mut)
             .ok_or_else(|| bad_ord(global))?;
-        let bytes = dict.seek_ord(ord).map_err(store)?;
+        let bytes = dict.lookup_ord(ord).map_err(store)?;
         labels.push(match std::str::from_utf8(bytes) {
             Ok(s) => s.to_owned(),
             Err(_) => String::from_utf8_lossy(bytes).into_owned(),

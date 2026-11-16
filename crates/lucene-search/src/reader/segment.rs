@@ -620,15 +620,26 @@ struct SegBinary<'a> {
     cur: DvCursor<'a>,
     reader: BinaryReader<'a>,
     value: &'a [u8],
+    /// A masked field's value: the stored bytes through the mask (`masked`), which no file holds.
+    shown: Vec<u8>,
+    masked: bool,
 }
 
 impl SegBinary<'_> {
     fn miss(&mut self) {
         self.value = &[];
+        self.shown.clear();
     }
 
     fn load(&mut self) -> Result<()> {
-        self.value = self.reader.value(self.cur.doc)?.unwrap_or_default();
+        if self.masked {
+            self.shown.clear();
+            if let Some(v) = self.reader.value_ref(self.cur.doc)? {
+                self.shown.extend_from_slice(v);
+            }
+        } else {
+            self.value = self.reader.value(self.cur.doc)?.unwrap_or_default();
+        }
         Ok(())
     }
 }
@@ -636,7 +647,11 @@ dv_iterator!(SegBinary);
 
 impl BinaryDocValues for SegBinary<'_> {
     fn binary_value(&self) -> &[u8] {
-        self.value
+        if self.masked {
+            &self.shown
+        } else {
+            self.value
+        }
     }
 }
 
@@ -699,7 +714,7 @@ impl SortedDocValues for SegSorted<'_> {
         self.ord
     }
     fn lookup_ord(&mut self, ord: i32) -> Result<Vec<u8>> {
-        Ok(self.terms.seek_ord(i64::from(ord))?.to_vec())
+        Ok(self.terms.lookup_ord(i64::from(ord))?.to_vec())
     }
     fn value_count(&self) -> i32 {
         i32::try_from(self.terms.size()).unwrap_or(i32::MAX)
@@ -846,7 +861,7 @@ impl SortedSetDocValues for SegSortedSet<'_> {
         Some(rest)
     }
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
-        Ok(self.terms.seek_ord(ord)?.to_vec())
+        Ok(self.terms.lookup_ord(ord)?.to_vec())
     }
     fn value_count(&self) -> i64 {
         self.terms.size()
@@ -1449,6 +1464,9 @@ impl SegmentReader {
         else {
             return Ok(None);
         };
+        if e.substring.is_some() && e.mask.is_some() {
+            return Err(lucene_codecs::value_mask::masked_error("compressed binary values").into());
+        }
         match e.substring.as_deref() {
             Some(sub) => Ok(Some(lucene_codecs::substring::SubstringIndex::new(
                 data, sub,
@@ -1566,6 +1584,11 @@ impl LeafReader for SegmentReader {
             return Ok(None);
         };
         if let Some(sub) = e.substring.as_deref() {
+            if e.mask.is_some() {
+                return Err(
+                    lucene_codecs::value_mask::masked_error("compressed binary values").into(),
+                );
+            }
             return Ok(Some(Box::new(SegSubstring {
                 cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
                 index: lucene_codecs::substring::SubstringIndex::new(data, sub)?,
@@ -1577,6 +1600,8 @@ impl LeafReader for SegmentReader {
             cur: DvCursor::open(self, data, DocsRegion::binary(e))?,
             reader: BinaryReader::new(data, e),
             value: &[],
+            shown: Vec::new(),
+            masked: e.mask.is_some(),
         })))
     }
 
