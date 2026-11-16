@@ -80,7 +80,7 @@ def load(base):
     bh.req(base, "PUT", "/sc", {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": -1}, "mappings": MAPPING})
     lines = []
     for i, d in docs():
-        lines.append(json.dumps({"index": {"_id": str(i)}}))
+        lines.append(json.dumps({"index": {"_id": (str(i) if i % 3 else "d%d" % i if i % 2 else "\u00e9%d" % i)}}))
         lines.append(json.dumps(d))
         if (i + 1) % 800 == 0:
             bh.req(base, "POST", "/sc/_bulk?refresh=true", body="\n".join(lines) + "\n", ndjson=True)
@@ -131,6 +131,8 @@ def shapes():
     for f in ["l", "d", "f", "h", "sf", "ul", "dt", "dn"]:
         s["fvf " + f] = {"size": 30, "query": {"function_score": {"query": body, "field_value_factor": {"field": f, "missing": 2, "modifier": "log2p", "factor": 1.5}, "boost_mode": "sum"}}}
         s["random " + f] = {"size": 30, "query": {"function_score": {"query": ma, "random_score": {"seed": 11, "field": f}, "boost_mode": "replace"}}}
+    s["random _id"] = {"size": 30, "query": {"function_score": {"query": ma, "random_score": {"seed": 11}, "boost_mode": "replace"}}}
+    s["random _id sum"] = {"size": 30, "query": {"function_score": {"query": body, "functions": [{"random_score": {"seed": 5}, "weight": 2}, {"filter": {"term": {"tag": "t1"}}, "random_score": {"seed": 9}}], "score_mode": "sum", "boost_mode": "sum"}}}
     s["fvf lm"] = {"size": 30, "query": {"function_score": {"query": body, "field_value_factor": {"field": "lm", "missing": 0, "modifier": "sqrt"}}}}
     s["fvf missing error"] = {"size": 30, "query": {"function_score": {"query": ma, "field_value_factor": {"field": "ul"}}}}
     # decay

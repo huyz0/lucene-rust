@@ -293,6 +293,8 @@ impl MultiValue {
 pub enum RandomField {
     /// No field: the document's index-wide ID.
     DocId,
+    /// The `_id` field data: the document's `_id` term, as the index encodes it.
+    Id,
     /// A keyword's first (smallest) term.
     Keyword(String),
     /// A numeric, boolean or date field: its values as `FieldData.toString`
@@ -526,7 +528,7 @@ fn decay(c: &mut Cursor<'_>) -> std::result::Result<Decay, Status> {
         2 => Decay::Linear,
         other => {
             return Err(invalid(format!(
-                "query tree: unknown decay function {other} (expected 0..=2)"
+                "query tree: unknown decay function {other} (expected 0..=3)"
             )))
         }
     })
@@ -610,9 +612,10 @@ pub fn decode_function(c: &mut Cursor<'_>, depth: usize) -> std::result::Result<
                     let field = field(c)?;
                     RandomField::Numeric(field, numeric(c)?)
                 }
+                3 => RandomField::Id,
                 other => {
                     return Err(invalid(format!(
-                        "query tree: unknown random score field kind {other} (expected 0..=2)"
+                        "query tree: unknown random score field kind {other} (expected 0..=3)"
                     )))
                 }
             };
@@ -777,6 +780,11 @@ pub enum LeafFunction<'c> {
         values: Box<dyn SortedSetDocValues + 'c>,
         salted_seed: i32,
     },
+    RandomId {
+        reader: &'c lucene_search::directory_reader::SegmentReader,
+        field_number: Option<i32>,
+        salted_seed: i32,
+    },
     RandomNumeric {
         values: Box<dyn SortedNumericDocValues + 'c>,
         numeric: Numeric,
@@ -839,6 +847,17 @@ impl<'c> LeafFunction<'c> {
                 field: RandomField::DocId,
             } => LeafFunction::RandomDoc {
                 doc_base: reader.doc_base,
+                salted_seed: *salted_seed,
+            },
+            Function::Random {
+                salted_seed,
+                field: RandomField::Id,
+            } => LeafFunction::RandomId {
+                reader,
+                field_number: reader
+                    .field_infos()
+                    .field_by_name(crate::writer::ID_FIELD)
+                    .map(|i| i.number),
                 salted_seed: *salted_seed,
             },
             Function::Random {
@@ -950,6 +969,27 @@ impl<'c> LeafFunction<'c> {
                 doc_base,
                 salted_seed,
             } => random(mix(doc_base.wrapping_add(doc), *salted_seed)),
+            LeafFunction::RandomId {
+                reader,
+                field_number,
+                salted_seed,
+            } => random(match field_number {
+                Some(number) => {
+                    let mut id = IdVisitor {
+                        number: *number,
+                        value: None,
+                    };
+                    let _ = reader.visit_stored_document(doc, &mut id)?;
+                    match id.value {
+                        Some(term) => lucene_util::string_helper::murmurhash3_x86_32(
+                            &decode_uid(&term),
+                            *salted_seed,
+                        ),
+                        None => *salted_seed,
+                    }
+                }
+                None => *salted_seed,
+            }),
             LeafFunction::RandomKeyword {
                 values,
                 salted_seed,
@@ -1243,5 +1283,89 @@ mod numeric_tests {
         assert_eq!(Numeric::UnsignedLong.text(-1), "18446744073709551615");
         assert_eq!(Numeric::Nanos.text(2_000_000), "2");
         assert_eq!(Numeric::Double.text(1.5f64.to_bits() as i64), "1.5");
+    }
+}
+
+/// The `_id` stored field's bytes: the term the index holds for the document.
+struct IdVisitor {
+    number: i32,
+    value: Option<Vec<u8>>,
+}
+
+impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor {
+    fn needs_field(
+        &mut self,
+        number: i32,
+    ) -> lucene_codecs::stored_fields::Result<lucene_codecs::stored_fields::VisitStatus> {
+        use lucene_codecs::stored_fields::VisitStatus;
+        Ok(if number == self.number {
+            VisitStatus::Yes
+        } else if self.value.is_some() {
+            VisitStatus::Stop
+        } else {
+            VisitStatus::No
+        })
+    }
+
+    fn binary_field(
+        &mut self,
+        _number: i32,
+        value: &[u8],
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        self.value = Some(value.to_vec());
+        Ok(())
+    }
+}
+
+/// `Uid.decodeId`, as the bytes `new BytesRef(String)` makes of its text: a leading `0xFF` marks
+/// UTF-8 text, `0xFE` digits packed two to a byte (a trailing `0xF` nibble pads), anything else
+/// URL-safe unpadded Base64 of the bytes (after a `0xFD` escape byte, which is dropped).
+fn decode_uid(id: &[u8]) -> Vec<u8> {
+    match id.split_first() {
+        None => Vec::new(),
+        Some((0xFF, text)) => String::from_utf8_lossy(text).into_owned().into_bytes(),
+        Some((0xFE, packed)) => {
+            let mut out = Vec::with_capacity(packed.len().saturating_mul(2));
+            let mut rest = packed.iter();
+            while let Some(b) = rest.next() {
+                out.push(b'0'.wrapping_add(b >> 4));
+                if rest.len() == 0 && b & 15 == 15 {
+                    break;
+                }
+                out.push(b'0'.wrapping_add(b & 15));
+            }
+            out
+        }
+        Some((first, tail)) => {
+            let raw = if *first == 0xFD { tail } else { id };
+            const A: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = Vec::with_capacity(raw.len().div_ceil(3).saturating_mul(4));
+            for chunk in raw.chunks(3) {
+                let mut n = 0u32;
+                for b in chunk {
+                    n = n << 8 | u32::from(*b);
+                }
+                n <<= 8u32.wrapping_mul(3u32.wrapping_sub(chunk.len() as u32));
+                for k in 0..=chunk.len() as u32 {
+                    out.push(A[(n >> 18u32.wrapping_sub(6u32.wrapping_mul(k)) & 63) as usize]);
+                }
+            }
+            out
+        }
+    }
+}
+
+#[cfg(test)]
+mod uid_tests {
+    use super::decode_uid;
+
+    #[test]
+    fn decodes_the_three_encodings() {
+        assert_eq!(decode_uid(&[0xFF, b'a', b'b']), b"ab");
+        assert_eq!(decode_uid(&[0xFE, 0x12, 0x3F]), b"123");
+        assert_eq!(decode_uid(&[0xFE, 0x12, 0x34]), b"1234");
+        assert_eq!(decode_uid(&[0x01, 0x02, 0x03, 0x04]), b"AQIDBA");
+        assert_eq!(decode_uid(&[0xFD, 0xFF, 0xFE]), b"__4");
     }
 }
