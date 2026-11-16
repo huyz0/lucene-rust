@@ -37,7 +37,7 @@ def rows():
     add("field_masking_span", {"query": {"span_near": {"clauses": [span("alpha"), {"field_masking_span": {"query": span("beta", "title"), "field": "body"}}], "slop": 10, "in_order": False}}}, "native")
     add("span_multi prefix", {"query": {"span_multi": {"match": {"prefix": {"body": {"value": "al"}}}}}}, "native")
     add("span_near boosted in bool", {"query": {"bool": {"must": [{"match": {"title": "alpha"}}], "should": [{"span_near": {"clauses": [span("beta"), span("gamma")], "slop": 2, "in_order": True, "boost": 2}}]}}}, "native")
-    add("span_near with span_gap", {"query": {"span_near": {"clauses": [span("alpha"), {"span_gap": {"body": 1}}, span("beta")], "slop": 0, "in_order": True}}}, "span_gap")
+    add("span_near with span_gap", {"query": {"span_near": {"clauses": [span("alpha"), {"span_gap": {"body": 1}}, span("beta")], "slop": 0, "in_order": True}}}, "native")
 
     # Intervals (`IntervalQuery`, node 22).
     add("intervals match ordered", {"query": {"intervals": {"body": {"match": {"query": "alpha beta", "max_gaps": 3, "ordered": True}}}}}, "native")
@@ -91,7 +91,7 @@ def rows():
                                                                          "should": [{"match": {"title": "beta"}}]}}}, "native")
     add("function_score in bool", {"query": {"bool": {"must": [{"match": {"title": "alpha"}}],
                                                       "should": [{"function_score": {"query": {"match": {"body": "beta"}}, "functions": [{"field_value_factor": {"field": "qty", "missing": 2}}]}}]}}}, "native")
-    add("function_score min_score", fs([{"weight": 2}], min_score=1), "function_score_min_score")
+    add("function_score min_score", fs([{"weight": 2}], min_score=1), "native")
     # Painless script_score functions the native runtime runs (checked first, see docs/parity/painless.md).
     add("function_score script", fs([{"script_score": {"script": {"source": "doc['qty'].size() == 0 ? 1 : doc['qty'].value + 1"}}}]), "native")
     add("function_score script _score replace", fs([{"script_score": {"script": {"source": "_score * params.f + 1", "params": {"f": 0.5}}}}],
@@ -129,7 +129,7 @@ def rows():
     add("script sort", {"query": {"match": {"body": "alpha"}}, "sort": ss("doc['qty'].size() == 0 ? -1 : doc['qty'].value * params.f", "desc", f=2)}, "native")
     add("script sort then doc", {"query": {"match_all": {}}, "size": 20,
                                  "sort": ss("doc['tag'].size() == 0 ? 0 : doc['tag'].value.length()") + [{"n": "asc"}]}, "native")
-    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "sort_script_score")
+    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "native")
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.
