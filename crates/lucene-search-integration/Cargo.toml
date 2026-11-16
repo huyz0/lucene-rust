@@ -1,0 +1,56 @@
+[package]
+name = "lucene-search-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
+lucene-store = { path = "../lucene-store", features = ["test-util"] }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
+lucene-analysis = { path = "../lucene-analysis" }
+lucene-search = { path = "../lucene-search" }
+lucene-queryparser = { path = "../lucene-queryparser" }
+lucene-monitor = { path = "../lucene-monitor" }
+lucene-suggest = { path = "../lucene-suggest" }
+lucene-grouping = { path = "../lucene-grouping" }
+lucene-expressions = { path = "../lucene-expressions" }
+lucene-facet = { path = "../lucene-facet" }
+lucene-aggs = { path = "../lucene-aggs" }
+criterion.workspace = true
+
+# The facets/grouping/join perf pass: FFI facet and range counting, sorted-set
+# counting, `FacetsCollectorManager::search_sorted` -- see the bench's module doc.
+[[bench]]
+name = "facet_counting"
+harness = false
+
+# The facets/grouping/join perf pass: `GroupingSearch` and the query-time
+# joins -- see the bench's module doc.
+[[bench]]
+name = "grouping_join"
+harness = false
+
+# The percolator hot paths (MemoryIndex, Monitor match/register) and the
+# spell checker string distances -- see the bench module doc.
+[[bench]]
+name = "monitor_memory_spell"
+harness = false
+
+# `DirectoryReader::open` of a compound, multi-format segment (the `.cfs`
+# members and per-field dictionaries opened without copies) -- see the
+# bench's own module doc.
+[[bench]]
+name = "segment_open_compound"
+harness = false
+
+# The infix suggester's build/refresh/update/lookup and the expression
+# layer's per-document evaluation -- see the bench's module doc.
+[[bench]]
+name = "suggest_expressions"
+harness = false
+
