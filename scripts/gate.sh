@@ -67,6 +67,8 @@ python3 scripts/check-dev-notes.py
 
 echo "gate: check-java-refs (comments cite Java that exists in the *pinned* tree)"
 python3 scripts/check-java-refs.py
+echo "gate: check-fallbacks (no new Lucene fallback reason)"
+python3 scripts/check-fallbacks.py
 
 echo "gate: check-licences (every shipped dependency is under an allowed licence)"
 # `cargo metadata --offline` needs every crate in the lock file, including
