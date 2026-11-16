@@ -581,14 +581,8 @@ fn score_parts<'a>(
 ) -> Result<Option<ScoreParts<'a>>> {
     let source = rewritten(ctx, &q.source)?;
     let needs_scores = source.needs_scores();
-    let Some(inner) = build::build(
-        ctx,
-        &q.in_query,
-        sub_boost,
-        inner_mode(source.as_ref()),
-        false,
-    )?
-    else {
+    let mode = inner_mode(source.as_ref());
+    let Some(inner) = build::build(ctx, &q.in_query, sub_boost, mode, false)? else {
         return Ok(None);
     };
     let cell = Rc::new(Cell::new(0.0f32));
@@ -606,7 +600,7 @@ pub(crate) fn function_score<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
-    if !mode.needs_scores() {
+    if !mode.needs_scores() && q.min_score.is_none() {
         return build::build(ctx, &q.in_query, 1.0, Mode::NoScores, top_level);
     }
     // A source that takes the weight's boost onto the wrapped query
@@ -623,7 +617,7 @@ pub(crate) fn function_score<'a>(
     // the document-at-a-time `score()` never asks for them.
     let batch =
         values.batch_capable() && (needs_scores || inner.constant_scores()) && super::batches_on();
-    Ok(Some(Box::new(FunctionScoreScorer {
+    let scorer = FunctionScoreScorer {
         inner,
         values,
         score,
@@ -632,7 +626,67 @@ pub(crate) fn function_score<'a>(
         batch,
         batch_values: Vec::new(),
         batch_has: Vec::new(),
-    })))
+    };
+    Ok(Some(match q.min_score {
+        Some(min) => Box::new(MinScoreScorer::new(Box::new(scorer), min)),
+        None => Box::new(scorer),
+    }))
+}
+
+/// OpenSearch's `MinScoreScorer`: the documents of the wrapped scorer that
+/// score at least `min` -- a two-phase iterator over its approximation,
+/// confirming the wrapped scorer's own matches first (scoring a document it
+/// does not match is illegal), then the score.
+struct MinScoreScorer<'a> {
+    inner: BoxScorer<'a>,
+    min: f32,
+    /// The score [`Self::matches`] read, for [`Self::score`].
+    score: f32,
+}
+
+impl<'a> MinScoreScorer<'a> {
+    fn new(inner: BoxScorer<'a>, min: f32) -> Self {
+        Self {
+            inner,
+            min,
+            score: 0.0,
+        }
+    }
+}
+
+impl Scorer for MinScoreScorer<'_> {
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+    fn two_phase(&self) -> bool {
+        true
+    }
+    fn matches(&mut self) -> Result<bool> {
+        if self.inner.two_phase() && !self.inner.matches()? {
+            return Ok(false);
+        }
+        self.score = self.inner.score()?;
+        // `curScore >= minScore`: false for a `NaN` score.
+        Ok(self.score >= self.min)
+    }
+    fn match_cost(&self) -> f32 {
+        1000.0
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(self.score)
+    }
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        self.inner.max_score(up_to)
+    }
 }
 
 // ---------------------------------------------------------------------------
