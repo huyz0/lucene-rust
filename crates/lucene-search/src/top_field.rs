@@ -5488,7 +5488,7 @@ mod tests {
     #[test]
     fn child_values_are_converted_before_they_are_picked() {
         let mut v = vec![-250i64, 0, 350];
-        assert_eq!(ChildConvert::HalfFloat.apply_one(0x3c00 ^ 0), {
+        assert_eq!(ChildConvert::HalfFloat.apply_one(0x3c00), {
             let mut h = vec![0x3c00];
             ChildConvert::HalfFloat.apply(&mut h);
             h[0]
