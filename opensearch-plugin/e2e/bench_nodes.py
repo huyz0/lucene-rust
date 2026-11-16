@@ -27,14 +27,15 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
+
+import benchhttp as bh
 
 VOCAB = 200_000
 ZIPF_S = 1.07
 PER_FILE = 5_000
 CLIENTS = int(os.environ.get("CLIENTS", "4"))
 WARMUP = int(os.environ.get("WARMUP", "30"))
+WARMUP_S = float(os.environ.get("WARMUP_S", "2"))
 CATEGORIES = 50
 TAGS = 1_000
 
@@ -89,17 +90,9 @@ BASE = ""
 
 
 def req(method, path, body=None, ndjson=False, timeout=600):
-    data = None
-    headers = {}
-    if body is not None:
-        data = body if isinstance(body, bytes) else (body.encode() if isinstance(body, str) else json.dumps(body).encode())
-        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
-    r = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:500]}")
+    """One request on this thread's keep-alive connection (benchhttp): a connection per request costs more
+    than the shapes below take."""
+    return bh.req(BASE, method, path, body, ndjson, timeout)
 
 
 MAPPING = {
@@ -185,19 +178,14 @@ def load(files):
 def time_shapes(rounds):
     out = {}
     for name, body in shapes():
-        for _ in range(WARMUP):
-            req("POST", "/bench/_search?request_cache=false", body)
-        wall = []
-        hits = None
-        for _ in range(rounds):
-            t = time.perf_counter()
-            r = req("POST", "/bench/_search?request_cache=false", body)
-            wall.append((time.perf_counter() - t) * 1000)
-            hits = r["hits"]["total"]["value"]
-        wall.sort()
-        out[name] = {"median_ms": round(statistics.median(wall), 3),
-                     "p90_ms": round(wall[int(len(wall) * 0.9) - 1], 3), "hits": hits}
-        print(f"  {name:32s} {out[name]['median_ms']:8.2f} ms (p90 {out[name]['p90_ms']:.2f})", flush=True)
+        hits = []
+
+        def one():
+            hits[:] = [req("POST", "/bench/_search?request_cache=false", body)["hits"]["total"]["value"]]
+
+        ms = bh.measure(one, rounds, WARMUP, WARMUP_S)
+        out[name] = {**bh.summarize(ms), "hits": hits[0]}
+        print(f"  {name:32s} {out[name]['median_ms']:8.2f} ms (p90 {out[name]['p90_ms']:.2f}, p99 {out[name]['p99_ms']:.2f})", flush=True)
     return out
 
 
@@ -528,7 +516,7 @@ if __name__ == "__main__":
         gen(sys.argv[2], int(sys.argv[3]))
     elif sys.argv[1] == "run":
         a = sys.argv[2:]
-        rounds = 50
+        rounds = int(os.environ.get("ROUNDS", "200"))
         if "--rounds" in a:
             rounds = int(a[a.index("--rounds") + 1])
         run(a[0], a[1], a[2], a[3], a[4], rounds, "--java-too" in a)

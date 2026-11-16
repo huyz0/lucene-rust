@@ -20,6 +20,7 @@ expected reason) for the rest. Then:
 Usage: verify_opensearch.py <base-url> <container-name> [--docs N] [--bench-out FILE]
 """
 import argparse
+import benchhttp as bh
 import json
 import os
 import random
@@ -50,17 +51,8 @@ SCRIPTED = ("scr", "scrw", "scrx", "scrs", "scrn")
 
 
 def req(method, path, body=None, ndjson=False):
-    data = None
-    headers = {}
-    if body is not None:
-        data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
-        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
-    r = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(r, timeout=120) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:500]}")
+    """Keep-alive (benchhttp): phase_bench and the matrices time through this, and a connection per request costs more than a cheap search."""
+    return bh.req(BASE, method, path, body, ndjson, 120)
 
 
 def check(ok, what):

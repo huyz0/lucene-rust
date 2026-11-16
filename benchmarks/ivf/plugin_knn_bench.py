@@ -16,7 +16,10 @@ dataset's ground truth, and mean and p99 latency as the client sees it
 `benchmarks/ivf/prepare.py` writes them. Needs Docker and the plugin zip in
 opensearch-plugin/build/distributions (`gradle -p opensearch-plugin bundlePlugin`).
 """
-import glob, importlib.util, json, os, shutil, struct, subprocess, sys, time, urllib.request
+import glob, importlib.util, json, os, shutil, struct, subprocess, sys, time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
+import benchhttp as bh  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
@@ -25,7 +28,7 @@ _spec.loader.exec_module(ck)
 
 NODE = ("knn-bench", 19231)
 K = 10
-WARMUP = 200
+WARMUP = 300
 BATCH = 2000
 
 
@@ -48,12 +51,10 @@ def mapping(name, dim, space):
 
 
 def timed(port, method, path, body=None, ndjson=False):
-    data = None if body is None else (body.encode() if ndjson else json.dumps(body).encode())
-    r = urllib.request.Request(f"http://localhost:{port}{path}", data=data, method=method,
-                               headers={"Content-Type": "application/x-ndjson" if ndjson else "application/json"})
+    """(parsed response, seconds), on this thread's keep-alive connection: a connection per request costs more than a query."""
+    c = bh.for_thread(f"http://localhost:{port}")
     t = time.perf_counter()
-    with urllib.request.urlopen(r, timeout=3600) as resp:
-        out = json.loads(resp.read() or b"null")
+    out = c.json(method, path, body.encode() if ndjson else body, ndjson, 3600)
     return out, time.perf_counter() - t
 
 
