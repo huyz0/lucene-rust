@@ -1,11 +1,13 @@
 #!/bin/bash
 # Runs the four configurations one after another on one node at a time; see docs/benchmarks/lean-seq-no.md.
-# Needs ./corpus (gen.py), the stock image and the plugin image (PLUGIN_IMAGE).
+# Needs ./corpus (gen.py) and the plugin zip built (gradle -p opensearch-plugin bundlePlugin); nodes are
+# plain processes (opensearch-plugin/e2e/nodectl.py), no Docker.
 cd "$(dirname "$0")"
+NODECTL=../nodectl.py
 for cfg in ${CFGS:-stock plugin-default plugin-lean plugin-lean-disable}; do
-  img=${PLUGIN_IMAGE:-lucene-rust-opensearch:lean}; ex="-e indices.engine.accelerated.default=true"; fl=""
-  case $cfg in stock) img=${STOCK_IMAGE:-opensearch-stock-min:3.9.0}; ex="";; plugin-lean) fl="--lean";; plugin-lean-disable) fl="--lean --disable-seq";; esac
-  HEAP=4g ./up.sh b-$cfg 9250 $img $ex || { echo "$cfg: node did not start"; continue; }
+  variant=plugin; ex="indices.engine.accelerated.default=true"; fl=""
+  case $cfg in stock) variant=stock-min; ex="";; plugin-lean) fl="--lean";; plugin-lean-disable) fl="--lean --disable-seq";; esac
+  HEAP=4g ./up.sh b-$cfg 9250 $variant $ex || { echo "$cfg: node did not start"; continue; }
   python3 bench.py http://localhost:9250 b-$cfg $cfg res-$cfg${RUN:-}.json $fl > log-$cfg${RUN:-}.txt 2>&1
-  docker rm -f b-$cfg >/dev/null
+  python3 $NODECTL rm b-$cfg
 done

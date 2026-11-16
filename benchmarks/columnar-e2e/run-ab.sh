@@ -10,7 +10,8 @@
 #
 # Writes out/$TAG-stock.json and out/$TAG-$label.json (the best median of the rounds, with that
 # round's responses); prints store size, then one table: stock, each build, last/first, and
-# whether each response equals stock's. Exit 1 on any DIFF. Same node limits as run.sh.
+# whether each response equals stock's. Exit 1 on any DIFF. Same node limits as run.sh; nodes are
+# plain processes (no Docker), data under $NODE_HOME/data.
 set -e
 cd "$(dirname "$0")"
 : "${DATA:?taxi or bgl}" "${CORPUS:?bulk dir}" "${BUILDS:?label=so,...}"
@@ -18,39 +19,37 @@ TAG=${TAG:-$DATA}; PORT=9250; U=http://localhost:$PORT; ROUNDS_AB=${ROUNDS_AB:-2
 SETTINGS=${SETTINGS:-'{}'}
 S="python3 columnar_e2e.py"
 mkdir -p out
-start() { # name image volume [so]
-  docker rm -f $1 >/dev/null 2>&1 || true
-  local extra=()
-  [ -n "$4" ] && extra=(-v $(realpath $4):/usr/share/opensearch/plugins/lucene-rust/native/linux-x86_64/liblucene_ffi.so:ro)
-  docker run -d --name $1 -p $PORT:9200 --cpuset-cpus 0-2 -v $3:/usr/share/opensearch/data "${extra[@]}" \
-    -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true -e cluster.routing.allocation.disk.threshold_enabled=false \
-    -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms2g -Xmx2g" $2 >/dev/null
-  for i in $(seq 120); do curl -sf $U/_cluster/health?wait_for_status=yellow >/dev/null 2>&1 && break; sleep 2; done
+HERE=$(pwd)
+nodectl() { python3 "$HERE/../../opensearch-plugin/e2e/nodectl.py" "$@"; }
+DATA_ROOT=${NODE_HOME:-$HOME/os-native}/data
+start() { # name variant volume [so]
+  nodectl rm $1 >/dev/null 2>&1 || true
+  nodectl run $1 $2 $PORT --heap 2g --cpus 0-2 --data "$DATA_ROOT/$3" ${4:+--lib "$(realpath $4)"} >/dev/null
 }
-trap 'docker rm -f colstock colplugin >/dev/null 2>&1 || true; docker volume rm colstockdata colplugindata >/dev/null 2>&1 || true' EXIT
-docker volume rm colstockdata colplugindata >/dev/null 2>&1 || true
+trap 'nodectl rm colstock >/dev/null 2>&1; nodectl rm colplugin >/dev/null 2>&1; rm -rf "$DATA_ROOT/colstockdata" "$DATA_ROOT/colplugindata"' EXIT
+rm -rf "$DATA_ROOT/colstockdata" "$DATA_ROOT/colplugindata"
 # stock: load, merge, time (SKIP_STOCK=1 reuses out/$TAG-stock.json and .stats.json)
 if [ -z "$SKIP_STOCK" ]; then
-start colstock opensearchproject/opensearch:3.9.0 colstockdata
+start colstock stock colstockdata
 taskset -c 3 $S load $U $DATA "$CORPUS" "$SETTINGS" ${MAPPING:+$MAPPING}
 $S merge $U; taskset -c 3 $S stats $U out/$TAG-stock.stats.json
 taskset -c 3 $S time $U $DATA stock out/$TAG-stock.json
-docker rm -f colstock >/dev/null; docker volume rm colstockdata >/dev/null
+nodectl rm colstock >/dev/null; rm -rf "$DATA_ROOT/colstockdata"
 fi
 # plugin: load once with the first build, then alternate
 IFS=, read -ra B <<< "$BUILDS"; first=${B[0]#*=}
 PSET=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d['index.engine.accelerated']=True; d.update(json.loads(sys.argv[2])); print(json.dumps(d))" "$SETTINGS" "${PLUGIN_EXTRA:-{\}}")
-start colplugin lucene-rust-opensearch:3.9.0 colplugindata "$first"
+start colplugin plugin colplugindata "$first"
 taskset -c 3 $S load $U $DATA "$CORPUS" "$PSET" ${MAPPING:+$MAPPING}
 $S merge $U; taskset -c 3 $S stats $U out/$TAG-plugin.stats.json
 for r in $(seq $ROUNDS_AB); do
   for b in "${B[@]}"; do
     label=${b%%=*}; so=${b#*=}
-    start colplugin lucene-rust-opensearch:3.9.0 colplugindata "$so"
+    start colplugin plugin colplugindata "$so"
     taskset -c 3 $S time $U $DATA $label-$r out/$TAG-$label-r$r.json
   done
 done
-docker rm -f colplugin >/dev/null
+nodectl rm colplugin >/dev/null
 python3 - <<PY
 import json, sys
 labels = [b.split("=")[0] for b in "$BUILDS".split(",")]

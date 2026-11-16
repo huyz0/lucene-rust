@@ -22,9 +22,8 @@ Knobs: `STOCK_SETTINGS` / `PLUGIN_SETTINGS` (index settings JSON per node; the p
 `{"index.engine.accelerated":true}`), `MAPPING` (a mappings JSON file replacing the dataset's),
 `TAG` (output name), `SKIP_STOCK=1` (reuse `out/$TAG-stock.json`, for an A/B of two plugin
 builds or settings). Nodes get cores 0-2 and the client core 3; a plugin build is a
-`--profile dist --features mimalloc` `liblucene_ffi.so` mounted over the image's.
-Needs the images `opensearchproject/opensearch:3.9.0` and `lucene-rust-opensearch:3.9.0`
-(`scripts/bench-opensearch.sh` builds the latter).
+`--profile dist --features mimalloc` `liblucene_ffi.so` used instead of the zip's. The nodes are plain
+processes (`opensearch-plugin/e2e/nodectl.py`, no Docker); the plugin zip must be built.
 
 About 2 minutes per dataset at 1M documents, a few more at the full 7.0M (taxi) / 4.6M (bgl).
 
