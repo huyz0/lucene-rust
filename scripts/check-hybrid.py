@@ -480,7 +480,9 @@ def main():
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         # What the native hybrid shard phase leaves to Java: the hybrid collectors' other modes.
         # Sorting by _id reads the field data of the _id terms: not a doc-values sort, so not a hybrid matter.
-        java = {"sort_SortField_CUSTOM_BytesRefFieldComparatorSource"}
+        java = {"sort_SortField_CUSTOM_BytesRefFieldComparatorSource",
+                # A post_filter range OpenSearch approximates (the first documents in BKD order).
+                "approximate"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
         print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")
