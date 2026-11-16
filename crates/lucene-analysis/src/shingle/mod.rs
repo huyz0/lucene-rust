@@ -424,6 +424,9 @@ pub struct FixedShingleFilter<I> {
     /// a shingle is emitted, for a base token that cannot start a shingle
     /// while a later one (possibly stacked at the same position) can.
     pending_pos_inc: i32,
+    /// Carry a skipped base token's increment forward (Lucene's
+    /// GITHUB#16577 fix); off, Lucene 10.5.1's behavior.
+    carry_skipped_increments: bool,
 }
 
 impl<I: TokenStream> FixedShingleFilter<I> {
@@ -451,7 +454,18 @@ impl<I: TokenStream> FixedShingleFilter<I> {
             filler_token: filler.to_string(),
             buffer: String::new(),
             pending_pos_inc: 0,
+            carry_skipped_increments: false,
         })
+    }
+}
+
+impl<I> FixedShingleFilter<I> {
+    /// Hands a base token that starts no shingle's position increment to the
+    /// next shingle, and to `end()` when none follows (Lucene's GITHUB#16577).
+    /// Lucene 10.5.1, which OpenSearch 3.9 bundles, drops it: the default.
+    pub fn with_carried_increments(mut self) -> Self {
+        self.carry_skipped_increments = true;
+        self
     }
 }
 
@@ -470,18 +484,29 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         let (mut start_offset, mut end_offset);
         let mut buffer = std::mem::take(&mut self.buffer);
+        if self.carry_skipped_increments {
+            // any pending increments went into the previous shingle
+            self.pending_pos_inc = 0;
+        }
         'outer: loop {
             // Lucene 10.5.1: the increment is the base token's where it
             // starts a shingle, and a base token that emitted nothing drops it
             // (the later GITHUB#16577 fix carries it forward).
-            self.pending_pos_inc = 0;
+            if !self.carry_skipped_increments {
+                self.pending_pos_inc = 0;
+            }
             if !self.graph.increment_graph()? {
                 // no more routes from the base token: move to the next one
                 if !self.graph.increment_base_token()? {
                     self.buffer = buffer;
                     return Ok(false);
                 }
-                self.pending_pos_inc = self.graph.attributes().position_increment();
+                let inc = self.graph.attributes().position_increment();
+                self.pending_pos_inc = if self.carry_skipped_increments {
+                    self.pending_pos_inc.saturating_add(inc)
+                } else {
+                    inc
+                };
             }
             let a = self.graph.attributes();
             start_offset = a.start_offset();
@@ -541,7 +566,13 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
 
     // Java: FixedShingleFilter.end
     fn end_filter(&mut self) -> Result<(), AnalysisError> {
-        self.graph.end()
+        self.graph.end()?;
+        if !self.carry_skipped_increments {
+            return Ok(());
+        }
+        let a = self.graph.attributes_mut();
+        let inc = a.position_increment().saturating_add(self.pending_pos_inc);
+        a.set_position_increment(inc)
     }
 
     // Java: FixedShingleFilter.reset
@@ -711,11 +742,13 @@ mod tests {
 
     #[test]
     fn fixed_shingles() {
-        let mut f =
-            FixedShingleFilter::new(Canned::parse("a:0:1:1:1 b:2:3:1:1 c:4:5:1:1|5|0"), 2).unwrap();
+        let mut f = FixedShingleFilter::new(Canned::parse("a:0:1:1:1 b:2:3:1:1 c:4:5:1:1|5|0"), 2)
+            .unwrap()
+            .with_carried_increments();
         assert_eq!(render(&mut f), "a b:0:3:1:1 b c:2:5:1:1|5|1");
-        let mut f =
-            FixedShingleFilter::new(Canned::parse("a:0:1:1:1 c:4:5:3:1 d:6:7:1:1|9|1"), 3).unwrap();
+        let mut f = FixedShingleFilter::new(Canned::parse("a:0:1:1:1 c:4:5:3:1 d:6:7:1:1|9|1"), 3)
+            .unwrap()
+            .with_carried_increments();
         assert_eq!(render(&mut f), "a _ _:0:1:1:1 c d _:4:7:3:1|9|2");
         assert!(FixedShingleFilter::new(Canned::parse(""), 5).is_err());
     }
@@ -731,17 +764,34 @@ mod tests {
             Canned::parse("Secure:0:6:1:1 Wi-Fi:7:12:1:2 Wi:7:9:0:1 Fi:10:12:1:1|12|0"),
             2,
         )
-        .unwrap();
+        .unwrap()
+        .with_carried_increments();
         assert_eq!(
             render(&mut f),
             "Secure Wi-Fi:0:12:1:1 Secure Wi:0:9:0:1 Wi Fi:7:12:1:1|12|1"
         );
         let mut f =
             FixedShingleFilter::new(Canned::parse("Wi-Fi:0:5:1:2 Wi:0:2:0:1 Fi:3:5:1:1"), 2)
-                .unwrap();
+                .unwrap()
+                .with_carried_increments();
         assert_eq!(render(&mut f), "Wi Fi:0:5:1:1|0|1");
         // reset() clears what end() added
         assert_eq!(render(&mut f), "Wi Fi:0:5:1:1|0|1");
+    }
+
+    /// Lucene 10.5.1, the default: the skipped base token's increment is
+    /// dropped and `end()` adds nothing.
+    #[test]
+    fn fixed_shingle_drops_the_increment_of_a_skipped_base_token() {
+        let mut f = FixedShingleFilter::new(
+            Canned::parse("Secure:0:6:1:1 Wi-Fi:7:12:1:2 Wi:7:9:0:1 Fi:10:12:1:1|12|0"),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            render(&mut f),
+            "Secure Wi-Fi:0:12:1:1 Secure Wi:0:9:0:1 Wi Fi:7:12:0:1|12|0"
+        );
     }
 
     #[test]
