@@ -3,7 +3,6 @@ target/
 # `*.profraw` under one target dir, so a coverage run concurrent with another
 # build must use its own. They are build output and must never be staged.
 target-*/
-Cargo.lock
 
 # Java fixture generator build output (regenerated from fixtures/src/*.java)
 fixtures/classes/

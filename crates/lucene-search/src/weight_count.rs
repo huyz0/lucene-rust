@@ -1,5 +1,5 @@
 //! `Weight.count(LeafReaderContext)`
-//! (`/home/tuong/work/lucene-10.5.0/lucene/core/src/java/org/apache/lucene/search/Weight.java`)
+//! (`lucene/core/src/java/org/apache/lucene/search/Weight.java`)
 //! and the two reader-level shortcuts built on it.
 //!
 //! ## What Java does with this
