@@ -470,20 +470,18 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         let (mut start_offset, mut end_offset);
         let mut buffer = std::mem::take(&mut self.buffer);
-        // any pending increments went into the previous shingle
-        self.pending_pos_inc = 0;
         'outer: loop {
+            // Lucene 10.5.1: the increment is the base token's where it
+            // starts a shingle, and a base token that emitted nothing drops it
+            // (the later GITHUB#16577 fix carries it forward).
+            self.pending_pos_inc = 0;
             if !self.graph.increment_graph()? {
                 // no more routes from the base token: move to the next one
                 if !self.graph.increment_base_token()? {
                     self.buffer = buffer;
                     return Ok(false);
                 }
-                // non-zero already when the previous base token emitted
-                // nothing (the `continue 'outer` path)
-                self.pending_pos_inc = self
-                    .pending_pos_inc
-                    .saturating_add(self.graph.attributes().position_increment());
+                self.pending_pos_inc = self.graph.attributes().position_increment();
             }
             let a = self.graph.attributes();
             start_offset = a.start_offset();
@@ -543,10 +541,7 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
 
     // Java: FixedShingleFilter.end
     fn end_filter(&mut self) -> Result<(), AnalysisError> {
-        self.graph.end()?;
-        let a = self.graph.attributes_mut();
-        let inc = a.position_increment().saturating_add(self.pending_pos_inc);
-        a.set_position_increment(inc)
+        self.graph.end()
     }
 
     // Java: FixedShingleFilter.reset

@@ -103,6 +103,12 @@ pub use bounds::{Bounded, Bounds};
 pub use distance_style::DistanceStyle;
 pub use geo_point::GeoPoint;
 pub use jmath::{to_degrees, to_radians};
+
+/// `Math.cos` as `StrictMath.cos` (fdlibm), the value every JVM mode but the
+/// x86-64 intrinsic stub gives.
+pub fn strict_cos(x: f64) -> f64 {
+    jmath::cos(x)
+}
 pub use lat_lon_bounds::LatLonBounds;
 pub use membership::Membership;
 pub use plane::Plane;

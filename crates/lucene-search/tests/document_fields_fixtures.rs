@@ -1024,7 +1024,7 @@ fn dump(dir: &std::path::Path) -> Vec<String> {
             };
             let term = |terms: &lucene_codecs::terms_dict::TermsDictEntry, ord: i64| {
                 let mut d = lucene_codecs::terms_dict::TermsDict::open(data, terms).unwrap();
-                hex(d.seek_ord(ord).unwrap())
+                hex(d.lookup_ord(ord).unwrap())
             };
             for doc in 0..r.max_doc {
                 let v = match f.doc_values_type {
