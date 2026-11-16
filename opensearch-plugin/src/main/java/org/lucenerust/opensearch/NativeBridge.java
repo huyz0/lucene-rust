@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 193;
+    public static final int EXPECTED_ABI_VERSION = 194;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -287,6 +287,7 @@ public final class NativeBridge {
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG)
         );
         static final MethodHandle STORE_SET_KEY_UPCALL = bind("ffi_store_set_key_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+        static final MethodHandle THAI_SET_BREAK_UPCALL = bind("ffi_thai_set_break_upcall", FunctionDescriptor.of(JAVA_INT, ADDRESS));
         static final MethodHandle STORE_BIND_ENCRYPTED = bind(
             "ffi_store_bind_encrypted",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG, JAVA_INT)
@@ -1820,6 +1821,15 @@ public final class NativeBridge {
     public static final int KEY_UPCALL_OK = 0;
     public static final int KEY_UPCALL_BUFFER_TOO_SMALL = 1;
     public static final int KEY_UPCALL_FAILED = 2;
+
+    /** Registers the JVM's Thai word-break upcall ({@code thai_break.rs}); only the first counts. */
+    static int thaiSetBreakUpcall(MemorySegment upcall) {
+        try {
+            return (int) H.THAI_SET_BREAK_UPCALL.invokeExact(upcall);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
 
     /**
      * Registers {@code upcall} (a stub with {@code store.rs}'s {@code KeyUpcall} signature, alive for

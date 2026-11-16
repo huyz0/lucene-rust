@@ -107,6 +107,7 @@ mod raw;
 mod registry;
 mod sparse_writer;
 mod store;
+mod thai_break;
 mod zstd_dictionary;
 mod zstd_terms;
 
