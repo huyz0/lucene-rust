@@ -40,7 +40,7 @@ import org.apache.lucene.util.BytesRef;
  * number, the escaped query and {@code Float.floatToIntBits(search(q))} in hex, or {@code X} and
  * the exception. {@code scenarios.tsv}: the named cases of {@link #scenarios}, each {@code name},
  * then the score bits or the exception. {@code
- * crates/lucene-search/tests/memory_index_fixtures.rs} compares.
+ * crates/lucene-search-integration/tests/memory_index_fixtures.rs} compares.
  */
 public class GenMemoryIndex {
 

@@ -1600,7 +1600,7 @@ outright.
   `corpus/analysis-factories.txt` and `normalize` per line (`N`);
   `names.txt` lists every SPI name. Read by
   `crates/lucene-analysis/tests/analysis_factory_fixtures.rs` and, for the
-  `Word2VecSynonym` configurations, `crates/lucene-search/tests/word2vec_factory_fixtures.rs`.
+  `Word2VecSynonym` configurations, `crates/lucene-search-integration/tests/word2vec_factory_fixtures.rs`.
 - `GenAnalysisMisc.java` — M11 T11.6: `ReverseStringFilter` with each marker
   over lines held in the generator (written to `lines.txt` with the rows),
   `CSVUtil` (`csv.words`), the deprecated `WordDelimiterFilter` (`wdf_*`, and
