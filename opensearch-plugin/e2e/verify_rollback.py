@@ -340,9 +340,11 @@ def main():
     # F3: adoption by reindex into a Rust-engine index, alias moved.
     t0 = time.time()
     body = req("GET", "/legacy/_mapping")["legacy"]["mappings"]
+    # The similarities and analyzers the mapping names come with it, as the index was created.
+    src = req("GET", "/legacy/_settings?flat_settings=true")["legacy"]["settings"]
+    carried = {k: v for k, v in src.items() if k.startswith(("index.similarity.", "index.analysis."))}
     req("PUT", "/adopted", {"settings": {"number_of_shards": 3, "number_of_replicas": 1,
-                                         "index.engine.accelerated": True,
-                                         "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}}},
+                                         "index.engine.accelerated": True, **carried},
                             "mappings": body})
     req("POST", "/_aliases", {"actions": [{"add": {"index": "legacy", "alias": "app"}}]})
     res = req("POST", "/_reindex?wait_for_completion=true&refresh=true",
@@ -394,8 +396,7 @@ def main():
     model.verify("adopted", "B2")
     same_answers(ref3, "adopted", "B2")
     t0 = time.time()
-    req("PUT", "/restored", {"settings": {"number_of_shards": 3, "number_of_replicas": 1,
-                                          "similarity": {"tuned": {"type": "BM25", "k1": 2.0, "b": 0.5}}},
+    req("PUT", "/restored", {"settings": {"number_of_shards": 3, "number_of_replicas": 1, **carried},
                              "mappings": body})
     res = req("POST", "/_reindex?wait_for_completion=true&refresh=true",
               {"source": {"index": "adopted"}, "dest": {"index": "restored"}}, timeout=3600)
