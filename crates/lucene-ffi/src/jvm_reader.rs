@@ -136,11 +136,83 @@ pub unsafe extern "C" fn ffi_open_jvm_reader(
     })
 }
 
+/// The host's mask of a field's values: writes the masked form of the `input_len` bytes at `input`,
+/// for the field named by the `name_len` bytes at `name`, into `out` (room for `out_cap` bytes), and
+/// answers its length -- which may exceed `out_cap`, when nothing was written and the caller asks
+/// again with room for that many -- or a negative number when the mask fails.
+pub type MaskFn = unsafe extern "C" fn(
+    name: *const u8,
+    name_len: usize,
+    input: *const u8,
+    input_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> i64;
+
+/// One masked field's mask: the host's [`MaskFn`] and the field's name.
+struct HostMask {
+    f: MaskFn,
+    name: Vec<u8>,
+}
+
+impl std::fmt::Debug for HostMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostMask")
+            .field("field", &String::from_utf8_lossy(&self.name))
+            .finish_non_exhaustive()
+    }
+}
+
+impl lucene_codecs::value_mask::ValueMask for HostMask {
+    fn apply(&self, raw: &[u8]) -> lucene_store::Result<Vec<u8>> {
+        let failed = |what: &str| {
+            lucene_store::Error::IllegalArgument(format!(
+                "the mask of field {} {what}",
+                String::from_utf8_lossy(&self.name)
+            ))
+        };
+        let mut out =
+            crate::raw::try_with_capacity::<u8>(raw.len().saturating_mul(2).saturating_add(160))
+                .map_err(|_| failed("is too large to answer"))?;
+        out.resize(out.capacity(), 0);
+        for _ in 0..2 {
+            // SAFETY: the host's function, given buffers valid for the lengths passed; it is kept
+            // alive for as long as the view is open, which the view's owner guarantees.
+            let n = unsafe {
+                (self.f)(
+                    self.name.as_ptr(),
+                    self.name.len(),
+                    raw.as_ptr(),
+                    raw.len(),
+                    out.as_mut_ptr(),
+                    out.len(),
+                )
+            };
+            let n = usize::try_from(n).map_err(|_| failed("failed"))?;
+            if n <= out.len() {
+                out.truncate(n);
+                return Ok(out);
+            }
+            out = crate::raw::try_with_capacity::<u8>(n)
+                .map_err(|_| failed("is too large to answer"))?;
+            out.resize(n, 0);
+        }
+        Err(failed("answered two different lengths"))
+    }
+}
+
 /// Opens a view of the reader `base` names: its segments, each hiding the fields the `hidden`
-/// blob lists for it, and masked with these live docs -- what a search sees through a reader
-/// wrapper that filters fields and documents (the security plugin's field- and document-level
-/// security). Nothing is read from disk. `base` stays open and independent: closing either leaves
+/// blob lists for it, showing the fields the `masked` blob lists through `mask`, and masked with
+/// these live docs -- what a search sees through a reader wrapper that filters fields and
+/// documents and masks values (the security plugin's field- and document-level security and field
+/// masking). Nothing is read from disk. `base` stays open and independent: closing either leaves
 /// the other searchable.
+///
+/// `masked` holds a little-endian `u32` count of names, then each name as a little-endian `u32`
+/// byte length and its UTF-8 bytes: the fields whose keyword and binary doc values the view shows
+/// as `mask` makes them (a name a segment has no such field for is ignored). `mask` is called
+/// whenever a masked value is shown, from the searching thread, and must stay valid until the
+/// returned handle is closed; it may be null only when `masked` lists nothing.
 ///
 /// `hidden` holds, for each of the `segment_count` segments in order, a little-endian `u32` count
 /// of names, then each name as a little-endian `u32` byte length and its UTF-8 bytes; a name the
@@ -157,6 +229,9 @@ pub unsafe extern "C" fn ffi_open_jvm_reader_view(
     base: u64,
     hidden: *const u8,
     hidden_len: usize,
+    masked: *const u8,
+    masked_len: usize,
+    mask: Option<MaskFn>,
     expected_max_docs: *const i32,
     segment_count: usize,
     live_words: *const u64,
@@ -170,6 +245,9 @@ pub unsafe extern "C" fn ffi_open_jvm_reader_view(
         // SAFETY: caller contract.
         let hidden_bytes = unsafe { bytes_from_raw(hidden, hidden_len)? };
         let hidden_sets = parse_hidden_fields(hidden_bytes, segment_count)?;
+        // SAFETY: caller contract.
+        let masked_bytes = unsafe { bytes_from_raw(masked, masked_len)? };
+        let masks = parse_masks(masked_bytes, mask)?;
         let (expected, counts): (&[i32], Option<&[usize]>) = if segment_count == 0 {
             (&[], None)
         } else {
@@ -203,13 +281,68 @@ pub unsafe extern "C" fn ffi_open_jvm_reader_view(
             base,
             "ffi_open_jvm_reader_view: unknown or already-closed base handle",
         )?;
-        let opened =
-            lucene_engine::reader_handle::open_view(&base, &hidden_sets, expected, counts, words)?;
+        let opened = lucene_engine::reader_handle::open_view(
+            &base,
+            &hidden_sets,
+            &masks,
+            expected,
+            counts,
+            words,
+        )?;
         let handle = lock_recovering(jvm_readers()).insert_checked(Arc::new(opened))?;
         // SAFETY: caller contract.
         unsafe { *out_handle = handle };
         Ok(())
     })
+}
+
+/// [`ffi_open_jvm_reader_view`]'s `masked` blob: the names of the masked fields, each with `mask`.
+fn parse_masks(
+    bytes: &[u8],
+    mask: Option<MaskFn>,
+) -> Result<std::collections::HashMap<String, lucene_codecs::value_mask::SharedMask>, FfiStatus> {
+    let bad = |what: &str| {
+        set_last_error(format!("the masked-fields blob is malformed: {what}"));
+        FfiStatus::InvalidArgument
+    };
+    let mut masks = std::collections::HashMap::new();
+    if bytes.is_empty() {
+        return Ok(masks);
+    }
+    let Some(f) = mask else {
+        return Err(bad("fields to mask without a mask function"));
+    };
+    let u32_at = |at: &mut usize| -> Result<usize, FfiStatus> {
+        let end = at.checked_add(4).ok_or_else(|| bad("offset"))?;
+        let raw: [u8; 4] = bytes
+            .get(*at..end)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| bad("truncated"))?;
+        *at = end;
+        usize::try_from(u32::from_le_bytes(raw)).map_err(|_| bad("length"))
+    };
+    let mut at = 0usize;
+    let n = u32_at(&mut at)?;
+    for _ in 0..n {
+        let len = u32_at(&mut at)?;
+        let end = at.checked_add(len).ok_or_else(|| bad("name length"))?;
+        let name = bytes.get(at..end).ok_or_else(|| bad("truncated name"))?;
+        let text = std::str::from_utf8(name)
+            .map_err(|_| bad("a name that is not UTF-8"))?
+            .to_owned();
+        masks.insert(
+            text,
+            std::sync::Arc::new(HostMask {
+                f,
+                name: name.to_vec(),
+            }) as lucene_codecs::value_mask::SharedMask,
+        );
+        at = end;
+    }
+    if at != bytes.len() {
+        return Err(bad("bytes after the last name"));
+    }
+    Ok(masks)
 }
 
 /// [`ffi_open_jvm_reader_view`]'s `hidden` blob: per segment, the names of its hidden fields.
@@ -4928,6 +5061,9 @@ pub(crate) mod tests {
                 base,
                 hidden.as_ptr(),
                 hidden.len(),
+                std::ptr::null(),
+                0,
+                None,
                 max_docs.as_ptr(),
                 max_docs.len(),
                 if words.is_empty() {
@@ -5042,6 +5178,9 @@ pub(crate) mod tests {
                 base,
                 blob.as_ptr(),
                 blob.len(),
+                std::ptr::null(),
+                0,
+                None,
                 max.as_ptr(),
                 max.len(),
                 std::ptr::null(),

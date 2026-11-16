@@ -433,7 +433,7 @@ def main():
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
     image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     ck.start(OURS[0], OURS[1], image)
-    ck.start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{ck.VERSION}")
+    ck.start(STOCK[0], STOCK[1], "stock")
     failures = []
     disabled = []
     try:

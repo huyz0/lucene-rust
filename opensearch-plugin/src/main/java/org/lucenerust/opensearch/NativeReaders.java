@@ -89,8 +89,9 @@ public final class NativeReaders {
     /**
      * The leaf wrapper of the security plugin's field- and document-level security: it hides
      * fields ({@code FieldInfos} without them, {@code null} terms, values and points for them),
-     * hides documents (its live docs), and may mask a field's values. The first two are a reader
-     * view the native side holds ({@code NativeBridge.openReaderView}); masking is not.
+     * hides documents (its live docs), and may mask a field's values. All three are a reader view the
+     * native side holds ({@code NativeBridge.openReaderView}): masking by calling the plugin's own masking
+     * function wherever native code shows a masked value.
      */
     private static final String SECURITY_LEAF = "org.opensearch.security.configuration.DlsFlsFilterLeafReader";
 
@@ -251,8 +252,12 @@ public final class NativeReaders {
             || l == NativeReaders.class.getClassLoader();
     }
 
-    /** What a wrapper of {@code reader} hides from one leaf: its fields and documents. */
-    private record View(String[][] hidden, long[][] live, String key) {}
+    /**
+     * What a wrapper of {@code reader} hides from one leaf, or shows through a mask: its fields
+     * and documents, and the fields whose keyword or binary values it rewrites ({@code masks}: the
+     * plugin's masking function of each, by field name).
+     */
+    private record View(String[][] hidden, long[][] live, java.util.Map<String, Object> masks, String key) {}
 
     private Acquired acquireView(IndexReader reader, IndexReader base, long baseHandle) {
         IndexReader.CacheHelper helper = base.getReaderCacheHelper();
@@ -280,6 +285,54 @@ public final class NativeReaders {
         return opened;
     }
 
+    /**
+     * The security plugin's masking function of each masked field, as the native side calls it
+     * whenever it shows one of the field's values: the very function the plugin's own leaf applies
+     * in {@code lookupOrd} and {@code binaryValue}, so the digest, salt and regular expressions are
+     * the plugin's.
+     */
+    private static final class Masker implements NativeBridge.FieldMasker {
+        private final java.util.Map<String, Object> fields;
+
+        Masker(java.util.Map<String, Object> fields) {
+            this.fields = fields;
+        }
+
+        @Override
+        public byte[] apply(String field, byte[] raw) {
+            Object masking = fields.get(field);
+            if (masking == null) {
+                throw new IllegalStateException("no mask for field " + field);
+            }
+            return applyTo(masking, raw);
+        }
+    }
+
+    private static byte[] applyTo(Object masking, byte[] raw) {
+        try {
+            java.lang.reflect.Method method = masking.getClass().getMethod("apply", org.apache.lucene.util.BytesRef.class);
+            method.setAccessible(true);
+            org.apache.lucene.util.BytesRef shown = (org.apache.lucene.util.BytesRef) method.invoke(masking, new org.apache.lucene.util.BytesRef(raw));
+            return shown == null ? null : java.util.Arrays.copyOfRange(shown.bytes, shown.offset, shown.offset + shown.length);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** What a masking function does to a few fixed values: two functions that agree on these and on their description are the same one. */
+    private static void fingerprint(java.security.MessageDigest digest, String field, Object masking) {
+        digest.update(field.getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) 2);
+        digest.update(String.valueOf(masking).getBytes(StandardCharsets.UTF_8));
+        for (byte[] probe : new byte[][] { {}, { 'a' }, "the quick brown fox 0123456789".getBytes(StandardCharsets.UTF_8), { 0, (byte) 0xff, 1 } }) {
+            digest.update((byte) 3);
+            byte[] shown = applyTo(masking, probe);
+            if (shown != null) {
+                digest.update(shown);
+            }
+        }
+    }
+
     private Acquired openView(long baseHandle, IndexReader base, View view) {
         List<LeafReaderContext> leaves = base.leaves();
         int[] maxDocs = new int[leaves.size()];
@@ -287,7 +340,10 @@ public final class NativeReaders {
             maxDocs[i] = leaves.get(i).reader().maxDoc();
         }
         long[] out = new long[1];
-        int rc = NativeBridge.openReaderView(baseHandle, view.hidden(), maxDocs, view.live(), out);
+        NativeBridge.Masking masking = view.masks().isEmpty()
+            ? null
+            : new NativeBridge.Masking(view.masks().keySet().toArray(new String[0]), new Masker(view.masks()));
+        int rc = NativeBridge.openReaderView(baseHandle, view.hidden(), masking, maxDocs, view.live(), out);
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
             return new Acquired(0, "native_open_failed");
@@ -309,6 +365,7 @@ public final class NativeReaders {
         }
         String[][] hidden = new String[outer.size()][];
         long[][] live = new long[outer.size()][];
+        java.util.Map<String, Object> masks = new java.util.TreeMap<>();
         java.security.MessageDigest digest;
         try {
             digest = java.security.MessageDigest.getInstance("SHA-256");
@@ -319,15 +376,24 @@ public final class NativeReaders {
             LeafReader top = outer.get(i).reader();
             LeafReader bottom = inner.get(i).reader();
             Set<String> maskedHere = new java.util.HashSet<>();
+            Set<String> shownMasked = new java.util.HashSet<>();
             for (LeafReader layer = top; layer != bottom;) {
                 if (viewLeaves.contains(layer.getClass().getName()) == false) {
                     return "reader_not_standard";
                 }
-                Set<String> masked = maskedFields(layer, bottom);
-                if (masked == null) {
+                Masking masking = maskedFields(layer, bottom);
+                if (masking == null) {
                     return "reader_not_standard";
                 }
-                maskedHere.addAll(masked);
+                maskedHere.addAll(masking.hidden());
+                for (java.util.Map.Entry<String, Object> e : masking.shown().entrySet()) {
+                    Object earlier = masks.putIfAbsent(e.getKey(), e.getValue());
+                    if (earlier != null && earlier != e.getValue() && sameMask(e.getKey(), earlier, e.getValue()) == false) {
+                        // Two leaves of one reader masking one field differently: one native function cannot stand in for both.
+                        return "reader_not_standard";
+                    }
+                    shownMasked.add(e.getKey());
+                }
                 layer = ((FilterLeafReader) layer).getDelegate();
                 if (layer instanceof FilterLeafReader == false && layer != bottom) {
                     return "reader_not_standard";
@@ -341,6 +407,12 @@ public final class NativeReaders {
                 if (maskedHere.contains(fi.name)) {
                     // Every read of it answers null in the wrapper: nothing is left of it to search.
                     gone.add(fi.name);
+                } else if (shownMasked.contains(fi.name)) {
+                    // Its stored values and masked doc values remain; the plugin's field info for it
+                    // says it is indexed no more, which the native view does as well.
+                    if (seen == null || seen.getDocValuesType() != fi.getDocValuesType()) {
+                        return "reader_not_standard";
+                    }
                 } else if (seen == null) {
                     gone.add(fi.name);
                 } else if (sameShape(fi, seen) == false) {
@@ -371,7 +443,25 @@ public final class NativeReaders {
                 digest.update(bytes.array());
             }
         }
-        return new View(hidden, live, java.util.HexFormat.of().formatHex(digest.digest()));
+        // The mask is part of what the view shows: two roles that mask a field differently never share a handle.
+        for (java.util.Map.Entry<String, Object> e : masks.entrySet()) {
+            digest.update((byte) 4);
+            fingerprint(digest, e.getKey(), e.getValue());
+        }
+        return new View(hidden, live, masks, java.util.HexFormat.of().formatHex(digest.digest()));
+    }
+
+    /** Whether two masking functions of one field are the same one: they describe themselves alike and agree on the probes. */
+    private static boolean sameMask(String field, Object a, Object b) {
+        try {
+            java.security.MessageDigest x = java.security.MessageDigest.getInstance("SHA-256");
+            java.security.MessageDigest y = java.security.MessageDigest.getInstance("SHA-256");
+            fingerprint(x, field, a);
+            fingerprint(y, field, b);
+            return java.util.Arrays.equals(x.digest(), y.digest());
+        } catch (java.security.NoSuchAlgorithmException | RuntimeException e) {
+            return false;
+        }
     }
 
     /** Whether {@code a} and {@code b} index and store the field alike: what a masked field does not. */
@@ -388,38 +478,52 @@ public final class NativeReaders {
             && a.number == b.number;
     }
 
+    /** What one security leaf masks: the fields it hides outright, and the masking function of each it shows through a mask. */
+    private record Masking(Set<String> hidden, java.util.Map<String, Object> shown) {}
+
     /**
-     * The fields the security plugin's leaf {@code layer} masks over {@code bottom}, or null when
-     * the native side cannot stand in for the mask. A masked field answers null for its postings,
-     * points, norms, vectors and numeric values, so it is hidden like a field its role may not see;
-     * one whose keyword or binary doc values survive, shown through the mask, is not -- those
-     * values are hashed where they are read, which only the plugin's own reader does. The rule is
-     * private to that plugin, so a version that moved it reads as masking those too.
+     * What the security plugin's leaf {@code layer} masks over {@code bottom}, or null when the
+     * native side cannot stand in for the mask. A masked field answers null for its postings,
+     * points, norms, vectors and numeric values, so it is hidden like a field its role may not see.
+     * One whose keyword or binary doc values survive is shown natively through the plugin's own
+     * masking function, which the native side calls wherever it turns an ordinal or a stored
+     * value into the bytes it shows: aggregation keys, sort values, collapse keys, script values.
+     * The rule is private to that plugin, so a version that moved it reads as masking those too.
      */
-    private static Set<String> maskedFields(LeafReader layer, LeafReader bottom) {
+    private static Masking maskedFields(LeafReader layer, LeafReader bottom) {
         try {
             java.lang.reflect.Field field = layer.getClass().getDeclaredField("fmRule");
             field.setAccessible(true);
             Object rule = field.get(layer);
             if (Boolean.TRUE.equals(call(rule, "isAllowAll"))) {
-                return Set.of();
+                return new Masking(Set.of(), java.util.Map.of());
             }
             java.lang.reflect.Field metaField = layer.getClass().getDeclaredField("metaFields");
             metaField.setAccessible(true);
             Set<?> meta = (Set<?>) metaField.get(layer);
-            Set<String> masked = new java.util.HashSet<>();
+            Set<String> hidden = new java.util.HashSet<>();
+            java.util.Map<String, Object> shown = new java.util.HashMap<>();
             for (FieldInfo fi : bottom.getFieldInfos()) {
                 if (meta.contains(fi.name) || Boolean.TRUE.equals(call(rule, "isMasked", fi.name)) == false) {
                     continue;
                 }
                 switch (fi.getDocValuesType()) {
                     case BINARY, SORTED, SORTED_SET -> {
-                        return null;
+                        if (fi.hasVectorValues() || "true".equals(fi.getAttribute("knn_field"))) {
+                            // The plugin has no masked form of a vector: the field is not there.
+                            hidden.add(fi.name);
+                            continue;
+                        }
+                        Object masking = call(rule, "get", fi.name);
+                        if (masking == null) {
+                            return null;
+                        }
+                        shown.put(fi.name, masking);
                     }
-                    default -> masked.add(fi.name);
+                    default -> hidden.add(fi.name);
                 }
             }
-            return masked;
+            return new Masking(hidden, shown);
         } catch (ReflectiveOperationException | RuntimeException e) {
             return null;
         }

@@ -19,6 +19,7 @@ import org.apache.lucene.queries.spans.SpanQuery;
 import org.apache.lucene.queries.spans.SpanTermQuery;
 import org.apache.lucene.queries.spans.SpanWithinQuery;
 import org.apache.lucene.search.CombinedFieldQuery;
+import org.apache.lucene.search.DoubleValuesSource;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
 import org.apache.lucene.search.join.QueryBitSetProducer;
@@ -796,6 +797,9 @@ final class ExtendedEncoder {
         if (field(q, "scriptBuilder") instanceof JsScripts.Leaf js) {
             return jsScore(q, js, out, child);
         }
+        if (isExpression(field(q, "scriptBuilder"))) {
+            return expressionScore(q, (ScoreScript.LeafFactory) field(q, "scriptBuilder"), out, child, "script_score_script");
+        }
         if (script == null || "painless".equals(script.getLang()) == false) {
             return "script_score_script";
         }
@@ -878,6 +882,20 @@ final class ExtendedEncoder {
             jsSpec(out, (Js) prepared, "", 0);
             return null;
         }
+        Object wrapped = wrappedExpression(field(q, "filterScript"));
+        if (wrapped != null) {
+            if (((ScoreScript.LeafFactory) wrapped).needs_score()) {
+                return "script_query_script";
+            }
+            ByteArrayOutputStream spec = new ByteArrayOutputStream();
+            String why = expressionSpec(wrapped, PainlessScore.FILTER, "", 0, spec, "script_query_script");
+            if (why != null) {
+                return why;
+            }
+            out.write(NODE_PAINLESS_FILTER);
+            out.writeBytes(spec.toByteArray());
+            return null;
+        }
         if (script == null || "painless".equals(script.getLang()) == false) {
             return "script_query_script";
         }
@@ -902,6 +920,9 @@ final class ExtendedEncoder {
         }
         if (factory instanceof JsScripts.Leaf js) {
             return jsSpec(out, js, PainlessScore.SORT, "sort_script");
+        }
+        if (isExpression(factory)) {
+            return expressionSpec(factory, PainlessScore.SORT, "", 0, out, "sort_script");
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
@@ -932,6 +953,9 @@ final class ExtendedEncoder {
         if (factory instanceof JsScripts.Leaf js) {
             return jsSpec(out, js, PainlessScore.AGGREGATION, "aggregation_script");
         }
+        if (isExpression(factory)) {
+            return expressionSpec(factory, PainlessScore.AGGREGATION, "", 0, out, "aggregation_script");
+        }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String source) == false || (sp[1] instanceof Map<?, ?>) == false) {
             return "aggregation_script";
@@ -957,6 +981,9 @@ final class ExtendedEncoder {
     static String painlessTermsSet(TermsSetQueryScript.LeafFactory factory, ByteArrayOutputStream out) {
         if (factory instanceof JsScripts.Leaf js) {
             return jsSpec(out, js, PainlessScore.TERMS_SET, "covering");
+        }
+        if (isExpression(factory)) {
+            return expressionSpec(factory, PainlessScore.TERMS_SET, "", 0, out, "covering_script");
         }
         Object[] sp = PainlessScore.sourceAndParams(factory);
         if (sp == null || (sp[0] instanceof String) == false || (sp[1] instanceof Map<?, ?>) == false) {
@@ -1229,6 +1256,210 @@ final class ExtendedEncoder {
         JsScripts.writeSpec(out, js.context(), js.source(), js.params(), js.names(), js.reads(), js.kinds(), index, shard, run);
     }
 
+
+    // ---------------------------------------------------------------------------------------------
+    // Lucene expressions (lang: expression)
+    // ---------------------------------------------------------------------------------------------
+
+    private static final String EXPRESSION_PACKAGE = "org.opensearch.script.expression.";
+
+    /** The Joda date getters an expression's {@code date} object serves, in the native runtime's order. */
+    private static final List<String> JODA_PARTS = List.of(
+        "centuryOfEra", "dayOfMonth", "dayOfWeek", "dayOfYear", "era", "hourOfDay", "millisOfDay", "millisOfSecond",
+        "minuteOfDay", "minuteOfHour", "monthOfYear", "secondOfDay", "secondOfMinute", "weekOfWeekyear", "weekyear",
+        "year", "yearOfCentury", "yearOfEra"
+    );
+
+    /** Whether {@code o} is a script of the expression language module. */
+    static boolean isExpression(Object o) {
+        return o != null && o.getClass().getName().startsWith(EXPRESSION_PACKAGE);
+    }
+
+    /**
+     * The expression behind a {@code script} query's filter factory, which wraps the score
+     * script's factory, or null.
+     */
+    private static Object wrappedExpression(Object filterFactory) {
+        if (filterFactory == null || filterFactory.getClass().getClassLoader() == null) {
+            return null;
+        }
+        for (Field f : filterFactory.getClass().getDeclaredFields()) {
+            try {
+                f.setAccessible(true);
+                Object v = f.get(filterFactory);
+                if (v instanceof ScoreScript.LeafFactory && isExpression(v)) {
+                    return v;
+                }
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * An expression script's spec ({@code painless_score.rs}'s {@code ExprSource}) written to {@code
+     * out}: its source, the fields its variables read, and what each variable is. Returns null, or
+     * {@code reason} when the script binds a variable the native runtime does not read.
+     */
+    private static String expressionSpec(Object factory, byte context, String index, int shard, ByteArrayOutputStream out, String reason) {
+        Function<String, MappedFieldType> types = FIELD_TYPES.get();
+        if (types == null) {
+            return reason;
+        }
+        try {
+            Object expr = field(factory, "exprScript");
+            String source = (String) field(expr, "sourceText");
+            String[] variables = (String[]) field(expr, "variables");
+            // The score script's factory keeps only the expression's value source, whose variable
+            // sources are in the order of the expression's variables.
+            Object bindings = Reflect.inHierarchy(factory.getClass(), "bindings") != null ? field(factory, "bindings") : null;
+            DoubleValuesSource[] bound = bindings == null ? (DoubleValuesSource[]) field(field(factory, "source"), "variables") : null;
+            java.lang.reflect.Method get = bindings == null ? null : bindings.getClass().getMethod("getDoubleValuesSource", String.class);
+            if (isExpression(factory) && Reflect.inHierarchy(factory.getClass(), "specialValue") != null && field(factory, "specialValue") != null) {
+                return reason;
+            }
+            java.util.LinkedHashMap<String, Integer> fields = new java.util.LinkedHashMap<>();
+            ByteArrayOutputStream vars = new ByteArrayOutputStream();
+            for (int v = 0; v < variables.length; v++) {
+                String variable = variables[v];
+                Object src = get != null ? get.invoke(bindings, variable) : bound[v];
+                String cn = src.getClass().getName();
+                writeString(vars, variable);
+                if (src == DoubleValuesSource.SCORES) {
+                    vars.write(0);
+                } else if (cn.endsWith("ConstantValuesSource")) {
+                    vars.write(1);
+                    writeLong(vars, Double.doubleToRawLongBits(((DoubleValuesSource) src).getValues(null, null).doubleValue()));
+                } else if (cn.startsWith(EXPRESSION_PACKAGE) && Reflect.inHierarchy(src.getClass(), "fieldData") != null) {
+                    Object data = field(src, "fieldData");
+                    String name = ((IndexFieldData<?>) data).getFieldName();
+                    MappedFieldType ft = types.apply(name);
+                    if (ft == null || ft.hasDocValues() == false) {
+                        return reason;
+                    }
+                    int at = fields.computeIfAbsent(ft.name(), n -> fields.size());
+                    String kind = cn.substring(EXPRESSION_PACKAGE.length());
+                    boolean geo = kind.startsWith("Geo");
+                    if (geo && data.getClass().getName().equals(LAT_LON_FIELD_DATA) == false) {
+                        return reason;
+                    }
+                    byte[] numeric = geo ? null : scoreNumeric(data);
+                    if (geo == false && numeric == null && kind.equals("EmptyMemberValueSource") == false && kind.equals("CountMethodValueSource") == false) {
+                        return reason;
+                    }
+                    switch (kind) {
+                        case "FieldDataValueSource" -> {
+                            int m = switch (((Enum<?>) field(src, "multiValueMode")).name()) {
+                                case "MIN" -> 0;
+                                case "MAX" -> 1;
+                                case "AVG" -> 2;
+                                case "MEDIAN" -> 3;
+                                case "SUM" -> 4;
+                                default -> -1;
+                            };
+                            if (m < 0) {
+                                return reason;
+                            }
+                            vars.write(2);
+                            writeInt(vars, at);
+                            vars.writeBytes(numeric);
+                            vars.write(m);
+                        }
+                        case "EmptyMemberValueSource" -> {
+                            vars.write(3);
+                            writeInt(vars, at);
+                        }
+                        case "CountMethodValueSource" -> {
+                            vars.write(4);
+                            writeInt(vars, at);
+                        }
+                        case "DateMethodValueSource" -> {
+                            int calendarField = (int) field(src, "calendarType");
+                            if (calendarField != 1 && calendarField != 2 && calendarField != 5 && calendarField != 11
+                                && calendarField != 12 && calendarField != 13) {
+                                return reason;
+                            }
+                            vars.write(5);
+                            writeInt(vars, at);
+                            vars.writeBytes(numeric);
+                            vars.write(calendarField);
+                        }
+                        case "DateObjectValueSource" -> {
+                            String method = (String) field(src, "methodName");
+                            if (method.startsWith("get") && method.length() > 3) {
+                                method = Character.toLowerCase(method.charAt(3)) + method.substring(4);
+                            }
+                            int part = JODA_PARTS.indexOf(method);
+                            if (part < 0) {
+                                return reason;
+                            }
+                            vars.write(6);
+                            writeInt(vars, at);
+                            vars.writeBytes(numeric);
+                            vars.write(part);
+                        }
+                        case "GeoLatitudeValueSource" -> {
+                            vars.write(7);
+                            writeInt(vars, at);
+                        }
+                        case "GeoLongitudeValueSource" -> {
+                            vars.write(8);
+                            writeInt(vars, at);
+                        }
+                        case "GeoEmptyValueSource" -> {
+                            vars.write(9);
+                            writeInt(vars, at);
+                        }
+                        default -> {
+                            return reason;
+                        }
+                    }
+                } else {
+                    return reason;
+                }
+            }
+            out.write(context | 0x40);
+            writeBytes(out, source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            writeBytes(out, PainlessIr.constant(Map.of()));
+            writeString(out, index == null ? "" : index);
+            writeInt(out, shard);
+            writeInt(out, 0);
+            writeInt(out, fields.size());
+            for (String name : fields.keySet()) {
+                writeString(out, name);
+                writeString(out, name);
+                // The stored longs, which each binding reads as its field type says.
+                out.write(PainlessScore.LONG);
+            }
+            writeInt(out, variables.length);
+            out.writeBytes(vars.toByteArray());
+            return null;
+        } catch (ReflectiveOperationException | java.io.IOException | RuntimeException | PainlessIr.Unsupported e) {
+            return reason;
+        }
+    }
+
+    /** A {@code script_score} query's expression as node 43: its sub-query, then its spec. */
+    private static String expressionScore(ScriptScoreQuery q, ScoreScript.LeafFactory factory, ByteArrayOutputStream out, Child child, String reason)
+        throws ReflectiveOperationException {
+        ByteArrayOutputStream spec = new ByteArrayOutputStream();
+        String why = expressionSpec(
+            factory, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE,
+            (String) field(q, "indexName"), (int) field(q, "shardId"), spec, reason
+        );
+        if (why != null) {
+            return why;
+        }
+        out.write(NODE_PAINLESS_SCORE);
+        String childReason = child.node((Query) field(q, "subQuery"));
+        if (childReason != null) {
+            return childReason;
+        }
+        out.writeBytes(spec.toByteArray());
+        return null;
+    }
+
     // ---------------------------------------------------------------------------------------------
     // function_score
     // ---------------------------------------------------------------------------------------------
@@ -1387,6 +1618,19 @@ final class ExtendedEncoder {
                 }
                 out.write(5);
                 jsSpec(out, (Js) prepared, (String) field(f, "indexName"), (int) field(f, "shardId"));
+                return null;
+            }
+            if (isExpression(factory)) {
+                ByteArrayOutputStream spec = new ByteArrayOutputStream();
+                String why = expressionSpec(
+                    factory, factory.needs_score() ? PainlessScore.SCORE_WITH_SCORE : PainlessScore.SCORE,
+                    (String) field(f, "indexName"), (int) field(f, "shardId"), spec, "function_score_script"
+                );
+                if (why != null) {
+                    return why;
+                }
+                out.write(5);
+                out.writeBytes(spec.toByteArray());
                 return null;
             }
             if (script == null || "painless".equals(script.getLang()) == false) {

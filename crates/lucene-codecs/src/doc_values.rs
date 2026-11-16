@@ -321,6 +321,9 @@ pub struct BinaryEntry {
     /// The `Substring90` format's blocks and gram index, in place of one
     /// byte run ([`crate::substring`]).
     pub substring: Option<Box<crate::substring::SubstringEntry>>,
+    /// The mask the values are shown through ([`crate::value_mask`]), `None` for a field shown
+    /// as it is: [`BinaryReader::value_ref`] applies it and the paths that cannot refuse.
+    pub mask: Option<crate::value_mask::SharedMask>,
 }
 
 #[derive(Debug, Clone)]
@@ -626,6 +629,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
     if min_length == crate::substring::MIN_LENGTH_MARKER {
         let substring = crate::substring::read_meta(input)?;
         return Ok(BinaryEntry {
+            mask: None,
             field_number,
             docs_with_field_offset,
             docs_with_field_length,
@@ -662,6 +666,7 @@ fn read_binary_entry(input: &mut SliceInput, field_number: i32) -> Result<Binary
 
     let _ = field_number;
     Ok(BinaryEntry {
+        mask: None,
         field_number,
         docs_with_field_offset,
         docs_with_field_length,
@@ -2396,6 +2401,9 @@ fn decode_value_varying_bpv(
 /// (fixed/variable). `data` is the whole `.dvd` file's bytes. `Ok(None)`
 /// means `doc` legitimately has no value.
 pub fn binary_value<'d>(data: &'d [u8], entry: &BinaryEntry, doc: i32) -> Result<Option<&'d [u8]>> {
+    if entry.mask.is_some() {
+        return Err(crate::value_mask::masked_error("binary_value").into());
+    }
     if entry.substring.is_some() {
         return Err(Error::CompressedBinary(entry.field_number));
     }
@@ -2501,6 +2509,8 @@ pub struct BinaryReader<'a> {
             crate::substring::Block,
         )>,
     >,
+    /// The masked form of the value [`Self::value_ref`] last answered.
+    shown: Vec<u8>,
 }
 
 /// [`BinaryReader`]'s per-iterator state.
@@ -2581,6 +2591,7 @@ impl<'a> BinaryReader<'a> {
             docs,
             resolved,
             substring,
+            shown: Vec::new(),
         }
     }
 
@@ -2588,8 +2599,25 @@ impl<'a> BinaryReader<'a> {
     /// and for a `Substring90` entry the value decompressed into this
     /// reader (so it lives until the next call).
     pub fn value_ref(&mut self, doc: i32) -> Result<Option<&[u8]>> {
+        let Some(mask) = self.entry.mask.clone() else {
+            return self.raw_value_ref(doc);
+        };
+        // `binaryValue()` of the masking wrapper: the stored bytes through the mask.
+        match self.raw_value_ref(doc)? {
+            None => Ok(None),
+            Some(raw) => {
+                let shown = mask.apply(raw)?;
+                self.shown = shown;
+                Ok(Some(&self.shown))
+            }
+        }
+    }
+
+    /// [`Self::value_ref`] without the mask: the stored bytes. Private: only the masking path
+    /// above reads them.
+    fn raw_value_ref(&mut self, doc: i32) -> Result<Option<&[u8]>> {
         if self.entry.substring.is_none() {
-            return self.value(doc);
+            return self.raw_value(doc);
         }
         match self.substring.as_deref_mut() {
             Some((index, block)) => index.value(doc, block),
@@ -2606,6 +2634,15 @@ impl<'a> BinaryReader<'a> {
     /// rederivation. Ascending `doc` walks the region once; going backwards
     /// rewinds the cursor, which costs a re-walk and still allocates nothing.
     pub fn value(&mut self, doc: i32) -> Result<Option<&'a [u8]>> {
+        if self.entry.mask.is_some() {
+            // The value borrows the file's bytes, which are not what the field shows.
+            return Err(crate::value_mask::masked_error("BinaryReader::value").into());
+        }
+        self.raw_value(doc)
+    }
+
+    /// [`Self::value`] without the mask check: the stored bytes.
+    fn raw_value(&mut self, doc: i32) -> Result<Option<&'a [u8]>> {
         if self.entry.substring.is_some() {
             return Err(Error::CompressedBinary(self.entry.field_number));
         }
@@ -7506,6 +7543,7 @@ mod tests {
         data_length: i64,
     ) -> BinaryEntry {
         BinaryEntry {
+            mask: None,
             field_number,
             docs_with_field_offset,
             docs_with_field_length,
@@ -7565,6 +7603,7 @@ mod tests {
 
         let blob = b"abcdefghi";
         let entry = BinaryEntry {
+            mask: None,
             field_number: 0,
             docs_with_field_offset: DOCS_WITH_FIELD_DENSE,
             docs_with_field_length: 0,
@@ -11036,7 +11075,7 @@ mod tests {
             .collect();
         for ord in ords {
             assert_eq!(
-                dict.seek_ord(ord).unwrap(),
+                dict.lookup_ord(ord).unwrap(),
                 &terms[ord as usize][..],
                 "ord {ord}"
             );
@@ -11045,7 +11084,7 @@ mod tests {
         for i in (0..n).step_by(5).chain([n - 1]) {
             let t = &terms[i as usize];
             assert_eq!(dict.lookup_term(t).unwrap(), i);
-            assert_eq!(dict.term(), &t[..]);
+            assert_eq!(dict.raw_term(), &t[..]);
             // Just past `t`, before the next term.
             let between = format!("t{:05}", i * 3 + 1).into_bytes();
             let want = if i + 1 < n { -(i + 1) - 1 } else { -n - 1 };
@@ -11054,13 +11093,14 @@ mod tests {
         assert_eq!(dict.lookup_term(b"a").unwrap(), -1);
         assert_eq!(dict.lookup_term(b"u").unwrap(), -n - 1);
         assert_eq!(dict.seek_ceil(b"t00004").unwrap(), SeekStatus::NotFound);
-        assert_eq!(dict.term(), b"t00006");
+        assert_eq!(dict.raw_term(), b"t00006");
         assert_eq!(dict.seek_ceil(b"t00006").unwrap(), SeekStatus::Found);
         assert_eq!(dict.seek_ceil(b"zzz").unwrap(), SeekStatus::End);
         for bad in [-1, n, i64::MAX] {
-            assert!(dict.seek_ord(bad).is_err(), "{bad}");
+            assert!(dict.lookup_ord(bad).is_err(), "{bad}");
         }
         let no_index = terms_dict::TermsDictEntry {
+            mask: None,
             index: None,
             ..entry.clone()
         };
@@ -11073,6 +11113,111 @@ mod tests {
             assert_eq!(d.seek_ceil(b"a").unwrap(), SeekStatus::End);
             assert_eq!(d.lookup_term(b"a").unwrap(), -1);
         }
+    }
+
+    /// A masked terms dictionary shows the masked bytes for an ordinal and answers every seek and
+    /// ordinal-by-term lookup against the stored ones; the stored bytes are what
+    /// `raw_term_at` and the sequential cursor read; a mask that fails fails the lookup.
+    #[test]
+    fn a_masked_terms_dictionary_shows_masked_terms_and_seeks_by_stored_ones() {
+        use crate::terms_dict::{self, SeekStatus};
+        use crate::value_mask::{SharedMask, ValueMask};
+
+        #[derive(Debug)]
+        struct Tag;
+        impl ValueMask for Tag {
+            fn apply(&self, raw: &[u8]) -> lucene_store::Result<Vec<u8>> {
+                let mut out = b"#".to_vec();
+                out.extend_from_slice(raw);
+                Ok(out)
+            }
+        }
+        #[derive(Debug)]
+        struct Broken;
+        impl ValueMask for Broken {
+            fn apply(&self, _: &[u8]) -> lucene_store::Result<Vec<u8>> {
+                Err(crate::value_mask::masked_error("the mask"))
+            }
+        }
+
+        let terms: Vec<Vec<u8>> = (0..200i64)
+            .map(|i| format!("t{:05}", i * 3).into_bytes())
+            .collect();
+        let (mut meta, mut data) = (Vec::new(), Vec::new());
+        write_terms_dict(&mut meta, &mut data, &terms);
+        let entry = terms_dict::read_term_dict_entry(&mut SliceInput::new(&meta)).unwrap();
+        let masked = terms_dict::TermsDictEntry {
+            mask: Some(std::sync::Arc::new(Tag) as SharedMask),
+            ..entry.clone()
+        };
+        let mut dict = terms_dict::TermsDict::open(&data, &masked).unwrap();
+        for ord in [0i64, 1, 63, 64, 65, 199, 100] {
+            let mut want = b"#".to_vec();
+            want.extend_from_slice(&terms[ord as usize]);
+            assert_eq!(dict.lookup_ord(ord).unwrap(), &want[..], "ord {ord}");
+            assert_eq!(dict.raw_term_at(ord).unwrap(), &terms[ord as usize][..]);
+        }
+        // Seeks and ordinal lookups compare the stored terms: the masked ones are not in the
+        // dictionary.
+        assert_eq!(dict.lookup_term(&terms[77]).unwrap(), 77);
+        assert!(dict.lookup_term(b"#t00231").unwrap() < 0);
+        assert_eq!(dict.seek_ceil(b"t00004").unwrap(), SeekStatus::NotFound);
+        assert_eq!(dict.raw_term(), b"t00006");
+        // The sequential cursor, which builds ordinal maps, reads the stored terms.
+        let mut cursor = terms_dict::TermsCursor::open(&data, &masked).unwrap();
+        assert_eq!(cursor.next_term().unwrap(), Some(&terms[0][..]));
+        // A mask that fails never falls back to the stored bytes.
+        let broken = terms_dict::TermsDictEntry {
+            mask: Some(std::sync::Arc::new(Broken) as SharedMask),
+            ..entry
+        };
+        assert!(terms_dict::TermsDict::open(&data, &broken)
+            .unwrap()
+            .lookup_ord(3)
+            .is_err());
+    }
+
+    /// A masked binary field shows masked values through `value_ref`, and every path that would
+    /// hand out the stored bytes refuses.
+    #[test]
+    fn a_masked_binary_field_shows_masked_values_and_refuses_the_stored_ones() {
+        use crate::value_mask::{SharedMask, ValueMask};
+
+        #[derive(Debug)]
+        struct Tag;
+        impl ValueMask for Tag {
+            fn apply(&self, raw: &[u8]) -> lucene_store::Result<Vec<u8>> {
+                let mut out = b"#".to_vec();
+                out.extend_from_slice(raw);
+                Ok(out)
+            }
+        }
+
+        let id = [7u8; 16];
+        let dense: Vec<Vec<u8>> = (0..100)
+            .map(|d| format!("d{}", d % 7).into_bytes())
+            .collect();
+        let (dvm, dvd, _) = write_single_dense_binary_field(0, &dense, 100, &id, "").unwrap();
+        let (_, meta) = parse_meta(&dvm, &id, "", &binary_field_infos()).unwrap();
+        let mut entry = meta.binary_entry(0).unwrap().clone();
+        entry.mask = Some(std::sync::Arc::new(Tag) as SharedMask);
+
+        let mut r = BinaryReader::new(&dvd, &entry);
+        for doc in [0, 5, 99, 3] {
+            let mut want = b"#".to_vec();
+            want.extend_from_slice(&dense[doc as usize]);
+            assert_eq!(r.value_ref(doc).unwrap(), Some(&want[..]), "doc {doc}");
+        }
+        assert!(r.value(0).is_err(), "the zero-copy read refuses");
+        assert!(
+            binary_value(&dvd, &entry, 0).is_err(),
+            "the free read refuses"
+        );
+        // Unmasked, the same entry reads as before.
+        entry.mask = None;
+        let mut r = BinaryReader::new(&dvd, &entry);
+        assert_eq!(r.value_ref(5).unwrap(), Some(&dense[5][..]));
+        assert_eq!(r.value(5).unwrap(), Some(&dense[5][..]));
     }
 
     /// The cursor readers (`NumericReader`, `SortedNumericReader`,

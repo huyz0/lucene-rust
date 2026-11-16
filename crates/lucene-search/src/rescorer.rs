@@ -483,7 +483,7 @@ fn key_value(
             return Ok((0, None));
         };
         let mut dict = TermsDict::open(data, terms).map_err(store_err)?;
-        let term = dict.seek_ord(ord).map_err(store_err)?.to_vec();
+        let term = dict.lookup_ord(ord).map_err(store_err)?.to_vec();
         return Ok((0, Some(term)));
     }
     // A numeric key: the stored long (a `SORTED_NUMERIC` value through the

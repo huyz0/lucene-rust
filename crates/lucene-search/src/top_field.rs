@@ -2974,7 +2974,7 @@ impl<'a> LeafStr<'a> {
     /// `lookupOrd`.
     fn term(&mut self, ord: i32) -> Result<Vec<u8>> {
         match self.dict.as_mut() {
-            Some(d) => Ok(d.seek_ord(i64::from(ord)).map_err(store_err)?.to_vec()),
+            Some(d) => Ok(d.lookup_ord(i64::from(ord)).map_err(store_err)?.to_vec()),
             None => Err(SortError::Ordinal(i64::from(ord)).into()),
         }
     }
@@ -3234,7 +3234,7 @@ impl<'a> LeafStr<'a> {
                 // `init`: the doc-values term of `minOrd`, found in the terms
                 // index, and the next `size - 1` terms after it.
                 let dict = self.dict.as_mut().ok_or(SortError::Ordinal(min_ord))?;
-                let min_term = dict.seek_ord(min_ord).map_err(store_err)?.to_vec();
+                let min_term = dict.lookup_ord(min_ord).map_err(store_err)?.to_vec();
                 let mut te = terms.iter();
                 let pe = |e| crate::Error::from(e);
                 if te.try_seek_ceil(&min_term).map_err(pe)? != crate::blocktree::SeekStatus::Found {
