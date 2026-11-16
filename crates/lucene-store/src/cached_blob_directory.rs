@@ -40,7 +40,6 @@ use crate::directory::{Directory, Input};
 use crate::error::{Error, Result};
 use crate::index_output::FsIndexOutput;
 use crate::lock::{lock_ignoring_poison, Lock, LockFactory, SingleInstanceLockFactory};
-#[cfg(unix)]
 use crate::page_cache::SpillReservation;
 use crate::page_cache::{Geometry, PageCache, PageCacheConfig, PageCodec, PageDecoder};
 #[cfg(target_os = "linux")]
@@ -258,7 +257,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
         let len = usize::try_from(file.geom.plain_len)
             .map_err(|_| Error::Corrupted(format!("{name}: too large to open")))?;
         let input = if pinned || file.geom.pages <= 1 {
-            Input::Owned(file.read_whole()?)
+            file.read_whole_counted(len)?
         } else {
             self.demand_filled(file, len)?
         };
@@ -385,6 +384,7 @@ impl<S: BlobStore + 'static> CachedBlobDirectory<S> {
                 let name = file.name.clone();
                 let filler: Arc<dyn PageFiller> = file;
                 let paged = pager.open(len, page, filler, &name)?;
+                self.cache.note_demand_paged_open();
                 // Lucene's readers check a file's header and footer as they
                 // open it: both ends come in one batch, not two round trips.
                 let bytes = crate::directory::ExternalBytes::bytes(&paged);
@@ -469,7 +469,26 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             }
         }
         let _ = (config, len);
-        Ok(Input::Owned(self.read_whole()?))
+        self.read_whole_counted(len)
+    }
+
+    /// The file read whole onto the heap, its `len` bytes counted against
+    /// [`PageCacheConfig::heap_budget`] until the input drops (when the
+    /// budget is bounded). The budget
+    /// is claimed before any byte is fetched.
+    fn read_whole_counted(&self, len: usize) -> Result<Input> {
+        // Unbounded (the default): the plain heap input, exactly as before,
+        // with no counting and no indirection on every read of the file.
+        if self.cache.config().heap_budget == u64::MAX {
+            return Ok(Input::Owned(self.read_whole()?));
+        }
+        let reservation = self.cache.reserve_heap(len as u64)?;
+        let bytes = self.read_whole()?;
+        self.cache.note_heap_open();
+        Ok(Input::external_bytes(HeapBytes {
+            bytes,
+            _reservation: reservation,
+        }))
     }
 
     /// Streams the file, a bounded chunk of pages at a time, into an unlinked
@@ -550,6 +569,18 @@ impl<S: BlobStore + 'static> CachedFile<S> {
             )));
         }
         Ok(out)
+    }
+}
+
+/// A file held whole on the heap, holding its share of the heap budget.
+struct HeapBytes {
+    bytes: Vec<u8>,
+    _reservation: SpillReservation,
+}
+
+impl crate::directory::ExternalBytes for HeapBytes {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -1337,5 +1368,71 @@ mod tests {
         let input = d.open_decoded("_0.fdt", &XorDecoder).unwrap().unwrap();
         assert!(input[..] == plain[..]);
         assert_eq!(d.cache().stats().spill_opens, 0);
+    }
+
+    #[test]
+    fn the_heap_budget_bounds_files_held_whole_and_returns_on_drop() {
+        let config = PageCacheConfig {
+            page_size: 64 * 1024,
+            demand_paging: false,
+            spill_min_bytes: None,
+            heap_budget: 300_000,
+            ..PageCacheConfig::default()
+        };
+        let (d, store, _tmp) = spill_dir("cached-blob-heap-budget", config);
+        put(&d, "_0.doc", &data(200_000, 1));
+        put(&d, "_1.doc", &data(200_000, 2));
+        put(&d, "_2.si", &data(50_000, 3)); // pinned
+        let first = d.open("_0.doc").unwrap();
+        assert!(first[..] == data(200_000, 1)[..]);
+        let stats = d.cache().stats();
+        assert_eq!((stats.heap_opens, stats.heap_open_bytes), (1, 200_000));
+        // Refused before one byte is fetched.
+        let ranges = store.ranges.load(Ordering::Relaxed);
+        let err = d.open("_1.doc").unwrap_err();
+        assert!(err.to_string().contains("heap budget"), "{err}");
+        assert_eq!(store.ranges.load(Ordering::Relaxed), ranges);
+        // A shared open of the same file counts once.
+        let again = d.open("_0.doc").unwrap();
+        assert_eq!(d.cache().stats().heap_open_bytes, 200_000);
+        // A pinned file counts against it too.
+        assert_eq!(d.open("_2.si").unwrap().len(), 50_000);
+        drop((first, again));
+        assert_eq!(d.cache().stats().heap_open_bytes, 0);
+        assert_eq!(d.open("_1.doc").unwrap().len(), 200_000, "returned");
+    }
+
+    #[test]
+    fn demand_paged_opens_are_counted_and_availability_matches_the_pager() {
+        let config = PageCacheConfig {
+            page_size: 64 * 1024,
+            ..PageCacheConfig::default()
+        };
+        let (d, _store, _tmp) = spill_dir("cached-blob-demand-count", config);
+        put(&d, "_0.doc", &data(500_000, 1));
+        let input = d.open("_0.doc").unwrap();
+        let stats = d.cache().stats();
+        if crate::page_cache::demand_paging_available() {
+            assert_eq!((stats.demand_paged_opens, stats.heap_opens), (1, 0));
+        } else {
+            assert_eq!(stats.demand_paged_opens, 0);
+        }
+        assert_eq!(input.len(), 500_000);
+    }
+
+    #[test]
+    fn an_unbounded_heap_budget_reads_whole_files_uncounted_as_before() {
+        let config = PageCacheConfig {
+            page_size: 64 * 1024,
+            demand_paging: false,
+            spill_min_bytes: None,
+            ..PageCacheConfig::default()
+        };
+        let (d, _store, _tmp) = spill_dir("cached-blob-heap-unbounded", config);
+        put(&d, "_0.doc", &data(200_000, 1));
+        let input = d.open("_0.doc").unwrap();
+        assert!(input[..] == data(200_000, 1)[..]);
+        let stats = d.cache().stats();
+        assert_eq!((stats.heap_opens, stats.heap_open_bytes), (0, 0));
     }
 }
