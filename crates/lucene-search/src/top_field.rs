@@ -3507,6 +3507,8 @@ impl Dict<'_> {
         }
     }
 
+    // SENTINEL: none -- `-1` is `lookupTerm`'s "insert before ordinal 0", in
+    // its domain. Every caller tests `< 0`/`>= 0` for found.
     fn lookup_term(&mut self, term: &[u8]) -> Result<i64> {
         match self {
             Dict::Dv(d) => d.lookup_term(term).map_err(store_err),
