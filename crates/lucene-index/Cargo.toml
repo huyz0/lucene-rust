@@ -19,6 +19,10 @@ lucene-disk-hnsw = { path = "../lucene-disk-hnsw" }
 lucene-vector-quant = { path = "../lucene-vector-quant" }
 rayon.workspace = true
 
+[features]
+# Hooks for other crates' tests (never enabled for a shipped build): see `set_rotate_slots`.
+test-support = []
+
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
