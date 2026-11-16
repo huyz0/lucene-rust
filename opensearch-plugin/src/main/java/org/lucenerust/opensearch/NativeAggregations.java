@@ -210,11 +210,18 @@ public final class NativeAggregations {
      */
     public record Plan(List<Object> entries, List<Metric> metrics, List<Terms> terms) {
         Plan(List<Object> entries) {
-            this(
-                entries,
-                entries.stream().filter(e -> e instanceof Metric).map(e -> (Metric) e).toList(),
-                entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList()
-            );
+            this(entries, split(entries, true), split(entries, false));
+        }
+
+        @SuppressWarnings("unchecked")
+        private static <T> List<T> split(List<Object> entries, boolean metrics) {
+            ArrayList<T> out = new ArrayList<>(entries.size());
+            for (Object e : entries) {
+                if (e instanceof Metric == metrics) {
+                    out.add((T) e);
+                }
+            }
+            return out;
         }
 
         /**
