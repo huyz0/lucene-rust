@@ -201,8 +201,6 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         if name not in reference:
             continue
         expect = expect_override or expect
-        if expect == "dfs_multi":
-            expect = "dfs" if shards > 1 else "native"
         # The plugin node runs the default accelerated_shapes: fast.
         if expect == "slow":
             expect = "slower_shape"

@@ -18,7 +18,7 @@
 //! | `pre_tag: bytes`, `post_tag: bytes` | UTF-8 |
 //! | `html: u8` | the `html` encoder |
 //!
-//! Result layout: `status: u8` ([`STATUS_FRAGMENTS`], or [`STATUS_STOCK`]
+//! Result layout: `status: u8` ([`STATUS_FRAGMENTS`], or [`STATUS_THROWS`]
 //! then the exception's class and message), `count: i32` and per
 //! fragment `score: f32`, `len: i32` and `len` UTF-16 units, every value's
 //! fragments in value order; then `summary_end: i32`, the end of the
