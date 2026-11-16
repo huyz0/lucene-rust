@@ -101,6 +101,18 @@ pub const NEED_MIN_MAX: u8 = 4;
 pub const NEED_MIN: u8 = 8;
 /// [`MetricState::max_of_maxes`] (`max`).
 pub const NEED_MAX: u8 = 16;
+/// The compensated sum of the squares (`extended_stats`), kept in
+/// [`MetricState::min_of_mins`] (the sum) and [`MetricState::max_of_maxes`] (its
+/// delta), so it never comes with [`NEED_MIN`] or [`NEED_MAX`]; the state
+/// starts from [`MetricState::for_needs`]. Not part of [`NEED_ALL`].
+pub const NEED_SQ: u8 = 32;
+/// Whether `needs` names parts a state can keep: [`NEED_ALL`]'s and
+/// [`NEED_SQ`], which excludes [`NEED_MIN`] and [`NEED_MAX`].
+pub const fn valid_needs(needs: u8) -> bool {
+    needs != 0
+        && needs & !(NEED_ALL | NEED_SQ) == 0
+        && (needs & NEED_SQ == 0 || needs & (NEED_MIN | NEED_MAX) == 0)
+}
 /// Every part.
 pub const NEED_ALL: u8 = NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_MIN | NEED_MAX;
 
@@ -138,6 +150,21 @@ impl Default for MetricState {
 }
 
 impl MetricState {
+    /// The state a fold of `needs` starts from.
+    pub fn for_needs(needs: u8) -> Self {
+        let mut s = Self::default();
+        if needs & NEED_SQ != 0 {
+            s.min_of_mins = 0.0;
+            s.max_of_maxes = 0.0;
+        }
+        s
+    }
+
+    /// The compensated sum of squares, when [`NEED_SQ`] was kept.
+    pub fn sum_of_squares(&self) -> f64 {
+        self.min_of_mins
+    }
+
     /// `CompensatedSum.add(value)`.
     fn add(&mut self, value: f64) {
         compensated_add(&mut self.sum, &mut self.delta, value);
@@ -162,6 +189,9 @@ impl MetricState {
         if N & NEED_MAX != 0 {
             self.max_of_maxes = java_max(self.max_of_maxes, v);
         }
+        if N & NEED_SQ != 0 {
+            compensated_add(&mut self.min_of_mins, &mut self.max_of_maxes, v * v);
+        }
     }
 
     /// A document's stored values, ascending, read as `kind`, keeping the
@@ -174,9 +204,12 @@ impl MetricState {
         if N & NEED_COUNT != 0 {
             self.count += values.len() as u64;
         }
-        if N & (NEED_SUM | NEED_MIN_MAX) != 0 {
+        if N & (NEED_SUM | NEED_MIN_MAX | NEED_SQ) != 0 {
             for &v in values {
                 let v = to_double(kind, v);
+                if N & NEED_SQ != 0 {
+                    compensated_add(&mut self.min_of_mins, &mut self.max_of_maxes, v * v);
+                }
                 if N & NEED_SUM != 0 {
                     self.add(v);
                 }
@@ -340,6 +373,40 @@ impl MetricSlot for MetricState {
     }
     fn set(&mut self, s: MetricState) {
         *self = s;
+    }
+}
+
+/// `extended_stats`: the count, the compensated sum, the minimum and maximum over
+/// every value, and the compensated sum of squares ([`NEED_SQ`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Extended(MetricState);
+
+impl Default for Extended {
+    fn default() -> Self {
+        Self(MetricState::for_needs(NEED_SQ))
+    }
+}
+
+impl MetricSlot for Extended {
+    const NEEDS: u8 = NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_SQ;
+    #[inline]
+    fn one(&mut self, v: f64) {
+        MetricState::one::<{ NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_SQ }>(&mut self.0, v);
+    }
+    #[inline]
+    fn many(&mut self, kind: ValueKind, values: &[i64]) {
+        MetricState::many::<{ NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_SQ }>(
+            &mut self.0,
+            kind,
+            values,
+        );
+    }
+    fn bound(&mut self, _: bool, _: f64) {}
+    fn state(&self) -> MetricState {
+        self.0
+    }
+    fn set(&mut self, s: MetricState) {
+        self.0 = s;
     }
 }
 
@@ -773,8 +840,12 @@ pub fn aggregate_sliced_counting(
     let slot: Vec<usize> = specs
         .iter()
         .map(|s| {
-            let same =
-                |u: &MetricSpec| u.field == s.field && u.kind == s.kind && u.source == s.source;
+            let same = |u: &MetricSpec| {
+                u.field == s.field
+                    && u.kind == s.kind
+                    && u.source == s.source
+                    && (u.needs & NEED_SQ) == (s.needs & NEED_SQ)
+            };
             match unique.iter().position(same) {
                 Some(i) => {
                     unique[i].needs |= s.needs;
@@ -899,7 +970,10 @@ fn slice_states(
     let mut docs_buf = Vec::new();
     let mut words = Vec::new();
     let mut precomputed = Vec::with_capacity(specs.len());
-    let mut states = vec![MetricState::default(); specs.len()];
+    let mut states: Vec<MetricState> = specs
+        .iter()
+        .map(|s| MetricState::for_needs(s.needs))
+        .collect();
     for &i in slice {
         let (Some(seg), Some(reader)) = (segments.get(i), readers.get(i)) else {
             return Err(lucene_search::Error::SliceOutOfRange {
@@ -979,6 +1053,11 @@ fn slice_states(
                 NEED_MIN => fold::<NEED_MIN>(values, &read, state, kind, max_doc, &mut raw)?,
                 NEED_MAX => fold::<NEED_MAX>(values, &read, state, kind, max_doc, &mut raw)?,
                 NEED_COUNT => fold::<NEED_COUNT>(values, &read, state, kind, max_doc, &mut raw)?,
+                n if n & NEED_SQ != 0 => {
+                    fold::<{ NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_SQ }>(
+                        values, &read, state, kind, max_doc, &mut raw,
+                    )?
+                }
                 n if n & !(NEED_COUNT | NEED_SUM) == 0 => fold::<{ NEED_COUNT | NEED_SUM }>(
                     values, &read, state, kind, max_doc, &mut raw,
                 )?,
@@ -1069,6 +1148,10 @@ pub(crate) fn fold_zone_needs(
     count: usize,
     kind: ValueKind,
 ) -> Option<MetricState> {
+    // Squares are not in the zones' statistics.
+    if needs & NEED_SQ != 0 {
+        return None;
+    }
     // A `float` column's sortable ints, sign-extended: anything else would
     // not convert as the values do.
     if kind == ValueKind::Float
@@ -1361,6 +1444,39 @@ mod tests {
     fn enc(d: f64) -> i64 {
         let bits = d.to_bits() as i64;
         bits ^ ((bits >> 63) & 0x7fff_ffff_ffff_ffff)
+    }
+
+    /// `extended_stats`' sum of squares is the compensated sum of each value's
+    /// square, whether the values come one at a time or a document's at once,
+    /// and never rides on a zone's statistics.
+    #[test]
+    fn the_sum_of_squares_is_the_compensated_sum_of_squared_values() {
+        use lucene_codecs::adaptive_zones::ZoneStats;
+        let values: Vec<i64> = (0..257).map(|i| (i * 7919) % 1001 - 400).collect();
+        let (mut sum, mut delta) = (0.0, 0.0);
+        for &v in &values {
+            let d = v as f64;
+            compensated_add(&mut sum, &mut delta, d * d);
+        }
+        const N: u8 = NEED_COUNT | NEED_SUM | NEED_MIN_MAX | NEED_SQ;
+        let mut one = MetricState::for_needs(N);
+        for &v in &values {
+            one.one::<N>(v as f64);
+        }
+        let mut many = MetricState::for_needs(N);
+        many.many::<N>(ValueKind::Long, &values);
+        for s in [&one, &many] {
+            assert_eq!(s.sum_of_squares().to_bits(), sum.to_bits());
+            assert_eq!(s.count, values.len() as u64);
+            assert_eq!((s.min, s.max), (-400.0, 600.0));
+        }
+        let stats = ZoneStats {
+            min: -400,
+            max: 600,
+            sum: Some(1),
+        };
+        assert!(fold_zone_needs(N, one, stats, 1, ValueKind::Long).is_none());
+        assert!(valid_needs(N) && !valid_needs(N | NEED_MIN) && !valid_needs(NEED_SQ << 1));
     }
 
     /// **A long window folded as integers lands on the very bits the
