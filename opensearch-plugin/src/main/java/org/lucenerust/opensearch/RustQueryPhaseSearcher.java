@@ -535,9 +535,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean hasTimeout
     ) throws IOException {
         if (flags(ctx).enabled() == false) return "disabled";
-        String reason = NativeHybrid.ineligible(ctx, query, collectors, hasFilterCollector);
+        // A hybrid query under document-level security, an alias filter or a nested mapping arrives
+        // wrapped in a boolean query: neural-search's own extraction pushes the wrapper's clauses
+        // into each sub-query as filters, as it does before the Java collectors run.
+        Query phaseQuery = query;
+        if (org.lucenerust.opensearch.neural.util.HybridQueryUtil.isHybridQuery(query, ctx)) {
+            org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
+            phaseQuery = org.lucenerust.opensearch.neural.util.HybridQueryUtil.extractHybridQuery(ctx, query);
+        }
+        String reason = NativeHybrid.ineligible(ctx, phaseQuery, collectors, hasFilterCollector);
         if (reason != null) return reason;
-        HybridQuery hybrid = (HybridQuery) query;
+        HybridQuery hybrid = (HybridQuery) phaseQuery;
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuerySearchType(ctx.searchType());
         org.lucenerust.opensearch.neural.util.HybridQueryUtil.validateHybridQuery(hybrid);
         int[][] slices = NativeAggregations.slices(ctx);
