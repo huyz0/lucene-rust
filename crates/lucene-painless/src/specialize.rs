@@ -663,7 +663,7 @@ impl Spec<'_, '_> {
             Some(DocKind::Doubles) => Fact::Class(Prim::Double),
             Some(DocKind::Booleans) => Fact::Class(Prim::Bool),
             Some(DocKind::Strings) => Fact::Str,
-            None => return,
+            Some(DocKind::Dates) | None => return,
         };
         self.learn(dst, f);
     }

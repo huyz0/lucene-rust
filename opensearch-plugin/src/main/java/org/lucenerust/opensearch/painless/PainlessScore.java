@@ -35,6 +35,7 @@ import org.lucenerust.opensearch.NativeBridge;
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.index.mapper.BooleanFieldMapper;
+import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.query.IntervalFilterScript;
 import org.opensearch.search.aggregations.AggregationExecutionException;
 import org.opensearch.index.mapper.KeywordFieldMapper;
@@ -65,7 +66,7 @@ import org.opensearch.index.similarity.ScriptedSimilarity;
 public final class PainlessScore {
 
     /** What a field reads as in a script's {@code doc}, in the native node's numbering. */
-    public static final byte LONG = 0, DOUBLE = 1, FLOAT = 2, HALF_FLOAT = 3, BOOLEAN = 4, KEYWORD = 5, UNSUPPORTED = (byte) 254,
+    public static final byte LONG = 0, DOUBLE = 1, FLOAT = 2, HALF_FLOAT = 3, BOOLEAN = 4, KEYWORD = 5, DATE = 6, DATE_NANOS = 7, UNSUPPORTED = (byte) 254,
         UNMAPPED = (byte) 255;
 
     /** Scripts kept compiled; past this many the cache starts over. */
@@ -928,7 +929,7 @@ public final class PainlessScore {
 
     /**
      * How a field reads in {@code doc}: as {@code ScriptDocValues.Longs}, {@code Doubles}, {@code
-     * Booleans} or {@code Strings} from its doc values, else {@link #UNSUPPORTED} (mapped, read in
+     * Booleans}, {@code Strings} or {@code Dates} from its doc values, else {@link #UNSUPPORTED} (mapped, read in
      * Java) or {@link #UNMAPPED}.
      */
     public static byte fieldKind(MappedFieldType ft) {
@@ -946,6 +947,9 @@ public final class PainlessScore {
                 case HALF_FLOAT -> HALF_FLOAT;
                 default -> UNSUPPORTED;
             };
+        }
+        if (ft.getClass() == DateFieldMapper.DateFieldType.class) {
+            return ((DateFieldMapper.DateFieldType) ft).resolution() == DateFieldMapper.Resolution.NANOSECONDS ? DATE_NANOS : DATE;
         }
         if (ft.getClass() == BooleanFieldMapper.BooleanFieldType.class) {
             return BOOLEAN;

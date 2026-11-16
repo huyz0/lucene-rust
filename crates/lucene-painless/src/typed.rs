@@ -483,6 +483,9 @@ impl Lower<'_> {
                 index,
             } => {
                 let kind = self.fields.get(*field as usize)?.1?;
+                if kind == DocKind::Dates {
+                    return None;
+                }
                 let (d, f) = (*dst, *field);
                 match access {
                     DocAccess::Values => return None,
@@ -505,6 +508,7 @@ impl Lower<'_> {
                             DocKind::Doubles => (Ty::P(Prim::Double), I::DocDouble(d, f, i)),
                             DocKind::Booleans => (Ty::P(Prim::Bool), I::DocBool(d, f, i)),
                             DocKind::Strings => (Ty::Str, I::DocStr(d, f, i)),
+                            DocKind::Dates => return None,
                         };
                         self.set(d, t)?;
                         self.code.push(ins);

@@ -35,6 +35,12 @@ pub trait JObject: Debug + Any {
         identity_hash(self as *const Self as *const ())
     }
 
+    /// `compareTo`'s result against another object of the same class, or
+    /// `None` when the class is not `Comparable` with it.
+    fn compare_to(&self, _other: &dyn JObject) -> Option<i32> {
+        None
+    }
+
     fn java_to_string(&self) -> String {
         format!("{}@{:x}", self.class_name(), self.java_hash())
     }
