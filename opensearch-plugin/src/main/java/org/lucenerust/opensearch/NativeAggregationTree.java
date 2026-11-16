@@ -772,6 +772,31 @@ public final class NativeAggregationTree {
         }
     }
 
+    /** {@code missing}: {@link FiltersNode}'s one filter, built as an {@code InternalMissing}. */
+    static final class MissingNode extends FixedNode {
+        final byte[] filter;
+
+        MissingNode(AggregatorBase agg, List<Node> subs, byte[] filter) {
+            super(agg, subs, 1);
+            this.filter = filter;
+        }
+
+        @Override
+        void write(ByteArrayOutputStream out) {
+            out.write(FILTERS);
+            NativeAggregations.writeInt(out, 1);
+            NativeAggregations.writeInt(out, filter.length);
+            out.writeBytes(filter);
+            out.write(0);
+            writeSubs(out);
+        }
+
+        @Override
+        InternalAggregation build(long[] docs, List<InternalAggregations> subs) throws ReflectiveOperationException {
+            return MISSING_CTOR.newInstance(agg.name(), docs[0], subs.get(0), agg.metadata());
+        }
+    }
+
     /** A {@code top_hits} anywhere in {@code nodes}: it reads scores. */
     private static boolean scored(List<Node> nodes) {
         for (Node n : nodes) {
@@ -919,11 +944,11 @@ public final class NativeAggregationTree {
 
     /** The aggregations the native planner has a node for (a shape inside one may still not be). */
     private static final java.util.Set<String> PLANNED = java.util.Set.of(
-        "AvgAggregatorFactory", "MaxAggregatorFactory", "MinAggregatorFactory", "StatsAggregatorFactory", "SumAggregatorFactory",
+        "AvgAggregatorFactory", "ExtendedStatsAggregatorFactory", "MaxAggregatorFactory", "MinAggregatorFactory", "StatsAggregatorFactory", "SumAggregatorFactory",
         "ValueCountAggregatorFactory", "CompositeAggregationFactory", "FilterAggregatorFactory", "FiltersAggregatorFactory",
         "GlobalAggregatorFactory", "DateHistogramAggregatorFactory", "HistogramAggregatorFactory", "NestedAggregatorFactory",
         "ReverseNestedAggregatorFactory", "DateRangeAggregatorFactory", "RangeAggregatorFactory", "SignificantTermsAggregatorFactory",
-        "SignificantTextAggregatorFactory", "TermsAggregatorFactory", "CardinalityAggregatorFactory", "PercentileRanksAggregatorFactory",
+        "SignificantTextAggregatorFactory", "MissingAggregatorFactory", "TermsAggregatorFactory", "CardinalityAggregatorFactory", "PercentileRanksAggregatorFactory",
         "PercentilesAggregatorFactory", "TopHitsAggregatorFactory"
     );
 
@@ -1102,6 +1127,27 @@ public final class NativeAggregationTree {
                 return top ? NativeComposite.node(ctx, agg, subs) : null;
             case AGGS + "bucket.terms.SignificantTextAggregatorFactory":
                 return NativeSignificantTerms.textNode(ctx, f, agg, subs);
+            case AGGS + "bucket.missing.MissingAggregatorFactory": {
+                // The documents with no doc value in the field: a one-bucket filter over "field does
+                // not exist", read from the same doc values the aggregator reads.
+                ValuesSourceConfig mc = (ValuesSourceConfig) CONFIG.get(f);
+                if (mc == null || mc.script() != null
+                    || agg.getClass().getName().equals(AGGS + "bucket.missing.MissingAggregator") == false) {
+                    return null;
+                }
+                org.apache.lucene.search.BooleanQuery.Builder b = new org.apache.lucene.search.BooleanQuery.Builder();
+                b.add(new MatchAllDocsQuery(), org.apache.lucene.search.BooleanClause.Occur.MUST);
+                if (mc.fieldContext() != null) {
+                    if (mc.fieldContext().fieldType().hasDocValues() == false) {
+                        return null;
+                    }
+                    b.add(new org.apache.lucene.search.FieldExistsQuery(mc.fieldContext().field()), org.apache.lucene.search.BooleanClause.Occur.MUST_NOT);
+                } else if (mc.hasValues()) {
+                    return null;
+                }
+                byte[] q = filterBlob(ctx, b.build(), fieldOk);
+                return q == null ? null : new MissingNode(agg, subs, q);
+            }
             case AGGS + "bucket.filter.FilterAggregatorFactory": {
                 byte[] q = filterBlob(ctx, (Query) declared(f, "filter"), fieldOk);
                 return q == null ? null : new FiltersNode(agg, subs, new byte[][] { q }, false);
@@ -1460,6 +1506,13 @@ public final class NativeAggregationTree {
         InternalAggregations.class,
         Map.class
     );
+    private static final Constructor<InternalAggregation> MISSING_CTOR = ctor(
+        AGGS + "bucket.missing.InternalMissing",
+        String.class,
+        long.class,
+        InternalAggregations.class,
+        Map.class
+    );
     private static final Constructor<InternalAggregation> GLOBAL_CTOR = ctor(
         AGGS + "bucket.global.InternalGlobal",
         String.class,
@@ -1506,6 +1559,7 @@ public final class NativeAggregationTree {
         LongBounds.class
     );
     private static final boolean CTORS_OK = FILTER_CTOR != null
+        && MISSING_CTOR != null
         && GLOBAL_CTOR != null
         && CARDINALITY_CTOR != null
         && DATE_HISTOGRAM_CTOR != null

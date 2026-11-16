@@ -348,7 +348,7 @@ pub fn node_of(
                 }
             };
             let needs = c.u8()?;
-            if needs == 0 || needs & !lucene_aggs::metric_aggs::NEED_ALL != 0 {
+            if !lucene_aggs::metric_aggs::valid_needs(needs) {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
             AggNode::Metric {
