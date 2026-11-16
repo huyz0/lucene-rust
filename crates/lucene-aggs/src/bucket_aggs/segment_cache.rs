@@ -550,6 +550,7 @@ fn nodes_cacheable(nodes: &[AggNode]) -> bool {
                 ..
             } => {
                 script.is_none()
+                    && *needs & metric_aggs::NEED_SQ == 0
                     && (*kind == ValueKind::Long || collected(*needs) & metric_aggs::NEED_SUM == 0)
             }
             AggNode::Terms {
