@@ -376,7 +376,7 @@ pub struct ConcurrentIndexWriter<'d> {
     id: usize,
     /// Tests: every add takes the next slot in rotation, so one thread can
     /// fill several buffers.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     rotate_slots: std::sync::atomic::AtomicBool,
     max_buffered_docs: Option<usize>,
     ram_buffer_bytes: Option<usize>,
@@ -628,7 +628,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
             full_flush: Mutex::new(()),
             next_slot: AtomicUsize::new(0),
             partition_slots: Mutex::new(HashMap::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             rotate_slots: std::sync::atomic::AtomicBool::new(false),
             max_buffered_docs,
             ram_buffer_bytes,
@@ -1173,6 +1173,13 @@ impl<'d> ConcurrentIndexWriter<'d> {
         self.slices[i].store(end, Ordering::Release);
     }
 
+    /// Tests: every add from now on takes the next slot in rotation (or stops doing so), so the
+    /// buffers that fill do not depend on how the threads that add happen to be scheduled.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_rotate_slots(&self, on: bool) {
+        self.rotate_slots.store(on, Ordering::Relaxed);
+    }
+
     /// Locks a free slot -- `DocumentsWriterPerThreadPool.getAndLock`. A
     /// thread goes back to the slot it last filled while that slot is free,
     /// so `k` threads indexing at once fill `k` buffers evenly and a refresh
@@ -1182,7 +1189,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// `DocumentsWriterPerThread` before it creates another. With every slot
     /// taken, it waits on one, picked in rotation.
     fn acquire_slot(&self) -> (usize, RwLockWriteGuard<'_, Dwpt>) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if self.rotate_slots.load(Ordering::Relaxed) {
             let i = self
                 .next_slot
