@@ -12,6 +12,7 @@ import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
 import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeMl;
 import org.lucenerust.opensearch.neural.ml.SparseEmbeddingFormat;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.env.Environment;
@@ -147,7 +148,7 @@ public final class HfAnalysis {
             throw new IllegalStateException("Analyzer " + resource + " has no tokenizer.json");
         }
         long[] out = new long[1];
-        if (NativeBridge.mlHfAnalyzerOpen(tokenizer, idf, out) != NativeBridge.OK) {
+        if (NativeMl.mlHfAnalyzerOpen(tokenizer, idf, out) != NativeBridge.OK) {
             throw new IllegalStateException("Failed to initialize tokenizer: " + resource + ": " + NativeBridge.lastError());
         }
         return out[0];
@@ -176,7 +177,7 @@ public final class HfAnalysis {
             if (text.isEmpty()) {
                 return;
             }
-            byte[] out = NativeBridge.mlHfAnalyze(handle.get(), text.getBytes(StandardCharsets.UTF_8));
+            byte[] out = NativeMl.mlHfAnalyze(handle.get(), text.getBytes(StandardCharsets.UTF_8));
             if (out == null) {
                 throw new IllegalStateException("Failed to tokenize: " + NativeBridge.lastError());
             }

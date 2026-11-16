@@ -58,7 +58,7 @@ test. This boundary gets more scrutiny than anything else in the workspace.
   change.
 - Code review: no exported `lucene-ffi` function without a `catch_unwind`
   wrapper and a handle-validation check.
-- **The JVM side** (`opensearch-plugin/`'s `NativeBridge`) calls the C ABI
+- **The JVM side** (`opensearch-plugin/`'s `NativeBridge` and `Native*` classes) calls the C ABI
   directly through Panama FFM downcalls (JDK 25): it copies Java arrays into
   per-thread native scratch memory and results back out, never passing heap
   arrays (that needs a `critical` downcall, which holds off every JVM

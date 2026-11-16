@@ -8,6 +8,7 @@ import java.io.IOException;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.store.IndexInput;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeZstd;
 
 /**
  * A field's zstd dictionary for its term blocks, prepared once in native memory; a field without
@@ -36,7 +37,7 @@ final class ZstdTermsDictionary implements Closeable {
         byte[] bytes = new byte[length];
         meta.readBytes(bytes, 0, length);
         long[] out = new long[1];
-        int rc = NativeBridge.zstdTermsDictionaryOpen(bytes, out);
+        int rc = NativeZstd.zstdTermsDictionaryOpen(bytes, out);
         if (rc != NativeBridge.OK) {
             throw new IOException("cannot prepare a zstd terms dictionary: " + NativeBridge.lastError());
         }
@@ -45,7 +46,7 @@ final class ZstdTermsDictionary implements Closeable {
 
     /** Decodes {@code frame[0..frameLength)} into exactly {@code plain[0..plainLength)}. */
     void decompress(byte[] frame, int frameLength, byte[] plain, int plainLength, IndexInput in) throws IOException {
-        int rc = NativeBridge.zstdTermsDecompress(handle, frame, frameLength, plain, plainLength);
+        int rc = NativeZstd.zstdTermsDecompress(handle, frame, frameLength, plain, plainLength);
         if (rc != NativeBridge.OK) {
             throw new CorruptIndexException(NativeBridge.lastError(), in);
         }
@@ -56,7 +57,7 @@ final class ZstdTermsDictionary implements Closeable {
         if (closed == false) {
             closed = true;
             if (handle != 0) {
-                NativeBridge.zstdTermsDictionaryClose(handle);
+                NativeZstd.zstdTermsDictionaryClose(handle);
             }
         }
     }

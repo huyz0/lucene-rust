@@ -16,6 +16,7 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeStore;
 
 /**
  * The {@code encrypted} store's directory: every file is encrypted at rest in the LRSE format
@@ -60,7 +61,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
         KeyHandles.install();
         this.handle = KeyHandles.register(keys);
         this.boundPath = nativePath(inner.getDirectory());
-        int rc = NativeBridge.storeBindEncrypted(boundPath, handle, chunkSize);
+        int rc = NativeStore.storeBindEncrypted(boundPath, handle, chunkSize);
         if (rc != NativeBridge.OK) {
             KeyHandles.release(handle);
             throw new IOException("lucene-rust: binding the encrypted store at [" + boundPath + "] failed: " + NativeBridge.lastError());
@@ -187,7 +188,7 @@ public final class RustEncryptedDirectory extends FilterDirectory {
         }
         closed = true;
         try {
-            NativeBridge.storeUnbind(boundPath);
+            NativeStore.storeUnbind(boundPath);
             KeyHandles.release(handle);
         } finally {
             try {

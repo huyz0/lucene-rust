@@ -209,7 +209,8 @@ decode it, and is freed with the segment).
 | `RustQueryPhaseSearcher` | eligibility, then native search or OpenSearch's own `QueryPhaseSearcherWrapper` |
 | `QueryEncoder` | rewritten Lucene `Query` → the query blob `jvm_reader.rs` decodes, or a fallback reason; `isFast` is the measured routing |
 | `NativeReaders` | one native reader per Java searcher reader: built from its `SegmentInfos`, `maxDoc`s and live docs, closed by its close listener |
-| `NativeBridge`, `NativeLibrary` | the FFM downcalls (per-thread native scratch memory for arguments and results) and the loader/handshake |
+| `NativeBridge` (+ `NativeCall`), `NativeLibrary` | the FFM downcall plumbing (per-thread native scratch memory for arguments and results) and the loader/handshake |
+| `NativeSearch`, `NativeStore`, `NativeAnalysis`, `NativeMl`, `NativeSparse`, `NativeZstd`, `NativeLimits`, `NativeWriter`, `NativeLive` | the downcalls grouped by area: search and aggregations, directory and stores, analysis, ML, sparse, zstd, limits and breakers, the writer, the live reader |
 | `src/test/…/NativeSelfTest` | the native path against Lucene's `IndexSearcher`: NRT readers with in-memory deletes, refreshes, merges, every Java-written fixture, the bridge's error paths |
 | `src/test/…/NativeBench` | `gradle nativeBench`: the downcall's crossing cost and in-process latency |
 | `src/yamlRestTest/…/LuceneRustYamlIT` | OpenSearch's REST YAML suites, for `verify-opensearch.sh --yaml` |

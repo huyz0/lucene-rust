@@ -11,6 +11,7 @@ import org.apache.lucene.util.CollectionUtil;
 import org.lucenerust.opensearch.AnalyzerSpec;
 import org.lucenerust.opensearch.LiveDirectoryReader;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeAnalysis;
 import org.lucenerust.opensearch.NativeReaders;
 import org.lucenerust.opensearch.QueryEncoder;
 import org.lucenerust.opensearch.SearchStats;
@@ -136,7 +137,7 @@ public final class NativeUnifiedHighlighter extends UnifiedHighlighter {
         }
         String value = mergeFieldValues(converted, MULTIVAL_SEP_CHAR);
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.highlightUnified(
+        int rc = NativeAnalysis.highlightUnified(
             prepared.handle,
             prepared.request,
             hitContext.readerContext().ord,

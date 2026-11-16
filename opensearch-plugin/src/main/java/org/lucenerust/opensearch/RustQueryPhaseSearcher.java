@@ -463,7 +463,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                         if (tree != null && treeBlob == null) {
                             request = null;
                         }
-                        int rc = NativeBridge.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
+                        int rc = NativeLive.liveViewReader(acquired.handle(), live.view().id(), request, treeBlob, rescoreBlobs, whole);
                         if (rc == NativeBridge.OK) {
                             stats.liveReaderTime(System.nanoTime() - built);
                         }
@@ -891,7 +891,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int rc;
         NativeMemory.Scope memory = NativeMemory.open(ctx, "accelerated_hybrid_search");
         try {
-            rc = NativeBridge.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, collapseBlob, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
+            rc = NativeSearch.searchHybrid(acquired.handle(), NativeHybrid.blob(enc.blobs(), topN, slices, aggregating, filterBlob, sortBlob, threshold, collapseBlob, NativeHybrid.terminates(ctx) ? ctx.terminateAfter() : -1), out);
             NativeMemory.check(rc);
             if (rc != NativeBridge.OK) {
                 logger.debug("lucene-rust: native hybrid search failed ({}): {}", rc, NativeBridge.lastError());
@@ -954,7 +954,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             long[] aggCounts = new long[states];
             double[] aggValues = new double[states * NativeAggregations.VALUES];
             byte[][] terms = new byte[1][];
-            int rc = NativeBridge.aggregate(
+            int rc = NativeSearch.aggregate(
                 handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, -1, new long[] { -1, 0, 0 },
                 new long[searcher.getIndexReader().leaves().size()]
             );
@@ -969,7 +969,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             return null;
         }
         byte[][] result = new byte[1][];
-        int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), false, result);
+        int rc = NativeSearch.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), false, result);
         if (rc != NativeBridge.OK) {
             NativeAggregations.checkBuckets(ctx, rc);
             NativeMemory.check(rc);
@@ -1102,7 +1102,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int[] docs = new int[numDocs];
         float[] scores = new float[numDocs];
         long[] counts = new long[4];
-        int rc = NativeBridge.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
+        int rc = NativeLive.searchLive(handle, live.view().id(), blob, numDocs, countLimit, docs, scores, counts);
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             stats.nativeError();
@@ -1523,7 +1523,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 && shortcut < 0 && countLimit > 0;
             long[] total = new long[] { -1, 0, 0 };
             long[] perSegment = new long[ctx.searcher().getIndexReader().leaves().size()];
-            int rc = NativeBridge.aggregate(
+            int rc = NativeSearch.aggregate(
                 handle, blob, aggs.blob(slices), aggCounts, aggValues, terms, countHere ? countLimit : -1, total, perSegment
             );
             if (rc != NativeBridge.OK) {
@@ -1546,7 +1546,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 return "intra_segment";
             }
             byte[][] result = new byte[1][];
-            int rc = NativeBridge.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), flags(ctx).aggCache(), result);
+            int rc = NativeSearch.aggregateTree(handle, blob, tree.blob(slices, NativeAggregations.bucketLimit(ctx)), flags(ctx).aggCache(), result);
             if (rc != NativeBridge.OK) {
                 NativeAggregations.checkBuckets(ctx, rc);
                 NativeMemory.check(rc);
@@ -1617,7 +1617,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // The total from the term's document frequency, the hits (if any are asked for) from
             // the same native call.
             BytesRef bytes = shortcutTerm.bytes();
-            int rc = NativeBridge.searchDocFreq(
+            int rc = NativeSearch.searchDocFreq(
                 handle,
                 blob,
                 numDocs,
@@ -1639,7 +1639,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // No hits, and a total already known (the shortcut) or not asked for: nothing the
             // native search would answer is read below.
         } else {
-            int rc = NativeBridge.search(handle, blob, numDocs, countLimit, docs, scores, counts);
+            int rc = NativeSearch.search(handle, blob, numDocs, countLimit, docs, scores, counts);
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
@@ -1798,7 +1798,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         NativeAggregations.writeSlices(spec, slices);
         long[] out = new long[1];
-        int rc = NativeBridge.countTerminates(handle, blob, spec.toByteArray(), out);
+        int rc = NativeSearch.countTerminates(handle, blob, spec.toByteArray(), out);
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             stats.nativeError();
@@ -1926,7 +1926,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             for (int i = 0; i < Math.min(n, r.window()); i++) {
                 window.add(docs[i]);
             }
-            int rc = NativeBridge.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
+            int rc = NativeSearch.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
             if (rc != NativeBridge.OK) {
                 NativeMemory.check(rc);
                 stats.nativeError();
@@ -1949,7 +1949,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
      */
     private String searchCollapsed(SearchContext ctx, long handle, byte[] blob, byte[] sortBlob, byte[] collapseBlob, int numDocs) {
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.searchCollapsed(handle, blob, sortBlob, collapseBlob, numDocs, out);
+        int rc = NativeSearch.searchCollapsed(handle, blob, sortBlob, collapseBlob, numDocs, out);
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             String message = NativeBridge.lastError();
@@ -1999,7 +1999,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         long[] values = new long[numDocs * fields.length];
         long[] counts = new long[5];
         byte[][] terms = new byte[1][];
-        int rc = NativeBridge.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts, terms);
+        int rc = NativeSearch.searchSorted(handle, blob, sortBlob, numDocs, countLimit, docs, values, counts, terms);
         if (rc != NativeBridge.OK) {
             NativeMemory.check(rc);
             stats.nativeError();
@@ -2151,7 +2151,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // Lucene's own, in every segment, cost more than the search itself.
             BytesRef bytes = term.bytes();
             long[] out = new long[1];
-            int rc = NativeBridge.docFreq(
+            int rc = NativeSearch.docFreq(
                 handle,
                 term.field().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 java.util.Arrays.copyOfRange(bytes.bytes, bytes.offset, bytes.offset + bytes.length),

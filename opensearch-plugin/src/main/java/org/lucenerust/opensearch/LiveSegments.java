@@ -33,7 +33,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
 /**
- * A view's buffers as segments Lucene reads ({@link NativeBridge#liveViewLucene}): what a search the
+ * A view's buffers as segments Lucene reads ({@link NativeLive#liveViewLucene}): what a search the
  * native engine cannot run reads the buffered documents through.
  */
 final class LiveSegments {

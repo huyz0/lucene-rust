@@ -108,7 +108,7 @@ public final class NativeBench {
                     for (int warm = 0; warm < 3; warm++) {
                         for (int i = 0; i < per; i++) {
                             sink += searcher.search(q, new TopScoreDocCollectorManager(10, 10_000)).totalHits.value();
-                            NativeBridge.search(handle, blob, 10, 10_000, docsOut, scoresOut, counts);
+                            NativeSearch.search(handle, blob, 10, 10_000, docsOut, scoresOut, counts);
                         }
                     }
                     for (int r = 0; r < ROUNDS; r++) {
@@ -119,13 +119,13 @@ public final class NativeBench {
                         lucene[r] = (System.nanoTime() - t) / 1000.0 / per;
                         t = System.nanoTime();
                         for (int i = 0; i < per; i++) {
-                            NativeBridge.search(handle, blob, 10, 10_000, docsOut, scoresOut, counts);
+                            NativeSearch.search(handle, blob, 10, 10_000, docsOut, scoresOut, counts);
                             sink += counts[1];
                         }
                         nat[r] = (System.nanoTime() - t) / 1000.0 / per;
                         t = System.nanoTime();
                         for (int i = 0; i < per; i++) {
-                            NativeBridge.search(handle, blob, 10, 0, docsOut, scoresOut, counts);
+                            NativeSearch.search(handle, blob, 10, 0, docsOut, scoresOut, counts);
                             sink += counts[0];
                         }
                         natNoCount[r] = (System.nanoTime() - t) / 1000.0 / per;

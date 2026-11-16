@@ -31,6 +31,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.Scorable;
 import org.apache.lucene.queries.intervals.IntervalIterator;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeAnalysis;
 
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
@@ -579,7 +580,7 @@ public final class PainlessScore {
         String hit = CHECKED.get(key);
         if (hit == null) {
             byte[][] out = new byte[1][];
-            int rc = NativeBridge.painlessCheck(spec.get(), out);
+            int rc = NativeAnalysis.painlessCheck(spec.get(), out);
             hit = rc != NativeBridge.OK ? "check failed: " + NativeBridge.lastError()
                 : out[0] == null ? "" : new String(out[0], java.nio.charset.StandardCharsets.UTF_8);
             if (CHECKED.size() >= CACHE_LIMIT) {

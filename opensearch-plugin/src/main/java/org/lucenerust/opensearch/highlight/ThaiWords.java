@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch.highlight;
 
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeAnalysis;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -54,7 +55,7 @@ final class ThaiWords {
                 );
             MemorySegment stub = Linker.nativeLinker()
                 .upcallStub(target, FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG), Arena.global());
-            if (NativeBridge.highlightSetThaiUpcall(stub) != NativeBridge.OK) {
+            if (NativeAnalysis.highlightSetThaiUpcall(stub) != NativeBridge.OK) {
                 throw new IllegalStateException("lucene-rust: registering the Thai word upcall failed: " + NativeBridge.lastError());
             }
             installed = true;

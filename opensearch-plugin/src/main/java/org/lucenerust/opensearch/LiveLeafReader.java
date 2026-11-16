@@ -232,7 +232,7 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
 
         private byte[] readDocValues(int doc, int[] fields) throws IOException {
             byte[][] out = new byte[1][];
-            int rc = NativeBridge.liveDocValues(view.id(), buffer, start + doc, fields, out);
+            int rc = NativeLive.liveDocValues(view.id(), buffer, start + doc, fields, out);
             if (rc != NativeBridge.OK) {
                 throw new IOException("doc values of buffered document " + doc + ": " + NativeBridge.lastError());
             }
@@ -253,7 +253,7 @@ public final class LiveLeafReader extends SequentialStoredFieldsLeafReader {
                 return;
             }
             byte[][] out = new byte[1][];
-            int rc = NativeBridge.liveDocument(view.id(), buffer, start + docID, out);
+            int rc = NativeLive.liveDocument(view.id(), buffer, start + docID, out);
             if (rc != NativeBridge.OK) {
                 throw new IOException("buffered document " + docID + ": " + NativeBridge.lastError());
             }

@@ -6,6 +6,7 @@ package org.lucenerust.opensearch.ml;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeMl;
 import org.opensearch.OpenSearchStatusException;
 import org.opensearch.action.DocWriteRequest;
 import org.opensearch.action.delete.DeleteRequest;
@@ -197,7 +198,7 @@ final class RemoteModels {
                 listener.onResponse(k);
                 return;
             }
-            String generated = NativeBridge.mlMasterKey();
+            String generated = NativeMl.mlMasterKey();
             if (generated == null) {
                 throw new IllegalStateException("cannot make a master key: " + NativeBridge.lastError());
             }
@@ -413,7 +414,7 @@ final class RemoteModels {
             masterKey(ActionListener.wrap(key -> {
                 Map<String, String> encrypted = new LinkedHashMap<>();
                 for (Map.Entry<String, String> e : ((Map<String, String>) c).entrySet()) {
-                    String v = NativeBridge.mlCredentialEncrypt(key, e.getValue() == null ? "" : e.getValue());
+                    String v = NativeMl.mlCredentialEncrypt(key, e.getValue() == null ? "" : e.getValue());
                     if (v == null) {
                         throw new IllegalStateException("cannot encrypt a credential: " + NativeBridge.lastError());
                     }
@@ -474,7 +475,7 @@ final class RemoteModels {
             Map<String, String> clear = new LinkedHashMap<>();
             if (doc.get("credential") instanceof Map<?, ?> c) {
                 for (Map.Entry<?, ?> e : c.entrySet()) {
-                    String v = NativeBridge.mlCredentialDecrypt(key, String.valueOf(e.getValue()));
+                    String v = NativeMl.mlCredentialDecrypt(key, String.valueOf(e.getValue()));
                     if (v == null) {
                         throw new IllegalStateException("cannot decrypt a credential: " + NativeBridge.lastError());
                     }
@@ -588,7 +589,7 @@ final class RemoteModels {
         ActionListener<Map<String, Object>> withConnector = ActionListener.wrap(connector -> masterKey(ActionListener.wrap(key -> {
             Connection connection = connection(connector.get("client_config"), "google_cloud".equals(connector.get("protocol")));
             long[] handle = new long[1];
-            if (NativeBridge.mlRemoteOpen(MlCommons.json(connector), key, handle) != NativeBridge.OK) {
+            if (NativeMl.mlRemoteOpen(MlCommons.json(connector), key, handle) != NativeBridge.OK) {
                 connection.http().shutdownNow();
                 throw new IllegalArgumentException(NativeBridge.lastError());
             }
@@ -873,7 +874,7 @@ final class RemoteModels {
     /** One step of a remote call in Rust. */
     private static Map<String, Object> call(long handle, Map<String, Object> request) {
         int[] status = new int[1];
-        String answer = NativeBridge.mlRemoteCall(handle, MlCommons.json(request), status);
+        String answer = NativeMl.mlRemoteCall(handle, MlCommons.json(request), status);
         if (answer == null) {
             String why = NativeBridge.lastError();
             throw status[0] == NativeBridge.INVALID_ARGUMENT ? new IllegalArgumentException(why) : new MLException(why);

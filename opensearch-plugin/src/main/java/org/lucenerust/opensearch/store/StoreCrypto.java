@@ -16,6 +16,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeStore;
 
 /**
  * The JVM side's AES-256-GCM and random numbers for the encrypted store.
@@ -87,7 +88,7 @@ public final class StoreCrypto {
             return new StoreCrypto(false, null, new SecureRandom(), "JDK default providers");
         }
         Provider accp = loadAccp();
-        if (NativeBridge.storeIsFips() == false) {
+        if (NativeStore.storeIsFips() == false) {
             throw new IllegalStateException(
                 "lucene-rust: this is the FIPS build, but the native library's encryption is not in FIPS mode "
                     + "(build it with scripts/build-fips.sh, or the plugin with -Pfips)"

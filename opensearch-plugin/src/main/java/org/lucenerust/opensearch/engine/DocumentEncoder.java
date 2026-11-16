@@ -27,6 +27,7 @@ import org.apache.lucene.search.similarities.PerFieldSimilarityWrapper;
 import org.apache.lucene.search.similarities.Similarity;
 import org.lucenerust.opensearch.AnalyzerSpec;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeWriter;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefHash;
 import org.apache.lucene.util.IntsRefBuilder;
@@ -141,7 +142,7 @@ final class DocumentEncoder {
                 && s.getClass().getMethod("computeNorm", FieldInvertState.class).getDeclaringClass() == Similarity.class) {
                 AnalyzerSpec.Spec spec = AnalyzerSpec.describe(analyzer, name);
                 int[] id = new int[1];
-                if (spec.ok() && NativeBridge.analysisRegister(spec.blob(), String.valueOf(s), id) == NativeBridge.OK) {
+                if (spec.ok() && NativeWriter.analysisRegister(spec.blob(), String.valueOf(s), id) == NativeBridge.OK) {
                     f = new NativeField(id[0], s.getDiscountOverlaps());
                 }
             }

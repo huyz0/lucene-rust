@@ -17,6 +17,7 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeSparse;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -203,14 +204,14 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
             }
             long[] handle = new long[1];
             byte[] name = field.name.getBytes(StandardCharsets.UTF_8);
-            if (NativeBridge.sparseClustererOpen(name, field.number, encodeAttributes(field.attributes()), maxDoc, handle) != 0) {
+            if (NativeSparse.sparseClustererOpen(name, field.number, encodeAttributes(field.attributes()), maxDoc, handle) != 0) {
                 throw failure("field [" + field.name + "]");
             }
             clusterers.put(field.name, handle[0]);
             BinaryDocValues docs = values.getBinary(field);
             for (int doc = docs.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = docs.nextDoc()) {
                 BytesRef v = docs.binaryValue();
-                if (NativeBridge.sparseClustererAdd(handle[0], doc, v.bytes, v.offset, v.length) != 0) {
+                if (NativeSparse.sparseClustererAdd(handle[0], doc, v.bytes, v.offset, v.length) != 0) {
                     throw failure("field [" + field.name + "] doc " + doc);
                 }
             }
@@ -225,7 +226,7 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
                 }
             } finally {
                 for (long h : clusterers.values()) {
-                    NativeBridge.sparseClustererClose(h);
+                    NativeSparse.sparseClustererClose(h);
                 }
                 clusterers.clear();
             }
@@ -236,7 +237,7 @@ final class ClusteringDocValuesFormat extends DocValuesFormat {
             long[] handles = clusterers.values().stream().mapToLong(Long::longValue).toArray();
             // The write takes the handles, whatever its outcome.
             clusterers.clear();
-            byte[] files = NativeBridge.sparsePostingsWrite(handles, state.segmentInfo.getId());
+            byte[] files = NativeSparse.sparsePostingsWrite(handles, state.segmentInfo.getId());
             if (files == null) {
                 throw failure("segment [" + state.segmentInfo.name + "]");
             }

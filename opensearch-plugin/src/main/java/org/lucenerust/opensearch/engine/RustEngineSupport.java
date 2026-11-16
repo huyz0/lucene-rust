@@ -13,6 +13,8 @@ import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.TieredMergePolicy;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeStore;
+import org.lucenerust.opensearch.NativeWriter;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.index.IndexSettings;
@@ -250,8 +252,8 @@ public final class RustEngineSupport {
         String path = org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath(store));
         String mode = STORE_MODE.get(config.getIndexSettings().getSettings());
         int rc = mode.equals("mmap")
-            ? NativeBridge.storeUnbindPageCache(path)
-            : NativeBridge.storeBindPageCache(path, 0, mode.equals("page_cache_vectors"));
+            ? NativeStore.storeUnbindPageCache(path)
+            : NativeStore.storeBindPageCache(path, 0, mode.equals("page_cache_vectors"));
         if (rc != 0) {
             throw new IllegalStateException("lucene-rust: cannot set the store mode of [" + path + "] (status " + rc + ")");
         }
@@ -372,15 +374,15 @@ public final class RustEngineSupport {
      */
     private static final Map<String, Integer> CODECS = Map.of(
         "default",
-        NativeBridge.STORED_FIELDS_BEST_SPEED,
+        NativeWriter.STORED_FIELDS_BEST_SPEED,
         "lucene_default",
-        NativeBridge.STORED_FIELDS_BEST_SPEED,
+        NativeWriter.STORED_FIELDS_BEST_SPEED,
         "best_compression",
-        NativeBridge.STORED_FIELDS_BEST_COMPRESSION,
+        NativeWriter.STORED_FIELDS_BEST_COMPRESSION,
         "zstd",
-        NativeBridge.STORED_FIELDS_ZSTD,
+        NativeWriter.STORED_FIELDS_ZSTD,
         "zstd_no_dict",
-        NativeBridge.STORED_FIELDS_ZSTD_NO_DICT
+        NativeWriter.STORED_FIELDS_ZSTD_NO_DICT
     );
 
     /** {@code NativeLuceneIndexWriterFactory}'s {@code opensearch.shuffle_forced_merge}, read as it reads it. */
@@ -507,9 +509,9 @@ public final class RustEngineSupport {
     /** The {@code NativeBridge.STORED_FIELDS_*} the Rust writer writes for {@code settings}. */
     static int storedFields(IndexSettings settings) {
         if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
-            return NativeBridge.STORED_FIELDS_ZSTD_PAGED;
+            return NativeWriter.STORED_FIELDS_ZSTD_PAGED;
         }
-        return CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED);
+        return CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeWriter.STORED_FIELDS_BEST_SPEED);
     }
 
     /**
@@ -517,10 +519,10 @@ public final class RustEngineSupport {
      * {@code index.codec}; paged zstd under any other codec takes zstd's default, 3.
      */
     static int compressionLevel(IndexSettings settings) {
-        int stored = CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeBridge.STORED_FIELDS_BEST_SPEED);
+        int stored = CODECS.getOrDefault(settings.getValue(EngineConfig.INDEX_CODEC_SETTING), NativeWriter.STORED_FIELDS_BEST_SPEED);
         if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())
-            && stored != NativeBridge.STORED_FIELDS_ZSTD
-            && stored != NativeBridge.STORED_FIELDS_ZSTD_NO_DICT) {
+            && stored != NativeWriter.STORED_FIELDS_ZSTD
+            && stored != NativeWriter.STORED_FIELDS_ZSTD_NO_DICT) {
             return 3;
         }
         return settings.getValue(EngineConfig.INDEX_CODEC_COMPRESSION_LEVEL_SETTING);
@@ -536,7 +538,7 @@ public final class RustEngineSupport {
         if (CODECS.containsKey(codec) == false) {
             return "the accelerated engine writes the codecs " + new java.util.TreeSet<>(CODECS.keySet()) + " only, and index.codec is [" + codec + "]";
         }
-        if ((CODECS.get(codec) != NativeBridge.STORED_FIELDS_BEST_SPEED || PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings()))
+        if ((CODECS.get(codec) != NativeWriter.STORED_FIELDS_BEST_SPEED || PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings()))
             && org.lucenerust.opensearch.sparse.SparseSettings.SPARSE_INDEX.get(settings.getSettings())) {
             if (PAGED_ZSTD_STORED_FIELDS.get(settings.getSettings())) {
                 return "the accelerated engine writes an index.sparse index with the default stored fields only, and "

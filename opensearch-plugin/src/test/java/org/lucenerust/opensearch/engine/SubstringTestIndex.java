@@ -16,6 +16,7 @@ import org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.store.FSDirectory;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeWriter;
 import org.lucenerust.opensearch.substring.RustWildcardFieldMapper;
 import org.opensearch.index.mapper.ParseContext;
 
@@ -70,7 +71,7 @@ public final class SubstringTestIndex {
             null,
             null,
             IndexWriter.MAX_DOCS,
-            NativeBridge.STORED_FIELDS_BEST_SPEED,
+            NativeWriter.STORED_FIELDS_BEST_SPEED,
             3,
             new StandardAnalyzer(),
             new BM25Similarity(),
