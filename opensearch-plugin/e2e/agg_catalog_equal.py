@@ -55,6 +55,10 @@ def aggs():
     out["extended_stats sigma"] = {"a": {"extended_stats": {"field": "d", "sigma": 3}}}
     out["extended_stats under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"e": {"extended_stats": {"field": "d"}}}}}
     out["extended_stats under histogram"] = {"a": {"histogram": {"field": "n", "interval": 500}, "aggs": {"e": {"extended_stats": {"field": "f"}}}}}
+    for fld in ["n", "d", "i", "f"]:
+        out["median_absolute_deviation " + fld] = {"a": {"median_absolute_deviation": {"field": fld}}}
+    out["mad compression"] = {"a": {"median_absolute_deviation": {"field": "d", "compression": 200}}}
+    out["mad under terms"] = {"a": {"terms": {"field": "g"}, "aggs": {"m": {"median_absolute_deviation": {"field": "n"}}}}}
     return out
 
 

@@ -949,7 +949,7 @@ public final class NativeAggregationTree {
         "GlobalAggregatorFactory", "DateHistogramAggregatorFactory", "HistogramAggregatorFactory", "NestedAggregatorFactory",
         "ReverseNestedAggregatorFactory", "DateRangeAggregatorFactory", "RangeAggregatorFactory", "SignificantTermsAggregatorFactory",
         "SignificantTextAggregatorFactory", "MissingAggregatorFactory", "TermsAggregatorFactory", "CardinalityAggregatorFactory", "PercentileRanksAggregatorFactory",
-        "PercentilesAggregatorFactory", "TopHitsAggregatorFactory"
+        "PercentilesAggregatorFactory", "MedianAbsoluteDeviationAggregatorFactory", "TopHitsAggregatorFactory"
     );
 
     /**
@@ -1282,6 +1282,7 @@ public final class NativeAggregationTree {
                 return NativeSignificantTerms.node(ctx, f, agg, type, field, valueKind, subs);
             case AGGS + "metrics.PercentilesAggregatorFactory":
             case AGGS + "metrics.PercentileRanksAggregatorFactory":
+            case AGGS + "metrics.MedianAbsoluteDeviationAggregatorFactory":
                 return NativePercentiles.node(agg, field, valueKind);
             case AGGS + "metrics.CardinalityAggregatorFactory": {
                 if (missing || aggClass.equals(AGGS + "metrics.CardinalityAggregator") == false) {
