@@ -273,13 +273,20 @@ impl ExprLeaf {
     /// The expression's value at `env.doc`.
     pub(super) fn run_value(&self, env: &mut ScoreEnv<'_>) -> Result<f64> {
         let src = self.source();
-        let mut cols = Vec::with_capacity(src.bindings.len()); // alloc-ok: one per variable
+        const INLINE: usize = 8;
+        let n = src.bindings.len();
+        if n <= INLINE {
+            let mut cols = [0.0f64; INLINE];
+            for (slot, (_, b)) in cols.iter_mut().zip(&src.bindings) {
+                *slot = self.variable(env, b)?;
+            }
+            return src.expr.evaluate_row(&cols[..n]);
+        }
+        let mut cols = Vec::with_capacity(n); // alloc-ok: more variables than the inline row
         for (_, b) in &src.bindings {
             cols.push(self.variable(env, b)?);
         }
-        let mut out = [0.0];
-        src.expr.evaluate_columns(&cols, &mut out)?;
-        Ok(out[0])
+        src.expr.evaluate_row(&cols)
     }
 
     /// The values (a filter's `1` and `0`) of `docs`, scores checked as

@@ -912,19 +912,18 @@ impl JObject for Zoned {
 
     fn call(&self, _vm: &mut Vm, this: &Value, name: &str, args: &[Value]) -> Option<R> {
         let z = *self;
-        let (y, m, d) = z.ymd();
         let int = |v: i64| Ok(Value::Int(v as i32));
         let zoned = |r: Result<Zoned, Throw>| r.map(Value::object);
         Some(match (name, args) {
-            ("getYear", []) => int(y),
-            ("getMonthValue", []) => int(m),
-            ("getDayOfMonth", []) => int(d),
+            ("getYear", []) => int(z.ymd().0),
+            ("getMonthValue", []) => int(z.ymd().1),
+            ("getDayOfMonth", []) => int(z.ymd().2),
             ("getDayOfYear", []) => int(year_day_of(z.days)),
             ("getHour", []) => int(z.nod / (3600 * NANOS)),
             ("getMinute", []) => int(z.nod / (60 * NANOS) % 60),
             ("getSecond", []) => int(z.nod / NANOS % 60),
             ("getNano", []) => int(z.nano()),
-            ("getMonth", []) => Ok(month_value(Month(m as u8 - 1))),
+            ("getMonth", []) => Ok(month_value(Month(z.ymd().1 as u8 - 1))),
             ("getDayOfWeek" | "getDayOfWeekEnum", []) => Ok(day_value(z.day_of_week())),
             ("getOffset" | "getZone", []) => Ok(Value::object(Offset(z.off))),
             ("toInstant", []) => z.instant().map(Value::object),
