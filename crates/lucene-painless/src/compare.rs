@@ -22,6 +22,7 @@ pub fn natural(a: &Value, b: &Value) -> Option<Ordering> {
         (Value::Double(x), Value::Double(y)) => double_compare(*x, *y),
         (Value::Float(x), Value::Float(y)) => double_compare(f64::from(*x), f64::from(*y)),
         (Value::Str(x), Value::Str(y)) => str_cmp(x, y),
+        (Value::Object(x), Value::Object(y)) => x.compare_to(&**y)?.cmp(&0),
         _ => return None,
     })
 }
