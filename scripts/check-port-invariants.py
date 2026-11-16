@@ -16,6 +16,7 @@ Run: `python3 scripts/check-port-invariants.py [--verbose]`
 Exit 0 = clean, 1 = at least one violation.
 """
 
+import json
 import os
 import re
 import sys
@@ -1108,6 +1109,60 @@ def rule_unsafe_scoped(files, problems, stats):
             )
 
 
+# The `unsafe` budget: the number of `unsafe` sites per file, committed in
+# `docs/unsafe-budget.json`. The scoping rule above keeps `unsafe` in three
+# crates; this one keeps it from growing inside them (or in an example, bench
+# or test target, which `#![forbid(unsafe_code)]` in `lib.rs` does not reach).
+# A file may not gain a site, a new file may not hold any, and a file that
+# lost sites must lower its number, so the budget only shrinks unless a diff
+# raises it where a reviewer sees it. `--write-unsafe-budget` rewrites it.
+
+UNSAFE_BUDGET_FILE = os.path.join(ROOT, "docs", "unsafe-budget.json")
+UNSAFE_ROOTS = ("crates", "benchmarks", "opensearch-plugin")
+
+
+def unsafe_site_counts():
+    """`{relative path: unsafe sites}` over every Rust file of the repo."""
+    counts = {}
+    for top in UNSAFE_ROOTS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, top)):
+            dirnames[:] = [d for d in dirnames if d not in ("target", ".git", "node_modules")]
+            for name in filenames:
+                if not name.endswith(".rs"):
+                    continue
+                path = os.path.join(dirpath, name)
+                with open(path, encoding="utf-8") as fh:
+                    n = sum(1 for line in fh if UNSAFE_USE.search(strip_comment(line)))
+                if n:
+                    counts[os.path.relpath(path, ROOT).replace(os.sep, "/")] = n
+    return dict(sorted(counts.items()))
+
+
+def rule_unsafe_budget(files, problems, stats):
+    counts = unsafe_site_counts()
+    stats["unsafe_sites"] = sum(counts.values())
+    try:
+        with open(UNSAFE_BUDGET_FILE, encoding="utf-8") as fh:
+            budget = json.load(fh)
+    except FileNotFoundError:
+        problems.append("docs/unsafe-budget.json is missing. (docs/mechanical-gates.md#unsafe-budget)")
+        return
+    for rel in sorted(set(counts) | set(budget)):
+        have, allowed = counts.get(rel, 0), budget.get(rel, 0)
+        if have > allowed:
+            problems.append(
+                f"{rel}: {have} `unsafe` site(s), budget {allowed}. Make it safe, or raise "
+                "docs/unsafe-budget.json in this diff with the reason in the commit. "
+                "(docs/mechanical-gates.md#unsafe-budget)"
+            )
+        elif have < allowed:
+            problems.append(
+                f"{rel}: {have} `unsafe` site(s), budget {allowed}; lower the budget with "
+                "`python3 scripts/check-port-invariants.py --write-unsafe-budget`. "
+                "(docs/mechanical-gates.md#unsafe-budget)"
+            )
+
+
 # A masked field's keyword or binary doc values keep their raw ordinals and
 # bytes, and only the value that leaves the engine is masked. The mask is
 # attached to the doc-values entry, so `TermsDict::lookup_ord` and
@@ -1169,11 +1224,18 @@ RULES = (
     ("test-framework-dev-only", rule_test_framework_dev_only),
     ("bench-not-asserting", rule_bench_not_asserting),
     ("unsafe-scoped", rule_unsafe_scoped),
+    ("unsafe-budget", rule_unsafe_budget),
     ("raw-term-choke-point", rule_raw_term_choke_point),
 )
 
 
 def main(argv):
+    if "--write-unsafe-budget" in argv:
+        with open(UNSAFE_BUDGET_FILE, "w", encoding="utf-8") as fh:
+            json.dump(unsafe_site_counts(), fh, indent=2)
+            fh.write("\n")
+        print(f"wrote {os.path.relpath(UNSAFE_BUDGET_FILE, ROOT)}")
+        return 0
     verbose = "--verbose" in argv
     only = None
     for arg in argv:
@@ -1201,6 +1263,7 @@ def main(argv):
         "bench_feature_lists": 0,
         "unsafe_crates_checked": 0,
         "raw_term_sites": 0,
+        "unsafe_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1227,6 +1290,7 @@ def main(argv):
         print(f"bench-runner feature lists          : {stats['bench_feature_lists']}")
         print(f"crates checked for forbid(unsafe)   : {stats['unsafe_crates_checked']}")
         print(f"raw term reads (all allow-listed)   : {stats['raw_term_sites']}")
+        print(f"unsafe sites (budgeted per file)    : {stats['unsafe_sites']}")
 
     if problems:
         for p in problems:

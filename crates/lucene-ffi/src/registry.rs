@@ -32,14 +32,6 @@ impl Drop for WriterHandle {
     }
 }
 
-// SAFETY: `WriterHandle` is `!Send`/`!Sync` only because of the erased
-// `dyn Directory` borrow. The writer's shared state is behind its own locks
-// (`lucene-index` forbids unsafe code), and the borrowed directory is the
-// `Send + Sync` one boxed in this struct.
-unsafe impl Send for WriterHandle {}
-// SAFETY: as for `Send` above.
-unsafe impl Sync for WriterHandle {}
-
 pub use lucene_engine::reader_handle::JvmReaderHandle;
 
 pub(crate) use lucene_engine::registry::engine_writers;

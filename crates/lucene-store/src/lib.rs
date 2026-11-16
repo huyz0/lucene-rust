@@ -1,5 +1,9 @@
 //! lucene-store: Directory/IndexInput abstractions. See /PLAN.md.
 
+// Unit tests call `unsafe` entry points with pointers they own; the contract
+// is stated once on each function, not repeated at every call.
+#![cfg_attr(test, allow(clippy::undocumented_unsafe_blocks))]
+
 pub mod alignment;
 pub mod blob_directory;
 pub mod byte_buffers_directory;

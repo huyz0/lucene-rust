@@ -97,7 +97,7 @@ impl VectorScorer for FloatScorer<'_> {
     fn prefetch(&self, nodes: &[i32]) {
         for &n in nodes {
             let o = n as usize * self.dim;
-            prefetch_bytes(bytemuck(&self.data[o..o + self.dim]));
+            prefetch_bytes(f32_bytes(&self.data[o..o + self.dim]));
         }
     }
 }
@@ -111,8 +111,9 @@ impl UpdateableVectorScorer for FloatScorer<'_> {
     }
 }
 
-fn bytemuck(v: &[f32]) -> &[u8] {
-    // SAFETY: f32 has no padding and any byte pattern is a valid u8.
+fn f32_bytes(v: &[f32]) -> &[u8] {
+    // SAFETY: f32 has no padding and any byte pattern is a valid u8; the
+    // length is the slice's size in bytes and u8 needs no alignment.
     unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
 }
 
@@ -301,26 +302,7 @@ fn main() {
                     },
                 })
                 .collect();
-            // SAFETY of Send: each scorer is used by one worker thread only.
-            struct SendScorer<'a>(CodeBuildScorer<'a>);
-            unsafe impl Send for SendScorer<'_> {}
-            impl VectorScorer for SendScorer<'_> {
-                fn score(&mut self, node: i32) -> R<f32> {
-                    self.0.score(node)
-                }
-                fn max_ord(&self) -> i32 {
-                    self.0.max_ord()
-                }
-                fn prefetch(&self, nodes: &[i32]) {
-                    self.0.prefetch(nodes)
-                }
-            }
-            impl UpdateableVectorScorer for SendScorer<'_> {
-                fn set_scoring_ordinal(&mut self, ord: i32) -> R<()> {
-                    self.0.set_scoring_ordinal(ord)
-                }
-            }
-            let (g, s) = build(scorers.into_iter().map(SendScorer).collect(), n);
+            let (g, s) = build(scorers, n);
             eprintln!("{name} graph built in {s:.1}s");
             graphs.push(("codes", s, g));
         }

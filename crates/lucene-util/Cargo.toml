@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
 [dependencies]
 thiserror.workspace = true
 

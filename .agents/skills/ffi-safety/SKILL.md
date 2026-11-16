@@ -44,6 +44,16 @@ test. This boundary gets more scrutiny than anything else in the workspace.
   architecture alone. Reproduce locally before touching this crate with
   `cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu
   -- -D warnings` — a check-only build, so no cross C compiler is needed.
+- `[workspace.lints]` denies `clippy::undocumented_unsafe_blocks` and
+  `clippy::missing_safety_doc` and `unsafe_op_in_unsafe_fn` (`lucene-util`
+  repeats them in its own manifest): a `// SAFETY:` comment above every block,
+  a `# Safety` section on every public `unsafe fn`.
+- `check-port-invariants.py`'s `unsafe-budget` rule: `docs/unsafe-budget.json`
+  holds the number of `unsafe` sites per file; a diff that adds one raises the
+  number where the reviewer sees it (`docs/mechanical-gates.md#unsafe-budget`).
+  Prefer a safe wrapper kernel (one small `unsafe` core with the contract
+  stated once, safe callers) over another block at a call site, and remove an
+  `unsafe` block that a benchmark shows gains nothing.
 - Miri on `lucene-util`/`lucene-store`'s `unsafe` blocks (`cargo +nightly miri
   test -p lucene-util -p lucene-store`) — run before landing any SIMD/mmap
   change.
