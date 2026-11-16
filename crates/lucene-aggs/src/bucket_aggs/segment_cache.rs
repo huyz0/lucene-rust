@@ -556,10 +556,10 @@ fn nodes_cacheable(nodes: &[AggNode]) -> bool {
             AggNode::Terms {
                 missing, accepted, ..
             } => missing.is_none() && accepted.is_none(),
-            AggNode::NumericTerms { .. }
-            | AggNode::Histogram { .. }
-            | AggNode::DateHistogram { .. }
-            | AggNode::Range { .. } => true,
+            AggNode::NumericTerms { script, .. }
+            | AggNode::Histogram { script, .. }
+            | AggNode::DateHistogram { script, .. }
+            | AggNode::Range { script, .. } => script.is_none(),
             AggNode::Filters { filters, .. } => filters.iter().all(boolean_cacheable),
             _ => false,
         };
