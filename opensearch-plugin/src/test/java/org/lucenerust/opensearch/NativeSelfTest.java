@@ -523,8 +523,8 @@ public final class NativeSelfTest {
         check(QueryEncoder.encode(new ConstantScoreQuery(t), f -> true).blob() != null, "constant score encodes");
         Query wrappedWildcard = new ConstantScoreQuery(new WildcardQuery(new Term("body", "a*b")));
         check(
-            "clause_WildcardQuery".equals(QueryEncoder.encode(wrappedWildcard, f -> true).fallbackReason()),
-            "wrapped wildcard falls back"
+            QueryEncoder.encode(wrappedWildcard, f -> true).blob() != null,
+            "a wildcard under a constant score encodes"
         );
         check("field_similarity".equals(QueryEncoder.encode(t, f -> false).fallbackReason()), "rejected field falls back");
         check(QueryEncoder.encode(MatchAllDocsQuery.INSTANCE, f -> true).blob() != null, "match_all encodes");
@@ -547,10 +547,27 @@ public final class NativeSelfTest {
             "msm 2 is fast"
         );
         check(QueryEncoder.isFast(new DisjunctionMaxQuery(List.of(t, t2), 0.3f)), "dismax is fast");
-        check(QueryEncoder.isFast(wrappedWildcard) == false, "a wildcard is not encodable yet");
         check(QueryEncoder.encode(new BooleanQuery.Builder().build(), f -> true).blob() != null, "empty encodes (and matches nothing)");
         check(
-            "query_WildcardQuery".equals(QueryEncoder.encode(new WildcardQuery(new Term("body", "a*b")), f -> true).fallbackReason()),
+            "query_NativeSelfTest".equals(QueryEncoder.encode(new Query() {
+                @Override
+                public String toString(String field) {
+                    return "unknown";
+                }
+
+                @Override
+                public void visit(org.apache.lucene.search.QueryVisitor visitor) {}
+
+                @Override
+                public boolean equals(Object o) {
+                    return this == o;
+                }
+
+                @Override
+                public int hashCode() {
+                    return 1;
+                }
+            }, f -> true).fallbackReason()),
             "an unsupported root reports query_, not clause_"
         );
         check(
@@ -907,7 +924,7 @@ public final class NativeSelfTest {
         }
         NativeAggregations.Plan plan = new NativeAggregations.Plan(
             java.util.stream.IntStream.range(0, AGG_FIELDS.length)
-                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31))
+                .mapToObj(i -> (Object) new NativeAggregations.Metric("m" + i, NativeAggregations.Kind.STATS, AGG_FIELDS[i], AGG_KINDS[i], null, null, NativeAggregations.DOC_VALUES, 31, 0.0))
                 .toList()
         );
         long[] counts = new long[AGG_FIELDS.length];
