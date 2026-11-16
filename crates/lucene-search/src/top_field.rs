@@ -4256,7 +4256,7 @@ impl<'a> Leaf<'a> {
         to: i32,
         live_docs: Option<&FixedBitSet>,
     ) -> i32 {
-        if !tf.queue_full || tf.can_set_min_score || self.early {
+        if tf.can_set_min_score || self.early {
             return from;
         }
         // Counting may go on while it changes no state (see `quick_reject`).
@@ -4266,6 +4266,9 @@ impl<'a> Leaf<'a> {
             tf.threshold
         };
         let single = tf.comps.len() == 1;
+        if !tf.queue_full {
+            return self.reject_before_top(tf, from, to, live_docs, limit);
+        }
         let (mul, bottom) = (tf.comps[0].mul, tf.comps[0].bottom);
         let mut d = from;
         macro_rules! run {
@@ -4292,6 +4295,48 @@ impl<'a> Leaf<'a> {
             Some(LeafKey::Str(k)) => run!(|d| k.quick_compare_bottom(d)),
             Some(LeafKey::Numeric(n)) => run!(|d| n.quick_value(d).map(|v| cmp(bottom, v))),
             _ => {}
+        }
+        d
+    }
+
+    /// Before the queue is full, a `search_after` page drops each document
+    /// that sorts before the last page's final hit (`compareTop` > 0 in the
+    /// paging collector) after counting it, whatever the queue holds. A run of
+    /// them (a time-ordered index paged from the middle) is counted here, one
+    /// column read each, until the first document that is not before it, the
+    /// hits threshold or the end of the run.
+    fn reject_before_top(
+        &mut self,
+        tf: &mut TopField,
+        from: i32,
+        to: i32,
+        live_docs: Option<&FixedBitSet>,
+        limit: u64,
+    ) -> i32 {
+        let c = &tf.comps[0];
+        if tf.comps.len() != 1 || !c.top_set || c.custom.is_some() || c.vals.is_some() {
+            return from;
+        }
+        let (mul, top) = (c.mul, c.top);
+        let Some(LeafKey::Numeric(n)) = self.keys.first_mut() else {
+            return from;
+        };
+        let mut d = from;
+        while d < to {
+            if live_docs.is_some_and(|l| !l.get_doc(d)) {
+                d += 1;
+                continue;
+            }
+            if tf.total_hits >= limit {
+                break;
+            }
+            match n.quick_value(d).map(|v| cmp(top, v)) {
+                Some(r) if mul * r > 0 => {
+                    tf.total_hits += 1;
+                    d += 1;
+                }
+                _ => break,
+            }
         }
         d
     }
