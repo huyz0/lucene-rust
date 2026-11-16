@@ -7,11 +7,15 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.FilterCodecReader;
 import org.apache.lucene.index.FilterDirectoryReader;
+import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.StandardDirectoryReader;
 import org.apache.lucene.store.ByteBuffersDataOutput;
@@ -25,6 +29,7 @@ import org.apache.lucene.util.FixedBitSet;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -80,7 +85,37 @@ public final class NativeReaders {
 
     private static final String POSTINGS_FORMAT_ATTRIBUTE = "PerFieldPostingsFormat.format";
 
+    /**
+     * The leaf wrapper of the security plugin's field- and document-level security: it hides
+     * fields ({@code FieldInfos} without them, {@code null} terms, values and points for them),
+     * hides documents (its live docs), and may mask a field's values. The first two are a reader
+     * view the native side holds ({@code NativeBridge.openReaderView}); masking is not.
+     */
+    private static final String SECURITY_LEAF = "org.opensearch.security.configuration.DlsFlsFilterLeafReader";
+
+    /** Whether a leaf wrapper of this class shows the segment's fields and documents as they are. */
+    private final java.util.function.Predicate<Class<?>> engineClass;
+    /** The names of the leaf wrappers whose filtering is a view the native side holds. */
+    private final java.util.Set<String> viewLeaves;
+
+    public NativeReaders() {
+        this(NativeReaders::byLoader, java.util.Set.of(SECURITY_LEAF));
+    }
+
+    /** For tests, whose wrappers share the plugin's class loader. */
+    NativeReaders(java.util.function.Predicate<Class<?>> engineClass, java.util.Set<String> viewLeaves) {
+        this.engineClass = engineClass;
+        this.viewLeaves = viewLeaves;
+    }
+
     private final ConcurrentHashMap<IndexReader.CacheKey, Acquired> byReader = new ConcurrentHashMap<>();
+    /**
+     * The views of a reader's native reader that its wrappers' filters ask for, by the reader's key
+     * and then by what the view hides ({@link View#key}). A wrapper is built per request and
+     * shares its delegate's cache key, so the native reader of that key must stay the unfiltered
+     * one: what one user's view hides is never what another user's search reads.
+     */
+    private final ConcurrentHashMap<IndexReader.CacheKey, ConcurrentHashMap<String, Acquired>> views = new ConcurrentHashMap<>();
     /** The most recent handle per index directory: the reuse candidate for the next refresh. */
     private final ConcurrentHashMap<Path, Long> latestByDir = new ConcurrentHashMap<>();
     private final AtomicLong open = new AtomicLong();
@@ -103,13 +138,35 @@ public final class NativeReaders {
      */
     public long peek(IndexReader reader) {
         reader = segmentsOf(reader);
-        IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
+        IndexReader base = baseOf(reader);
+        if (base == null) {
+            return 0;
+        }
+        IndexReader.CacheHelper helper = base.getReaderCacheHelper();
         Acquired cached = helper == null ? null : byReader.get(helper.getKey());
         return cached == null ? 0 : cached.handle();
     }
 
+    /**
+     * The native reader to search {@code searched} with: the one of its segments as the engine's
+     * reader shows them, or -- when a wrapper above that reader filters fields and documents (the
+     * security plugin's field- and document-level security) -- a view of it that hides what the
+     * wrapper hides.
+     */
     public Acquired acquire(IndexReader searched) {
         IndexReader reader = segmentsOf(searched);
+        IndexReader base = baseOf(reader);
+        if (base == null) {
+            return new Acquired(0, "reader_not_standard");
+        }
+        Acquired opened = acquireBase(base);
+        if (base == reader || opened.handle() == 0) {
+            return opened;
+        }
+        return acquireView(reader, base, opened.handle());
+    }
+
+    private Acquired acquireBase(IndexReader reader) {
         IndexReader.CacheHelper helper = reader.getReaderCacheHelper();
         if (helper == null) {
             return new Acquired(0, "reader_uncacheable");
@@ -138,6 +195,218 @@ public final class NativeReaders {
     }
 
     /**
+     * The reader under {@code reader}'s wrappers whose leaves are the engine's own, or null when
+     * the wrappers cannot be told apart from the engine's. A leaf is the engine's when every
+     * wrapper on it is Lucene's, OpenSearch's or this plugin's: those show the segment's documents
+     * and fields as they are.
+     */
+    private IndexReader baseOf(IndexReader reader) {
+        IndexReader base = reader;
+        while (hasForeignWrapper(base)) {
+            if (base instanceof FilterDirectoryReader f) {
+                base = f.getDelegate();
+            } else {
+                return null;
+            }
+        }
+        return base;
+    }
+
+    private boolean hasForeignWrapper(IndexReader reader) {
+        for (LeafReaderContext ctx : reader.leaves()) {
+            LeafReader leaf = ctx.reader();
+            while (true) {
+                if (leaf instanceof SegmentReader) {
+                    break;
+                }
+                if (leaf instanceof FilterLeafReader f) {
+                    if (engine(f.getClass()) == false) {
+                        return true;
+                    }
+                    leaf = f.getDelegate();
+                } else if (leaf instanceof FilterCodecReader f) {
+                    if (engine(f.getClass()) == false) {
+                        return true;
+                    }
+                    leaf = f.getDelegate();
+                } else {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether {@code c} is Lucene's, OpenSearch core's or this plugin's: a wrapper that changes nothing a search reads. */
+    private boolean engine(Class<?> c) {
+        return engineClass.test(c);
+    }
+
+    /** {@link #engine} by class loader: Lucene's, OpenSearch core's and this plugin's. */
+    private static boolean byLoader(Class<?> c) {
+        ClassLoader l = c.getClassLoader();
+        return l == IndexReader.class.getClassLoader()
+            || l == org.opensearch.index.store.Store.class.getClassLoader()
+            || l == NativeReaders.class.getClassLoader();
+    }
+
+    /** What a wrapper of {@code reader} hides from one leaf: its fields and documents. */
+    private record View(String[][] hidden, long[][] live, String key) {}
+
+    private Acquired acquireView(IndexReader reader, IndexReader base, long baseHandle) {
+        IndexReader.CacheHelper helper = base.getReaderCacheHelper();
+        if (helper == null) {
+            return new Acquired(0, "reader_uncacheable");
+        }
+        Object viewOrReason = viewOf(reader, base);
+        if (viewOrReason instanceof String reason) {
+            return new Acquired(0, reason);
+        }
+        View view = (View) viewOrReason;
+        ConcurrentHashMap<String, Acquired> mine = views.computeIfAbsent(helper.getKey(), k -> new ConcurrentHashMap<>());
+        Acquired cached = mine.get(view.key());
+        if (cached != null) {
+            return cached;
+        }
+        Acquired opened = mine.computeIfAbsent(view.key(), k -> openView(baseHandle, base, view));
+        if (views.get(helper.getKey()) != mine) {
+            // The base reader closed meanwhile and took its views with it: this one belongs to nobody.
+            if (opened.handle() != 0 && mine.remove(view.key(), opened)) {
+                close(opened.handle());
+            }
+            return new Acquired(0, "reader_closed");
+        }
+        return opened;
+    }
+
+    private Acquired openView(long baseHandle, IndexReader base, View view) {
+        List<LeafReaderContext> leaves = base.leaves();
+        int[] maxDocs = new int[leaves.size()];
+        for (int i = 0; i < maxDocs.length; i++) {
+            maxDocs[i] = leaves.get(i).reader().maxDoc();
+        }
+        long[] out = new long[1];
+        int rc = NativeBridge.openReaderView(baseHandle, view.hidden(), maxDocs, view.live(), out);
+        if (rc != NativeBridge.OK) {
+            logger.warn("lucene-rust: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
+            return new Acquired(0, "native_open_failed");
+        }
+        open.incrementAndGet();
+        return new Acquired(out[0], null);
+    }
+
+    /**
+     * What the wrappers between {@code reader} and {@code base} hide, or the reason the native side
+     * cannot stand in for them. Only a wrapper this class knows is taken, and only while it hides
+     * fields and documents: one that rewrites values (field masking) cannot be read around.
+     */
+    private Object viewOf(IndexReader reader, IndexReader base) {
+        List<LeafReaderContext> outer = reader.leaves();
+        List<LeafReaderContext> inner = base.leaves();
+        if (outer.size() != inner.size()) {
+            return "reader_not_standard";
+        }
+        String[][] hidden = new String[outer.size()][];
+        long[][] live = new long[outer.size()][];
+        java.security.MessageDigest digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+        for (int i = 0; i < hidden.length; i++) {
+            LeafReader top = outer.get(i).reader();
+            LeafReader bottom = inner.get(i).reader();
+            for (LeafReader layer = top; layer != bottom;) {
+                if (viewLeaves.contains(layer.getClass().getName()) == false) {
+                    return "reader_not_standard";
+                }
+                if (maskingFree(layer) == false) {
+                    return "reader_not_standard";
+                }
+                layer = ((FilterLeafReader) layer).getDelegate();
+                if (layer instanceof FilterLeafReader == false && layer != bottom) {
+                    return "reader_not_standard";
+                }
+            }
+            FieldInfos shown = top.getFieldInfos();
+            FieldInfos all = bottom.getFieldInfos();
+            List<String> gone = new ArrayList<>();
+            for (FieldInfo fi : all) {
+                FieldInfo seen = shown.fieldInfo(fi.name);
+                if (seen == null) {
+                    gone.add(fi.name);
+                } else if (sameShape(fi, seen) == false) {
+                    return "reader_not_standard";
+                }
+            }
+            for (FieldInfo fi : shown) {
+                if (all.fieldInfo(fi.name) == null) {
+                    return "reader_not_standard";
+                }
+            }
+            java.util.Collections.sort(gone);
+            hidden[i] = gone.toArray(new String[0]);
+            Bits bits = top.getLiveDocs();
+            digest.update(Integer.toString(hidden[i].length).getBytes(StandardCharsets.UTF_8));
+            for (String name : hidden[i]) {
+                digest.update((byte) 0);
+                digest.update(name.getBytes(StandardCharsets.UTF_8));
+            }
+            digest.update((byte) 1);
+            if (bits == null) {
+                digest.update((byte) 0);
+            } else {
+                digest.update((byte) 1);
+                live[i] = words(bits, top.maxDoc());
+                java.nio.ByteBuffer bytes = java.nio.ByteBuffer.allocate(live[i].length * Long.BYTES);
+                bytes.asLongBuffer().put(live[i]);
+                digest.update(bytes.array());
+            }
+        }
+        return new View(hidden, live, java.util.HexFormat.of().formatHex(digest.digest()));
+    }
+
+    /** Whether {@code a} and {@code b} index and store the field alike: what a masked field does not. */
+    private static boolean sameShape(FieldInfo a, FieldInfo b) {
+        return a.getIndexOptions() == b.getIndexOptions()
+            && a.getDocValuesType() == b.getDocValuesType()
+            && a.docValuesSkipIndexType() == b.docValuesSkipIndexType()
+            && a.getPointDimensionCount() == b.getPointDimensionCount()
+            && a.getPointIndexDimensionCount() == b.getPointIndexDimensionCount()
+            && a.getPointNumBytes() == b.getPointNumBytes()
+            && a.getVectorDimension() == b.getVectorDimension()
+            && a.hasNorms() == b.hasNorms()
+            && a.hasTermVectors() == b.hasTermVectors()
+            && a.number == b.number;
+    }
+
+    /**
+     * Whether the security plugin's leaf {@code layer} masks no field: its field-masking rule allows
+     * everything. The rule is private to that plugin, so a plugin version that moved it reads as
+     * masking -- the search then runs on Lucene's reader, which applies the mask.
+     */
+    private static boolean maskingFree(LeafReader layer) {
+        try {
+            java.lang.reflect.Field field = layer.getClass().getDeclaredField("fmRule");
+            field.setAccessible(true);
+            Object rule = field.get(layer);
+            for (Class<?> c = rule.getClass(); c != null; c = c.getSuperclass()) {
+                try {
+                    java.lang.reflect.Method m = c.getDeclaredMethod("isAllowAll");
+                    m.setAccessible(true);
+                    return Boolean.TRUE.equals(m.invoke(rule));
+                } catch (NoSuchMethodException e) {
+                    // The superclass declares it.
+                }
+            }
+            return false;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
      * The reader whose segments {@code reader} searches: the engine reader under a view of the
      * writer's buffers ({@link LiveDirectoryReader}), whose native reader every such view shares, or
      * {@code reader} itself.
@@ -148,6 +417,14 @@ public final class NativeReaders {
     }
 
     private void onClosed(IndexReader.CacheKey key) {
+        ConcurrentHashMap<String, Acquired> mine = views.remove(key);
+        if (mine != null) {
+            for (Acquired view : mine.values()) {
+                if (view.handle() != 0) {
+                    close(view.handle());
+                }
+            }
+        }
         Acquired a = byReader.remove(key);
         if (a != null && a.handle() != 0) {
             latestByDir.values().remove(a.handle());

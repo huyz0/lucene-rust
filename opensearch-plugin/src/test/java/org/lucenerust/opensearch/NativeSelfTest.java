@@ -155,6 +155,12 @@ public final class NativeSelfTest {
             System.out.printf("NativeSelfTest (leaves only): %s; %d checks, %d failures; %d of %d compared scores bit-exact%n", NativeSelfTestLeaves.ENCODED.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()[0]).toList(), checks, failures, bitExact, scored);
             System.exit(failures > 0 ? 1 : 0);
         }
+        // SELFTEST_ONLY=security: NativeSelfTestSecurity alone.
+        if ("security".equals(System.getenv("SELFTEST_ONLY"))) {
+            NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+            System.out.printf("NativeSelfTest (security only): %d checks, %d failures%n", checks, failures);
+            System.exit(failures > 0 ? 1 : 0);
+        }
         // SELFTEST_ONLY=substring: NativeSelfTestSubstring alone.
         if ("substring".equals(System.getenv("SELFTEST_ONLY"))) {
             NativeSelfTestSubstring.run(new Random(43), (ok, what) -> check(ok, what), NativeSelfTest::compare);
@@ -189,6 +195,8 @@ public final class NativeSelfTest {
         geo(new Random(13));
         }
         NativeSelfTestExtended.run(new Random(17), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        NativeSelfTestSecurity.run(new Random(47), (ok, what) -> check(ok, what), NativeSelfTest::compare);
+        check(NativeSelfTestSecurity.compared >= 120, "security view queries compared: " + NativeSelfTestSecurity.compared);
         NativeSelfTestLeaves.run(new Random(23), (ok, what) -> check(ok, what), NativeSelfTest::compare);
         for (var e : NativeSelfTestLeaves.ENCODED.entrySet()) {
             check(e.getValue()[0] >= (e.getKey().equals("term_states") ? 6 : 50), "leaf " + e.getKey() + " queries encoded and compared: " + e.getValue()[0]);
