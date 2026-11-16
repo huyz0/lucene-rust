@@ -267,7 +267,7 @@ impl Drop for Guard {
     }
 }
 
-fn current() -> Option<Rc<Session>> {
+fn installed_session() -> Option<Rc<Session>> {
     CURRENT.with(|c| c.borrow().clone())
 }
 
@@ -301,7 +301,7 @@ pub(crate) fn profiled<'a>(
     clause: &Clause,
     build: impl FnOnce() -> Result<Option<BoxScorer<'a>>>,
 ) -> Result<Option<BoxScorer<'a>>> {
-    let Some(session) = current() else {
+    let Some(session) = installed_session() else {
         return build();
     };
     let Some(path) = enter(&session, clause) else {
@@ -338,7 +338,7 @@ fn enter(session: &Session, clause: &Clause) -> Option<Vec<u32>> {
 /// boolean built itself): its path is found under the clause being built, and building it took
 /// no time worth a timer of its own.
 pub(crate) fn wrap_child<'a>(clause: &Clause, scorer: BoxScorer<'a>) -> BoxScorer<'a> {
-    let Some(session) = current() else {
+    let Some(session) = installed_session() else {
         return scorer;
     };
     let path = {
@@ -566,12 +566,12 @@ mod tests {
             assert!(active());
             {
                 let _b = Guard::install(&inner);
-                assert!(Rc::ptr_eq(&current().unwrap(), &inner));
+                assert!(Rc::ptr_eq(&installed_session().unwrap(), &inner));
             }
-            assert!(Rc::ptr_eq(&current().unwrap(), &outer));
+            assert!(Rc::ptr_eq(&installed_session().unwrap(), &outer));
         }
         assert!(!active());
-        assert!(current().is_none());
+        assert!(installed_session().is_none());
     }
 
     #[test]

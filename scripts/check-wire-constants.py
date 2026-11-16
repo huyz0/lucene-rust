@@ -167,6 +167,8 @@ JAVA_ONLY = {
     ("LuceneChangesSnapshot.java", "DEFAULT_BATCH_SIZE"): "derived OpenSearch engine code",
     ("LuceneChangesSnapshot.java", "MIN_SEQUENTIAL_ACCESS_BATCH_SIZE"): "derived OpenSearch engine code",
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
+    ("TermsDocFreqShortcut.java", "MAX_TERMS"): "most terms of a field one segment's cached document frequencies keep, a Java-side cache",
+    ("TermsDocFreqShortcut.java", "MAX_ENTRIES"): "how many segments' cached term frequencies the Java shortcut keeps",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
     ("NativeAggregations.java", "HALF_FLOAT"): "ValueKind::HalfFloat's number in metric_aggs.rs, an enum's",
     ("NativeAggregations.java", "SCALED"): "ValueKind::Scaled's number in metric_aggs.rs, an enum's",
