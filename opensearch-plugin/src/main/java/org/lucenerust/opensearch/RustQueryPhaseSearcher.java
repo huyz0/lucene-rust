@@ -257,6 +257,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             ? null
             : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
+        if (reason == null || "search_after".equals(reason)) {
+            // A request Lucene's collector refuses: its error, as QueryPhase raises it.
+            RuntimeException refused = SortEncoder.searchAfterRefusal(ctx.sort() == null ? null : ctx.sort().sort, ctx.searchAfter(), ctx.size(), searcher.getIndexReader());
+            if (refused != null) {
+                throw new QueryPhaseExecutionException(ctx.shardTarget(), "Failed to execute main query", refused);
+            }
+        }
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
         // collector in its FilteredCollector): the hits search "query AND filter", the filter a
@@ -305,8 +312,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
             }
             if (reason == null) {
-                blob = similarities.prefix(blob);
-                hitsBlob = similarities.prefix(hitsBlob);
+                boolean sameBlob = blob == hitsBlob;
+                blob = NativeDfs.prefix(searcher, similarities.prefix(blob));
+                hitsBlob = sameBlob ? blob : NativeDfs.prefix(searcher, similarities.prefix(hitsBlob));
             }
         }
         // The rescore queries, encoded before anything runs: one that cannot be leaves the whole
@@ -1071,8 +1079,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // differently from the native pass (ascending); stay on OpenSearch's.
         if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
         // dfs_query_then_fetch scores with statistics aggregated across shards
-        // (ContextIndexSearcher.setAggregatedDfs); the native engine only knows this shard's.
-        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";
+        // (ContextIndexSearcher.setAggregatedDfs), which NativeDfs hands the native statistics pass.
+        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH && NativeDfs.readable() == false) return "dfs";
         // Another plugin may replace the top-docs collector (QueryPhase's own first question).
         try {
             if (QueryCollectorContextSpecRegistry.getQueryCollectorContextSpec(
@@ -1846,14 +1854,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int shortcut
     ) {
         SortField[] fields = sort.getSort();
-        // A nested key does not skip natively (its field's points are the children's), nor do a
-        // few others as Lucene's do (SortEncoder.skippingReason); Lucene's comparator skips once
-        // more than the threshold's hits are in, so such a sort runs here only where the shard
-        // cannot hold that many documents.
-        String skipping = SortEncoder.skippingReason(fields);
-        if (skipping != null && ctx.searcher().getIndexReader().maxDoc() > countLimit) {
-            return skipping;
-        }
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
         long[] counts = new long[5];
