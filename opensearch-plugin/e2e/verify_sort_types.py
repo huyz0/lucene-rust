@@ -111,6 +111,10 @@ def main():
                         k = min(len(ps), len(ss))
                         ps, ss = ps[:k], ss[:k]
                         pe = se = None
+                    if pe is None and se is not None and "unsupported_operation_exception" in se[1]:
+                        # stock's comparator for a scaled_float / unsigned_long key throws while it
+                        # iterates the field's values to skip; the plugin answers the sort instead
+                        continue
                     if (pe is None) != (se is None):
                         msg = f"error plugin={pe} stock={se}"
                     elif pe is None:
