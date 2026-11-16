@@ -998,7 +998,14 @@ impl TokenFilterFactory for NumericPayloadTokenFilterFactory {
 factory_struct! {
     /// `org.apache.lucene.analysis.shingle.FixedShingleFilterFactory`
     /// (`fixedShingle`; Java does not check for unknown arguments).
-    FixedShingleFilterFactory { shingle_size: i32, token_separator: String, filler_token: String }
+    /// `carrySkippedIncrements` (ours, default false) selects Lucene 10.5.2's
+    /// `pendingPosInc` (GITHUB#16577) over 10.5.1's, the bundled one.
+    FixedShingleFilterFactory {
+        shingle_size: i32,
+        token_separator: String,
+        filler_token: String,
+        carry: bool,
+    }
 }
 analysis_factory!(FixedShingleFilterFactory);
 
@@ -1010,25 +1017,30 @@ impl FactoryClass for FixedShingleFilterFactory {
         let shingle_size = args::get_int(args, "shingleSize", 2)?;
         let token_separator = args::get_or(args, "tokenSeparator", " ");
         let filler_token = args::get_or(args, "fillerToken", "_");
+        let carry = args::get_boolean(args, "carrySkippedIncrements", false);
         Ok(FixedShingleFilterFactory {
             base,
             shingle_size,
             token_separator,
             filler_token,
+            carry,
         })
     }
 }
 
 impl TokenFilterFactory for FixedShingleFilterFactory {
     fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>, AnalysisError> {
-        Ok(Box::new(
-            crate::shingle::FixedShingleFilter::with_separator(
-                input,
-                self.shingle_size,
-                &self.token_separator,
-                &self.filler_token,
-            )?,
-        ))
+        let filter = crate::shingle::FixedShingleFilter::with_separator(
+            input,
+            self.shingle_size,
+            &self.token_separator,
+            &self.filler_token,
+        )?;
+        Ok(Box::new(if self.carry {
+            filter.with_carried_increments()
+        } else {
+            filter
+        }))
     }
 }
 
