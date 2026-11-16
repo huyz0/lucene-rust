@@ -967,6 +967,9 @@ fn reader_stats(
     let function_stats =
         crate::function::prepare_functions(segments, &functions, &map, similarity)?;
     map.set_functions(function_stats);
+    if let Some(source) = similarity.and_then(|s| s.statistics_source()) {
+        map.override_statistics(source)?;
+    }
     Ok(map)
 }
 

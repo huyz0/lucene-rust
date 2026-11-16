@@ -724,6 +724,21 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
     lucene_engine::reader_search::search_hybrid_blobs(&h, blob)
 }
 
+/// [`lucene_engine::profile::profile_blob`] over `handle`'s reader.
+pub(crate) fn profile_blobs(
+    handle: u64,
+    blob: &[u8],
+    collect: u8,
+    top_n: usize,
+    count_limit: i64,
+) -> Result<Vec<u8>, FfiStatus> {
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_profile: unknown or already-closed handle",
+    )?;
+    lucene_engine::profile::profile_blob(&h, blob, collect, top_n, count_limit)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     // Tests index and count freely: the gate is about values read off disk.
@@ -1154,10 +1169,9 @@ pub(crate) mod tests {
         for cut in 1..lucene.len() {
             assert!(decode_sort(&lucene[..cut]).is_err(), "cut at {cut}");
         }
-        assert_eq!(
-            status(&geo_sort_blob(0, 0, &o, 1.0, Some(5))),
-            invalid,
-            "Lucene's key and search_after"
+        assert!(
+            decode_sort(&geo_sort_blob(0, 0, &o, 1.0, Some(5))).is_ok(),
+            "Lucene's key with a search_after"
         );
         assert_eq!(
             status(&geo_sort_blob(SORT_REVERSE, 0, &o, 1.0, None)),
@@ -4721,7 +4735,46 @@ pub(crate) mod tests {
                 "{ty} {flags}"
             );
         }
+        // A scaled_float key: the missing value, then 1 / scaling_factor as raw bits.
+        let scaled = |flags: u8, inverse: f64| {
+            let mut b = vec![1, SORT_SCALED_FLOAT, flags];
+            b.extend_from_slice(&1i32.to_le_bytes());
+            b.push(b'm');
+            let missing = lucene_util::numeric_utils::double_to_sortable_long(f64::INFINITY);
+            b.extend_from_slice(&missing.to_le_bytes());
+            b.extend_from_slice(&(inverse.to_bits() as i64).to_le_bytes());
+            b.extend_from_slice(&[0, 0]);
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b
+        };
+        for flags in [0, SORT_MAX, SORT_MODE_SUM, SORT_MODE_AVG, SORT_MODE_MEDIAN] {
+            assert!(decode_sort(&scaled(flags, 0.01)).is_ok(), "{flags}");
+        }
         let invalid = Some(FfiStatus::InvalidArgument);
+        for inverse in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(decode_sort(&scaled(0, inverse)).err(), invalid);
+        }
+        let h = open_fixture("sorted_search_index");
+        let q = term_blob("body", "w1");
+        let by_scaled = search_sorted_blobs(h, &q, &scaled(0, 0.5), 5, i64::MAX).unwrap();
+        let by_long = search_sorted_blobs(
+            h,
+            &q,
+            &sort_blob(&[(SORT_LONG, 0, "m", i64::MAX)], None),
+            5,
+            i64::MAX,
+        )
+        .unwrap();
+        // Half the stored long, in the double's sortable encoding, in the long key's order.
+        assert_eq!(
+            by_scaled.hits.iter().map(|f| f.doc).collect::<Vec<_>>(),
+            by_long.hits.iter().map(|f| f.doc).collect::<Vec<_>>()
+        );
+        for (a, b) in by_scaled.hits.iter().zip(&by_long.hits) {
+            let got = lucene_util::numeric_utils::sortable_long_to_double(a.values[0]);
+            assert_eq!(got, b.values[0] as f64 * 0.5);
+        }
+        assert_eq!(ffi_close_jvm_reader(h), 0);
         for blob in [
             opensearch_key(SORT_SHARD_DOC, SORT_MAX, "", 0),
             opensearch_key(SORT_UNSIGNED_LONG, SORT_MODE_MEDIAN, "l", 0),

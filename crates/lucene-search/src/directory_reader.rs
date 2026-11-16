@@ -4650,7 +4650,9 @@ mod tests {
             .unwrap();
         assert!(none.segment_readers()[0].hidden_fields().is_none());
         // A view is its own reader, whatever it hides.
-        let view = reader.with_hidden_fields(&[names.clone()]).unwrap();
+        let view = reader
+            .with_hidden_fields(std::slice::from_ref(&names))
+            .unwrap();
         let v = &view.segment_readers()[0];
         assert!(v.field_infos.fields.is_empty());
         assert_eq!(v.hidden_fields().unwrap().len(), names.len());
