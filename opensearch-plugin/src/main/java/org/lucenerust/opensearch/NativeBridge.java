@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 183;
+    public static final int EXPECTED_ABI_VERSION = 185;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -107,6 +107,10 @@ public final class NativeBridge {
                 ADDRESS,
                 ADDRESS
             )
+        );
+        static final MethodHandle OPEN_READER_VIEW = bind(
+            "ffi_open_jvm_reader_view",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
         );
         static final MethodHandle SEARCH = bind(
             "ffi_jvm_reader_search",
@@ -2191,6 +2195,87 @@ public final class NativeBridge {
         } catch (Throwable t) {
             throw rethrow(t);
         }
+    }
+
+    /**
+     * Opens a view of the reader {@code base} names: its segments, segment {@code i} hiding the
+     * fields {@code hidden[i]} lists, masked with {@code liveDocs} ({@link #openReader}'s contract).
+     * What a search sees through a reader wrapper that filters fields and documents -- the security
+     * plugin's field- and document-level security. Nothing is read from disk, and the view stands
+     * on its own once opened: closing {@code base} leaves it searchable.
+     */
+    public static int openReaderView(long base, String[][] hidden, int[] maxDocs, long[][] liveDocs, long[] outHandle) {
+        if (hidden == null) {
+            return nullArgument("hidden");
+        }
+        if (maxDocs == null) {
+            return nullArgument("maxDocs");
+        }
+        int segments = maxDocs.length;
+        if (hidden.length != segments || (liveDocs != null && liveDocs.length != segments)) {
+            return fail(INVALID_ARGUMENT, "hidden and liveDocs must have an entry for each of the " + segments + " segments");
+        }
+        java.io.ByteArrayOutputStream blob = new java.io.ByteArrayOutputStream();
+        java.nio.ByteBuffer word = java.nio.ByteBuffer.allocate(Integer.BYTES).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (String[] names : hidden) {
+            writeInt(blob, word, names.length);
+            for (String name : names) {
+                byte[] utf8 = name.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                writeInt(blob, word, utf8.length);
+                blob.writeBytes(utf8);
+            }
+        }
+        byte[] hiddenBlob = blob.toByteArray();
+        try (Scratch s = Scratch.open()) {
+            long[] counts = new long[segments];
+            long words = 0;
+            if (liveDocs != null) {
+                for (int i = 0; i < segments; i++) {
+                    if (liveDocs[i] != null) {
+                        counts[i] = liveDocs[i].length;
+                        words += liveDocs[i].length;
+                    }
+                }
+            }
+            MemorySegment wordsSeg = s.room(JAVA_LONG, words);
+            long at = 0;
+            if (liveDocs != null) {
+                for (long[] w : liveDocs) {
+                    if (w != null) {
+                        MemorySegment.copy(w, 0, wordsSeg, JAVA_LONG, at * Long.BYTES, w.length);
+                        at += w.length;
+                    }
+                }
+            }
+            MemorySegment out = s.alloc(Long.BYTES);
+            int rc = (int) H.OPEN_READER_VIEW.invokeExact(
+                base,
+                s.bytes(hiddenBlob),
+                (long) hiddenBlob.length,
+                s.ints(maxDocs),
+                (long) segments,
+                wordsSeg,
+                s.longs(counts),
+                out
+            );
+            if (rc == OK) {
+                long handle = out.get(JAVA_LONG, 0);
+                if (outHandle == null || outHandle.length < 1) {
+                    closeReader(handle);
+                    return fail(INVALID_ARGUMENT, "outHandle holds no slot");
+                }
+                outHandle[0] = handle;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    private static void writeInt(java.io.ByteArrayOutputStream out, java.nio.ByteBuffer word, int value) {
+        word.clear();
+        word.putInt(value);
+        out.write(word.array(), 0, Integer.BYTES);
     }
 
     public static int closeReader(long handle) {

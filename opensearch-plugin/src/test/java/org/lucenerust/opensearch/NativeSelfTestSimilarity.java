@@ -56,6 +56,7 @@ import org.opensearch.lucene.similarity.LegacyBM25Similarity;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
@@ -207,6 +208,20 @@ final class NativeSelfTestSimilarity {
                 // and sends nothing for the default.
                 SimilarityEncoder unknown = new SimilarityEncoder(new ClassicSimilarity() {});
                 check.accept(unknown.test("body") == false, "a ClassicSimilarity subclass is not sent");
+                // A plugin's similarity naming its built-in equivalent is sent as that built-in.
+                class Declared extends ClassicSimilarity implements NativeSimilarity {
+                    @Override
+                    public Similarity nativeEquivalent() {
+                        return new BM25Similarity(2.0f, 0.5f);
+                    }
+                }
+                SimilarityEncoder declared = new SimilarityEncoder(new Declared());
+                SimilarityEncoder builtIn = new SimilarityEncoder(new BM25Similarity(2.0f, 0.5f));
+                check.accept(
+                    declared.test("body") && builtIn.test("body")
+                        && Arrays.equals(declared.prefix(new byte[] { 9 }), builtIn.prefix(new byte[] { 9 })),
+                    "a declared equivalent is sent as the built-in"
+                );
                 SimilarityEncoder plain = new SimilarityEncoder(new BM25Similarity());
                 byte[] blob = { 1, 2, 3 };
                 check.accept(plain.test("body") && plain.prefix(blob) == blob, "the default BM25 sends no table");
