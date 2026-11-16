@@ -471,7 +471,7 @@ public final class NativeAggregations {
             return null;
         }
         double sigma = kind == Kind.EXTENDED ? (double) declared(f, "sigma") : 0;
-        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), sigma, 0);
+        return new Metric(f.name(), kind, config.fieldContext() == null ? "" : config.fieldContext().field(), DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), sigma, 0);
     }
 
     /**
