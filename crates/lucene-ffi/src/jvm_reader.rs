@@ -1498,7 +1498,7 @@ pub(crate) mod tests {
             &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
             2,
         )[0]
-            .0;
+        .0;
         let (total, hits, flag) = run(3);
         assert_eq!((total, flag), (3, 1));
         assert!(hits > 0);
@@ -1509,7 +1509,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_collapsing_hybrid_search_counts_to_its_threshold_and_groups_the_documents_without_a_value() {
+    fn a_collapsing_hybrid_search_counts_to_its_threshold_and_groups_the_documents_without_a_value()
+    {
         let h = open();
         let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
         let run = |threshold: i64| {
@@ -1547,7 +1548,7 @@ pub(crate) mod tests {
             &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
             2,
         )[0]
-            .0;
+        .0;
         let (total, gte, per) = run(i64::MAX);
         assert_eq!((total, gte), (all, 0));
         assert!(per.iter().all(|&(n, collected)| n == collected));
