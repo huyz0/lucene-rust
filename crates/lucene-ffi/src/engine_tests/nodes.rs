@@ -358,6 +358,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_span_gap_outside_a_near_query_is_refused() {
+        let tmp = index("jvm-nodes-span-gap");
+        let h = open(&tmp);
+        let gap = || span(SPAN_GAP).str("body").i32(3);
+        // A gap alone, or under another span, would match document numbers
+        // past the end of the index.
+        for blob in [
+            spans(gap()),
+            spans(span(SPAN_OR).i32(2).raw(&st("alpha")).raw(&gap())),
+            spans(span(SPAN_FIRST).i32(4).raw(&gap())),
+        ] {
+            let (rc, msg) = fails(h, &blob);
+            assert_eq!(rc, Status::InvalidArgument.code(), "{msg}");
+            assert!(msg.contains("span gap"), "{msg}");
+        }
+        // Between the terms of a near query it still leaves positions.
+        let near = span(SPAN_NEAR)
+            .i32(0)
+            .u8(1)
+            .i32(3)
+            .raw(&st("alpha"))
+            .raw(&gap())
+            .raw(&st("gamma"));
+        assert!(total(h, spans(near)) >= 0);
+    }
+
+    #[test]
     fn span_queries_decode_into_every_span_class() {
         let tmp = index("jvm-nodes-spans");
         let h = open(&tmp);
