@@ -463,10 +463,10 @@ fn build(name: &str) -> Option<Analyzer> {
             comps(s)
         }),
         "std_fixed_shingle_3" => chain(|| {
-            comps(FixedShingleFilter::new(
-                StopFilter::new(StandardTokenizer::new(), english()),
-                3,
-            )?)
+            comps(
+                FixedShingleFilter::new(StopFilter::new(StandardTokenizer::new(), english()), 3)?
+                    .with_carried_increments(),
+            )
         }),
 
         // ---- pattern
