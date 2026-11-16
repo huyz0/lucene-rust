@@ -469,7 +469,7 @@ pub unsafe extern "C" fn ffi_jvm_highlight_unified_alloc(
 
 /// The host's Thai word boundaries: `(text, len, out, cap) -> n`, the
 /// boundaries of `text` (`len` UTF-16 units) in ascending order written to
-/// `out` (`cap` is at least `len + 1`), `n` of them, or a negative number
+/// `out` (`cap` is `len + 2`), `n` of them, or a negative number
 /// when the host's iterator failed. Called on any thread that highlights.
 pub type ThaiWordsUpcall = unsafe extern "C" fn(*const u16, i64, *mut i32, i64) -> i64;
 
@@ -502,7 +502,8 @@ fn thai_word_boundaries(text: &[u16]) -> Option<Vec<i32>> {
 ///
 /// # Safety
 /// `upcall` must have [`ThaiWordsUpcall`]'s contract and stay callable for
-/// the life of the process.
+/// the life of the process; the highlight entry points must then be called
+/// on JVM threads, in non-critical downcalls.
 #[no_mangle]
 pub unsafe extern "C" fn ffi_jvm_highlight_set_thai_upcall(upcall: Option<ThaiWordsUpcall>) -> i32 {
     crate::error::guard(|| {

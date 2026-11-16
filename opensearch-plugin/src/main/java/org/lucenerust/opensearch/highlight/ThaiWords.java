@@ -29,13 +29,19 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 final class ThaiWords {
     private static final Locale THAI = Locale.forLanguageTag("th");
-    private static boolean installed;
+    private static volatile boolean installed;
 
     private ThaiWords() {}
 
-    /** Registers the upcall, once per process. */
-    @SuppressWarnings("restricted") // the stub has ThaiWordsUpcall's signature in jvm_highlight.rs
-    static synchronized void install() {
+    /** Registers the upcall, once per process (the stub has ThaiWordsUpcall's signature in jvm_highlight.rs). */
+    static void install() {
+        if (installed == false) {
+            installOnce();
+        }
+    }
+
+    @SuppressWarnings("restricted")
+    private static synchronized void installOnce() {
         if (installed) {
             return;
         }

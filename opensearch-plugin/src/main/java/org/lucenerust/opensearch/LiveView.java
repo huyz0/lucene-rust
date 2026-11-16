@@ -115,7 +115,7 @@ public final class LiveView implements AutoCloseable {
      * 0 when the buffers cannot be written as segments.
      */
     public synchronized long fullReader(long handle) {
-        if (full == 0 && fullTried == false) {
+        if (full == 0 && fullTried == false && closed.get() == false) {
             fullTried = true;
             long[] out = new long[1];
             int rc = NativeBridge.liveViewReader(handle, id, null, null, null, out);

@@ -220,16 +220,15 @@ impl ThaiWordBreakIterator {
 
 impl BreakIterator for ThaiWordBreakIterator {
     fn set_text(&mut self, text: &[u16]) {
-        match THAI_WORDS.get().and_then(|f| f(text)) {
-            Some(bounds) => {
-                self.list.set(to_i32(text.len()), bounds);
-                self.from_list = true;
-            }
-            None => {
-                self.rules.set_text(text);
-                self.from_list = false;
-            }
-        }
+        // Without the host's boundaries the rule iterator would cut Thai differently from
+        // the JDK's dictionary, silently: the call fails instead (the plugin then hands the
+        // field to OpenSearch's highlighter).
+        let bounds = THAI_WORDS
+            .get()
+            .and_then(|f| f(text))
+            .expect("the host's Thai word boundaries are unavailable");
+        self.list.set(to_i32(text.len()), bounds);
+        self.from_list = true;
     }
     fn text_end(&self) -> i32 {
         if self.from_list {
