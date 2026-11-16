@@ -205,17 +205,12 @@ pub fn value_kind(k: u8) -> Result<ValueKind, Status> {
     }
 }
 
-/// The wire code of `half_float`, read by the nodes [`wide_value_kind`] serves.
-pub const KIND_HALF_FLOAT: u8 = 3;
-/// The wire code of `scaled_float`: its scaling factor follows, as a double.
-pub const KIND_SCALED: u8 = 4;
-
-/// [`value_kind`] for the nodes that also read `half_float` ([`KIND_HALF_FLOAT`]) and
-/// `scaled_float` ([`KIND_SCALED`], then the scaling factor as a double).
+/// [`value_kind`] for the nodes that also read `half_float` (3) and `scaled_float` (4, then the
+/// scaling factor as a double).
 pub fn wide_value_kind(c: &mut Cursor<'_>) -> Result<ValueKind, Status> {
     match c.u8()? {
-        KIND_HALF_FLOAT => Ok(ValueKind::HalfFloat),
-        KIND_SCALED => {
+        3 => Ok(ValueKind::HalfFloat),
+        4 => {
             let factor = f64_of(c)?;
             if !(factor.is_finite() && factor > 0.0) {
                 return Err(bad(format!("aggregation tree: scaling factor {factor}")));
