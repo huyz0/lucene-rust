@@ -421,6 +421,20 @@ pub trait ScriptValues {
     /// kind's encoding (none: the document has no value).
     fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()>;
 
+    /// Reads the single values of `docs` (ascending, inside the window starting at `base`) at
+    /// once: `vals[doc - base]` and its bit in `bits`, set for a document with a value, as
+    /// [`Self::values`] would answer for each. `Ok(false)`: this script is read document by
+    /// document, and nothing was written.
+    fn fill_docs(
+        &mut self,
+        _base: i32,
+        _docs: &[i32],
+        _vals: &mut [i64],
+        _bits: &mut [u64],
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Appends the script's result for each of `doc`'s field `inputs`, each
     /// the script's `_value` (`ValuesSource.Numeric.WithScript`), ascending,
     /// in the node's value kind's encoding.
@@ -1932,6 +1946,33 @@ impl Leaf<'_> {
             }
         }
         Ok(())
+    }
+
+    /// [`Self::prefetch_docs`] for a script's values, whose documents must be exactly the
+    /// matches (a script runs on no other document): a script that reads a batch at a time
+    /// (`ScriptValues::fill_docs`) answers the window from the arrays.
+    fn prefetch_script(&mut self, base: i32, len: usize, docs: &[i32]) -> Result<bool> {
+        if self.nested.is_some() || self.missing.is_some() {
+            return Ok(false);
+        }
+        let Col::Script(s) = &mut self.col else {
+            return Ok(false);
+        };
+        self.pre_vals.clear();
+        self.pre_vals.resize(len, 0);
+        self.pre_bits.clear();
+        self.pre_bits.resize(len.div_ceil(64), 0);
+        self.pre_multi = false;
+        if !s.fill_docs(base, docs, &mut self.pre_vals, &mut self.pre_bits)? {
+            self.pre_len = 0;
+            return Ok(false);
+        }
+        self.pre_base = base;
+        self.pre_len = len;
+        for sub in &mut self.subs {
+            sub.prefetch_docs(base, len, docs)?;
+        }
+        Ok(true)
     }
 
     /// [`Self::prefetch`] for a window whose matches are too few to read in
@@ -6127,6 +6168,9 @@ pub fn aggregate_tree_cached(
                 .zip(leaves.iter_mut())
                 .filter(|(_, l)| !l.done && !l.zoned)
             {
+                if !no_windows() && l.prefetch_script(base, len, docs)? {
+                    continue;
+                }
                 if matches.saturating_mul(8) >= len && !no_windows() {
                     l.prefetch(base, len)?;
                 } else if docs.len() >= SPARSE_WINDOW

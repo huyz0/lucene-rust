@@ -781,7 +781,10 @@ pub enum LeafFunction<'c> {
         salted_seed: i32,
     },
     RandomId {
-        reader: &'c lucene_search::directory_reader::SegmentReader,
+        run: lucene_search::directory_reader::StoredRun<'c>,
+        /// The stored `_id` and its decoded text, reused from one document to the next.
+        raw: Vec<u8>,
+        text: Vec<u8>,
         field_number: Option<i32>,
         salted_seed: i32,
     },
@@ -853,7 +856,9 @@ impl<'c> LeafFunction<'c> {
                 salted_seed,
                 field: RandomField::Id,
             } => LeafFunction::RandomId {
-                reader,
+                run: reader.stored_run(),
+                raw: Vec::new(),
+                text: Vec::new(),
                 field_number: reader
                     .field_infos()
                     .field_by_name(crate::writer::ID_FIELD)
@@ -970,22 +975,26 @@ impl<'c> LeafFunction<'c> {
                 salted_seed,
             } => random(mix(doc_base.wrapping_add(doc), *salted_seed)),
             LeafFunction::RandomId {
-                reader,
+                run,
+                raw,
+                text,
                 field_number,
                 salted_seed,
             } => random(match field_number {
                 Some(number) => {
+                    raw.clear();
                     let mut id = IdVisitor {
                         number: *number,
-                        value: None,
+                        value: raw,
+                        found: false,
                     };
-                    let _ = reader.visit_stored_document(doc, &mut id)?;
-                    match id.value {
-                        Some(term) => lucene_util::string_helper::murmurhash3_x86_32(
-                            &decode_uid(&term),
-                            *salted_seed,
-                        ),
-                        None => *salted_seed,
+                    let _ = run.visit(doc, &mut id)?;
+                    if id.found {
+                        text.clear();
+                        decode_uid_into(raw, text);
+                        lucene_util::string_helper::murmurhash3_x86_32(text, *salted_seed)
+                    } else {
+                        *salted_seed
                     }
                 }
                 None => *salted_seed,
@@ -1197,18 +1206,9 @@ impl FunctionScoreValues<'_> {
     }
 }
 
-impl DoubleValues for FunctionScoreValues<'_> {
-    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
-        let sub = match (&mut self.scores, self.needs_sub) {
-            (Some(s), true) => {
-                if s.advance_exact(doc)? {
-                    s.double_value()? as f32
-                } else {
-                    0.0
-                }
-            }
-            _ => 0.0,
-        };
+impl FunctionScoreValues<'_> {
+    /// The function score of `doc`, whose wrapped query scored `sub`.
+    fn score_of(&mut self, doc: i32, sub: f32) -> Result<f64> {
         let factor = self.compute(doc, sub)?;
         let score = self
             .combine
@@ -1224,12 +1224,51 @@ impl DoubleValues for FunctionScoreValues<'_> {
                 Error::IllegalArgument(message)
             });
         }
-        self.value = f64::from(score);
+        Ok(f64::from(score))
+    }
+}
+
+impl DoubleValues for FunctionScoreValues<'_> {
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        let sub = match (&mut self.scores, self.needs_sub) {
+            (Some(s), true) => {
+                if s.advance_exact(doc)? {
+                    s.double_value()? as f32
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        };
+        self.value = self.score_of(doc, sub)?;
         Ok(true)
     }
 
     fn double_value(&mut self) -> Result<f64> {
         Ok(self.value)
+    }
+
+    /// A batch reads the sub-query scores it is handed, not `scores`.
+    fn batch_capable(&self) -> bool {
+        true
+    }
+
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> Result<()> {
+        for (i, &doc) in docs.iter().enumerate() {
+            let sub = if self.needs_sub { scores[i] } else { 0.0 };
+            out[i] = self.score_of(doc, sub)?;
+            has[i] = true;
+        }
+        if let Some(&last) = out[..docs.len()].last() {
+            self.value = last;
+        }
+        Ok(())
     }
 }
 
@@ -1287,12 +1326,13 @@ mod numeric_tests {
 }
 
 /// The `_id` stored field's bytes: the term the index holds for the document.
-struct IdVisitor {
+struct IdVisitor<'v> {
     number: i32,
-    value: Option<Vec<u8>>,
+    value: &'v mut Vec<u8>,
+    found: bool,
 }
 
-impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor {
+impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor<'_> {
     fn needs_field(
         &mut self,
         number: i32,
@@ -1300,7 +1340,7 @@ impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor {
         use lucene_codecs::stored_fields::VisitStatus;
         Ok(if number == self.number {
             VisitStatus::Yes
-        } else if self.value.is_some() {
+        } else if self.found {
             VisitStatus::Stop
         } else {
             VisitStatus::No
@@ -1312,7 +1352,9 @@ impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor {
         _number: i32,
         value: &[u8],
     ) -> lucene_codecs::stored_fields::Result<()> {
-        self.value = Some(value.to_vec());
+        self.value.clear();
+        self.value.extend_from_slice(value);
+        self.found = true;
         Ok(())
     }
 }
@@ -1320,12 +1362,19 @@ impl lucene_codecs::stored_fields::StoredFieldVisitor for IdVisitor {
 /// `Uid.decodeId`, as the bytes `new BytesRef(String)` makes of its text: a leading `0xFF` marks
 /// UTF-8 text, `0xFE` digits packed two to a byte (a trailing `0xF` nibble pads), anything else
 /// URL-safe unpadded Base64 of the bytes (after a `0xFD` escape byte, which is dropped).
+#[cfg(test)]
 fn decode_uid(id: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    decode_uid_into(id, &mut out);
+    out
+}
+
+/// [`decode_uid`], appended to `out`.
+fn decode_uid_into(id: &[u8], out: &mut Vec<u8>) {
     match id.split_first() {
-        None => Vec::new(),
-        Some((0xFF, text)) => String::from_utf8_lossy(text).into_owned().into_bytes(),
+        None => {}
+        Some((0xFF, text)) => out.extend_from_slice(String::from_utf8_lossy(text).as_bytes()),
         Some((0xFE, packed)) => {
-            let mut out = Vec::with_capacity(packed.len().saturating_mul(2));
             let mut rest = packed.iter();
             while let Some(b) = rest.next() {
                 out.push(b'0'.wrapping_add(b >> 4));
@@ -1334,13 +1383,11 @@ fn decode_uid(id: &[u8]) -> Vec<u8> {
                 }
                 out.push(b'0'.wrapping_add(b & 15));
             }
-            out
         }
         Some((first, tail)) => {
             let raw = if *first == 0xFD { tail } else { id };
             const A: &[u8; 64] =
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = Vec::with_capacity(raw.len().div_ceil(3).saturating_mul(4));
             for chunk in raw.chunks(3) {
                 let mut n = 0u32;
                 for b in chunk {
@@ -1351,7 +1398,6 @@ fn decode_uid(id: &[u8]) -> Vec<u8> {
                     out.push(A[(n >> 18u32.wrapping_sub(6u32.wrapping_mul(k)) & 63) as usize]);
                 }
             }
-            out
         }
     }
 }

@@ -1938,6 +1938,38 @@ impl lucene_aggs::bucket_aggs::ScriptValues for AggLeaf<'_> {
         Ok(())
     }
 
+    /// An expression's value of each document, a batch at a time through its vectorised
+    /// evaluation; any other script is read document by document.
+    fn fill_docs(
+        &mut self,
+        base: i32,
+        docs: &[i32],
+        vals: &mut [i64],
+        bits: &mut [u64],
+    ) -> Result<bool> {
+        let Some(e) = &self.0.expr else {
+            return Ok(false);
+        };
+        const BATCH: usize = 256;
+        let zeros = [0.0f32; BATCH];
+        let mut out = [0.0f64; BATCH];
+        let mut has = [false; BATCH];
+        for chunk in docs.chunks(BATCH) {
+            e.fill_batch(&mut self.0.env, chunk, &zeros, &mut out, &mut has)?;
+            for (&doc, &x) in chunk.iter().zip(&out) {
+                let at = doc.wrapping_sub(base) as u32 as usize;
+                let v = Value::Double(x);
+                vals[at] = if self.1 {
+                    agg_long(&v)?
+                } else {
+                    lucene_util::numeric_utils::double_to_sortable_long(agg_double(&v)?)
+                };
+                bits[at >> 6] |= 1 << (at & 63);
+            }
+        }
+        Ok(true)
+    }
+
     fn mapped(&mut self, doc: i32, inputs: &[f64], out: &mut Vec<i64>) -> Result<()> {
         self.0.env.doc = doc;
         let count = inputs.len();
