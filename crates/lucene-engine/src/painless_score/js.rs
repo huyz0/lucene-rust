@@ -24,7 +24,6 @@ pub(super) fn script(source: &str, timeout_ms: i32, heap_mb: i32, fields: &[Fiel
                 }
                 FieldKind::Boolean => Kind::Boolean,
                 FieldKind::Keyword => Kind::Keyword,
-                // A JS script has no `Dates` doc values: reading one fails, as any unreadable field does.
                 FieldKind::Date
                 | FieldKind::DateNanos
                 | FieldKind::Unsupported

@@ -19,7 +19,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use lucene_analysis::{Analyzer, AttributeSource, TokenStream};
+use lucene_analysis::{Analyzer, AttributeSource, TokenStream, UnitsReader};
 use lucene_search::query::Clause;
 
 use crate::{
@@ -83,7 +83,7 @@ pub struct PlainHighlighter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlainFragment {
     pub score: f32,
-    pub text: String,
+    pub text: Vec<u16>,
 }
 
 impl PlainHighlighter {
@@ -110,7 +110,8 @@ impl PlainHighlighter {
     /// The analysis chain's; [`crate::Error::InvalidTokenOffsets`] when a
     /// token reaches past the text.
     pub fn fragments(&self, text: &str) -> Result<Vec<PlainFragment>> {
-        self.fragments_carrying(text, &mut -1)
+        let units: Vec<u16> = text.encode_utf16().collect();
+        self.fragments_carrying(&units, &mut -1)
     }
 
     /// [`Self::fragments`] with the span fragmenter's `waitForPos` as the
@@ -120,7 +121,7 @@ impl PlainHighlighter {
     /// As [`Self::fragments`].
     pub fn fragments_carrying(
         &self,
-        text: &str,
+        units: &[u16],
         wait_for_pos: &mut i32,
     ) -> Result<Vec<PlainFragment>> {
         let o = &self.options;
@@ -150,15 +151,16 @@ impl PlainHighlighter {
         highlighter.set_text_fragmenter(fragmenter);
         highlighter.set_max_doc_chars_to_analyze(i32::MAX);
         let n = usize::try_from(o.number_of_fragments.max(1)).unwrap_or(1);
-        let stream = DynStream::new(self.analyzer.token_stream(&o.field, text)?);
-        let fragments = highlighter.get_best_text_fragments(stream, text, false, n)?;
+        let reader = Box::new(UnitsReader::new(units.to_vec()));
+        let stream = DynStream::new(self.analyzer.token_stream_from_reader(&o.field, reader)?);
+        let fragments = highlighter.get_best_text_fragments_units(stream, units, false, n)?;
         *wait_for_pos = carried.get();
         Ok(fragments
             .iter()
             .filter(|f| f.score() > 0.0)
             .map(|f| PlainFragment {
                 score: f.score(),
-                text: f.to_string(),
+                text: f.units().to_vec(),
             })
             .collect())
     }
@@ -172,7 +174,20 @@ impl PlainHighlighter {
     /// # Errors
     /// The analysis chain's.
     pub fn no_match_end(&self, no_match_size: i32, text: &str) -> Result<i32> {
-        let mut stream = self.analyzer.token_stream(&self.options.field, text)?;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        self.no_match_end_units(no_match_size, &units)
+    }
+
+    /// [`Self::no_match_end`] over a Java string's UTF-16 units, which may
+    /// hold unpaired surrogates.
+    ///
+    /// # Errors
+    /// The analysis chain's.
+    pub fn no_match_end_units(&self, no_match_size: i32, text: &[u16]) -> Result<i32> {
+        let reader = Box::new(UnitsReader::new(text.to_vec()));
+        let mut stream = self
+            .analyzer
+            .token_stream_from_reader(&self.options.field, reader)?;
         let mut end = -1;
         stream.reset()?;
         while stream.increment_token()? {

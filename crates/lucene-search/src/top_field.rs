@@ -673,6 +673,9 @@ pub struct SortField {
     /// The `_id` field: no doc values, its terms are read back from the postings and decoded
     /// to the id strings, which sort as bytes (OpenSearch sorts it through uninverted fielddata).
     pub uninverted: bool,
+    /// `NonPruningSortField`: the comparator builds no competitive iterator, whatever the field
+    /// indexes (a `wildcard` field's postings hold its ngrams, not the values it sorts by).
+    pub no_pruning: bool,
 }
 
 impl SortField {
@@ -698,6 +701,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -712,6 +716,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -746,6 +751,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -761,6 +767,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -795,6 +802,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 }
@@ -1200,7 +1208,7 @@ impl TopField {
                 } else {
                     Pruning::GreaterThanOrEqualTo
                 };
-                if f.point_bytes().is_none() && f.ty != SortType::String {
+                if f.no_pruning || (f.point_bytes().is_none() && f.ty != SortType::String) {
                     pruning = Pruning::None;
                 }
                 let strs = (f.ty == SortType::String).then(|| {
@@ -1740,7 +1748,9 @@ impl NestedColumn<'_> {
     /// average through `divideUnsignedAndRoundUp`). The result has its sign bit flipped
     /// ([`ChildConvert::Unsigned`]); a root without values is the (already flipped) missing
     /// value.
-    // SENTINEL: none -- `-1` seeds the running unsigned minimum (all bits set), not an absent value.
+    //
+    // SENTINEL: none -- `-1` is the all-ones unsigned maximum, the starting
+    // value of a least pick, in the result's domain.
     fn pick_unsigned(&mut self, start: i32, end: i32) -> Result<i64> {
         let mut acc: i64 = match self.selector {
             // `MAX_UNSIGNED_LONG_VALUE_AS_LONG` for a least, `MIN_UNSIGNED_LONG_VALUE_AS_LONG` for a greatest.
@@ -3507,8 +3517,9 @@ impl Dict<'_> {
         }
     }
 
-    // SENTINEL: none -- `-1` is `lookupTerm`'s "insert before ordinal 0", in
-    // its domain. Every caller tests `< 0`/`>= 0` for found.
+    //
+    // SENTINEL: none -- a negative result is `lookupTerm`'s "insert before
+    // ordinal `-r - 1`", in its domain. Every caller tests `< 0`/`>= 0` for found.
     fn lookup_term(&mut self, term: &[u8]) -> Result<i64> {
         match self {
             Dict::Dv(d) => d.lookup_term(term).map_err(store_err),
@@ -3949,10 +3960,14 @@ fn open_leaf<'a>(
                                     // the ones its own root needs.
                                     let roots = col.parents.clone();
                                     for d in roots {
-                                        // FBS: `d` is a root of this segment, below `max_doc`, which
-                                        // sized `has` and `values` (`len`).
-                                        has.set(d as usize);
-                                        values[d as usize] = col.value(d)?;
+                                        // A parent is below `max_doc`, the bitset's length;
+                                        // a doc outside it is no root of this segment.
+                                        let at = usize::try_from(d).unwrap_or(usize::MAX);
+                                        if at >= has.len() {
+                                            continue;
+                                        }
+                                        has.set(at);
+                                        values[at] = col.value(d)?;
                                     }
                                     Ok(SortColumn::Longs { values, has })
                                 })?
@@ -5066,7 +5081,11 @@ pub fn search_sorted_min_score(
     slices: &[Vec<usize>],
     min_score: Option<f32>,
 ) -> Result<TopFieldDocs> {
-    if slices.len() <= 1 || top_n == 0 || track_max_score {
+    // A slice visiting its segments last first (a time-series shard sorted by its timestamp):
+    // ties keep the documents collected first, so the visit order is the answer's.
+    let reversed =
+        slices.len() == 1 && slices[0].len() > 1 && slices[0].windows(2).all(|w| w[0] > w[1]);
+    if (slices.len() <= 1 && !reversed) || top_n == 0 || track_max_score {
         return search_sorted_leaves(
             segments,
             readers,
@@ -5104,16 +5123,22 @@ pub fn search_sorted_min_score(
         similarity: None,
         scorer_only: false,
     };
-    if let Some(top) = newest_n::search(&run)? {
-        return Ok(top);
+    // The newest-N search visits the segments in order, which decides ties.
+    if !reversed {
+        if let Some(top) = newest_n::search(&run)? {
+            return Ok(top);
+        }
     }
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
     let parts = crate::slices::run_slices_if(parallel, slices, |slice| {
-        // `LeafSlice` keeps its partitions by doc base: a collector breaks
-        // ties assuming ascending documents.
+        // `LeafSlice` keeps its partitions by doc base: a collector breaks ties assuming
+        // ascending documents. A time-series shard's one slice arrives last segment first,
+        // the order its collector visits them, which decides which of the ties it keeps.
         let mut order = slice.to_vec();
-        order.sort_unstable();
+        if !reversed {
+            order.sort_unstable();
+        }
         search_segments(&run, &order)
     })
     .into_iter()

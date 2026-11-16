@@ -85,6 +85,7 @@ public final class SortEncoder {
     static final byte NESTED_KEY = 16;
     /** Key flag on a keyword key: the field's terms are read back from its postings (the {@code _id} field). */
     static final byte UNINVERTED_KEY = 32;
+    static final byte NO_PRUNING_KEY = 64;
     /** Blob options: track the max score over every match (track_scores). */
     static final byte TRACK_MAX_SCORE = 1;
     static final byte TERMINATE_AFTER = 2;
@@ -213,6 +214,11 @@ public final class SortEncoder {
             }
             if (type == STRING && idSort(f)) {
                 flags |= UNINVERTED_KEY;
+            }
+            if (type == STRING && key != f) {
+                // The wildcard field's NonPruningSortField: Pruning.NONE, no competitive iterator
+                // over a postings list that holds ngrams rather than the values.
+                flags |= NO_PRUNING_KEY;
             }
             out.write(type);
             out.write(flags);

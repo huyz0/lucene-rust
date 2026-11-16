@@ -28,7 +28,7 @@ use lucene_search::query::Clause;
 use lucene_search::query_visitor::extract_terms;
 
 use super::break_iterators::{
-    sentence_instance, word_instance, BreakIterator, CustomSeparatorBreakIterator, DONE,
+    sentence_instance, word_instance_for, BreakIterator, CustomSeparatorBreakIterator, DONE,
 };
 use super::passage::{EmptyOffsets, OffsetsEnum, Passage};
 use super::strategies::{multi_fields_enum, FieldMatcher, LeafCtx, Strategy, MULTIVAL_SEP_CHAR};
@@ -77,10 +77,10 @@ pub struct BoundedBreakIteratorScanner {
 
 impl BoundedBreakIteratorScanner {
     /// `BoundedBreakIteratorScanner.getSentence(Locale.ROOT, maxLen)`.
-    pub fn sentence(max_len: i32) -> Self {
+    pub fn sentence(max_len: i32, thai: bool) -> Self {
         BoundedBreakIteratorScanner {
             main: sentence_instance(),
-            inner: word_instance(),
+            inner: word_instance_for(thai),
             max_len,
             last_preceding_offset: -1,
             window_start: -1,
@@ -189,14 +189,14 @@ pub enum Breaks {
 }
 
 impl Breaks {
-    fn make(self) -> Box<dyn BreakIterator> {
+    fn make(self, thai: bool) -> Box<dyn BreakIterator> {
         match self {
             Breaks::Values => Box::new(CustomSeparatorBreakIterator::new(MULTIVAL_SEP_CHAR)),
             Breaks::Sentence => sentence_instance(),
             Breaks::BoundedSentence(max_len) => {
-                Box::new(BoundedBreakIteratorScanner::sentence(max_len))
+                Box::new(BoundedBreakIteratorScanner::sentence(max_len, thai))
             }
-            Breaks::Word => word_instance(),
+            Breaks::Word => word_instance_for(thai),
         }
     }
 }
@@ -214,6 +214,8 @@ pub struct Options {
     pub max_passages: i32,
     /// `no_match_size`.
     pub no_match_size: i32,
+    /// `boundary_scanner_locale` is Thai: the word iterators are the host's.
+    pub thai: bool,
     /// The first of `pre_tags`.
     pub pre_tag: String,
     /// The first of `post_tags`.
@@ -232,6 +234,7 @@ pub struct CustomUnifiedHighlighter {
     strategies: Vec<Strategy>,
     highlighter: FieldHighlighter,
     no_match_size: i32,
+    thai: bool,
     pre_tag: Vec<u16>,
     post_tag: Vec<u16>,
     html: bool,
@@ -250,11 +253,12 @@ impl CustomUnifiedHighlighter {
         analyzer: Option<Arc<lucene_analysis::Analyzer>>,
     ) -> Result<Self> {
         let breaks = options.breaks;
+        let thai = options.thai;
         let mut uh = UnifiedHighlighter::new(None, analyzer)
             .with_flags(true, true, true, false)
             .with_offset_source(options.offset_source)
             .with_field_matcher(options.field_matcher)
-            .with_break_iterator(Arc::new(move || breaks.make()));
+            .with_break_iterator(Arc::new(move || breaks.make(thai)));
         if let Some(masked) = options.masked_fields {
             uh = uh.with_masked_fields(masked);
         }
@@ -265,6 +269,7 @@ impl CustomUnifiedHighlighter {
             strategies,
             highlighter,
             no_match_size: options.no_match_size,
+            thai,
             pre_tag: options.pre_tag.encode_utf16().collect(),
             post_tag: options.post_tag.encode_utf16().collect(),
             html: options.html,
@@ -400,7 +405,7 @@ impl CustomUnifiedHighlighter {
             .map_or(len, |p| p + pos);
         let no_match = usize::try_from(self.no_match_size).unwrap_or(0);
         if no_match + pos < end {
-            let mut words = word_instance();
+            let mut words = word_instance_for(self.thai);
             words.set_text(content);
             // the next word boundary after no_match_size
             let following = words.following(i32::try_from(no_match + pos).unwrap_or(i32::MAX));

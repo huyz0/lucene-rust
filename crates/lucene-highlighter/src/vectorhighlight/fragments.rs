@@ -175,7 +175,6 @@ pub struct FragmentsBuilder {
     boundary_scanner: Box<dyn BoundaryScanner>,
     discrete_multi_value_highlighting: bool,
     fix_broken_analysis: bool,
-    strict_utf16: bool,
 }
 
 impl FragmentsBuilder {
@@ -189,7 +188,6 @@ impl FragmentsBuilder {
             boundary_scanner: Box::new(SimpleBoundaryScanner::new()),
             discrete_multi_value_highlighting: false,
             fix_broken_analysis: false,
-            strict_utf16: false,
         }
     }
 
@@ -238,13 +236,6 @@ impl FragmentsBuilder {
     /// later than its first match (`FragmentBuilderHelper.fixWeightedFragInfo`).
     pub fn set_fix_broken_analysis(&mut self, fix: bool) {
         self.fix_broken_analysis = fix;
-    }
-
-    /// A cut through a surrogate pair, or an unpaired surrogate in the text,
-    /// is an error instead of U+FFFD, for a caller that must give Java's
-    /// UTF-16 exactly.
-    pub fn set_strict_utf16(&mut self, strict: bool) {
-        self.strict_utf16 = strict;
     }
 
     /// `isDiscreteMultiValueHighlighting()`.
@@ -366,6 +357,34 @@ impl FragmentsBuilder {
         post_tags: &[String],
         encoder: &dyn Encoder,
     ) -> Result<Option<Vec<String>>> {
+        Ok(self
+            .create_fragments_units(
+                values,
+                frag_list,
+                max_num_fragments,
+                pre_tags,
+                post_tags,
+                encoder,
+            )?
+            .map(|all| all.iter().map(|f| String::from_utf16_lossy(f)).collect()))
+    }
+
+    /// [`Self::create_fragments_from_values`] with each fragment as the UTF-16
+    /// units Java's `String` holds: a cut through a surrogate pair, or a value's
+    /// unpaired surrogate, is kept as it is.
+    ///
+    /// # Errors
+    /// As [`Self::create_fragments_from_values`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_fragments_units(
+        &mut self,
+        values: &[Vec<u16>],
+        frag_list: &FieldFragList,
+        max_num_fragments: i32,
+        pre_tags: &[String],
+        post_tags: &[String],
+        encoder: &dyn Encoder,
+    ) -> Result<Option<Vec<Vec<u16>>>> {
         if max_num_fragments < 0 {
             return Err(Error::IllegalArgument(format!(
                 "maxNumFragments({max_num_fragments}) must be positive number."
@@ -456,7 +475,7 @@ impl FragmentsBuilder {
         pre_tags: &[String],
         post_tags: &[String],
         encoder: &dyn Encoder,
-    ) -> Result<String> {
+    ) -> Result<Vec<u16>> {
         let (src, modified_start) = self.fragment_source(
             buffer,
             index,
@@ -464,35 +483,20 @@ impl FragmentsBuilder {
             frag_info.start_offset,
             frag_info.end_offset,
         )?;
-        let mut fragment = String::new();
+        let mut fragment: Vec<u16> = Vec::new();
         let mut src_index = 0i32;
         for sub in &frag_info.sub_infos {
             for to in &sub.terms_offsets {
                 let start = to.start_offset().wrapping_sub(modified_start);
                 let end = to.end_offset().wrapping_sub(modified_start);
-                fragment.push_str(&encoder.encode_text(&substring(
-                    &src,
-                    self.strict_utf16,
-                    src_index,
-                    start,
-                )?));
-                fragment.push_str(tag(pre_tags, sub.seqnum)?);
-                fragment.push_str(&encoder.encode_text(&substring(
-                    &src,
-                    self.strict_utf16,
-                    start,
-                    end,
-                )?));
-                fragment.push_str(tag(post_tags, sub.seqnum)?);
+                fragment.extend(encoder.encode_units(substring(&src, src_index, start)?));
+                fragment.extend(tag(pre_tags, sub.seqnum)?.encode_utf16());
+                fragment.extend(encoder.encode_units(substring(&src, start, end)?));
+                fragment.extend(tag(post_tags, sub.seqnum)?.encode_utf16());
                 src_index = end;
             }
         }
-        fragment.push_str(&encoder.encode_text(&substring(
-            &src,
-            self.strict_utf16,
-            src_index,
-            len_i32(&src),
-        )?));
+        fragment.extend(encoder.encode_units(substring(&src, src_index, len_i32(&src))?));
         Ok(fragment)
     }
 
@@ -514,9 +518,10 @@ impl FragmentsBuilder {
             buffer.push(self.multi_valued_separator);
         }
         if *index == 0 {
-            return Err(Error::IllegalArgument(
-                "array index out of range: -1".to_string(),
-            ));
+            return Err(Error::ArrayIndexOutOfBounds(format!(
+                "Index -1 out of bounds for length {}",
+                values.len()
+            )));
         }
         // the values are tokenized text: the separator after the last is not
         // part of it
@@ -530,7 +535,7 @@ impl FragmentsBuilder {
             .boundary_scanner
             .find_start_offset(buffer, start_offset);
         if mso < 0 || eo < mso || eo > len_i32(buffer) {
-            return Err(Error::IllegalArgument(format!(
+            return Err(Error::StringIndexOutOfBounds(format!(
                 "begin {mso}, end {eo}, length {}",
                 buffer.len()
             )));
@@ -649,21 +654,15 @@ fn tag(tags: &[String], num: i32) -> Result<&str> {
     Ok(&tags[n as usize])
 }
 
-/// `String.substring(begin, end)` over UTF-16 text; an unpaired surrogate at
-/// a cut reads as U+FFFD.
-fn substring(text: &[u16], strict: bool, begin: i32, end: i32) -> Result<String> {
+/// `String.substring(begin, end)` over UTF-16 text, its units as they are.
+fn substring(text: &[u16], begin: i32, end: i32) -> Result<&[u16]> {
     if begin < 0 || end < begin || end > len_i32(text) {
-        return Err(Error::IllegalArgument(format!(
+        return Err(Error::StringIndexOutOfBounds(format!(
             "begin {begin}, end {end}, length {}",
             text.len()
         )));
     }
-    let units = &text[begin as usize..end as usize];
-    if strict {
-        return String::from_utf16(units)
-            .map_err(|_| Error::Runtime("unpaired surrogate in a fragment".to_string()));
-    }
-    Ok(String::from_utf16_lossy(units))
+    Ok(&text[begin as usize..end as usize])
 }
 
 /// `FragmentBuilderHelper.fixWeightedFragInfo`: the sub infos sorted by
@@ -756,11 +755,14 @@ mod tests {
     }
 
     #[test]
-    fn strict_text_refuses_half_a_surrogate_pair() {
+    fn a_substring_keeps_half_a_surrogate_pair() {
         let text: Vec<u16> = "a😀b".encode_utf16().collect();
-        assert_eq!(substring(&text, false, 0, 2).unwrap(), "a\u{FFFD}");
-        assert!(substring(&text, true, 0, 2).is_err());
-        assert_eq!(substring(&text, true, 0, 4).unwrap(), "a😀b");
-        assert!(substring(&text, true, 3, 2).is_err());
+        assert_eq!(substring(&text, 0, 2).unwrap(), &text[..2]);
+        assert_eq!(substring(&text, 0, 4).unwrap(), &text[..]);
+        assert!(matches!(
+            substring(&text, 3, 2),
+            Err(Error::StringIndexOutOfBounds(_))
+        ));
+        assert!(substring(&text, 0, 9).is_err());
     }
 }

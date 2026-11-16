@@ -144,6 +144,29 @@ impl StrReader {
     }
 }
 
+/// A `StringReader` over a Java string that may hold unpaired surrogates:
+/// the UTF-16 code units, read exactly as given.
+#[derive(Debug, Clone, Default)]
+pub struct UnitsReader {
+    units: Vec<u16>,
+    pos: usize,
+}
+
+impl UnitsReader {
+    pub fn new(units: Vec<u16>) -> Self {
+        UnitsReader { units, pos: 0 }
+    }
+}
+
+impl CharReader for UnitsReader {
+    fn read(&mut self, buf: &mut [u16]) -> Result<usize, AnalysisError> {
+        let n = buf.len().min(self.units.len() - self.pos);
+        buf[..n].copy_from_slice(&self.units[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
 impl CharReader for StrReader {
     fn recycle(self: Box<Self>) -> Option<Box<StrReader>> {
         // a reader that held a huge document is not kept

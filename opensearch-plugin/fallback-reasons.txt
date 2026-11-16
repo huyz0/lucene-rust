@@ -51,20 +51,25 @@ function_score_script  # ExtendedEncoder.java
 fuzzy_automaton  # QueryEncoder.java
 geo_geometry  # GeoEncoder.java
 geo_reflect  # GeoEncoder.java
-highlight_  # QueryEncoder.java
-highlight_boundary_scanner  # NativeFvhHighlighter.java
+highlight_  # NativePlainHighlighter.java, NativeUnifiedHighlighter.java, QueryEncoder.java
+highlight_analyzer  # NativeUnifiedHighlighter.java
+highlight_boundary_scanner  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
 highlight_clause_order  # QueryEncoder.java
-highlight_derived_field  # NativeFvhHighlighter.java
+highlight_derived_field  # NativeFvhHighlighter.java, NativePlainHighlighter.java, NativeUnifiedHighlighter.java
 highlight_fragment_offset  # NativeFvhHighlighter.java
 highlight_fragment_size  # NativeFvhHighlighter.java
+highlight_fragmenter  # NativePlainHighlighter.java
 highlight_fvh_hit  # NativeFvhHighlighter.java
 highlight_fvh_reflection  # NativeFvhHighlighter.java
 highlight_fvh_term_vectors  # NativeFvhHighlighter.java
-highlight_live_view  # NativeFvhHighlighter.java
-highlight_locale  # NativeFvhHighlighter.java
-highlight_lone_surrogate  # NativeFvhHighlighter.java
+highlight_live_view  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
+highlight_locale  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
+highlight_lone_surrogate  # NativeFvhHighlighter.java, NativePlainHighlighter.java
+highlight_max_analyzer_offset  # NativePlainHighlighter.java
+highlight_native_error  # NativeFvhHighlighter.java, NativePlainHighlighter.java, NativeUnifiedHighlighter.java
 highlight_nested_  # QueryEncoder.java
-highlight_reader  # NativeFvhHighlighter.java
+highlight_plain_hit  # NativePlainHighlighter.java
+highlight_reader  # NativeFvhHighlighter.java, NativeUnifiedHighlighter.java
 interval_  # ExtendedEncoder.java
 interval_options  # ExtendedEncoder.java
 interval_painless  # ExtendedEncoder.java
@@ -87,6 +92,7 @@ points_width  # GeoEncoder.java
 postings_format  # NativeReaders.java
 query_too_deep  # QueryEncoder.java
 query_too_large  # QueryEncoder.java
+random_score_id  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
 reader_closed  # NativeReaders.java
 reader_not_directory  # NativeReaders.java
 reader_not_standard  # NativeReaders.java
@@ -97,6 +103,8 @@ rescore_  # NativeRescore.java
 rescore_approximate  # NativeRescore.java
 rescore_query  # NativeRescore.java
 scaled_float  # SortEncoder.java
+script_date_values  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
+script_expression_per_document  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
 script_query_script  # ExtendedEncoder.java
 script_score_hammingbit  # ExtendedEncoder.java
 script_score_script  # ExtendedEncoder.java

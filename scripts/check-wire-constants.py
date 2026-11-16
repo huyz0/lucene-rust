@@ -82,6 +82,9 @@ PREFIXES = {
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
 # more than a prefix or the prefix rule is ambiguous.
 RENAMES = {
+    ("QueryEncoder.java", "NODE_MORE_LIKE_THIS_KIND"): ("queries.rs", "NODE_MORE_LIKE_THIS"),
+    ("NativeFvhHighlighter.java", "THAI"): ("jvm_highlight.rs", "BREAKS_THAI"),
+    ("NativeUnifiedHighlighter.java", "THAI"): ("jvm_highlight.rs", "BREAKS_THAI"),
     ("ExtendedEncoder.java", "NODE_MATCH_NONE"): ("query_blob.rs", "NODE_MATCH_NONE"),
     ("NativeHybrid.java", "RETURN_DOCS"): ("reader_search.rs", "HYBRID_RETURN_DOCS"),
     ("NativeHybrid.java", "POST_FILTER"): ("reader_search.rs", "HYBRID_POST_FILTER"),
@@ -94,6 +97,7 @@ RENAMES = {
     ("GeoEncoder.java", "MAX_ORIGINS"): ("reader_search.rs", "MAX_GEO_ORIGINS"),
     ("SortEncoder.java", "NESTED_KEY"): ("reader_search.rs", "SORT_NESTED"),
     ("SortEncoder.java", "UNINVERTED_KEY"): ("reader_search.rs", "SORT_UNINVERTED"),
+    ("SortEncoder.java", "NO_PRUNING_KEY"): ("reader_search.rs", "SORT_NO_PRUNING"),
     ("NativeDocValues.java", "NONE"): ("fetch.rs", "DV_NONE"),
     ("NativeDocValues.java", "SORTED_NUMERIC"): ("fetch.rs", "DV_SORTED_NUMERIC"),
     ("NativeDocValues.java", "SORTED_SET"): ("fetch.rs", "DV_SORTED_SET"),
@@ -129,6 +133,7 @@ RENAMES = {
 
 # Constants with no Rust counterpart, and why.
 JAVA_ONLY = {
+    ("MoreLikeThisEncoder.java", "DEFAULT_MAX_NUM_TOKENS_PARSED"): "stock's default max_num_tokens_parsed of more_like_this, applied in Java when the query is encoded",
     ("KnnQueryBuilder.java", "MAX_GROUP_SIZE"): "knn group_size's upper bound, checked when the query is parsed; Rust takes any positive size",
     ("JsScripts.java", "CACHE_LIMIT"): "the plugin's cache of js check results, in Java only",
     ("MlAgents.java", "MAX_NAME"): "the longest agent name ml-commons accepts, checked in Java when an agent is registered or updated",

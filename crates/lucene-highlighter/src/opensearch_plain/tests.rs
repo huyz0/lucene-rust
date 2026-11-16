@@ -28,7 +28,7 @@ fn run(options: PlainOptions, query: Clause) -> Vec<String> {
         .fragments(TEXT)
         .unwrap()
         .into_iter()
-        .map(|f| f.text)
+        .map(|f| String::from_utf16_lossy(&f.text))
         .collect()
 }
 
@@ -164,6 +164,10 @@ fn the_no_match_summary_ends_at_a_token() {
     assert_eq!(h.options().field, "body");
 }
 
+fn units(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
 #[test]
 fn a_span_read_to_the_end_keeps_the_next_text_from_cutting() {
     let q =
@@ -174,14 +178,20 @@ fn a_span_read_to_the_end_keeps_the_next_text_from_cutting() {
     let h = PlainHighlighter::new(o, q, analyzer);
     // the span quick..fox ends at the last token: position 2 is waited for
     let mut wait = -1;
-    let first = h.fragments_carrying("a quick fox", &mut wait).unwrap();
+    let first = h
+        .fragments_carrying(&units("a quick fox"), &mut wait)
+        .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(wait, 3);
     // the next text does not cut before its position 3
-    let texts = |f: Vec<PlainFragment>| f.into_iter().map(|f| f.text).collect::<Vec<_>>();
+    let texts = |f: Vec<PlainFragment>| {
+        f.into_iter()
+            .map(|f| String::from_utf16_lossy(&f.text))
+            .collect::<Vec<_>>()
+    };
     let text = "one two three quick fox";
     assert_eq!(
-        texts(h.fragments_carrying(text, &mut wait).unwrap()),
+        texts(h.fragments_carrying(&units(text), &mut wait).unwrap()),
         ["one two three <em>quick</em> <em>fox</em>"]
     );
     assert_eq!(wait, 5);
@@ -250,4 +260,28 @@ fn a_prefix_past_the_clause_count_is_stock_s_error() {
         Err(crate::Error::TooManyClauses(_))
     ));
     assert!(h.fragments(&words[..20].join(" ")).is_ok());
+}
+
+#[test]
+fn an_unpaired_surrogate_stays_in_the_fragment() {
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let h = PlainHighlighter::new(options(), term("body", "fox"), analyzer);
+    let mut text = units("a \u{1F600} fox <b> ");
+    text.insert(1, 0xD83D);
+    let found = h.fragments_carrying(&text, &mut -1).unwrap();
+    assert_eq!(found.len(), 1);
+    let mut expect = units("a");
+    expect.push(0xD83D);
+    expect.extend(units(" \u{1F600} <em>fox</em> <b> "));
+    assert_eq!(found[0].text, expect);
+}
+
+#[test]
+fn text_ending_in_a_high_surrogate_has_no_tokens() {
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let h = PlainHighlighter::new(options(), term("body", "fox"), analyzer);
+    let mut units: Vec<u16> = "aa bb fox".encode_utf16().collect();
+    assert_eq!(h.no_match_end_units(100, &units).unwrap(), 9);
+    units.push(0xD83D);
+    assert_eq!(h.no_match_end_units(100, &units).unwrap(), -1);
 }

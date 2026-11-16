@@ -233,16 +233,29 @@ pub fn decode_span(
     depth: usize,
     nodes: &mut usize,
 ) -> Result<SpanNode, Status> {
+    decode_span_clause(c, depth, nodes, false)
+}
+
+/// One span node; `near_clause` is true for a direct clause of a near query,
+/// the only place a gap has positions to fill: anywhere else it would match
+/// every document number there is, past the end of the index.
+fn decode_span_clause(
+    c: &mut Cursor<'_>,
+    depth: usize,
+    nodes: &mut usize,
+    near_clause: bool,
+) -> Result<SpanNode, Status> {
     descend(depth, nodes)?;
     let built = |e| refused("span query", e);
-    let list = |c: &mut Cursor<'_>, nodes: &mut usize| -> Result<Vec<SpanNode>, Status> {
-        let n = count(c, 1, nodes, "span query")?;
-        let mut out = Vec::new();
-        for _ in 0..n {
-            out.push(decode_span(c, depth.saturating_add(1), nodes)?);
-        }
-        Ok(out)
-    };
+    let list =
+        |c: &mut Cursor<'_>, nodes: &mut usize, near: bool| -> Result<Vec<SpanNode>, Status> {
+            let n = count(c, 1, nodes, "span query")?;
+            let mut out = Vec::new();
+            for _ in 0..n {
+                out.push(decode_span_clause(c, depth.saturating_add(1), nodes, near)?);
+            }
+            Ok(out)
+        };
     let tag = c.u8()?;
     Ok(match tag {
         SPAN_TERM => {
@@ -252,26 +265,33 @@ pub fn decode_span(
         SPAN_NEAR => {
             let slop = c.i32()?;
             let in_order = c.u8()? != 0;
-            SpanNode::near(list(c, nodes)?, slop, in_order).map_err(built)?
+            SpanNode::near(list(c, nodes, true)?, slop, in_order).map_err(built)?
         }
-        SPAN_OR => SpanNode::or(list(c, nodes)?).map_err(built)?,
+        SPAN_OR => SpanNode::or(list(c, nodes, false)?).map_err(built)?,
         SPAN_FIRST => {
             let end = c.i32()?;
-            SpanNode::first(decode_span(c, depth.saturating_add(1), nodes)?, end)
+            SpanNode::first(
+                decode_span_clause(c, depth.saturating_add(1), nodes, false)?,
+                end,
+            )
         }
         SPAN_POSITION_RANGE => {
             let (start, end) = (c.i32()?, c.i32()?);
-            SpanNode::position_range(decode_span(c, depth.saturating_add(1), nodes)?, start, end)
+            SpanNode::position_range(
+                decode_span_clause(c, depth.saturating_add(1), nodes, false)?,
+                start,
+                end,
+            )
         }
         SPAN_NOT => {
             let (pre, post) = (c.i32()?, c.i32()?);
-            let include = decode_span(c, depth.saturating_add(1), nodes)?;
-            let exclude = decode_span(c, depth.saturating_add(1), nodes)?;
+            let include = decode_span_clause(c, depth.saturating_add(1), nodes, false)?;
+            let exclude = decode_span_clause(c, depth.saturating_add(1), nodes, false)?;
             SpanNode::not(include, exclude, pre, post).map_err(built)?
         }
         SPAN_CONTAINING | SPAN_WITHIN => {
-            let big = decode_span(c, depth.saturating_add(1), nodes)?;
-            let little = decode_span(c, depth.saturating_add(1), nodes)?;
+            let big = decode_span_clause(c, depth.saturating_add(1), nodes, false)?;
+            let little = decode_span_clause(c, depth.saturating_add(1), nodes, false)?;
             if tag == SPAN_CONTAINING {
                 SpanNode::containing(big, little).map_err(built)?
             } else {
@@ -280,9 +300,18 @@ pub fn decode_span(
         }
         SPAN_FIELD_MASKING => {
             let field = utf8(c.bytes()?)?.to_string();
-            SpanNode::field_masking(decode_span(c, depth.saturating_add(1), nodes)?, field)
+            SpanNode::field_masking(
+                decode_span_clause(c, depth.saturating_add(1), nodes, false)?,
+                field,
+            )
         }
         SPAN_GAP => {
+            if !near_clause {
+                return Err(invalid(
+                    "query tree: a span gap is only valid as a clause of a span near query"
+                        .to_string(),
+                ));
+            }
             let field = utf8(c.bytes()?)?.to_string();
             SpanNode::gap(field, c.i32()?)
         }

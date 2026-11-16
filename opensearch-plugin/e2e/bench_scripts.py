@@ -33,7 +33,10 @@ def load(base, n):
 def timing(base, out, rounds):
     shapes = se.shapes()
     res = {}
+    only = [x for x in os.environ.get("SHAPES", "").split("|") if x]
     for name in PICK:
+        if only and not any(o in name for o in only):
+            continue
         body = dict(shapes[name], size=10)
         path = "/sc/_search?request_cache=false&rest_total_hits_as_int=true"
         res[name] = bh.summarize(bh.measure(lambda: bh.req(base, "POST", path, body), rounds=rounds, warmup=20, warmup_s=1.0))
@@ -42,7 +45,7 @@ def timing(base, out, rounds):
 
 def report(paths):
     sides = [[json.load(open(p)) for p in sorted(__import__("glob").glob(g))] for g in paths]
-    names = list(sides[0][0])
+    names = [k for k in sides[0][0] if all(k in r for s in sides for r in s)]
     print("%-28s %10s" % ("shape (best median ms)", "stock") + "".join(" %10s %6s" % ("plugin" + str(i), "x") for i in range(len(sides) - 1)))
     for k in names:
         best = [min(r[k]["median_ms"] for r in s) for s in sides]

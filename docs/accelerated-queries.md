@@ -169,7 +169,7 @@ where the native call's fixed cost shows -- see
 | Request (DSL) | Rewritten Lucene query | Native |
 |---|---|---|
 | `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
-| `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
+| `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes |
 | `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`, `interval_options` for a script with compile options) |
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
@@ -215,6 +215,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `timeout` | the request's `timeout` had already passed when the native call would start; Lucene answers it (nothing, `timed_out`) |
 | `query_<Class>` | the rewritten query's root is not a supported shape — e.g. `query_GlobalOrdinalsWithScoreQuery` (`has_child`), `query_ScriptScoreQuery` (`script_score`), `query_TermQuery` on a numeric field |
 | `automaton_states`, `fuzzy_automaton` | a multi-term query whose automaton has more than 65,536 states, or a fuzzy query Lucene cannot build an automaton for |
+| `script_date_values`, `script_expression_per_document`, `random_score_id` | a Painless script reading `date` values, a Lucene expression that scores, sorts or filters, or `random_score` seeded by `_id`: measured slower than OpenSearch's own implementation, so they run there unless `index.script.accelerated_extended` is `true` |
 | `covering_script`, `covering_painless`, `covering_options`, `covering_field_data` | `terms_set` whose minimum is a script other than inline Painless, a Painless script the static check refuses or compiled with options (`max_loop_counter`, `picky`) or stored, or field data other than plain integral doc values |
 | `clause_<Class>` | the same, for a clause anywhere below the root (inside a `bool`, `constant_score`, `dis_max`, a boost) |
 | `query_too_deep`, `query_too_large` | more than 32 levels, or more than 1,024 nodes counting wrappers (Lucene counts only leaves, and `indices.query.bool.max_clause_count` can raise its limit) |
@@ -225,7 +226,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
 | `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
 | `join_parents` | a block join whose parent filter is not a `QueryBitSetProducer` or OpenSearch's bit-set-cache producer |
-| `span_gap`, `span_<Class>` | a `span_near` with a `span_gap`; a span query class outside the encoded set (payload spans) |
+| `span_<Class>` | a span query class outside the encoded set (payload spans) |
 | `interval_<Class>`, `interval_scoring`, `interval_automaton` | an intervals source outside Lucene's own classes (OpenSearch's `script` filter), a payload-filtered term, another scoring function, a multi-term automaton past 65,536 states |
 | `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | a script function that is not Painless or JavaScript; a function over field data of another plugin (keyword for `random_score`; the mapper types of other plugins); a decay class of another plugin or another function class |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |
@@ -291,8 +292,32 @@ as stock's phrase helper rewrites it.
 A field falls back to OpenSearch's highlighter (counted in the stats'
 `fallbacks`) when its query's visit matches terms by an automaton the
 encoder does not send (`highlight_<Class>`), a needed analyzer cannot be described
-(the analyzer's reason), the search reads a realtime view (`highlight_live_view`: its buffered documents are leaves the native reader does not hold), or the highlighter is switched off
+(the analyzer's reason), or the highlighter is switched off
 (`index.highlight.accelerated: false`).
+
+`index.highlight.accelerated_extended` (dynamic, default `false`) adds the cases
+OpenSearch's highlighters kept before they were ported: a realtime view, a
+derived field, a Thai locale, text with an unpaired surrogate, `more_like_this`
+and an out-of-order `bool` on `plain`, and every request or hit OpenSearch
+refuses (whose exception the native side then throws). Off, those fall back as
+before, under `highlight_live_view`, `highlight_derived_field`,
+`highlight_locale`, `highlight_lone_surrogate`, `highlight_MoreLikeThisQuery`,
+`highlight_clause_order`, `highlight_fvh_hit`, `highlight_plain_hit`, and the
+option reasons (`highlight_fragmenter`, `highlight_boundary_scanner`,
+`highlight_fragment_size`, `highlight_fragment_offset`,
+`highlight_max_analyzer_offset`, `highlight_fvh_term_vectors`,
+`highlight_fvh_reflection`).
+
+A search that reads a realtime view highlights through a native reader over
+the view's buffers written as segments (`LiveView.fullReader`, built once
+per view), which numbers the hits' documents as the view does; the field
+falls back (`highlight_live_view`) only when a buffer was taken for a flush
+since the view opened. A derived field is analyzed by its own index analyzer,
+as stock does. The Thai word iterator segments by a dictionary the library
+does not carry (`docs/licences.md`), so a request whose
+`boundary_scanner_locale` is Thai asks the JVM for each text's word
+boundaries (`highlight/ThaiWords.java`, an upcall to the JDK's own
+`BreakIterator`), and cuts at what stock cuts at.
 
 ### The `plain` highlighter
 
@@ -317,25 +342,27 @@ that state from one call to the next. A `FuzzyQuery` is sent as itself
 A query the extractor does not know whose rewrite keeps it (a script, geo,
 `intervals`, `distance_feature`, `terms_set`, `combined_fields`,
 `script_score`) is sent as its recorded visit, whose terms the extractor
-reads when it has none yet; one whose rewrite reads the index
-(`more_like_this`) falls back (`highlight_<Class>`).
+reads when it has none yet. `more_like_this` on the plain highlighter is sent
+as its candidate terms, in Java's `HashMap` order, with their `tf * idf`; the
+native side keeps those the hit's text holds in Lucene's bounded priority
+queue, so ties past `max_query_terms` fall as stock's do.
 
 `e2e/highlight_matrix.py` runs every option set above as `type: plain`
 and seven of plain's own (fragmenters, sizes, score order, `html`), all
 identical to stock. Falls back: the reasons above but the realtime view
-(the plain highlighter reads no index), a boolean query whose clauses are
-not musts, then shoulds, then filters (`highlight_clause_order`: the
-extractor's kept weights and an unknown query's terms depend on the order),
-a join or points-or-doc-values query directly inside a `function_score` or
+(the plain highlighter reads no index), a join or points-or-doc-values query directly inside a `function_score` or
 `nested` query, or such a wrapper there whose rewrite changes it
 (`highlight_nested_<Class>`: Lucene's extractor, which stock hands that
 query to, rewrites it against the document), an unknown
 `fragmenter` or a `max_analyzer_offset` over the index limit (stock's
 errors), and per hit a value past `index.highlight.max_analyzed_offset`
-(stock's error), a multi-term query expanding past the clause count over
-it (`highlight_plain_hit`: stock throws), or holding a lone surrogate (`highlight_lone_surrogate`:
-Java's tokenizers read one, often left by a `max_analyzer_offset` cut, in
-ways the native text cannot hold).
+(stock's error) or a multi-term query expanding past the clause count over
+it (stock throws): the native call names the exception stock throws (its
+class and message) and the plugin throws it, so the request fails as it does
+on stock. A text holding an unpaired surrogate (often left by a
+`max_analyzer_offset` cut) is read as UTF-16 units, so the analysis, the
+offsets and the fragments are Java's: the standard tokenizer yields nothing
+for a text that ends in a high surrogate, as Java's does.
 
 ### The `fvh` highlighter
 
@@ -365,13 +392,15 @@ start back to its first match when the analyzer has a filter that
 thirteen of fvh's own (`matched_fields`, `fragment_offset`,
 `phrase_limit`, `boundary_chars`, `force_source`, multi-valued fields,
 locales, `highlight_filter`) on six term-vector indices (stored or not,
-`edge_ngram`, synonyms, `english`), all identical to stock. Falls back: a
-field without term vectors (stock's error, `highlight_fvh_term_vectors`),
-a `fragment_size` under the fragment list's minimum or a negative
-`fragment_offset` (stock's errors), the realtime view, the reasons of the
-unified highlighter's reader and derived fields, Thai boundaries; per hit
-a value with a lone surrogate, and a hit stock's highlighter throws on or
-whose fragment would cut a surrogate pair (`highlight_fvh_hit`).
+`edge_ngram`, synonyms, `english`), all identical to stock; the options
+stock refuses (a field without term vectors, a `fragment_size` under the
+fragment list's minimum, a negative `fragment_offset`, an unknown boundary
+scanner) fail with stock's own exception, thrown from what the native call
+names, and a fragment that cuts a surrogate pair keeps the half pair.
+`e2e/highlight_extra.py` adds the requests stock refuses, text with
+unpaired surrogates, the analyzed-offset limit, derived fields, a realtime
+view and the Thai iterator (629 rows). Falls back only by the reasons the
+unified highlighter's reader has.
 
 ### What runs native around the others
 
