@@ -1,4 +1,7 @@
-//! Creation ownership for operation-local codec output cleanup.
+//! Creation ownership for operation-local codec output cleanup: the subset of
+//! Java's `TrackingDirectoryWrapper` that the flush, merge and live-docs
+//! writers use. Delegation preserves directory policy; the set contains only
+//! outputs successfully created during one attempt.
 
 use lucene_store::Directory;
 
