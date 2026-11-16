@@ -1,7 +1,7 @@
 //! Profile mode: the scorer tree of a query, built and driven with a timer around every
 //! clause, as OpenSearch's `ProfileWeight` and `ProfileScorer` time a Lucene tree.
 //!
-//! A profile request runs the query a second time through [`profile_clause`], with a
+//! A profile request runs the query a second time, with a
 //! [`Session`] installed on the thread ([`Guard`]). The scorer builder then
 //!
 //! * builds every clause as its own scorer ([`active`] turns off the bulk shapes that fuse

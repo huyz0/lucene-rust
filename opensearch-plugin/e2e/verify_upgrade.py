@@ -183,6 +183,27 @@ def fell_back(delta, expect):
     return n
 
 
+def exact_reference(body):
+    """`body` as the stock node must answer it for the reference. A nested sort key's comparator
+    skips with the children's points once the queue is full and more than the total-hits threshold
+    matches -- and a single term's total is a count OpenSearch does not run once no deletion is
+    left (`shortcutTotalHitCount`), which leaves the threshold at `size`. Stock then drops hits
+    that belong in the top (docs/accelerated-queries.md, "Sorts where Lucene drops hits"), and
+    which ones depends on the segment layout, so it is no reference. A `function_score` wrapper
+    (no function, a boost of 1) has no shortcut: the matches are counted, the threshold is never
+    passed, and the comparator never skips. The native side never skips for such a key."""
+    sort = body.get("sort") or []
+    if not any(isinstance(k, dict) and any(isinstance(v, dict) and "nested" in v for v in k.values()) for k in sort):
+        return body
+    inner = body.get("query", {"match_all": {}})
+    exact = {**body, "query": {"function_score": {"query": inner, "boost": 1.0}}}
+    if body.get("track_total_hits") is False:
+        # A threshold of `size` skips from the first full queue: count every match instead, and
+        # leave the total out of the comparison (`run_rows`).
+        exact["track_total_hits"] = True
+    return exact
+
+
 def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
     """Each row on the stock node (the reference) and on the plugin node: same
     answer, and the plugin's counters show where it ran."""
@@ -191,7 +212,9 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
     for name, body, _ in rows:
         url, b = vo.search_url(index, body)
         try:
-            reference[name] = vo.shape(vo.complete(vo.search(index, body)), b)
+            reference[name] = vo.shape(vo.complete(vo.search(index, exact_reference(body))), b)
+            if body.get("track_total_hits") is False:
+                reference[name]["total"] = None
         except RuntimeError as e:
             vo.UNVERIFIABLE.append(f"{label} {index} [{name}]")
             print(f"UNVERIFIABLE: {label} {index} [{name}]: the stock node failed: {str(e)[:300]}")
@@ -201,8 +224,6 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
         if name not in reference:
             continue
         expect = expect_override or expect
-        if expect == "dfs_multi":
-            expect = "dfs" if shards > 1 else "native"
         # The plugin node runs the default accelerated_shapes: fast.
         if expect == "slow":
             expect = "slower_shape"
@@ -248,10 +269,9 @@ def serve_all(label, plugin, stock, prefix="", merged=False):
         native += run_rows(index, vo.matrix() + vector_rows(False), label, plugin, stock, shards)
     # Once a force merge has dropped every deletion, OpenSearch answers a term's total without
     # counting (shortcutTotalHitCount), which leaves a count limit of `size`: past it Lucene's
-    # comparator skips, which a nested key does not natively, so such a sort falls back.
-    # Rows that stay in Java anyway (an aggregation it cannot run) keep their own reason.
-    nest = [(n, b, "native|sort_nested" if merged and e == "native" else e) for n, b, e in vo.nested_rows()]
-    native += run_rows(prefix + "nest", nest, label, plugin, stock, 1)
+    # comparator skips with the children's points and drops hits. The native sort does not skip
+    # for a nested key, so it is compared with the exact answer (`exact_reference`).
+    native += run_rows(prefix + "nest", vo.nested_rows(), label, plugin, stock, 1)
     # The k-NN plugin's codec reads natively; with the k-NN plugin installed, its own
     # vector queries stay in Java.
     text = [(n, b, e) for n, b, e in vo.matrix()[:8]]

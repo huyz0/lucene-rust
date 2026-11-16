@@ -81,6 +81,7 @@ fn sort(spec: &str) -> Vec<SortField> {
                 rewritten: None,
                 convert: lucene_search::top_field::ChildConvert::None,
                 uninverted: false,
+                no_pruning: false,
                 field: p[0].to_string(),
                 ty: match p[1] {
                     "score" => SortType::Score,
@@ -169,6 +170,60 @@ fn query(text: &str) -> BooleanQuery {
             b
         }
     }
+}
+
+/// `ContextIndexSearcher.search` visits a time-series shard's segments last first when it is
+/// sorted by its timestamp ascending, and a collector keeps the first of equal keys it sees: a
+/// match-all sorted by a score that every document shares keeps the first documents of the
+/// segment visited first, whether the search is one slice or several.
+#[test]
+fn a_slice_visits_its_segments_in_the_order_it_is_given() {
+    let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
+    let segments = opened.as_open_segments();
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .unwrap()
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let n = segments.len();
+    let all = BooleanQuery {
+        must: vec![Clause::MatchAllDocs(MatchAllDocsQuery::new(0))],
+        ..BooleanQuery::default()
+    };
+    let by_score = sort("body:score:min:false:0");
+    let first_docs = |slices: &[Vec<usize>]| -> Vec<i32> {
+        search_sorted_sliced(
+            &segments,
+            reader.segment_readers(),
+            &all,
+            &norms,
+            &by_score,
+            5,
+            1_000_000,
+            None,
+            slices,
+        )
+        .unwrap()
+        .hits
+        .iter()
+        .map(|h| h.doc)
+        .collect()
+    };
+    let last_base = segments[n - 1].doc_base;
+    // Deletions leave gaps: the first five live documents of the first (or last) segment.
+    let ascending = first_docs(&[(0..n).collect()]);
+    assert!(ascending.iter().all(|&d| d < segments[1].doc_base));
+    let last_first = first_docs(&[(0..n).rev().collect()]);
+    assert_eq!(last_first.len(), 5);
+    assert!(last_first.iter().all(|&d| d >= last_base), "{last_first:?}");
+    // Several slices each visit their own segments in the order given, their hits merged.
+    let first_slice_reversed = first_docs(&[vec![1, 0], (2..n).collect()]);
+    assert_eq!(first_slice_reversed.len(), 5);
+    assert!(first_slice_reversed.iter().all(|&d| d < last_base + 5));
 }
 
 #[test]
@@ -300,8 +355,10 @@ fn sorted_searches_match_real_lucene() {
         // own collector, the hits merged.
         if !track {
             let n = segments.len();
-            // Given out of order: a slice's segments are searched by doc base.
-            let slices = [(n / 2..n).rev().collect::<Vec<_>>(), (0..n / 2).collect()];
+            // A slice's segments by doc base, as `LeafSlice` keeps them; the order they are given
+            // in is the order they are visited in (see
+            // `a_slice_visits_its_segments_in_the_order_it_is_given`).
+            let slices = [(n / 2..n).collect::<Vec<_>>(), (0..n / 2).collect()];
             let sliced = search_sorted_sliced(
                 &segments,
                 reader.segment_readers(),

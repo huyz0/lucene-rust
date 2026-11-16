@@ -1431,7 +1431,7 @@ fn bench_doc_values(w: Duration, m: Duration, index: &str) {
             let mut ord = 0i64;
             for _ in 0..4096 {
                 ord = (ord + 4099) % value_count;
-                s += dict.seek_ord(ord).unwrap().len();
+                s += dict.lookup_ord(ord).unwrap().len();
             }
             black_box(s);
             4096

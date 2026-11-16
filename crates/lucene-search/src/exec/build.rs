@@ -777,9 +777,14 @@ fn term<'a>(
     let cursor = field_terms.lazy_postings_for(&seeked, doc_in, flags)?;
     // A per-field similarity whose similarity for this field is the default
     // BM25 scores it exactly as no similarity at all: keep the inline path.
+    // Not under a `StatisticsSource` (a `dfs_query_then_fetch`'s aggregated statistics): the
+    // inline path takes its average field length from the segment norms, which carry the
+    // shard's, where `BM25Similarity` reads it off the overridden collection statistics.
     let sim = ctx.similarity.filter(|sim| {
-        sim.as_bm25(&t.field)
-            .is_none_or(|b| *b != crate::similarities::Bm25Similarity::default())
+        sim.statistics_source().is_some()
+            || sim
+                .as_bm25(&t.field)
+                .is_none_or(|b| *b != crate::similarities::Bm25Similarity::default())
     });
     if let Some(sim) = sim {
         // `TermWeight`: `similarity.scorer(boost, collectionStats, termStats)`.

@@ -169,7 +169,7 @@ where the native call's fixed cost shows -- see
 | Request (DSL) | Rewritten Lucene query | Native |
 |---|---|---|
 | `nested`, any `score_mode`, with or without `inner_hits` | `OpenSearchToParentBlockJoinQuery` (`ToParentBlockJoinQuery` over OpenSearch's bit-set producer for the root or parent-path filter) | yes; the parent bit sets are cached natively per segment and filter |
-| `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes, but a `span_near` holding a `span_gap` (`span_gap`) |
+| `span_term`, `span_near`, `span_or`, `span_not`, `span_first`, `span_containing`, `span_within`, `field_masking_span`, `span_multi` | the `spans` package's queries (`span_multi` rewritten to a `SpanOrQuery`) | yes |
 | `intervals` (`match`, `any_of`, `all_of`, `prefix`, `wildcard`, `fuzzy`, every filter) | `IntervalQuery` over Lucene's `IntervalsSource`s | yes; a Painless `script` filter runs natively when the static check passes it, else falls back (`interval_painless`, `interval_script`, `interval_options` for a script with compile options) |
 | `combined_fields` | `CombinedFieldQuery` | yes |
 | `function_score` with `weight`, `field_value_factor`, `random_score` (with a `seed` and `field`, or neither), numeric and date `gauss`/`exp`/`linear` decays, function filters, any `score_mode`, `boost_mode`, `max_boost`, `boost` | OpenSearch's `FunctionScoreQuery` | yes, OpenSearch's arithmetic computed natively; `min_score`, scripts, geo decays fall back (`function_score_*`) |
@@ -225,7 +225,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `geo_geometry`, `geo_reflect` | a geo query holding a geometry class Lucene's factories do not build, or one whose fields the plugin cannot read (a Lucene whose geo classes changed) |
 | `clause_IntersectsPrefixTreeQuery` (and the other spatial-extras queries) | a `geo_shape` field on the deprecated prefix-tree mapping (`tree`) |
 | `join_parents` | a block join whose parent filter is not a `QueryBitSetProducer` or OpenSearch's bit-set-cache producer |
-| `span_gap`, `span_<Class>` | a `span_near` with a `span_gap`; a span query class outside the encoded set (payload spans) |
+| `span_<Class>` | a span query class outside the encoded set (payload spans) |
 | `interval_<Class>`, `interval_scoring`, `interval_automaton` | an intervals source outside Lucene's own classes (OpenSearch's `script` filter), a payload-filtered term, another scoring function, a multi-term automaton past 65,536 states |
 | `function_score_script`, `function_score_field_data`, `function_score_decay`, `function_score_<Class>` | a script function that is not Painless or JavaScript; a function over field data of another plugin (keyword for `random_score`; the mapper types of other plugins); a decay class of another plugin or another function class |
 | `combined_fields_empty`, `extended_reflect` | a `CombinedFieldQuery` over no field; a Lucene or OpenSearch class whose private fields the plugin cannot read (a version whose classes changed) |

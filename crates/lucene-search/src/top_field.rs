@@ -673,6 +673,9 @@ pub struct SortField {
     /// The `_id` field: no doc values, its terms are read back from the postings and decoded
     /// to the id strings, which sort as bytes (OpenSearch sorts it through uninverted fielddata).
     pub uninverted: bool,
+    /// `NonPruningSortField`: the comparator builds no competitive iterator, whatever the field
+    /// indexes (a `wildcard` field's postings hold its ngrams, not the values it sorts by).
+    pub no_pruning: bool,
 }
 
 impl SortField {
@@ -698,6 +701,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -712,6 +716,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -746,6 +751,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -761,6 +767,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 
@@ -795,6 +802,7 @@ impl SortField {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
         }
     }
 }
@@ -1200,7 +1208,7 @@ impl TopField {
                 } else {
                     Pruning::GreaterThanOrEqualTo
                 };
-                if f.point_bytes().is_none() && f.ty != SortType::String {
+                if f.no_pruning || (f.point_bytes().is_none() && f.ty != SortType::String) {
                     pruning = Pruning::None;
                 }
                 let strs = (f.ty == SortType::String).then(|| {
@@ -5062,6 +5070,12 @@ pub fn search_sorted_min_score(
     min_score: Option<f32>,
 ) -> Result<TopFieldDocs> {
     if slices.len() <= 1 || top_n == 0 || track_max_score {
+        // One slice is one collector over the segments in the order it is given: a time-series
+        // shard sorted by its timestamp ascending visits them last first
+        // (`ContextIndexSearcher.search`), which decides which of the equal keys it keeps.
+        let visited = slices
+            .first()
+            .filter(|s| s.iter().enumerate().any(|(at, &segment)| at != segment));
         return search_sorted_leaves(
             segments,
             readers,
@@ -5072,7 +5086,7 @@ pub fn search_sorted_min_score(
             total_hits_threshold,
             after,
             track_max_score,
-            None,
+            visited.map(Vec::as_slice),
             None,
             min_score,
             None,
@@ -5105,11 +5119,10 @@ pub fn search_sorted_min_score(
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
     let parts = crate::slices::run_slices_if(parallel, slices, |slice| {
-        // `LeafSlice` keeps its partitions by doc base: a collector breaks
-        // ties assuming ascending documents.
-        let mut order = slice.to_vec();
-        order.sort_unstable();
-        search_segments(&run, &order)
+        // `LeafSlice` keeps its partitions by doc base, which is the order the caller hands
+        // them in, or last first for a time-series shard sorted ascending: a collector breaks
+        // ties by the order it visits the documents in.
+        search_segments(&run, slice)
     })
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
@@ -6337,6 +6350,7 @@ mod tests {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
+            no_pruning: false,
             ..SortField::numeric("l", SortType::Long, false)
         };
         assert_eq!(key, key.clone());

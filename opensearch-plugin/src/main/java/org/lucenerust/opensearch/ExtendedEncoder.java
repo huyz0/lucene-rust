@@ -81,7 +81,7 @@ import java.util.function.Predicate;
  *   <li>{@code nested}: {@link OpenSearchToParentBlockJoinQuery} (or a plain {@link
  *       ToParentBlockJoinQuery}) over a {@link QueryBitSetProducer} or OpenSearch's {@code
  *       BitsetFilterCache} producer, any {@code score_mode} (node 20);
- *   <li>{@code span_term}, {@code span_near} (without gaps), {@code span_or}, {@code span_not},
+ *   <li>{@code span_term}, {@code span_near} (with its {@code span_gap}s), {@code span_or}, {@code span_not},
  *       {@code span_first}, {@code span_containing}, {@code span_within}, {@code
  *       field_masking_span}, and {@code span_multi} once the searcher has rewritten it (node 21);
  *   <li>{@code intervals}: {@link IntervalQuery} over any of Lucene's {@code IntervalsSource}s,
@@ -99,8 +99,7 @@ import java.util.function.Predicate;
  *
  * <p>The classes are read through their getters, or through {@link Reflect} where Lucene and
  * OpenSearch keep the fields private (the fields their constructors were given, which are what
- * their {@code equals} compares). Not encoded, each under a named reason: a {@code span_near} with
- * a {@code span_gap} ({@code span_gap}), a payload span query ({@code span_<Class>}), an interval
+ * their {@code equals} compares). Not encoded, each under a named reason: a payload span query ({@code span_<Class>}), an interval
  * source with a payload filter or of a class this does not know ({@code interval_<Class>}), a
  * script ({@code function_score_script}), a geo or other non-numeric decay ({@code
  * function_score_<Class>}), field data other than plain sorted-numeric (or keyword, for {@code

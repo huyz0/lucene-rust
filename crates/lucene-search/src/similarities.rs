@@ -2297,7 +2297,11 @@ impl Similarity for PerFieldSimilarity {
     }
 
     fn is_default_bm25(&self) -> bool {
-        self.default.is_default_bm25() && self.fields.values().all(|s| s.is_default_bm25())
+        // Under overridden statistics the BM25 fast path would score with the segment norms'
+        // average field length, not the statistics'.
+        self.statistics.is_none()
+            && self.default.is_default_bm25()
+            && self.fields.values().all(|s| s.is_default_bm25())
     }
 
     fn as_tfidf(&self, field: &str) -> Option<&dyn TfIdfSimilarity> {
