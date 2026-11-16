@@ -1402,6 +1402,74 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_sorted_hybrid_search_orders_each_sub_querys_hits_and_pages_after_one() {
+        let h = open();
+        let subs = [term_blob("body", "fox"), term_blob("body", "dog")];
+        let sorted = |sort: Vec<u8>, top_n: i32| {
+            let mut blob = hybrid_blob_flags(&subs, top_n, &[], 4);
+            blob.extend_from_slice(&i64::MAX.to_le_bytes());
+            blob.extend_from_slice(&(sort.len() as i32).to_le_bytes());
+            blob.extend_from_slice(&sort);
+            let out = search_hybrid_blobs(h, &blob).unwrap();
+            let mut c = Cursor::new(&out);
+            assert_eq!(c.i32().unwrap(), 1);
+            let total = c.i64().unwrap();
+            c.i32().unwrap();
+            let mut per = Vec::new();
+            for _ in 0..2 {
+                let n = c.i32().unwrap();
+                let hits: Vec<(i32, f32, i64)> = (0..n)
+                    .map(|_| {
+                        (
+                            c.i32().unwrap(),
+                            f32::from_bits(c.i32().unwrap() as u32),
+                            c.i64().unwrap(),
+                        )
+                    })
+                    .collect();
+                let terms = c.i32().unwrap();
+                assert_eq!(terms, 0);
+                per.push(hits);
+            }
+            assert_eq!(c.remaining(), 0);
+            (total, per)
+        };
+        let plain = decode_hybrid(
+            &search_hybrid_blobs(h, &hybrid_blob(&subs, 100, &[])).unwrap(),
+            2,
+        );
+        // By document, descending: the same documents and total, in the sort's order.
+        let (total, per) = sorted(sort_blob(&[(SORT_DOC, SORT_REVERSE, "", 0)], None), 100);
+        assert_eq!(total, plain[0].0);
+        for (got, want) in per.iter().zip(&plain[0].1) {
+            let mut docs: Vec<i32> = want.iter().map(|&(d, _)| d).collect();
+            docs.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), docs);
+            // Each hit keeps its sub-query's score.
+            for g in got {
+                assert!(want.contains(&(g.0, g.1)));
+            }
+        }
+        // The page after a sub-query's first hit.
+        let first = per[0][0];
+        let (_, page) = sorted(
+            sort_blob(
+                &[(SORT_DOC, SORT_REVERSE, "", 0)],
+                Some((first.0, &[first.2])),
+            ),
+            100,
+        );
+        assert_eq!(
+            page[0].iter().map(|g| g.0).collect::<Vec<_>>(),
+            per[0].iter().skip(1).map(|g| g.0).collect::<Vec<_>>()
+        );
+        // No room keeps no hits.
+        let (_, none) = sorted(sort_blob(&[(SORT_DOC, 0, "", 0)], None), 0);
+        assert!(none.iter().all(Vec::is_empty));
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    #[test]
     fn a_nested_key_carries_its_filters_and_runs_over_a_handle() {
         let nested_key = |ty: u8, flags: u8| {
             let mut b = vec![2u8, ty, flags | SORT_NESTED];
