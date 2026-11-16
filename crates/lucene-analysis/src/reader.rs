@@ -133,18 +133,12 @@ impl StrReader {
 
     /// `ReusableStringReader.setValue`: reuse this reader's allocation.
     pub fn set_value(&mut self, text: &str) {
-        let owned = match &mut self.text {
-            ReaderText::Owned(s) => s,
-            shared => {
-                *shared = ReaderText::Owned(String::new());
-                match shared {
-                    ReaderText::Owned(s) => s,
-                    ReaderText::Shared(_) => unreachable!("just assigned"),
-                }
-            }
-        };
-        owned.clear();
-        owned.push_str(text);
+        if let ReaderText::Owned(s) = &mut self.text {
+            s.clear();
+            s.push_str(text);
+        } else {
+            self.text = ReaderText::Owned(text.to_owned());
+        }
         self.pos = 0;
         self.pending_low = None;
     }

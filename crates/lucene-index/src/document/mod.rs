@@ -1153,7 +1153,10 @@ impl TextField {
     }
 
     /// [`Self::new`] over text the caller keeps sharing: the field holds the
-    /// `Arc`, and indexing analyzes those bytes without copying them.
+    /// `Arc`, and indexing analyzes those bytes without copying them. A
+    /// `Store::Yes` field still copies the text once into its stored value,
+    /// as a `String` field does; the saving is on the analysis side.
+    /// Rust-only: Java's `Field` holds an immutable `String`.
     pub fn new_shared(name: impl Into<String>, value: Arc<str>, store: Store) -> Field {
         let ft = match store {
             Store::Yes => Self::type_stored(),
