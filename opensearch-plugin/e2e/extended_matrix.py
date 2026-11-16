@@ -129,7 +129,9 @@ def rows():
     add("script sort", {"query": {"match": {"body": "alpha"}}, "sort": ss("doc['qty'].size() == 0 ? -1 : doc['qty'].value * params.f", "desc", f=2)}, "native")
     add("script sort then doc", {"query": {"match_all": {}}, "size": 20,
                                  "sort": ss("doc['tag'].size() == 0 ? 0 : doc['tag'].value.length()") + [{"n": "asc"}]}, "native")
-    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "native")
+    # Evaluated a hit at a time, measured slower than OpenSearch's own Painless: on OpenSearch unless
+    # `index.script.accelerated_extended` is true (script_extended_rows runs it native).
+    add("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": ss("_score * 2")}, "script_sort_score")
 
     # Rewritten before the query phase sees them: more_like_this to a boolean of
     # term queries, common to blended term queries.
@@ -137,6 +139,12 @@ def rows():
     add("more_like_this doc", {"query": {"more_like_this": {"fields": ["body", "title"], "like": [{"_id": "1"}], "min_term_freq": 1, "min_doc_freq": 1}}}, "native")
     add("common", {"query": {"common": {"body": {"query": "alpha beta omega", "cutoff_frequency": 0.01}}}}, "native")
     return q
+
+
+def script_extended_rows():
+    """The script shapes `index.script.accelerated_extended` (default false) turns native."""
+    return [("script sort reading _score", {"query": {"match": {"body": "alpha"}}, "sort": [
+        {"_script": {"type": "number", "order": "asc", "script": {"source": "_score * 2"}}}]}, "native")]
 
 
 def nested_rows():
