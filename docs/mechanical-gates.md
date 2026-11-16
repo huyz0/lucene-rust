@@ -962,6 +962,18 @@ is not in any pack directory`). **Blind to** a resource read by
 `include_bytes!` outside `pack.rs` (it stays compiled in, which works, just
 larger).
 
+## file-size
+
+`python3 scripts/check-file-size.py` (`--list` prints every file over the limit
+and exits 0). Counts the production lines of each `crates/*/src/**.rs` file:
+`#[cfg(test)]` items, files opening with `#![cfg(test)]`, any `tests.rs` and the
+test framework crate do not count. A file over 3,000 production lines is listed
+in the script's `OVER` table with its size and may not grow; a new file over
+the limit fails. When a listed file shrinks the check asks for a lower entry,
+and for the entry's removal once the file is under the limit. Move a module's
+tests to a sibling `tests.rs` (first line `#![cfg(test)]`) rather than keeping
+them inline.
+
 ## dev-notes
 
 `python3 scripts/check-dev-notes.py` (`--list` prints hits and exits 0).
