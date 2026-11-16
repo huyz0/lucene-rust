@@ -153,6 +153,48 @@ def shapes():
     s["hammingbit binary short"] = {"size": 20, "query": {"script_score": {"query": ma, "script": knn("bin", base64.b64encode(bytes([0, 0, 7])).decode())}}}
     s["hammingbit binary long"] = {"size": 20, "query": {"script_score": {"query": ma, "script": knn("bin", base64.b64encode(bytes([255, 1, 2, 3, 4, 5, 6])).decode())}}}
     s["hammingbit min_score"] = {"size": 20, "query": {"script_score": {"query": ma, "script": knn("hl", 5), "min_score": 0.06}}}
+    # the expression language
+    def ex(source, **params):
+        d = {"lang": "expression", "source": source}
+        if params:
+            d["params"] = params
+        return d
+
+    for name, src in [
+        ("long", "doc['l'].value * 2"),
+        ("score", "_score * doc['d'].value / 100"),
+        ("multi", "doc['lm'].avg() + doc['lm'].median() + doc['lm'].min() + doc['lm'].max() + doc['lm'].sum()"),
+        ("empty", "doc['l'].empty ? 1 : doc['l'].value / 1000"),
+        ("length", "doc['lm'].length + doc['lm'].count()"),
+        ("float", "doc['f'].value + doc['h'].value + doc['d'].value"),
+        ("date", "doc['dt'].value / 1000000000000"),
+        ("fns", "sqrt(doc['d'].value) + ln(doc['l'].value + 1) + min(doc['f'].value, 5) + max(doc['h'].value, 1) + pow(2, 3) + abs(0 - doc['l'].value)"),
+        ("div0", "doc['l'].value / (doc['h'].value - doc['h'].value)"),
+        ("methods", "doc['l'].getValue() + doc['lm'].size() + doc['d'].isEmpty()"),
+    ]:
+        s["expr score " + name] = {"size": 30, "query": {"script_score": {"query": body, "script": ex(src)}}}
+        s["expr fs " + name] = {"size": 30, "query": {"function_score": {"query": body, "functions": [{"script_score": {"script": ex(src)}}], "boost_mode": "sum"}}}
+        s["expr sort " + name] = {"size": 30, "query": ma, "sort": [{"_script": {"type": "number", "script": ex(src), "order": "desc"}}, "_doc"]}
+    s["expr score params"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['l'].value * k + j", k=0.5, j=3)}}}
+    s["expr score min_score"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['l'].value / 100"), "min_score": 20}}}
+    s["expr score negative"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("0 - doc['l'].value")}}}
+    s["expr score missing field"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['nope'].value")}}}
+    s["expr script query"] = {"size": 30, "query": {"bool": {"filter": [{"script": {"script": ex("doc['l'].value > 2500")}}]}}, "sort": ["_doc"]}
+    s["expr script query count"] = {"size": 0, "track_total_hits": True, "query": {"script": {"script": ex("doc['l'].value > 100 && doc['d'].value < 400")}}}
+    s["expr agg sum"] = {"size": 0, "aggs": {"a": {"sum": {"script": ex("doc['l'].value * 3")}}, "m": {"max": {"script": ex("doc['d'].value + 1")}}, "av": {"avg": {"script": ex("doc['lm'].avg()")}}}}
+    s["expr terms agg"] = {"size": 0, "aggs": {"a": {"terms": {"script": ex("doc['l'].value % 10"), "size": 5}}}}
+    s["expr histogram agg"] = {"size": 0, "aggs": {"a": {"histogram": {"script": ex("doc['l'].value"), "interval": 500}}}}
+    s["expr terms_set"] = {"size": 30, "query": {"terms_set": {"tag": {"terms": ["t1", "t2", "t3"], "minimum_should_match_script": ex("1 + doc['l'].empty")}}}}
+    s["expr min_score fs"] = {"size": 30, "query": {"function_score": {"query": body, "functions": [{"script_score": {"script": ex("doc['l'].value / 100")}}], "min_score": 20, "boost_mode": "replace"}}}
+    s["expr date year"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].date.year")}}}
+    s["expr date method"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].date.getHourOfDay() + doc['dt'].date.dayOfWeek")}}}
+    s["expr date short"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dt'].getYear() + doc['dt'].getMonth()")}}}
+    s["expr geo"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("abs(doc['gp'].lat) + abs(doc['gp'].lon) + doc['gp'].empty")}}}
+    s["expr geo method"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("abs(doc['gp'].getLat()) + abs(doc['gp'].getLon()) + doc['gp'].isEmpty()")}}}
+    s["expr haversin"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("1000 / (1 + haversin(10, 20, doc['gp'].lat, doc['gp'].lon))")}}}
+    s["expr sf"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['sf'].value")}}}
+    s["expr dn"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['dn'].value / 1000000000000")}}}
+    s["expr ul"] = {"size": 30, "query": {"script_score": {"query": body, "script": ex("doc['ul'].value / 1000000")}}}
     return s
 
 
