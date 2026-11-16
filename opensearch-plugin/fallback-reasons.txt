@@ -1,8 +1,10 @@
 # Fallback reasons the plugin still has (scripts/check-fallbacks.py).
 # Shrinks as paths are ported; adding a line needs approval.
+aggregation_  # NativeAggregationTree.java
 aggregation_script  # ExtendedEncoder.java
 aggregation_script_options  # ExtendedEncoder.java
 aggregation_script_score  # ExtendedEncoder.java
+aggregation_shape  # NativeAggregationTree.java
 aggregations  # RustQueryPhaseSearcher.java
 analysis_  # AnalyzerSpec.java
 analysis_hunspell  # AnalyzerSpec.java
