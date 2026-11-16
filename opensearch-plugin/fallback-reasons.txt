@@ -108,6 +108,7 @@ script_expression_per_document  # ExtendedEncoder.java (opt-in index.script.acce
 script_query_script  # ExtendedEncoder.java
 script_score_hammingbit  # ExtendedEncoder.java
 script_score_script  # ExtendedEncoder.java
+script_sort_score  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; per-hit interpreter slower than stock, Huy 2026-11-16)
 scroll_after  # RustQueryPhaseSearcher.java
 search_after  # RustQueryPhaseSearcher.java
 search_after_fields  # SortEncoder.java
