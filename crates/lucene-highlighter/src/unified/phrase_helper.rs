@@ -338,6 +338,9 @@ impl PhraseHelper {
             }
             SpanNode::PayloadCheck(p) => self.retarget_node(&mut p.inner, accepted, rejected),
             SpanNode::PayloadScore(p) => self.retarget_node(&mut p.inner, accepted, rejected),
+            SpanNode::Gap { field, .. } | SpanNode::NoMatch { field } => {
+                field.clone_from(&self.field);
+            }
         }
     }
 }

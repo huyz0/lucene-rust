@@ -78,6 +78,15 @@ pub trait Spans {
     fn end_position(&self) -> i32;
     /// `width()`.
     fn width(&self) -> i32;
+    /// `NearSpansOrdered.advancePosition(spans, position)`: moves to the
+    /// first span starting at or after `position` and returns its start
+    /// (`NO_MORE_POSITIONS` when there is none).
+    fn advance_position(&mut self, position: i32) -> Result<i32> {
+        while self.start_position() < position {
+            self.next_start_position()?;
+        }
+        Ok(self.start_position())
+    }
     /// `collect(collector)`.
     fn collect(&mut self, collector: &mut dyn SpanCollector) -> Result<()>;
     /// `doStartCurrentDoc()`: before the document's first span is scored.
@@ -170,6 +179,10 @@ impl Spans for BoxSpans<'_> {
     #[inline]
     fn width(&self) -> i32 {
         dispatch!(self, s => s.width())
+    }
+    #[inline]
+    fn advance_position(&mut self, position: i32) -> Result<i32> {
+        dispatch!(self, s => s.advance_position(position))
     }
     #[inline]
     fn collect(&mut self, collector: &mut dyn SpanCollector) -> Result<()> {
@@ -488,6 +501,75 @@ impl SpansConjunction {
     }
 }
 
+/// `SpanNearQuery.GapSpans`: a gap of `width` positions in every document,
+/// as long as the other clauses of its near query have one. Its
+/// approximation never ends, its cost is 0 (so a conjunction leads with it)
+/// and it has no confirmation.
+pub(crate) struct GapSpans {
+    doc: i32,
+    pos: i32,
+    width: i32,
+}
+
+impl GapSpans {
+    pub(crate) fn new(width: i32) -> Self {
+        GapSpans {
+            doc: -1,
+            pos: -1,
+            width,
+        }
+    }
+}
+
+impl Spans for GapSpans {
+    fn doc_id(&self) -> i32 {
+        self.doc
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        self.pos = -1;
+        self.doc = self.doc.wrapping_add(1);
+        Ok(self.doc)
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.pos = -1;
+        self.doc = target;
+        Ok(self.doc)
+    }
+    fn cost(&self) -> i64 {
+        0
+    }
+    fn matches(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+    fn match_cost(&self) -> f32 {
+        0.0
+    }
+    fn two_phase(&self) -> bool {
+        false
+    }
+    fn next_start_position(&mut self) -> Result<i32> {
+        self.pos = self.pos.wrapping_add(1);
+        Ok(self.pos)
+    }
+    fn start_position(&self) -> i32 {
+        self.pos
+    }
+    fn end_position(&self) -> i32 {
+        self.pos.wrapping_add(self.width)
+    }
+    fn width(&self) -> i32 {
+        self.width
+    }
+    /// `GapSpans.skipToPosition`.
+    fn advance_position(&mut self, position: i32) -> Result<i32> {
+        self.pos = position;
+        Ok(position)
+    }
+    fn collect(&mut self, _collector: &mut dyn SpanCollector) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// `NearSpansOrdered`, generic over its sub-spans: terms held as
 /// themselves when every clause is a term ([`root_spans`]), so the
 /// per-position walk in `stretchToOrder` calls them statically.
@@ -523,11 +605,7 @@ impl<S: Spans> NearSpansOrdered<S> {
         self.match_width = 0;
         for i in 1..self.subs.len() {
             let prev_end = self.subs[i - 1].end_position();
-            // `advancePosition(spans, prevSpans.endPosition())`.
-            while self.subs[i].start_position() < prev_end {
-                self.subs[i].next_start_position()?;
-            }
-            if self.subs[i].start_position() == NO_MORE_POSITIONS {
+            if self.subs[i].advance_position(prev_end)? == NO_MORE_POSITIONS {
                 self.one_exhausted_in_current_doc = true;
                 return Ok(false);
             }
@@ -1620,6 +1698,8 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
         // Inside another span query a payload score query's weight is its
         // inner query's (`PayloadSpanWeight.getSpans`).
         SpanNode::PayloadScore(p) => spans_with(ctx, &p.inner, true)?.map(|s| sink.sink_boxed(s)),
+        SpanNode::Gap { width, .. } => Some(sink.sink(GapSpans::new(*width))),
+        SpanNode::NoMatch { .. } => None,
         SpanNode::MultiTerm(_) => {
             return Err(Error::IllegalArgument("Rewrite first!".into()));
         }
@@ -1777,7 +1857,7 @@ pub fn weight_terms(q: &SpanNode, out: &mut Vec<(String, Vec<u8>)>) {
             weight_terms(big, out);
             weight_terms(little, out);
         }
-        SpanNode::MultiTerm(_) => {}
+        SpanNode::MultiTerm(_) | SpanNode::Gap { .. } | SpanNode::NoMatch { .. } => {}
     }
 }
 
@@ -1896,6 +1976,11 @@ pub enum SpanNode {
     PayloadCheck(Box<payloads::SpanPayloadCheckQuery>),
     /// `PayloadScoreQuery`.
     PayloadScore(Box<payloads::PayloadScoreQuery>),
+    /// `SpanNearQuery`'s gap clause (`Builder.addGap`): `width` positions
+    /// that match anywhere in an ordered near query.
+    Gap { field: String, width: i32 },
+    /// OpenSearch's `SpanMatchNoDocsQuery`: reports `field`, matches nothing.
+    NoMatch { field: String },
 }
 
 impl SpanNode {
@@ -2009,6 +2094,21 @@ impl SpanNode {
         }
     }
 
+    /// `new SpanNearQuery.SpanGapQuery(field, width)`.
+    pub fn gap(field: impl Into<String>, width: i32) -> Self {
+        SpanNode::Gap {
+            field: field.into(),
+            width,
+        }
+    }
+
+    /// `new SpanMatchNoDocsQuery(field, reason)`.
+    pub fn no_match(field: impl Into<String>) -> Self {
+        SpanNode::NoMatch {
+            field: field.into(),
+        }
+    }
+
     /// `new SpanMultiTermQueryWrapper(query)`.
     pub fn multi_term(query: MultiTermQuery) -> Self {
         SpanNode::MultiTerm(query)
@@ -2017,7 +2117,10 @@ impl SpanNode {
     /// `SpanQuery.getField()`.
     pub fn field(&self) -> Option<&str> {
         match self {
-            SpanNode::Term { field, .. } | SpanNode::FieldMasking { field, .. } => Some(field),
+            SpanNode::Term { field, .. }
+            | SpanNode::FieldMasking { field, .. }
+            | SpanNode::Gap { field, .. }
+            | SpanNode::NoMatch { field } => Some(field),
             SpanNode::Near { clauses, .. } | SpanNode::Or { clauses } => {
                 clauses.first().and_then(SpanNode::field)
             }
@@ -2041,14 +2144,20 @@ impl SpanNode {
     /// `IndexSearcher.rewrite`'s clause-count check adds up.
     pub fn term_count(&self) -> usize {
         match self {
-            SpanNode::Term { .. } | SpanNode::MultiTerm(_) => 1,
+            SpanNode::Term { .. }
+            | SpanNode::MultiTerm(_)
+            | SpanNode::Gap { .. }
+            | SpanNode::NoMatch { .. } => 1,
             _ => self.children().into_iter().map(SpanNode::term_count).sum(),
         }
     }
 
     fn children(&self) -> Vec<&SpanNode> {
         match self {
-            SpanNode::Term { .. } | SpanNode::MultiTerm(_) => Vec::new(),
+            SpanNode::Term { .. }
+            | SpanNode::MultiTerm(_)
+            | SpanNode::Gap { .. }
+            | SpanNode::NoMatch { .. } => Vec::new(),
             SpanNode::Near { clauses, .. } | SpanNode::Or { clauses } => clauses.iter().collect(),
             SpanNode::First { inner, .. }
             | SpanNode::PositionRange { inner, .. }
@@ -2126,6 +2235,13 @@ impl SpanNode {
             },
             SpanNode::FieldMasking { inner, field } => SpanNode::FieldMasking {
                 inner: b(inner)?,
+                field: field.clone(),
+            },
+            SpanNode::Gap { field, width } => SpanNode::Gap {
+                field: field.clone(),
+                width: *width,
+            },
+            SpanNode::NoMatch { field } => SpanNode::NoMatch {
                 field: field.clone(),
             },
             SpanNode::MultiTerm(m) => rewrite_multi_term(searcher, m)?,
@@ -2242,6 +2358,8 @@ impl std::fmt::Display for SpanNode {
             ),
             SpanNode::PayloadCheck(p) => p.fmt(f),
             SpanNode::PayloadScore(p) => p.fmt(f),
+            SpanNode::Gap { field, width } => write!(f, "SpanGap({field}:{width})"),
+            SpanNode::NoMatch { field } => write!(f, "SpanMatchNoDocsQuery({field})"),
         }
     }
 }
