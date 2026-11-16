@@ -735,7 +735,7 @@ pub(crate) mod tests {
             }
             let mut spec = case.spec.clone();
             spec[0] = 5;
-            let Ok(values) = PainlessAggValues::decode(&mut Cursor::new(&spec)) else {
+            let Ok(values) = PainlessAggValues::decode(&mut Cursor::new(&spec), false) else {
                 let e = lucene_engine::status::last_error();
                 // A filter script's `params` has no `doc` or `_source`; an
                 // aggregation script's has them, as Java serves them.
@@ -797,6 +797,71 @@ pub(crate) mod tests {
         assert!(ran >= 20, "{ran} scripts run");
         drop(handle);
         assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
+    /// **Script values prefix.** `AGG_SCRIPT_VALUES` puts a script on the
+    /// bucket node after it, with its mode (doubles or longs), beside a
+    /// `missing` in either order; a second one, another mode, or a node
+    /// without a script to set refuse the tree.
+    #[test]
+    fn script_values_prefix_sets_the_nodes_script() {
+        use lucene_aggs::bucket_aggs::AggNode;
+        use lucene_engine::agg_tree::{
+            decode_tree, AGG_MISSING, AGG_NUMERIC_TERMS, AGG_SCRIPT_VALUES,
+        };
+        let case = cases().into_iter().find(|c| c.sort.is_some()).unwrap();
+        let mut spec = case.spec.clone();
+        spec[0] = 5;
+        let terms = || {
+            let mut b = vec![AGG_NUMERIC_TERMS];
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b.push(0);
+            b.extend_from_slice(&10i32.to_le_bytes());
+            b.extend_from_slice(&[2, 0]);
+            b
+        };
+        let tree = |prefixes: &[Vec<u8>], node: Vec<u8>| {
+            let mut b = vec![1u8];
+            for p in prefixes {
+                b.extend_from_slice(p);
+            }
+            b.extend_from_slice(&node);
+            b.push(0);
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b
+        };
+        let script = |mode: u8| {
+            let mut b = vec![AGG_SCRIPT_VALUES, mode];
+            b.extend_from_slice(&spec);
+            b
+        };
+        let missing = || {
+            let mut b = vec![AGG_MISSING];
+            b.extend_from_slice(&7i64.to_le_bytes());
+            b
+        };
+        for prefixes in [
+            vec![script(0)],
+            vec![script(1)],
+            vec![script(1), missing()],
+            vec![missing(), script(0)],
+        ] {
+            let t = decode_tree(&tree(&prefixes, terms())).unwrap();
+            let AggNode::NumericTerms {
+                script, missing, ..
+            } = &t.nodes[0]
+            else {
+                panic!("a numeric terms")
+            };
+            assert!(script.is_some());
+            assert_eq!(missing.is_some(), prefixes.len() == 2);
+        }
+        assert!(decode_tree(&tree(&[script(0), script(0)], terms())).is_err());
+        assert!(decode_tree(&tree(&[script(2)], terms())).is_err());
+        assert!(decode_tree(&tree(&[missing(), missing()], terms())).is_err());
+        let mut global = vec![7u8];
+        global.push(0);
+        assert!(decode_tree(&tree(&[script(0)], global)).is_err());
     }
 
     #[test]
@@ -1124,6 +1189,7 @@ pub(crate) mod bench {
                 script_id_at: 0,
                 fields,
                 js: None,
+                expr: None,
             }));
             let n = seg.max_doc;
             let mut best = f64::MAX;

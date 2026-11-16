@@ -43,6 +43,9 @@ pub struct TermsDictEntry {
     /// The block-address array and the reverse terms index, for random
     /// access ([`TermsDict`]); `None` for an entry built by hand.
     pub index: Option<Box<TermsDictIndex>>,
+    /// The mask the values are shown through ([`crate::value_mask`]), `None` for a field shown
+    /// as it is. Only [`TermsDict::lookup_ord`] applies it.
+    pub mask: Option<crate::value_mask::SharedMask>,
 }
 
 /// `TermsDictEntry`'s random-access half: where each 64-term block starts
@@ -126,6 +129,7 @@ pub fn read_term_dict_entry(input: &mut SliceInput) -> Result<TermsDictEntry> {
     let index_addresses_length = input.read_i64()?;
 
     Ok(TermsDictEntry {
+        mask: None,
         terms_dict_size,
         max_term_length,
         max_block_length,
@@ -428,6 +432,10 @@ pub struct TermsDict<'a> {
     terms: &'a [u8],
     /// The ordinal of the term the cursor holds; `-1` before any.
     ord: i64,
+    /// The mask of the entry ([`TermsDictEntry::mask`]).
+    mask: Option<crate::value_mask::SharedMask>,
+    /// The masked form of the term [`Self::lookup_ord`] last answered.
+    shown: Vec<u8>,
 }
 
 impl<'a> TermsDict<'a> {
@@ -449,6 +457,8 @@ impl<'a> TermsDict<'a> {
             index_bytes: region(data, index.index_offset, index.index_length)?,
             terms: region(data, entry.terms_data_offset, entry.terms_data_length)?,
             ord: -1,
+            mask: entry.mask.clone(),
+            shown: Vec::new(),
         })
     }
 
@@ -457,8 +467,8 @@ impl<'a> TermsDict<'a> {
         self.size
     }
 
-    /// The current term.
-    pub fn term(&self) -> &[u8] {
+    /// The current term as stored, whatever the mask: for comparisons, never for showing.
+    pub fn raw_term(&self) -> &[u8] {
         &self.cursor.term
     }
 
@@ -467,12 +477,31 @@ impl<'a> TermsDict<'a> {
         self.ord
     }
 
-    /// `seekExact(ord)`: the term of ordinal `ord`.
+    /// `lookupOrd(ord)`: the term of ordinal `ord` as the field shows it -- the masked bytes when
+    /// the entry has a mask ([`crate::value_mask`]). The answer to use whenever the bytes go
+    /// anywhere a user can see, or into a comparison Lucene makes between looked-up values.
+    ///
+    /// # Errors
+    /// An ordinal outside the dictionary, a dictionary that does not decode, or a mask that
+    /// fails.
+    pub fn lookup_ord(&mut self, ord: i64) -> Result<&[u8]> {
+        self.raw_term_at(ord)?;
+        match &self.mask {
+            None => Ok(&self.cursor.term),
+            Some(mask) => {
+                self.shown = mask.apply(&self.cursor.term)?;
+                Ok(&self.shown)
+            }
+        }
+    }
+
+    /// `seekExact(ord)`: the term of ordinal `ord` as stored, whatever the mask -- what a
+    /// `TermsEnum` compares and seeks by. Never for showing.
     // ARITH: `0 <= ord < size <= i64::MAX` (checked first), so `ord >> 6`
     // and `(block << 6) - 1 >= -1` are in range, and `self.ord + 1 <= ord`
     // inside the loop.
     #[allow(clippy::arithmetic_side_effects)]
-    pub fn seek_ord(&mut self, ord: i64) -> Result<&[u8]> {
+    pub fn raw_term_at(&mut self, ord: i64) -> Result<&[u8]> {
         if ord < 0 || ord >= self.size {
             return Err(lucene_store::Error::Corrupted(format!(
                 "terms dict ordinal {ord} outside 0..{}",
@@ -734,6 +763,7 @@ mod tests {
     #[test]
     fn decode_all_terms_empty_dict() {
         let entry = TermsDictEntry {
+            mask: None,
             terms_dict_size: 0,
             max_term_length: 0,
             max_block_length: 8192,
@@ -756,6 +786,7 @@ mod tests {
         data.extend_from_slice(b"apple");
 
         let entry = TermsDictEntry {
+            mask: None,
             terms_dict_size: 1,
             max_term_length: 5,
             max_block_length: 8192,
@@ -788,6 +819,7 @@ mod tests {
         data.extend_from_slice(&compressed_body);
 
         let entry = TermsDictEntry {
+            mask: None,
             terms_dict_size: 3,
             max_term_length: 11,
             max_block_length: 8192,
@@ -861,6 +893,7 @@ mod tests {
         data.extend_from_slice(&compressed_body);
 
         let entry = TermsDictEntry {
+            mask: None,
             terms_dict_size: 2,
             max_term_length: 39,
             max_block_length: 8192,
@@ -892,6 +925,7 @@ mod tests {
         data.extend_from_slice(&compressed_body);
 
         let entry = TermsDictEntry {
+            mask: None,
             terms_dict_size: 2,
             max_term_length: 14,
             max_block_length: 8192,
@@ -914,6 +948,7 @@ mod tests {
             write_vint(&mut data, first_len);
             data.extend_from_slice(b"apple");
             let entry = TermsDictEntry {
+                mask: None,
                 terms_dict_size: 1,
                 max_term_length: 5,
                 max_block_length: 8192,
@@ -1029,6 +1064,7 @@ mod tests {
         let data = [0u8; 64];
         for (offset, length) in [(i64::MAX, 1i64), (0, i64::MAX), (-1, 4), (4, -1)] {
             let entry = TermsDictEntry {
+                mask: None,
                 terms_dict_size: 1,
                 max_term_length: 4,
                 max_block_length: 8192,
@@ -1059,6 +1095,7 @@ mod tests {
             write_vint(&mut data, 100);
             data.extend_from_slice(&[0u8; 64]);
             let entry = TermsDictEntry {
+                mask: None,
                 terms_dict_size: 3,
                 max_term_length: 11,
                 max_block_length: 8,
@@ -1080,6 +1117,7 @@ mod tests {
             data.extend_from_slice(&[0u8; 8]);
 
             let entry = TermsDictEntry {
+                mask: None,
                 terms_dict_size: 3,
                 max_term_length: 11,
                 max_block_length: 8192,
@@ -1111,6 +1149,7 @@ mod tests {
                 data.extend_from_slice(&encode_literal_lz4(&block_body));
 
                 let entry = TermsDictEntry {
+                    mask: None,
                     terms_dict_size: 2,
                     max_term_length: 11,
                     max_block_length: 8192,

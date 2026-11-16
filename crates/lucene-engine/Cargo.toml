@@ -19,6 +19,7 @@ lucene-tensor = { path = "../lucene-tensor" }
 lucene-sparse = { path = "../lucene-sparse" }
 # Painless scripts run natively (`painless_score`).
 lucene-painless = { path = "../lucene-painless" }
+lucene-expressions = { path = "../lucene-expressions" }
 lucene-analysis = { path = "../lucene-analysis" }
 # ICU's Thai dictionary word iterator, which `ThaiTokenizer` segments with,
 # and with `analysis-icu` the module's own factories.
