@@ -1,0 +1,388 @@
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by net.bytebuddy.dynamic.loading.ClassInjector$UsingUnsafe$Dispatcher$CreationAction
+WARNING: Please consider reporting this to the maintainers of class net.bytebuddy.dynamic.loading.ClassInjector$UsingUnsafe$Dispatcher$CreationAction
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+[2026-11-16T10:53:23,618][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] version[3.9.0], pid[14957], build[tar/4ee42a94e87f66fbf1e62a9871b1b87f91e02472/2026-09-23T01:01:31.883915140Z], OS[Linux/6.18.44-fc-v470/amd64], JVM[Eclipse Adoptium/OpenJDK 64-Bit Server VM/25.0.4.1/25.0.4.1+1-LTS]
+[2026-11-16T10:53:23,620][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] JVM home [/root/os-native/dist/plugin-knn/jdk], using bundled JDK/JRE [true]
+[2026-11-16T10:53:23,620][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] JVM arguments [-Xshare:auto, -Dopensearch.networkaddress.cache.ttl=60, -Dopensearch.networkaddress.cache.negative.ttl=10, -XX:+AlwaysPreTouch, -Xss1m, -Djava.awt.headless=true, -Dfile.encoding=UTF-8, -Djna.nosys=true, -XX:-OmitStackTraceInFastThrow, -XX:+ShowCodeDetailsInExceptionMessages, -Dio.netty.noUnsafe=true, -Dio.netty.noKeySetOptimization=true, -Dio.netty.recycler.maxCapacityPerThread=0, -Dio.netty.allocator.numDirectArenas=0, -Dlog4j.shutdownHookEnabled=false, -Dlog4j2.disable.jmx=true, -Djava.locale.providers=SPI,CLDR, -Xms1g, -Xmx1g, -XX:+UseG1GC, -XX:G1ReservePercent=25, -XX:InitiatingHeapOccupancyPercent=30, -Djava.io.tmpdir=/tmp/opensearch-1323719575607472461, -XX:+HeapDumpOnOutOfMemoryError, -XX:HeapDumpPath=data, -XX:ErrorFile=logs/hs_err_pid%p.log, -Xlog:gc*,gc+age=trace,safepoint:file=logs/gc.log:utctime,pid,tags:filecount=32,filesize=64m, --add-modules=jdk.incubator.vector, -javaagent:agent/opensearch-agent.jar, --add-opens=java.base/java.nio=ALL-UNNAMED, -Dorg.apache.lucene.store.MMapDirectory.sharedArenaMaxPermits=1, -XX:+UseCompactObjectHeaders, --enable-native-access=ALL-UNNAMED, -Xms1g, -Xmx1g, -Djava.library.path=/root/os-native/dist/plugin-knn/plugins/opensearch-knn/lib, -XX:MaxDirectMemorySize=536870912, -Dopensearch.path.home=/root/os-native/dist/plugin-knn, -Dopensearch.path.conf=/root/os-native/dist/plugin-knn/config, -Dopensearch.distribution.type=tar, -Dopensearch.bundled_jdk=true]
+[2026-11-16T10:53:23,840][INFO ][o.a.l.i.v.PanamaVectorizationProvider] [lucene-rust-upgrade-plugin] Java vector incubator API enabled; uses preferredBitSize=512; FMA enabled
+[2026-11-16T10:53:24,944][INFO ][o.l.o.RustSearchPlugin   ] [lucene-rust-upgrade-plugin] lucene-rust: the k-NN plugin is installed; it serves knn_vector and knn
+[2026-11-16T10:53:25,123][INFO ][o.l.o.NativeMemory       ] [lucene-rust-upgrade-plugin] lucene-rust: off-heap limit 5.6gb (machine or container 13.3gb, heap 1gb)
+[2026-11-16T10:53:25,130][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Loading 1 QueryBuilderProtoConverter extensions from other plugins
+[2026-11-16T10:53:25,131][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Discovered QueryBuilderProtoConverter extension: org.opensearch.knn.grpc.proto.request.search.query.KNNQueryBuilderProtoConverter (handles: KNN)
+[2026-11-16T10:53:25,131][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Successfully loaded 1 QueryBuilderProtoConverter extensions
+[2026-11-16T10:53:25,132][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] No AggregationBuilderProtoConverter extensions found from other plugins
+[2026-11-16T10:53:25,132][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] No AggregateProtoConverter extensions found from other plugins
+[2026-11-16T10:53:25,133][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Found 0 gRPC interceptor providers [], will initialize during component creation
+[2026-11-16T10:53:25,133][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Successfully loaded 0 GrpcServiceFactory extensions []
+[2026-11-16T10:53:25,135][INFO ][o.o.i.r.ReindexModulePlugin] [lucene-rust-upgrade-plugin] ReindexPlugin reloadSPI called
+[2026-11-16T10:53:25,135][INFO ][o.o.i.r.ReindexModulePlugin] [lucene-rust-upgrade-plugin] Unable to find any implementation for RemoteReindexExtension
+[2026-11-16T10:53:25,156][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [aggs-matrix-stats]
+[2026-11-16T10:53:25,157][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [analysis-common]
+[2026-11-16T10:53:25,157][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [cache-common]
+[2026-11-16T10:53:25,157][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [concurrency-limit]
+[2026-11-16T10:53:25,157][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [geo]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [ingest-common]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [ingest-geoip]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [ingest-user-agent]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [lang-expression]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [lang-mustache]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [lang-painless]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [mapper-extras]
+[2026-11-16T10:53:25,158][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [opensearch-dashboards]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [parent-join]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [percolator]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [rank-eval]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [reindex]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [repository-url]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [rule-framework]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [search-pipeline-common]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [store-subdirectory]
+[2026-11-16T10:53:25,159][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [systemd]
+[2026-11-16T10:53:25,160][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [transport-grpc]
+[2026-11-16T10:53:25,160][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded module [transport-netty4]
+[2026-11-16T10:53:25,160][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded plugin [lucene-rust]
+[2026-11-16T10:53:25,160][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded plugin [opensearch-custom-codecs]
+[2026-11-16T10:53:25,160][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] loaded plugin [opensearch-knn]
+[2026-11-16T10:53:25,211][INFO ][o.o.e.NodeEnvironment    ] [lucene-rust-upgrade-plugin] using [1] data paths, mounts [[/ (/dev/vda)]], net usable_space [10.6gb], net total_space [251.9gb], types [ext4]
+[2026-11-16T10:53:25,212][INFO ][o.o.e.NodeEnvironment    ] [lucene-rust-upgrade-plugin] heap size [1gb], compressed ordinary object pointers [true]
+[2026-11-16T10:53:25,336][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] node name [lucene-rust-upgrade-plugin], node ID [Yqxe5hBmTeeUawDppOwnCg], cluster name [opensearch], roles [ingest, remote_cluster_client, data, cluster_manager]
+[2026-11-16T10:53:25,369][INFO ][o.o.e.ExtensionsManager  ] [lucene-rust-upgrade-plugin] ExtensionsManager initialized
+[2026-11-16T10:53:25,960][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index _na_ from [false] to [true]
+[2026-11-16T10:53:25,960][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index _na_.
+[2026-11-16T10:53:25,960][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index _na_ with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:26,133][INFO ][o.l.o.RustAnalysis       ] [lucene-rust-upgrade-plugin] lucene-rust: [japanese] not registered, its data pack [kuromoji] is not installed: [japanese]: the accelerated tokenizer is unavailable: analysis spec: IOException: data pack kuromoji: kuromoji/character_definition.dat.z is not in any pack directory (/root/os-native/dist/plugin-knn/config/lucene-rust/packs, /root/os-native/dist/plugin-knn/plugins/lucene-rust/packs; LUCENE_RUST_PACKS), and this build has no copy compiled in
+[2026-11-16T10:53:26,133][INFO ][o.l.o.RustAnalysis       ] [lucene-rust-upgrade-plugin] lucene-rust: [korean] not registered, its data pack [nori] is not installed: [korean]: the accelerated tokenizer is unavailable: analysis spec: IOException: data pack nori: nori/character_definition.dat.z is not in any pack directory (/root/os-native/dist/plugin-knn/config/lucene-rust/packs, /root/os-native/dist/plugin-knn/plugins/lucene-rust/packs; LUCENE_RUST_PACKS), and this build has no copy compiled in
+[2026-11-16T10:53:26,133][INFO ][o.l.o.RustAnalysis       ] [lucene-rust-upgrade-plugin] lucene-rust: [chinese] not registered, its data pack [smartcn] is not installed: [chinese]: the accelerated tokenizer is unavailable: analysis spec: IOException: data pack smartcn: smartcn/bigramdict.mem.z is not in any pack directory (/root/os-native/dist/plugin-knn/config/lucene-rust/packs, /root/os-native/dist/plugin-knn/plugins/lucene-rust/packs; LUCENE_RUST_PACKS), and this build has no copy compiled in
+[2026-11-16T10:53:26,164][INFO ][o.l.o.RustAnalysis       ] [lucene-rust-upgrade-plugin] lucene-rust: [japanese] not registered, its data pack [kuromoji] is not installed: [japanese]: the accelerated tokenizer is unavailable: analysis spec: IOException: data pack kuromoji: kuromoji/character_definition.dat.z is not in any pack directory (/root/os-native/dist/plugin-knn/config/lucene-rust/packs, /root/os-native/dist/plugin-knn/plugins/lucene-rust/packs; LUCENE_RUST_PACKS), and this build has no copy compiled in
+[2026-11-16T10:53:26,165][INFO ][o.l.o.RustAnalysis       ] [lucene-rust-upgrade-plugin] lucene-rust: [korean] not registered, its data pack [nori] is not installed: [korean]: the accelerated tokenizer is unavailable: analysis spec: IOException: data pack nori: nori/character_definition.dat.z is not in any pack directory (/root/os-native/dist/plugin-knn/config/lucene-rust/packs, /root/os-native/dist/plugin-knn/plugins/lucene-rust/packs; LUCENE_RUST_PACKS), and this build has no copy compiled in
+[2026-11-16T10:53:26,165][INFO ][o.l.o.RustAnalysis       ] [lucene-rust-upgrade-plugin] lucene-rust: [chinese] not registered, its data pack [smartcn] is not installed: [chinese]: the accelerated tokenizer is unavailable: analysis spec: IOException: data pack smartcn: smartcn/bigramdict.mem.z is not in any pack directory (/root/os-native/dist/plugin-knn/config/lucene-rust/packs, /root/os-native/dist/plugin-knn/plugins/lucene-rust/packs; LUCENE_RUST_PACKS), and this build has no copy compiled in
+[2026-11-16T10:53:26,220][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index _na_ from [false] to [true]
+[2026-11-16T10:53:26,220][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index _na_.
+[2026-11-16T10:53:26,220][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index _na_ with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:26,728][WARN ][stderr                   ] [lucene-rust-upgrade-plugin] SLF4J(W): No SLF4J providers were found.
+[2026-11-16T10:53:26,728][WARN ][stderr                   ] [lucene-rust-upgrade-plugin] SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+[2026-11-16T10:53:26,728][WARN ][stderr                   ] [lucene-rust-upgrade-plugin] SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+[2026-11-16T10:53:27,687][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MATCH_ALL: org.opensearch.transport.grpc.proto.request.search.query.MatchAllQueryBuilderProtoConverter
+[2026-11-16T10:53:27,688][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MATCH_NONE: org.opensearch.transport.grpc.proto.request.search.query.MatchNoneQueryBuilderProtoConverter
+[2026-11-16T10:53:27,689][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for TERM: org.opensearch.transport.grpc.proto.request.search.query.TermQueryBuilderProtoConverter
+[2026-11-16T10:53:27,689][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for TERMS: org.opensearch.transport.grpc.proto.request.search.query.TermsQueryBuilderProtoConverter
+[2026-11-16T10:53:27,690][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MATCH_PHRASE: org.opensearch.transport.grpc.proto.request.search.query.MatchPhraseQueryBuilderProtoConverter
+[2026-11-16T10:53:27,690][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MULTI_MATCH: org.opensearch.transport.grpc.proto.request.search.query.MultiMatchQueryBuilderProtoConverter
+[2026-11-16T10:53:27,691][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for BOOL: org.opensearch.transport.grpc.proto.request.search.query.BoolQueryBuilderProtoConverter
+[2026-11-16T10:53:27,691][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for SCRIPT: org.opensearch.transport.grpc.proto.request.search.query.ScriptQueryBuilderProtoConverter
+[2026-11-16T10:53:27,691][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for EXISTS: org.opensearch.transport.grpc.proto.request.search.query.ExistsQueryBuilderProtoConverter
+[2026-11-16T10:53:27,692][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for REGEXP: org.opensearch.transport.grpc.proto.request.search.query.RegexpQueryBuilderProtoConverter
+[2026-11-16T10:53:27,692][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for WILDCARD: org.opensearch.transport.grpc.proto.request.search.query.WildcardQueryBuilderProtoConverter
+[2026-11-16T10:53:27,692][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for GEO_BOUNDING_BOX: org.opensearch.transport.grpc.proto.request.search.query.GeoBoundingBoxQueryBuilderProtoConverter
+[2026-11-16T10:53:27,693][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for GEO_DISTANCE: org.opensearch.transport.grpc.proto.request.search.query.GeoDistanceQueryBuilderProtoConverter
+[2026-11-16T10:53:27,694][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for NESTED: org.opensearch.transport.grpc.proto.request.search.query.NestedQueryBuilderProtoConverter
+[2026-11-16T10:53:27,694][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for IDS: org.opensearch.transport.grpc.proto.request.search.query.IdsQueryBuilderProtoConverter
+[2026-11-16T10:53:27,694][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for RANGE: org.opensearch.transport.grpc.proto.request.search.query.RangeQueryBuilderProtoConverter
+[2026-11-16T10:53:27,695][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for TERMS_SET: org.opensearch.transport.grpc.proto.request.search.query.TermsSetQueryBuilderProtoConverter
+[2026-11-16T10:53:27,695][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for CONSTANT_SCORE: org.opensearch.transport.grpc.proto.request.search.query.ConstantScoreQueryBuilderProtoConverter
+[2026-11-16T10:53:27,696][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for FUZZY: org.opensearch.transport.grpc.proto.request.search.query.FuzzyQueryBuilderProtoConverter
+[2026-11-16T10:53:27,696][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for PREFIX: org.opensearch.transport.grpc.proto.request.search.query.PrefixQueryBuilderProtoConverter
+[2026-11-16T10:53:27,697][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MATCH: org.opensearch.transport.grpc.proto.request.search.query.MatchQueryBuilderProtoConverter
+[2026-11-16T10:53:27,697][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MATCH_BOOL_PREFIX: org.opensearch.transport.grpc.proto.request.search.query.MatchBoolPrefixQueryBuilderProtoConverter
+[2026-11-16T10:53:27,697][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for MATCH_PHRASE_PREFIX: org.opensearch.transport.grpc.proto.request.search.query.MatchPhrasePrefixQueryBuilderProtoConverter
+[2026-11-16T10:53:27,698][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for FUNCTION_SCORE: org.opensearch.transport.grpc.proto.request.search.query.functionscore.FunctionScoreQueryBuilderProtoConverter
+[2026-11-16T10:53:27,698][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Set registry on 24 converters
+[2026-11-16T10:53:27,698][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterRegistryImpl] [lucene-rust-upgrade-plugin] Registered 24 built-in query converters
+[2026-11-16T10:53:27,700][INFO ][o.o.t.g.p.r.s.a.AggregationBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregation converter for MIN: org.opensearch.transport.grpc.proto.request.search.aggregation.metrics.MinAggregationBuilderProtoConverter
+[2026-11-16T10:53:27,700][INFO ][o.o.t.g.p.r.s.a.AggregationBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregation converter for MAX: org.opensearch.transport.grpc.proto.request.search.aggregation.metrics.MaxAggregationBuilderProtoConverter
+[2026-11-16T10:53:27,701][INFO ][o.o.t.g.p.r.s.a.AggregationBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregation converter for TERMS_AGGREGATION: org.opensearch.transport.grpc.proto.request.search.aggregation.bucket.terms.TermsAggregationBuilderConverter
+[2026-11-16T10:53:27,701][INFO ][o.o.t.g.p.r.s.a.AggregationBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Set registry on 3 aggregation converter(s)
+[2026-11-16T10:53:27,702][INFO ][o.o.t.g.p.r.s.a.AggregationBuilderProtoConverterRegistryImpl] [lucene-rust-upgrade-plugin] Registered 3 built-in aggregation converter(s)
+[2026-11-16T10:53:27,702][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.metrics.InternalMin: org.opensearch.transport.grpc.proto.response.search.aggregation.metrics.MinAggregateProtoConverter
+[2026-11-16T10:53:27,703][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.metrics.InternalMax: org.opensearch.transport.grpc.proto.response.search.aggregation.metrics.MaxAggregateProtoConverter
+[2026-11-16T10:53:27,703][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.bucket.terms.DoubleTerms: org.opensearch.transport.grpc.proto.response.search.aggregation.bucket.terms.DoubleTermsAggregateConverter
+[2026-11-16T10:53:27,704][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.bucket.terms.LongTerms: org.opensearch.transport.grpc.proto.response.search.aggregation.bucket.terms.LongTermsAggregateConverter
+[2026-11-16T10:53:27,704][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.bucket.terms.UnsignedLongTerms: org.opensearch.transport.grpc.proto.response.search.aggregation.bucket.terms.UnsignedLongTermsAggregateConverter
+[2026-11-16T10:53:27,705][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.bucket.terms.StringTerms: org.opensearch.transport.grpc.proto.response.search.aggregation.bucket.terms.StringTermsAggregateConverter
+[2026-11-16T10:53:27,705][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered aggregate converter for org.opensearch.search.aggregations.bucket.terms.UnmappedTerms: org.opensearch.transport.grpc.proto.response.search.aggregation.bucket.terms.UnmappedTermsAggregateConverter
+[2026-11-16T10:53:27,705][INFO ][o.o.t.g.p.r.s.a.AggregateProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Set registry on 7 aggregate converter(s)
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Injecting registry and registering 1 external QueryBuilderProtoConverter(s)
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Processing external converter: org.opensearch.knn.grpc.proto.request.search.query.KNNQueryBuilderProtoConverter (handles: KNN)
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Injected registry into converter: org.opensearch.knn.grpc.proto.request.search.query.KNNQueryBuilderProtoConverter
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Registered query converter for KNN: org.opensearch.knn.grpc.proto.request.search.query.KNNQueryBuilderProtoConverter
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Successfully injected registry and registered all 1 external converters
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.p.r.s.q.QueryBuilderProtoConverterSpiRegistry] [lucene-rust-upgrade-plugin] Set registry on 25 converters
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] Updated registry on all converters to include external converters
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] No external AggregationBuilderProtoConverter(s) to register
+[2026-11-16T10:53:27,706][INFO ][o.o.t.g.GrpcPlugin       ] [lucene-rust-upgrade-plugin] No external AggregateProtoConverter(s) to register
+[2026-11-16T10:53:28,684][INFO ][o.o.t.NettyAllocator     ] [lucene-rust-upgrade-plugin] creating NettyAllocator with the following configs: [name=unpooled, suggested_max_allocation_size=256kb, factors={opensearch.unsafe.use_unpooled_allocator=null, g1gc_enabled=true, g1gc_region_size=1mb, heap_size=1gb}]
+[2026-11-16T10:53:28,757][INFO ][o.o.d.DiscoveryModule    ] [lucene-rust-upgrade-plugin] using discovery type [single-node] and seed hosts providers [settings]
+[2026-11-16T10:53:29,129][WARN ][o.o.g.DanglingIndicesState] [lucene-rust-upgrade-plugin] gateway.auto_import_dangling_indices is disabled, dangling indices will not be automatically detected or imported and must be managed manually
+[2026-11-16T10:53:29,417][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] initialized
+[2026-11-16T10:53:29,417][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] starting ...
+[2026-11-16T10:53:29,548][INFO ][o.o.t.TransportService   ] [lucene-rust-upgrade-plugin] publish_address {127.0.0.1:9300}, bound_addresses {127.0.0.1:9300}
+[2026-11-16T10:53:29,549][INFO ][o.o.t.TransportService   ] [lucene-rust-upgrade-plugin] Remote clusters initialized successfully.
+[2026-11-16T10:53:29,607][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:53:29,608][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:53:29,608][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:29,682][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index knn from [false] to [true]
+[2026-11-16T10:53:29,682][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index knn.
+[2026-11-16T10:53:29,682][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index knn with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:29,694][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index nest from [false] to [true]
+[2026-11-16T10:53:29,695][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index nest.
+[2026-11-16T10:53:29,695][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index nest with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:29,701][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:53:29,701][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:53:29,701][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:29,827][WARN ][o.o.b.BootstrapChecks    ] [lucene-rust-upgrade-plugin] max file descriptors [20000] for opensearch process is too low, increase to at least [65535]
+[2026-11-16T10:53:29,828][WARN ][o.o.b.BootstrapChecks    ] [lucene-rust-upgrade-plugin] max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144]
+[2026-11-16T10:53:29,829][INFO ][o.o.c.c.Coordinator      ] [lucene-rust-upgrade-plugin] cluster UUID [k3GWVgu-RKCy3OnAcDZm7w]
+[2026-11-16T10:53:29,933][INFO ][o.o.c.s.ClusterManagerService] [lucene-rust-upgrade-plugin] Tasks batched with key: org.opensearch.cluster.coordination.JoinHelper, count:3 and sample tasks: elected-as-cluster-manager ([1] nodes joined)[{lucene-rust-upgrade-plugin}{Yqxe5hBmTeeUawDppOwnCg}{uEoHz352RySQtPWjwNUvUQ}{127.0.0.1}{127.0.0.1:9300}{dimr}{shard_indexing_pressure_enabled=true} elect leader, _BECOME_CLUSTER_MANAGER_TASK_, _FINISH_ELECTION_], term: 2, version: 25, delta: cluster-manager node changed {previous [], current [{lucene-rust-upgrade-plugin}{Yqxe5hBmTeeUawDppOwnCg}{uEoHz352RySQtPWjwNUvUQ}{127.0.0.1}{127.0.0.1:9300}{dimr}{shard_indexing_pressure_enabled=true}]}
+[2026-11-16T10:53:29,972][INFO ][o.o.c.s.ClusterApplierService] [lucene-rust-upgrade-plugin] cluster-manager node changed {previous [], current [{lucene-rust-upgrade-plugin}{Yqxe5hBmTeeUawDppOwnCg}{uEoHz352RySQtPWjwNUvUQ}{127.0.0.1}{127.0.0.1:9300}{dimr}{shard_indexing_pressure_enabled=true}]}, term: 2, version: 25, reason: Publication{term=2, version=25}
+[2026-11-16T10:53:29,989][INFO ][o.o.d.PeerFinder         ] [lucene-rust-upgrade-plugin] setting findPeersInterval to [1s] as node commission status = [true] for local node [{lucene-rust-upgrade-plugin}{Yqxe5hBmTeeUawDppOwnCg}{uEoHz352RySQtPWjwNUvUQ}{127.0.0.1}{127.0.0.1:9300}{dimr}{shard_indexing_pressure_enabled=true}]
+[2026-11-16T10:53:29,997][INFO ][o.o.h.AbstractHttpServerTransport] [lucene-rust-upgrade-plugin] publish_address {127.0.0.1:9240}, bound_addresses {127.0.0.1:9240}
+[2026-11-16T10:53:29,997][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] started
+[2026-11-16T10:53:30,045][INFO ][o.o.r.RepositoriesService] [lucene-rust-upgrade-plugin] created repository [fs][upgrade_repo] in [1.6ms]
+[2026-11-16T10:53:30,055][INFO ][o.o.c.s.ClusterManagerTaskThrottler] [lucene-rust-upgrade-plugin] Starting cluster manager throttling as all nodes are higher than or equal to 2.5.0
+[2026-11-16T10:53:30,058][INFO ][o.o.g.GatewayService     ] [lucene-rust-upgrade-plugin] recovered [4] indices into cluster_state
+[2026-11-16T10:53:30,060][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index z8g3kbsuSPGDaodKNf8iOA from [false] to [true]
+[2026-11-16T10:53:30,061][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index z8g3kbsuSPGDaodKNf8iOA.
+[2026-11-16T10:53:30,061][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index z8g3kbsuSPGDaodKNf8iOA with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:30,095][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[z8g3kbsuSPGDaodKNf8iOA/63ORZQF3QjOYIVxnUbdSbA]
+[2026-11-16T10:53:30,158][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index z8g3kbsuSPGDaodKNf8iOA from [true] to [true]
+[2026-11-16T10:53:30,160][INFO ][o.o.c.m.MetadataIndexTemplateService] [lucene-rust-upgrade-plugin] adding component template [logs_preset@settings]
+[2026-11-16T10:53:30,205][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index 9Zv2frpyQlOMjzed4xJnnA from [false] to [true]
+[2026-11-16T10:53:30,205][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index 9Zv2frpyQlOMjzed4xJnnA.
+[2026-11-16T10:53:30,205][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index 9Zv2frpyQlOMjzed4xJnnA with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:30,215][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[9Zv2frpyQlOMjzed4xJnnA/YfgF-Bw0RbCkC1aNxEdSsg]
+[2026-11-16T10:53:30,220][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index 9Zv2frpyQlOMjzed4xJnnA from [true] to [true]
+[2026-11-16T10:53:30,228][INFO ][o.o.c.m.MetadataIndexTemplateService] [lucene-rust-upgrade-plugin] adding component template [logs_preset@mappings]
+[2026-11-16T10:53:30,341][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:53:30,342][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:53:30,342][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:30,345][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:53:30,599][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:53:30,609][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index knn from [false] to [true]
+[2026-11-16T10:53:30,609][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index knn.
+[2026-11-16T10:53:30,609][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index knn with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:30,612][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[knn/J4M2ggeLTu2OuEszFisNmA]
+[2026-11-16T10:53:30,616][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index knn from [true] to [true]
+[2026-11-16T10:53:30,619][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index nest from [false] to [true]
+[2026-11-16T10:53:30,619][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index nest.
+[2026-11-16T10:53:30,619][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index nest with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:30,621][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[nest/hhgiMFxcSoSUv0twre5rBg]
+[2026-11-16T10:53:30,624][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index nest from [true] to [true]
+[2026-11-16T10:53:31,107][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:53:31,108][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:53:31,108][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:31,111][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:53:31,118][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:53:31,198][INFO ][o.o.c.r.a.AllocationService] [lucene-rust-upgrade-plugin] Cluster health status changed from [RED] to [GREEN] (reason: [shards started [[multi][0]]]).
+[2026-11-16T10:53:52,724][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:53:52,724][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:53:52,724][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:52,727][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:53:52,731][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:53:52,845][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:53:52,845][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:53:52,846][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:52,848][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:53:52,851][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:53:52,969][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:53:52,969][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:53:52,970][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:52,972][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:53:52,975][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:53:53,062][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:53:53,062][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:53:53,062][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:53:53,064][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:53:53,066][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:54:00,567][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:00,571][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:00,571][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:00,573][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:00,576][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:00,699][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:00,699][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:00,700][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:00,702][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:00,704][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:00,784][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:00,784][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:00,784][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:00,786][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:00,789][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:00,875][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:00,875][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:00,875][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:00,877][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:00,880][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:02,163][INFO ][o.o.r.b.BlobStoreProvider] [lucene-rust-upgrade-plugin] initialized blob store for repository [fs][upgrade_repo] in [941.4micros]
+[2026-11-16T10:54:02,173][INFO ][o.o.r.RepositoriesService] [lucene-rust-upgrade-plugin] put/update repository [upgrade_repo] took [13.9ms]
+[2026-11-16T10:54:02,205][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index knn from [false] to [true]
+[2026-11-16T10:54:02,205][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index knn.
+[2026-11-16T10:54:02,205][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index knn with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,210][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index nest from [false] to [true]
+[2026-11-16T10:54:02,210][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index nest.
+[2026-11-16T10:54:02,210][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index nest with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,213][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:54:02,214][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:54:02,214][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,218][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:02,219][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:02,219][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,285][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:02,285][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:02,285][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,287][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:02,293][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:02,296][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_nest from [false] to [true]
+[2026-11-16T10:54:02,299][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_nest.
+[2026-11-16T10:54:02,299][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_nest with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,300][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_nest/mISNbQ15QwmNmHFeTrWQNA]
+[2026-11-16T10:54:02,302][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_nest from [true] to [true]
+[2026-11-16T10:54:02,306][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_knn from [false] to [true]
+[2026-11-16T10:54:02,306][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_knn.
+[2026-11-16T10:54:02,306][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_knn with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,307][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_knn/eh6aakl2RFi8_mOKYyaY3g]
+[2026-11-16T10:54:02,308][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_knn from [true] to [true]
+[2026-11-16T10:54:02,624][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:02,625][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:02,625][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:02,627][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:02,631][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:02,810][INFO ][o.o.c.r.a.AllocationService] [lucene-rust-upgrade-plugin] Cluster health status changed from [YELLOW] to [GREEN] (reason: [shards started [[restored_single][0]]]).
+[2026-11-16T10:54:08,480][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:08,480][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:08,481][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:08,482][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:08,485][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:08,593][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:08,594][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:08,594][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:08,596][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:08,598][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:08,717][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:08,717][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:08,717][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:08,719][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:08,721][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:08,809][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:08,809][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:08,809][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:08,811][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:08,813][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:14,071][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:14,072][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:14,072][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:14,073][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:14,076][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:14,196][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:14,196][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:14,196][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:14,197][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:14,200][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:14,268][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:14,269][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:14,269][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:14,270][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:14,273][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:14,353][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:14,353][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:14,353][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:14,355][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:14,357][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:15,334][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_knn][0] starting segment upgrade upgradeOnlyAncientSegments=true
+[2026-11-16T10:54:15,479][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_knn][0] finished segment upgrade
+[2026-11-16T10:54:15,480][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_nest][0] starting segment upgrade upgradeOnlyAncientSegments=true
+[2026-11-16T10:54:15,541][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_nest][0] finished segment upgrade
+[2026-11-16T10:54:15,542][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_multi][0] starting segment upgrade upgradeOnlyAncientSegments=true
+[2026-11-16T10:54:15,826][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_multi][0] finished segment upgrade
+[2026-11-16T10:54:15,827][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_multi][1] starting segment upgrade upgradeOnlyAncientSegments=true
+[2026-11-16T10:54:16,039][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_multi][1] finished segment upgrade
+[2026-11-16T10:54:16,039][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_multi][2] starting segment upgrade upgradeOnlyAncientSegments=true
+[2026-11-16T10:54:16,199][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_multi][2] finished segment upgrade
+[2026-11-16T10:54:16,199][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_single][0] starting segment upgrade upgradeOnlyAncientSegments=true
+[2026-11-16T10:54:16,644][INFO ][o.o.i.e.Engine           ] [lucene-rust-upgrade-plugin] [restored_single][0] finished segment upgrade
+[2026-11-16T10:54:22,646][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:22,647][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:22,647][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:22,652][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:22,656][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:22,768][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:22,769][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:22,769][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:22,770][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:22,773][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:22,891][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:22,891][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:22,891][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:22,893][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:22,895][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:22,983][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [false] to [true]
+[2026-11-16T10:54:22,983][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_single.
+[2026-11-16T10:54:22,984][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:22,986][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_single/7zZ4hvGkQpyKtOAVIJFD5A]
+[2026-11-16T10:54:22,988][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_single from [true] to [true]
+[2026-11-16T10:54:28,079][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:28,079][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:28,079][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:28,085][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:28,087][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:28,227][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:28,227][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:28,227][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:28,229][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:28,231][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:28,303][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:28,303][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:28,303][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:28,305][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:28,307][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:28,386][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [false] to [true]
+[2026-11-16T10:54:28,386][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index restored_multi.
+[2026-11-16T10:54:28,386][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index restored_multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:28,387][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[restored_multi/-JqGqV2MTFC9WyFMwHy0aQ]
+[2026-11-16T10:54:28,389][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index restored_multi from [true] to [true]
+[2026-11-16T10:54:34,531][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:54:34,531][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:54:34,531][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:34,533][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:54:34,535][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:54:34,644][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:54:34,644][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:54:34,644][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:34,645][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:54:34,647][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:54:34,756][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:54:34,756][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:54:34,756][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:34,757][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:54:34,760][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:54:34,831][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [false] to [true]
+[2026-11-16T10:54:34,831][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index single.
+[2026-11-16T10:54:34,831][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index single with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:34,832][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[single/uqKIBGMfTKC4n1GrGLMvtw]
+[2026-11-16T10:54:34,834][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index single from [true] to [true]
+[2026-11-16T10:54:38,623][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:38,623][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:38,623][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:38,630][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:38,632][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:38,759][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:38,760][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:38,760][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:38,761][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:38,763][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:38,827][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:38,827][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:38,827][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:38,829][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:38,831][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:38,916][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [false] to [true]
+[2026-11-16T10:54:38,917][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating maxThreadCount from [0] to [2] and maxMergeCount from [0] to [7] for index multi.
+[2026-11-16T10:54:38,917][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Initialized index multi with maxMergeCount=7, maxThreadCount=2, autoThrottleEnabled=true
+[2026-11-16T10:54:38,919][INFO ][o.o.p.PluginsService     ] [lucene-rust-upgrade-plugin] PluginService:onIndexModule index:[multi/jXqU20IbTkmzjMqMhhIfgw]
+[2026-11-16T10:54:38,921][INFO ][o.o.i.MergeSchedulerConfig] [lucene-rust-upgrade-plugin] Updating autoThrottle for index multi from [true] to [true]
+[2026-11-16T10:54:39,899][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] stopping ...
+[2026-11-16T10:54:39,952][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] stopped
+[2026-11-16T10:54:39,952][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] closing ...
+[2026-11-16T10:54:39,959][INFO ][o.o.n.Node               ] [lucene-rust-upgrade-plugin] closed
