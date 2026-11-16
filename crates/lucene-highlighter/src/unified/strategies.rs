@@ -207,14 +207,22 @@ fn retarget(c: &Clause, fm: &dyn Fn(&str) -> bool, to: &str) -> Clause {
 fn retarget_span(node: &SpanNode, fm: &dyn Fn(&str) -> bool, to: &str) -> SpanNode {
     fn walk(n: &mut SpanNode, fm: &dyn Fn(&str) -> bool, to: &str) {
         match n {
-            SpanNode::Term { field, .. } | SpanNode::FieldMasking { field, .. } if fm(field) => {
+            SpanNode::Term { field, .. }
+            | SpanNode::FieldMasking { field, .. }
+            | SpanNode::Gap { field, .. }
+            | SpanNode::NoMatch { field }
+                if fm(field) =>
+            {
                 *field = to.to_string();
             }
             SpanNode::MultiTerm(m) if fm(m.field()) => *m.source.field_mut() = to.to_string(),
             _ => {}
         }
         match n {
-            SpanNode::Term { .. } | SpanNode::MultiTerm(_) => {}
+            SpanNode::Term { .. }
+            | SpanNode::MultiTerm(_)
+            | SpanNode::Gap { .. }
+            | SpanNode::NoMatch { .. } => {}
             SpanNode::Near { clauses, .. } | SpanNode::Or { clauses } => {
                 for c in clauses {
                     walk(c, fm, to);

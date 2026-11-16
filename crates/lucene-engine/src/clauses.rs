@@ -20,9 +20,11 @@ pub fn map_search_error(e: lucene_search::Error) -> Status {
     Status::Search
 }
 
-/// Lucene's default `IndexSearcher.getMaxClauseCount()`. `BooleanQuery` here
-/// has no builder to enforce it, so the boundary refuses larger clause arrays.
-pub const MAX_CLAUSE_COUNT: usize = 1024;
+/// The most nodes one query tree may hold. Lucene's own `maxClauseCount`
+/// (a dynamic setting, 1024 by default) is enforced on the Java side before a
+/// query is encoded, so this bound only keeps an allocation sized from the
+/// wire in check; it sits far above any limit an operator would set.
+pub const MAX_CLAUSE_COUNT: usize = 1 << 20;
 
 /// Rejects a query with more than [`MAX_CLAUSE_COUNT`] clauses, counted over
 /// the whole tree. Java counts per nesting level; one total is the bound a
@@ -89,7 +91,7 @@ enum Node {
 /// The deepest `clause_parents` chain accepted. Not a Lucene limit: nested
 /// clauses are evaluated and dropped recursively, so depth is stack depth, and
 /// a stack overflow aborts past `catch_unwind`.
-pub const MAX_CLAUSE_DEPTH: usize = 32;
+pub const MAX_CLAUSE_DEPTH: usize = 128;
 
 /// One decoded clause, before it is attached to its parent.
 struct PendingClause<'a> {
@@ -369,6 +371,7 @@ pub fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
             Clause::DisjunctionMax(d) => stack.extend(d.disjuncts.iter()),
             Clause::Term(TermQuery { field, .. })
             | Clause::Phrase(PhraseQuery { field, .. })
+            | Clause::MultiPhrase(lucene_search::query::MultiPhraseQuery { field, .. })
             | Clause::Fuzzy(lucene_search::query::FuzzyQuery { field, .. })
                 if !out.contains(&field.as_str()) =>
             {
