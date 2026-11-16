@@ -39,7 +39,8 @@ def check_file(path: Path, errors: list[str]) -> int:
     """Returns the number of TODO(arith-audit) markers in `path`."""
     lines = path.read_text().splitlines()
     markers = 0
-    in_test_module = False
+    # A file that opens with `#![cfg(test)]` is a test module moved out of its parent.
+    in_test_module = any(l.strip() == "#![cfg(test)]" for l in lines[:5])
     for i, line in enumerate(lines):
         stripped = line.strip()
         if re.match(r"^#\[cfg\(test\)\]", stripped):

@@ -69,6 +69,9 @@ def _blank_cfg_test(lines):
     everywhere and stops meaning anything (the same reasoning
     `docs/arithmetic-gate.md` gives for its own test-code carve-out).
     """
+    if any(l.strip() == "#![cfg(test)]" for l in lines[:5]):
+        # A test module moved out of its parent into its own file.
+        return [""] * len(lines)
     out = list(lines)
     i = 0
     n = len(lines)
