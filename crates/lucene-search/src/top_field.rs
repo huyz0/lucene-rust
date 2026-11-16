@@ -206,6 +206,13 @@ pub trait FieldComparator: Send + Sync {
     fn needs_scores(&self) -> bool {
         false
     }
+    /// Whether [`LeafFieldComparator::value`] reads the score of a scorer
+    /// that was made without scoring, as a script does through
+    /// `Scorable.score()` (constant scorers answer their constant, the
+    /// others `0`), though the search itself needs no scores.
+    fn reads_unscored_scorer(&self) -> bool {
+        false
+    }
 }
 
 /// `FieldComparatorSource`: makes the comparator of a `CUSTOM` key.
@@ -407,10 +414,21 @@ pub(crate) fn custom_comparator(
 
 /// Whether a key reads the score: the score itself, or a custom comparator
 /// that says so.
-fn key_needs_scores(f: &SortField) -> bool {
+pub fn key_needs_scores(f: &SortField) -> bool {
     match f.ty {
         SortType::Score => true,
         SortType::Custom(id) => custom_comparator(id, f, 1).is_ok_and(|c| c.needs_scores()),
+        _ => false,
+    }
+}
+
+/// Whether a key reads the score of a scorer made without scoring
+/// ([`FieldComparator::reads_unscored_scorer`]).
+pub fn key_reads_unscored_scorer(f: &SortField) -> bool {
+    match f.ty {
+        SortType::Custom(id) => {
+            custom_comparator(id, f, 1).is_ok_and(|c| c.reads_unscored_scorer())
+        }
         _ => false,
     }
 }
@@ -4855,6 +4873,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track || min_score.is_some();
+    let reads_unscored = sort.iter().any(key_reads_unscored_scorer);
     let mut max_score = f32::NEG_INFINITY;
     let clause = rewritten_clause(query);
     let mode = match tf.score_mode() {
@@ -4936,14 +4955,15 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         if end != NO_MORE_DOCS {
             scorer = Box::new(exec::Below::new(scorer, end));
         }
-        let mut scores = if want_scores && !self_scores {
+        let mut scores = if (want_scores || reads_unscored) && !self_scores {
             // The same query, so the same segment answer: a tree here and
             // none there would be a bug, reported rather than scored as 0.
-            let Some(c) = exec::build::child(&ctx, &clause, 1.0, mode, true)? else {
+            let score_mode = if want_scores { mode } else { Mode::NoScores };
+            let Some(c) = exec::build::child(&ctx, &clause, 1.0, score_mode, true)? else {
                 return Err(SortError::ScoringTree(-1).into());
             };
             Some(ScoreAt {
-                inner: c.into_scorer(mode),
+                inner: c.into_scorer(score_mode),
                 doc: -1,
             })
         } else {

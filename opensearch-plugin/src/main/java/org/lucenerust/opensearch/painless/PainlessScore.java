@@ -101,10 +101,10 @@ public final class PainlessScore {
 
     /**
      * A script's context on the wire: a score script, one reading {@code _score}, a filter script,
-     * a number sort script, an aggregation script, a {@code terms_set} minimum, an
+     * a number sort script (and one reading {@code _score}), an aggregation script, a {@code terms_set} minimum, an
      * {@code intervals} filter script, a scripted similarity's script and its weight script.
      */
-    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
+    public static final byte SCORE = 0, SCORE_WITH_SCORE = 1, FILTER = 2, SORT = 3, SORT_WITH_SCORE = 4, AGGREGATION = 5, TERMS_SET = 6, INTERVAL = 7,
         SIMILARITY = 8, SIMILARITY_WEIGHT = 9;
 
     /** A script the request sends to the native runtime, as Java makes it again for its error. */
@@ -159,6 +159,12 @@ public final class PainlessScore {
         @Override
         public ScriptException rethrown(Object s, int doc, float score) {
             NumberSortScript script = (NumberSortScript) s;
+            script.setScorer(new org.apache.lucene.search.Scorable() {
+                @Override
+                public float score() {
+                    return score;
+                }
+            });
             script.setDocument(doc);
             try {
                 script.execute();
