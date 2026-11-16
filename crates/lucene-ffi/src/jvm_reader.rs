@@ -1136,6 +1136,45 @@ pub(crate) mod tests {
         }
     }
 
+    /// A `QUERY_DFS` prefix for `body:fox` with `doc_count` documents holding `sum_ttf` terms,
+    /// in front of its term query.
+    fn dfs_fox_blob(doc_count: i64, sum_ttf: i64) -> Vec<u8> {
+        let put = |b: &mut Vec<u8>, s: &str| {
+            b.extend_from_slice(&(s.len() as i32).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        };
+        let mut b = vec![lucene_engine::similarity::QUERY_DFS];
+        b.extend_from_slice(&1i32.to_le_bytes());
+        put(&mut b, "body");
+        put(&mut b, "fox");
+        b.extend_from_slice(&5i64.to_le_bytes());
+        b.extend_from_slice(&9i64.to_le_bytes());
+        b.extend_from_slice(&1i32.to_le_bytes());
+        put(&mut b, "body");
+        for v in [doc_count + 10, doc_count, sum_ttf, sum_ttf] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&term_blob("body", "fox"));
+        b
+    }
+
+    /// A DFS' field statistics set the average field length BM25 scores with, as
+    /// `BM25Similarity` reads it off `collectionStatistics` (`ContextIndexSearcher` answers the
+    /// aggregated ones): the same term statistics over a field twice as long on average score
+    /// lower for a document shorter than the average.
+    #[test]
+    fn dfs_field_statistics_set_the_average_field_length() {
+        let h = open();
+        let short = run(h, &dfs_fox_blob(100, 2_000), 8, true).unwrap().0;
+        let long = run(h, &dfs_fox_blob(100, 40_000), 8, true).unwrap().0;
+        assert!(!short.is_empty() && short.len() == long.len());
+        assert!(
+            short.iter().zip(&long).any(|(a, b)| a.1 != b.1),
+            "scores do not depend on the DFS' average field length: {short:?} vs {long:?}"
+        );
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
     /// `count` true is an exact count (`i64::MAX`), false none.
     fn run(
         handle: u64,
@@ -1864,6 +1903,27 @@ pub(crate) mod tests {
         let (hits, total, _) = run_sorted(h, &q, &nested_key(SORT_LONG, 0), 5, i64::MAX).unwrap();
         assert!(!hits.is_empty() && total >= hits.len() as i64);
         ffi_close_jvm_reader(h);
+    }
+
+    /// `NonPruningSortField` (the wildcard field's sort) crosses as a flag on a keyword key and
+    /// builds no competitive iterator; any other key kind refuses the flag.
+    #[test]
+    fn a_keyword_key_can_say_it_does_not_prune() {
+        let blob = sort_blob(
+            &[
+                (SORT_STRING, SORT_NO_PRUNING | SORT_REVERSE, "k", 1),
+                (SORT_STRING, 0, "j", 0),
+            ],
+            None,
+        );
+        let (keys, ..) = decode_sort(&blob).unwrap();
+        assert!(keys[0].no_pruning && keys[0].reverse);
+        assert!(!keys[1].no_pruning);
+        let numeric = sort_blob(&[(SORT_LONG, SORT_NO_PRUNING, "n", 0)], None);
+        assert_eq!(
+            decode_sort(&numeric).err(),
+            Some(FfiStatus::InvalidArgument)
+        );
     }
 
     #[test]
@@ -4929,6 +4989,14 @@ pub(crate) mod tests {
         ] {
             assert_eq!(decode_sort(&blob).err(), invalid, "{blob:?}");
         }
+        // An unsigned_long key takes the median of its values (a nested one has no median pick,
+        // as no nested key has).
+        let median = opensearch_key(SORT_UNSIGNED_LONG, SORT_MODE_MEDIAN, "l", 0);
+        assert_eq!(decode_sort(&median).err(), None);
+        // A half_float key without a nested path is read as a float key is, whatever its missing
+        // value (the generic numeric path takes the sortable int as sent).
+        let half = opensearch_key(SORT_HALF_FLOAT, 0, "l", i64::MAX);
+        assert_eq!(decode_sort(&half).err(), None);
         let h = open_fixture("sorted_search_index");
         let q = term_blob("body", "w1");
         let out = search_sorted_blobs(h, &q, &shard, 5, i64::MAX).unwrap();

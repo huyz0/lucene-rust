@@ -131,7 +131,18 @@ if [[ $YAML == 1 && $status == 0 ]]; then
     echo "yaml (stock):       $(run_yaml "$((PORT + 2))" "$work/stock")"
     stats=$(curl -s "localhost:${PORT}/_plugins/lucene_rust/stats")
     echo "yaml: plugin stats $stats"
-    if ! diff "$work/stock/failures.txt" "$work/rust/failures.txt"; then
+    # Failures that are the plugin's design, each with its reason in the file. An entry that no
+    # longer fails is an error: the list can only name tests that still differ.
+    known="opensearch-plugin/e2e/yaml-known-differences.txt"
+    { grep -v '^#' "$known" || true; } | { grep -v '^$' || true; } | sort >"$work/known.txt"
+    comm -13 "$work/rust/failures.txt" "$work/known.txt" >"$work/stale.txt"
+    if [[ -s "$work/stale.txt" ]]; then
+        echo "verify-opensearch: $known lists tests that pass now:" >&2
+        cat "$work/stale.txt" >&2
+        status=1
+    fi
+    comm -23 "$work/rust/failures.txt" "$work/known.txt" >"$work/rust/failures-unexpected.txt"
+    if ! diff "$work/stock/failures.txt" "$work/rust/failures-unexpected.txt"; then
         echo "verify-opensearch: the YAML suites fail differently with the plugin" >&2
         status=1
     fi
