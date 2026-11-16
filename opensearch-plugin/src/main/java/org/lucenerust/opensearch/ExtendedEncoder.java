@@ -119,7 +119,7 @@ final class ExtendedEncoder {
     static final byte NODE_MAX_SIM = 44;
     static final byte NODE_PAINLESS_FILTER = 45;
     static final byte NODE_JOIN = 46;
-    /** {@code NODE_MATCH_NONE} of the query tree. */
+    /** {@code NODE_MATCH_NONE} of the query tree (query_blob.rs). */
     static final byte NODE_MATCH_NONE = 6;
     static final byte NODE_PATTERN_PHRASE = 47;
     static final byte NODE_SUBSTRING = 49;
