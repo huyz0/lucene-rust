@@ -31,8 +31,8 @@ A request runs native when **all** of these hold:
   aggregations the native side plans (R5: the metrics, `terms`, the histograms,
   ranges, `filter(s)`, `global` and `cardinality`, nested in any combination), and
   `min_score`, `collapse` on a keyword or numeric field (`NativeCollapse`)
-  and `rescore` with `query` rescorers (`NativeRescore`) -- but
-  no `profile`, not `search_type=dfs_query_then_fetch`,
+  `rescore` with `query` rescorers (`NativeRescore`) and `profile` (`NativeProfile`) -- but
+  not `search_type=dfs_query_then_fetch`,
   and no other plugin replacing the top-docs collector. A `post_filter`
   searches the hits as `query AND filter` (the filter a non-scoring clause, as
   `FilteredCollector` leaves the query's score alone) and the aggregations as
@@ -207,7 +207,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `aggregations`, `collectors` | the request adds a collector the native side does not run |
 | `min_score` | `min_score` behind a scroll or `terminate_after` |
 | `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort over anything but a plain `TermQuery`, which alone the query cache never holds; a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
-| `sort_*`, `search_after`, `profile` | the request needs something the native top-hits path does not produce |
+| `sort_*`, `search_after` | the request needs something the native top-hits path does not produce |
 | `sort_nested`, `sort_skipping` | a nested key, a `mode: sum` key, a `half_float` or `unsigned_long` key, or the `wildcard` field's key, on a shard with more documents than the total-hits threshold: their native comparators do not skip as Lucene's do past it |
 | `collapse_field`, `collapse_search_after`, `collapse_refused` | `collapse` on a field neither keyword nor numeric; `search_after` with a sort other than the collapse field alone (Lucene refuses it); a multi-valued collapse field (Lucene raises the error) |
 | `rescore`, `rescore_<reason>` | a rescorer other than OpenSearch's `query` one; a rescore query that falls back for `<reason>` |
@@ -436,3 +436,28 @@ nodes.
   many large segments can hold more than that setting would allow.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
   OpenSearch 3.9.0 image has 2.34, and `verify-opensearch.sh` checks it).
+
+## Profile
+
+A search with `profile: true` runs natively as any other, then the query is run once more
+single-threaded through the generic per-clause scorer tree with a timer around every clause
+(`lucene-search/src/exec/profile.rs`, `profile_search.rs`; `profile_blob` in `lucene-engine`). The
+timers are ports of OpenSearch's `Timer` (same sampling, so counts and timings mean what stock's
+do) over `build_scorer`, `next_doc`, `advance`, `match`, `score`, `shallow_advance`,
+`compute_max_score` and `set_min_competitive_score`, kept per clause path and segment.
+`NativeProfile` lays them into OpenSearch's own profile classes: the query tree
+(`QueryProfiler`, serial or concurrent per-slice breakdowns, with the `create_weight` time the
+encoding took), the post_filter's and each rescore query's tree, the collector tree (the shape
+OpenSearch builds, with the time the native calls took), the aggregators' timers (the native pass's
+time split over `build_leaf_collector`, `collect`, `post_collection` and `build_aggregation`, since
+it does not step them apart) and the fetch profile (OpenSearch's own). Differences from stock:
+
+- the query runs twice on a profiled request, so a profiled search costs about twice an unprofiled
+  one; with `profile` off nothing runs and no timer exists;
+- the replay does not skip by competitive score as the native pass does (a field-sorted search)
+  and its bulk scorers differ from Lucene's, so counts such as `next_doc` and `advance` follow
+  the native clause scorers rather than Lucene's;
+- the clauses OpenSearch lists under a multi-term query's rewrite (one `TermQuery` per matched term
+  and segment) and under a `function_score` have no native counterpart and show their
+  `create_weight` time only;
+- a hybrid query with `profile` still runs on Java (`hybrid_profile`).
