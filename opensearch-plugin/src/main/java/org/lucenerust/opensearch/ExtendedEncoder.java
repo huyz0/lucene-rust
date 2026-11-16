@@ -1161,6 +1161,11 @@ final class ExtendedEncoder {
                 return "script_date_values";
             }
         }
+        if (context == PainlessScore.SORT_WITH_SCORE && ExtendedScripts.on() == false) {
+            // A sort script that reads the score is evaluated one hit at a time through the interpreter:
+            // 1.5 to 2 times slower than OpenSearch's own compiled Painless.
+            return "script_sort_score";
+        }
         // The whole script checked before anything runs: one the native runtime would not run
         // exactly as Painless does stays in Java, never tried natively first.
         Painless p = new Painless(context, compiled, params, names, kinds);

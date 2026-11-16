@@ -8,7 +8,7 @@
 //! semantics for each operation; a script with anything else stays on the
 //! [`Vm`](crate::vm::Vm), which runs it as it is.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::api::doc::DocKind;
@@ -109,6 +109,7 @@ pub fn lower(prog: &Program, fields: &[(&str, Option<DocKind>)]) -> Option<Typed
         code: Vec::new(),
         ty: vec![None; f.regs],
         loops: Vec::new(),
+        force: HashMap::new(),
     };
     l.block(&f.body)?;
     l.code.push(I::RetNull);
@@ -353,9 +354,109 @@ struct Lower<'a> {
     code: Vec<I>,
     ty: Vec<Option<Ty>>,
     loops: Vec<Loop>,
+    /// Registers a conditional assigns with different widths on its two
+    /// sides, and the width every assignment is widened to.
+    force: HashMap<Reg, Prim>,
+}
+
+/// What lowering has changed, to roll it back.
+struct Mark {
+    code: usize,
+    ty: Vec<Option<Ty>>,
+    loops: Vec<(usize, usize)>,
+    force: HashMap<Reg, Prim>,
 }
 
 impl Lower<'_> {
+    fn mark(&self) -> Mark {
+        Mark {
+            code: self.code.len(),
+            ty: self.ty.clone(),
+            loops: self
+                .loops
+                .iter()
+                .map(|l| (l.breaks.len(), l.continues.len()))
+                .collect(),
+            force: self.force.clone(),
+        }
+    }
+
+    fn rewind(&mut self, m: &Mark) {
+        self.code.truncate(m.code);
+        self.ty.clone_from(&m.ty);
+        self.loops.truncate(m.loops.len());
+        for (l, (b, c)) in self.loops.iter_mut().zip(&m.loops) {
+            l.breaks.truncate(*b);
+            l.continues.truncate(*c);
+        }
+        self.force.clone_from(&m.force);
+    }
+
+    /// The types `ops` gives the registers that existed before them.
+    fn assigned(&mut self, ops: &[Op], before: &Mark) -> Option<Vec<(Reg, Ty)>> {
+        let ok = self.block(ops);
+        let out = self
+            .ty
+            .iter()
+            .zip(&before.ty)
+            .enumerate()
+            .filter(|(_, (now, was))| now != was)
+            .filter_map(|(r, (now, _))| Some((r as Reg, (*now)?)))
+            .collect();
+        self.rewind(before);
+        ok.map(|()| out)
+    }
+
+    /// Finds the registers a conditional assigns with different numeric
+    /// widths (`c ? 0 : doc['l'].value`) and the width to widen them to.
+    fn join_if(&mut self, then: &[Op], otherwise: &[Op]) -> Option<()> {
+        let m = self.mark();
+        let a = self.assigned(then, &m)?;
+        let b = self.assigned(otherwise, &m)?;
+        for (r, ta) in &a {
+            let Some((_, tb)) = b.iter().find(|(q, _)| q == r) else {
+                continue;
+            };
+            if let (Ty::P(p), Ty::P(q)) = (ta, tb) {
+                if p == q || *p == Prim::Bool || *q == Prim::Bool {
+                    continue;
+                }
+                let w = if crate::def::widens(*p, *q) { *q } else { *p };
+                if !crate::def::widens(*p, w) || !crate::def::widens(*q, w) {
+                    return None;
+                }
+                self.force.insert(*r, w);
+            }
+        }
+        Some(())
+    }
+
+    /// `d = s`, widened to the width a conditional joined `d` at.
+    fn assign_forced(&mut self, d: Reg, s: Reg) -> Option<bool> {
+        let Some(&w) = self.force.get(&d) else {
+            return Some(false);
+        };
+        let s = self.as_type(s, w)?;
+        self.set(d, Ty::P(w))?;
+        self.code.push(I::Mov(d, s));
+        Some(true)
+    }
+
+    fn lower_if(&mut self, cond: Reg, then: &[Op], otherwise: &[Op]) -> Option<()> {
+        if self.get(cond)? != Ty::P(Prim::Bool) {
+            return None;
+        }
+        let jf = self.code.len();
+        self.code.push(I::JmpF(cond, 0));
+        self.block(then)?;
+        let j = self.code.len();
+        self.code.push(I::Jmp(0));
+        self.patch(jf);
+        self.block(otherwise)?;
+        self.patch(j);
+        Some(())
+    }
+
     fn get(&self, r: Reg) -> Option<Ty> {
         self.ty.get(r as usize).copied().flatten()
     }
@@ -437,10 +538,20 @@ impl Lower<'_> {
             }
             Op::Const(d, v) => {
                 let p = prim_of(v)?;
-                self.set(*d, Ty::P(p))?;
-                self.code.push(I::K(*d, bits_of(v)?));
+                if self.force.contains_key(d) {
+                    let t = self.temp(Ty::P(p));
+                    self.code.push(I::K(t, bits_of(v)?));
+                    self.assign_forced(*d, t)?;
+                } else {
+                    self.set(*d, Ty::P(p))?;
+                    self.code.push(I::K(*d, bits_of(v)?));
+                }
             }
-            Op::Move(d, s) => self.mov(*d, *s)?,
+            Op::Move(d, s) => {
+                if !self.assign_forced(*d, *s)? {
+                    self.mov(*d, *s)?
+                }
+            }
             Op::Native {
                 dst,
                 args,
@@ -516,6 +627,14 @@ impl Lower<'_> {
                 }
             }
             Op::Arith { dst, op, ty, a, b } => self.arith(*dst, *op, *ty, *a, *b)?,
+            Op::DefArith {
+                dst,
+                op,
+                a,
+                b,
+                flags,
+                ret,
+            } => self.def_arith(*dst, *op, *a, *b, *flags, ret.as_deref())?,
             Op::Cmp {
                 dst,
                 op,
@@ -563,17 +682,15 @@ impl Lower<'_> {
                 then,
                 otherwise,
             } => {
-                if self.get(*cond)? != Ty::P(Prim::Bool) {
-                    return None;
+                let m = self.mark();
+                if self.lower_if(*cond, then, otherwise).is_none() {
+                    self.rewind(&m);
+                    self.join_if(then, otherwise)?;
+                    let forced = self.force.clone();
+                    self.rewind(&m);
+                    self.force = forced;
+                    self.lower_if(*cond, then, otherwise)?;
                 }
-                let jf = self.code.len();
-                self.code.push(I::JmpF(*cond, 0));
-                self.block(then)?;
-                let j = self.code.len();
-                self.code.push(I::Jmp(0));
-                self.patch(jf);
-                self.block(otherwise)?;
-                self.patch(j);
             }
             Op::Loop { head, body, after } => {
                 let top = self.pc();
@@ -622,6 +739,50 @@ impl Lower<'_> {
             Op::Return(None) => self.code.push(I::RetNull),
             _ => return None,
         }
+        Some(())
+    }
+
+    /// `def` arithmetic on operands whose types lowering knows: `DefMath`
+    /// promotes them as the typed operation does, and the result widens to
+    /// the call site's type.
+    fn def_arith(
+        &mut self,
+        d: Reg,
+        op: BinOp,
+        a: Reg,
+        b: Reg,
+        flags: i32,
+        ret: Option<&str>,
+    ) -> Option<()> {
+        // Bit 0 (`ALLOWS_NULL`) cannot matter: both operands are numbers.
+        if flags & !0b001 != 0
+            || !matches!(
+                op,
+                BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Add | BinOp::Sub
+            )
+        {
+            return None;
+        }
+        let (Ty::P(pa), Ty::P(pb)) = (self.get(a)?, self.get(b)?) else {
+            return None;
+        };
+        if pa == Prim::Bool || pb == Prim::Bool {
+            return None;
+        }
+        let ty = promote(pa, pb);
+        let target = match ret.map(crate::types::prim) {
+            None | Some(None) => ty,
+            Some(Some(p)) if p != Prim::Bool && crate::def::widens(ty, p) => p,
+            Some(Some(_)) => return None,
+        };
+        if target == ty {
+            return self.arith(d, op, ty, a, b);
+        }
+        let t = self.temp(Ty::P(ty));
+        self.arith(t, op, ty, a, b)?;
+        let c = self.as_type(t, target)?;
+        self.set(d, Ty::P(target))?;
+        self.code.push(I::Mov(d, c));
         Some(())
     }
 
@@ -1589,5 +1750,110 @@ impl Typed {
             }
             *pc += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jmap::{JMap, Order};
+    use crate::value::MapKind;
+    use crate::vm::{Func, ParamsEnv, Program};
+
+    /// `cond ? <int> : <long>` into one register, returned.
+    fn ternary(cond: bool, then: Value, otherwise: Value) -> Program {
+        let body = vec![
+            Op::Const(0, Value::Bool(cond)),
+            Op::If {
+                cond: 0,
+                then: vec![Op::Const(1, then)].into(),
+                otherwise: vec![Op::Const(1, otherwise)].into(),
+            },
+            Op::Return(Some(1)),
+        ];
+        Program {
+            funcs: vec![Func {
+                name: "execute".into(),
+                arity: 0,
+                regs: 2,
+                reg_types: vec![None; 2],
+                body: body.into(),
+                max_loop_counter: 1000,
+            }],
+            entry: 0,
+            binding_sites: 0,
+        }
+    }
+
+    fn run(p: &Program) -> Option<Value> {
+        let t = lower(p, &[])?;
+        let mut env = ParamsEnv {
+            params: Value::map(MapKind::HashMap, JMap::new(Order::Hash)),
+        };
+        let mut regs = t.regs();
+        t.run(&mut env, &mut regs).ok()
+    }
+
+    #[test]
+    fn a_conditional_joins_an_int_and_a_long_at_long() {
+        for cond in [true, false] {
+            let p = ternary(cond, Value::Int(7), Value::Long(1 << 40));
+            let want = if cond { 7 } else { 1 << 40 };
+            assert!(matches!(run(&p), Some(Value::Long(v)) if v == want));
+            let p = ternary(cond, Value::Long(1 << 40), Value::Int(7));
+            let want = if cond { 1 << 40 } else { 7 };
+            assert!(matches!(run(&p), Some(Value::Long(v)) if v == want));
+        }
+    }
+
+    #[test]
+    fn a_conditional_joins_a_long_and_a_double_at_double() {
+        let p = ternary(true, Value::Long(3), Value::Double(0.5));
+        assert!(matches!(run(&p), Some(Value::Double(v)) if v == 3.0));
+    }
+
+    fn def_add(ret: &str) -> Program {
+        let body = vec![
+            Op::Const(0, Value::Bool(false)),
+            Op::If {
+                cond: 0,
+                then: vec![Op::Const(1, Value::Int(7))].into(),
+                otherwise: vec![Op::Const(1, Value::Long(1 << 40))].into(),
+            },
+            Op::Const(2, Value::Double(0.5)),
+            Op::DefArith {
+                dst: 3,
+                op: BinOp::Add,
+                a: 2,
+                b: 1,
+                flags: 0,
+                ret: Some(ret.into()),
+            },
+            Op::Return(Some(3)),
+        ];
+        Program {
+            funcs: vec![Func {
+                name: "execute".into(),
+                arity: 0,
+                regs: 4,
+                reg_types: vec![None; 4],
+                body: body.into(),
+                max_loop_counter: 1000,
+            }],
+            entry: 0,
+            binding_sites: 0,
+        }
+    }
+
+    #[test]
+    fn def_arithmetic_on_known_operands_promotes_as_def_math_does() {
+        let p = def_add("double");
+        assert!(matches!(run(&p), Some(Value::Double(v)) if v == (1u64 << 40) as f64 + 0.5));
+        assert!(lower(&def_add("int"), &[]).is_none());
+    }
+
+    #[test]
+    fn a_conditional_of_a_boolean_and_a_number_stays_unlowered() {
+        assert!(lower(&ternary(true, Value::Bool(true), Value::Long(1)), &[]).is_none());
     }
 }
