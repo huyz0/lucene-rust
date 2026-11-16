@@ -3,7 +3,7 @@
 [Index](../parity.md). `lucene-queries`' `function` package (T10.5).
 Inventory: `docs/inventory/lucene-queries.tsv` (`check-port-inventory.py
 --module queries`). Tests: `fixtures/src/GenFunction.java` ->
-`lucene-search/tests/function_fixtures.rs` (97 value-source specs, 236
+`lucene-search-integration/tests/function_fixtures.rs` (97 value-source specs, 236
 searches, equal; [M10 evidence](../milestones/m10-joins-grouping-queries.md#ledger-evidence)). Unit:
 `lucene-search/src/function/tests.rs`.
 

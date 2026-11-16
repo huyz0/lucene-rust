@@ -1209,28 +1209,40 @@ dependencies = [
  "crc32fast",
  "criterion",
  "libc",
- "lucene-aggs",
  "lucene-analysis",
  "lucene-codecs",
  "lucene-disk-hnsw",
- "lucene-expressions",
- "lucene-facet",
- "lucene-grouping",
- "lucene-highlighter",
  "lucene-index",
  "lucene-ivf",
- "lucene-monitor",
- "lucene-queryparser",
  "lucene-spatial3d",
  "lucene-spatial4j",
  "lucene-store",
- "lucene-suggest",
  "lucene-util",
  "lucene-vector-quant",
  "memmap2",
  "miniz_oxide 0.9.1",
  "rayon",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "lucene-search-integration"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "lucene-aggs",
+ "lucene-analysis",
+ "lucene-codecs",
+ "lucene-expressions",
+ "lucene-facet",
+ "lucene-grouping",
+ "lucene-index",
+ "lucene-monitor",
+ "lucene-queryparser",
+ "lucene-search",
+ "lucene-store",
+ "lucene-suggest",
+ "lucene-util",
 ]
 
 [[package]]
