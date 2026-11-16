@@ -118,6 +118,9 @@ public final class NativeAggregations {
     static final byte LONG = 0;
     static final byte DOUBLE = 1;
     static final byte FLOAT = 2;
+    /** Kinds only the aggregation tree reads: {@code half_float}, and {@code scaled_float} (its factor follows). */
+    static final byte HALF_FLOAT = 3;
+    static final byte SCALED = 4;
     /** Doubles per field in the native output ({@code METRIC_VALUES}). */
     static final int VALUES = 6;
 
@@ -146,7 +149,9 @@ public final class NativeAggregations {
         Map<String, Object> metadata,
         byte source,
         int needs,
-        double sigma
+        double sigma,
+        // A scaled_float's scaling factor, else 0.
+        double scale
     ) {}
 
     /**
@@ -208,13 +213,20 @@ public final class NativeAggregations {
      * The native aggregations of a search, or null when some aggregation must run on Lucene:
      * {@code entries} in the request's order, each a {@link Metric} or a {@link Terms}.
      */
-    public record Plan(List<Object> entries) {
-        List<Metric> metrics() {
-            return entries.stream().filter(e -> e instanceof Metric).map(e -> (Metric) e).toList();
+    public record Plan(List<Object> entries, List<Metric> metrics, List<Terms> terms) {
+        Plan(List<Object> entries) {
+            this(entries, split(entries, true), split(entries, false));
         }
 
-        List<Terms> terms() {
-            return entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList();
+        @SuppressWarnings("unchecked")
+        private static <T> List<T> split(List<Object> entries, boolean metrics) {
+            ArrayList<T> out = new ArrayList<>(entries.size());
+            for (Object e : entries) {
+                if (e instanceof Metric == metrics) {
+                    out.add((T) e);
+                }
+            }
+            return out;
         }
 
         /**
@@ -366,8 +378,19 @@ public final class NativeAggregations {
      * shard, so a sum's rounding depends on the slices; the native pass reproduces them.
      */
     static int[][] slices(SearchContext ctx) {
+        // A time-series shard sorted by its timestamp ascending: ContextIndexSearcher visits each
+        // slice's segments last first (a search that is not concurrent is one slice of every segment).
+        boolean reversed = ctx.shouldUseTimeSeriesDescSortOptimization();
         if (ctx.shouldUseConcurrentSearch() == false) {
-            return new int[0][];
+            if (reversed == false) {
+                return new int[0][];
+            }
+            int leaves = ctx.searcher().getIndexReader().leaves().size();
+            int[] all = new int[leaves];
+            for (int i = 0; i < leaves; i++) {
+                all[i] = leaves - 1 - i;
+            }
+            return new int[][] { all };
         }
         IndexSearcher.LeafSlice[] leafSlices = ctx.searcher().getSlices();
         int[][] out = new int[leafSlices.length][];
@@ -379,6 +402,13 @@ public final class NativeAggregations {
                     return null;
                 }
                 out[s][p] = parts[p].ctx.ord;
+            }
+            if (reversed) {
+                for (int i = 0, j = out[s].length - 1; i < j; i++, j--) {
+                    int t = out[s][i];
+                    out[s][i] = out[s][j];
+                    out[s][j] = t;
+                }
             }
         }
         return out;
@@ -421,7 +451,7 @@ public final class NativeAggregations {
                     entries.add(t);
                     continue;
                 }
-                Metric m = metric(ctx, f, config, true);
+                Metric m = metric(ctx, f, config, true, false);
                 if (m == null) {
                     return null;
                 }
@@ -440,7 +470,7 @@ public final class NativeAggregations {
         if (kind == null || kind == Kind.EXTENDED) {
             return null;
         }
-        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), 0);
+        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), 0, 0);
     }
 
     /**
@@ -449,13 +479,14 @@ public final class NativeAggregations {
      * {@code max} may answer from the points.
      */
     @SuppressWarnings("unchecked")
-    static Metric metric(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config, boolean top)
+    static Metric metric(SearchContext ctx, AggregatorFactory f, ValuesSourceConfig config, boolean top, boolean wide)
         throws IllegalAccessException {
         Kind kind = kind(f);
         if (kind == null) {
             return null;
         }
-        byte valueKind = valueKind(config.fieldContext().fieldType());
+        MappedFieldType fieldType = config.fieldContext().fieldType();
+        byte valueKind = wide ? valueKindWide(fieldType) : valueKind(fieldType);
         if (valueKind < 0) {
             return null;
         }
@@ -468,6 +499,7 @@ public final class NativeAggregations {
         if (top
             && (kind == Kind.MIN || kind == Kind.MAX)
             && (ctx.query() == null || ctx.query().getClass() == MatchAllDocsQuery.class)
+            && valueKind <= FLOAT
             && config.getPointReaderOrNull() != null) {
             source = kind == Kind.MIN ? POINTS_MIN : POINTS_MAX;
         }
@@ -480,7 +512,8 @@ public final class NativeAggregations {
             (Map<String, Object>) METADATA.get(f),
             source,
             Plan.needs(kind),
-            kind == Kind.EXTENDED ? (double) declared(f, "sigma") : 0
+            kind == Kind.EXTENDED ? (double) declared(f, "sigma") : 0,
+            scale(fieldType)
         );
     }
 
@@ -582,6 +615,26 @@ public final class NativeAggregations {
             case METRICS + "ExtendedStatsAggregatorFactory" -> Kind.EXTENDED;
             default -> null;
         };
+    }
+
+    /** {@link #valueKind}, and also {@code half_float} and {@code scaled_float}: for the nodes that read those. */
+    static byte valueKindWide(MappedFieldType type) {
+        if (type instanceof NumberFieldMapper.NumberFieldType n && n.numberType() == NumberFieldMapper.NumberType.HALF_FLOAT) {
+            return HALF_FLOAT;
+        }
+        return scale(type) > 0 ? SCALED : valueKind(type);
+    }
+
+    /** A {@code scaled_float}'s scaling factor (the mapper's class lives in another module), else 0. */
+    static double scale(MappedFieldType type) {
+        if (type.getClass().getName().endsWith("ScaledFloatFieldMapper$ScaledFloatFieldType")) {
+            try {
+                return (double) type.getClass().getMethod("getScalingFactor").invoke(type);
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return 0;
+            }
+        }
+        return 0;
     }
 
     /** How the field's stored longs become the doubles its aggregators read, or -1. */

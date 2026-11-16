@@ -157,6 +157,20 @@ final class NativeSelfTestExtended {
                 for (int q = 0; q < 40; q++) {
                     add(queries, shapes, "nested", nested(r));
                     add(queries, shapes, "span", roots(span(r, 0)));
+                    // A gap between two frequent words, at each slop.
+                    add(
+                        queries,
+                        shapes,
+                        "span",
+                        roots(
+                            SpanNearQuery.newOrderedNearQuery("body")
+                                .setSlop(q % 3)
+                                .addClause(new SpanTermQuery(new Term("body", WORDS[q % 3])))
+                                .addGap(q % 4)
+                                .addClause(new SpanTermQuery(new Term("body", WORDS[(q + 1) % 3])))
+                                .build()
+                        )
+                    );
                     add(queries, shapes, "intervals", roots(interval(r)));
                     add(queries, shapes, "combined_fields", roots(combined(r)));
                     add(queries, shapes, "function_score", roots(functionScore(r)));
@@ -226,14 +240,8 @@ final class NativeSelfTestExtended {
         }
         // The shapes left to Lucene fall back by name.
         Predicate<String> any = f -> true;
-        SpanNearQuery gap = SpanNearQuery.newOrderedNearQuery("body")
-            .addClause(new SpanTermQuery(new Term("body", "alpha")))
-            .addGap(1)
-            .addClause(new SpanTermQuery(new Term("body", "beta")))
-            .build();
-        check.accept("span_gap".equals(QueryEncoder.encode(gap, any).fallbackReason()), "a span_near with a gap falls back");
         Query minScore = new FunctionScoreQuery(MatchAllDocsQuery.INSTANCE, new WeightFactorFunction(2f), CombineFunction.MULTIPLY, 1f, Float.MAX_VALUE);
-        check.accept("function_score_min_score".equals(QueryEncoder.encode(minScore, any).fallbackReason()), "a function_score min_score falls back");
+        check.accept(QueryEncoder.encode(minScore, any).fallbackReason() == null, "a function_score min_score is encoded");
     }
 
     /** {@code NativeSelfTest.compare}. */
@@ -290,7 +298,22 @@ final class NativeSelfTestExtended {
         if (depth >= 2) {
             return spanTerm(r);
         }
-        return switch (r.nextInt(10)) {
+        return switch (r.nextInt(12)) {
+            case 10 -> {
+                SpanNearQuery.Builder b = SpanNearQuery.newOrderedNearQuery("body").setSlop(r.nextInt(3)).addClause(span(r, depth + 1));
+                if (r.nextBoolean()) {
+                    b.addGap(1 + r.nextInt(3));
+                }
+                b.addClause(span(r, depth + 1));
+                if (r.nextBoolean()) {
+                    b.addGap(r.nextInt(3));
+                    b.addClause(spanTerm(r));
+                }
+                yield b.build();
+            }
+            case 11 -> r.nextBoolean()
+                ? new SpanOrQuery(spanTerm(r), new org.opensearch.lucene.queries.SpanMatchNoDocsQuery("body", "no match"))
+                : new SpanNearQuery(new SpanQuery[] { spanTerm(r), new org.opensearch.lucene.queries.SpanMatchNoDocsQuery("body", "no match") }, 2, true);
             case 0 -> spanTerm(r);
             case 1 -> new SpanNearQuery(new SpanQuery[] { span(r, depth + 1), span(r, depth + 1) }, r.nextInt(4), r.nextBoolean());
             case 2 -> new SpanOrQuery(span(r, depth + 1), span(r, depth + 1));
@@ -383,6 +406,9 @@ final class NativeSelfTestExtended {
         return (ScoreFunction) k.newInstance(origin, scale, 0.1 + 0.8 * r.nextDouble(), (double) r.nextInt(3), DECAYS[r.nextInt(3)], data, mode, null);
     }
 
+    /** Whether a field_value_factor over a sparse field has a missing value. */
+    private static boolean missingIsSafe;
+
     private static final FieldValueFactorFunction.Modifier[] SAFE = {
         FieldValueFactorFunction.Modifier.NONE,
         FieldValueFactorFunction.Modifier.LOG1P,
@@ -406,7 +432,7 @@ final class NativeSelfTestExtended {
                 "pos",
                 1f,
                 r.nextBoolean() ? FieldValueFactorFunction.Modifier.RECIPROCAL : FieldValueFactorFunction.Modifier.LOG,
-                null,
+                missingIsSafe ? Double.valueOf(1.0) : null,
                 new SortedNumericIndexFieldData("pos", IndexNumericFieldData.NumericType.LONG)
             );
             case 3 -> new RandomScoreFunction(r.nextInt(), r.nextInt(), null);
@@ -446,6 +472,10 @@ final class NativeSelfTestExtended {
                     .build();
                 default -> MatchAllDocsQuery.INSTANCE;
             };
+            // A min_score scores every document, so a field_value_factor of a field some
+            // documents lack needs a missing value: Lucene raises for one that has none.
+            Float minScore = r.nextInt(4) == 0 ? Float.valueOf(0.25f * r.nextInt(12)) : null;
+            missingIsSafe = minScore != null;
             int n = 1 + r.nextInt(3);
             ScoreFunction[] functions = new ScoreFunction[n];
             for (int i = 0; i < n; i++) {
@@ -455,8 +485,10 @@ final class NativeSelfTestExtended {
             FunctionScoreQuery.ScoreMode mode = FunctionScoreQuery.ScoreMode.values()[r.nextInt(6)];
             CombineFunction combine = CombineFunction.values()[r.nextInt(CombineFunction.values().length)];
             float maxBoost = r.nextBoolean() ? Float.MAX_VALUE : 0.5f + r.nextInt(4);
-            Query q = new FunctionScoreQuery(sub, mode, functions, combine, null, maxBoost);
-            return r.nextInt(4) == 0 ? new BoostQuery(q, 2.5f) : q;
+            Query q = new FunctionScoreQuery(sub, mode, functions, combine, minScore, maxBoost);
+            // Lucene's own searches disagree on a boosted min_score (a count and a sort by field
+            // rewrite the boost away, iterating a weight keeps it): no such shape here.
+            return minScore == null && r.nextInt(4) == 0 ? new BoostQuery(q, 2.5f) : q;
         } catch (Exception e) {
             throw new AssertionError(e);
         }

@@ -2773,6 +2773,9 @@ pub struct FieldTerms {
     /// several ([`BlockTreeFields::combine`]). Added to every term's decoded
     /// file pointers.
     postings_base: [u64; 3],
+    /// Terms a reader view does not show ([`BlockTreeFields::without_terms`]): a lookup of one
+    /// finds nothing. Set only for the `_field_names` field of a reader that hides fields.
+    hidden_terms: Option<Arc<std::collections::HashSet<Vec<u8>>>>,
 }
 
 impl std::fmt::Debug for FieldTerms {
@@ -2817,6 +2820,7 @@ impl Clone for FieldTerms {
                 self.wide_walks.load(std::sync::atomic::Ordering::Relaxed),
             ),
             postings_base: self.postings_base,
+            hidden_terms: self.hidden_terms.clone(),
         }
     }
 }
@@ -2872,10 +2876,19 @@ impl FieldTerms {
         }
     }
 
+    /// Whether a reader view hides `term` ([`BlockTreeFields::without_terms`]).
+    #[inline]
+    fn term_hidden(&self, term: &[u8]) -> bool {
+        self.hidden_terms.as_ref().is_some_and(|h| h.contains(term))
+    }
+
     /// `TermsEnum.seekExact(BytesRef)` + `docFreq()`/`totalTermFreq()`:
     /// walks the `.tip` trie to the one block that could hold `term`, loads
     /// it, and decodes only that term's stats.
     pub fn try_seek_exact(&self, term: &[u8]) -> Result<Option<TermStats>> {
+        if self.term_hidden(term) {
+            return Ok(None);
+        }
         self.with_scratch(|ste| {
             if !ste.seek_exact(term)? {
                 return Ok(None);
@@ -2902,6 +2915,9 @@ impl FieldTerms {
     /// query hands these to [`lucene_store::prefetch`] for all its terms
     /// before seeking any, so their blocks arrive together.
     pub fn term_block(&self, term: &[u8]) -> Result<Option<&[u8]>> {
+        if self.term_hidden(term) {
+            return Ok(None);
+        }
         let mut st = EnumState {
             prepare_only: true,
             ..EnumState::default()
@@ -2931,6 +2947,9 @@ impl FieldTerms {
     /// `seekExact` plus `decodeMetaData` — the stats *and* the postings file
     /// pointers, in one trie walk.
     pub(crate) fn term_state(&self, term: &[u8]) -> Result<Option<(TermStats, TermMetadata)>> {
+        if self.term_hidden(term) {
+            return Ok(None);
+        }
         self.with_scratch(|ste| {
             if !ste.seek_exact(term)? {
                 return Ok(None);
@@ -3673,6 +3692,36 @@ impl BlockTreeFields {
         BlockTreeFields { fields }
     }
 
+    /// This dictionary with `terms` of `field` not found by an exact lookup: a reader that hides
+    /// fields hides their names in `_field_names`, whose terms are the names of the fields a
+    /// document has. Lookups by term see nothing of them; a walk over the field's terms still
+    /// lists them, which nothing a search runs does for that field.
+    #[must_use]
+    pub fn without_terms(&self, field: &str, terms: std::collections::HashSet<Vec<u8>>) -> Self {
+        let terms = Arc::new(terms);
+        let mut out = self.clone();
+        for (name, f) in &mut out.fields {
+            if name == field {
+                f.hidden_terms = Some(Arc::clone(&terms));
+            }
+        }
+        out
+    }
+
+    /// This dictionary without the fields `hidden` names: what a reader that hides them sees
+    /// (`Terms` for such a field is `null`). The other fields are shared, not re-read.
+    #[must_use]
+    pub fn without(&self, hidden: &std::collections::HashSet<String>) -> Self {
+        BlockTreeFields {
+            fields: self
+                .fields
+                .iter()
+                .filter(|(name, _)| !hidden.contains(name))
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// `PerFieldPostingsFormat.FieldsReader`: one dictionary over the
     /// dictionaries of every postings format a segment's fields were routed
     /// to (one `.tim`/`.tip`/`.tmd` per format and suffix), each group's
@@ -3725,6 +3774,7 @@ impl FieldTerms {
             ngram: std::sync::OnceLock::new(),
             wide_walks: std::sync::atomic::AtomicU32::new(0),
             postings_base: [0; 3],
+            hidden_terms: None,
         }
     }
 
@@ -5692,6 +5742,7 @@ pub fn open_shared(
                 ngram: std::sync::OnceLock::new(),
                 wide_walks: std::sync::atomic::AtomicU32::new(0),
                 postings_base: [0; 3],
+                hidden_terms: None,
             },
         ));
     }

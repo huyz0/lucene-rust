@@ -23,6 +23,7 @@ The result (JSON) goes to OUT."""
 import bisect
 import concurrent.futures
 import json
+import nodectl
 import random
 import statistics
 import subprocess
@@ -111,20 +112,16 @@ def send_all(bodies):
         list(ex.map(send, bodies))
 
 
-PID = "$(/usr/share/opensearch/jdk/bin/jcmd -l | grep -m1 org.opensearch.bootstrap | cut -d' ' -f1)"
+PID = "$NODE_PID"  # exec_ sets it to the JVM's pid
 
 
 def full_gc(container):
-    subprocess.run(["docker", "exec", container, "bash", "-c",
-                    "/usr/share/opensearch/jdk/bin/jcmd " + PID + " GC.run"],
-                   capture_output=True, check=False)
+    nodectl.exec_(container, "/usr/share/opensearch/jdk/bin/jcmd " + PID + " GC.run")
     time.sleep(2)
 
 
 def rss_mib(container):
-    out = subprocess.run(["docker", "exec", container, "bash", "-c",
-                          "grep -E 'VmRSS|VmHWM' /proc/" + PID + "/status"],
-                         capture_output=True, text=True).stdout
+    out = nodectl.exec_(container, "grep -E 'VmRSS|VmHWM' /proc/" + PID + "/status").stdout
     vals = {l.split(":")[0]: int(l.split()[1]) // 1024 for l in out.splitlines() if l}
     return vals.get("VmRSS"), vals.get("VmHWM")
 

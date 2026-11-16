@@ -451,6 +451,42 @@ pub unsafe extern "C" fn ffi_jvm_reader_search_hybrid_alloc(
     })
 }
 
+/// [`jvm_reader::profile_blobs`]: a request's query run once more with a timer around each
+/// clause (`profile`), the timers encoded in an owned buffer.
+///
+/// # Safety
+/// `blob` must be valid for `blob_len` bytes and `out_ptr`/`out_len` for one
+/// write each.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ffi_jvm_reader_profile_alloc(
+    handle: u64,
+    blob: *const u8,
+    blob_len: usize,
+    collect: i32,
+    top_n: usize,
+    count_limit: i64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: caller contract.
+        unsafe { clear_out(out_ptr, out_len)? };
+        // SAFETY: caller contract.
+        let blob = unsafe { bytes_from_raw(blob, blob_len)? };
+        let encoded = jvm_reader::profile_blobs(
+            handle,
+            blob,
+            u8::try_from(collect).unwrap_or(u8::MAX),
+            top_n,
+            count_limit,
+        )?;
+        // SAFETY: caller contract.
+        unsafe { give(encoded, out_ptr, out_len) };
+        Ok(())
+    })
+}
+
 /// [`jvm_reader::search_collapsed_blobs`]: a collapsed search (OpenSearch's
 /// `collapse`), its slices' groups encoded in an owned buffer.
 ///

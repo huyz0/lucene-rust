@@ -202,6 +202,22 @@ pub fn value_kind(k: u8) -> Result<ValueKind, Status> {
     }
 }
 
+/// [`value_kind`] for the nodes that also read `half_float` (3) and `scaled_float` (4, then the
+/// scaling factor as a double).
+pub fn wide_value_kind(c: &mut Cursor<'_>) -> Result<ValueKind, Status> {
+    match c.u8()? {
+        3 => Ok(ValueKind::HalfFloat),
+        4 => {
+            let factor = f64_of(c)?;
+            if !(factor.is_finite() && factor > 0.0) {
+                return Err(bad(format!("aggregation tree: scaling factor {factor}")));
+            }
+            Ok(ValueKind::Scaled(factor.to_bits()))
+        }
+        k => value_kind(k),
+    }
+}
+
 pub fn field(c: &mut Cursor<'_>) -> Result<String, Status> {
     Ok(std::str::from_utf8(c.bytes()?)
         .map_err(|_| Status::InvalidUtf8)?
@@ -336,7 +352,7 @@ pub fn node_of(
 ) -> Result<AggNode, Status> {
     Ok(match kind {
         AGG_METRIC => {
-            let kind = value_kind(c.u8()?)?;
+            let kind = wide_value_kind(c)?;
             let source = match c.u8()? {
                 0 => Source::DocValues,
                 1 if depth == 0 => Source::PointsMin,
@@ -574,7 +590,7 @@ pub fn node_of(
         }
         AGG_HISTOGRAM => {
             let field = field(c)?;
-            let kind = value_kind(c.u8()?)?;
+            let kind = wide_value_kind(c)?;
             let interval = f64_of(c)?;
             let offset = f64_of(c)?;
             // `AbstractHistogramAggregator`: not zero or negative.
@@ -1156,13 +1172,19 @@ pub fn aggregate_tree_blobs_cached(
         .global
         .as_ref()
         .is_some_and(|(_, g)| g.iter().any(AggNode::needs_scores));
+    let q = if min_score.is_some() || main_scores {
+        q
+    } else {
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
     let mut norm_fields: Vec<String> = Vec::new();
     if min_score.is_some() || main_scores {
-        norm_fields.extend(
-            crate::clauses::clause_field_names(&q)
-                .into_iter()
-                .map(str::to_string),
-        );
+        norm_fields.extend(crate::clauses::norm_field_names(&q));
+    } else {
+        norm_fields.extend(crate::clauses::min_score_field_names(&q));
     }
     if let (true, Some(gq)) = (global_scores, global_query) {
         for f in crate::clauses::clause_field_names(gq) {

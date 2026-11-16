@@ -78,9 +78,9 @@ pub const GEOMETRY_CIRCLE: u8 = 4;
 pub fn decode_request(
     blob: &[u8],
 ) -> Result<(JvmQuery, Option<f32>, Option<PerFieldSimilarity>), Status> {
-    use crate::similarity::QUERY_SIMILARITY;
-    // The prefixes, in either order, each at most once.
-    let (mut min, mut similarity) = (None, None);
+    use crate::similarity::{QUERY_DFS, QUERY_SIMILARITY};
+    // The prefixes, in any order, each at most once.
+    let (mut min, mut similarity, mut dfs) = (None, None, None);
     let mut c = Cursor { buf: blob, pos: 0 };
     loop {
         let at = c.pos;
@@ -93,12 +93,25 @@ pub fn decode_request(
                 c.pos = c.pos.saturating_add(1);
                 similarity = Some(crate::similarity::decode(&mut c)?);
             }
-            Some(&QUERY_MIN_SCORE | &QUERY_SIMILARITY) => {
-                set_last_error("query blob: min_score or similarity table twice");
+            Some(&QUERY_DFS) if dfs.is_none() => {
+                c.pos = c.pos.saturating_add(1);
+                dfs = Some(crate::similarity::decode_dfs(&mut c)?);
+            }
+            Some(&QUERY_MIN_SCORE | &QUERY_SIMILARITY | &QUERY_DFS) => {
+                set_last_error("query blob: min_score, similarity table or dfs twice");
                 return Err(Status::InvalidArgument);
             }
             _ => break,
         }
+    }
+    // Scoring with a DFS' statistics: the table's similarities, or the default BM25.
+    if let Some(dfs) = dfs {
+        let table = similarity.unwrap_or_else(|| {
+            PerFieldSimilarity::new(std::sync::Arc::new(
+                lucene_search::similarities::Bm25Similarity::default(),
+            ))
+        });
+        similarity = Some(table.with_statistics(std::sync::Arc::new(dfs)));
     }
     let rest = blob.get(c.pos..).ok_or(Status::InvalidArgument)?;
     let query = rewritten(decode_query(rest)?);

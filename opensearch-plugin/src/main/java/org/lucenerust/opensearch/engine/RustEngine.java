@@ -2137,7 +2137,7 @@ public class RustEngine extends Engine {
         throws EngineException {
         SearcherSupplier supplier = CAN_MATCH_SEARCH_SOURCE.equals(source)
             ? acquireSearcherSupplier(wrapper, scope)
-            : super.acquireSearcherSupplier(wrapper, scope);
+            : super.acquireSearcherSupplier(EngineFetchLayer.under(wrapper, engineConfig.getIndexSettings()), scope);
         Searcher searcher = null;
         try {
             searcher = supplier.acquireSearcher(source);
@@ -2161,7 +2161,7 @@ public class RustEngine extends Engine {
     public SearcherSupplier acquireSearcherSupplier(java.util.function.Function<Searcher, Searcher> wrapper, SearcherScope scope) throws EngineException {
         return LiveSearchers.supplier(
             documentIndexWriter,
-            wrapper,
+            EngineFetchLayer.under(wrapper, engineConfig.getIndexSettings()),
             scope,
             super::acquireSearcherSupplier,
             engineConfig.getThreadPool() == null ? null : engineConfig.getThreadPool().generic()

@@ -385,6 +385,43 @@ impl<'a> Selector<'a> {
     }
 }
 
+/// The collapse field of one segment read as neural-search's hybrid collapse collector reads
+/// it (`CollapseDocSourceGroupSelector`): a document's group value, refusing several values.
+pub struct HybridGroup<'a> {
+    selector: Selector<'a>,
+    key: Key,
+}
+
+impl<'a> HybridGroup<'a> {
+    /// `setNextReader`: `field` of `reader`, read as `kind`.
+    ///
+    /// # Errors
+    /// A doc-values type the kind does not read.
+    pub fn open(reader: &'a SegmentReader, field: &str, kind: CollapseKind) -> Result<Self> {
+        Ok(Self {
+            selector: Selector::open(reader, field, kind)?,
+            key: Key::Missing,
+        })
+    }
+
+    /// `advanceTo(doc)`.
+    ///
+    /// # Errors
+    /// A document with several values.
+    pub fn advance(&mut self, doc: i32) -> Result<()> {
+        self.key = self.selector.advance(doc)?;
+        Ok(())
+    }
+
+    /// `copyValue()`: the current document's group value.
+    ///
+    /// # Errors
+    /// A dictionary read failure.
+    pub fn value(&mut self) -> Result<CollapseValue> {
+        Collapser::value_of(&mut self.selector, &self.key)
+    }
+}
+
 /// A segment's collapse field as one group id per document, for a search
 /// that groups as it goes (a grouped KNN search): the field read once, in
 /// document order, then looked up at random. Kept in the segment's cache of

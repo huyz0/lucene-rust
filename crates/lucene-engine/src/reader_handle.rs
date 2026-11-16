@@ -95,7 +95,6 @@ pub fn open_reader(
     counts: Option<&[usize]>,
     words: &[u64],
 ) -> Result<JvmReaderHandle, crate::status::Status> {
-    use crate::alloc::try_with_capacity;
     use crate::status::{set_last_error, Status};
     let segment_infos = lucene_index::segment_infos::parse(infos, generation).map_err(|e| {
         set_last_error(format!("parsing the JVM reader's SegmentInfos: {e}"));
@@ -117,6 +116,28 @@ pub fn open_reader(
         ));
         return Err(Status::InvalidArgument);
     }
+    let (live_docs, deleted) = live_masks(&opened, counts, words)?;
+    let cacheable = live_docs.len();
+    Ok(JvmReaderHandle {
+        reader,
+        live_docs,
+        deleted,
+        commit_live: std::sync::Mutex::new(None),
+        cacheable,
+        agg_identities: std::sync::OnceLock::new(),
+        path: Arc::from(path),
+    })
+}
+
+/// Each segment's live docs as [`open_reader`] takes them, and how many documents each deletes.
+#[allow(clippy::type_complexity)]
+fn live_masks(
+    opened: &[i32],
+    counts: Option<&[usize]>,
+    words: &[u64],
+) -> Result<(Vec<Option<FixedBitSet>>, Vec<i64>), crate::status::Status> {
+    use crate::alloc::try_with_capacity;
+    use crate::status::{set_last_error, Status};
     let mut live_docs = try_with_capacity(opened.len())?;
     let mut deleted = try_with_capacity(opened.len())?;
     let mut at = 0usize;
@@ -138,6 +159,39 @@ pub fn open_reader(
         }));
         live_docs.push(live);
     }
+    Ok((live_docs, deleted))
+}
+
+/// A view of the reader `base` holds: the same segments with each one hiding the fields
+/// `hidden[i]` names ([`lucene_search::directory_reader::SegmentReader::with_hidden_fields`]) and
+/// masked with the live docs of this call -- what a search sees through a wrapper that filters
+/// fields and documents (field- and document-level security). Nothing is read from disk, the
+/// segments are `base`'s; `expected`, `counts` and `words` are [`open_reader`]'s.
+pub fn open_view(
+    base: &JvmReaderHandle,
+    hidden: &[std::collections::HashSet<String>],
+    expected: &[i32],
+    counts: Option<&[usize]>,
+    words: &[u64],
+) -> Result<JvmReaderHandle, crate::status::Status> {
+    use crate::status::{set_last_error, Status};
+    let opened: Vec<i32> = base
+        .reader
+        .segment_readers()
+        .iter()
+        .map(|s| s.max_doc)
+        .collect();
+    if opened != expected {
+        set_last_error(format!(
+            "segment maxDocs {opened:?} do not match the JVM reader's {expected:?}"
+        ));
+        return Err(Status::InvalidArgument);
+    }
+    let reader = base.reader.with_hidden_fields(hidden).map_err(|e| {
+        set_last_error(format!("hiding fields of the JVM reader's segments: {e}"));
+        Status::InvalidArgument
+    })?;
+    let (live_docs, deleted) = live_masks(&opened, counts, words)?;
     let cacheable = live_docs.len();
     Ok(JvmReaderHandle {
         reader,
@@ -146,7 +200,7 @@ pub fn open_reader(
         commit_live: std::sync::Mutex::new(None),
         cacheable,
         agg_identities: std::sync::OnceLock::new(),
-        path: Arc::from(path),
+        path: Arc::clone(&base.path),
     })
 }
 

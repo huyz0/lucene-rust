@@ -19,12 +19,14 @@ searches, and the answers are compared:
 
   scripts/check-hybrid.py [--keep]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import glob, importlib.util, json, os, random, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 _spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
 ck = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ck)
@@ -65,6 +67,9 @@ def setup(port, rust, index="h"):
             lines.append(json.dumps(all_docs[i]))
         ck.req(port, "POST", f"/{index}/_bulk", "\n".join(lines) + "\n", ndjson=True)
         ck.req(port, "POST", f"/{index}/_refresh")
+    # An alias with a filter wraps the hybrid query in a bool query with the filter.
+    ck.req(port, "POST", "/_aliases", {"actions": [{"add": {"index": index, "alias": f"{index}_a",
+                                                         "filter": {"range": {"n": {"gte": 100}}}}}]})
     for name, body in PIPELINES.items():
         ck.req(port, "PUT", f"/_search/pipeline/{name}", body)
 
@@ -78,13 +83,14 @@ def setup_big(port):
     rng = random.Random(11)
     ck.req(port, "PUT", "/hb", {"settings": {"index": {"knn": True, "number_of_shards": 1, "number_of_replicas": 0,
                                                        "refresh_interval": -1}},
-                                "mappings": {"properties": {"t": {"type": "text"}, "v": {"type": "knn_vector", "dimension": 4,
+                                "mappings": {"properties": {"t": {"type": "text"}, "n": {"type": "integer"}, "tag": {"type": "keyword"},
+                                             "v": {"type": "knn_vector", "dimension": 4,
                                              "method": {"name": "hnsw", "engine": "lucene", "space_type": "l2"}}}}})
     for start in range(0, BIG, 5000):
         lines = []
         for i in range(start, start + 5000):
             lines.append(json.dumps({"index": {"_id": str(i)}}))
-            lines.append(json.dumps({"t": " ".join(rng.choices(WORDS[:40], k=6)),
+            lines.append(json.dumps({"t": " ".join(rng.choices(WORDS[:40], k=6)), "n": i % 1000, "tag": f"g{i % 7}",
                                      "v": [round(rng.uniform(-1, 1), 4) for _ in range(4)]}))
         ck.req(port, "POST", "/hb/_bulk", "\n".join(lines) + "\n", ndjson=True)
         ck.req(port, "POST", "/hb/_refresh")
@@ -98,7 +104,38 @@ def big_searches():
         {"query": hybrid(m, k, pagination_depth=40), "from": 20, "size": 10},
         {"query": hybrid(m, {"match": {"t": "w5"}}, k), "size": 25},
         {"query": hybrid(m, k), "size": 0, "track_total_hits": True},
+        # Past the first window, where the aggregations and the post filter see what the bulk
+        # scorer's thresholds let through.
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "size": 5, "track_total_hits": True,
+         "aggs": {"c": {"value_count": {"field": "n"}}, "mx": {"max": {"field": "n"}}, "tags": {"terms": {"field": "tag"}}}},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 5, "post_filter": {"range": {"n": {"lt": 300}}},
+         "aggs": {"c": {"value_count": {"field": "n"}}, "tags": {"terms": {"field": "tag"}}}},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 5, "post_filter": {"range": {"n": {"lt": 300}}}},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "size": 0, "aggs": {"c": {"value_count": {"field": "n"}}, "top": {"top_hits": {"size": 2, "_source": False}}}},
+        {"query": hybrid(m, k, pagination_depth=0)},
+        # Sorted: past the first window, with the hit count the sorted collectors stop counting at.
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "sort": [{"n": "asc"}], "size": 10},
+        {"query": hybrid(m, {"match": {"t": "w5"}}, k), "sort": [{"n": "desc"}], "size": 25, "track_total_hits": True},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10, "track_total_hits": True},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10, "track_total_hits": 50},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"n": "asc"}, {"_doc": "asc"}], "size": 10, "search_after": [500, 3000]},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"_doc": "asc"}], "size": 10, "search_after": [3000]},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"tag": "asc"}, {"n": "desc"}], "size": 10, "track_total_hits": 500},
+        {"query": hybrid(m, {"match": {"t": "w5"}}), "sort": [{"n": "asc"}], "size": 5, "post_filter": {"range": {"n": {"lt": 300}}},
+         "aggs": {"c": {"value_count": {"field": "n"}}}},
     )]
+
+
+def alias_searches():
+    """(pipeline, body) pairs run through the filtered alias."""
+    return [("minmax", {"query": hybrid(MATCH, KNN)}),
+            ("rrf", {"query": hybrid(MATCH, KNN), "size": 20}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "size": 8}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 6}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "aggs": {"tags": {"terms": {"field": "tag"}}},
+                        "post_filter": {"term": {"tag": "g2"}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "size": 0, "track_total_hits": True})]
 
 
 def norm(technique, combination="arithmetic_mean", **extra):
@@ -163,16 +200,69 @@ def searches():
         {"query": hybrid(MATCH, KNN), "aggs": {"tags": {"terms": {"field": "tag"}}, "avg_n": {"avg": {"field": "n"}}}},
         {"query": hybrid(MATCH, KNN), "post_filter": {"term": {"tag": "g1"}}},
         {"query": hybrid(MATCH, KNN), "min_score": 0.4},
+        {"query": hybrid(MATCH, KNN), "post_filter": {"term": {"tag": "g1"}},
+         "aggs": {"tags": {"terms": {"field": "tag"}}, "avg_n": {"avg": {"field": "n"}}}},
+        {"query": hybrid(MATCH, KNN), "size": 0,
+         "aggs": {"tags": {"terms": {"field": "tag"}}, "h": {"histogram": {"field": "n", "interval": 100}}}},
+        {"query": hybrid(MATCH, KNN), "aggs": {"all": {"global": {}, "aggs": {"m": {"max": {"field": "n"}}}}}},
+        {"query": hybrid(MATCH, KNN), "aggs": {"t": {"terms": {"field": "tag"}, "aggs": {"a": {"avg": {"field": "n"}}}}}},
+        {"query": hybrid(MATCH, KNN), "aggs": {"top": {"top_hits": {"size": 2, "_source": False}}}},
+        {"query": hybrid(MATCH, KNN), "size": 8,
+         "rescore": {"query": {"rescore_query": {"match": {"t": "w1"}}, "query_weight": 0, "rescore_query_weight": 10}}},
+        {"query": hybrid(MATCH, KNN), "size": 8, "rescore": {"window_size": 3, "query": {"rescore_query": {"term": {"tag": "g3"}}}}},
+        {"query": hybrid(MATCH, KNN), "size": 0, "post_filter": {"term": {"tag": "g1"}}},
+        {"query": hybrid(MATCH, KNN, pagination_depth=0)},
     ]
     out = []
     for p in ("minmax", "minmax_w", "minmax_lb", "l2_geo", "z_arith", "minmax_harm", "rrf", "rrf_k"):
         out += [(p, b) for b in two]
     three = hybrid({"match": {"t": "w2"}}, {"term": {"tag": "g4"}}, {"range": {"n": {"gte": 100, "lte": 400}}})
     out += [(p, {"query": three, "size": 15}) for p in ("minmax", "l2_geo", "z_arith", "rrf")]
-    out += [("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "desc"}], "size": 15}),
-            ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}, {"_id": "asc"}], "size": 15}),
+    sorted_hybrid = hybrid(MATCH, KNN)
+    out += [("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "size": 15}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "asc"}, {"_id": "asc"}], "size": 15}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"tag": "asc"}, {"n": "desc"}], "size": 40}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"_score": "asc"}], "size": 12}),
+            ("rrf", {"query": sorted_hybrid, "sort": [{"_doc": "asc"}], "size": 12}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "asc"}, {"_id": "asc"}], "size": 10,
+                        "search_after": [500, "300"]}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"tag": "desc"}, {"_id": "asc"}], "size": 10,
+                        "search_after": ["g4", "100"]}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "size": 0, "track_total_hits": True}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "post_filter": {"term": {"tag": "g1"}}}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "asc"}],
+                        "aggs": {"tags": {"terms": {"field": "tag"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=30), "sort": [{"n": "asc"}], "from": 10, "size": 10}),
+            ("minmax", {"query": sorted_hybrid, "sort": [{"n": "desc"}], "track_total_hits": 20}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 40, "size": 30}),
+            ("rrf", {"query": hybrid(MATCH, KNN), "terminate_after": 100000}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 7, "size": 0, "track_total_hits": True}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 25, "post_filter": {"term": {"tag": "g1"}},
+                        "aggs": {"tags": {"terms": {"field": "tag"}}, "avg_n": {"avg": {"field": "n"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 20, "sort": [{"n": "desc"}]}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 20, "sort": [{"_doc": "asc"}], "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 1}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 3, "post_filter": {"term": {"tag": "g1"}},
+                        "aggs": {"c": {"value_count": {"field": "n"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "terminate_after": 10, "post_filter": {"term": {"tag": "g1"}}, "sort": [{"n": "asc"}],
+                        "aggs": {"c": {"value_count": {"field": "n"}}}}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10}),
-            ("rrf", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10})]
+            ("rrf", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "n"}, "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "desc"}], "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "asc"}, {"_doc": "asc"}], "size": 6}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"_score": "asc"}], "size": 6}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 0, "track_total_hits": True}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10, "post_filter": {"range": {"n": {"gte": 300}}},
+                        "aggs": {"tags": {"terms": {"field": "tag"}}}}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "terminate_after": 20, "size": 10}),
+            ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=30), "collapse": {"field": "tag"}, "from": 3, "size": 4}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "t"}, "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag", "inner_hits": {"name": "grp", "size": 2}}, "size": 5}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag", "inner_hits": {"name": "grp", "size": 2, "sort": [{"n": "asc"}]}},
+                        "sort": [{"n": "desc"}], "size": 4}),
+            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "asc"}], "search_after": [10], "size": 5})]
     return out
 
 
@@ -185,8 +275,14 @@ def answer(port, pipeline, body, explain=False, index="h"):
     hits = r["hits"]
     out = {"total": hits.get("total"), "max_score": hits.get("max_score"),
            "hits": [(h["_id"], h.get("_score"), h.get("sort"), (h.get("fields") or {}).get("tag")) for h in hits["hits"]]}
+    inner = [{name: [(x["_id"], x.get("_score")) for x in v["hits"]["hits"]] for name, v in h["inner_hits"].items()}
+             for h in hits["hits"] if "inner_hits" in h]
+    if inner:
+        out["inner_hits"] = inner
     if "aggregations" in r:
         out["aggregations"] = r["aggregations"]
+    if "terminated_early" in r:
+        out["terminated_early"] = r["terminated_early"]
     if explain:
         out["explanations"] = {h["_id"]: h.get("_explanation") for h in hits["hits"]}
     return out
@@ -227,6 +323,10 @@ def compare(pipeline, body, failures, explain=False, ours="h", stock="h"):
         failures.append(f"{label}: total/max ours {o['total']} {o['max_score']}, stock {s['total']} {s['max_score']}")
     if not same_hits(o["hits"], s["hits"]):
         failures.append(f"{label}: hits\n  ours  {o['hits'][:12]}\n  stock {s['hits'][:12]}")
+    if o.get("terminated_early") != s.get("terminated_early"):
+        failures.append(f"{label}: terminated_early ours {o.get('terminated_early')}, stock {s.get('terminated_early')}")
+    if not close(o.get("inner_hits"), s.get("inner_hits")):
+        failures.append(f"{label}: inner_hits ours {o.get('inner_hits')}, stock {s.get('inner_hits')}")
     if not close(o.get("aggregations"), s.get("aggregations")):
         failures.append(f"{label}: aggregations ours {o.get('aggregations')}, stock {s.get('aggregations')}")
     if explain and not close(o["explanations"], s["explanations"]):
@@ -242,6 +342,10 @@ ERRORS = [
     ("minmax", {"query": {"hybrid": {"queries": [MATCH], "boost": 2}}}),
     ("minmax", {"query": hybrid(MATCH, KNN, pagination_depth=0)}),
     ("minmax", {"query": hybrid(MATCH, KNN), "from": 5, "size": 10}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "track_scores": True}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"_score": "asc"}, {"n": "asc"}]}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "min_score": 0.3}),
+    ("minmax", {"query": hybrid(MATCH, KNN), "sort": [{"n": "asc"}], "search_after": [1]}),
     ("minmax", {"query": hybrid(MATCH, KNN), "rescore": {"query": {"rescore_query": {"match": {"t": "w1"}}}}}),
 ]
 BAD_PIPELINES = [
@@ -327,12 +431,7 @@ def main():
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{ck.VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     ck.start(OURS[0], OURS[1], image)
     ck.start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{ck.VERSION}")
     failures = []
@@ -352,6 +451,8 @@ def main():
         for pipeline, body in runs:
             compare(pipeline, body, failures)
         compare("explain", {"query": hybrid(MATCH, KNN), "size": 5}, failures, explain=True)
+        for pipeline, body in alias_searches():
+            compare(pipeline, body, failures, ours="h_a", stock="h_a")
         for pipeline, body in ERRORS:
             compare(pipeline, body, failures)
         setup_big(OURS[1])
@@ -378,15 +479,17 @@ def main():
                      if v != before.get("fallbacks", {}).get(k, 0)}
         print(f"plugin: {ran} shard queries in Rust, fallbacks {fallbacks}")
         # What the native hybrid shard phase leaves to Java: the hybrid collectors' other modes.
-        java = {"hybrid_aggregations", "hybrid_collapse", "hybrid_no_hits", "hybrid_post_filter", "hybrid_rescore",
-                "hybrid_sort"}
+        # Sorting by _id reads the field data of the _id terms: not a doc-values sort, so not a hybrid matter.
+        java = {"sort_SortField_CUSTOM_BytesRefFieldComparatorSource",
+                # A post_filter range OpenSearch approximates (the first documents in BKD order).
+                "approximate"}
         if ran == 0 or set(fallbacks) - java:
             failures.append(f"hybrid searches fell back to Java: {fallbacks}")
         print(f"{len(runs) + 1} hybrid searches, {len(whole)} on a Rust-engine index, {len(big)} over 5000-document segments, {len(ERRORS)} search errors, {len(BAD_PIPELINES)} pipeline errors, {len(STATS_CALLS)} stats calls compared")
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):
-                subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+                nodectl.rm(name)
     if failures:
         print("\n".join(failures))
         sys.exit(1)

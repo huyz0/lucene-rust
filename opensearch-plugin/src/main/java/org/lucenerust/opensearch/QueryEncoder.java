@@ -671,6 +671,43 @@ public final class QueryEncoder {
         return null;
     }
 
+    /** {@code MultiPhraseQuery} (and OpenSearch's prefix variant, before its rewrite) as a search node. */
+    private static String plainMultiPhrase(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int[] nodes) {
+        Term[][] arrays;
+        int[] positions;
+        int slop;
+        int maxExpansions = 0;
+        byte kind = NODE_MULTI_PHRASE;
+        if (q instanceof org.apache.lucene.search.MultiPhraseQuery mp) {
+            arrays = mp.getTermArrays();
+            positions = mp.getPositions();
+            slop = mp.getSlop();
+        } else {
+            org.opensearch.common.lucene.search.MultiPhrasePrefixQuery mpp = (org.opensearch.common.lucene.search.MultiPhrasePrefixQuery) q;
+            arrays = mpp.getTerms();
+            positions = mpp.getPositions();
+            slop = mpp.getSlop();
+            Integer read = maxExpansions(mpp);
+            maxExpansions = read == null ? 50 : read;
+            kind = NODE_MULTI_PHRASE_PREFIX;
+        }
+        if (arrays.length == 0) {
+            out.write(NODE_MATCH_NONE);
+            return null;
+        }
+        for (Term[] a : arrays) {
+            if (a.length == 0) {
+                out.write(NODE_MATCH_NONE);
+                return null;
+            }
+        }
+        if (fieldOk.test(arrays[0][0].field()) == false) {
+            return "field_similarity";
+        }
+        String reason = multiPhrase(kind, arrays, positions, slop, maxExpansions, "", out, nodes);
+        return reason.isEmpty() ? null : reason;
+    }
+
     private static Encoded encodeRoot(Query query, Predicate<String> fieldOk) {
         query = unwrapUnitBoost(query);
         if (query instanceof TermQuery tq && tq.getTermStates() == null) {
@@ -711,15 +748,15 @@ public final class QueryEncoder {
     }
 
     /** The native decoder's depth limit ({@code MAX_CLAUSE_DEPTH} in {@code clauses.rs}). */
-    private static final int MAX_DEPTH = 32;
+    private static final int MAX_DEPTH = 128;
 
     /**
      * The native decoder's node limit ({@code MAX_CLAUSE_COUNT} in {@code clauses.rs}), over every
      * node, wrappers included. Lucene counts only leaves and OpenSearch's {@code
-     * indices.query.bool.max_clause_count} may raise its limit, so a larger query is legal: it runs
-     * on Lucene, under a named reason rather than as a native error.
+     * indices.query.bool.max_clause_count} may raise its limit, so the bound sits far above any
+     * limit an operator sets and only guards the decoder's allocations.
      */
-    private static final int MAX_NODES = 1024;
+    private static final int MAX_NODES = 1 << 20;
 
     private static final byte NODE_TERM = 0;
     private static final byte NODE_BOOLEAN = 1;
@@ -872,6 +909,9 @@ public final class QueryEncoder {
             nodes[0]--;
             return node(a.getOriginalQuery(), out, fieldOk, depth, nodes);
         }
+        if (q instanceof org.apache.lucene.search.MultiPhraseQuery || q instanceof org.opensearch.common.lucene.search.MultiPhrasePrefixQuery) {
+            return plainMultiPhrase(q, out, fieldOk, nodes);
+        }
         if (q.getClass() == PhraseQuery.class) {
             PhraseQuery pq = (PhraseQuery) q;
             Term[] terms = pq.getTerms();
@@ -883,22 +923,21 @@ public final class QueryEncoder {
             if (fieldOk.test(pq.getField()) == false) {
                 return "field_similarity";
             }
-            // The native phrase has no position gaps (a stopword the analyzer removed).
+            // A gap in the positions is a stopword the analyzer removed: the node then carries them.
+            boolean gaps = false;
             for (int i = 0; i < positions.length; i++) {
-                if (positions[i] - positions[0] != i) {
-                    return "phrase_positions";
-                }
+                gaps |= positions[i] - positions[0] != i;
             }
             nodes[0] += terms.length;
             if (nodes[0] > MAX_NODES) {
                 return "query_too_large";
             }
-            out.write(NODE_PHRASE);
+            out.write(gaps ? NODE_PHRASE_POSITIONS : NODE_PHRASE);
             writeBytes(out, pq.getField().getBytes(StandardCharsets.UTF_8));
             writeInt(out, pq.getSlop());
             writeInt(out, terms.length);
             for (int i = 0; i < terms.length; i++) {
-                writeInt(out, i);
+                writeInt(out, gaps ? positions[i] : i);
                 writeBytes(out, terms[i].bytes());
             }
             return null;
@@ -1034,6 +1073,11 @@ public final class QueryEncoder {
         String geo = GeoEncoder.node(q, out);
         if (geo != GeoEncoder.NOT_GEO) {
             return geo;
+        }
+        // A multi-term query not yet rewritten (a filter inside another query): its constant-score
+        // rewrite, the default.
+        if (q instanceof MultiTermQuery mt && mt.getRewriteMethod() == MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE) {
+            return multiTerm(q, REWRITE_CONSTANT_SCORE_BLENDED, out, fieldOk, depth, nodes);
         }
         // The whole query is unsupported ("query_"), or one clause of an otherwise native tree is.
         return (depth == 0 ? "query_" : "clause_") + name(q);
