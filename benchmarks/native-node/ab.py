@@ -18,8 +18,9 @@ sys.path.insert(0, os.path.join(here, "../agg-sweep"))
 import bench_nodes as bn  # noqa: E402
 import e2e_sweep  # noqa: E402
 
-ROUNDS = int(os.environ.get("ROUNDS", "40"))
-WARMUP = int(os.environ.get("WARMUP", "15"))
+ROUNDS = int(os.environ.get("ROUNDS", "100"))
+WARMUP = int(os.environ.get("WARMUP", "30"))
+WARMUP_S = float(os.environ.get("WARMUP_S", "1.5"))
 
 
 def all_shapes():
@@ -46,19 +47,18 @@ def load(base, corpus, settings):
 
 
 def time_all(base, label, out):
+    """Every shape on one keep-alive connection: WARMUP requests and at least WARMUP_S seconds, then ROUNDS timed."""
     bn.BASE = base
     res = {}
     for name, body in all_shapes():
-        for _ in range(WARMUP):
-            bn.req("POST", "/bench/_search?request_cache=false", body)
-        wall = []
-        for _ in range(ROUNDS):
-            t = time.perf_counter()
-            r = bn.req("POST", "/bench/_search?request_cache=false", body)
-            wall.append((time.perf_counter() - t) * 1000)
-        wall.sort()
-        res[name] = {"median_ms": round(statistics.median(wall), 3), "p90_ms": round(wall[int(len(wall) * 0.9) - 1], 3),
-                     "hits": r["hits"]["total"]["value"], "took": r.get("took")}
+        last = []
+
+        def one():
+            last[:] = [bn.req("POST", "/bench/_search?request_cache=false", body)]
+
+        wall = bn.bh.measure(one, ROUNDS, WARMUP, WARMUP_S)
+        r = last[0]
+        res[name] = {**bn.bh.summarize(wall), "hits": r["hits"]["total"]["value"], "took": r.get("took")}
     res["_stats"] = bn.req("GET", "/_nodes/stats/os,process")
     json.dump(res, open(out, "w"), indent=1)
 
@@ -106,41 +106,10 @@ def knn_load(base, settings):
     print(f"{NVEC} vectors in {time.perf_counter() - t0:.0f}s, store {int(idx['store.size']) / 2**20:.0f} MiB")
 
 
-class KeepAlive:
-    """One persistent raw HTTP/1.1 socket: `bn.req` (urllib) opens a connection per request, which costs
-    about 3.5 ms of client time on the cloud box, more than a k-NN search takes (1.1-1.7 ms), and
-    `http.client` still adds about 1 ms. Only POST with a JSON body."""
-
-    def __init__(self, base):
-        import socket
-        host, port = base.split("//")[1].split(":")
-        self.s = socket.create_connection(("127.0.0.1" if host == "localhost" else host, int(port)), timeout=600)
-        self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-    def post(self, path, body):
-        import re
-        data = json.dumps(body).encode()
-        self.s.sendall(f"POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\n\r\n".encode() + data)
-        buf = b""
-        while b"\r\n\r\n" not in buf:
-            chunk = self.s.recv(1 << 20)
-            if not chunk:
-                raise ConnectionError("closed")
-            buf += chunk
-        head, rest = buf.split(b"\r\n\r\n", 1)
-        size = int(re.search(rb"content-length: *(\d+)", head, re.I).group(1))
-        while len(rest) < size:
-            rest += self.s.recv(1 << 20)
-        status = int(head.split(b" ", 2)[1])
-        if status >= 300:
-            raise RuntimeError(f"{path}: {status} {rest[:300]!r}")
-        return rest
-
-
 def knn_time(base, label, out):
     bn.BASE = base
-    ka = KeepAlive(base)
-    qs = list(vectors(int(os.environ.get("NQ", "300")), 99))
+    ka = bn.bh.Client(base)
+    qs = list(vectors(300, 99))
     shapes = {
         "knn k=10": lambda q: {"size": 10, "_source": False, "query": {"knn": {"v": {"vector": q, "k": 10}}}},
         "knn k=100 ef": lambda q: {"size": 100, "_source": False, "query": {"knn": {"v": {"vector": q, "k": 100}}}},
@@ -153,15 +122,12 @@ def knn_time(base, label, out):
     for name, mk in shapes.items():
         if want and not any(w in name for w in want):
             continue
-        for q in qs[:20]:
-            ka.post("/vec/_search?request_cache=false", mk(q))
-        wall = []
-        for q in qs:
-            t = time.perf_counter()
-            ka.post("/vec/_search?request_cache=false", mk(q))
-            wall.append((time.perf_counter() - t) * 1000)
-        wall.sort()
-        res[name] = {"median_ms": round(statistics.median(wall), 3), "p90_ms": round(wall[int(len(wall) * 0.9) - 1], 3)}
+        it = iter(range(10**9))
+
+        def one():
+            ka.json("POST", "/vec/_search?request_cache=false", mk(qs[next(it) % len(qs)]))
+
+        res[name] = bn.bh.summarize(bn.bh.measure(one, int(os.environ.get("NQ", "300")), 50, WARMUP_S))
     res["_stats"] = bn.req("GET", "/_nodes/stats/os,process")
     json.dump(res, open(out, "w"), indent=1)
 

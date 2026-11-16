@@ -4,16 +4,14 @@ the Loghub 2k samples (one *.log file per system, in LOGHUB_DIR) with their digi
 
 python3 bench_compact_wildcard.py LOGHUB_DIR [lines] [config,...]
 """
-import json, os, random, re, sys, time, glob, statistics, urllib.request, urllib.error
+import json, os, random, re, sys, time, glob, statistics
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import benchhttp as bh
 B = "http://localhost:9200"
 DIR = sys.argv[1]
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 1_000_000
 def req(m, p, body=None, nd=False):
-    d = None if body is None else (body.encode() if isinstance(body, str) else json.dumps(body).encode())
-    r = urllib.request.Request(B + p, data=d, method=m, headers={"content-type": "application/x-ndjson" if nd else "application/json"})
-    try:
-        with urllib.request.urlopen(r, timeout=600) as x: return json.load(x)
-    except urllib.error.HTTPError as e: raise RuntimeError(e.read().decode()[:400])
+    return bh.req(B, m, p, body, nd, 600)
 lines = []
 for f in sorted(glob.glob(os.path.join(DIR, "*.log"))):
     lines += [l.rstrip("\n") for l in open(f, errors="replace") if l.strip()]

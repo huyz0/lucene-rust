@@ -25,27 +25,18 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import benchhttp as bh  # noqa: E402
 
 BASE = ""
 K = 10
 
 
 def req(method, path, body=None, ndjson=False, timeout=600):
-    data = None
-    headers = {}
-    if body is not None:
-        data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
-    r = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:800]}")
+    return bh.req(BASE, method, path, body, ndjson, timeout)
 
 
 def env(name, default):
