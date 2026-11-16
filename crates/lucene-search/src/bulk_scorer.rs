@@ -961,6 +961,38 @@ impl<'a> TermLeg<'a> {
         self.next_docs_and_scores_where(up_to, live_docs, |_| Ok(true), out)
     }
 
+    /// [`Self::next_docs_and_scores`] without scoring: the live documents of the rest of the
+    /// postings block below `up_to`, each with score `0`; the cursor is left on the first
+    /// document not returned, and an empty buffer means no more documents below `up_to`.
+    pub(crate) fn next_docs_unscored(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        if self.constant_scorer {
+            return self.constant_docs_and_scores(up_to, usize::MAX, live_docs, out);
+        }
+        loop {
+            self.ensure_competitive()?;
+            self.cursor
+                .next_postings_at_most(up_to, usize::MAX, &mut out.docs, &mut self.freqs)?;
+            if out.docs.is_empty() {
+                break;
+            }
+            if let Some(live) = live_docs {
+                out.docs.retain(|&d| live.get_doc(d));
+                if out.docs.is_empty() {
+                    continue;
+                }
+            }
+            break;
+        }
+        out.scores.clear();
+        out.scores.resize(out.docs.len(), 0.0);
+        Ok(())
+    }
+
     /// [`Self::next_docs_and_scores`] over at most `max` of the postings'
     /// documents (live or not; `max >= 1`), the cursor left on the next.
     pub(crate) fn next_docs_and_scores_at_most(

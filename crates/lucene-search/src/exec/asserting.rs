@@ -400,6 +400,25 @@ impl Scorer for AssertingScorer<'_> {
         Ok(())
     }
 
+    fn next_docs_unscored(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        self.inner.next_docs_unscored(up_to, live_docs, out)?;
+        let doc = self.inner.doc_id();
+        if doc != self.doc {
+            self.doc = doc;
+            self.state = if doc == NO_MORE_DOCS {
+                State::Finished
+            } else {
+                State::Iterating
+            };
+        }
+        Ok(())
+    }
+
     fn prefers_batches(&self) -> bool {
         self.inner.prefers_batches()
     }

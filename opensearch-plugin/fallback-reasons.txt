@@ -92,6 +92,7 @@ points_width  # GeoEncoder.java
 postings_format  # NativeReaders.java
 query_too_deep  # QueryEncoder.java
 query_too_large  # QueryEncoder.java
+random_score_id  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
 reader_closed  # NativeReaders.java
 reader_not_directory  # NativeReaders.java
 reader_not_standard  # NativeReaders.java
@@ -102,6 +103,8 @@ rescore_  # NativeRescore.java
 rescore_approximate  # NativeRescore.java
 rescore_query  # NativeRescore.java
 scaled_float  # SortEncoder.java
+script_date_values  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
+script_expression_per_document  # ExtendedEncoder.java (opt-in index.script.accelerated_extended; slower than stock, Huy 2026-11-16)
 script_query_script  # ExtendedEncoder.java
 script_score_hammingbit  # ExtendedEncoder.java
 script_score_script  # ExtendedEncoder.java
