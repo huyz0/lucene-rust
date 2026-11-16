@@ -249,6 +249,55 @@ pub(crate) struct DisjunctionScorer<'a, S: Scorer + ?Sized + 'a = dyn Scorer + '
     /// `DisjunctionMaxScorer.disjunctionBlockPropagator`: set only under
     /// `TOP_SCORES`.
     propagator: Option<BlockBoundaryPropagator>,
+    /// The documents of the clauses read ahead by [`Scorer::next_docs_unscored`].
+    window: Window,
+}
+
+/// How many documents [`Window`] spans at most.
+const WINDOW_DOCS: i32 = 4096;
+
+/// What [`DisjunctionScorer::next_docs_unscored`] read ahead: the union of
+/// the clauses' documents in `base..end` as bits (`BooleanScorer`'s window),
+/// every clause already past `end`. While `active`, the scorer's current
+/// document is the window's next set bit.
+#[derive(Default)]
+struct Window {
+    active: bool,
+    base: i32,
+    end: i32,
+    bits: Vec<u64>,
+    /// A clause's batch.
+    batch: crate::bulk_scorer::DocScores,
+    /// Scored: each clause's membership bits and scores, indexed from `base`.
+    scored: bool,
+    member: Vec<Vec<u64>>,
+    scores: Vec<Vec<f32>>,
+}
+
+/// Most clauses a scored window sums.
+const WINDOW_SCORED_CLAUSES: usize = 4;
+
+impl Window {
+    /// The first set bit at or after document `from`, as a document.
+    fn next_from(&self, from: i32) -> Option<i32> {
+        if from >= self.end {
+            return None;
+        }
+        // ARITH: `base <= from < end`, a window of at most `WINDOW_DOCS`.
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            let at = (from - self.base).max(0) as usize;
+            let mut w = at >> 6;
+            let mut word = self.bits.get(w).copied()? & (u64::MAX << (at & 63));
+            loop {
+                if word != 0 {
+                    return Some(self.base + (w << 6) as i32 + word.trailing_zeros() as i32);
+                }
+                w += 1;
+                word = *self.bits.get(w)?;
+            }
+        }
+    }
 }
 
 /// A clause a [`BlockBoundaryPropagator`] reads through.
@@ -382,7 +431,95 @@ impl<'a, S: Scorer + ?Sized + 'a> DisjunctionScorer<'a, S> {
             scratch: Vec::with_capacity(subs.len()),
             subs,
             propagator: None,
+            window: Window::default(),
         }
+    }
+
+    /// The smallest document the clauses are on.
+    fn min_doc(&self) -> i32 {
+        self.subs
+            .iter()
+            .map(|w| w.doc)
+            .min()
+            .unwrap_or(NO_MORE_DOCS)
+    }
+
+    /// Reads the clauses' documents from the current one on, below `up_to`,
+    /// into the window; with `scored`, each clause's scores too.
+    fn fill_window(&mut self, up_to: i32, scored: bool) -> Result<()> {
+        let base = self.doc;
+        let end = up_to.min(base.saturating_add(WINDOW_DOCS));
+        // ARITH: `base < end <= base + WINDOW_DOCS`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let len = (end - base) as usize;
+        let win = &mut self.window;
+        win.bits.clear();
+        win.bits.resize(len.div_ceil(64), 0);
+        win.scored = scored;
+        if scored {
+            win.member.resize_with(self.subs.len(), Vec::new);
+            win.scores.resize_with(self.subs.len(), Vec::new);
+        }
+        for (i, w) in self.subs.iter_mut().enumerate() {
+            if scored {
+                win.member[i].clear();
+                win.member[i].resize(len.div_ceil(64), 0);
+                win.scores[i].resize(len, 0.0);
+            }
+            while w.doc < end {
+                if scored {
+                    w.scorer.next_docs_and_scores(end, None, &mut win.batch)?;
+                } else {
+                    w.scorer.next_docs_unscored(end, None, &mut win.batch)?;
+                }
+                for (k, &d) in win.batch.docs.iter().enumerate() {
+                    // ARITH: `base <= d < end`.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    let at = (d - base) as usize;
+                    win.bits[at >> 6] |= 1 << (at & 63);
+                    if scored {
+                        win.member[i][at >> 6] |= 1 << (at & 63);
+                        win.scores[i][at] = win.batch.scores[k];
+                    }
+                }
+                w.doc = w.scorer.doc_id();
+                if win.batch.docs.is_empty() {
+                    break;
+                }
+            }
+        }
+        win.base = base;
+        win.end = end;
+        win.active = true;
+        Ok(())
+    }
+
+    /// The score of `doc`, in the window: the members' scores summed in
+    /// member order, as a linear queue's `topList()` is.
+    fn window_score(&self, doc: i32) -> f32 {
+        // ARITH: `base <= doc < end`.
+        #[allow(clippy::arithmetic_side_effects)]
+        let at = (doc - self.window.base) as usize;
+        let mut score = 0.0f64;
+        for (m, s) in self.window.member.iter().zip(&self.window.scores) {
+            if m[at >> 6] >> (at & 63) & 1 == 1 {
+                score += f64::from(s[at]);
+            }
+        }
+        score as f32
+    }
+
+    /// The window's next document after the current one, or the clauses'
+    /// smallest once it is spent.
+    fn window_next(&mut self) -> i32 {
+        match self.window.next_from(self.doc.saturating_add(1)) {
+            Some(d) => self.doc = d,
+            None => {
+                self.window.active = false;
+                self.doc = self.min_doc();
+            }
+        }
+        self.doc
     }
 
     /// `getSubMatches()`: the sub-scorers matching the current document.
@@ -408,6 +545,9 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        if self.window.active {
+            return Ok(self.window_next());
+        }
         if self.heap.is_linear() {
             // The heap loop below, unrolled: every member on the current
             // document steps once, and the new document is the smallest.
@@ -440,6 +580,23 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.window.active {
+            match self.window.next_from(target) {
+                Some(d) => {
+                    self.doc = d;
+                    return Ok(d);
+                }
+                None => {
+                    // Every clause is past the window; the clauses' own advance
+                    // below takes it from there.
+                    self.window.active = false;
+                    self.doc = self.min_doc();
+                    if self.doc >= target {
+                        return Ok(self.doc);
+                    }
+                }
+            }
+        }
         if self.heap.is_linear() {
             // The heap loop below, unrolled: each member behind `target`
             // advances to it once, in whichever order.
@@ -511,6 +668,9 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     }
 
     fn score(&mut self) -> Result<f32> {
+        if self.window.active && self.window.scored {
+            return Ok(self.window_score(self.doc));
+        }
         if !self.two_phase && self.heap.is_linear() {
             if let Combine::Sum = self.combine {
                 // `topList()` of a linear queue is the members on the
@@ -603,6 +763,9 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     /// `DisjunctionDISIApproximation.docIDRunEnd`: the longest run among the
     /// clauses on the current document.
     fn doc_id_run_end(&self) -> i32 {
+        if self.window.active {
+            return self.doc.saturating_add(1);
+        }
         let mut end = self.doc.saturating_add(1);
         for w in &self.subs {
             if w.doc == self.doc {
@@ -610,6 +773,79 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
             }
         }
         end
+    }
+
+    /// The window of `BooleanScorer`: the clauses' documents of a stretch
+    /// read as bits, then listed in order -- a clause's batch each, not a
+    /// virtual call per document.
+    fn next_docs_unscored(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        if self.needs_scores
+            || self.two_phase
+            || self.propagator.is_some()
+            || !self.heap.is_linear()
+        {
+            return super::docs_one_by_one(self, up_to, live_docs, out);
+        }
+        out.docs.clear();
+        out.scores.clear();
+        while out.docs.len() < super::NEXT_DOCS_BATCH {
+            if !self.window.active {
+                if self.doc >= up_to {
+                    break;
+                }
+                self.fill_window(up_to, false)?;
+            }
+            let doc = self.doc;
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                out.docs.push(doc);
+                out.scores.push(0.0);
+            }
+            self.window_next();
+        }
+        Ok(())
+    }
+
+    /// The window of `BooleanScorer`, scored: each clause's batch of documents
+    /// and scores into the window, then the documents listed in order with the
+    /// members' scores summed in member order (as `score()` sums them).
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        if !self.needs_scores
+            || self.two_phase
+            || self.propagator.is_some()
+            || !self.heap.is_linear()
+            || !matches!(self.combine, Combine::Sum)
+            || self.subs.len() > WINDOW_SCORED_CLAUSES
+            || (self.window.active && !self.window.scored)
+        {
+            return super::docs_and_scores_one_by_one(self, up_to, live_docs, out);
+        }
+        out.docs.clear();
+        out.scores.clear();
+        while out.docs.len() < super::NEXT_DOCS_BATCH {
+            if !self.window.active {
+                if self.doc >= up_to {
+                    break;
+                }
+                self.fill_window(up_to, true)?;
+            }
+            let doc = self.doc;
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                out.docs.push(doc);
+                out.scores.push(self.window_score(doc));
+            }
+            self.window_next();
+        }
+        Ok(())
     }
 
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
@@ -684,5 +920,145 @@ mod tests {
         let empty = DisiQueue::for_disjunction(12);
         empty.top_list(&heaped, &mut got);
         assert!(got.is_empty());
+    }
+
+    fn lists() -> Vec<Vec<i32>> {
+        (0..3)
+            .map(|m: i32| {
+                (0..20_000)
+                    .filter(|d| (d * 7 + m * 3) % (3 + m * 5) == 0 || d % 997 == m)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn disjunction(lists: &[Vec<i32>]) -> DisjunctionScorer<'static, DocList> {
+        let subs = lists
+            .iter()
+            .map(|l| Box::new(DocList::new(l.clone(), Vec::new())))
+            .collect();
+        let mut d = DisjunctionScorer::new(subs, Combine::Sum, false);
+        d.next_doc().unwrap();
+        d
+    }
+
+    /// The window read ahead by `next_docs_unscored` lists exactly the documents a
+    /// document-at-a-time walk finds, whatever mixes of batches, `next_doc`, `advance` and
+    /// deleted documents come between.
+    #[test]
+    fn a_window_lists_the_documents_one_at_a_time_walk_finds() {
+        use lucene_util::fixed_bit_set::FixedBitSet;
+        let lists = lists();
+        let mut want: Vec<i32> = lists.iter().flatten().copied().collect();
+        want.sort_unstable();
+        want.dedup();
+        // Batches to the end.
+        let mut d = disjunction(&lists);
+        let mut got = Vec::new();
+        let mut out = crate::bulk_scorer::DocScores::default();
+        loop {
+            d.next_docs_unscored(i32::MAX, None, &mut out).unwrap();
+            if out.docs.is_empty() {
+                break;
+            }
+            assert!(out.docs.len() <= super::super::NEXT_DOCS_BATCH);
+            got.extend_from_slice(&out.docs);
+        }
+        assert_eq!(got, want);
+        assert_eq!(d.doc_id(), NO_MORE_DOCS);
+        // A bound, a step, a jump, then the rest; deleted documents skipped.
+        let mut live = FixedBitSet::new(20_001);
+        for i in 0..20_001 {
+            if i % 5 != 0 {
+                live.set(i);
+            }
+        }
+        let mut d = disjunction(&lists);
+        let mut got = Vec::new();
+        d.next_docs_unscored(9000, Some(&live), &mut out).unwrap();
+        got.extend_from_slice(&out.docs);
+        let at = d.doc_id();
+        assert_eq!(Some(&at), want.iter().find(|&&x| x > *got.last().unwrap()));
+        let next = d.next_doc().unwrap();
+        let jump = d.advance(next + 3000).unwrap();
+        assert_eq!(Some(&jump), want.iter().find(|&&x| x >= next + 3000));
+        d.next_docs_unscored(i32::MAX, Some(&live), &mut out)
+            .unwrap();
+        assert!(out.docs.iter().all(|&x| x % 5 != 0 && want.contains(&x)));
+        let first = d.doc_id();
+        let mut rest = vec![first];
+        loop {
+            let n = d.next_doc().unwrap();
+            if n == NO_MORE_DOCS {
+                break;
+            }
+            rest.push(n);
+        }
+        let last = *out.docs.last().unwrap();
+        assert_eq!(
+            rest,
+            want.iter()
+                .copied()
+                .filter(|&x| x > last)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A scored window's documents and scores are those a one-document-at-a-time walk finds.
+    #[test]
+    fn a_scored_window_scores_as_the_walk_does() {
+        let lists = lists();
+        let scored = |on: bool| {
+            let subs = lists
+                .iter()
+                .enumerate()
+                .map(|(m, l)| {
+                    let scores = l
+                        .iter()
+                        .map(|d| 0.25 + ((d * (m as i32 + 3)) % 17) as f32 * 0.37)
+                        .collect();
+                    Box::new(DocList::new(l.clone(), scores))
+                })
+                .collect();
+            let mut d = DisjunctionScorer::new(subs, Combine::Sum, on);
+            d.next_doc().unwrap();
+            d
+        };
+        let mut walk = scored(true);
+        let mut want = Vec::new();
+        while walk.doc_id() != NO_MORE_DOCS {
+            want.push((walk.doc_id(), walk.score().unwrap()));
+            walk.next_doc().unwrap();
+        }
+        let mut batched = scored(true);
+        let mut got = Vec::new();
+        let mut out = crate::bulk_scorer::DocScores::default();
+        loop {
+            batched
+                .next_docs_and_scores(i32::MAX, None, &mut out)
+                .unwrap();
+            if out.docs.is_empty() {
+                break;
+            }
+            got.extend(out.docs.iter().copied().zip(out.scores.iter().copied()));
+        }
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!(g.0, w.0);
+            assert_eq!(g.1.to_bits(), w.1.to_bits(), "doc {}", g.0);
+        }
+        // Stepping with `next_doc` and `score` in the middle of a window reads the same scores.
+        let mut mixed = scored(true);
+        mixed
+            .next_docs_and_scores(i32::MAX, None, &mut out)
+            .unwrap();
+        let at = mixed.doc_id();
+        let k = want.iter().position(|w| w.0 == at).unwrap();
+        assert_eq!(mixed.score().unwrap().to_bits(), want[k].1.to_bits());
+        assert_eq!(mixed.next_doc().unwrap(), want[k + 1].0);
+        assert_eq!(mixed.score().unwrap().to_bits(), want[k + 1].1.to_bits());
+        let target = want[k + 900].0;
+        assert_eq!(mixed.advance(target).unwrap(), target);
+        assert_eq!(mixed.score().unwrap().to_bits(), want[k + 900].1.to_bits());
     }
 }

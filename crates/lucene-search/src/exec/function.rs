@@ -538,7 +538,11 @@ impl Scorer for FunctionScoreScorer<'_> {
         if !self.batch {
             return super::docs_and_scores_one_by_one(self, up_to, live_docs, out);
         }
-        self.inner.next_docs_and_scores(up_to, live_docs, out)?;
+        if self.needs_scores {
+            self.inner.next_docs_and_scores(up_to, live_docs, out)?;
+        } else {
+            self.inner.next_docs_unscored(up_to, live_docs, out)?;
+        }
         let n = out.docs.len();
         self.batch_values.resize(n, 0.0);
         self.batch_has.resize(n, false);
@@ -613,10 +617,9 @@ pub(crate) fn function_score<'a>(
     let Some((inner, values, score, needs_scores)) = score_parts(ctx, q, sub_boost)? else {
         return Ok(None);
     };
-    // Without its scores the wrapped scorer's batch must not compute any:
+    // Without its scores the wrapped scorer's unscored batch reads none:
     // the document-at-a-time `score()` never asks for them.
-    let batch =
-        values.batch_capable() && (needs_scores || inner.constant_scores()) && super::batches_on();
+    let batch = values.batch_capable() && super::batches_on();
     let scorer = FunctionScoreScorer {
         inner,
         values,
@@ -642,14 +645,20 @@ struct MinScoreScorer<'a> {
     min: f32,
     /// The score [`Self::matches`] read, for [`Self::score`].
     score: f32,
+    /// The wrapped scorer scores a batch at a time, so this one filters the batches.
+    batch: bool,
+    scratch: crate::bulk_scorer::DocScores,
 }
 
 impl<'a> MinScoreScorer<'a> {
     fn new(inner: BoxScorer<'a>, min: f32) -> Self {
+        let batch = inner.prefers_batches() && !inner.two_phase() && super::batches_on();
         Self {
             inner,
             min,
             score: 0.0,
+            batch,
+            scratch: crate::bulk_scorer::DocScores::default(),
         }
     }
 }
@@ -686,6 +695,45 @@ impl Scorer for MinScoreScorer<'_> {
     }
     fn max_score(&mut self, up_to: i32) -> Result<f32> {
         self.inner.max_score(up_to)
+    }
+    /// The wrapped scorer's batches, the documents scoring at least `min` kept.
+    fn next_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        if !self.batch {
+            return super::docs_and_scores_one_by_one(self, up_to, live_docs, out);
+        }
+        out.docs.clear();
+        out.scores.clear();
+        loop {
+            self.inner
+                .next_docs_and_scores(up_to, live_docs, &mut self.scratch)?;
+            if self.scratch.docs.is_empty() {
+                break;
+            }
+            for (&d, &s) in self.scratch.docs.iter().zip(&self.scratch.scores) {
+                // `curScore >= minScore`: false for a `NaN` score.
+                if s >= self.min {
+                    out.docs.push(d);
+                    out.scores.push(s);
+                }
+            }
+            if !out.docs.is_empty() {
+                break;
+            }
+        }
+        // Left on the first document not returned that matches.
+        let mut doc = self.inner.doc_id();
+        while doc != NO_MORE_DOCS && !self.matches()? {
+            doc = self.inner.next_doc()?;
+        }
+        Ok(())
+    }
+    fn prefers_batches(&self) -> bool {
+        self.batch
     }
 }
 

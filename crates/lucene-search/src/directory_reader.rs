@@ -2463,6 +2463,17 @@ impl SegmentReader {
         result
     }
 
+    /// A run of [`Self::visit_stored_document`] reads over ascending documents that keeps the
+    /// decompressed chunk itself, so a scorer reading one stored field of every document it scores
+    /// decompresses each chunk once and pays no per-read setup.
+    pub fn stored_run(&self) -> StoredRun<'_> {
+        StoredRun {
+            segment: self,
+            last_doc: -1,
+            chunk: None,
+        }
+    }
+
     /// [`Self::visit_stored_document`] with `_source` as OpenSearch reads it: in a segment that
     /// lists k-NN derived fields ([`crate::derived_source`]), with their vectors put back.
     ///
@@ -3727,6 +3738,57 @@ struct SeqFetch {
     serial: u64,
     last_doc: i32,
     chunk: Option<lucene_codecs::stored_fields::DecompressedChunk>,
+}
+
+/// [`SegmentReader::stored_run`]'s reads.
+pub struct StoredRun<'a> {
+    segment: &'a SegmentReader,
+    last_doc: i32,
+    chunk: Option<lucene_codecs::stored_fields::DecompressedChunk>,
+}
+
+impl StoredRun<'_> {
+    /// [`SegmentReader::visit_stored_document`] for `doc`: from the run's chunk when it holds the
+    /// document, loading the chunk whole once the reads follow each other closely.
+    ///
+    /// # Errors
+    /// Those of [`SegmentReader::visit_stored_document`].
+    pub fn visit(
+        &mut self,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<bool> {
+        let seg = self.segment;
+        let (None, Some(f)) = (&seg.simpletext, seg.stored.as_deref()) else {
+            return seg.visit_stored_document(doc, visitor);
+        };
+        let near =
+            self.last_doc >= 0 && doc > self.last_doc && doc - self.last_doc <= SEQ_FETCH_GAP;
+        self.last_doc = doc;
+        if self.chunk.as_ref().is_none_or(|c| !c.contains(doc)) {
+            self.chunk = if near {
+                f.reader_for(&seg.segment_id, doc)?
+                    .read_small_chunk(doc, SEQ_FETCH_MAX_CHUNK)?
+            } else {
+                None
+            };
+        }
+        if let Some((n, bytes)) = self.chunk.as_ref().and_then(|c| c.document(doc)) {
+            match &seg.hidden {
+                None => lucene_codecs::stored_fields::visit_document(n, bytes, visitor)?,
+                Some(hidden) => lucene_codecs::stored_fields::visit_document(
+                    n,
+                    bytes,
+                    &mut VisibleFields {
+                        inner: visitor,
+                        hidden,
+                    },
+                )?,
+            }
+            return Ok(true);
+        }
+        seg.visit_stored_document(doc, visitor)
+    }
 }
 
 /// A read this close after the last one (documents ahead) is taken as a run through the chunk.
