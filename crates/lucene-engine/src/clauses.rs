@@ -348,6 +348,66 @@ pub fn read_boolean_clauses<'a>(
     Ok(root)
 }
 
+/// [`clause_field_names`] and, wherever in the tree a `min_score`d function
+/// score sits (a filter's too: its minimum scores its wrapped query), that
+/// query's: the norms a search that takes no scores still needs.
+pub fn norm_field_names(query: &BooleanQuery) -> Vec<String> {
+    let mut out: Vec<String> = clause_field_names(query)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for name in min_score_field_names(query) {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// The fields of the queries `min_score`d function scores wrap, anywhere in
+/// the tree: what a search that takes no scores needs norms for.
+pub fn min_score_field_names(query: &BooleanQuery) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<&Clause> = Vec::new();
+    fn push_all<'q>(q: &'q BooleanQuery, stack: &mut Vec<&'q Clause>) {
+        stack.extend(
+            q.must
+                .iter()
+                .chain(&q.should)
+                .chain(&q.filter)
+                .chain(&q.must_not),
+        );
+    }
+    push_all(query, &mut stack);
+    while let Some(clause) = stack.pop() {
+        match clause {
+            Clause::Boolean(nested) => push_all(nested, &mut stack),
+            Clause::Boost(b) => stack.push(&b.inner),
+            Clause::ConstantScore(c) => stack.push(&c.inner),
+            Clause::DisjunctionMax(d) => stack.extend(d.disjuncts.iter()),
+            Clause::Extended(e) => {
+                use lucene_search::extended_query::ExtendedQuery;
+                if let ExtendedQuery::FunctionScore(f) = e.as_ref() {
+                    if f.min_score.is_some() {
+                        let scored = BooleanQuery {
+                            must: vec![(*f.in_query).clone()],
+                            ..Default::default()
+                        };
+                        for name in clause_field_names(&scored) {
+                            if !out.iter().any(|o| o == name) {
+                                out.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+                stack.extend(e.children());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Every distinct field name a decoded `BooleanQuery`'s *scoring* clauses
 /// mention, at any nesting depth -- the set a scored search needs norms for.
 /// A `FILTER` or `MUST_NOT` clause and a constant-score query's inner query

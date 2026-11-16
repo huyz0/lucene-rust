@@ -95,7 +95,7 @@ pub struct FieldNorms<'a> {
 /// old per-call decode paid anyway.
 #[derive(Debug)]
 pub struct FieldNormsCursor<'n, 'a> {
-    norms: &'n FieldNorms<'a>,
+    norms: std::borrow::Cow<'n, FieldNorms<'a>>,
     /// `Some` only for a sparse field; a dense or empty one never needs it.
     disi: Option<lucene_codecs::indexed_disi::DisiCursor<'a>>,
     text: Option<SimpleTextNumericDocValues<'a>>,
@@ -396,7 +396,7 @@ impl<'a> FieldNorms<'a> {
     #[inline]
     pub fn cursor(&self) -> FieldNormsCursor<'_, 'a> {
         FieldNormsCursor {
-            norms: self,
+            norms: std::borrow::Cow::Borrowed(self),
             disi: self.sparse_region.map(|region| {
                 lucene_codecs::indexed_disi::DisiCursor::new(
                     region,
@@ -405,6 +405,24 @@ impl<'a> FieldNorms<'a> {
                 )
             }),
             text: self.text.clone(),
+        }
+    }
+
+    /// [`Self::cursor`] owning these norms, for a scorer that outlives the
+    /// map they were built into.
+    pub fn into_cursor<'n>(self) -> FieldNormsCursor<'n, 'a> {
+        let disi = self.sparse_region.map(|region| {
+            lucene_codecs::indexed_disi::DisiCursor::new(
+                region,
+                self.entry.dense_rank_power,
+                self.entry.jump_table_entry_count,
+            )
+        });
+        let text = self.text.clone();
+        FieldNormsCursor {
+            norms: std::borrow::Cow::Owned(self),
+            disi,
+            text,
         }
     }
 

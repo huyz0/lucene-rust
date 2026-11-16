@@ -406,6 +406,9 @@ final class NativeSelfTestExtended {
         return (ScoreFunction) k.newInstance(origin, scale, 0.1 + 0.8 * r.nextDouble(), (double) r.nextInt(3), DECAYS[r.nextInt(3)], data, mode, null);
     }
 
+    /** Whether a field_value_factor over a sparse field has a missing value. */
+    private static boolean missingIsSafe;
+
     private static final FieldValueFactorFunction.Modifier[] SAFE = {
         FieldValueFactorFunction.Modifier.NONE,
         FieldValueFactorFunction.Modifier.LOG1P,
@@ -429,7 +432,7 @@ final class NativeSelfTestExtended {
                 "pos",
                 1f,
                 r.nextBoolean() ? FieldValueFactorFunction.Modifier.RECIPROCAL : FieldValueFactorFunction.Modifier.LOG,
-                null,
+                missingIsSafe ? Double.valueOf(1.0) : null,
                 new SortedNumericIndexFieldData("pos", IndexNumericFieldData.NumericType.LONG)
             );
             case 3 -> new RandomScoreFunction(r.nextInt(), r.nextInt(), null);
@@ -469,6 +472,10 @@ final class NativeSelfTestExtended {
                     .build();
                 default -> MatchAllDocsQuery.INSTANCE;
             };
+            // A min_score scores every document, so a field_value_factor of a field some
+            // documents lack needs a missing value: Lucene raises for one that has none.
+            Float minScore = r.nextInt(4) == 0 ? Float.valueOf(0.25f * r.nextInt(12)) : null;
+            missingIsSafe = minScore != null;
             int n = 1 + r.nextInt(3);
             ScoreFunction[] functions = new ScoreFunction[n];
             for (int i = 0; i < n; i++) {
@@ -478,10 +485,10 @@ final class NativeSelfTestExtended {
             FunctionScoreQuery.ScoreMode mode = FunctionScoreQuery.ScoreMode.values()[r.nextInt(6)];
             CombineFunction combine = CombineFunction.values()[r.nextInt(CombineFunction.values().length)];
             float maxBoost = r.nextBoolean() ? Float.MAX_VALUE : 0.5f + r.nextInt(4);
-            // A min_score keeps the documents scoring at least that.
-            Float minScore = r.nextInt(4) == 0 ? Float.valueOf(0.25f * r.nextInt(12)) : null;
             Query q = new FunctionScoreQuery(sub, mode, functions, combine, minScore, maxBoost);
-            return r.nextInt(4) == 0 ? new BoostQuery(q, 2.5f) : q;
+            // Lucene's own searches disagree on a boosted min_score (a count and a sort by field
+            // rewrite the boost away, iterating a weight keeps it): no such shape here.
+            return minScore == null && r.nextInt(4) == 0 ? new BoostQuery(q, 2.5f) : q;
         } catch (Exception e) {
             throw new AssertionError(e);
         }

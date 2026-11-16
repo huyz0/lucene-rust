@@ -111,6 +111,8 @@ def shapes():
     s["fs min_score fvf"] = {"query": {"function_score": {"query": body, "field_value_factor": {"field": "l", "missing": 1, "modifier": "log1p"}, "boost_mode": "multiply", "min_score": 6.0}}}
     s["fs min_score replace"] = {"query": {"function_score": {"query": body, "functions": [{"filter": {"term": {"tag": "t3"}}, "weight": 4}], "boost_mode": "replace", "min_score": 1}}}
     s["fs min_score count"] = {"size": 0, "track_total_hits": True, "query": {"function_score": {"query": body, "functions": [{"weight": 3}], "min_score": 2.0}}}
+    s["fs min_score sorted"] = {"size": 30, "sort": [{"l": "asc"}, {"_doc": "asc"}], "query": {"function_score": {"query": body, "functions": [{"weight": 3}], "min_score": 2.0}}}
+    s["fs min_score aggs"] = {"size": 0, "aggs": {"t": {"terms": {"field": "tag"}}, "s": {"sum": {"field": "l"}}}, "query": {"function_score": {"query": body, "functions": [{"weight": 3}], "min_score": 2.0}}}
     s["fs min_score no functions"] = {"query": {"function_score": {"query": body, "min_score": 1.0}}}
     s["fs min_score in bool"] = {"query": {"bool": {"must": [{"function_score": {"query": body, "functions": [{"weight": 2}], "min_score": 2.0}}], "should": [{"term": {"tag": "t1"}}]}}}
     s["script_score min_score"] = {"query": {"script_score": {"query": body, "script": {"source": "doc['l'].size() == 0 ? 0 : doc['l'].value / 100.0"}, "min_score": 20}}}
