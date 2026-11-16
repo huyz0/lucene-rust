@@ -3902,7 +3902,7 @@ fn collect_composite_sorted(
     let mut table: Vec<u32> = Vec::new();
     for ord in from..map.len() {
         let term = dict
-            .seek_ord(ord as i64)
+            .lookup_ord(ord as i64)
             .map_err(|e| lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e)))?;
         let docs = terms
             .postings_with_flags(
@@ -6371,12 +6371,37 @@ impl<'r> TermLookup<'r> {
         self.with_term(global, field, g, <[u8]>::to_vec)
     }
 
-    /// `f` of global ordinal `g`'s term, read in place.
+    /// `f` of global ordinal `g`'s term as the field shows it (`lookupOrd`: masked, when the
+    /// field is), read in place. For everything that is emitted, hashed or compared the way
+    /// Lucene compares looked-up values.
     fn with_term<T>(
         &mut self,
         global: &GlobalOrds,
         field: &str,
         g: i64,
+        f: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T> {
+        self.read_term(global, field, g, false, f)
+    }
+
+    /// `f` of global ordinal `g`'s term as stored, whatever the mask: what `lookupTerm` and a
+    /// `TermsEnum` compare by. Never for emitting.
+    fn with_raw_term<T>(
+        &mut self,
+        global: &GlobalOrds,
+        field: &str,
+        g: i64,
+        f: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T> {
+        self.read_term(global, field, g, true, f)
+    }
+
+    fn read_term<T>(
+        &mut self,
+        global: &GlobalOrds,
+        field: &str,
+        g: i64,
+        raw: bool,
         f: impl FnOnce(&[u8]) -> T,
     ) -> Result<T> {
         let (Some(seg), Some(ord)) = (global.first_segment(g), global.first_segment_ord(g)) else {
@@ -6404,9 +6429,12 @@ impl<'r> TermLookup<'r> {
                 "{field}: segment {seg} has no dictionary"
             )));
         };
-        Ok(f(dict.seek_ord(ord).map_err(|e| {
-            lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e))
-        })?))
+        let to_error = |e| lucene_search::Error::from(lucene_codecs::doc_values::Error::from(e));
+        Ok(f(if raw {
+            dict.raw_term_at(ord).map_err(to_error)?
+        } else {
+            dict.lookup_ord(ord).map_err(to_error)?
+        }))
     }
 }
 
@@ -6462,7 +6490,7 @@ fn resolve_missing(
         let mut found = None;
         while low < high {
             let mid = low + (high - low) / 2;
-            match lookup.with_term(g, field, mid, |t| t.cmp(term))? {
+            match lookup.with_raw_term(g, field, mid, |t| t.cmp(term))? {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid,
                 std::cmp::Ordering::Equal => {

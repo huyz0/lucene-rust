@@ -323,10 +323,93 @@ pub struct SegmentReader {
     /// postings, doc values, norms, points, vectors, term vectors and stored values are not
     /// there for any read. `None` for a segment that hides nothing.
     hidden: Option<Arc<std::collections::HashSet<i32>>>,
+    /// The fields whose keyword or binary doc values this reader shows through a mask
+    /// ([`Self::with_security_view`]), by field number. Their postings, points, norms and
+    /// vectors are not there; their stored values and doc values are, the latter masked.
+    masked: Option<Arc<std::collections::HashMap<i32, MaskedField>>>,
+}
+
+/// A masked field: the mask, and the doc-values metadata its entries carry it in, built when the
+/// field's doc values are first read.
+#[derive(Debug)]
+struct MaskedField {
+    mask: lucene_codecs::value_mask::SharedMask,
+    meta: OnceLock<Arc<DocValuesMeta>>,
 }
 
 /// OpenSearch's `_field_names` metadata field.
 const FIELD_NAMES_FIELD: &str = "_field_names";
+
+/// The `FieldInfo` the security plugin shows for a masked field: its doc values, and nothing
+/// that indexes it -- no postings, points, vectors, norms or term vectors -- so that every count
+/// shortcut agrees with the doc-values view.
+fn masked_field_info(
+    info: &lucene_codecs::field_infos::FieldInfo,
+) -> lucene_codecs::field_infos::FieldInfo {
+    use lucene_codecs::field_infos::{DocValuesSkipIndexType, IndexOptions};
+    let mut shown = info.clone();
+    shown.store_term_vectors = false;
+    shown.omit_norms = true;
+    shown.store_payloads = false;
+    shown.index_options = IndexOptions::None;
+    shown.doc_values_skip_index_type = DocValuesSkipIndexType::None;
+    shown.point_dimension_count = 0;
+    shown.point_index_dimension_count = 0;
+    shown.point_num_bytes = 0;
+    shown.vector_dimension = 0;
+    shown
+}
+
+/// `meta`'s entries for `field_number` with `mask` on each: the doc-values metadata a masked
+/// field is read through. The other fields' entries and the skip indexes are left out -- they
+/// are not what a reader of this field is handed.
+fn masked_meta(
+    meta: &DocValuesMeta,
+    field_number: i32,
+    mask: &lucene_codecs::value_mask::SharedMask,
+) -> DocValuesMeta {
+    let binary = meta
+        .binary
+        .iter()
+        .filter(|e| e.field_number == field_number)
+        .cloned()
+        .map(|mut e| {
+            e.mask = Some(Arc::clone(mask));
+            e
+        })
+        .collect();
+    let sorted = meta
+        .sorted
+        .iter()
+        .filter(|e| e.field_number == field_number)
+        .cloned()
+        .map(|mut e| {
+            e.terms.mask = Some(Arc::clone(mask));
+            e
+        })
+        .collect();
+    let sorted_set = meta
+        .sorted_set
+        .iter()
+        .filter(|e| e.field_number == field_number)
+        .cloned()
+        .map(|mut e| {
+            match &mut e.kind {
+                doc_values::SortedSetKind::Single(se) => se.terms.mask = Some(Arc::clone(mask)),
+                doc_values::SortedSetKind::Multi { terms, .. } => {
+                    terms.mask = Some(Arc::clone(mask));
+                }
+            }
+            e
+        })
+        .collect();
+    DocValuesMeta {
+        binary,
+        sorted,
+        sorted_set,
+        ..DocValuesMeta::default()
+    }
+}
 
 /// A stored-fields visitor that is never told about the fields a view hides
 /// ([`SegmentReader::with_hidden_fields`]): `StoredFieldVisitor.needsField` answers `NO` for them.
@@ -803,6 +886,23 @@ impl SegmentReader {
     /// # Errors
     /// None today; the signature keeps room for a view that cannot be built.
     pub fn with_hidden_fields(&self, names: &std::collections::HashSet<String>) -> Result<Self> {
+        self.with_security_view(names, &std::collections::HashMap::new())
+    }
+
+    /// [`Self::with_hidden_fields`], also showing the fields `masks` names through their masks:
+    /// field masking's view. A masked field keeps its stored values and its keyword or binary
+    /// doc values, and the doc values answer what the mask makes of the stored bytes
+    /// ([`lucene_codecs::value_mask`]); its postings, points, norms, vectors and skip index are
+    /// not there, as the security plugin's `FieldInfo` for it says. A name the segment has no
+    /// field for is ignored.
+    ///
+    /// # Errors
+    /// None today; the signature keeps room for a view that cannot be built.
+    pub fn with_security_view(
+        &self,
+        names: &std::collections::HashSet<String>,
+        masks: &std::collections::HashMap<String, lucene_codecs::value_mask::SharedMask>,
+    ) -> Result<Self> {
         let numbers: std::collections::HashSet<i32> = self
             .field_infos
             .fields
@@ -810,7 +910,24 @@ impl SegmentReader {
             .filter(|f| names.contains(&f.name))
             .map(|f| f.number)
             .collect();
-        if numbers.is_empty() {
+        let masked: std::collections::HashMap<i32, MaskedField> = self
+            .field_infos
+            .fields
+            .iter()
+            .filter(|f| !numbers.contains(&f.number))
+            .filter_map(|f| {
+                masks.get(&f.name).map(|mask| {
+                    (
+                        f.number,
+                        MaskedField {
+                            mask: Arc::clone(mask),
+                            meta: OnceLock::new(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        if numbers.is_empty() && masked.is_empty() {
             return Ok(self.clone_reader());
         }
         let mut reader = self.clone_reader();
@@ -820,21 +937,52 @@ impl SegmentReader {
                 .fields
                 .iter()
                 .filter(|f| !numbers.contains(&f.number))
-                .cloned()
+                .map(|f| {
+                    if masked.contains_key(&f.number) {
+                        masked_field_info(f)
+                    } else {
+                        f.clone()
+                    }
+                })
                 .collect(),
         });
         // `_field_names` lists, per document, the fields it has a value for: the hidden ones' names
         // are not found in it, as field-level security's reader filters them.
         let listed: std::collections::HashSet<Vec<u8>> =
             names.iter().map(|n| n.as_bytes().to_vec()).collect();
+        // A masked field has no postings; its name stays in `_field_names`, which its `exists`
+        // query reads.
+        let mut unindexed = names.clone();
+        unindexed.extend(masks.keys().cloned());
         reader.fields = Arc::new(
             self.fields
-                .without(names)
+                .without(&unindexed)
                 .without_terms(FIELD_NAMES_FIELD, listed),
         );
         let mut all = self.hidden.as_deref().cloned().unwrap_or_default();
         all.extend(numbers);
-        reader.hidden = Some(Arc::new(all));
+        reader.hidden = (!all.is_empty()).then(|| Arc::new(all));
+        if !masked.is_empty() {
+            let mut all = self
+                .masked
+                .as_deref()
+                .map(|m| {
+                    m.iter()
+                        .map(|(n, f)| {
+                            (
+                                *n,
+                                MaskedField {
+                                    mask: Arc::clone(&f.mask),
+                                    meta: OnceLock::new(),
+                                },
+                            )
+                        })
+                        .collect::<std::collections::HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+            all.extend(masked);
+            reader.masked = Some(Arc::new(all));
+        }
         reader.attachments = Arc::default();
         reader.query_cache = Arc::default();
         reader.skip_indexes = Arc::default();
@@ -842,6 +990,28 @@ impl SegmentReader {
         reader.core_cache = crate::reader::CacheHelper::new();
         reader.reader_cache = crate::reader::CacheHelper::new();
         Ok(reader)
+    }
+
+    /// Whether this reader shows the field numbered `field_number` through a mask
+    /// ([`Self::with_security_view`]).
+    #[inline]
+    pub fn is_masked(&self, field_number: i32) -> bool {
+        self.masked
+            .as_ref()
+            .is_some_and(|m| m.contains_key(&field_number))
+    }
+
+    /// Whether any field of this reader is shown through a mask.
+    pub fn has_masked_fields(&self) -> bool {
+        self.masked.is_some()
+    }
+
+    /// Whether this reader has no index structures for the field numbered `field_number`: no
+    /// postings, points, norms, vectors or skip index. True for a hidden field and for a masked
+    /// one, which keeps only its stored values and its (masked) doc values.
+    #[inline]
+    pub(crate) fn hides_index(&self, field_number: i32) -> bool {
+        self.is_hidden(field_number) || self.is_masked(field_number)
     }
 
     /// The core's query cache (and its decoded sort columns).
@@ -948,6 +1118,7 @@ impl SegmentReader {
             norms_meta,
             norms_data,
             hidden: None,
+            masked: None,
         };
         Ok(reader.with_lazy_doc_values(lazy))
     }
@@ -1603,6 +1774,7 @@ impl SegmentReader {
             norms_meta,
             norms_data,
             hidden: None,
+            masked: None,
         })
     }
 
@@ -1768,7 +1940,7 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         if self.simpletext.is_some() {
@@ -1825,7 +1997,7 @@ impl SegmentReader {
             Option<lucene_codecs::hnsw_vectors::HnswVectorsReader<'_>>,
         )>,
     > {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         if self.simpletext.is_some() {
@@ -1862,7 +2034,7 @@ impl SegmentReader {
     /// # Errors
     /// IVF files that do not decode.
     pub fn ivf_for(&self, field_number: i32) -> crate::Result<Option<Arc<lucene_ivf::IvfReader>>> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         // A field without per-field attributes (a codec whose format is the
@@ -1908,7 +2080,7 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<Arc<lucene_index::hnsw_quant_vectors::HnswCodesReader>>> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         let named = self.vectors_instance_of(field_number);
@@ -1951,7 +2123,7 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<Arc<lucene_disk_hnsw::DiskHnswReader>>> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         let named = self.vectors_instance_of(field_number);
@@ -1997,7 +2169,7 @@ impl SegmentReader {
     ) -> crate::Result<
         Option<lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader<'_>>,
     > {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         use lucene_codecs::scalar_quantized_vectors::ScalarQuantizedVectorsReader;
@@ -2416,6 +2588,10 @@ impl SegmentReader {
     ) -> Option<lucene_index::concurrent_writer::KeywordRun<'_>> {
         let lazy = self.lazy_doc_values.as_ref()?;
         let info = self.field_infos.fields.iter().find(|f| f.name == field)?;
+        if self.is_masked(info.number) {
+            // The run is the field's values as they arrived: the masked field shows none of them.
+            return None;
+        }
         lazy.source.keyword_run(info.number)
     }
 
@@ -2428,7 +2604,27 @@ impl SegmentReader {
     /// and stay that way: a caller that has not been taught about generations
     /// keeps working for un-updated fields rather than silently reading a
     /// column that has been superseded for one field and not another.
+    ///
+    /// A masked field ([`Self::with_security_view`]) answers metadata whose terms dictionary and
+    /// binary entries carry the field's mask ([`lucene_codecs::value_mask`]): the readers that
+    /// open them show masked values, which is what makes this the one door a masked value goes
+    /// out of.
     pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
+        let (meta, data) = self.stored_doc_values_for_field(field_number)?;
+        match self.masked.as_deref().and_then(|m| m.get(&field_number)) {
+            None => Some((meta, data)),
+            Some(field) => {
+                let shown = field
+                    .meta
+                    .get_or_init(|| Arc::new(masked_meta(meta, field_number, &field.mask)));
+                Some((&**shown, data))
+            }
+        }
+    }
+
+    /// [`Self::doc_values_for_field`] as stored, whatever the mask. Private: only the masking
+    /// door above reads it.
+    fn stored_doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
         if self.is_hidden(field_number) {
             return None;
         }
@@ -2512,7 +2708,7 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<&doc_values::DocValuesSkipIndex>> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return Ok(None);
         }
         if self
@@ -2637,7 +2833,7 @@ impl SegmentReader {
     /// segment has no norms at all or this field omits them
     /// (`FieldInfo.omitNorms`).
     pub fn norms_entry(&self, field_number: i32) -> Option<&NormsEntry> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return None;
         }
         self.norms_meta.as_ref()?.entry(field_number)
@@ -2910,7 +3106,7 @@ impl SegmentReader {
                 self.doc_values_skipper(field)?
                     .map(|skipper| skipper.global_doc_count())
             } else {
-                info.and_then(|fi| {
+                info.filter(|fi| !self.is_masked(fi.number)).and_then(|fi| {
                     self.doc_values_meta()
                         .and_then(|meta| meta.skipper_meta(fi.number))
                         .map(|skipper| skipper.doc_count)
@@ -3111,7 +3307,7 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> Option<&lucene_codecs::points::PointsField> {
-        if self.is_hidden(field_number) {
+        if self.hides_index(field_number) {
             return None;
         }
         // The metadata `open_points` parses once per segment core, parsed
@@ -4063,6 +4259,19 @@ impl DirectoryReader {
     /// # Errors
     /// A `hidden` of another length than the reader's segment count.
     pub fn with_hidden_fields(&self, hidden: &[std::collections::HashSet<String>]) -> Result<Self> {
+        self.with_security_view(hidden, &std::collections::HashMap::new())
+    }
+
+    /// [`Self::with_hidden_fields`], also showing the fields `masks` names through their masks
+    /// ([`SegmentReader::with_security_view`]): what a search sees through field masking.
+    ///
+    /// # Errors
+    /// A `hidden` of another length than the reader's segment count.
+    pub fn with_security_view(
+        &self,
+        hidden: &[std::collections::HashSet<String>],
+        masks: &std::collections::HashMap<String, lucene_codecs::value_mask::SharedMask>,
+    ) -> Result<Self> {
         if hidden.len() != self.segments.len() {
             return Err(Error::Store(lucene_store::Error::Corrupted(format!(
                 "{} hidden-field sets for {} segments",
@@ -4074,7 +4283,7 @@ impl DirectoryReader {
             .segments
             .iter()
             .zip(hidden)
-            .map(|(segment, names)| segment.with_hidden_fields(names))
+            .map(|(segment, names)| segment.with_security_view(names, masks))
             .collect::<Result<Vec<_>>>()?;
         Ok(DirectoryReader {
             segment_infos: self.segment_infos.clone(),

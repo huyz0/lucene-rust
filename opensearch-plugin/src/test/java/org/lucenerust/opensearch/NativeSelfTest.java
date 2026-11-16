@@ -461,7 +461,7 @@ public final class NativeSelfTest {
         }
     }
 
-    private static void check(boolean ok, String what) {
+    static void check(boolean ok, String what) {
         checks++;
         if (ok == false) {
             failures++;
@@ -1120,23 +1120,34 @@ public final class NativeSelfTest {
                     continue fields;
                 }
             }
+            // Buckets are told apart and ranked by the stored value, as OpenSearch's global ordinals
+            // do, and listed by what the reader shows for it: a masked field's value is its mask.
             java.util.TreeMap<BytesRef, Long> counts = new java.util.TreeMap<>();
+            java.util.Map<BytesRef, BytesRef> shown = new java.util.HashMap<>();
             searcher.search(query, new org.apache.lucene.search.CollectorManager<org.apache.lucene.search.SimpleCollector, Void>() {
                 @Override
                 public org.apache.lucene.search.SimpleCollector newCollector() {
                     return new org.apache.lucene.search.SimpleCollector() {
                         org.apache.lucene.index.SortedSetDocValues dv;
+                        org.apache.lucene.index.SortedSetDocValues stored;
 
                         @Override
                         protected void doSetNextReader(org.apache.lucene.index.LeafReaderContext context) throws java.io.IOException {
                             dv = org.apache.lucene.index.DocValues.getSortedSet(context.reader(), field);
+                            stored = org.apache.lucene.index.DocValues.getSortedSet(
+                                org.apache.lucene.index.FilterLeafReader.unwrap(context.reader()),
+                                field
+                            );
                         }
 
                         @Override
                         public void collect(int doc) throws java.io.IOException {
                             if (dv.advanceExact(doc)) {
                                 for (int i = 0; i < dv.docValueCount(); i++) {
-                                    counts.merge(BytesRef.deepCopyOf(dv.lookupOrd(dv.nextOrd())), 1L, Long::sum);
+                                    long ord = dv.nextOrd();
+                                    BytesRef raw = BytesRef.deepCopyOf(stored.lookupOrd(ord));
+                                    counts.merge(raw, 1L, Long::sum);
+                                    shown.putIfAbsent(raw, BytesRef.deepCopyOf(dv.lookupOrd(ord)));
                                 }
                             }
                         }
@@ -1160,7 +1171,7 @@ public final class NativeSelfTest {
                 java.util.TreeMap<BytesRef, Long> kept = new java.util.TreeMap<>();
                 for (int i = 0; i < ranked.size(); i++) {
                     if (i < shardSize) {
-                        kept.put(ranked.get(i).getKey(), ranked.get(i).getValue());
+                        kept.put(shown.get(ranked.get(i).getKey()), ranked.get(i).getValue());
                     } else {
                         wantOther += ranked.get(i).getValue();
                     }
