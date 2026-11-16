@@ -9,6 +9,7 @@ import org.apache.lucene.index.FieldInfos;
 import org.lucenerust.opensearch.LiveDirectoryReader;
 import org.lucenerust.opensearch.LiveView;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeLive;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineException;
@@ -135,7 +136,7 @@ final class LiveSearchers {
             OpenSearchDirectoryReader kept = writer.sharedLive().take(handle.id(), reader);
             if (kept != null) {
                 // This open's count of the handle: the kept reader's view holds its own.
-                NativeBridge.liveViewClose(handle.id());
+                NativeLive.liveViewClose(handle.id());
                 return kept;
             }
         }

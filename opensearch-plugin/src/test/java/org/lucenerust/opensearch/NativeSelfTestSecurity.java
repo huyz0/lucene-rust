@@ -412,8 +412,8 @@ final class NativeSelfTestSecurity {
             NativeReaders.Acquired baseHandle = readers.acquire(base);
             long[] seen = new long[1];
             long[] hiddenSeen = new long[1];
-            check.accept(NativeBridge.docFreq(baseHandle.handle(), "tag".getBytes(StandardCharsets.UTF_8), "alpha".getBytes(StandardCharsets.UTF_8), seen) == NativeBridge.OK && seen[0] > 0, "security: the unwrapped reader sees tag");
-            check.accept(NativeBridge.docFreq(b.handle(), "tag".getBytes(StandardCharsets.UTF_8), "alpha".getBytes(StandardCharsets.UTF_8), hiddenSeen) == NativeBridge.OK && hiddenSeen[0] == 0, "security: the role hiding tag does not");
+            check.accept(NativeSearch.docFreq(baseHandle.handle(), "tag".getBytes(StandardCharsets.UTF_8), "alpha".getBytes(StandardCharsets.UTF_8), seen) == NativeBridge.OK && seen[0] > 0, "security: the unwrapped reader sees tag");
+            check.accept(NativeSearch.docFreq(b.handle(), "tag".getBytes(StandardCharsets.UTF_8), "alpha".getBytes(StandardCharsets.UTF_8), hiddenSeen) == NativeBridge.OK && hiddenSeen[0] == 0, "security: the role hiding tag does not");
             check.accept(readers.acquire(plain).handle() != baseHandle.handle() && b.handle() != baseHandle.handle(), "security: a wrapped reader never takes the base's handle");
             check.accept(readers.acquire(base).handle() == baseHandle.handle() && readers.acquire(hiding).handle() == b.handle(), "security: acquiring in another order returns each its own");
             // A leaf the readers do not recognise stays on Lucene.
@@ -441,7 +441,7 @@ final class NativeSelfTestSecurity {
         );
         byte[][] out = new byte[1][];
         NativeAggregations.Plan plan = new NativeAggregations.Plan(List.of(spec));
-        int rc = NativeBridge.aggregate(handle, all.blob(), plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2], null);
+        int rc = NativeSearch.aggregate(handle, all.blob(), plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2], null);
         if (rc != NativeBridge.OK) {
             throw new IllegalStateException("terms aggregation failed: " + rc + " " + NativeBridge.lastError());
         }

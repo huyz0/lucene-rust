@@ -9,6 +9,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.util.CollectionUtil;
 import org.lucenerust.opensearch.AnalyzerSpec;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeAnalysis;
 import org.lucenerust.opensearch.QueryEncoder;
 import org.lucenerust.opensearch.SearchStats;
 import org.opensearch.core.common.text.Text;
@@ -154,7 +155,7 @@ public final class NativePlainHighlighter extends PlainHighlighter {
         int noMatchSize = options.noMatchSize();
         String summary = noMatchSize > 0 && textsToHighlight.isEmpty() == false ? textsToHighlight.get(0).toString() : null;
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.highlightPlain(prepared.request, values, noMatchSize, summary, prepared.waitForPos, out);
+        int rc = NativeAnalysis.highlightPlain(prepared.request, values, noMatchSize, summary, prepared.waitForPos, out);
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: native highlighting of [{}] failed ({}): {}", fieldContext.fieldName, rc, NativeBridge.lastError());
             stats.nativeError();

@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeStore;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
@@ -28,7 +29,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  * side caches what it unwrapped, so a released handle only fails new key operations.
  *
  * <p>The upcall never throws: an exception crossing an upcall would end the JVM. Every failure
- * becomes {@link NativeBridge#KEY_UPCALL_FAILED} with its message in the output buffer.
+ * becomes {@link NativeStore#KEY_UPCALL_FAILED} with its message in the output buffer.
  */
 public final class KeyHandles {
     private static final Map<Long, KeySource> SOURCES = new ConcurrentHashMap<>();
@@ -61,7 +62,7 @@ public final class KeyHandles {
                 );
             FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS);
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
-            int rc = NativeBridge.storeSetKeyUpcall(stub);
+            int rc = NativeStore.storeSetKeyUpcall(stub);
             if (rc != NativeBridge.OK) {
                 throw new IllegalStateException("lucene-rust: registering the key upcall failed: " + NativeBridge.lastError());
             }
@@ -96,16 +97,16 @@ public final class KeyHandles {
         try {
             byte[] in = inputLen == 0 ? new byte[0] : input.reinterpret(inputLen).toArray(JAVA_BYTE);
             result = call(provider, op, in);
-            status = NativeBridge.KEY_UPCALL_OK;
+            status = NativeStore.KEY_UPCALL_OK;
         } catch (Throwable t) {
             String message = t.getMessage() == null ? t.toString() : t.getMessage();
             byte[] utf8 = message.getBytes(StandardCharsets.UTF_8);
             result = utf8.length <= outCap ? utf8 : java.util.Arrays.copyOf(utf8, (int) outCap);
-            status = NativeBridge.KEY_UPCALL_FAILED;
+            status = NativeStore.KEY_UPCALL_FAILED;
         }
         lenSlot.set(JAVA_LONG, 0, result.length);
         if (result.length > outCap) {
-            return NativeBridge.KEY_UPCALL_BUFFER_TOO_SMALL;
+            return NativeStore.KEY_UPCALL_BUFFER_TOO_SMALL;
         }
         MemorySegment.copy(result, 0, outBuf, JAVA_BYTE, 0, result.length);
         java.util.Arrays.fill(result, (byte) 0);
@@ -118,7 +119,7 @@ public final class KeyHandles {
             throw new java.io.IOException("key provider handle " + provider + " is closed");
         }
         switch (op) {
-            case NativeBridge.KEY_OP_GENERATE -> {
+            case NativeStore.KEY_OP_GENERATE -> {
                 KeySource.DataKey k = source.generate();
                 byte[] id = k.keyId().getBytes(StandardCharsets.UTF_8);
                 byte[] out = new byte[2 + id.length + k.raw().length + k.wrapped().length];
@@ -129,7 +130,7 @@ public final class KeyHandles {
                 System.arraycopy(k.wrapped(), 0, out, 2 + id.length + k.raw().length, k.wrapped().length);
                 return out;
             }
-            case NativeBridge.KEY_OP_UNWRAP -> {
+            case NativeStore.KEY_OP_UNWRAP -> {
                 if (in.length < 2) {
                     throw new java.io.IOException("malformed unwrap request");
                 }

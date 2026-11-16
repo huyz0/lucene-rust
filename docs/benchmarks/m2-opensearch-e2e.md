@@ -24,7 +24,7 @@ Ratios are `lucene_time / native_time`: **above 1.0 means native is faster.**
   a 500,000-document index written by Lucene's `IndexWriter` (4 segments, 9,891
   deletions), searched through an NRT reader. Lucene runs
   `TopScoreDocCollectorManager(10, 10_000)` — OpenSearch's default
-  `track_total_hits` — and native runs `NativeBridge.search` with the same
+  `track_total_hits` — and native runs `NativeSearch.search` with the same
   threshold. Median of 15 batches of 200 queries, engines alternating by batch.
 
 ## The JNI crossing

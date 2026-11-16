@@ -90,7 +90,7 @@ public final class NativeReaders {
      * The leaf wrapper of the security plugin's field- and document-level security: it hides
      * fields ({@code FieldInfos} without them, {@code null} terms, values and points for them),
      * hides documents (its live docs), and may mask a field's values. All three are a reader view the
-     * native side holds ({@code NativeBridge.openReaderView}): masking by calling the plugin's own masking
+     * native side holds ({@code NativeSearch.openReaderView}): masking by calling the plugin's own masking
      * function wherever native code shows a masked value.
      */
     private static final String SECURITY_LEAF = "org.opensearch.security.configuration.DlsFlsFilterLeafReader";
@@ -291,7 +291,7 @@ public final class NativeReaders {
      * in {@code lookupOrd} and {@code binaryValue}, so the digest, salt and regular expressions are
      * the plugin's.
      */
-    private static final class Masker implements NativeBridge.FieldMasker {
+    private static final class Masker implements NativeSearch.FieldMasker {
         private final java.util.Map<String, Object> fields;
 
         Masker(java.util.Map<String, Object> fields) {
@@ -340,10 +340,10 @@ public final class NativeReaders {
             maxDocs[i] = leaves.get(i).reader().maxDoc();
         }
         long[] out = new long[1];
-        NativeBridge.Masking masking = view.masks().isEmpty()
+        NativeSearch.Masking masking = view.masks().isEmpty()
             ? null
-            : new NativeBridge.Masking(view.masks().keySet().toArray(new String[0]), new Masker(view.masks()));
-        int rc = NativeBridge.openReaderView(baseHandle, view.hidden(), masking, maxDocs, view.live(), out);
+            : new NativeSearch.Masking(view.masks().keySet().toArray(new String[0]), new Masker(view.masks()));
+        int rc = NativeSearch.openReaderView(baseHandle, view.hidden(), masking, maxDocs, view.live(), out);
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: opening a view of a native reader failed ({}): {}", rc, NativeBridge.lastError());
             return new Acquired(0, "native_open_failed");
@@ -571,7 +571,7 @@ public final class NativeReaders {
     }
 
     private void close(long handle) {
-        int rc = NativeBridge.closeReader(handle);
+        int rc = NativeSearch.closeReader(handle);
         if (rc == NativeBridge.OK) {
             open.decrementAndGet();
         } else {
@@ -644,10 +644,10 @@ public final class NativeReaders {
         }
         long[] out = new long[1];
         Long previous = latestByDir.get(path);
-        int rc = NativeBridge.openReader(pathBytes, infoBytes, infos.getGeneration(), previous == null ? 0 : previous, maxDocs, live, out);
+        int rc = NativeSearch.openReader(pathBytes, infoBytes, infos.getGeneration(), previous == null ? 0 : previous, maxDocs, live, out);
         if (rc == NativeBridge.INVALID_HANDLE && previous != null) {
             // The reuse candidate closed under us; open from scratch.
-            rc = NativeBridge.openReader(pathBytes, infoBytes, infos.getGeneration(), 0, maxDocs, live, out);
+            rc = NativeSearch.openReader(pathBytes, infoBytes, infos.getGeneration(), 0, maxDocs, live, out);
         }
         if (rc != NativeBridge.OK) {
             logger.warn("lucene-rust: native reader open failed for [{}] ({}): {}", path, rc, NativeBridge.lastError());

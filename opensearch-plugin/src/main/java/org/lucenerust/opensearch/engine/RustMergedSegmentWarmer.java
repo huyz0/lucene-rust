@@ -31,6 +31,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.util.StringHelper;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeWriter;
 
 /**
  * {@code IndexWriterConfig.setMergedSegmentWarmer} for the Rust writer: once a merge has written its
@@ -60,7 +61,7 @@ final class RustMergedSegmentWarmer {
     static void install(long handle, Directory directory, int indexCreatedVersionMajor, IndexWriter.IndexReaderWarmer warmer) {
         installUpcall();
         WARMERS.put(handle, new RustMergedSegmentWarmer(directory, indexCreatedVersionMajor, warmer));
-        if (NativeBridge.writerSetMergedSegmentWarmer(handle, true) != NativeBridge.OK) {
+        if (NativeWriter.writerSetMergedSegmentWarmer(handle, true) != NativeBridge.OK) {
             WARMERS.remove(handle);
             throw new IllegalStateException("lucene-rust: setting the merged-segment warmer failed: " + NativeBridge.lastError());
         }
@@ -86,7 +87,7 @@ final class RustMergedSegmentWarmer {
                 );
             FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS);
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
-            if (NativeBridge.setWarmUpcall(stub) != NativeBridge.OK) {
+            if (NativeWriter.setWarmUpcall(stub) != NativeBridge.OK) {
                 throw new IllegalStateException("lucene-rust: registering the warm upcall failed: " + NativeBridge.lastError());
             }
             upcallInstalled = true;
@@ -104,21 +105,21 @@ final class RustMergedSegmentWarmer {
     private static int warmUpcall(long handle, MemorySegment name, long nameLen, MemorySegment id) {
         RustMergedSegmentWarmer w = WARMERS.get(handle);
         if (w == null) {
-            return NativeBridge.WARM_OK;
+            return NativeWriter.WARM_OK;
         }
         String segment = null;
         try {
             segment = new String(name.reinterpret(nameLen).toArray(JAVA_BYTE), StandardCharsets.UTF_8);
             byte[] segmentId = id.reinterpret(StringHelper.ID_LENGTH).toArray(JAVA_BYTE);
             w.warm(segment, segmentId);
-            return NativeBridge.WARM_OK;
+            return NativeWriter.WARM_OK;
         } catch (Throwable t) {
             try {
                 logger.warn("warming merged segment [" + segment + "] failed", t);
             } catch (Throwable ignored) {
                 // Nothing may cross the upcall.
             }
-            return NativeBridge.WARM_FAILED;
+            return NativeWriter.WARM_FAILED;
         }
     }
 

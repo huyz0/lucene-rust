@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.knn;
 
+import org.lucenerust.opensearch.NativeSearch;
 import org.apache.lucene.index.ByteVectorValues;
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.LeafReaderContext;

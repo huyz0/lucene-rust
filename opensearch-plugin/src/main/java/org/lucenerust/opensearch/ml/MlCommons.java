@@ -21,6 +21,7 @@ import org.opensearch.action.support.WriteRequest;
 import org.opensearch.action.update.UpdateRequest;
 import org.opensearch.action.update.UpdateResponse;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeMl;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -270,7 +271,7 @@ public final class MlCommons {
 
     private void closeConnector(long handle) {
         try {
-            NativeBridge.mlModelClose(handle);
+            NativeMl.mlModelClose(handle);
         } finally {
             remote.closed(handle);
         }

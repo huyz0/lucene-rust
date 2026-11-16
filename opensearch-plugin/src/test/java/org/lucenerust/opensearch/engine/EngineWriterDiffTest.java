@@ -3,6 +3,7 @@
  */
 package org.lucenerust.opensearch.engine;
 
+import org.lucenerust.opensearch.NativeWriter;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.LowerCaseFilter;
 import org.apache.lucene.analysis.StopFilter;
@@ -115,7 +116,7 @@ public final class EngineWriterDiffTest {
         run(6, 4000, nativeAnalyzer(), true);
         // Under index.codec.terms_compression: zstd: every terms dictionary read back through the
         // ZstdTerms104 postings format's reader, zstd term blocks and trained dictionaries included.
-        run(9, 4000, nativeAnalyzer(), false, null, true, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
+        run(9, 4000, nativeAnalyzer(), false, null, true, org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED);
         // Under an index sort (a keyword, then a descending numeric), with OpenSearch's parent
         // field: segments flushed and merged in the same order Lucene writes them.
         org.apache.lucene.search.Sort sort = new org.apache.lucene.search.Sort(
@@ -127,7 +128,7 @@ public final class EngineWriterDiffTest {
         }
         // Under index.codec.stored_fields.page_aligned: the documents read back through the
         // plugin's ZstdPagedCodec, from flushed and merged segments.
-        run(9, 2500, nativeAnalyzer(), false, null, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED);
+        run(9, 2500, nativeAnalyzer(), false, null, false, org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_ZSTD_PAGED);
         check(DocumentEncoder.ANALYZED_NATIVELY.get() > 3000, "field values analyzed in Rust: " + DocumentEncoder.ANALYZED_NATIVELY.get());
         check(payloadsSeen > 0, "payloads were indexed and compared");
         refusals();
@@ -377,7 +378,7 @@ public final class EngineWriterDiffTest {
 
     private static void run(long seed, int ops, Analyzer analyzer, boolean adaptive, org.apache.lucene.search.Sort sort)
         throws Exception {
-        run(seed, ops, analyzer, adaptive, sort, false, org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED);
+        run(seed, ops, analyzer, adaptive, sort, false, org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED);
     }
 
     private static void run(
@@ -506,7 +507,7 @@ public final class EngineWriterDiffTest {
             compare("seed " + seed, javaDir, rustDir);
             checkIndex("seed " + seed, rustDir);
             checkSkippers("seed " + seed, rustDir);
-            if (storedFields == org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_ZSTD_PAGED) {
+            if (storedFields == org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_ZSTD_PAGED) {
                 try (DirectoryReader reader = DirectoryReader.open(rustDir)) {
                     for (org.apache.lucene.index.LeafReaderContext ctx : reader.leaves()) {
                         String codec = ((org.apache.lucene.index.SegmentReader) ctx.reader()).getSegmentInfo().info.getCodec().getName();
@@ -900,7 +901,7 @@ public final class EngineWriterDiffTest {
                 null,
                 null,
                 IndexWriter.MAX_DOCS,
-                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED,
                 3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
@@ -961,7 +962,7 @@ public final class EngineWriterDiffTest {
             null,
             null,
             IndexWriter.MAX_DOCS,
-            org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+            org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED,
             3,
             new TestAnalyzer(),
             new BM25Similarity(),
@@ -1052,7 +1053,7 @@ public final class EngineWriterDiffTest {
                 null,
                 null,
                 IndexWriter.MAX_DOCS,
-                org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED,
                 3,
                 new TestAnalyzer(),
                 new BM25Similarity(),
