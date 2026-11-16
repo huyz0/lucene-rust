@@ -369,6 +369,7 @@ pub fn clause_field_names(query: &BooleanQuery) -> Vec<&str> {
             Clause::DisjunctionMax(d) => stack.extend(d.disjuncts.iter()),
             Clause::Term(TermQuery { field, .. })
             | Clause::Phrase(PhraseQuery { field, .. })
+            | Clause::MultiPhrase(lucene_search::query::MultiPhraseQuery { field, .. })
             | Clause::Fuzzy(lucene_search::query::FuzzyQuery { field, .. })
                 if !out.contains(&field.as_str()) =>
             {

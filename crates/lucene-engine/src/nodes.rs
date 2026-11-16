@@ -207,6 +207,8 @@ pub const SPAN_NOT: u8 = 5;
 pub const SPAN_CONTAINING: u8 = 6;
 pub const SPAN_WITHIN: u8 = 7;
 pub const SPAN_FIELD_MASKING: u8 = 8;
+pub const SPAN_GAP: u8 = 9;
+pub const SPAN_NO_MATCH: u8 = 10;
 
 /// One span query, a tag and its payload:
 ///
@@ -221,6 +223,8 @@ pub const SPAN_FIELD_MASKING: u8 = 8;
 /// | `6` | big, little | `SpanContainingQuery` |
 /// | `7` | big, little | `SpanWithinQuery` |
 /// | `8` | `field`, clause | `FieldMaskingSpanQuery` |
+/// | `9` | `field`, `width: i32` | `SpanNearQuery`'s gap clause |
+/// | `10` | `field` | `SpanMatchNoDocsQuery` |
 ///
 /// Clauses of different fields are refused, as Java's constructors refuse
 /// them.
@@ -278,9 +282,14 @@ pub fn decode_span(
             let field = utf8(c.bytes()?)?.to_string();
             SpanNode::field_masking(decode_span(c, depth.saturating_add(1), nodes)?, field)
         }
+        SPAN_GAP => {
+            let field = utf8(c.bytes()?)?.to_string();
+            SpanNode::gap(field, c.i32()?)
+        }
+        SPAN_NO_MATCH => SpanNode::no_match(utf8(c.bytes()?)?.to_string()),
         other => {
             return Err(invalid(format!(
-                "query tree: unknown span tag {other} (expected 0..={SPAN_FIELD_MASKING})"
+                "query tree: unknown span tag {other} (expected 0..={SPAN_NO_MATCH})"
             )))
         }
     })

@@ -579,3 +579,29 @@ fn searched_rewritten_and_explained() {
         "{e}"
     );
 }
+
+/// `SpanNearQuery.GapSpans`: positions without limit, skipped to a position
+/// at once, and a gap and a no-match clause print and report their field.
+#[test]
+fn a_gap_spans_every_position_and_skips() {
+    let mut g = GapSpans::new(2);
+    assert_eq!(g.next_doc().unwrap(), 0);
+    assert_eq!(g.next_start_position().unwrap(), 0);
+    assert_eq!((g.start_position(), g.end_position(), g.width()), (0, 2, 2));
+    assert_eq!(g.advance_position(7).unwrap(), 7);
+    assert_eq!(g.end_position(), 9);
+    assert_eq!(g.advance(5).unwrap(), 5);
+    assert_eq!(g.start_position(), -1);
+    assert!(g.matches().unwrap() && !g.two_phase());
+    assert_eq!((g.cost(), g.match_cost()), (0, 0.0));
+    let gap = SpanNode::gap("f", 3);
+    let none = SpanNode::no_match("f");
+    assert_eq!(gap.to_string(), "SpanGap(f:3)");
+    assert_eq!(none.to_string(), "SpanMatchNoDocsQuery(f)");
+    assert_eq!((gap.field(), none.field()), (Some("f"), Some("f")));
+    assert_eq!((gap.term_count(), none.term_count()), (1, 1));
+    let near = SpanNode::near(vec![t("a"), gap, t("b")], 0, true).unwrap();
+    let mut terms = Vec::new();
+    weight_terms(&near, &mut terms);
+    assert_eq!(terms.len(), 2);
+}

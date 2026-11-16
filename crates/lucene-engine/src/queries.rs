@@ -512,7 +512,7 @@ pub fn decode(
         NODE_PAINLESS_SCORE => return crate::painless_score::decode(c, depth, nodes),
         NODE_MAX_SIM => return crate::max_sim_query::decode(c, depth, nodes),
         NODE_PAINLESS_FILTER => return crate::painless_score::decode_filter(c),
-        NODE_PATTERN_PHRASE => return crate::pattern_phrase::decode(c),
+        NODE_PATTERN_PHRASE => return crate::pattern_phrase::decode(c, depth, nodes),
         NODE_POINT_RANGE_OR_DV => {
             let field = field(c)?;
             let (min, max) = (c.i64()?, c.i64()?);

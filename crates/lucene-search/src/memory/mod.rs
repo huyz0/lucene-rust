@@ -696,6 +696,11 @@ impl MemoryIndex {
         self.create_reader()?.search(query)
     }
 
+    /// Whether the document matches `query`.
+    pub fn any_match(&mut self, query: &Clause) -> Result<bool> {
+        self.create_reader()?.any_match(query)
+    }
+
     /// The document in the codec writers' terms: its fields in Java's
     /// numbering (creation order) -- term vectors off, since they are served
     /// from `Info`, and payloads left to the postings to record -- each

@@ -11,6 +11,7 @@ import org.apache.lucene.queries.spans.FieldMaskingSpanQuery;
 import org.apache.lucene.queries.spans.SpanContainingQuery;
 import org.apache.lucene.queries.spans.SpanFirstQuery;
 import org.apache.lucene.queries.spans.SpanNearQuery;
+import org.opensearch.lucene.queries.SpanMatchNoDocsQuery;
 import org.apache.lucene.queries.spans.SpanNotQuery;
 import org.apache.lucene.queries.spans.SpanOrQuery;
 import org.apache.lucene.queries.spans.SpanPositionRangeQuery;
@@ -119,6 +120,8 @@ final class ExtendedEncoder {
     static final byte NODE_MAX_SIM = 44;
     static final byte NODE_PAINLESS_FILTER = 45;
     static final byte NODE_JOIN = 46;
+    /** {@code NODE_MATCH_NONE} of the query tree. */
+    static final byte NODE_MATCH_NONE = 6;
     static final byte NODE_PATTERN_PHRASE = 47;
     static final byte NODE_SUBSTRING = 49;
     static final byte SUBSTRING_WILDCARD = 0;
@@ -126,7 +129,7 @@ final class ExtendedEncoder {
     static final byte SUBSTRING_CONTAINS = 2;
     static final byte SUBSTRING_EXACT = 3;
     /** {@code pattern_phrase.rs}'s {@code MAX_TERMS}. */
-    static final int MAX_PATTERN_TERMS = 1024;
+    static final int MAX_PATTERN_TERMS = 1 << 16;
 
     /** What {@link #node} returns for a query that is none of these. */
     static final String NOT_EXTENDED = "not_extended";
@@ -155,7 +158,7 @@ final class ExtendedEncoder {
                 return maxSim(ms, out, child);
             }
             if (q instanceof PatternPhraseQuery pp) {
-                return patternPhrase(pp, out);
+                return patternPhrase(pp, out, child);
             }
             if (q instanceof RustWildcardQuery rw) {
                 return substring(rw, out);
@@ -289,11 +292,6 @@ final class ExtendedEncoder {
         }
         if (c == SpanNearQuery.class) {
             SpanNearQuery n = (SpanNearQuery) q;
-            for (SpanQuery s : n.getClauses()) {
-                if (s.getClass().getSimpleName().equals("SpanGapQuery")) {
-                    return "span_gap";
-                }
-            }
             out.write(1);
             writeInt(out, n.getSlop());
             out.write(n.isInOrder() ? 1 : 0);
@@ -346,6 +344,17 @@ final class ExtendedEncoder {
             out.write(8);
             writeString(out, m.getField());
             return span(m.getMaskedQuery(), out, fieldOk);
+        }
+        if (c.getName().equals("org.apache.lucene.queries.spans.SpanNearQuery$SpanGapQuery")) {
+            out.write(9);
+            writeString(out, q.getField());
+            writeInt(out, (int) field(q, "width"));
+            return null;
+        }
+        if (c == SpanMatchNoDocsQuery.class) {
+            out.write(10);
+            writeString(out, q.getField());
+            return null;
         }
         return "span_" + c.getSimpleName();
     }
@@ -452,7 +461,8 @@ final class ExtendedEncoder {
                 Object n = field(s, "name");
                 out.write(n == null ? 0 : "ORDERED".equals(n) ? 1 : "UNORDERED".equals(n) ? 2 : 3);
                 if (n != null && "ORDERED".equals(n) == false && "UNORDERED".equals(n) == false) {
-                    return "interval_repeating_name";
+                    // Lucene names a repeating source only ORDERED or UNORDERED (its own setName callers).
+                    throw new ClassCastException("repeating source name " + n);
                 }
                 return source((IntervalsSource) field(s, "in"), out);
             }
@@ -591,7 +601,9 @@ final class ExtendedEncoder {
         Map<?, ?> fields = (Map<?, ?>) field(q, "fieldAndWeights");
         BytesRef term = (BytesRef) field(q, "term");
         if (fields.isEmpty()) {
-            return "combined_fields_empty";
+            // CombinedFieldQuery.rewrite: no field is the empty boolean query, which matches nothing.
+            out.write(NODE_MATCH_NONE);
+            return null;
         }
         out.write(NODE_COMBINED_FIELD);
         writeBytes(out, term);
@@ -670,25 +682,26 @@ final class ExtendedEncoder {
      * crates/lucene-engine/src/pattern_phrase.rs} reads them. A phrase with slop or a prefix, or an
      * analyzer {@link AnalyzerSpec} cannot describe, runs in Java.
      */
-    private static String patternPhrase(PatternPhraseQuery q, ByteArrayOutputStream out) {
-        if (q.positions() == null) {
-            return q.positional() instanceof PhraseQuery || q.positional() instanceof MultiPhraseQuery ? "pattern_phrase_slop" : "pattern_phrase_prefix";
-        }
-        int count = 0;
-        for (BytesRef[] t : q.terms()) {
-            count += t.length;
-        }
-        if (count > MAX_PATTERN_TERMS) {
-            return "pattern_phrase_terms";
-        }
+    private static String patternPhrase(PatternPhraseQuery q, ByteArrayOutputStream out, Child child) {
         AnalyzerSpec.Spec spec = AnalyzerSpec.cached(q.analyzer(), q.field());
         if (spec.ok() == false) {
             return "pattern_phrase_" + spec.reason();
+        }
+        if (q.positions() == null) {
+            // Slop or a prefix: the native side runs the phrase over each candidate message.
+            out.write(NODE_PATTERN_PHRASE);
+            writeString(out, q.field());
+            writeBytes(out, spec.blob());
+            out.write(q.templateParts() ? 1 : 0);
+            out.write(1);
+            String reason = child.node(q.approximation());
+            return reason != null ? reason : child.node(q.positional());
         }
         out.write(NODE_PATTERN_PHRASE);
         writeString(out, q.field());
         writeBytes(out, spec.blob());
         out.write(q.templateParts() ? 1 : 0);
+        out.write(0);
         int[] positions = q.positions();
         BytesRef[][] terms = q.terms();
         writeInt(out, positions.length);
