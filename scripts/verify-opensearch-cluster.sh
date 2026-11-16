@@ -10,19 +10,18 @@
 #
 #   scripts/verify-opensearch-cluster.sh [--keep] [--no-build]
 #
-# Needs Docker, a JDK 25 (Gradle's toolchain; see
-# opensearch-plugin/build.gradle), Gradle and cargo; the plugin image is the one
-# scripts/verify-opensearch.sh builds. Nodes listen on localhost:9201..9203.
+# Needs a JDK 25 (Gradle's toolchain; scripts/opensearch-dist.sh registers the tarball's own),
+# Gradle and cargo; the nodes are plain processes (opensearch-plugin/e2e/nodectl.py), no Docker.
+# Nodes listen on localhost:9201..9203 (transport 9301..9303, on loopback: OpenSearch enforces its
+# production bootstrap checks only when the transport binds a non-loopback address).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VERSION=3.9.0
-IMAGE="lucene-rust-opensearch:${VERSION}"
-# OS_IMAGE runs the nodes from another image built on that one -- e.g. an
-# OpenSearch patched with an overridable Engine#lastRefreshedCheckpoint, under
-# which the plugin needs no hook for segment replication (see
-# docs/opensearch-engine.md). The build step still builds IMAGE.
-NODE_IMAGE="${OS_IMAGE:-$IMAGE}"
+nodectl() { python3 opensearch-plugin/e2e/nodectl.py "$@"; }
+# OS_VARIANT runs the nodes from another nodectl variant (see `nodectl.py dist --help`) -- e.g. an
+# OpenSearch patched with an overridable Engine#lastRefreshedCheckpoint, under which the plugin
+# needs no hook for segment replication (see docs/opensearch-engine.md).
+VARIANT="${OS_VARIANT:-plugin}"
 KEEP=0
 BUILD=1
 for a in "$@"; do
@@ -36,40 +35,24 @@ done
 if [[ $BUILD == 1 ]]; then
     scripts/opensearch-dist.sh
     gradle --no-daemon -q -p opensearch-plugin bundlePlugin
-    rm -f opensearch-plugin/docker/*.zip
-    cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/docker/
-    docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
 fi
 
-# The three nodes share one network namespace -- a holder container's -- and
-# talk over loopback: OpenSearch enforces its production bootstrap checks
-# (65535 file descriptors, vm.max_map_count) only when the transport binds a
-# non-loopback address, and a sandboxed Docker may cap both below them. HTTP
-# still binds every interface, so the published ports reach it; stopping one
-# node leaves the others' network alone.
 cleanup() {
-    docker rm -f os1 os2 os3 lucene-rust-net >/dev/null 2>&1 || true
+    nodectl rm os1 >/dev/null 2>&1 || true
+    nodectl rm os2 >/dev/null 2>&1 || true
+    nodectl rm os3 >/dev/null 2>&1 || true
 }
 cleanup
 if [[ $KEEP == 0 ]]; then
     trap cleanup EXIT
 fi
-docker run -d --name lucene-rust-net -p 9201:9201 -p 9202:9202 -p 9203:9203 \
-    --entrypoint sleep "opensearchproject/opensearch:${VERSION}" infinity >/dev/null
 
 start() { # name http-port transport-port rust-enabled
-    docker rm -f "$1" >/dev/null 2>&1 || true
-    docker run -d --name "$1" --network container:lucene-rust-net \
-        -e node.name="$1" -e cluster.name=lucene-rust \
-        -e http.host=0.0.0.0 -e http.port="$2" \
-        -e transport.host=127.0.0.1 -e transport.port="$3" \
-        -e discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303 \
-        -e cluster.initial_cluster_manager_nodes=os1,os2,os3 \
-        -e indices.engine.accelerated.node_enabled="$4" \
-        -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
-        -e cluster.routing.allocation.disk.threshold_enabled=false \
-        -e OPENSEARCH_JAVA_OPTS="-Xms768m -Xmx768m" \
-        "$NODE_IMAGE" >/dev/null
+    nodectl run "$1" "$VARIANT" "$2" --transport "$3" --heap 768m --no-wait \
+        --setting cluster.name=lucene-rust \
+        --setting discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303 \
+        --setting cluster.initial_cluster_manager_nodes=os1,os2,os3 \
+        --setting indices.engine.accelerated.node_enabled="$4" >/dev/null
 }
 start os1 9201 9301 true
 start os2 9202 9302 true

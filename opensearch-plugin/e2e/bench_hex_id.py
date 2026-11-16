@@ -9,6 +9,7 @@ per-search server time).
 """
 import argparse
 import json
+import nodectl
 import random
 import subprocess
 import time
@@ -72,8 +73,7 @@ def files(name):
     linger until the last reader on them closes)."""
     live = {s["segment"] for s in req("GET", f"/_cat/segments/{name}?format=json")}
     uuid = req("GET", f"/{name}/_settings")[name]["settings"]["index"]["uuid"]
-    out = subprocess.check_output(["docker", "exec", a.container, "sh", "-c",
-                                   f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid}/0/index && ls -l"]).decode()
+    out = nodectl.exec_(a.container, f"cd /usr/share/opensearch/data/nodes/0/indices/{uuid}/0/index && ls -l").stdout
     by_ext = {}
     for line in out.splitlines():
         parts = line.split()

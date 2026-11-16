@@ -23,6 +23,7 @@ read with preference=_only_nodes -- must hold exactly that, after each of:
 Standard library only.
 """
 import json
+import nodectl
 import random
 import sys
 import time
@@ -180,9 +181,9 @@ class Model:
         print(f"{label}: {len(self.docs)} documents on {nodes}", flush=True)
 
 
-def docker(*args):
-    import subprocess
-    subprocess.run(["docker", *args], check=True, capture_output=True)
+def docker(verb, name):
+    """What `docker stop`/`start` did to a container: SIGTERM or relaunch the node of that name."""
+    {"stop": nodectl.stop, "start": lambda n: nodectl.start(n, wait=False)}[verb](name)
 
 
 def settings(index, s):
