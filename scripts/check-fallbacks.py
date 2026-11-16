@@ -25,6 +25,7 @@ LIST = ROOT / "opensearch-plugin/fallback-reasons.txt"
 PATTERNS = [
     re.compile(r'\breturn\s+"([a-z][a-z0-9_]*)"\s*;'),
     re.compile(r'\breturn\s+"([a-z][a-z0-9_]*_)"\s*\+'),
+    re.compile(r'[?:]\s*"([a-z][a-z0-9_]*_)"\s*\+'),
     re.compile(r'\breason\s*=\s*"([a-z][a-z0-9_]*)"'),
     re.compile(r'\bfallback\(\s*"([a-z][a-z0-9_]*)"'),
     re.compile(r'Encoded\(\s*null\s*,\s*"([a-z][a-z0-9_]*)"'),

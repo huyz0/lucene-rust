@@ -917,6 +917,44 @@ public final class NativeAggregationTree {
         }
     }
 
+    /** The aggregations the native planner has a node for (a shape inside one may still not be). */
+    private static final java.util.Set<String> PLANNED = java.util.Set.of(
+        "AvgAggregatorFactory", "MaxAggregatorFactory", "MinAggregatorFactory", "StatsAggregatorFactory", "SumAggregatorFactory",
+        "ValueCountAggregatorFactory", "CompositeAggregationFactory", "FilterAggregatorFactory", "FiltersAggregatorFactory",
+        "GlobalAggregatorFactory", "DateHistogramAggregatorFactory", "HistogramAggregatorFactory", "NestedAggregatorFactory",
+        "ReverseNestedAggregatorFactory", "DateRangeAggregatorFactory", "RangeAggregatorFactory", "SignificantTermsAggregatorFactory",
+        "SignificantTextAggregatorFactory", "TermsAggregatorFactory", "CardinalityAggregatorFactory", "PercentileRanksAggregatorFactory",
+        "PercentilesAggregatorFactory", "TopHitsAggregatorFactory"
+    );
+
+    /**
+     * The fallback reason for aggregations the native planner does not take: the first aggregation
+     * type in the tree it has no node for ({@code aggregation_ExtendedStats}), or
+     * {@code aggregation_shape} when every type is planned but a shape inside one is not.
+     */
+    static String unsupportedReason(SearchContext ctx) {
+        try {
+            String found = firstUnplanned(ctx.aggregations().factories().getFactories());
+            return found == null ? "aggregation_shape" : "aggregation_" + found;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return "aggregation_shape";
+        }
+    }
+
+    private static String firstUnplanned(AggregatorFactory[] factories) throws IllegalAccessException {
+        for (AggregatorFactory f : factories) {
+            String name = f.getClass().getSimpleName();
+            if (PLANNED.contains(name) == false) {
+                return name.replace("AggregatorFactory", "").replace("AggregationFactory", "");
+            }
+            String sub = SUB_FACTORIES == null ? null : firstUnplanned(((AggregatorFactories) SUB_FACTORIES.get(f)).getFactories());
+            if (sub != null) {
+                return sub;
+            }
+        }
+        return null;
+    }
+
     /**
      * The native trees for {@code ctx}'s aggregations, or null when any of them is not supported.
      * {@code fieldOk} and the searcher are what {@link QueryEncoder} needs for the filters.
