@@ -34,6 +34,8 @@ pub enum ExprBinding {
         numeric: Numeric,
         mode: Mode,
     },
+    /// `_value`: the field value an aggregation maps (`0` outside one).
+    Value,
     /// `doc['f'].empty`: `1` without a value, else `0`.
     Empty(usize),
     /// `doc['f'].length`: the document's value count.
@@ -150,9 +152,10 @@ impl ExprSource {
                 7 => ExprBinding::GeoLat(field(c)?),
                 8 => ExprBinding::GeoLon(field(c)?),
                 9 => ExprBinding::GeoEmpty(field(c)?),
+                10 => ExprBinding::Value,
                 other => {
                     return Err(invalid(format!(
-                        "query tree: expression binding kind {other} (expected 0..=4)"
+                        "query tree: expression binding kind {other} (expected 0..=10)"
                     )))
                 }
             };
@@ -197,14 +200,19 @@ impl ExprLeaf {
     /// The value of variable `b` at `env.doc`.
     fn variable(&self, env: &mut ScoreEnv<'_>, b: &ExprBinding) -> Result<f64> {
         Ok(match b {
+            // A sort expression is given no scorer: its `_score` reads `0`.
             ExprBinding::Score => {
-                if self.spec.needs_score {
+                if self.spec.needs_score && !self.spec.sort {
                     env.score
                 } else {
                     0.0
                 }
             }
             ExprBinding::Const(v) => *v,
+            ExprBinding::Value => match env.agg_value {
+                Value::Double(d) => d,
+                _ => 0.0,
+            },
             ExprBinding::Field {
                 field,
                 numeric,

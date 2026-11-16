@@ -1148,12 +1148,10 @@ pub enum DistanceMode {
 }
 
 impl OpenSearchGeoDistanceSort {
-    /// A document's value from its encoded points; `+Infinity` (OpenSearch's
-    /// `replaceMissing`) for a document without one.
-    pub fn value(&self, encoded: &[i64], scratch: &mut Vec<f64>) -> f64 {
-        if encoded.is_empty() {
-            return f64::INFINITY;
-        }
+    /// The distances from every origin to every one of a document's encoded points, in the
+    /// unit and sorted (`Arrays.sort(double[])`'s order): the values `GeoUtils.distanceValues`
+    /// gives a document.
+    pub fn distances(&self, encoded: &[i64], scratch: &mut Vec<f64>) {
         scratch.clear();
         for &e in encoded {
             // `(int) (encoded >>> 32)` and `(int) encoded`.
@@ -1170,6 +1168,15 @@ impl OpenSearchGeoDistanceSort {
         }
         // `Arrays.sort(double[])`: `Double.compare`'s order.
         scratch.sort_by(|a, b| double_compare(*a, *b));
+    }
+
+    /// A document's value from its encoded points; `+Infinity` (OpenSearch's
+    /// `replaceMissing`) for a document without one.
+    pub fn value(&self, encoded: &[i64], scratch: &mut Vec<f64>) -> f64 {
+        if encoded.is_empty() {
+            return f64::INFINITY;
+        }
+        self.distances(encoded, scratch);
         let n = scratch.len();
         match self.mode {
             DistanceMode::Min => scratch[0],

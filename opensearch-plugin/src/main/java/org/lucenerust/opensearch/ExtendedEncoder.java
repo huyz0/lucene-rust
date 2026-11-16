@@ -911,15 +911,16 @@ final class ExtendedEncoder {
 
     /**
      * A {@code _script} sort key's number sort script, made by {@code factory}, as the native
-     * runtime runs it: its spec (context {@link PainlessScore#SORT}), or why it stays in Java. A
-     * script reading {@code _score} stays in Java.
+     * runtime runs it: its spec (context {@link PainlessScore#SORT}, or {@link
+     * PainlessScore#SORT_WITH_SCORE} for a script reading {@code _score}), or why it stays in Java.
      */
     static String painlessSort(NumberSortScript.LeafFactory factory, ByteArrayOutputStream out) {
-        if (factory.needs_score()) {
-            return "sort_script_score";
-        }
+        byte context = factory.needs_score() ? PainlessScore.SORT_WITH_SCORE : PainlessScore.SORT;
         if (factory instanceof JsScripts.Leaf js) {
-            return jsSpec(out, js, PainlessScore.SORT, "sort_script");
+            return jsSpec(out, js, context, "sort_script");
+        }
+        if (isExpression(factory)) {
+            return expressionSpec(factory, context, "", 0, out, "sort_script");
         }
         if (isExpression(factory)) {
             return expressionSpec(factory, PainlessScore.SORT, "", 0, out, "sort_script");
@@ -933,7 +934,7 @@ final class ExtendedEncoder {
         if (PainlessScore.compiledWithDefaults((String) sp[0]) == false) {
             return "sort_script_options";
         }
-        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), PainlessScore.SORT, "sort_script");
+        Object prepared = painless(new Script(ScriptType.INLINE, "painless", (String) sp[0], params), context, "sort_script");
         if (prepared instanceof String reason) {
             return reason;
         }
@@ -1126,7 +1127,7 @@ final class ExtendedEncoder {
         }
         Object compiledOrWhy = switch (context) {
             case PainlessScore.FILTER -> PainlessScore.filter(script.getIdOrCode());
-            case PainlessScore.SORT -> PainlessScore.sort(script.getIdOrCode());
+            case PainlessScore.SORT, PainlessScore.SORT_WITH_SCORE -> PainlessScore.sort(script.getIdOrCode());
             case PainlessScore.AGGREGATION -> PainlessScore.aggregation(script.getIdOrCode());
             case PainlessScore.TERMS_SET -> PainlessScore.termsSet(script.getIdOrCode());
             case PainlessScore.INTERVAL -> PainlessScore.interval(script.getIdOrCode());
@@ -1316,9 +1317,6 @@ final class ExtendedEncoder {
             Object bindings = Reflect.inHierarchy(factory.getClass(), "bindings") != null ? field(factory, "bindings") : null;
             DoubleValuesSource[] bound = bindings == null ? (DoubleValuesSource[]) field(field(factory, "source"), "variables") : null;
             java.lang.reflect.Method get = bindings == null ? null : bindings.getClass().getMethod("getDoubleValuesSource", String.class);
-            if (isExpression(factory) && Reflect.inHierarchy(factory.getClass(), "specialValue") != null && field(factory, "specialValue") != null) {
-                return reason;
-            }
             java.util.LinkedHashMap<String, Integer> fields = new java.util.LinkedHashMap<>();
             ByteArrayOutputStream vars = new ByteArrayOutputStream();
             for (int v = 0; v < variables.length; v++) {
@@ -1328,6 +1326,9 @@ final class ExtendedEncoder {
                 writeString(vars, variable);
                 if (src == DoubleValuesSource.SCORES) {
                     vars.write(0);
+                } else if (cn.endsWith("PerThreadReplaceableConstDoubleValueSource") && context == PainlessScore.AGGREGATION) {
+                    // `_value`: the field value the aggregator maps.
+                    vars.write(10);
                 } else if (cn.endsWith("ConstantValuesSource")) {
                     vars.write(1);
                     writeLong(vars, Double.doubleToRawLongBits(((DoubleValuesSource) src).getValues(null, null).doubleValue()));
