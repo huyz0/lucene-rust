@@ -153,6 +153,20 @@ pub struct PageCacheConfig {
     /// that would exceed it fails to open rather than fill the disk (an I/O error; a caller may retry once other
     /// files close).
     pub spill_budget: u64,
+    /// The most bytes of files held whole on the heap at once: pinned files,
+    /// files of one page, and (without demand paging) files below
+    /// [`Self::spill_min_bytes`] or read without a disk tier. A file that
+    /// would pass it fails to open (an I/O error; a caller may retry once
+    /// other files close), so the steady-state heap held by such files is bounded by
+    /// this and not by how many readers are open (an open also holds its
+    /// pages and the assembled file, up to about twice its length, while it
+    /// reads). Two threads opening one uncached file at once each count it
+    /// until one input drops. Shared opens of one file
+    /// count once. `u64::MAX` (the default) is unbounded, as before, and
+    /// then such files are not counted ([`PageCacheStats::heap_open_bytes`]
+    /// stays 0) and read exactly as they always were; a bounded budget
+    /// serves them through one indirect call per access.
+    pub heap_budget: u64,
 }
 
 /// What a store costs per request and per byte, measured once and given to
@@ -209,7 +223,27 @@ impl Default for PageCacheConfig {
             demand_paging: true,
             spill_min_bytes: Some(DEFAULT_SPILL_MIN_BYTES),
             spill_budget: u64::MAX,
+            heap_budget: u64::MAX,
         }
+    }
+}
+
+/// Whether files can be demand-filled through `userfaultfd` in this process:
+/// `true` on Linux where the kernel and its settings
+/// (`vm.unprivileged_userfaultfd`, seccomp, the container) allow a
+/// `userfaultfd`, `false` elsewhere. The first call probes it (starting the
+/// process's fault handler); a node reports the answer as a metric so an
+/// operator knows whether remote files are demand-filled or read through
+/// ([`PageCacheConfig::spill_min_bytes`], [`PageCacheConfig::heap_budget`]).
+/// [`PageCacheConfig::demand_paging`] `false` turns it off per cache.
+pub fn demand_paging_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::paged_input::Pager::global().is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
     }
 }
 
@@ -243,6 +277,15 @@ pub struct PageCacheStats {
     /// [`PageCacheConfig::max_inflight_requests`] or
     /// [`PageCacheConfig::max_inflight_bytes`] being in use.
     pub fetch_waits: u64,
+    /// Bytes of files held whole on the heap now, counted only while
+    /// [`PageCacheConfig::heap_budget`] is bounded.
+    pub heap_open_bytes: u64,
+    /// Files opened whole onto the heap since the cache was created, counted
+    /// only while [`PageCacheConfig::heap_budget`] is bounded.
+    pub heap_opens: u64,
+    /// Files opened demand-filled through `userfaultfd` since the cache was
+    /// created.
+    pub demand_paged_opens: u64,
 }
 
 #[derive(Default)]
@@ -254,6 +297,8 @@ struct Counters {
     shared_fetches: AtomicU64,
     read_ahead_pages: AtomicU64,
     spill_opens: AtomicU64,
+    heap_opens: AtomicU64,
+    demand_paged_opens: AtomicU64,
 }
 
 /// One file's pages in stored bytes, from its [`UnitLayout`].
@@ -418,12 +463,15 @@ pub struct PageCache {
     tuner: Tuner,
     /// Bytes of spill-mapped files open now.
     spill_open: Arc<AtomicU64>,
+    /// Bytes of files held whole on the heap now.
+    heap_open: Arc<AtomicU64>,
     /// Requests and bytes in flight over every reader.
     budget: FetchBudget,
 }
 
-/// Holds `bytes` of [`PageCacheConfig::spill_budget`] while a mapped spill
-/// file is open; dropping it returns them.
+/// Holds `bytes` of [`PageCacheConfig::spill_budget`] (or of
+/// [`PageCacheConfig::heap_budget`]) while a mapped spill file (or a file
+/// held whole on the heap) is open; dropping it returns them.
 pub(crate) struct SpillReservation {
     open: Arc<AtomicU64>,
     bytes: u64,
@@ -535,6 +583,7 @@ impl PageCache {
             counters: Counters::default(),
             tuner: Tuner::default(),
             spill_open: Arc::new(AtomicU64::new(0)),
+            heap_open: Arc::new(AtomicU64::new(0)),
             budget: FetchBudget::new(
                 config.max_inflight_requests,
                 config.max_inflight_bytes as u64,
@@ -564,6 +613,9 @@ impl PageCache {
             spill_open_bytes: self.spill_open.load(Ordering::Relaxed),
             spill_opens: c.spill_opens.load(Ordering::Relaxed),
             fetch_waits: self.budget.waits(),
+            heap_open_bytes: self.heap_open.load(Ordering::Relaxed),
+            heap_opens: c.heap_opens.load(Ordering::Relaxed),
+            demand_paged_opens: c.demand_paged_opens.load(Ordering::Relaxed),
         }
     }
 
@@ -692,6 +744,37 @@ impl PageCache {
     /// Counts a spill file that opened.
     pub(crate) fn note_spill_open(&self) {
         self.counters.spill_opens.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts a file that opened demand-filled.
+    pub(crate) fn note_demand_paged_open(&self) {
+        self.counters
+            .demand_paged_opens
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts a file that opened whole onto the heap.
+    pub(crate) fn note_heap_open(&self) {
+        self.counters.heap_opens.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reserves `bytes` of [`PageCacheConfig::heap_budget`] until the guard
+    /// drops, or fails when that would pass it.
+    pub(crate) fn reserve_heap(&self, bytes: u64) -> Result<SpillReservation> {
+        let budget = self.config.heap_budget;
+        self.heap_open
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |open| {
+                open.checked_add(bytes).filter(|total| *total <= budget)
+            })
+            .map_err(|open| {
+                Error::Io(std::io::Error::other(format!(
+                    "heap budget exhausted: {open} bytes open, {bytes} more asked, budget {budget}"
+                )))
+            })?;
+        Ok(SpillReservation {
+            open: Arc::clone(&self.heap_open),
+            bytes,
+        })
     }
 
     /// Reserves `bytes` of the spill budget until the guard drops, or

@@ -106,6 +106,17 @@ let dir = CachedBlobDirectory::new(MyS3Store::new("bucket", "idx/"), cache, "buc
   500k opens: the tuned window fetched 6-36 MiB for one cold shard open and a
   `StoreProfile` 24 MiB every time; a version costs 154 ns per shared open
   against 116 ns.
+- Heap held by remote files is bounded and observable. Files read whole
+  (pinned files, files of one page, and without demand paging the files
+  below `spill_min_bytes` or read without a disk tier) count against
+  `PageCacheConfig::heap_budget` (default unbounded, as before: then they
+  are not counted and read as they always were) until their inputs drop; a file that would pass it fails to open before a byte is
+  fetched, so heap is bounded by the budget, not by how many readers are
+  open. `PageCacheStats` reports `heap_open_bytes`, `heap_opens` and
+  `demand_paged_opens`, and `lucene_store::demand_paging_available()` says
+  whether this process can demand-fill at all (a node exports it as a
+  metric: recent kernels default `vm.unprivileged_userfaultfd` to 0, so an
+  unprivileged container commonly cannot).
 - Readers announce their reads, as Lucene's `IndexInput.prefetch` does, so
   a cold query waits for few round trips: a segment open fetches every file
   it reads at once (`Directory::prefetch_files`), a search the terms
