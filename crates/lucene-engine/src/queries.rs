@@ -134,7 +134,11 @@ pub const NODE_VISITED: u8 = 55;
 /// (`MinScoreScorer`): `min_score: f32`, then the scored query (a node): only
 /// its documents that score at least `min_score` match.
 pub const NODE_MIN_SCORE: u8 = 56;
-pub const NODE_LAST: u8 = NODE_MIN_SCORE;
+/// OpenSearch's `MoreLikeThisQuery` for the plain highlighter, which rewrites it over the
+/// highlighted text: `boost: u8`, `boost_factor: f32` bits, `parts: i32` of (`groups: i32` of
+/// (`field`, `limit: i32`, `candidates: i32` of (`word: bytes`, `score: f32` bits))).
+pub const NODE_MORE_LIKE_THIS: u8 = 57;
+pub const NODE_LAST: u8 = NODE_MORE_LIKE_THIS;
 
 pub const VISIT_TERMS: u8 = 0;
 pub const VISIT_LEAF: u8 = 1;
@@ -583,6 +587,38 @@ pub fn decode(
                 .map_err(|e| invalid(format!("query tree: {e}")))?
                 .with_slop(slop);
             return Ok(Clause::MultiPhrase(phrase));
+        }
+        NODE_MORE_LIKE_THIS => {
+            use lucene_search::extended_query::{MoreLikeThisGroup, MoreLikeThisHighlight};
+            let boost = c.u8()? != 0;
+            let boost_factor = f32::from_bits(c.i32()? as u32);
+            let mut parts = Vec::new();
+            for _ in 0..c.length()? {
+                let mut groups = Vec::new();
+                for _ in 0..c.length()? {
+                    let field = field(c)?;
+                    let limit = usize::try_from(c.i32()?)
+                        .map_err(|_| invalid("query tree: a negative more-like-this limit"))?;
+                    let n = c.length()?;
+                    let mut candidates = crate::alloc::try_with_capacity(n.min(1024))?;
+                    for _ in 0..n {
+                        let word = c.bytes()?.to_vec();
+                        candidates.push((word, f32::from_bits(c.i32()? as u32)));
+                    }
+                    groups.push(MoreLikeThisGroup {
+                        field,
+                        limit,
+                        candidates,
+                    });
+                }
+                parts.push(groups);
+            }
+            return Ok(MoreLikeThisHighlight {
+                parts,
+                boost,
+                boost_factor,
+            }
+            .into());
         }
         NODE_VISITED => {
             let record = visit_record(c, depth.saturating_add(1), nodes)?;

@@ -41,6 +41,16 @@ impl Formatter for SimpleHtmlFormatter {
         }
         format!("{}{}{}", self.pre_tag, original_text, self.post_tag)
     }
+
+    fn highlight_term_units(&self, original_text: &[u16], token_group: &TokenGroup) -> Vec<u16> {
+        if token_group.total_score() <= 0.0 {
+            return original_text.to_vec();
+        }
+        let mut out: Vec<u16> = self.pre_tag.encode_utf16().collect();
+        out.extend_from_slice(original_text);
+        out.extend(self.post_tag.encode_utf16());
+        out
+    }
 }
 
 /// `GradientFormatter`: a `<font>` whose colours grade with the group's score.
@@ -230,6 +240,10 @@ impl Encoder for DefaultEncoder {
     fn encode_text(&self, original_text: &str) -> String {
         original_text.to_string()
     }
+
+    fn encode_units(&self, units: &[u16]) -> Vec<u16> {
+        units.to_vec()
+    }
 }
 
 /// `SimpleHTMLEncoder`: `"` `&` `<` `>` `'` and `/` as entities.
@@ -258,6 +272,26 @@ impl SimpleHtmlEncoder {
 impl Encoder for SimpleHtmlEncoder {
     fn encode_text(&self, original_text: &str) -> String {
         Self::html_encode(original_text)
+    }
+
+    fn encode_units(&self, units: &[u16]) -> Vec<u16> {
+        let mut out = Vec::with_capacity(units.len());
+        for &u in units {
+            let entity = match u {
+                0x22 => "&quot;",
+                0x26 => "&amp;",
+                0x3C => "&lt;",
+                0x3E => "&gt;",
+                0x27 => "&#x27;",
+                0x2F => "&#x2F;",
+                _ => {
+                    out.push(u);
+                    continue;
+                }
+            };
+            out.extend(entity.encode_utf16());
+        }
+        out
     }
 }
 

@@ -752,6 +752,7 @@ public class RustSearchPlugin extends Plugin implements
             RustQueryPhaseSearcher.ENABLED,
             FETCH_ENABLED,
             HIGHLIGHT_ENABLED,
+            org.lucenerust.opensearch.highlight.ExtendedHighlighting.ENABLED,
             NODE_FETCH_WRAPPER,
             RustQueryPhaseSearcher.NATIVE_SHAPES,
             RustQueryPhaseSearcher.NATIVE_APPROXIMATE,
