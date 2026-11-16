@@ -211,8 +211,8 @@ final class KnnEncoder {
 
     private static int knn(long handle, LiveDirectoryReader live, byte[] blob, int room, int[] docs, float[] scores, int[] count) {
         return live == null
-            ? NativeBridge.readerKnn(handle, blob, room, docs, scores, count)
-            : NativeBridge.liveViewKnn(handle, live.view().id(), blob, room, docs, scores, count);
+            ? NativeSearch.readerKnn(handle, blob, room, docs, scores, count)
+            : NativeSearch.liveViewKnn(handle, live.view().id(), blob, room, docs, scores, count);
     }
 
     private static void target(ByteArrayOutputStream out, KnnTarget t) {

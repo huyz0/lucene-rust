@@ -473,49 +473,49 @@ public final class NativeSelfTest {
         float[] scores = new float[4];
         long[] counts = new long[3];
         byte[] blob = QueryEncoder.encode(new TermQuery(new Term("f", "t")), f -> true).blob();
-        int rc = NativeBridge.search(12345L, blob, 4, Long.MAX_VALUE, docs, scores, counts);
+        int rc = NativeSearch.search(12345L, blob, 4, Long.MAX_VALUE, docs, scores, counts);
         check(rc == NativeBridge.INVALID_HANDLE, "search on a fabricated handle -> INVALID_HANDLE, got " + rc);
         check(NativeBridge.lastError().contains("unknown"), "lastError names the bad handle: " + NativeBridge.lastError());
-        check(NativeBridge.closeReader(0) == NativeBridge.INVALID_HANDLE, "closing handle 0");
+        check(NativeSearch.closeReader(0) == NativeBridge.INVALID_HANDLE, "closing handle 0");
         // Marshalling failures are status codes, never exceptions.
-        check(NativeBridge.search(1, null, 4, Long.MAX_VALUE, docs, scores, counts) == 10, "null query blob -> InvalidArgument");
+        check(NativeSearch.search(1, null, 4, Long.MAX_VALUE, docs, scores, counts) == 10, "null query blob -> InvalidArgument");
         // A refusal made in Java reports through the same last-error slot as the native code's.
         check(NativeBridge.lastError().contains("query is null"), "lastError names the Java-side refusal: " + NativeBridge.lastError());
-        check(NativeBridge.search(1, blob, -1, Long.MAX_VALUE, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
-        check(NativeBridge.search(1, blob, 8, Long.MAX_VALUE, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
-        check(NativeBridge.search(1, blob, 4, Long.MAX_VALUE, null, scores, counts) == 10, "null output array -> InvalidArgument");
+        check(NativeSearch.search(1, blob, -1, Long.MAX_VALUE, docs, scores, counts) == 10, "negative topN -> InvalidArgument");
+        check(NativeSearch.search(1, blob, 8, Long.MAX_VALUE, docs, scores, counts) == 8, "short output arrays -> BufferTooSmall");
+        check(NativeSearch.search(1, blob, 4, Long.MAX_VALUE, null, scores, counts) == 10, "null output array -> InvalidArgument");
         long[] counts4 = new long[4];
         byte[] f = { 'f' };
-        rc = NativeBridge.searchDocFreq(12345L, blob, 4, 4, f, f, docs, scores, counts4);
+        rc = NativeSearch.searchDocFreq(12345L, blob, 4, 4, f, f, docs, scores, counts4);
         check(rc == NativeBridge.INVALID_HANDLE, "searchDocFreq on a fabricated handle -> INVALID_HANDLE, got " + rc);
-        check(NativeBridge.searchDocFreq(1, blob, 4, 4, null, f, docs, scores, counts4) == 10, "searchDocFreq null field -> InvalidArgument");
-        check(NativeBridge.searchDocFreq(1, blob, 4, 4, f, null, docs, scores, counts4) == 10, "searchDocFreq null term -> InvalidArgument");
-        check(NativeBridge.openReader(null, new byte[0], 1, 0, new int[0], null, new long[1]) == 10, "null path -> InvalidArgument");
+        check(NativeSearch.searchDocFreq(1, blob, 4, 4, null, f, docs, scores, counts4) == 10, "searchDocFreq null field -> InvalidArgument");
+        check(NativeSearch.searchDocFreq(1, blob, 4, 4, f, null, docs, scores, counts4) == 10, "searchDocFreq null term -> InvalidArgument");
+        check(NativeSearch.openReader(null, new byte[0], 1, 0, new int[0], null, new long[1]) == 10, "null path -> InvalidArgument");
         check(
-            NativeBridge.openReader(new byte[] { '/' }, new byte[0], 1, 0, new int[2], new long[1][], new long[1]) == 10,
+            NativeSearch.openReader(new byte[] { '/' }, new byte[0], 1, 0, new int[2], new long[1][], new long[1]) == 10,
             "liveDocs shorter than maxDocs -> InvalidArgument"
         );
         byte[] sort = SortEncoder.encode(new Sort(SortField.FIELD_SCORE), null).blob();
         long[] values = new long[4];
         long[] counts5 = new long[5];
         byte[][] out = new byte[1][];
-        check(NativeBridge.searchSorted(1, blob, null, 4, 0, docs, values, counts5, out) == 10, "null sort blob -> InvalidArgument");
-        check(NativeBridge.searchSorted(1, blob, sort, 8, 0, docs, values, counts5, out) == 8, "short sorted outputs -> BufferTooSmall");
-        check(NativeBridge.searchSorted(1, blob, sort, 4, 0, docs, values, new long[4], out) == 10, "short sorted counts -> InvalidArgument");
-        check(NativeBridge.searchSorted(12345L, blob, sort, 4, 0, docs, values, counts5, out) == NativeBridge.INVALID_HANDLE, "sorted search on a fabricated handle");
+        check(NativeSearch.searchSorted(1, blob, null, 4, 0, docs, values, counts5, out) == 10, "null sort blob -> InvalidArgument");
+        check(NativeSearch.searchSorted(1, blob, sort, 8, 0, docs, values, counts5, out) == 8, "short sorted outputs -> BufferTooSmall");
+        check(NativeSearch.searchSorted(1, blob, sort, 4, 0, docs, values, new long[4], out) == 10, "short sorted counts -> InvalidArgument");
+        check(NativeSearch.searchSorted(12345L, blob, sort, 4, 0, docs, values, counts5, out) == NativeBridge.INVALID_HANDLE, "sorted search on a fabricated handle");
         check(out[0] == null, "a failed call hands back nothing");
-        check(NativeBridge.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2], null) == 10, "null aggregate terms slot -> InvalidArgument");
-        check(NativeBridge.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
+        check(NativeSearch.aggregate(1, blob, new byte[0], new long[1], new double[6], null, 0, new long[2], null) == 10, "null aggregate terms slot -> InvalidArgument");
+        check(NativeSearch.aggregateTree(1, blob, new byte[0], new byte[0][]) == 10, "empty aggregateTree out -> InvalidArgument");
         boolean[] lent = new boolean[1];
-        check(NativeBridge.document(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "document on a fabricated handle");
-        check(NativeBridge.document(12345L, 0, 0, null) == 10, "null document reader -> InvalidArgument");
-        check(NativeBridge.derivedSource(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent _source on a fabricated handle");
-        check(NativeBridge.countTerminates(1, blob, null, new long[1]) == 10, "null count spec -> InvalidArgument");
-        check(NativeBridge.docFreq(12345L, f, f, new long[1]) == NativeBridge.INVALID_HANDLE, "docFreq on a fabricated handle");
-        check(NativeBridge.writerApply(12345L, new byte[2], 5) == 10, "writerApply past the array -> InvalidArgument");
-        check(NativeBridge.writerApply(12345L, null, -1) == 10, "null op -> InvalidArgument");
-        check(NativeBridge.writerCommitGenerations(12345L, new long[4], null) == 10, "null outLen -> InvalidArgument");
-        check(NativeBridge.writerStats(12345L, new long[NativeBridge.STAT_COUNT]) == NativeBridge.INVALID_HANDLE, "writer stats on a fabricated handle");
+        check(NativeSearch.document(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "document on a fabricated handle");
+        check(NativeSearch.document(12345L, 0, 0, null) == 10, "null document reader -> InvalidArgument");
+        check(NativeSearch.derivedSource(12345L, 0, 0, bytes -> lent[0] = true) == NativeBridge.INVALID_HANDLE && lent[0] == false, "lent _source on a fabricated handle");
+        check(NativeSearch.countTerminates(1, blob, null, new long[1]) == 10, "null count spec -> InvalidArgument");
+        check(NativeSearch.docFreq(12345L, f, f, new long[1]) == NativeBridge.INVALID_HANDLE, "docFreq on a fabricated handle");
+        check(NativeWriter.writerApply(12345L, new byte[2], 5) == 10, "writerApply past the array -> InvalidArgument");
+        check(NativeWriter.writerApply(12345L, null, -1) == 10, "null op -> InvalidArgument");
+        check(NativeWriter.writerCommitGenerations(12345L, new long[4], null) == 10, "null outLen -> InvalidArgument");
+        check(NativeWriter.writerStats(12345L, new long[NativeWriter.STAT_COUNT]) == NativeBridge.INVALID_HANDLE, "writer stats on a fabricated handle");
     }
 
     // --- QueryEncoder --------------------------------------------------------------------
@@ -830,7 +830,7 @@ public final class NativeSelfTest {
             long[] zero = new long[3];
             long exactCount = searcher.count(rewritten);
             for (long limit : new long[] { Long.MAX_VALUE, 1, Math.max(1, exactCount / 2), Math.max(1, exactCount) }) {
-                check(NativeBridge.search(acquired.handle(), enc.blob(), 0, limit, new int[0], new float[0], zero) == NativeBridge.OK, where + ": size 0");
+                check(NativeSearch.search(acquired.handle(), enc.blob(), 0, limit, new int[0], new float[0], zero) == NativeBridge.OK, where + ": size 0");
                 boolean ok0 = zero[2] == 0 ? zero[1] == exactCount : exactCount > limit && zero[1] > limit && zero[1] <= exactCount;
                 check(ok0 && zero[0] == 0, where + ": " + rewritten + " size 0 limit " + limit + " gave " + zero[1] + (zero[2] == 1 ? "+" : "") + ", exact " + exactCount);
             }
@@ -850,10 +850,10 @@ public final class NativeSelfTest {
                     float[] s1 = new float[topN], s2 = new float[topN];
                     long[] c1 = new long[4], c2 = new long[3];
                     String what = where + ": " + rewritten + " searchDocFreq top" + topN;
-                    check(NativeBridge.searchDocFreq(acquired.handle(), enc.blob(), topN, topN, field, term, d1, s1, c1) == NativeBridge.OK, what);
+                    check(NativeSearch.searchDocFreq(acquired.handle(), enc.blob(), topN, topN, field, term, d1, s1, c1) == NativeBridge.OK, what);
                     check(c1[3] == reader.docFreq(shortcut), what + ": docFreq " + c1[3] + " vs " + reader.docFreq(shortcut));
                     if (topN > 0) {
-                        check(NativeBridge.search(acquired.handle(), enc.blob(), topN, topN, d2, s2, c2) == NativeBridge.OK, what + ": search");
+                        check(NativeSearch.search(acquired.handle(), enc.blob(), topN, topN, d2, s2, c2) == NativeBridge.OK, what + ": search");
                         check(
                             c1[0] == c2[0] && c1[1] == c2[1] && c1[2] == c2[2] && java.util.Arrays.equals(d1, d2) && java.util.Arrays.equals(s1, s2),
                             what + ": differs from search"
@@ -868,7 +868,7 @@ public final class NativeSelfTest {
                 int[] docs = new int[topN];
                 float[] scores = new float[topN];
                 long[] counts = new long[3];
-                int rc = NativeBridge.search(acquired.handle(), enc.blob(), topN, Long.MAX_VALUE, docs, scores, counts);
+                int rc = NativeSearch.search(acquired.handle(), enc.blob(), topN, Long.MAX_VALUE, docs, scores, counts);
                 String what = where + ": " + rewritten + " top" + topN;
                 check(rc == NativeBridge.OK, what + ": native search status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
@@ -879,7 +879,7 @@ public final class NativeSelfTest {
                 // Lucene's totalHitsThreshold: exact below the limit, a lower bound >= limit at it.
                 long limit = exact > 0 ? 1 + new Random(exact).nextLong(exact) : 1;
                 long[] limited = new long[3];
-                check(NativeBridge.search(acquired.handle(), enc.blob(), topN, limit, docs, scores, limited) == NativeBridge.OK, what + ": limited");
+                check(NativeSearch.search(acquired.handle(), enc.blob(), topN, limit, docs, scores, limited) == NativeBridge.OK, what + ": limited");
                 // Exact up to the limit (Lucene switches to GTE only past it);
                 // above it either exact, or a lower bound that itself exceeds
                 // the limit.
@@ -912,7 +912,7 @@ public final class NativeSelfTest {
         NativeAggregations.LONG };
 
     /**
-     * {@code NativeBridge.aggregate} against the loop OpenSearch's metric aggregators run (as in
+     * {@code NativeSearch.aggregate} against the loop OpenSearch's metric aggregators run (as in
      * {@code fixtures/src/GenMetricAggs.java}): every value of every live match, summed with {@code
      * CompensatedSum}, {@code Math.min}/{@code Math.max} over the values and over each document's
      * first and last. Bit for bit.
@@ -936,11 +936,11 @@ public final class NativeSelfTest {
         );
         long[] counts = new long[AGG_FIELDS.length];
         double[] values = new double[AGG_FIELDS.length * NativeAggregations.VALUES];
-        int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][], -1, new long[2], null);
+        int rc = NativeSearch.aggregate(handle, blob, plan.blob(new int[0][]), counts, values, new byte[1][], -1, new long[2], null);
         check(rc == NativeBridge.OK, what + ": aggregate status " + rc + " " + NativeBridge.lastError());
         // A count with nowhere to put it: refused after the native call, whose results (the terms
         // buffer included) must still be released -- a status, not a throw or a leak.
-        int unusable = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, null, null);
+        int unusable = NativeSearch.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, null, null);
         check(unusable == NativeBridge.OK || unusable == NativeBridge.INVALID_ARGUMENT, what + ": a null outTotal is a status, got " + unusable);
         if (rc != NativeBridge.OK) {
             return;
@@ -950,7 +950,7 @@ public final class NativeSelfTest {
         java.util.List<org.apache.lucene.index.LeafReaderContext> leaves = searcher.getIndexReader().leaves();
         long[] perSegment = new long[leaves.size()];
         long[] counted = new long[] { -1, 0, 0 };
-        int crc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, counted, perSegment);
+        int crc = NativeSearch.aggregate(handle, blob, plan.blob(new int[0][]), new long[counts.length], new double[values.length], new byte[1][], Long.MAX_VALUE, counted, perSegment);
         check(crc == NativeBridge.OK, what + ": counted aggregate status " + crc + " " + NativeBridge.lastError());
         if (crc == NativeBridge.OK && counted[2] == 1) {
             try {
@@ -1010,7 +1010,7 @@ public final class NativeSelfTest {
                             }
                             NativeAggregations.writeSlices(spec, slices);
                             long[] out = new long[1];
-                            int trc = NativeBridge.countTerminates(handle, blob, spec.toByteArray(), out);
+                            int trc = NativeSearch.countTerminates(handle, blob, spec.toByteArray(), out);
                             check(trc == NativeBridge.OK, what + ": countTerminates status " + trc);
                             boolean replay = RustQueryPhaseSearcher.replayCountTerminated(slices, leaves, iterate, perSegment, n);
                             check(replay == (out[0] != 0), what + ": replayed terminated_early " + replay + " at n " + n + ", native " + out[0]);
@@ -1103,7 +1103,7 @@ public final class NativeSelfTest {
     }
 
     /**
-     * {@code NativeBridge.aggregate}'s {@code terms} results against the shard's {@code terms} steps on Lucene: every live match
+     * {@code NativeSearch.aggregate}'s {@code terms} results against the shard's {@code terms} steps on Lucene: every live match
      * counted once per distinct term, the top {@code shard_size} by count desc then term, the rest
      * summed, the kept by term.
      */
@@ -1187,7 +1187,7 @@ public final class NativeSelfTest {
                 );
                 byte[][] out = new byte[1][];
                 NativeAggregations.Plan plan = new NativeAggregations.Plan(List.of(spec));
-                int rc = NativeBridge.aggregate(handle, blob, plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2], null);
+                int rc = NativeSearch.aggregate(handle, blob, plan.blob(new int[0][]), new long[0], new double[0], out, -1, new long[2], null);
                 check(rc == NativeBridge.OK, what + ": terms status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     continue;
@@ -1284,7 +1284,7 @@ public final class NativeSelfTest {
                 long[] counts = new long[5];
                 byte[][] terms = new byte[1][];
                 long limit = threshold == Integer.MAX_VALUE ? Long.MAX_VALUE : threshold;
-                int rc = NativeBridge.searchSorted(handle, queryBlob, enc.blob(), topN, limit, docs, values, counts, terms);
+                int rc = NativeSearch.searchSorted(handle, queryBlob, enc.blob(), topN, limit, docs, values, counts, terms);
                 check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
                 if (rc != NativeBridge.OK) {
                     return;
@@ -1420,7 +1420,7 @@ public final class NativeSelfTest {
             long[] values = new long[topN * keys.length];
             long[] counts = new long[5];
             byte[][] terms = new byte[1][];
-            int rc = NativeBridge.searchSorted(handle, blob, enc.blob(), topN, Long.MAX_VALUE, docs, values, counts, terms);
+            int rc = NativeSearch.searchSorted(handle, blob, enc.blob(), topN, Long.MAX_VALUE, docs, values, counts, terms);
             check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
             if (rc != NativeBridge.OK) {
                 return;
@@ -1507,7 +1507,7 @@ public final class NativeSelfTest {
             int[] docs = new int[10];
             float[] scores = new float[10];
             long[] counts = new long[3];
-            int rc = NativeBridge.search(handle, withMin, 10, Long.MAX_VALUE, docs, scores, counts);
+            int rc = NativeSearch.search(handle, withMin, 10, Long.MAX_VALUE, docs, scores, counts);
             String what = where + ": " + query + " min_score " + min;
             check(rc == NativeBridge.OK, what + ": status " + rc + " " + NativeBridge.lastError());
             if (rc != NativeBridge.OK) {
@@ -1524,7 +1524,7 @@ public final class NativeSelfTest {
             org.apache.lucene.search.TotalHitCountCollector count = new org.apache.lucene.search.TotalHitCountCollector();
             sequential.search(query, new MinScore(count, min));
             long[] zero = new long[3];
-            rc = NativeBridge.search(handle, withMin, 0, Long.MAX_VALUE, new int[0], new float[0], zero);
+            rc = NativeSearch.search(handle, withMin, 0, Long.MAX_VALUE, new int[0], new float[0], zero);
             check(rc == NativeBridge.OK && zero[1] == count.getTotalHits() && zero[2] == 0,
                 what + ": size 0 count " + zero[1] + " vs " + count.getTotalHits());
         }
@@ -1834,7 +1834,7 @@ public final class NativeSelfTest {
                 // A lent document holds its bytes for the call only: a view kept past it fails
                 // instead of reading the freed buffer.
                 java.lang.foreign.MemorySegment[] kept = new java.lang.foreign.MemorySegment[1];
-                int lentRc = NativeBridge.document(storedHandle, 0, 0, bytes -> {
+                int lentRc = NativeSearch.document(storedHandle, 0, 0, bytes -> {
                     kept[0] = bytes;
                     check(bytes.byteSize() > 4 && bytes.get(java.lang.foreign.ValueLayout.JAVA_INT_UNALIGNED, 0) > 0, "a lent document holds fields");
                 });

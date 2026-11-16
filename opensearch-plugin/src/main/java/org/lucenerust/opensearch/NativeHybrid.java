@@ -283,7 +283,7 @@ final class NativeHybrid {
                     for (int i = 0; i < Math.min(n, r.window()); i++) {
                         window.add(docs[i]);
                     }
-                    int rc = NativeBridge.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
+                    int rc = NativeSearch.rescore(handle, r.blob(), r.window(), r.queryWeight(), r.rescoreQueryWeight(), r.mode(), docs, scores);
                     if (rc != NativeBridge.OK) {
                         NativeMemory.check(rc);
                         return "native_error";

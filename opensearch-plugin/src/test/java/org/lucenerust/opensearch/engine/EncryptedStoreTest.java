@@ -36,6 +36,9 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.MMapDirectory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeSearch;
+import org.lucenerust.opensearch.NativeStore;
+import org.lucenerust.opensearch.NativeWriter;
 import org.lucenerust.opensearch.NativeLibrary;
 import org.lucenerust.opensearch.NativeReaders;
 import org.lucenerust.opensearch.store.CachingKeySource;
@@ -62,7 +65,7 @@ public final class EncryptedStoreTest {
         NativeLibrary.load(Path.of("."));
         StoreCrypto crypto = StoreCrypto.get();
         System.out.println("EncryptedStoreTest: crypto is " + crypto.description() + (crypto.fips() ? ", FIPS" : ""));
-        check(crypto.fips() == NativeBridge.storeIsFips(), "the JVM and native crypto agree on FIPS mode");
+        check(crypto.fips() == NativeStore.storeIsFips(), "the JVM and native crypto agree on FIPS mode");
         lrse();
         javaWritesRustReads(crypto);
         rustWritesJavaReads(crypto);
@@ -108,7 +111,7 @@ public final class EncryptedStoreTest {
                     if (a.handle() != 0) {
                         for (String t : List.of("alpha", "kappa", "secretword1", "nothere")) {
                             long[] out = new long[1];
-                            int rc = NativeBridge.docFreq(a.handle(), "body".getBytes(StandardCharsets.UTF_8), t.getBytes(StandardCharsets.UTF_8), out);
+                            int rc = NativeSearch.docFreq(a.handle(), "body".getBytes(StandardCharsets.UTF_8), t.getBytes(StandardCharsets.UTF_8), out);
                             check(rc == NativeBridge.OK, "native docFreq(" + t + "): " + NativeBridge.lastError());
                             check(out[0] == r.docFreq(new Term("body", t)), "native docFreq(" + t + ") " + out[0] + " == Lucene's " + r.docFreq(new Term("body", t)));
                         }
@@ -244,7 +247,7 @@ public final class EncryptedStoreTest {
                     null,
                     null,
                     IndexWriter.MAX_DOCS,
-                    org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                    org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED,
                     3,
                     new StandardAnalyzer(),
                     new BM25Similarity(),

@@ -6,6 +6,7 @@ package org.lucenerust.opensearch.storedfields;
 import java.io.Closeable;
 import java.io.IOException;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeZstd;
 
 /** A segment's zstd dictionary, prepared once in native memory for decoding its chunks. */
 final class ZstdDictionary implements Closeable {
@@ -18,7 +19,7 @@ final class ZstdDictionary implements Closeable {
 
     static ZstdDictionary open(byte[] dictionary) throws IOException {
         long[] out = new long[1];
-        int rc = NativeBridge.zstdDictionaryOpen(dictionary, out);
+        int rc = NativeZstd.zstdDictionaryOpen(dictionary, out);
         if (rc != NativeBridge.OK) {
             throw new IOException("cannot prepare a zstd dictionary: " + NativeBridge.lastError());
         }
@@ -33,7 +34,7 @@ final class ZstdDictionary implements Closeable {
     public synchronized void close() {
         if (closed == false) {
             closed = true;
-            NativeBridge.zstdDictionaryClose(handle);
+            NativeZstd.zstdDictionaryClose(handle);
         }
     }
 }

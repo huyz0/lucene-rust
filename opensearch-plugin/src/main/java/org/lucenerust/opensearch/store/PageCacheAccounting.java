@@ -4,6 +4,7 @@
 package org.lucenerust.opensearch.store;
 
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeStore;
 import org.lucenerust.opensearch.engine.RustEngineSupport;
 
 import org.opensearch.common.unit.TimeValue;
@@ -36,7 +37,7 @@ public final class PageCacheAccounting {
         if (breaker == null) {
             return;
         }
-        long resident = Math.max(0, NativeBridge.storePageCacheStats()[1]);
+        long resident = Math.max(0, NativeStore.storePageCacheStats()[1]);
         long previous = CHARGED.getAndSet(resident);
         if (resident != previous) {
             breaker.addWithoutBreaking(resident - previous);

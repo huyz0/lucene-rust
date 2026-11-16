@@ -24,6 +24,8 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeWriter;
+import org.lucenerust.opensearch.NativeLive;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.core.common.breaker.CircuitBreaker;
@@ -229,7 +231,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         installCommitDataUpcall();
         RustMergeScheduler.installUpcall();
         long[] out = new long[1];
-        int status = NativeBridge.writerOpen(
+        int status = NativeWriter.writerOpen(
             org.lucenerust.opensearch.store.RustEncryptedDirectory.nativePath(indexPath).getBytes(StandardCharsets.UTF_8),
             ramBufferMb,
             faultInjection,
@@ -289,7 +291,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             return w;
         } finally {
             if (success == false) {
-                NativeBridge.writerClose(out[0]);
+                NativeWriter.writerClose(out[0]);
             }
         }
     }
@@ -323,7 +325,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         int[] out = new int[1];
         synchronized (lock) {
             ensureOpen();
-            check(NativeBridge.writerRegisterField(handle, schema.encode(), out), "registering field [" + schema.name + "]");
+            check(NativeWriter.writerRegisterField(handle, schema.encode(), out), "registering field [" + schema.name + "]");
         }
         return out[0];
     }
@@ -369,7 +371,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         long prepared = 0;
         if (op.analyzesNatively) {
             long[] id = new long[1];
-            int rc = NativeBridge.writerPrepare(op.array(), op.length(), id);
+            int rc = NativeWriter.writerPrepare(op.array(), op.length(), id);
             if (rc != NativeBridge.OK) {
                 if (breaker != null) {
                     breaker.addWithoutBreaking(-estimate);
@@ -391,14 +393,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
             if (prepared != 0) {
                 long id = prepared;
                 prepared = 0;
-                check(NativeBridge.writerApplyPrepared(handle, id), "indexing");
+                check(NativeWriter.writerApplyPrepared(handle, id), "indexing");
             } else {
-                check(NativeBridge.writerApply(handle, op.array(), op.length()), "indexing");
+                check(NativeWriter.writerApply(handle, op.array(), op.length()), "indexing");
             }
             docsSinceCommit.addAndGet(docs);
         } finally {
             if (prepared != 0) {
-                NativeBridge.preparedFree(prepared);
+                NativeWriter.preparedFree(prepared);
             }
             reconcileBreaker();
             indexing.readLock().unlock();
@@ -428,7 +430,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             return;
         }
         long[] out = new long[1];
-        long ram = closed == false && NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
+        long ram = closed == false && NativeWriter.writerStats(handle, out) == NativeBridge.OK ? out[NativeWriter.STAT_RAM_BYTES] : 0;
         synchronized (accounting) {
             breaker.addWithoutBreaking(ram - accounted);
             accounted = ram;
@@ -650,7 +652,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         commitDataFailure = null;
         COMMITTING.set(this);
         try {
-            status = NativeBridge.writerCommit(handle, handle, out);
+            status = NativeWriter.writerCommit(handle, handle, out);
         } finally {
             COMMITTING.remove();
             committingData = null;
@@ -696,7 +698,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 );
             FunctionDescriptor fd = FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS);
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
-            if (NativeBridge.setCommitDataUpcall(stub) != NativeBridge.OK) {
+            if (NativeWriter.setCommitDataUpcall(stub) != NativeBridge.OK) {
                 throw new IllegalStateException("lucene-rust: registering the commit-data upcall failed: " + NativeBridge.lastError());
             }
             upcallInstalled = true;
@@ -715,7 +717,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private static int commitDataUpcall(long context, MemorySegment out, long cap, MemorySegment outLen) {
         RustIndexWriter w = COMMITTING.get();
         if (w == null || w.handle != context) {
-            return NativeBridge.COMMIT_DATA_FAILED;
+            return NativeWriter.COMMIT_DATA_FAILED;
         }
         try {
             Blob data = new Blob(256);
@@ -728,13 +730,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
             data.patchI32(countAt, n);
             outLen.reinterpret(Long.BYTES).set(JAVA_LONG, 0, data.length());
             if (data.length() > cap) {
-                return NativeBridge.COMMIT_DATA_BUFFER_TOO_SMALL;
+                return NativeWriter.COMMIT_DATA_BUFFER_TOO_SMALL;
             }
             MemorySegment.copy(data.array(), 0, out.reinterpret(cap), JAVA_BYTE, 0, data.length());
-            return NativeBridge.COMMIT_DATA_OK;
+            return NativeWriter.COMMIT_DATA_OK;
         } catch (Throwable t) {
             w.commitDataFailure = t;
-            return NativeBridge.COMMIT_DATA_FAILED;
+            return NativeWriter.COMMIT_DATA_FAILED;
         }
     }
 
@@ -755,7 +757,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 return;
             }
             check(
-                NativeBridge.writerSetMergePolicy(
+                NativeWriter.writerSetMergePolicy(
                     handle,
                     policy.getMaxMergeAtOnce(),
                     policy.getSegmentsPerTier(),
@@ -768,7 +770,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             );
             mergePolicySettings = settings;
             if (mergeOnFlushPolicyWait >= 0) {
-                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+                check(NativeWriter.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
             }
         }
     }
@@ -779,13 +781,13 @@ final class RustIndexWriter implements DocumentIndexWriter {
      * {@link #setMergePolicy} configures; sent again only when one changed.
      */
     void setPluggableMergePolicy(MergePolicy policy) throws IOException {
-        int kind = NativeBridge.MERGE_POLICY_TIERED;
+        int kind = NativeWriter.MERGE_POLICY_TIERED;
         LogByteSizeMergePolicy log = null;
         if (policy instanceof LogByteSizeMergePolicy l) {
-            kind = NativeBridge.MERGE_POLICY_LOG_BYTE_SIZE;
+            kind = NativeWriter.MERGE_POLICY_LOG_BYTE_SIZE;
             log = l;
         } else if (policy instanceof NoMergePolicy) {
-            kind = NativeBridge.MERGE_POLICY_NONE;
+            kind = NativeWriter.MERGE_POLICY_NONE;
         }
         double[] settings = log == null
             ? new double[] { kind }
@@ -803,7 +805,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 return;
             }
             check(
-                NativeBridge.writerSetPluggableMergePolicy(
+                NativeWriter.writerSetPluggableMergePolicy(
                     handle,
                     kind,
                     log == null ? 0 : log.getMergeFactor(),
@@ -818,7 +820,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             );
             pluggableMergePolicySettings = settings;
             if (mergeOnFlushPolicyWait >= 0) {
-                check(NativeBridge.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
+                check(NativeWriter.writerSetMergeOnFlush(handle, mergeOnFlushPolicyWait, true), "setting merge-on-flush");
             }
         }
     }
@@ -836,7 +838,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 return;
             }
             check(
-                NativeBridge.writerSetOptions(handle, useCompoundFile, noCfsRatio, megabytes(maxCfsSegmentMb), checkPendingFlush, shuffle),
+                NativeWriter.writerSetOptions(handle, useCompoundFile, noCfsRatio, megabytes(maxCfsSegmentMb), checkPendingFlush, shuffle),
                 "setting the writer options"
             );
             writerOptions = options;
@@ -853,7 +855,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
                 return;
             }
             check(
-                NativeBridge.writerSetBpReorder(
+                NativeWriter.writerSetBpReorder(
                     handle,
                     values.enabled(),
                     values.minDocFreq(),
@@ -882,7 +884,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      */
     void setMergeLz4HcNonForce() throws IOException {
         synchronized (lock) {
-            check(NativeBridge.writerSetMergeLz4HcNonForce(handle, true), "setting index.codec.stored_fields.recompress_on_merge");
+            check(NativeWriter.writerSetMergeLz4HcNonForce(handle, true), "setting index.codec.stored_fields.recompress_on_merge");
         }
     }
 
@@ -892,7 +894,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
      */
     void setIvfPartitionClusters(int minVectors) throws IOException {
         synchronized (lock) {
-            check(NativeBridge.writerSetIvfPartitionClusters(handle, minVectors), "setting index.knn.ivf.partition_min_vectors");
+            check(NativeWriter.writerSetIvfPartitionClusters(handle, minVectors), "setting index.knn.ivf.partition_min_vectors");
         }
     }
 
@@ -902,14 +904,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
      */
     void setMergeOnFlush(long waitMillis, boolean mergeOnFlushPolicy) throws IOException {
         synchronized (lock) {
-            check(NativeBridge.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
+            check(NativeWriter.writerSetMergeOnFlush(handle, waitMillis, mergeOnFlushPolicy), "setting merge-on-flush");
             mergeOnFlushPolicyWait = mergeOnFlushPolicy ? waitMillis : -1;
         }
     }
 
     private void applyRetention() throws IOException {
         if (minRetainedSeqNo != null) {
-            check(NativeBridge.writerSetRetention(handle, true, seqNoSentinels, minRetainedSeqNo.getAsLong()), "setting retention");
+            check(NativeWriter.writerSetRetention(handle, true, seqNoSentinels, minRetainedSeqNo.getAsLong()), "setting retention");
         }
     }
 
@@ -932,10 +934,10 @@ final class RustIndexWriter implements DocumentIndexWriter {
     private void onNewCommits() throws IOException {
         long[] gens = new long[16];
         int[] len = new int[1];
-        int status = NativeBridge.writerCommitGenerations(handle, gens, len);
+        int status = NativeWriter.writerCommitGenerations(handle, gens, len);
         if (status == NativeBridge.BUFFER_TOO_SMALL) {
             gens = new long[len[0]];
-            status = NativeBridge.writerCommitGenerations(handle, gens, len);
+            status = NativeWriter.writerCommitGenerations(handle, gens, len);
         }
         check(status, "listing commits");
         List<IndexCommit> list = new ArrayList<>(len[0]);
@@ -971,7 +973,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         }
         if (doomed.isEmpty() == false) {
             long[] arr = doomed.stream().mapToLong(Long::longValue).toArray();
-            check(NativeBridge.writerDeleteCommits(handle, arr), "deleting commits");
+            check(NativeWriter.writerDeleteCommits(handle, arr), "deleting commits");
             doomed.forEach(commits::remove);
         }
     }
@@ -987,7 +989,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         try {
             ensureOpen();
             byte[][] bytes = new byte[1][];
-            check(NativeBridge.writerNrtSnapshot(handle, out, bytes), "opening a near-real-time view");
+            check(NativeWriter.writerNrtSnapshot(handle, out, bytes), "opening a near-real-time view");
             return bytes[0];
         } finally {
             reconcileBreaker();
@@ -1018,7 +1020,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void setAdaptiveDocValuesAuto() throws IOException {
         synchronized (lock) {
             ensureOpen();
-            check(NativeBridge.writerSetAdaptiveAuto(handle), "setting adaptive doc values to auto");
+            check(NativeWriter.writerSetAdaptiveAuto(handle), "setting adaptive doc values to auto");
         }
     }
 
@@ -1027,19 +1029,19 @@ final class RustIndexWriter implements DocumentIndexWriter {
         int[] out = new int[1];
         synchronized (lock) {
             ensureOpen();
-            check(NativeBridge.writerAdaptiveChoice(handle, out), "reading the adaptive doc values choice");
+            check(NativeWriter.writerAdaptiveChoice(handle, out), "reading the adaptive doc values choice");
         }
         return out[0] < 0 ? null : out[0] == 1;
     }
 
-    /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeBridge#writerSetLiveStaleness}). */
+    /** Lets searches read a view of the buffers up to {@code max} old ({@link NativeLive#writerSetLiveStaleness}). */
     void setLiveStaleness(org.opensearch.common.unit.TimeValue max) throws IOException {
         if (liveSearch == false || max.millis() == 0) {
             return;
         }
         synchronized (lock) {
             ensureOpen();
-            check(NativeBridge.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
+            check(NativeLive.writerSetLiveStaleness(handle, max.millis()), "setting the realtime staleness");
         }
         liveStalenessNanos = max.nanos();
     }
@@ -1056,7 +1058,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             if (closed || nativeClosed) {
                 return false;
             }
-            check(NativeBridge.writerLiveRefreshShared(handle), "refreshing the shared realtime view");
+            check(NativeLive.writerLiveRefreshShared(handle), "refreshing the shared realtime view");
             return true;
         } finally {
             indexing.readLock().unlock();
@@ -1065,7 +1067,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
 
     /**
      * A view of the documents a reader of the segment list at {@code version} lacks: its handle and blob ({@link
-     * NativeBridge#liveViewOpen}), or null when the buffers cannot be read for that list (they were
+     * NativeLive#liveViewOpen}), or null when the buffers cannot be read for that list (they were
      * let go, a delete by query reached them, the writer is closed); the reader is then searched
      * alone.
      */
@@ -1079,7 +1081,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             long[] view = new long[1];
             byte[][] blob = new byte[1][];
-            if (NativeBridge.liveViewOpen(handle, version, view, blob) != NativeBridge.OK) {
+            if (NativeLive.liveViewOpen(handle, version, view, blob) != NativeBridge.OK) {
                 if (LOGGER.isDebugEnabled()) {
                     LOGGER.debug("lucene-rust: no view of the buffers for segment list version {}: {}", version, NativeBridge.lastError());
                 }
@@ -1091,7 +1093,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         }
     }
 
-    /** An open view: {@link NativeBridge#liveViewClose} it once nothing reads it. */
+    /** An open view: {@link NativeLive#liveViewClose} it once nothing reads it. */
     record LiveViewHandle(long id, byte[] blob) {}
 
     /** The reader over the view searches share, kept until the next refresh. */
@@ -1125,7 +1127,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             }
             indexing.readLock().lock();
             try {
-                if (nativeClosed == false && NativeBridge.writerReleaseLive(handle, version) == NativeBridge.OK) {
+                if (nativeClosed == false && NativeLive.writerReleaseLive(handle, version) == NativeBridge.OK) {
                     liveReleased = version;
                 }
             } finally {
@@ -1182,7 +1184,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void releaseHold(long hold) {
         synchronized (lock) {
             if (nativeClosed == false) {
-                NativeBridge.writerReleaseHold(handle, hold);
+                NativeWriter.writerReleaseHold(handle, hold);
             }
         }
     }
@@ -1205,7 +1207,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (closed) {
             return;
         }
-        int status = NativeBridge.writerSetMergeScheduler(handle, maxMergeCount, maxThreadCount, autoThrottle, maxForceMergeMbPerSec);
+        int status = NativeWriter.writerSetMergeScheduler(handle, maxMergeCount, maxThreadCount, autoThrottle, maxForceMergeMbPerSec);
         if (status == NativeBridge.INVALID_ARGUMENT) {
             throw new IllegalArgumentException(NativeBridge.lastError());
         }
@@ -1225,7 +1227,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     int upgradeSegments(boolean onlyAncientSegments) throws IOException {
         synchronized (lock) {
             ensureOpen();
-            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
+            if (stat(NativeWriter.STAT_UNCOMMITTED) != 0) {
                 commitLocked();
             }
             applyRetention();
@@ -1233,7 +1235,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             long[] out = new long[2];
             indexing.writeLock().lock();
             try {
-                check(NativeBridge.writerUpgrade(handle, current.major, current.minor, onlyAncientSegments, out), "segment upgrade");
+                check(NativeWriter.writerUpgrade(handle, current.major, current.minor, onlyAncientSegments, out), "segment upgrade");
             } finally {
                 indexing.writeLock().unlock();
             }
@@ -1247,7 +1249,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             ensureOpen();
             // `IndexWriter.forceMerge` flushes what is buffered first, and writes no commit when
             // nothing is: the merge is the only new commit then.
-            if (stat(NativeBridge.STAT_UNCOMMITTED) != 0) {
+            if (stat(NativeWriter.STAT_UNCOMMITTED) != 0) {
                 commitLocked();
             }
             applyRetention();
@@ -1255,7 +1257,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             // The merge commits with the last commit's user data, so nothing may be added meanwhile.
             indexing.writeLock().lock();
             try {
-                check(NativeBridge.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
+                check(NativeWriter.writerForceMerge(handle, maxNumSegments, onlyDeletes, out), "force merge");
             } finally {
                 indexing.writeLock().unlock();
             }
@@ -1269,14 +1271,14 @@ final class RustIndexWriter implements DocumentIndexWriter {
             return false;
         }
         boolean[] pending = new boolean[1];
-        return NativeBridge.writerMergeState(handle, pending, new double[1]) == NativeBridge.OK && pending[0];
+        return NativeWriter.writerMergeState(handle, pending, new double[1]) == NativeBridge.OK && pending[0];
     }
 
     /** The merge scheduler's IO rate limit in MB/s, infinite when merges are not throttled. */
     double mergeIoRateMbPerSec() {
         double[] rate = { Double.POSITIVE_INFINITY };
         if (closed == false) {
-            NativeBridge.writerMergeState(handle, new boolean[1], rate);
+            NativeWriter.writerMergeState(handle, new boolean[1], rate);
         }
         return rate[0];
     }
@@ -1300,8 +1302,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
     // ---- state ----
 
     private long stat(int index) throws IOException {
-        long[] out = new long[NativeBridge.STAT_COUNT];
-        check(NativeBridge.writerStats(handle, out), "reading stats");
+        long[] out = new long[NativeWriter.STAT_COUNT];
+        check(NativeWriter.writerStats(handle, out), "reading stats");
         return out[index];
     }
 
@@ -1311,7 +1313,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             return 0;
         }
         long[] out = new long[1];
-        return NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_RAM_BYTES] : 0;
+        return NativeWriter.writerStats(handle, out) == NativeBridge.OK ? out[NativeWriter.STAT_RAM_BYTES] : 0;
     }
 
     @Override
@@ -1319,8 +1321,8 @@ final class RustIndexWriter implements DocumentIndexWriter {
         if (closed) {
             return 0;
         }
-        long[] out = new long[NativeBridge.STAT_FLUSHING_BYTES + 1];
-        return NativeBridge.writerStats(handle, out) == NativeBridge.OK ? out[NativeBridge.STAT_FLUSHING_BYTES] : 0;
+        long[] out = new long[NativeWriter.STAT_FLUSHING_BYTES + 1];
+        return NativeWriter.writerStats(handle, out) == NativeBridge.OK ? out[NativeWriter.STAT_FLUSHING_BYTES] : 0;
     }
 
     @Override
@@ -1332,7 +1334,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     public boolean hasUncommittedChanges() {
         ensureOpen();
         try {
-            return stat(NativeBridge.STAT_UNCOMMITTED) != 0;
+            return stat(NativeWriter.STAT_UNCOMMITTED) != 0;
         } catch (IOException e) {
             throw new AlreadyClosedException("this IndexWriter is closed", e);
         }
@@ -1371,7 +1373,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
             try {
                 if (nativeClosed == false) {
                     nativeClosed = true;
-                    NativeBridge.writerClose(handle);
+                    NativeWriter.writerClose(handle);
                     RustMergeScheduler.detach(handle);
                     RustMergedSegmentWarmer.remove(handle);
                 }
@@ -1391,7 +1393,7 @@ final class RustIndexWriter implements DocumentIndexWriter {
     void injectPanic() throws IOException {
         synchronized (lock) {
             ensureOpen();
-            check(NativeBridge.writerApply(handle, new byte[] { (byte) DocumentEncoder.OP_PANIC }, 1), "indexing");
+            check(NativeWriter.writerApply(handle, new byte[] { (byte) DocumentEncoder.OP_PANIC }, 1), "indexing");
         }
     }
 

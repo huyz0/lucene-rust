@@ -33,6 +33,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.Version;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeWriter;
 import org.opensearch.common.logging.Loggers;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
@@ -160,8 +161,8 @@ public class RustMergeScheduler implements Closeable {
                 );
             }
         }
-        if (failureKind != NativeBridge.MERGE_OK) {
-            handleMergeException(failureKind == NativeBridge.MERGE_FAILED_IO ? new IOException(failure) : new RuntimeException(failure));
+        if (failureKind != NativeWriter.MERGE_OK) {
+            handleMergeException(failureKind == NativeWriter.MERGE_FAILED_IO ? new IOException(failure) : new RuntimeException(failure));
         }
     }
 
@@ -222,7 +223,7 @@ public class RustMergeScheduler implements Closeable {
                 JAVA_LONG
             );
             MemorySegment stub = Linker.nativeLinker().upcallStub(target, fd, Arena.global());
-            if (NativeBridge.setMergeUpcall(stub) != NativeBridge.OK) {
+            if (NativeWriter.setMergeUpcall(stub) != NativeBridge.OK) {
                 throw new IllegalStateException("lucene-rust: registering the merge upcall failed: " + NativeBridge.lastError());
             }
             upcallInstalled = true;
@@ -257,7 +258,7 @@ public class RustMergeScheduler implements Closeable {
             return;
         }
         try {
-            if (event == NativeBridge.MERGE_EVENT_BEFORE) {
+            if (event == NativeWriter.MERGE_EVENT_BEFORE) {
                 scheduler.onBefore(id, docs, bytes, utf8(names, namesLen));
             } else {
                 String message = failureLen == 0 ? null : utf8(failure, failureLen);

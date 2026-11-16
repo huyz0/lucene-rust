@@ -76,8 +76,8 @@ public final class RestStatsAction extends BaseRestHandler {
             long[] parents = NativeBridge.parentCacheStats();
             b.field("nested_parent_sets", parents[0]);
             b.field("nested_parent_set_bytes", parents[1]);
-            long[] agg = new long[NativeBridge.AGG_CACHE_STATS];
-            if (NativeBridge.aggCacheStats(agg) == NativeBridge.OK) {
+            long[] agg = new long[NativeStore.AGG_CACHE_STATS];
+            if (NativeStore.aggCacheStats(agg) == NativeBridge.OK) {
                 b.startObject("aggregation_segment_cache");
                 b.field("hits", agg[0]);
                 b.field("misses", agg[1]);
@@ -146,7 +146,7 @@ public final class RestStatsAction extends BaseRestHandler {
             // The page cache (page_cache and encrypted shards): its memory is native, outside
             // the heap OpenSearch measures; resident bytes are also charged to the indexing_buffers
             // breaker (PageCacheAccounting).
-            long[] pages = NativeBridge.storePageCacheStats();
+            long[] pages = NativeStore.storePageCacheStats();
             b.startObject("page_cache");
             b.field("budget_in_bytes", pages[0]);
             b.field("resident_in_bytes", pages[1]);

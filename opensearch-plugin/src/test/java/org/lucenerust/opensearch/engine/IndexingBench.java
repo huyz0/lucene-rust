@@ -24,6 +24,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeWriter;
 import org.lucenerust.opensearch.NativeLibrary;
 
 import java.nio.charset.StandardCharsets;
@@ -212,7 +213,7 @@ public final class IndexingBench {
                     null,
                     null,
                     IndexWriter.MAX_DOCS,
-                    org.lucenerust.opensearch.NativeBridge.STORED_FIELDS_BEST_SPEED,
+                    org.lucenerust.opensearch.NativeWriter.STORED_FIELDS_BEST_SPEED,
                     3,
                     analyzer,
                     similarity,
@@ -286,10 +287,10 @@ public final class IndexingBench {
                                 case "encode" -> enc.add(List.of(doc));
                                 case "prepare" -> {
                                     Blob b = enc.add(List.of(doc));
-                                    if (NativeBridge.writerPrepare(b.array(), b.length(), id) != NativeBridge.OK) {
+                                    if (NativeWriter.writerPrepare(b.array(), b.length(), id) != NativeBridge.OK) {
                                         throw new IllegalStateException(NativeBridge.lastError());
                                     }
-                                    NativeBridge.preparedFree(id[0]);
+                                    NativeWriter.preparedFree(id[0]);
                                 }
                                 case "rust" -> rw.addDocument(doc);
                                 case "lucene" -> lw.addDocument(doc);

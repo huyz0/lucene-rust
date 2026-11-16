@@ -10,6 +10,7 @@ import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.StoredFieldVisitor;
 import org.apache.lucene.search.vectorhighlight.FieldQuery;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeAnalysis;
 import org.lucenerust.opensearch.NativeReaders;
 import org.lucenerust.opensearch.SearchStats;
 import org.lucenerust.opensearch.LiveDirectoryReader;
@@ -172,7 +173,7 @@ public final class NativeFvhHighlighter extends FastVectorHighlighter {
             }
         }
         byte[][] out = new byte[1][];
-        int rc = NativeBridge.highlightFvh(
+        int rc = NativeAnalysis.highlightFvh(
             prepared.handle,
             prepared.request,
             hitContext.readerContext().ord,

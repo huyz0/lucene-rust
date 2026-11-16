@@ -12,6 +12,7 @@ import org.apache.lucene.store.DataInput;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.lucenerust.opensearch.NativeBridge;
+import org.lucenerust.opensearch.NativeZstd;
 
 /**
  * One segment's paged zstd units ({@code Compression::ZstdPaged} in {@code compression.rs}): a vint
@@ -64,7 +65,7 @@ final class ZstdPagedCompressionMode extends CompressionMode {
             compressed = ArrayUtil.growNoCopy(compressed, n);
             in.readBytes(compressed, 0, n);
             bytes.bytes = ArrayUtil.growNoCopy(bytes.bytes, originalLength);
-            int rc = NativeBridge.zstdPagedDecompress(dictionary, compressed, n, bytes.bytes, originalLength);
+            int rc = NativeZstd.zstdPagedDecompress(dictionary, compressed, n, bytes.bytes, originalLength);
             if (rc != NativeBridge.OK) {
                 throw new CorruptIndexException("paged zstd stored fields: " + NativeBridge.lastError(), in);
             }
