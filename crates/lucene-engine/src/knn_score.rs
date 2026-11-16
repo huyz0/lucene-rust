@@ -53,6 +53,9 @@ use crate::status::Status;
 
 pub const NODE_KNN_SCORE: u8 = 42;
 
+/// `hammingbit`'s space number on the wire (`KnnScoringScriptEngine.HAMMING_BIT_CODE`).
+const HAMMING_BIT_CODE: u8 = 6;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Space {
     L2,
@@ -112,7 +115,7 @@ pub fn decode(
         3 => Space::L1,
         4 => Space::LInf,
         5 => Space::Hamming,
-        6 => Space::HammingBit,
+        HAMMING_BIT_CODE => Space::HammingBit,
         other => {
             return Err(invalid(format!(
                 "query tree: knn_score space {other} (expected 0..=6)"
@@ -308,7 +311,11 @@ fn hamming_bit_bytes(q: &[u8], v: &[u8]) -> u32 {
     let split = long.len().saturating_sub(short.len());
     let (high, low) = long.split_at(split);
     let high: u32 = high.iter().map(|b| b.count_ones()).sum();
-    let low: u32 = low.iter().zip(short).map(|(a, b)| (a ^ b).count_ones()).sum();
+    let low: u32 = low
+        .iter()
+        .zip(short)
+        .map(|(a, b)| (a ^ b).count_ones())
+        .sum();
     high.saturating_add(low)
 }
 
@@ -384,9 +391,11 @@ impl DoubleValuesSource for KnnScoreSource {
             let Target::Bytes(q) = &self.target else {
                 return Ok(none(me));
             };
-            let q = i64::from_be_bytes(q[..8].try_into().map_err(|_| {
-                Error::IllegalState("hammingbit target is not 8 bytes".into())
-            })?);
+            let q = i64::from_be_bytes(
+                q[..8]
+                    .try_into()
+                    .map_err(|_| Error::IllegalState("hammingbit target is not 8 bytes".into()))?,
+            );
             let mut values = get_sorted_numeric(reader, &self.field)?;
             return Ok(Box::new(Scores {
                 next: Box::new(move |doc| {
@@ -600,9 +609,18 @@ mod tests {
         assert!(decoded(&node(0, 0, floats.clone())).is_ok());
         assert!(decoded(&node(5, 1, bytes.clone())).is_ok());
         let long = Blob::default().u8(1).bytes(&[0, 0, 0, 0, 0, 0, 0, 5]);
-        assert!(decoded(&node(6, 3, long.clone())).is_ok(), "hammingbit over a long");
-        assert!(decoded(&node(6, 1, bytes.clone())).is_ok(), "hammingbit over binary");
-        assert!(decoded(&node(6, 3, bytes.clone())).is_err(), "a long target is 8 bytes");
+        assert!(
+            decoded(&node(6, 3, long.clone())).is_ok(),
+            "hammingbit over a long"
+        );
+        assert!(
+            decoded(&node(6, 1, bytes.clone())).is_ok(),
+            "hammingbit over binary"
+        );
+        assert!(
+            decoded(&node(6, 3, bytes.clone())).is_err(),
+            "a long target is 8 bytes"
+        );
         assert!(decoded(&node(6, 0, floats.clone())).is_err(), "space");
         assert!(decoded(&node(0, 3, floats.clone())).is_err(), "data type");
         assert!(

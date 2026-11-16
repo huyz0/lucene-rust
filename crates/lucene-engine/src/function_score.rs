@@ -198,12 +198,12 @@ fn half_to_f32(h: u16) -> f32 {
         (0, 0) => sign,
         (0, f) => {
             // A subnormal: normalise it.
-            let shift = f.leading_zeros() - 21;
+            let shift = f.leading_zeros().saturating_sub(21);
             let f = (f << shift) & 0x3ff;
-            sign | ((113 - shift) << 23) | (f << 13)
+            sign | (113u32.saturating_sub(shift) << 23) | (f << 13)
         }
         (0x1f, f) => sign | 0x7f80_0000 | (f << 13),
-        (e, f) => sign | ((e + 112) << 23) | (f << 13),
+        (e, f) => sign | (e.wrapping_add(112) << 23) | (f << 13),
     };
     f32::from_bits(bits)
 }
@@ -1201,7 +1201,10 @@ mod numeric_tests {
     fn half_floats_decode_like_java() {
         // `HalfFloatPoint.halfFloatToSortableShort(1.5f)`: 0x3e00; a negative flips its low bits.
         assert_eq!(Numeric::HalfFloat.decode(0x3e00), 1.5);
-        assert_eq!(Numeric::HalfFloat.decode(i64::from(0x3e00i16 ^ 0x7fffu16 as i16 | i16::MIN)), -1.5);
+        assert_eq!(
+            Numeric::HalfFloat.decode(i64::from(0x3e00i16 ^ 0x7fffu16 as i16 | i16::MIN)),
+            -1.5
+        );
         assert_eq!(Numeric::HalfFloat.decode(0), 0.0);
         // The smallest subnormal, 2^-24.
         assert_eq!(Numeric::HalfFloat.decode(1), 2.0f64.powi(-24));
@@ -1211,13 +1214,23 @@ mod numeric_tests {
     #[test]
     fn unsigned_longs_round_to_odd_then_double() {
         assert_eq!(Numeric::UnsignedLong.decode(5), 5.0);
-        assert_eq!(Numeric::UnsignedLong.decode(-1), 18_446_744_073_709_551_616.0);
-        assert_eq!(Numeric::UnsignedLong.decode(i64::MIN), 9_223_372_036_854_775_808.0);
+        assert_eq!(
+            Numeric::UnsignedLong.decode(-1),
+            18_446_744_073_709_551_616.0
+        );
+        assert_eq!(
+            Numeric::UnsignedLong.decode(i64::MIN),
+            9_223_372_036_854_775_808.0
+        );
     }
 
     #[test]
     fn float_text_is_the_double_of_the_float() {
-        for (v, text) in [(89.22f32, "89.22000122070312"), (84.22, "84.22000122070312"), (3.5, "3.5")] {
+        for (v, text) in [
+            (89.22f32, "89.22000122070312"),
+            (84.22, "84.22000122070312"),
+            (3.5, "3.5"),
+        ] {
             assert_eq!(Numeric::Float.text(i64::from(v.to_bits() as i32)), text);
         }
     }
@@ -1229,6 +1242,6 @@ mod numeric_tests {
         assert_eq!(Numeric::Long.text(-7), "-7");
         assert_eq!(Numeric::UnsignedLong.text(-1), "18446744073709551615");
         assert_eq!(Numeric::Nanos.text(2_000_000), "2");
-        assert_eq!(Numeric::Double.text(1.5f64.to_bits() as i64 ^ 0), double_to_string(Numeric::Double.decode(1.5f64.to_bits() as i64)));
+        assert_eq!(Numeric::Double.text(1.5f64.to_bits() as i64), "1.5");
     }
 }

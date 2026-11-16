@@ -582,8 +582,7 @@ fn score_parts<'a>(
     let source = rewritten(ctx, &q.source)?;
     let needs_scores = source.needs_scores();
     let mode = inner_mode(source.as_ref());
-    let Some(inner) = build::build(ctx, &q.in_query, sub_boost, mode, false)?
-    else {
+    let Some(inner) = build::build(ctx, &q.in_query, sub_boost, mode, false)? else {
         return Ok(None);
     };
     let cell = Rc::new(Cell::new(0.0f32));
@@ -611,9 +610,7 @@ pub(crate) fn function_score<'a>(
     } else {
         (1.0, boost)
     };
-    let Some((inner, values, score, needs_scores)) =
-        score_parts(ctx, q, sub_boost)?
-    else {
+    let Some((inner, values, score, needs_scores)) = score_parts(ctx, q, sub_boost)? else {
         return Ok(None);
     };
     // Without its scores the wrapped scorer's batch must not compute any:
