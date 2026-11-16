@@ -348,10 +348,10 @@ fn pick(numeric: Numeric, items: &[i64], mode: Mode) -> f64 {
 /// Date fields of an epoch-millisecond instant, in UTC: `java.util.Calendar`'s
 /// (`GregorianCalendar`, with the Julian calendar before 1582-10-15) and
 /// Joda's `ISOChronology`.
+// ARITH: every operand is a day number or a time of day derived from an `i64`
+// of milliseconds, so none of the sums and products here can overflow.
+#[allow(clippy::arithmetic_side_effects)]
 mod calendar {
-    // Every operand is a day number or a time of day derived from an `i64`
-    // of milliseconds, so none of the sums and products here can overflow.
-    #![allow(clippy::arithmetic_side_effects)]
 
     const MS_PER_DAY: i64 = 86_400_000;
     /// 1582-10-15T00:00Z, `GregorianCalendar`'s cutover.

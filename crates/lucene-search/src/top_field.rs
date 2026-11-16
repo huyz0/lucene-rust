@@ -1748,6 +1748,9 @@ impl NestedColumn<'_> {
     /// average through `divideUnsignedAndRoundUp`). The result has its sign bit flipped
     /// ([`ChildConvert::Unsigned`]); a root without values is the (already flipped) missing
     /// value.
+    //
+    // SENTINEL: none -- `-1` is the all-ones unsigned maximum, the starting
+    // value of a least pick, in the result's domain.
     fn pick_unsigned(&mut self, start: i32, end: i32) -> Result<i64> {
         let mut acc: i64 = match self.selector {
             // `MAX_UNSIGNED_LONG_VALUE_AS_LONG` for a least, `MIN_UNSIGNED_LONG_VALUE_AS_LONG` for a greatest.
@@ -3514,6 +3517,9 @@ impl Dict<'_> {
         }
     }
 
+    //
+    // SENTINEL: none -- a negative result is `lookupTerm`'s "insert before
+    // ordinal `-r - 1`", in its domain. Every caller tests `< 0`/`>= 0` for found.
     fn lookup_term(&mut self, term: &[u8]) -> Result<i64> {
         match self {
             Dict::Dv(d) => d.lookup_term(term).map_err(store_err),
@@ -3954,8 +3960,14 @@ fn open_leaf<'a>(
                                     // the ones its own root needs.
                                     let roots = col.parents.clone();
                                     for d in roots {
-                                        has.set(d as usize);
-                                        values[d as usize] = col.value(d)?;
+                                        // A parent is below `max_doc`, the bitset's length;
+                                        // a doc outside it is no root of this segment.
+                                        let at = usize::try_from(d).unwrap_or(usize::MAX);
+                                        if at >= has.len() {
+                                            continue;
+                                        }
+                                        has.set(at);
+                                        values[at] = col.value(d)?;
                                     }
                                     Ok(SortColumn::Longs { values, has })
                                 })?
