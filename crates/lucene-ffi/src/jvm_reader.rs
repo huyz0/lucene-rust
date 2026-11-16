@@ -1154,10 +1154,9 @@ pub(crate) mod tests {
         for cut in 1..lucene.len() {
             assert!(decode_sort(&lucene[..cut]).is_err(), "cut at {cut}");
         }
-        assert_eq!(
-            status(&geo_sort_blob(0, 0, &o, 1.0, Some(5))),
-            invalid,
-            "Lucene's key and search_after"
+        assert!(
+            decode_sort(&geo_sort_blob(0, 0, &o, 1.0, Some(5))).is_ok(),
+            "Lucene's key with a search_after"
         );
         assert_eq!(
             status(&geo_sort_blob(SORT_REVERSE, 0, &o, 1.0, None)),
