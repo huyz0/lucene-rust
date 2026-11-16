@@ -43,7 +43,7 @@ final class DeferredAggregationProcessor implements AggregationProcessor {
 
     @Override
     public void preProcess(SearchContext context) {
-        if (context.aggregations() == null || LiveDirectoryReader.find(context.searcher().getIndexReader()) == null) {
+        if (context.aggregations() == null) {
             delegate.preProcess(context);
             return;
         }

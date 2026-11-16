@@ -43,7 +43,7 @@ native_setup() {
   [ -n "${NATIVE_LIB:-}" ] && { mkdir -p "$NODE_HOME/lib"; cp "$NATIVE_LIB" "$NODE_HOME/lib/liblucene_ffi.so"; GRADLE_ARGS="-PnativeLib=$NODE_HOME/lib/liblucene_ffi.so ${GRADLE_ARGS:-}"; }
   (cd "$REPO" && gradle -p opensearch-plugin bundlePlugin -x torchShim ${GRADLE_ARGS:-})
   rm -rf "$NODE_HOME/plugin" && cp -rL "$NODE_HOME/stock" "$NODE_HOME/plugin"
-  # as in opensearch-plugin/docker/Dockerfile: the bundled plugins go (neural-search registers its own
+  # as in opensearch-plugin/e2e/nodectl.py (variant `plugin`): the bundled plugins go (neural-search registers its own
   # QueryPhaseSearcher and the node allows one); KEEP_PLUGINS names the ones to keep
   local p; for p in "$NODE_HOME"/plugin/plugins/*; do
     case " ${KEEP_PLUGINS:-opensearch-custom-codecs} " in *" $(basename "$p") "*) ;; *) rm -rf "$p" ;; esac

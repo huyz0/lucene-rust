@@ -2,6 +2,8 @@
   python3 bench.py BASE CONTAINER LABEL OUT.json [--lean] [--disable-seq]
 """
 import concurrent.futures, glob, hashlib, json, os, statistics, subprocess, sys, time, urllib.request, urllib.error
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import nodectl  # noqa: E402
 BASE, CONT, LABEL, OUT = sys.argv[1:5]
 A = sys.argv
 CORPUS = os.environ.get("CORPUS", "corpus")
@@ -63,8 +65,7 @@ res["store_after_merge_mib"] = round(req("GET", "/logs/_stats/store")["indices"]
 
 def files_mib():
     idx = req("GET", "/logs/_settings")["logs"]["settings"]["index"]["uuid"]
-    out = subprocess.run(["docker", "exec", CONT, "sh", "-c", f"ls -l /usr/share/opensearch/data/nodes/0/indices/{idx}/0/index/"],
-                         capture_output=True, text=True).stdout
+    out = nodectl.exec_(CONT, f"ls -l /usr/share/opensearch/data/nodes/0/indices/{idx}/0/index/").stdout
     by = {}
     for l in out.splitlines():
         p = l.split()

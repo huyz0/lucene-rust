@@ -127,7 +127,8 @@ public final class NativeAggregations {
         SUM,
         AVG,
         VALUE_COUNT,
-        STATS
+        STATS,
+        EXTENDED
     }
 
     /** Where a metric's minimum or maximum comes from ({@code aggs::Source} in Rust). */
@@ -144,7 +145,8 @@ public final class NativeAggregations {
         DocValueFormat format,
         Map<String, Object> metadata,
         byte source,
-        int needs
+        int needs,
+        double sigma
     ) {}
 
     /**
@@ -206,13 +208,20 @@ public final class NativeAggregations {
      * The native aggregations of a search, or null when some aggregation must run on Lucene:
      * {@code entries} in the request's order, each a {@link Metric} or a {@link Terms}.
      */
-    public record Plan(List<Object> entries) {
-        List<Metric> metrics() {
-            return entries.stream().filter(e -> e instanceof Metric).map(e -> (Metric) e).toList();
+    public record Plan(List<Object> entries, List<Metric> metrics, List<Terms> terms) {
+        Plan(List<Object> entries) {
+            this(entries, split(entries, true), split(entries, false));
         }
 
-        List<Terms> terms() {
-            return entries.stream().filter(e -> e instanceof Terms).map(e -> (Terms) e).toList();
+        @SuppressWarnings("unchecked")
+        private static <T> List<T> split(List<Object> entries, boolean metrics) {
+            ArrayList<T> out = new ArrayList<>(entries.size());
+            for (Object e : entries) {
+                if (e instanceof Metric == metrics) {
+                    out.add((T) e);
+                }
+            }
+            return out;
         }
 
         /**
@@ -286,6 +295,8 @@ public final class NativeAggregations {
                 case AVG -> 1 | 2;
                 case VALUE_COUNT -> 1;
                 case STATS -> 1 | 2 | 4;
+                // The count, sum, extremes and (in the min-of-mins and max-of-maxes slots) the sum of squares.
+                case EXTENDED -> 1 | 2 | 4 | 32;
             };
         }
 
@@ -304,6 +315,17 @@ public final class NativeAggregations {
                 case AVG -> new InternalAvg(m.name(), sum, count, m.format(), m.metadata());
                 case VALUE_COUNT -> new InternalValueCount(m.name(), count, m.metadata());
                 case STATS -> new InternalStats(m.name(), count, sum, min, max, m.format(), m.metadata());
+                case EXTENDED -> new org.opensearch.search.aggregations.metrics.InternalExtendedStats(
+                    m.name(),
+                    count,
+                    sum,
+                    min,
+                    max,
+                    minOfMins,
+                    m.sigma(),
+                    m.format(),
+                    m.metadata()
+                );
             };
         }
     }
@@ -422,10 +444,10 @@ public final class NativeAggregations {
     @SuppressWarnings("unchecked")
     static Metric scriptMetric(AggregatorFactory f, ValuesSourceConfig config) throws IllegalAccessException {
         Kind kind = kind(f);
-        if (kind == null) {
+        if (kind == null || kind == Kind.EXTENDED) {
             return null;
         }
-        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind));
+        return new Metric(f.name(), kind, "", DOUBLE, config.format(), (Map<String, Object>) METADATA.get(f), DOC_VALUES, Plan.needs(kind), 0);
     }
 
     /**
@@ -464,7 +486,8 @@ public final class NativeAggregations {
             config.format(),
             (Map<String, Object>) METADATA.get(f),
             source,
-            Plan.needs(kind)
+            Plan.needs(kind),
+            kind == Kind.EXTENDED ? (double) declared(f, "sigma") : 0
         );
     }
 
@@ -563,6 +586,7 @@ public final class NativeAggregations {
             case METRICS + "AvgAggregatorFactory" -> Kind.AVG;
             case METRICS + "ValueCountAggregatorFactory" -> Kind.VALUE_COUNT;
             case METRICS + "StatsAggregatorFactory" -> Kind.STATS;
+            case METRICS + "ExtendedStatsAggregatorFactory" -> Kind.EXTENDED;
             default -> null;
         };
     }

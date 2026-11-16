@@ -65,7 +65,11 @@ estimates — is [`PLAN.md`](PLAN.md). The OpenSearch plugin lives in
 
 ## Commands
 
-**Run tests in the container.** `scripts/docker-test.sh` is the official local
+**Run tests in the container, or without Docker.** On a Linux box with no container
+runtime (a cloud VM, a CI runner) nothing here needs one: `scripts/lr test quick|e2e|full`
+runs the gate and every OpenSearch proof natively, with nodes as plain processes
+([`docs/testing-without-docker.md`](docs/testing-without-docker.md)). Where the WSL2 VM has to be
+protected from a runaway build, `scripts/docker-test.sh` is the official local
 way to run anything that builds or tests this workspace:
 
 ```
@@ -135,7 +139,7 @@ the hook, the container and this table cannot drift apart:
 | Crash campaign (all crash models in parallel, varied conditions, optional `--load`) | `scripts/crash-storm.sh --duration SECS` |
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
 | Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |
-| OpenSearch plugin, whole proof (real 3.8.0 node: native-vs-Lucene matrix, force-merge release, SIGKILL, OpenSearch's YAML suites vs a stock node) | `scripts/verify-opensearch.sh --yaml` (needs Docker; see `opensearch-plugin/README.md`) |
+| OpenSearch plugin, whole proof (real 3.8.0 node: native-vs-Lucene matrix, force-merge release, SIGKILL, OpenSearch's YAML suites vs a stock node) | `scripts/verify-opensearch.sh --yaml` (nodes are plain processes, no Docker; see `opensearch-plugin/README.md`) |
 | Rust engine (M5), one node: Rust vs OpenSearch's engine op for op, restart/SIGKILL/panic/breaker, YAML suites with every index on the Rust engine | `scripts/verify-opensearch.sh --engine --yaml` (see `docs/opensearch-engine.md`) |
 | Rust engine (M5), three nodes: document replication, recovery, failover, Rust<->Java relocation | `scripts/verify-opensearch-cluster.sh` |
 | OpenSearch's own `InternalEngineTests` on the Rust engine | `scripts/opensearch-engine-tests.sh` (skips are listed with reasons in `opensearch-plugin/tools/derive_engine_tests.py`) |

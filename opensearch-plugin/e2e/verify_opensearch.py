@@ -22,6 +22,7 @@ Usage: verify_opensearch.py <base-url> <container-name> [--docs N] [--bench-out 
 import argparse
 import benchhttp as bh
 import json
+import nodectl
 import os
 import random
 import statistics
@@ -1200,15 +1201,14 @@ def fallback_delta(before, after):
 
 
 def java_pid(container):
-    """The node's JVM (the image has no pgrep)."""
-    script = 'for p in /proc/[0-9]*; do grep -qa org.opensearch.bootstrap.OpenSearch $p/cmdline 2>/dev/null && echo ${p#/proc/}; done'
-    return subprocess.check_output(["docker", "exec", container, "sh", "-c", script]).decode().split()[0]
+    """The node's JVM."""
+    return str(nodectl.pid(container))
 
 
 def deleted_index_mappings(container):
     """Mappings of index files that were deleted from disk but are still mapped."""
     pid = java_pid(container)
-    maps = subprocess.check_output(["docker", "exec", container, "cat", f"/proc/{pid}/maps"]).decode()
+    maps = open(f"/proc/{pid}/maps").read()
     return [l for l in maps.splitlines() if "/indices/" in l and "(deleted)" in l]
 
 
@@ -1348,9 +1348,9 @@ def crash(container, indices):
         lines.append(json.dumps({"body": "late arrival alpha", "title": "late", "tuned": "late", "tag": "late", "n": -n}))
     req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
     counts[indices[0]] += 200
-    subprocess.check_call(["docker", "kill", "--signal", "KILL", container], stdout=subprocess.DEVNULL)
+    nodectl.kill(container)
     time.sleep(2)
-    subprocess.check_call(["docker", "start", container], stdout=subprocess.DEVNULL)
+    nodectl.start(container, wait=False)
     wait_up()
     # Read before the counts below: a _count is a match_all, which runs natively.
     s = stats()

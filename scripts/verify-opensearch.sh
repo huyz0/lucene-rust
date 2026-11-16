@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # the end-to-end proof: builds the lucene-rust OpenSearch plugin, installs it
-# into the pinned OpenSearch image, starts a node, and runs
+# into the pinned OpenSearch distribution, starts a node (a plain process, no Docker), and runs
 # opensearch-plugin/e2e/verify_opensearch.py against it -- the query matrix
 # native vs Lucene, force-merge reader release, and SIGKILL recovery.
 #
 # With --yaml it then runs OpenSearch's own REST YAML suites (YAML_SUITES)
 # against that node *and* against a stock node built from the same image
-# without the plugin, and requires the two failure sets to be identical and
+# without the plugin (`stock-min`), and requires the two failure sets to be identical and
 # the plugin to report no native error: the suites' own pass/fail is
 # OpenSearch's business, a difference between the two nodes is ours. Then
 # e2e/highlight_matrix.py requires every highlight on the two to be identical.
@@ -26,14 +26,15 @@
 #
 #   scripts/verify-opensearch.sh [--docs N] [--bench-out FILE] [--yaml] [--engine] [--js] [--keep]
 #
-# Needs Docker, a JDK 25 (Gradle's toolchain; see
-# opensearch-plugin/build.gradle), Gradle and cargo. The node listens on
-# localhost:${OS_PORT:-9200}.
+# Needs a JDK 25 (Gradle's toolchain; scripts/opensearch-dist.sh registers the tarball's own),
+# Gradle and cargo; nodes are tarball distributions started by
+# opensearch-plugin/e2e/nodectl.py (state and data under $NODE_HOME, ~/os-native). The node
+# listens on localhost:${OS_PORT:-9200}.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VERSION=3.9.0
-IMAGE="lucene-rust-opensearch:${VERSION}"
+nodectl() { python3 opensearch-plugin/e2e/nodectl.py "$@"; }
 NAME="${OS_CONTAINER:-lucene-rust-verify}"
 PORT="${OS_PORT:-9200}"
 KEEP=0
@@ -57,41 +58,24 @@ if [[ $JS == 1 ]]; then
     export ORG_GRADLE_PROJECT_js=1 E2E_JS=1
 fi
 gradle --no-daemon -q -p opensearch-plugin clean bundlePlugin check
-rm -f opensearch-plugin/docker/*.zip
-cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/docker/
-
-# The library must load in the image: its newest required glibc symbol
-# version may not exceed the image's glibc.
-need=$(objdump -T "${CARGO_TARGET_DIR:-target}/${ORG_GRADLE_PROJECT_cargoProfile:-dist}/liblucene_ffi.so" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
-have=$(docker run --rm --entrypoint ldd "opensearchproject/opensearch:${VERSION}" --version 2>/dev/null | sed -n 1p | grep -o '[0-9.]*$')
-if [[ "$(printf '%s\n%s\n' "${need#GLIBC_}" "$have" | sort -V | tail -1)" != "$have" ]]; then
-    echo "verify-opensearch: liblucene_ffi.so needs ${need}, the image has glibc ${have}" >&2
-    exit 1
-fi
-
-docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
-# The disk-watermark block is off: a CI runner's or container's disk can sit
-# past the flood stage, and a node refusing to create indices tests nothing.
-NODE_ENV=(-e indices.engine.accelerated.default=false)
+# The disk-watermark block is off in nodectl (a CI runner's or container's disk can sit past
+# the flood stage, and a node refusing to create indices tests nothing).
+NODE_ENV=(indices.engine.accelerated.default=false)
 if [[ $ENGINE == 1 ]]; then
     NODE_ENV=()
 fi
 if [[ $JS == 1 ]]; then
-    NODE_ENV+=(-e lucene_rust.script.js.enabled=true -e lucene_rust.script.js.timeout=1s)
+    NODE_ENV+=(lucene_rust.script.js.enabled=true lucene_rust.script.js.timeout=1s)
 fi
-start_node() { # name port image [docker-run args...]
-    docker rm -f "$1" >/dev/null 2>&1 || true
-    # The e2e hunspell dictionary (config/hunspell/en_US) on every node, stock ones too.
-    docker run -d --name "$1" -p "$2:9200" "${@:4}" \
-        -v "$PWD/opensearch-plugin/e2e/hunspell:/usr/share/opensearch/config/hunspell:ro" \
-        -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
-        -e cluster.routing.allocation.disk.threshold_enabled=false \
-        -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms1g -Xmx1g" \
-        "$3" >/dev/null
+start_node() { # name port variant [setting ...]; the e2e hunspell dictionary is on every node, stock ones too
+    local n=$1 p=$2 v=$3; shift 3
+    local a=() s
+    for s in "$@"; do a+=(--setting "$s"); done
+    nodectl run "$n" "$v" "$p" --setting cluster.name=lucene-rust-e2e "${a[@]}" >/dev/null
 }
-start_node "$NAME" "$PORT" "$IMAGE" "${NODE_ENV[@]}"
+start_node "$NAME" "$PORT" plugin ${NODE_ENV[@]+"${NODE_ENV[@]}"}
 if [[ $KEEP == 0 ]]; then
-    trap 'docker rm -f "$NAME" "$NAME-stock" >/dev/null 2>&1 || true' EXIT
+    trap 'nodectl rm "$NAME" >/dev/null 2>&1; nodectl rm "$NAME-stock" >/dev/null 2>&1 || true' EXIT
 fi
 
 status=0
@@ -102,7 +86,7 @@ if [[ $ENGINE == 1 ]]; then
         # The node's own account of a failed check (a shard that failed to start, say); the
         # container is gone once the script exits.
         echo "verify-opensearch: the node's last warnings and errors:" >&2
-        docker logs "$NAME" 2>&1 | grep -E -A12 '^\[[^]]*\]\[(WARN|ERROR)' | tail -n 200 >&2 || true
+        nodectl logs "$NAME" 2>&1 | grep -E -A12 '^\[[^]]*\]\[(WARN|ERROR)' | tail -n 200 >&2 || true
     fi
 else
     python3 opensearch-plugin/e2e/verify_opensearch.py "http://localhost:${PORT}" "$NAME" "${ARGS[@]}" || status=$?
@@ -120,7 +104,7 @@ run_yaml() { # port out-dir
     mkdir -p "$2" && chmod 777 "$2"
     (cd "$2" && "${as[@]}" "$java_bin" -ea -cp "$cp:$cp/*" \
         -Dtests.rest.cluster="localhost:$1" -Dtests.cluster="localhost:$1" \
-        -Dtests.clustername=docker-cluster -Dtests.rest.suite="$YAML_SUITES" \
+        -Dtests.clustername=lucene-rust-e2e -Dtests.rest.suite="$YAML_SUITES" \
         -Dtests.security.manager=false -Djava.io.tmpdir="$2" \
         org.junit.runner.JUnitCore org.lucenerust.opensearch.LuceneRustYamlIT >"$2/out.txt" 2>&1 || true)
     grep -E '^[0-9]+\) ' "$2/out.txt" | sed 's/^[0-9]*) //' | sort >"$2/failures.txt" || true
@@ -128,7 +112,7 @@ run_yaml() { # port out-dir
 }
 # Checked now: the YAML stage below replaces this container, and its log with it.
 check_jvm() {
-    if docker logs "$1" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
+    if nodectl logs "$1" 2>&1 | grep -E "A fatal error has been detected|SIGSEGV \(0xb\)" >/dev/null; then
         echo "verify-opensearch: the JVM of $1 crashed" >&2
         status=1
     fi
@@ -138,10 +122,8 @@ if [[ $YAML == 1 && $status == 0 ]]; then
     gradle --no-daemon -q -p opensearch-plugin yamlRestTestClasspath
     work=$(mktemp -d) && chmod 755 "$work"
     # A fresh node: the e2e above killed and restarted this one.
-    start_node "$NAME" "$PORT" "$IMAGE" "${NODE_ENV[@]}"
-    printf 'FROM opensearchproject/opensearch:%s\nRUN rm -rf /usr/share/opensearch/plugins/*\n' "$VERSION" \
-        | docker build -q -t "opensearch-stock-min:${VERSION}" - >/dev/null
-    start_node "$NAME-stock" "$((PORT + 2))" "opensearch-stock-min:${VERSION}"
+    start_node "$NAME" "$PORT" plugin ${NODE_ENV[@]+"${NODE_ENV[@]}"}
+    start_node "$NAME-stock" "$((PORT + 2))" stock-min
     for p in "$PORT" "$((PORT + 2))"; do
         for _ in $(seq 1 90); do curl -sf "localhost:$p" >/dev/null && break; sleep 2; done
     done

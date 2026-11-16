@@ -463,9 +463,9 @@ pub(crate) mod tests {
             ),
         );
         assert!(msg.contains("span query"), "{msg}");
-        // Too deep: 40 nested span_first.
+        // Too deep: 200 nested span_first.
         let mut deep = st("alpha");
-        for _ in 0..40 {
+        for _ in 0..200 {
             deep = span(SPAN_FIRST).i32(9).raw(&deep);
         }
         let (_, msg) = fails(h, &spans(deep));
@@ -631,8 +631,8 @@ pub(crate) mod tests {
         // Each copy is an iterator and its cached positions: bounded as the
         // clauses Java's `Intervals.ordered` could have deduplicated.
         bad(
-            intervals(src(SOURCE_REPEATING).i32(5000).u8(0).raw(&it("a"))),
-            "5000 copies",
+            intervals(src(SOURCE_REPEATING).i32((1 << 20) + 1).u8(0).raw(&it("a"))),
+            "copies",
         );
         bad(
             intervals(src(SOURCE_REPEATING).i32(i32::MAX).u8(0).raw(&it("a"))),
@@ -657,8 +657,8 @@ pub(crate) mod tests {
         );
         let mt = |b: Blob| src(SOURCE_MULTI_TERM).i32(16).str("p").raw(&b);
         bad(
-            intervals(src(SOURCE_MULTI_TERM).i32(5000).str("p").u8(0)),
-            "maxExpansions [5000]",
+            intervals(src(SOURCE_MULTI_TERM).i32((1 << 20) + 1).str("p").u8(0)),
+            "maxExpansions [1048577]",
         );
         bad(
             intervals(mt(Blob::default().u8(9))),
@@ -717,7 +717,7 @@ pub(crate) mod tests {
         bad(scoring(7, 1.0), "unknown interval scoring 7");
         bad(scoring(0, -1.0), "pivot must be > 0");
         let mut deep = it("alpha");
-        for _ in 0..40 {
+        for _ in 0..200 {
             deep = src(SOURCE_EXTENDED).i32(0).i32(0).raw(&deep);
         }
         bad(intervals(deep), "nesting depth");

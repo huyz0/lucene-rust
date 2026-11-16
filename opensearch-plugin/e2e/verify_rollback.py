@@ -33,6 +33,7 @@ Standard library only.
 """
 import json
 import os
+import nodectl
 import random
 import subprocess
 import sys
@@ -59,8 +60,9 @@ PLUGIN_SETTINGS = (
 )
 
 NODES = [("os1", 9201, 9301), ("os2", 9202, 9302), ("os3", 9203, 9303)]
-PLUGIN_IMAGE = os.environ.get("PLUGIN_IMAGE", "lucene-rust-opensearch:3.9.0")
-STOCK_IMAGE = os.environ.get("STOCK_IMAGE", "lucene-rust-stock:3.9.0")
+# nodectl variants: the plugin node, and OpenSearch as an operator runs it before and after (no bundled plugins).
+PLUGIN_IMAGE = os.environ.get("PLUGIN_IMAGE", "plugin")
+STOCK_IMAGE = os.environ.get("STOCK_IMAGE", "stock-min")
 DATA = os.environ["ROLLBACK_DATA"]
 DOCS = int(os.environ.get("ROLLBACK_DOCS", "200000"))
 FAILURES = []
@@ -102,27 +104,21 @@ def check(ok, what):
         print("FAIL:", what, flush=True)
 
 
-def docker(*args):
-    return subprocess.run(["docker", *args], capture_output=True, text=True)
-
-
 def node(name, http, transport, image, enabled=True):
-    docker("rm", "-f", name)
-    env = [
-        "-e", f"node.name={name}", "-e", "cluster.name=lucene-rust-rollback",
-        "-e", "http.host=0.0.0.0", "-e", f"http.port={http}",
-        "-e", "transport.host=127.0.0.1", "-e", f"transport.port={transport}",
-        "-e", "discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303",
-        "-e", "cluster.initial_cluster_manager_nodes=os1,os2,os3",
-        "-e", "DISABLE_SECURITY_PLUGIN=true", "-e", "DISABLE_INSTALL_DEMO_CONFIG=true",
-        "-e", "cluster.routing.allocation.disk.threshold_enabled=false",
-        "-e", "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g",
+    """(Re)create node NAME on variant `image` over its data directory, as `docker run` did."""
+    settings = [
+        "cluster.name=lucene-rust-rollback",
+        "discovery.seed_hosts=127.0.0.1:9301,127.0.0.1:9302,127.0.0.1:9303",
+        "cluster.initial_cluster_manager_nodes=os1,os2,os3",
     ]
     if image == PLUGIN_IMAGE:
-        env += ["-e", f"indices.engine.accelerated.node_enabled={'true' if enabled else 'false'}"]
-    r = docker("run", "-d", "--name", name, "--network", "container:lucene-rust-net",
-               "-v", f"{DATA}/{name}:/usr/share/opensearch/data", *env, image)
-    check(r.returncode == 0, f"start {name} on {image}: {r.stderr[:300]}")
+        settings.append(f"indices.engine.accelerated.node_enabled={'true' if enabled else 'false'}")
+    try:
+        nodectl.run(name, image, http, settings=settings, transport=transport, data=f"{DATA}/{name}",
+                    wait=False)
+        check(True, f"start {name} on {image}")
+    except SystemExit as e:
+        check(False, f"start {name} on {image}: {e}")
 
 
 def health(status="green", nodes=3, timeout=900):
@@ -147,7 +143,7 @@ def rolling(image, enabled, label):
         # operator's rolling restart does.
         req("PUT", "/_cluster/settings", {"persistent": {"cluster.routing.allocation.enable": "primaries"}})
         req("POST", "/_flush", timeout=600)
-        docker("stop", "-t", "120", name)
+        nodectl.stop(name, timeout=120)
         node(name, http, transport, image, enabled)
         up = health("yellow", timeout=900)
         req("PUT", "/_cluster/settings", {"persistent": {"cluster.routing.allocation.enable": None}})

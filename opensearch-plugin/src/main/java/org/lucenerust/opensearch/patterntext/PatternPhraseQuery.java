@@ -161,6 +161,10 @@ public final class PatternPhraseQuery extends Query {
         return templateParts;
     }
 
+    public Query approximation() {
+        return approximation;
+    }
+
     public Query positional() {
         return positional;
     }
