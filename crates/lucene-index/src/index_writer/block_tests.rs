@@ -593,3 +593,86 @@ fn a_block_segment_without_its_parent_column_fails_the_sort_check() {
         "{broken:?}"
     );
 }
+
+/// `TextField::new_shared` is a copy-avoiding way to hand the same text in:
+/// the segment it produces must be the segment the owned `String` produces.
+/// Two writers see the same documents, one over `String`s and one over
+/// `Arc<str>`s; every file is the same size and differs only where the
+/// per-file random segment id and the footer checksum it feeds live.
+#[test]
+fn a_shared_text_field_writes_the_same_segment_as_an_owned_one() {
+    use crate::document::TextField;
+    use lucene_store::Directory;
+    use std::sync::Arc;
+
+    let texts: Vec<String> = (0..40)
+        .map(|i| {
+            format!(
+                "Quick brown fox {i} jumps over 世界 😀 the lazy dog {}",
+                i % 7
+            )
+        })
+        .collect();
+    let write = |shared: bool, tag: &str| {
+        let tmp = TempDir::new(tag);
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = writer(&dir);
+        for (i, t) in texts.iter().enumerate() {
+            let mut d = FieldsDocument::new();
+            d.add(StringField::new("id", format!("d{i}"), Store::Yes));
+            let store = if i % 2 == 0 { Store::Yes } else { Store::No };
+            if shared {
+                d.add(TextField::new_shared(
+                    "body",
+                    Arc::<str>::from(t.as_str()),
+                    store,
+                ));
+            } else {
+                d.add(TextField::new("body", t.clone(), store));
+            }
+            w.add_fields_document(&d).unwrap();
+        }
+        let id = w.commit().unwrap().segments[0].segment_id;
+        let mut files: Vec<(String, Vec<u8>)> = dir
+            .list_all()
+            .unwrap()
+            .into_iter()
+            // `.si` carries the segment id and a timestamp in its body,
+            // and says nothing about the text
+            .filter(|n| !n.starts_with("segments") && n != "write.lock" && !n.ends_with(".si"))
+            .map(|n| {
+                let mut bytes = std::fs::read(tmp.path().join(&n)).unwrap();
+                // blank every copy of the random segment id (a codec header
+                // nested in another carries one too)
+                let mut i = 0;
+                while i + id.len() <= bytes.len() {
+                    if bytes[i..i + id.len()] == id {
+                        bytes[i..i + id.len()].fill(0);
+                        i += id.len();
+                    } else {
+                        i += 1;
+                    }
+                }
+                (n, bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let owned = write(false, "shared-text-owned");
+    let shared = write(true, "shared-text-shared");
+    assert!(
+        owned.len() > 4,
+        "a real segment: {:?}",
+        owned.iter().map(|f| &f.0).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        owned.iter().map(|f| (&f.0, f.1.len())).collect::<Vec<_>>(),
+        shared.iter().map(|f| (&f.0, f.1.len())).collect::<Vec<_>>()
+    );
+    for ((name, a), (_, b)) in owned.iter().zip(&shared) {
+        // all but the footer's checksum, which the blanked id still fed
+        let body = a.len().saturating_sub(8);
+        assert_eq!(a[..body], b[..body], "{name}");
+    }
+}

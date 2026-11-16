@@ -50,6 +50,7 @@ pub mod column;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 pub use lucene_codecs::field_infos::{
@@ -702,6 +703,13 @@ pub trait IndexableField: fmt::Debug + Send + Sync {
     fn analyzed_text(&self) -> Option<&str> {
         None
     }
+    /// [`Self::analyzed_text`] for a field whose text is shared (an `Arc<str>`):
+    /// the indexing chain then hands the analyzer the same bytes instead of a
+    /// copy. When this is `Some`, so is [`Self::analyzed_text`]. `None`, the
+    /// default, is the copying path.
+    fn analyzed_shared(&self) -> Option<&Arc<str>> {
+        None
+    }
     /// The KNN vector of a vector field (`KnnFloatVectorField.vectorValue()`
     /// / `KnnByteVectorField.vectorValue()`).
     fn vector_value(&self) -> Option<crate::index_writer::VectorValue> {
@@ -713,6 +721,10 @@ pub trait IndexableField: fmt::Debug + Send + Sync {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldData {
     String(String),
+    /// A `String` value the caller shares rather than hands over: the indexing
+    /// chain analyzes the same bytes, so a document of hundreds of MiB is held
+    /// once. Behaves as [`FieldData::String`] everywhere else.
+    SharedString(Arc<str>),
     /// A `Reader` value: read as text, never stored.
     Reader(String),
     Bytes(Vec<u8>),
@@ -846,6 +858,10 @@ impl Field {
                 *s = value.into();
                 Ok(())
             }
+            FieldData::SharedString(_) => {
+                self.data = FieldData::String(value.into());
+                Ok(())
+            }
             other => Err(type_change(other, "String")),
         }
     }
@@ -919,7 +935,7 @@ impl Field {
 
 fn data_class(d: &FieldData) -> &'static str {
     match d {
-        FieldData::String(_) => "String",
+        FieldData::String(_) | FieldData::SharedString(_) => "String",
         FieldData::Reader(_) => "Reader",
         FieldData::Bytes(_) => "BytesRef",
         FieldData::Int(_) => "Integer",
@@ -950,6 +966,7 @@ impl IndexableField for Field {
     fn string_value(&self) -> Option<Cow<'_, str>> {
         match &self.data {
             FieldData::String(s) => Some(Cow::Borrowed(s)),
+            FieldData::SharedString(s) => Some(Cow::Borrowed(s)),
             FieldData::Int(v) => Some(Cow::Owned(v.to_string())),
             FieldData::Long(v) => Some(Cow::Owned(v.to_string())),
             FieldData::Float(v) => Some(Cow::Owned(java_float_string(*v))),
@@ -987,6 +1004,7 @@ impl IndexableField for Field {
             FieldData::Double(v) => Some(StoredValue::Double(*v)),
             FieldData::Bytes(b) => Some(StoredValue::Binary(b.clone())),
             FieldData::String(s) => Some(StoredValue::String(s.clone())),
+            FieldData::SharedString(s) => Some(StoredValue::String(s.to_string())),
             FieldData::Reader(_) | FieldData::TokenStream(_) => None,
         }
     }
@@ -1017,6 +1035,7 @@ impl IndexableField for Field {
             FieldData::Reader(text) | FieldData::String(text) => {
                 analyze_field(analyzer, &self.name, text).map(Some)
             }
+            FieldData::SharedString(text) => analyze_field(analyzer, &self.name, text).map(Some),
             _ => match self.string_value() {
                 Some(s) => analyze_field(analyzer, &self.name, &s).map(Some),
                 None => Err(illegal(format!(
@@ -1034,6 +1053,18 @@ impl IndexableField for Field {
         }
         match &self.data {
             FieldData::Reader(text) | FieldData::String(text) => Some(text),
+            FieldData::SharedString(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// [`Self::analyzed_text`] when the text is shared.
+    fn analyzed_shared(&self) -> Option<&Arc<str>> {
+        if self.field_type.index_options() == IndexOptions::None || !self.field_type.tokenized() {
+            return None;
+        }
+        match &self.data {
+            FieldData::SharedString(text) => Some(text),
             _ => None,
         }
     }
@@ -1119,6 +1150,16 @@ impl TextField {
             Store::No => Self::type_not_stored(),
         };
         Field::raw(name, ft, FieldData::String(value.into()))
+    }
+
+    /// [`Self::new`] over text the caller keeps sharing: the field holds the
+    /// `Arc`, and indexing analyzes those bytes without copying them.
+    pub fn new_shared(name: impl Into<String>, value: Arc<str>, store: Store) -> Field {
+        let ft = match store {
+            Store::Yes => Self::type_stored(),
+            Store::No => Self::type_not_stored(),
+        };
+        Field::raw(name, ft, FieldData::SharedString(value))
     }
 
     /// `new TextField(name, reader)`.

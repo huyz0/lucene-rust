@@ -581,23 +581,46 @@ impl Analyzer {
         field_name: &str,
         text: &str,
     ) -> Result<AnalyzerTokenStream<'_>, AnalysisError> {
+        self.token_stream_over(field_name, |spare| match spare {
+            Some(mut r) => {
+                r.set_value(text);
+                r
+            }
+            None => Box::new(StrReader::new(text)),
+        })
+    }
+
+    /// [`Self::token_stream`] over text the caller keeps: the stream holds a
+    /// clone of the `Arc`, not a copy of the bytes, so analyzing a document of
+    /// hundreds of MiB costs no second copy of it. The tokens are the same.
+    pub fn token_stream_shared(
+        &self,
+        field_name: &str,
+        text: &Arc<str>,
+    ) -> Result<AnalyzerTokenStream<'_>, AnalysisError> {
+        self.token_stream_over(field_name, |_spare| {
+            Box::new(StrReader::shared(Arc::clone(text)))
+        })
+    }
+
+    /// `tokenStream`'s body: `make_reader` is handed the reused components'
+    /// spare string reader, if they have one.
+    fn token_stream_over(
+        &self,
+        field_name: &str,
+        make_reader: impl FnOnce(Option<Box<StrReader>>) -> Box<dyn CharReader>,
+    ) -> Result<AnalyzerTokenStream<'_>, AnalysisError> {
         if let Kind::Delegating(d) = &self.kind {
             return d
                 .wrapped_analyzer(field_name)
-                .token_stream(field_name, text);
+                .token_stream_over(field_name, make_reader);
         }
         let key = self.pool_key(field_name);
         let mut components = self.take_components(&key)?;
         // the reused components' tokenizer hands back its last string reader
         // (Java's `ReusableStringReader`); the order, `initReader` before
         // `createComponents`, is `token_stream_from_reader`'s
-        let reader: Box<dyn CharReader> = match components.as_mut().and_then(|c| c.spare_reader()) {
-            Some(mut r) => {
-                r.set_value(text);
-                r
-            }
-            None => Box::new(StrReader::new(text)),
-        };
+        let reader = make_reader(components.as_mut().and_then(|c| c.spare_reader()));
         let r = self.init_reader(field_name, reader);
         let mut components = match components {
             Some(c) => c,
@@ -1007,6 +1030,35 @@ mod tests {
         let mut out = Vec::new();
         consume(&mut ts, |x| out.push(x.term().to_string())).unwrap();
         out
+    }
+
+    #[test]
+    fn a_shared_text_stream_yields_the_same_tokens_as_a_borrowed_one() {
+        let text = "The quick brown 😀 fox, jumps over the lazy dog's 世界 back";
+        let shared: Arc<str> = Arc::from(text);
+        let a = Analyzer::new(StandardAnalyzer::new());
+        let mut want = Vec::new();
+        let mut ts = a.token_stream("f", text).unwrap();
+        consume(&mut ts, |x| {
+            want.push((x.term().to_string(), x.start_offset(), x.end_offset()))
+        })
+        .unwrap();
+        drop(ts);
+        // twice: the second run reuses the components the first returned
+        for _ in 0..2 {
+            let mut got = Vec::new();
+            let mut ts = a.token_stream_shared("f", &shared).unwrap();
+            consume(&mut ts, |x| {
+                got.push((x.term().to_string(), x.start_offset(), x.end_offset()))
+            })
+            .unwrap();
+            drop(ts);
+            assert_eq!(got, want);
+        }
+        // the stream let go of its clone once dropped
+        assert_eq!(Arc::strong_count(&shared), 1);
+        // and a borrowed stream after a shared one still works
+        assert_eq!(terms(&a, "f", "a b"), vec!["a", "b"]);
     }
 
     /// Counts `create_components` calls; per-field gaps.
