@@ -12,7 +12,7 @@
   "crates/lucene-ffi/src/ffm_bridge.rs": 123,
   "crates/lucene-ffi/src/jvm_aggs.rs": 13,
   "crates/lucene-ffi/src/jvm_fetch.rs": 14,
-  "crates/lucene-ffi/src/jvm_highlight.rs": 5,
+  "crates/lucene-ffi/src/jvm_highlight.rs": 8,
   "crates/lucene-ffi/src/jvm_highlight/tests.rs": 4,
   "crates/lucene-ffi/src/jvm_highlight_fvh.rs": 6,
   "crates/lucene-ffi/src/jvm_highlight_fvh/tests.rs": 4,
