@@ -78,7 +78,7 @@ def main():
             for missing in (None, "_first", "_last"):
                 if sf == "nanos" and missing == "_first":
                     continue  # stock hangs sorting date_nanos with missing _first (both nodes), skip
-                for mode in (None, "min", "max"):
+                for mode in (None, "min", "max") + (("median", "sum", "avg") if sf == "ulong" else ()):
                     spec = {"order": order}
                     if missing:
                         spec["missing"] = missing

@@ -623,20 +623,23 @@ def realtime():
             check(a["hits"]["total"]["value"] == b["hits"]["total"]["value"], f"{where}: native aggregation total {q}")
             check(json.dumps(a["aggregations"], sort_keys=True) == json.dumps(b["aggregations"], sort_keys=True),
                   f"{where}: native aggregations {q}: {json.dumps(a['aggregations'])[:300]} vs {json.dumps(b['aggregations'])[:300]}")
-        # Searches Lucene answers (a script query, a highlight, versions) read the buffered
-        # documents too, and the documents updated since the commit once.
+        # Searches Lucene answers (a script query, a highlight) read the buffered documents too,
+        # and the documents updated since the commit once; versions, sequence numbers and
+        # explanations are read from the buffers natively.
         by_n = [{"n": "desc"}, {"@timestamp": "asc"}]
         fox = {"match": {"body": "fox"}}
         for body in [{"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": flat_aggs},
                      {"query": on_lucene, "size": 0, "track_total_hits": True, "aggs": aggs},
                      {"query": on_lucene, "size": 100, "track_total_hits": True, "sort": by_n},
-                     {"query": fox, "size": 100, "track_total_hits": True, "version": True, "sort": by_n},
+                     {"query": fox, "size": 100, "track_total_hits": True, "version": True, "seq_no_primary_term": True, "sort": by_n},
+                     {"query": fox, "size": 100, "track_total_hits": True, "version": True, "seq_no_primary_term": True},
                      {"query": fox, "size": 20, "track_total_hits": True, "sort": by_n,
                       "highlight": {"fields": {"body": {}}}},
                      # Rewritten again once Lucene reads the buffers: its terms are theirs too.
                      {"query": {"prefix": {"title": {"value": "qu", "rewrite": "scoring_boolean"}}}, "size": 50,
                       "track_total_hits": True, "sort": by_n, "track_scores": True},
-                     {"query": fox, "size": 10, "track_total_hits": True, "sort": by_n, "explain": True}]:
+                     {"query": fox, "size": 10, "track_total_hits": True, "sort": by_n, "explain": True},
+                     {"query": fox, "size": 10, "track_total_hits": True, "explain": True}]:
             a = must("POST", f"/{rt}/_search?request_cache=false", body)
             b = must("POST", f"/{ref}/_search?request_cache=false", body)
             what = f"{where}: on Lucene {json.dumps(body)[:120]}"
@@ -647,10 +650,14 @@ def realtime():
             def seen(h):
                 score = None if h.get("_score") is None else round(h["_score"], 4)
                 explained = h.get("_explanation", {}).get("value")
-                return (h["_id"], h.get("sort"), h.get("_version"), h.get("highlight"), score,
+                return (h["_id"], h.get("sort"), h.get("_version"), h.get("_seq_no"), h.get("_primary_term"), h.get("highlight"), score,
                         None if explained is None else round(explained, 4))
             ha = [seen(h) for h in a["hits"]["hits"]]
             hb = [seen(h) for h in b["hits"]["hits"]]
+            if "sort" not in body:
+                # Equal scores come in segment order, which differs between the two indexes.
+                ha.sort(key=str)
+                hb.sort(key=str)
             check(ha == hb, f"{what}: hits {ha[:2]} vs {hb[:2]}")
         # A sorted match_all that counts at most the default hits is one OpenSearch approximates
         # over the points, which buffered documents do not have yet.

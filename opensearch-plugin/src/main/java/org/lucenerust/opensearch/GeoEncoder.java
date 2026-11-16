@@ -246,7 +246,7 @@ final class GeoEncoder {
      * LatLonPointSortField}, else OpenSearch's comparator with its origins, unit (metres per unit)
      * and mode.
      */
-    record Sort(boolean lucene, String field, double[] lats, double[] lons, double unitMeters, MultiValueMode mode, boolean plane) {}
+    record Sort(boolean lucene, String field, double[] lats, double[] lons, double unitMeters, MultiValueMode mode, boolean plane, Object nested) {}
 
     /** At most this many origins ({@code MAX_GEO_ORIGINS} in {@code reader_search.rs}). */
     static final int MAX_ORIGINS = 1 << 20;
@@ -263,13 +263,14 @@ final class GeoEncoder {
                 if (lat == null || lon == null) {
                     return "sort_geo_reflect";
                 }
-                return new Sort(true, f.getField(), new double[] { lat.getDouble(f) }, new double[] { lon.getDouble(f) }, 1.0, MultiValueMode.MIN, false);
+                return new Sort(true, f.getField(), new double[] { lat.getDouble(f) }, new double[] { lon.getDouble(f) }, 1.0, MultiValueMode.MIN, false, null);
             }
             if (openSearchSort(f) == false) {
                 return null;
             }
             IndexFieldData.XFieldComparatorSource src = (IndexFieldData.XFieldComparatorSource) f.getComparatorSource();
-            if (src.nested() != null) {
+            // MultiValueMode.MEDIAN has no nested pick: OpenSearch raises there, in Java.
+            if (src.nested() != null && src.sortMode() == MultiValueMode.MEDIAN) {
                 return "sort_geo_nested";
             }
             Class<?> c = src.getClass();
@@ -295,7 +296,7 @@ final class GeoEncoder {
                     return "sort_geo_origins";
                 }
             }
-            return new Sort(false, ifd.getFieldName(), lats, lons, b.unit().toMeters(1.0), src.sortMode(), b.geoDistance() == GeoDistance.PLANE);
+            return new Sort(false, ifd.getFieldName(), lats, lons, b.unit().toMeters(1.0), src.sortMode(), b.geoDistance() == GeoDistance.PLANE, src.nested());
         } catch (ReflectiveOperationException | RuntimeException e) {
             return "sort_geo_reflect";
         }

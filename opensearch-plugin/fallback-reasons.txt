@@ -44,7 +44,6 @@ disabled  # RustQueryPhaseSearcher.java
 error  # SortEncoder.java
 extended_reflect  # ExtendedEncoder.java
 fetch_doc_values  # RustQueryPhaseSearcher.java
-fetch_metadata  # RustQueryPhaseSearcher.java
 field_similarity  # ExtendedEncoder.java, QueryEncoder.java
 function_score_  # ExtendedEncoder.java
 function_score_decay  # ExtendedEncoder.java
