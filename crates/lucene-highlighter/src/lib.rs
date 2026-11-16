@@ -68,6 +68,10 @@ pub enum Error {
     Runtime(String),
     /// `IndexSearcher.TooManyClauses`: a rewrite expands past the clause count.
     TooManyClauses(String),
+    /// `StringIndexOutOfBoundsException`, with Java's message.
+    StringIndexOutOfBounds(String),
+    /// `ArrayIndexOutOfBoundsException`, with Java's message.
+    ArrayIndexOutOfBounds(String),
 }
 
 impl Error {
@@ -83,6 +87,8 @@ impl Error {
             Error::Io(_) => "java.io.IOException",
             Error::Runtime(_) => "java.lang.RuntimeException",
             Error::TooManyClauses(_) => "org.apache.lucene.search.IndexSearcher$TooManyClauses",
+            Error::StringIndexOutOfBounds(_) => "java.lang.StringIndexOutOfBoundsException",
+            Error::ArrayIndexOutOfBounds(_) => "java.lang.ArrayIndexOutOfBoundsException",
         }
     }
 
@@ -93,7 +99,9 @@ impl Error {
             | Error::IllegalArgument(m)
             | Error::Io(m)
             | Error::Runtime(m)
-            | Error::TooManyClauses(m) => m.clone(),
+            | Error::TooManyClauses(m)
+            | Error::StringIndexOutOfBounds(m)
+            | Error::ArrayIndexOutOfBounds(m) => m.clone(),
             Error::Analysis(e) => e.to_string(),
             Error::Search(e) => e.to_string(),
         }
@@ -171,6 +179,12 @@ pub trait Scorer {
     fn start_fragment(&mut self);
     /// `getTokenScore()` for the current token.
     fn token_score(&mut self, token: &AttributeSource) -> f32;
+    /// `getTokenScore()` for a token whose text holds an unpaired surrogate,
+    /// which no term the scorer holds equals (the terms come from bytes,
+    /// where it is U+FFFD): the token counts as read and scores 0.
+    fn token_score_unmatched(&mut self, _token: &AttributeSource) -> f32 {
+        0.0
+    }
     /// `getFragmentScore()`.
     fn fragment_score(&self) -> f32;
     /// `QueryScorer.setMaxDocCharsToAnalyze`, which the highlighter sets on a
@@ -199,17 +213,49 @@ impl<F: Fragmenter + ?Sized> Fragmenter for Box<F> {
 pub trait Formatter {
     /// `highlightTerm(originalText, tokenGroup)`.
     fn highlight_term(&self, original_text: &str, token_group: &TokenGroup) -> String;
+
+    /// [`Self::highlight_term`] over Java's UTF-16, the text already encoded:
+    /// an unpaired surrogate in it is kept as it is.
+    fn highlight_term_units(&self, original_text: &[u16], token_group: &TokenGroup) -> Vec<u16> {
+        self.highlight_term(&String::from_utf16_lossy(original_text), token_group)
+            .encode_utf16()
+            .collect()
+    }
 }
 
 /// `Encoder`: escapes the text between and inside the marked-up terms.
 pub trait Encoder {
     /// `encodeText(originalText)`.
     fn encode_text(&self, original_text: &str) -> String;
+
+    /// `encodeText` over Java's UTF-16: a run of valid text is encoded as
+    /// text, an unpaired surrogate is kept as it is (the encoders only
+    /// replace single characters, so none of them reads across it).
+    fn encode_units(&self, units: &[u16]) -> Vec<u16> {
+        let mut out = Vec::with_capacity(units.len());
+        let mut run = String::new();
+        for c in char::decode_utf16(units.iter().copied()) {
+            match c {
+                Ok(c) => run.push(c),
+                Err(lone) => {
+                    out.extend(self.encode_text(&run).encode_utf16());
+                    run.clear();
+                    out.push(lone.unpaired_surrogate());
+                }
+            }
+        }
+        out.extend(self.encode_text(&run).encode_utf16());
+        out
+    }
 }
 
 impl<E: Encoder + ?Sized> Encoder for Box<E> {
     fn encode_text(&self, original_text: &str) -> String {
         (**self).encode_text(original_text)
+    }
+
+    fn encode_units(&self, units: &[u16]) -> Vec<u16> {
+        (**self).encode_units(units)
     }
 }
 
@@ -354,6 +400,15 @@ impl TextFragment {
     }
 }
 
+impl TextFragment {
+    /// The marked-up text of this fragment, as UTF-16 (`toString()`'s units).
+    pub fn units(&self) -> &[u16] {
+        let end = self.text_end_pos.min(self.marked_up_text.len());
+        let start = self.text_start_pos.min(end);
+        &self.marked_up_text[start..end]
+    }
+}
+
 impl std::fmt::Display for TextFragment {
     /// `toString()`: the marked-up text of this fragment.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -361,6 +416,36 @@ impl std::fmt::Display for TextFragment {
         let start = self.text_start_pos.min(end);
         f.write_str(&String::from_utf16_lossy(&self.marked_up_text[start..end]))
     }
+}
+
+/// Where `units` holds a surrogate that is not half of a pair.
+fn unpaired_surrogates(units: &[u16]) -> Vec<i32> {
+    let mut at = Vec::new();
+    let mut i = 0;
+    while i < units.len() {
+        let u = units[i];
+        if (0xD800..0xDC00).contains(&u)
+            && units
+                .get(i + 1)
+                .is_some_and(|n| (0xDC00..0xE000).contains(n))
+        {
+            i += 2;
+            continue;
+        }
+        if (0xD800..0xE000).contains(&u) {
+            at.push(i32::try_from(i).unwrap_or(i32::MAX));
+        }
+        i += 1;
+    }
+    at
+}
+
+/// Whether the token's text is one Java holds an unpaired surrogate in: its
+/// offsets take one in and its text, read as UTF-8, has U+FFFD for it.
+fn token_holds_lone(lone: &[i32], token: &AttributeSource) -> bool {
+    let (start, end) = (token.start_offset(), token.end_offset());
+    let first = lone.partition_point(|&p| p < start);
+    lone.get(first).is_some_and(|&p| p < end) && token.term().contains('\u{FFFD}')
 }
 
 /// `Highlighter.DEFAULT_MAX_CHARS_TO_ANALYZE`.
@@ -480,6 +565,23 @@ impl Highlighter {
         max_num_fragments: usize,
     ) -> Result<Vec<TextFragment>> {
         let units: Vec<u16> = text.encode_utf16().collect();
+        self.get_best_text_fragments_units(
+            token_stream,
+            &units,
+            merge_contiguous_fragments,
+            max_num_fragments,
+        )
+    }
+
+    /// [`Self::get_best_text_fragments`] over Java's UTF-16 text, which may
+    /// hold an unpaired surrogate (the stream was made from it).
+    pub fn get_best_text_fragments_units(
+        &mut self,
+        token_stream: DynStream<'_>,
+        units: &[u16],
+        merge_contiguous_fragments: bool,
+        max_num_fragments: usize,
+    ) -> Result<Vec<TextFragment>> {
         let text_len = units.len();
         let mut new_text: Vec<u16> = Vec::new();
         let mut doc_frags: Vec<TextFragment> = vec![TextFragment::new(0, 0)];
@@ -489,7 +591,7 @@ impl Highlighter {
         let mut stream = self.fragment_scorer.init(token_stream)?;
         self.fragment_scorer.start_fragment();
 
-        let outcome = self.read_tokens(&mut stream, &units, &mut new_text, &mut doc_frags);
+        let outcome = self.read_tokens(&mut stream, units, &mut new_text, &mut doc_frags);
         // `finally`: end and close, ignoring what they throw
         let _ = stream.end();
         let _ = stream.close();
@@ -536,14 +638,11 @@ impl Highlighter {
             let to = usize::try_from(to).unwrap_or(0).min(text_len).max(from);
             &units[from..to]
         };
-        // the text between tokens, encoded onto `new_text` (through one
-        // reused buffer)
-        let mut scratch = String::new();
-        let mut encode = |enc: &dyn Encoder, s: &[u16], new_text: &mut Vec<u16>| {
-            scratch.clear();
-            scratch.extend(char::decode_utf16(s.iter().copied()).map(|c| c.unwrap_or('\u{FFFD}')));
-            new_text.extend(enc.encode_text(&scratch).encode_utf16());
+        // the text between tokens, encoded onto `new_text`
+        let encode = |enc: &dyn Encoder, s: &[u16], new_text: &mut Vec<u16>| {
+            new_text.extend(enc.encode_units(s));
         };
+        let lone = unpaired_surrogates(units);
         let mut last_end_offset = 0i32;
         let mut cur = doc_frags.len() - 1;
         self.text_fragmenter.start(&String::from_utf16_lossy(units));
@@ -562,10 +661,10 @@ impl Highlighter {
             }
             if token_group.num_tokens() > 0 && token_group.is_distinct(atts) {
                 let (start, end) = (token_group.start_offset(), token_group.end_offset());
-                let token_text = String::from_utf16_lossy(slice(start, end));
-                let marked = self
-                    .formatter
-                    .highlight_term(&self.encoder.encode_text(&token_text), &token_group);
+                let marked = self.formatter.highlight_term_units(
+                    &self.encoder.encode_units(slice(start, end)),
+                    &token_group,
+                );
                 if start > last_end_offset {
                     encode(
                         self.encoder.as_ref(),
@@ -573,7 +672,7 @@ impl Highlighter {
                         new_text,
                     );
                 }
-                new_text.extend(marked.encode_utf16());
+                new_text.extend(marked);
                 last_end_offset = end.max(last_end_offset);
                 token_group.clear();
                 if self.text_fragmenter.is_new_fragment(stream.attributes()) {
@@ -584,17 +683,21 @@ impl Highlighter {
                     self.fragment_scorer.start_fragment();
                 }
             }
-            let score = self.fragment_scorer.token_score(stream.attributes());
+            let atts = stream.attributes();
+            let score = if !lone.is_empty() && token_holds_lone(&lone, atts) {
+                self.fragment_scorer.token_score_unmatched(atts)
+            } else {
+                self.fragment_scorer.token_score(atts)
+            };
             token_group.add_token(score, stream.attributes());
             next = stream.increment_token()?;
         }
         doc_frags[cur].score = self.fragment_scorer.fragment_score();
         if token_group.num_tokens() > 0 {
             let (start, end) = (token_group.start_offset(), token_group.end_offset());
-            let token_text = String::from_utf16_lossy(slice(start, end));
             let marked = self
                 .formatter
-                .highlight_term(&self.encoder.encode_text(&token_text), &token_group);
+                .highlight_term_units(&self.encoder.encode_units(slice(start, end)), &token_group);
             if start > last_end_offset {
                 encode(
                     self.encoder.as_ref(),
@@ -602,7 +705,7 @@ impl Highlighter {
                     new_text,
                 );
             }
-            new_text.extend(marked.encode_utf16());
+            new_text.extend(marked);
             last_end_offset = last_end_offset.max(end);
         }
         let text_len_i = i32::try_from(text_len).unwrap_or(i32::MAX);

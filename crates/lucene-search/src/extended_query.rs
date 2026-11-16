@@ -90,6 +90,10 @@ pub enum ExtendedQuery {
     /// OpenSearch's `match_phrase_prefix` query
     /// ([`MultiPhrasePrefixQuery`]); only highlighted, not searched.
     MultiPhrasePrefix(MultiPhrasePrefixQuery),
+    /// OpenSearch's `MoreLikeThisQuery` as the plain highlighter reads it,
+    /// rewritten over the highlighted text ([`MoreLikeThisHighlight`]); only
+    /// highlighted, not searched.
+    MoreLikeThisHighlight(MoreLikeThisHighlight),
     /// A query Lucene's highlighters read only through its `visit`, which
     /// visits the wrapped query as `MUST`: OpenSearch's `FunctionScoreQuery`
     /// (`function_score`), a class the span extractor does not support.
@@ -134,6 +138,7 @@ into_clause! {
     DocumentClause => Document,
     SubstringQuery => Substring,
     MultiPhrasePrefixQuery => MultiPhrasePrefix,
+    MoreLikeThisHighlight => MoreLikeThisHighlight,
 }
 
 impl From<crate::function::FunctionQuery> for Clause {
@@ -200,6 +205,7 @@ impl ExtendedQuery {
             ExtendedQuery::NumericDocValuesRange(_) => "SortedNumericDocValuesRangeQuery",
             ExtendedQuery::Substring(_) => "SubstringQuery",
             ExtendedQuery::MultiPhrasePrefix(_) => "MultiPhrasePrefixQuery",
+            ExtendedQuery::MoreLikeThisHighlight(_) => "MoreLikeThisQuery",
             ExtendedQuery::VisitOnly(_) => "FunctionScoreQuery",
             ExtendedQuery::Visited(_) => "VisitedQuery",
             ExtendedQuery::IndexSortRange(_) => "IndexSortSortedNumericDocValuesRangeQuery",
@@ -1614,5 +1620,284 @@ mod tests {
         mapped[11] = 0xff;
         mapped[12..].copy_from_slice(&[10, 1, 2, 3]);
         assert_eq!(inet_bytes(v4), mapped);
+    }
+}
+
+/// One field's terms of a [`MoreLikeThisHighlight`]: `XMoreLikeThis.createQueue`'s
+/// candidates, in the order Java's `HashMap` iterates them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoreLikeThisGroup {
+    /// The field the terms are of (`topField`).
+    pub field: String,
+    /// `min(maxQueryTerms, words.size())`: the queue's size.
+    pub limit: usize,
+    /// Each word that passed the filters that need no index, with its
+    /// `tf * idf`; the document frequency of a word in the one-document index
+    /// the plain highlighter rewrites over is 1 when the text holds it.
+    pub candidates: Vec<(Vec<u8>, f32)>,
+}
+
+/// OpenSearch's `MoreLikeThisQuery` rewritten (`XMoreLikeThis`) over the
+/// one-document index of the text the plain highlighter highlights, in which
+/// every term the text holds has document frequency 1 in every field and the
+/// index has 1 document: the candidates the Java side collected, narrowed to
+/// the text's terms, then Lucene's bounded priority queue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoreLikeThisHighlight {
+    /// The boolean queries the `like` fields and the `like` texts make, each
+    /// the groups whose terms it holds.
+    pub parts: Vec<Vec<MoreLikeThisGroup>>,
+    /// `boost`, and `boostFactor`.
+    pub boost: bool,
+    pub boost_factor: f32,
+}
+
+struct ScoreTerm<'a> {
+    word: &'a [u8],
+    score: f32,
+}
+
+/// `org.apache.lucene.util.PriorityQueue` over scores, least on top.
+struct Heap<'a> {
+    heap: Vec<Option<ScoreTerm<'a>>>,
+    size: usize,
+}
+
+impl<'a> Heap<'a> {
+    fn new(max: usize) -> Self {
+        let mut heap = Vec::new();
+        heap.resize_with(max.max(1) + 1, || None);
+        Heap { heap, size: 0 }
+    }
+
+    fn less(&self, a: usize, b: usize) -> bool {
+        match (&self.heap[a], &self.heap[b]) {
+            (Some(x), Some(y)) => x.score < y.score,
+            _ => false,
+        }
+    }
+
+    fn add(&mut self, e: ScoreTerm<'a>) {
+        self.size += 1;
+        self.heap[self.size] = Some(e);
+        self.up_heap(self.size);
+    }
+
+    fn up_heap(&mut self, orig: usize) {
+        let mut i = orig;
+        let node = self.heap[i].take();
+        let mut j = i >> 1;
+        while j > 0 {
+            let lt = match (&node, &self.heap[j]) {
+                (Some(n), Some(h)) => n.score < h.score,
+                _ => false,
+            };
+            if !lt {
+                break;
+            }
+            self.heap[i] = self.heap[j].take();
+            i = j;
+            j >>= 1;
+        }
+        self.heap[i] = node;
+    }
+
+    fn down_heap(&mut self, mut i: usize) {
+        let node = self.heap[i].take();
+        let mut j = i << 1;
+        let k = j + 1;
+        if k <= self.size && self.less(k, j) {
+            j = k;
+        }
+        loop {
+            if j > self.size {
+                break;
+            }
+            let lt = match (&self.heap[j], &node) {
+                (Some(h), Some(n)) => h.score < n.score,
+                _ => false,
+            };
+            if !lt {
+                break;
+            }
+            self.heap[i] = self.heap[j].take();
+            i = j;
+            j = i << 1;
+            let k = j + 1;
+            if k <= self.size && self.less(k, j) {
+                j = k;
+            }
+        }
+        self.heap[i] = node;
+    }
+
+    /// `top()` and `updateTop()` with the replacement: the least term is
+    /// overwritten by `e` when it scores less.
+    fn replace_top_if_less(&mut self, e: ScoreTerm<'a>) {
+        let replace = matches!(&self.heap[1], Some(t) if t.score < e.score);
+        if replace {
+            self.heap[1] = Some(e);
+            self.down_heap(1);
+        }
+    }
+
+    fn pop(&mut self) -> Option<ScoreTerm<'a>> {
+        if self.size == 0 {
+            return None;
+        }
+        let result = self.heap[1].take();
+        self.heap[1] = self.heap[self.size].take();
+        self.size -= 1;
+        if self.size > 0 {
+            self.down_heap(1);
+        }
+        result
+    }
+}
+
+impl MoreLikeThisHighlight {
+    /// `rewrite(searcher)` over a one-leaf reader whose terms are `terms`
+    /// (sorted, each once).
+    pub fn rewrite_over(&self, terms: &[Vec<u8>]) -> Clause {
+        use crate::query::{BooleanQuery, BoostQuery, TermQuery};
+        let present = |w: &[u8]| terms.binary_search_by(|t| t.as_slice().cmp(w)).is_ok();
+        let mut outer = BooleanQuery::new();
+        let mut shoulds = Vec::new();
+        for part in &self.parts {
+            let mut inner = Vec::new();
+            'groups: for group in part {
+                let mut queue = Heap::new(group.limit);
+                for (word, score) in &group.candidates {
+                    if !present(word) {
+                        continue;
+                    }
+                    let e = ScoreTerm {
+                        word,
+                        score: *score,
+                    };
+                    if queue.size < group.limit {
+                        queue.add(e);
+                    } else {
+                        queue.replace_top_if_less(e);
+                    }
+                }
+                let mut best = -1.0f32;
+                while let Some(t) = queue.pop() {
+                    let tq: Clause =
+                        Clause::Term(TermQuery::new(group.field.clone(), t.word.to_vec()));
+                    let tq = if self.boost {
+                        if best == -1.0 {
+                            best = t.score;
+                        }
+                        BoostQuery::new(tq, self.boost_factor * t.score / best).into()
+                    } else {
+                        tq
+                    };
+                    if inner.len() >= MAX_CLAUSE_COUNT {
+                        // `TooManyClauses` ends this group's terms
+                        continue 'groups;
+                    }
+                    inner.push(tq);
+                }
+            }
+            shoulds.push(Clause::Boolean(Box::new(
+                BooleanQuery::new().with_should(inner),
+            )));
+        }
+        outer = outer.with_should(shoulds);
+        Clause::Boolean(Box::new(outer))
+    }
+}
+
+#[cfg(test)]
+mod more_like_this_tests {
+    use super::*;
+    use crate::query::{BoostQuery, TermQuery};
+
+    fn group(limit: usize, words: &[(&str, f32)]) -> MoreLikeThisGroup {
+        MoreLikeThisGroup {
+            field: "body".into(),
+            limit,
+            candidates: words
+                .iter()
+                .map(|(w, s)| (w.as_bytes().to_vec(), *s))
+                .collect(),
+        }
+    }
+
+    fn terms(words: &[&str]) -> Vec<Vec<u8>> {
+        words.iter().map(|w| w.as_bytes().to_vec()).collect()
+    }
+
+    /// The clauses of the one inner boolean of the one part.
+    fn inner(c: Clause) -> Vec<Clause> {
+        let Clause::Boolean(outer) = c else {
+            panic!("outer")
+        };
+        let Clause::Boolean(inner) = outer.should.into_iter().next().unwrap() else {
+            panic!("inner")
+        };
+        inner.should
+    }
+
+    fn term(w: &str) -> Clause {
+        Clause::Term(TermQuery::new("body", w.as_bytes().to_vec()))
+    }
+
+    #[test]
+    fn the_queue_keeps_the_best_and_pops_the_least_first() {
+        let q = MoreLikeThisHighlight {
+            parts: vec![vec![group(
+                2,
+                &[("a", 1.0), ("b", 3.0), ("c", 2.0), ("d", 0.5), ("e", 3.0)],
+            )]],
+            boost: false,
+            boost_factor: 1.0,
+        };
+        // a and b fill it; c replaces a, d scores less than the top, e replaces
+        // c; the least pops first, and a tie with the top never replaces
+        let kept = inner(q.rewrite_over(&terms(&["a", "b", "c", "d", "e"])));
+        assert_eq!(kept, [term("e"), term("b")]);
+    }
+
+    #[test]
+    fn a_word_the_text_lacks_is_not_a_candidate() {
+        let q = MoreLikeThisHighlight {
+            parts: vec![vec![group(5, &[("a", 1.0), ("zz", 9.0), ("b", 2.0)])]],
+            boost: false,
+            boost_factor: 1.0,
+        };
+        assert_eq!(
+            inner(q.rewrite_over(&terms(&["a", "b"]))),
+            [term("a"), term("b")]
+        );
+    }
+
+    #[test]
+    fn boosts_are_relative_to_the_first_popped() {
+        let q = MoreLikeThisHighlight {
+            parts: vec![vec![group(3, &[("a", 2.0), ("b", 4.0), ("c", 8.0)])]],
+            boost: true,
+            boost_factor: 2.0,
+        };
+        let got = inner(q.rewrite_over(&terms(&["a", "b", "c"])));
+        let boosted = |w: &str, b: f32| -> Clause { BoostQuery::new(term(w), b).into() };
+        assert_eq!(
+            got,
+            [boosted("a", 2.0), boosted("b", 4.0), boosted("c", 8.0)]
+        );
+    }
+
+    #[test]
+    fn too_many_clauses_end_the_group() {
+        let words: Vec<String> = (0..1100).map(|i| format!("w{i:04}")).collect();
+        let cands: Vec<(&str, f32)> = words.iter().map(|w| (w.as_str(), 1.0)).collect();
+        let refs: Vec<&str> = words.iter().map(String::as_str).collect();
+        let q = MoreLikeThisHighlight {
+            parts: vec![vec![group(1100, &cands)]],
+            boost: false,
+            boost_factor: 1.0,
+        };
+        assert_eq!(inner(q.rewrite_over(&terms(&refs))).len(), MAX_CLAUSE_COUNT);
     }
 }

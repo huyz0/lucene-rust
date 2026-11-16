@@ -19,6 +19,11 @@ import concurrent.futures
 import json, os, random, sys, threading
 import requests
 
+# HL_EXTENDED=0 runs the plugin with index.highlight.accelerated_extended off (its default)
+EXTENDED = {"index.highlight.accelerated_extended": True} if os.environ.get("HL_EXTENDED", "1") != "0" else {}
+
+sys.stdout.reconfigure(errors="backslashreplace")
+
 PLUGIN = os.environ.get("PLUGIN", "http://localhost:9200")
 STOCK = os.environ.get("STOCK", "http://localhost:9201")
 S = requests.Session()
@@ -159,7 +164,7 @@ def load(docs):
         for name, m in INDICES.items():
             S.delete(f"{base}/{name}")
             r = S.put(f"{base}/{name}", json={
-                "settings": {"number_of_shards": 1, "number_of_replicas": 0, "analysis": ANALYSIS},
+                "settings": {"number_of_shards": 1, "number_of_replicas": 0, "analysis": ANALYSIS, **(EXTENDED if base == PLUGIN else {})},
                 "mappings": m,
             })
             assert r.ok, r.text
