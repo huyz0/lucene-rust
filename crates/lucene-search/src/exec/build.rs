@@ -131,7 +131,9 @@ pub(crate) fn build<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
-    let scorer = build_unchecked(ctx, clause, boost, mode, top_level)?;
+    let scorer = super::profile::profiled(clause, || {
+        build_unchecked(ctx, clause, boost, mode, top_level)
+    })?;
     // `AssertingWeight`: under the test framework's asserting searcher, every
     // scorer the tree is built from checks its iteration contract.
     #[cfg(any(test, feature = "asserting"))]
@@ -142,10 +144,11 @@ pub(crate) fn build<'a>(
 /// Whether [`build`] wraps the scorers it builds (an `AssertingGuard` is
 /// held).
 fn asserting_active() -> bool {
+    // A profiled run builds every clause as a scorer of its own, like the asserting searcher.
     #[cfg(any(test, feature = "asserting"))]
-    return super::asserting::active();
+    return super::asserting::active() || super::profile::active();
     #[cfg(not(any(test, feature = "asserting")))]
-    false
+    super::profile::active()
 }
 
 /// [`build`] without the asserting wrapper around the scorer itself (its
@@ -198,7 +201,7 @@ pub(crate) fn build_unchecked<'a>(
         Clause::DisjunctionMax(d) => {
             // Every disjunct a term, scored: `TermDisMaxScorer`, which a
             // disjunction around it can read a block at a time.
-            if mode.needs_scores() && d.disjuncts.len() > 1 {
+            if mode.needs_scores() && d.disjuncts.len() > 1 && !super::profile::active() {
                 let mut legs = Vec::with_capacity(d.disjuncts.len());
                 let mut all_terms = true;
                 for disjunct in &d.disjuncts {
@@ -886,9 +889,9 @@ fn build_led<'a>(
         super::asserting::check_lead_cost(lead);
     }
     match index_or_doc_values_of(clause) {
-        Some(q) if lead_cost.is_some() => {
+        Some(q) if lead_cost.is_some() => super::profile::profiled(clause, || {
             super::extended::index_or_doc_values(ctx, q, boost, mode, top_level, lead_cost)
-        }
+        }),
         _ => build(ctx, clause, boost, mode, top_level),
     }
 }
@@ -947,7 +950,7 @@ pub(crate) fn build_clauses<'a, 'q>(
     let mut costs: [Vec<Option<i64>>; 4] = Default::default();
     // `SHOULD` fuzzy clauses flattened into this boolean, by position.
     let mut flattened: Vec<Option<Vec<Child<'a>>>> = (0..q.should.len()).map(|_| None).collect();
-    let flatten = mode.needs_scores() && q.minimum_should_match <= 1;
+    let flatten = mode.needs_scores() && q.minimum_should_match <= 1 && !super::profile::active();
     // The lead cost the deferred `IndexOrDocValuesQuery`s were built with.
     let mut lead_cost = None;
     // The required clauses that score nothing -- the filters, and the
@@ -962,7 +965,9 @@ pub(crate) fn build_clauses<'a, 'q>(
             .flat_map(|g| (0..groups[g].0.len()).map(move |i| (g, i)))
             .collect();
         let clauses: Vec<&Clause> = at.iter().map(|&(g, i)| &groups[g].0[i]).collect();
-        if let Some(found) = super::sort_prefix::sort_prefix_run(ctx, &clauses)? {
+        if let Some(found) =
+            super::profile::unless_profiled(|| super::sort_prefix::sort_prefix_run(ctx, &clauses))?
+        {
             let Some(run) = found.run else {
                 return Ok(None);
             };
@@ -1220,8 +1225,9 @@ fn child_led<'a>(
                 build_led(&core, clause, boost, mode, top_level, None)
             })? {
                 Some(super::cache::CacheResult::Hit(set)) => {
-                    return Ok(Some(Child::Scorer(Box::new(
-                        super::cache::CachedScorer::new(set),
+                    return Ok(Some(Child::Scorer(super::profile::wrap_child(
+                        clause,
+                        Box::new(super::cache::CachedScorer::new(set)),
                     ))))
                 }
                 Some(super::cache::CacheResult::Empty) => return Ok(None),
@@ -1230,6 +1236,20 @@ fn child_led<'a>(
         }
     }
     Ok(match term_leg(ctx, clause, boost, mode)? {
+        // A profiled run times each term as a scorer of its own, not as a leg of a bulk scorer.
+        TermForm::Leg(leg) if super::profile::active() => {
+            let scorer: BoxScorer<'a> = Box::new(TermScorer::at_level(
+                *leg,
+                mode == Mode::TopScores,
+                top_level,
+            ));
+            // A constant-scored term is one leg: its term is timed as the same scorer.
+            let scorer = match clause {
+                Clause::ConstantScore(c) => super::profile::wrap_child(&c.inner, scorer),
+                _ => scorer,
+            };
+            Some(Child::Scorer(super::profile::wrap_child(clause, scorer)))
+        }
         TermForm::Leg(leg) => Some(Child::Leg(leg)),
         TermForm::Absent => None,
         TermForm::Other => match clause {
