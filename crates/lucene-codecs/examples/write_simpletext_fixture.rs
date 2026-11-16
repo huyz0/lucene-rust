@@ -565,6 +565,7 @@ fn stored_lines(docs: &[Document]) -> String {
         for f in &doc.fields {
             let (t, v) = match &f.value {
                 FieldValue::String(v) => ("string", hexs(v)),
+                FieldValue::Shared(v) => ("string", hexs(v)),
                 FieldValue::Binary(v) => ("binary", hex(v)),
                 FieldValue::Int(v) => ("int", v.to_string()),
                 FieldValue::Long(v) => ("long", v.to_string()),

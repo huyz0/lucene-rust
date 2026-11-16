@@ -266,6 +266,7 @@ fn simpletext_stored_values_and_checksums_match_java_through_directory_reader() 
                 for field in segment.stored_document(doc).unwrap().unwrap().fields {
                     let value = match field.value {
                         FieldValue::String(value) => format!("string\t{}", hex(value.as_bytes())),
+                        FieldValue::Shared(value) => format!("string\t{}", hex(value.as_bytes())),
                         FieldValue::Binary(value) => format!("binary\t{}", hex(&value)),
                         FieldValue::Int(value) => format!("int\t{value}"),
                         FieldValue::Long(value) => format!("long\t{value}"),

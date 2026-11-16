@@ -142,6 +142,7 @@ pub fn stored_string_value(value: &lucene_codecs::stored_fields::FieldValue) -> 
     use lucene_codecs::stored_fields::FieldValue;
     match value {
         FieldValue::String(s) => Some(s.clone()),
+        FieldValue::Shared(s) => Some(s.to_string()),
         FieldValue::Int(v) => Some(v.to_string()),
         FieldValue::Long(v) => Some(v.to_string()),
         FieldValue::Float(v) => Some(crate::function::java_float(*v)),

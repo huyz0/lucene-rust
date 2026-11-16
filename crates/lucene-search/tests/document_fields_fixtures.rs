@@ -207,6 +207,7 @@ fn facets(f: &dyn IndexableField, analyzer: &Analyzer) -> String {
             StoredValue::Float(v) => format!("float:{:x}", v.to_bits()),
             StoredValue::Double(v) => format!("double:{:x}", v.to_bits()),
             StoredValue::String(s) => format!("string:{}", hex(s.as_bytes())),
+            StoredValue::Shared(s) => format!("string:{}", hex(s.as_bytes())),
             StoredValue::Binary(b) => format!("binary:{}", hex(&b)),
         }
     };

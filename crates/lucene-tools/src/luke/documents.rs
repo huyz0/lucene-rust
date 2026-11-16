@@ -679,6 +679,7 @@ impl<'r> Documents<'r> {
 fn stored_value(v: &FieldValue) -> StoredValue {
     match v {
         FieldValue::String(s) => StoredValue::String(s.clone()),
+        FieldValue::Shared(s) => StoredValue::String(s.to_string()),
         FieldValue::Binary(b) => StoredValue::Binary(b.clone()),
         FieldValue::Int(i) => StoredValue::Number(i.to_string()),
         FieldValue::Long(l) => StoredValue::Number(l.to_string()),

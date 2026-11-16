@@ -296,7 +296,7 @@ fn numeric_long(value: &FieldValue) -> Option<i64> {
         FieldValue::Long(v) => Some(*v),
         FieldValue::Float(v) => Some(*v as i64),
         FieldValue::Double(v) => Some(*v as i64),
-        FieldValue::String(_) | FieldValue::Binary(_) => None,
+        FieldValue::String(_) | FieldValue::Shared(_) | FieldValue::Binary(_) => None,
     }
 }
 
@@ -365,6 +365,7 @@ fn bytes_of(value: &FieldValue) -> Vec<u8> {
         FieldValue::Binary(b) => b.clone(),
         FieldValue::String(s) => s.as_bytes().to_vec(),
         FieldValue::Int(v) => v.to_string().into_bytes(),
+        FieldValue::Shared(s) => s.as_bytes().to_vec(),
         FieldValue::Long(v) => v.to_string().into_bytes(),
         FieldValue::Float(v) => java_float_string(*v).into_bytes(),
         FieldValue::Double(v) => java_double_string(*v).into_bytes(),

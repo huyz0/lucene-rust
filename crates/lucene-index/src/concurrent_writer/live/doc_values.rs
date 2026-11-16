@@ -127,6 +127,7 @@ fn number(v: &FieldValue) -> Option<i64> {
 fn bytes(v: &FieldValue) -> Option<&[u8]> {
     match v {
         FieldValue::String(s) => Some(s.as_bytes()),
+        FieldValue::Shared(s) => Some(s.as_bytes()),
         FieldValue::Binary(b) => Some(b),
         _ => None,
     }

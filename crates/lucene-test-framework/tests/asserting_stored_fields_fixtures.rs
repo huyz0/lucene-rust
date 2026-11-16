@@ -80,6 +80,10 @@ impl StoredFieldsWriter for ProbeWriter {
                 assert_eq!(value, "hello λ");
                 "string"
             }
+            FieldValue::Shared(value) => {
+                assert_eq!(&**value, "hello λ");
+                "string"
+            }
         })
     }
     fn write_field_data_input(

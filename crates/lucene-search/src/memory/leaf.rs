@@ -787,6 +787,7 @@ impl LeafReader for MemoryIndexReader {
                     FieldValue::Float(f) => visitor.float_field(number, *f)?,
                     FieldValue::Long(l) => visitor.long_field(number, *l)?,
                     FieldValue::Int(n) => visitor.int_field(number, *n)?,
+                    FieldValue::Shared(s) => visitor.string_field(number, s)?,
                     FieldValue::String(s) => visitor.string_field(number, s)?,
                 }
             }

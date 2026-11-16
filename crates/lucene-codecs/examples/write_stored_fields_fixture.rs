@@ -278,6 +278,7 @@ fn write_segment_manifest(
             .map(|f| {
                 let (ty, val) = match &f.value {
                     FieldValue::String(s) => ("string".to_string(), s.clone()),
+                    FieldValue::Shared(s) => ("string".to_string(), s.to_string()),
                     FieldValue::Binary(b) => ("binary".to_string(), hex(b)),
                     FieldValue::Int(v) => ("int".to_string(), v.to_string()),
                     FieldValue::Long(v) => ("long".to_string(), v.to_string()),
