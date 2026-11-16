@@ -1088,6 +1088,7 @@ mod tests {
     /// is what lets this test exercise resolution without a real `.dvd`.
     fn empty_binary_entry() -> doc_values::BinaryEntry {
         doc_values::BinaryEntry {
+            mask: None,
             field_number: 0,
             // `DOCS_WITH_FIELD_EMPTY` (-2): `is_empty_field()` is true, so
             // `binary_value` returns `None` without touching `base_data`.

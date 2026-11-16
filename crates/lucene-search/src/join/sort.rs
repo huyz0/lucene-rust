@@ -227,10 +227,13 @@ impl FieldComparator for Comparator {
                 } else {
                     -1
                 };
-                Column::Ords(OrdColumn::open(ctx.reader, &s.field)?, missing_ord)
+                Column::Ords(
+                    Box::new(OrdColumn::open(ctx.reader, &s.field)?),
+                    missing_ord,
+                )
             }
             _ => Column::Longs(
-                numeric_column(ctx.reader, &s.field)?,
+                Box::new(numeric_column(ctx.reader, &s.field)?),
                 s.child_missing.and_then(JoinMissing::comparable),
             ),
         };
@@ -348,10 +351,10 @@ impl Blocks {
 /// The column a segment's parents are sorted by.
 enum Column<'a> {
     /// `getSortedNumeric`, with the comparable child missing value.
-    Longs(NumericColumn<'a>, Option<i64>),
+    Longs(Box<NumericColumn<'a>>, Option<i64>),
     /// `getSortedSet`, with the child missing ordinal (`-1`, or
     /// `Integer.MAX_VALUE` for `STRING_LAST`).
-    Ords(OrdColumn<'a>, i64),
+    Ords(Box<OrdColumn<'a>>, i64),
 }
 
 struct Leaf<'a> {
@@ -625,7 +628,7 @@ impl<'a> OrdColumn<'a> {
         let store = |e| Error::from(lucene_codecs::blocktree::Error::Store(e));
         match self {
             OrdColumn::Absent => Ok(&[]),
-            OrdColumn::Single(_, d) | OrdColumn::Multi(_, d) => d.seek_ord(ord).map_err(store),
+            OrdColumn::Single(_, d) | OrdColumn::Multi(_, d) => d.lookup_ord(ord).map_err(store),
         }
     }
 }
@@ -702,7 +705,7 @@ mod tests {
 
     #[test]
     fn a_field_without_values_sorts_every_parent_as_missing() {
-        let mut longs = leaf(Column::Longs(NumericColumn::Absent, Some(1)));
+        let mut longs = leaf(Column::Longs(Box::new(NumericColumn::Absent), Some(1)));
         assert_eq!(longs.value(2, 0.0).unwrap(), SortValue::Long(42));
         // Read twice: the second answer comes from the memo.
         assert_eq!(longs.value(2, 0.0).unwrap(), SortValue::Long(42));
@@ -712,7 +715,7 @@ mod tests {
         );
         assert_eq!(longs.term(0).unwrap(), b"");
 
-        let mut ords = leaf(Column::Ords(OrdColumn::Absent, -1));
+        let mut ords = leaf(Column::Ords(Box::new(OrdColumn::Absent), -1));
         assert_eq!(ords.value(2, 0.0).unwrap(), SortValue::Bytes(None));
         assert_eq!(
             ords.compare_bottom(&SortValue::Long(0), 2, 0.0).unwrap(),
@@ -733,7 +736,10 @@ mod tests {
         // No child has a value, so the child missing ordinal never joins a
         // selection (`advanceExact` is `false`); looked up, `STRING_LAST`'s
         // is past every term.
-        let mut last = leaf(Column::Ords(OrdColumn::Absent, i64::from(i32::MAX)));
+        let mut last = leaf(Column::Ords(
+            Box::new(OrdColumn::Absent),
+            i64::from(i32::MAX),
+        ));
         assert_eq!(last.value(2, 0.0).unwrap(), SortValue::Bytes(None));
         let e = last.term(i64::from(i32::MAX)).unwrap_err();
         assert!(e.to_string().contains("out of bounds for length 0"), "{e}");

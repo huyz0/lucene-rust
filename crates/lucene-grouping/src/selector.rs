@@ -208,8 +208,10 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
         self.misses = self.misses.saturating_add(1);
         let count = values.value_count();
         let known = i32::try_from(self.values.len()).unwrap_or(i32::MAX);
-        let worth_walking = known.saturating_mul(8) >= count
-            || (self.dict.is_some() && self.misses.saturating_mul(64) >= count);
+        // A masked field's dictionary is walked as stored, which is not what the field shows.
+        let worth_walking = self.dict.is_none_or(|(_, entry)| entry.mask.is_none())
+            && (known.saturating_mul(8) >= count
+                || (self.dict.is_some() && self.misses.saturating_mul(64) >= count));
         if !self.walked && self.misses > 32 && worth_walking {
             self.walked = true;
             match self.dict {
