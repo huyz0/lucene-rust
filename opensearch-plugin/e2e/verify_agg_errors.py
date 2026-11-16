@@ -33,6 +33,23 @@ CASES = {
     "composite empty sources": {"size": 0, "aggs": {"a": {"composite": {"sources": []}}}},
     "pipeline missing path": {"size": 0, "aggs": {"a": {"terms": {"field": "category"}}, "b": {"max_bucket": {"buckets_path": "zz"}}}},
     "global with terms": {"size": 0, "aggs": {"g": {"global": {}, "aggs": {"a": {"terms": {"field": "nope", "size": -2}}}}}},
+    "ok terms size 1": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 1}}}},
+    "ok terms size 10 shard_size 10": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 10, "shard_size": 10}}}},
+    "ok terms size 50": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 50}}}},
+    "ok terms size 100": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 100}}}},
+    "ok terms error stats": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 5, "show_term_doc_count_error": True}}}},
+    "ok terms track false": {"size": 0, "track_total_hits": False, "aggs": {"a": {"terms": {"field": "category", "size": 5}}}},
+    "ok terms track 5": {"size": 0, "track_total_hits": 5, "aggs": {"a": {"terms": {"field": "category", "size": 5}}}},
+    "ok terms match_all explicit": {"size": 0, "query": {"match_all": {}}, "aggs": {"a": {"terms": {"field": "category", "size": 7}}}},
+    "ok terms with query": {"size": 0, "query": {"match": {"body": "t8"}}, "aggs": {"a": {"terms": {"field": "category", "size": 7}}}},
+    "ok terms tag 1000 terms": {"size": 0, "aggs": {"a": {"terms": {"field": "tag", "size": 20}}}},
+    "ok terms min_doc_count 0": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "min_doc_count": 0}}}},
+    "ok terms min_doc_count big": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "min_doc_count": 20000}}}},
+    "ok terms include": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "include": "c1.*"}}}},
+    "ok terms order key": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "order": {"_key": "desc"}}}}},
+    "ok terms with hits": {"size": 3, "aggs": {"a": {"terms": {"field": "category", "size": 5}}}},
+    "ok terms post_filter": {"size": 0, "post_filter": {"term": {"category": "c1"}}, "aggs": {"a": {"terms": {"field": "category", "size": 5}}}},
+    "ok terms meta": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 3}, "meta": {"x": 1}}}},
     "ok terms": {"size": 0, "aggs": {"a": {"terms": {"field": "category", "size": 5}}}},
     "ok stats": {"size": 0, "aggs": {"a": {"stats": {"field": "price"}}}},
     "ok terms+min": {"size": 0, "aggs": {"a": {"terms": {"field": "category"}}, "m": {"min": {"field": "price"}}}},
@@ -49,7 +66,7 @@ def run(base, body, max_buckets=None):
 
 def shape(kind, r):
     if kind == "ok":
-        return ("ok", json.dumps(r.get("aggregations"), sort_keys=True), r["hits"]["total"])
+        return ("ok", json.dumps(r.get("aggregations"), sort_keys=True), r["hits"].get("total"))
     s = r
     try:
         j = json.loads(s[s.index("{"):])
