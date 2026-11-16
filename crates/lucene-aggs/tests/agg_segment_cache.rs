@@ -177,6 +177,7 @@ fn terms(field: &str, shard_size: usize, order: TermsOrder, subs: Vec<AggNode>) 
 
 fn date_histogram(interval: i64, subs: Vec<AggNode>) -> AggNode {
     AggNode::DateHistogram {
+        script: None,
         field: "ts".to_string(),
         missing: None,
         rounding: DateRounding {
@@ -249,6 +250,7 @@ fn trees() -> Vec<Vec<AggNode>> {
         // value, and the top hosts by key.
         vec![
             AggNode::Range {
+                script: None,
                 field: "dur".to_string(),
                 missing: Some(0),
                 kind: ValueKind::Long,
@@ -263,6 +265,7 @@ fn trees() -> Vec<Vec<AggNode>> {
                 }],
             },
             AggNode::Histogram {
+                script: None,
                 field: "dur".to_string(),
                 missing: None,
                 kind: ValueKind::Long,
@@ -270,6 +273,7 @@ fn trees() -> Vec<Vec<AggNode>> {
                 offset: 1.0,
                 hard_bounds: (None, None),
                 subs: vec![AggNode::NumericTerms {
+                    script: None,
                     field: "ts".to_string(),
                     missing: None,
                     kind: ValueKind::Long,
