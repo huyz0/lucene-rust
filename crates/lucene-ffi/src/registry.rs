@@ -39,6 +39,14 @@ pub(crate) use lucene_engine::registry::engine_writers;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The registry shares handles across threads with no `unsafe impl`, so
+    /// the compiler must derive both traits from the fields.
+    #[test]
+    fn a_writer_handle_is_send_and_sync_by_derivation() {
+        fn both<T: Send + Sync>() {}
+        both::<WriterHandle>();
+    }
     use std::sync::{OnceLock, RwLock};
 
     /// [`lock_recovering`] must hand back the inner value after a writer
