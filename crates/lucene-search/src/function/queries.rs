@@ -274,6 +274,9 @@ impl PartialEq for FunctionMatchQuery {
 pub struct FunctionScoreQuery {
     pub in_query: Box<Clause>,
     pub source: Arc<dyn DoubleValuesSource>,
+    /// OpenSearch's `min_score` of a `function_score` or `script_score`
+    /// (`MinScoreScorer`): only the documents scoring at least this match.
+    pub min_score: Option<f32>,
 }
 
 impl FunctionScoreQuery {
@@ -281,7 +284,16 @@ impl FunctionScoreQuery {
         Self {
             in_query: Box::new(in_query.into()),
             source,
+            min_score: None,
         }
+    }
+
+    /// This query matching only the documents that score at least `min_score`
+    /// (OpenSearch's `MinScoreScorer`).
+    #[must_use]
+    pub fn with_min_score(mut self, min_score: f32) -> Self {
+        self.min_score = Some(min_score);
+        self
     }
 
     /// `getWrappedQuery()`.
@@ -336,7 +348,9 @@ impl fmt::Debug for FunctionScoreQuery {
 
 impl PartialEq for FunctionScoreQuery {
     fn eq(&self, o: &Self) -> bool {
-        self.in_query == o.in_query && self.source.equality_key() == o.source.equality_key()
+        self.in_query == o.in_query
+            && self.source.equality_key() == o.source.equality_key()
+            && self.min_score.map(f32::to_bits) == o.min_score.map(f32::to_bits)
     }
 }
 

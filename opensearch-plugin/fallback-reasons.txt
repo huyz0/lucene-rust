@@ -49,7 +49,6 @@ field_similarity  # ExtendedEncoder.java, QueryEncoder.java
 function_score_  # ExtendedEncoder.java
 function_score_decay  # ExtendedEncoder.java
 function_score_field_data  # ExtendedEncoder.java
-function_score_min_score  # ExtendedEncoder.java
 function_score_script  # ExtendedEncoder.java
 fuzzy_automaton  # QueryEncoder.java
 geo_geometry  # GeoEncoder.java
@@ -102,7 +101,6 @@ rescore_query  # NativeRescore.java
 scaled_float  # SortEncoder.java
 script_query_script  # ExtendedEncoder.java
 script_score_hammingbit  # ExtendedEncoder.java
-script_score_min_score  # ExtendedEncoder.java
 script_score_script  # ExtendedEncoder.java
 scroll_after  # RustQueryPhaseSearcher.java
 search_after  # RustQueryPhaseSearcher.java
