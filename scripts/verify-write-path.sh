@@ -270,7 +270,7 @@ CASES=(
   # A monitor query index written by this port, opened by Lucene's
   # own Monitor (a writable WritableQueryIndex), CheckIndex-clean, with the same
   # queries, pieces and matches as the index Lucene writes for the corpus.
-  "lucene-search|write_monitor_index_fixture|monitor-index|VerifyMonitorIndex"
+  "lucene-search-integration|write_monitor_index_fixture|monitor-index|VerifyMonitorIndex"
   # And a merge whose *sources real Lucene wrote*, disagreeing about the two
   # facts `SegmentMerger` derives from its readers rather than from the merging
   # writer: `minVersion` (the minimum across the sources) and `hasBlocks` (their
