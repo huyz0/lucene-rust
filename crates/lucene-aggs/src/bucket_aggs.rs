@@ -407,6 +407,12 @@ impl TermsOrder {
 pub trait ScriptValuesSource: Send + Sync + std::fmt::Debug {
     /// The values on one segment.
     fn open<'a>(&self, reader: &'a SegmentReader) -> Result<Box<dyn ScriptValues + 'a>>;
+
+    /// The kind of the node's field when the script maps its values
+    /// (`_value`) instead of replacing them.
+    fn input_kind(&self) -> Option<ValueKind> {
+        None
+    }
 }
 
 /// A [`ScriptValuesSource`] on one segment.
@@ -414,6 +420,11 @@ pub trait ScriptValues {
     /// Appends `doc`'s values to `out`, ascending, in the node's value
     /// kind's encoding (none: the document has no value).
     fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()>;
+
+    /// Appends the script's result for each of `doc`'s field `inputs`, each
+    /// the script's `_value` (`ValuesSource.Numeric.WithScript`), ascending,
+    /// in the node's value kind's encoding.
+    fn mapped(&mut self, doc: i32, inputs: &[f64], out: &mut Vec<i64>) -> Result<()>;
 }
 
 /// One aggregation of a request, with its sub-aggregations.
@@ -1856,6 +1867,8 @@ enum Col<'a> {
     Scores(&'a RefCell<ScoredChunk>, i32),
     /// A script's values.
     Script(Box<dyn ScriptValues + 'a>),
+    /// A script mapping a field's values.
+    Mapped(Box<MappedCol<'a>>),
     None,
 }
 
@@ -2088,6 +2101,25 @@ impl Leaf<'_> {
             }
             Col::Ords(Ords::Multi(r), _) => r.values(doc, &mut self.buf)?,
             Col::Script(s) => s.values(doc, &mut self.buf)?,
+            Col::Mapped(m) => {
+                let m = &mut **m;
+                m.raw.clear();
+                match &mut m.values {
+                    Values::Absent => {}
+                    Values::Single(r) => {
+                        if let Some(v) = r.value(doc)? {
+                            m.raw.push(v);
+                        }
+                    }
+                    Values::Multi(r) => r.values(doc, &mut m.raw)?,
+                }
+                m.input.clear();
+                m.input
+                    .extend(m.raw.iter().map(|&v| metric_aggs::to_double(m.kind, v)));
+                if !m.input.is_empty() {
+                    m.script.mapped(doc, &m.input, &mut self.buf)?;
+                }
+            }
             Col::Filters(_) | Col::Scores(..) | Col::None => {}
         }
         if self.buf.is_empty() {
@@ -2114,6 +2146,57 @@ struct SegmentView<'s, 'a> {
     doc_base: i32,
 }
 
+/// The column of a node whose script maps its field's values (`_value`).
+fn mapped_col<'a>(node: &AggNode, reader: &'a SegmentReader) -> Result<Option<Col<'a>>> {
+    let (field, script) = match node {
+        AggNode::Metric {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::NumericTerms {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::Histogram {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::DateHistogram {
+            field,
+            script: Some(script),
+            ..
+        }
+        | AggNode::Range {
+            field,
+            script: Some(script),
+            ..
+        } => (field, script),
+        _ => return Ok(None),
+    };
+    let Some(kind) = script.input_kind() else {
+        return Ok(None);
+    };
+    Ok(Some(Col::Mapped(Box::new(MappedCol {
+        values: metric_aggs::open_values(reader, field)?,
+        script: script.open(reader)?,
+        kind,
+        raw: Vec::new(),
+        input: Vec::new(),
+    }))))
+}
+
+/// A field's values and the script that maps each (`_value`).
+struct MappedCol<'a> {
+    values: Values<'a>,
+    script: Box<dyn ScriptValues + 'a>,
+    kind: ValueKind,
+    raw: Vec<i64>,
+    input: Vec<f64>,
+}
+
 fn open_leaf<'a>(
     node: &AggNode,
     view: &SegmentView<'a, 'a>,
@@ -2121,99 +2204,104 @@ fn open_leaf<'a>(
     state: &mut State,
 ) -> Result<Leaf<'a>> {
     let reader = view.reader;
-    let col = match node {
-        AggNode::Metric {
-            script: Some(script),
-            ..
-        }
-        | AggNode::NumericTerms {
-            script: Some(script),
-            ..
-        }
-        | AggNode::Histogram {
-            script: Some(script),
-            ..
-        }
-        | AggNode::DateHistogram {
-            script: Some(script),
-            ..
-        }
-        | AggNode::Range {
-            script: Some(script),
-            ..
-        } => Col::Script(script.open(reader)?),
-        AggNode::Metric {
-            field,
-            kind,
-            source,
-            ..
-        } => {
-            // The points shortcut (a top-level `min`/`max` over a match-all)
-            // answers the segment without visiting a document.
-            let bound = if view.top && *source != Source::DocValues && node.missing().is_none() {
-                let spec = metric_aggs::MetricSpec {
-                    field: field.clone(),
-                    kind: *kind,
-                    source: *source,
-                    needs: metric_aggs::NEED_ALL,
+    let col = if let Some(mapped) = mapped_col(node, reader)? {
+        mapped
+    } else {
+        match node {
+            AggNode::Metric {
+                script: Some(script),
+                ..
+            }
+            | AggNode::NumericTerms {
+                script: Some(script),
+                ..
+            }
+            | AggNode::Histogram {
+                script: Some(script),
+                ..
+            }
+            | AggNode::DateHistogram {
+                script: Some(script),
+                ..
+            }
+            | AggNode::Range {
+                script: Some(script),
+                ..
+            } => Col::Script(script.open(reader)?),
+            AggNode::Metric {
+                field,
+                kind,
+                source,
+                ..
+            } => {
+                // The points shortcut (a top-level `min`/`max` over a match-all)
+                // answers the segment without visiting a document.
+                let bound = if view.top && *source != Source::DocValues && node.missing().is_none()
+                {
+                    let spec = metric_aggs::MetricSpec {
+                        field: field.clone(),
+                        kind: *kind,
+                        source: *source,
+                        needs: metric_aggs::NEED_ALL,
+                    };
+                    metric_aggs::leaf_point_bound(view.seg, &spec)?
+                } else {
+                    None
                 };
-                metric_aggs::leaf_point_bound(view.seg, &spec)?
-            } else {
-                None
-            };
-            if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
-                let is_min = *source == Source::PointsMin;
-                with_metric_col!(states, st => metric_aggs::MetricSlot::bound(slot(st, 0), is_min, v));
+                if let (Some(v), State::Metric(states)) = (bound, &mut *state) {
+                    let is_min = *source == Source::PointsMin;
+                    with_metric_col!(states, st => metric_aggs::MetricSlot::bound(slot(st, 0), is_min, v));
+                }
+                Col::Values(metric_aggs::open_values(reader, field)?, bound.is_some())
             }
-            Col::Values(metric_aggs::open_values(reader, field)?, bound.is_some())
-        }
-        AggNode::SignificantTerms { text: Some(_), .. } => Col::None,
-        AggNode::Cardinality {
-            field,
-            kind: CardinalityKind::Keyword,
-            ..
-        }
-        | AggNode::Terms { field, .. }
-        | AggNode::SignificantTerms {
-            field,
-            numeric: false,
-            ..
-        } => {
-            let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
-            Col::Ords(lucene_search::global_ords::open_ords(reader, field)?.0, map)
-        }
-        AggNode::Cardinality { field, .. }
-        | AggNode::Percentiles { field, .. }
-        | AggNode::SignificantTerms { field, .. }
-        | AggNode::NumericTerms { field, .. }
-        | AggNode::Histogram { field, .. }
-        | AggNode::DateHistogram { field, .. }
-        | AggNode::Range { field, .. } => {
-            Col::Values(metric_aggs::open_values(reader, field)?, false)
-        }
-        AggNode::Filters { filters, .. } => {
-            let mut bits = Vec::with_capacity(filters.len());
-            for f in filters {
-                bits.push(filter_bits(view.seg, f, globals)?);
+            AggNode::SignificantTerms { text: Some(_), .. } => Col::None,
+            AggNode::Cardinality {
+                field,
+                kind: CardinalityKind::Keyword,
+                ..
             }
-            Col::Filters(bits)
-        }
-        AggNode::SortedTopHits { .. } => match view.scores {
-            Some(chunk) => Col::Scores(chunk, view.doc_base),
-            None => Col::None,
-        },
-        AggNode::TopHits { .. } => match view.scores {
-            Some(chunk) => Col::Scores(chunk, view.doc_base),
-            None => {
-                return Err(lucene_search::Error::TermsAggType(
-                    "top_hits without scores".to_string(),
-                ))
+            | AggNode::Terms { field, .. }
+            | AggNode::SignificantTerms {
+                field,
+                numeric: false,
+                ..
+            } => {
+                let map = globals.get(field)?.segment_map(view.index).unwrap_or(&[]);
+                Col::Ords(lucene_search::global_ords::open_ords(reader, field)?.0, map)
             }
-        },
-        AggNode::Global { .. }
-        | AggNode::Nested { .. }
-        | AggNode::ReverseNested { .. }
-        | AggNode::Composite { .. } => Col::None,
+            AggNode::Cardinality { field, .. }
+            | AggNode::Percentiles { field, .. }
+            | AggNode::SignificantTerms { field, .. }
+            | AggNode::NumericTerms { field, .. }
+            | AggNode::Histogram { field, .. }
+            | AggNode::DateHistogram { field, .. }
+            | AggNode::Range { field, .. } => {
+                Col::Values(metric_aggs::open_values(reader, field)?, false)
+            }
+            AggNode::Filters { filters, .. } => {
+                let mut bits = Vec::with_capacity(filters.len());
+                for f in filters {
+                    bits.push(filter_bits(view.seg, f, globals)?);
+                }
+                Col::Filters(bits)
+            }
+            AggNode::SortedTopHits { .. } => match view.scores {
+                Some(chunk) => Col::Scores(chunk, view.doc_base),
+                None => Col::None,
+            },
+            AggNode::TopHits { .. } => match view.scores {
+                Some(chunk) => Col::Scores(chunk, view.doc_base),
+                None => {
+                    return Err(lucene_search::Error::TermsAggType(
+                        "top_hits without scores".to_string(),
+                    ))
+                }
+            },
+            AggNode::Global { .. }
+            | AggNode::Nested { .. }
+            | AggNode::ReverseNested { .. }
+            | AggNode::Composite { .. } => Col::None,
+        }
     };
     let mut subs = Vec::with_capacity(node.subs().len());
     let sub_view = SegmentView {
@@ -4344,7 +4432,7 @@ fn any_order(l: &Leaf<'_>) -> bool {
         && l.text.is_none()
         && l.filter.is_none()
         && l.composite.is_none()
-        && !matches!(l.col, Col::Script(_) | Col::Scores(..))
+        && !matches!(l.col, Col::Script(_) | Col::Mapped(_) | Col::Scores(..))
         && l.subs.iter().all(any_order)
 }
 
