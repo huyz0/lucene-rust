@@ -82,6 +82,12 @@ PREFIXES = {
 # (Java file, Java name) -> (Rust file, Rust name), where the names differ by
 # more than a prefix or the prefix rule is ambiguous.
 RENAMES = {
+    ("ExtendedEncoder.java", "NODE_MATCH_NONE"): ("query_blob.rs", "NODE_MATCH_NONE"),
+    ("NativeHybrid.java", "RETURN_DOCS"): ("reader_search.rs", "HYBRID_RETURN_DOCS"),
+    ("NativeHybrid.java", "POST_FILTER"): ("reader_search.rs", "HYBRID_POST_FILTER"),
+    ("NativeHybrid.java", "SORT"): ("reader_search.rs", "HYBRID_SORT"),
+    ("NativeHybrid.java", "TERMINATE"): ("reader_search.rs", "HYBRID_TERMINATE"),
+    ("NativeHybrid.java", "COLLAPSE"): ("reader_search.rs", "HYBRID_COLLAPSE"),
     ("ExtendedEncoder.java", "MAX_PATTERN_TERMS"): ("pattern_phrase.rs", "MAX_TERMS"),
     ("QueryEncoder.java", "MAX_DEPTH"): ("clauses.rs", "MAX_CLAUSE_DEPTH"),
     ("QueryEncoder.java", "MAX_NODES"): ("clauses.rs", "MAX_CLAUSE_COUNT"),
@@ -153,7 +159,8 @@ JAVA_ONLY = {
     ("LuceneChangesSnapshot.java", "MIN_SEQUENTIAL_ACCESS_BATCH_SIZE"): "derived OpenSearch engine code",
     ("RustIndexWriter.java", "BUFFER_BYTES_PER_BLOB_BYTE"): "the Java side's RAM accounting estimate",
     ("PainlessScore.java", "CACHE_LIMIT"): "the Java side's cache of compiled scripts",
-    ("ExtendedEncoder.java", "MAX_REPEATS"): "Java refuses earlier than Rust's clause limit",
+    ("NativeAggregations.java", "HALF_FLOAT"): "ValueKind::HalfFloat's number in metric_aggs.rs, an enum's",
+    ("NativeAggregations.java", "SCALED"): "ValueKind::Scaled's number in metric_aggs.rs, an enum's",
     ("PatternTextFieldMapper.java", "MAX_TEMPLATE_BYTES"): "MAX_TEMPLATE_BYTES in lucene-pattern-text's fields.rs, outside lucene-ffi (both Lucene's IndexWriter.MAX_TERM_LENGTH)",
     ("JoinQueries.java", "MAX_DEPTH"): "how deep the request filter looks for joins in a query builder tree, Java only",
     ("SparseAnnQueryBuilder.java", "DEFAULT_TOP_K"): "neural-search's query default, resolved before encoding",
