@@ -1,6 +1,7 @@
 //! Peak resident memory of indexing one huge text field, owned versus shared:
 //! `cargo run --release -p lucene-index --example shared_text_mem -- 200 shared`
-//! (`owned` for the `String` path). Linux only: it reads `/proc/self`.
+//! (`owned` for the `String` path); a third argument `store` also stores the
+//! field. Linux only: it reads `/proc/self`.
 #![allow(missing_docs, clippy::arithmetic_side_effects)]
 use lucene_index::document::{Document, Store, TextField};
 use lucene_index::index_writer::IndexWriter;
@@ -23,6 +24,11 @@ fn status(key: &str) -> u64 {
 fn main() {
     let mb: usize = std::env::args().nth(1).unwrap().parse().unwrap();
     let shared = std::env::args().nth(2).unwrap() == "shared";
+    let store = if std::env::args().nth(3).as_deref() == Some("store") {
+        Store::Yes
+    } else {
+        Store::No
+    };
     let mut text = String::with_capacity(mb << 20);
     let mut i = 0u64;
     while text.len() < mb << 20 {
@@ -47,9 +53,9 @@ fn main() {
     let mut d = Document::new();
     if shared {
         let a: Arc<str> = Arc::from(text); // the caller's one copy
-        d.add(TextField::new_shared("body", a, Store::No));
+        d.add(TextField::new_shared("body", a, store));
     } else {
-        d.add(TextField::new("body", text, Store::No));
+        d.add(TextField::new("body", text, store));
     }
     // forget the transient peak of building the text; only indexing is measured
     std::fs::write("/proc/self/clear_refs", "5").unwrap();
