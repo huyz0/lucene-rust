@@ -55,6 +55,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.function.ToLongFunction;
 
 /**
  * Runs the query phase of a shard search natively when the whole request is inside the supported
@@ -173,10 +174,12 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // QueryPhase took the timeout's start just before calling here.
         NativeMemory.queryStarted(hasTimeout ? ctx.timeout().nanos() : 0);
         try {
+            NativeProfile.begin(ctx);
             return containsHybrid(query)
                 ? searchHybridOrLucene(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout)
                 : searchPlain(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         } finally {
+            NativeProfile.end();
             NativeMemory.queryStarted(0);
             PainlessScore.endRequest();
         }
@@ -254,6 +257,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             ? null
             : ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> NativeAggregationTree.plan(ctx, field -> true));
         String reason = ineligible(ctx, collectors, hasFilterCollector, aggs != null || tree != null);
+        if (reason == null || "search_after".equals(reason)) {
+            // A request Lucene's collector refuses: its error, as QueryPhase raises it.
+            RuntimeException refused = SortEncoder.searchAfterRefusal(ctx.sort() == null ? null : ctx.sort().sort, ctx.searchAfter(), ctx.size(), searcher.getIndexReader());
+            if (refused != null) {
+                throw new QueryPhaseExecutionException(ctx.shardTarget(), "Failed to execute main query", refused);
+            }
+        }
         byte[] blob = null;
         // A post_filter narrows the hits, not the aggregations (QueryPhase wraps only the top-docs
         // collector in its FilteredCollector): the hits search "query AND filter", the filter a
@@ -279,7 +289,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             // filter narrower than the range, which the native engine would not
             // reproduce, so OpenSearch answers.
             Query postFilter = reason == null && ctx.parsedPostFilter() != null ? searcher.rewrite(ctx.parsedPostFilter().query()) : null;
-            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) {
+            if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) {
                 reason = "approximate";
             }
             if (reason == null && postFilter != null) {
@@ -302,8 +312,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                 hitsBlob = QueryEncoder.withMinScore(hitsBlob, ctx.minimumScore());
             }
             if (reason == null) {
-                blob = similarities.prefix(blob);
-                hitsBlob = similarities.prefix(hitsBlob);
+                boolean sameBlob = blob == hitsBlob;
+                blob = NativeDfs.prefix(searcher, similarities.prefix(blob));
+                hitsBlob = sameBlob ? blob : NativeDfs.prefix(searcher, similarities.prefix(hitsBlob));
             }
         }
         // The rescore queries, encoded before anything runs: one that cannot be leaves the whole
@@ -394,6 +405,8 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         }
         NativeReaders.Acquired acquired = null;
         boolean memoryTimedOut = false;
+        // The reader the native search ran over, for a profile to run the query over again.
+        long[] searchedHandle = new long[1];
         if (reason == null) {
             acquired = readers.acquire(searcher.getIndexReader());
             reason = acquired.fallbackReason();
@@ -412,6 +425,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     // The writer's buffered documents too, when the searcher has a view of them and
                     // the request is one the buffers answer; otherwise the reader's documents alone.
                     LiveDirectoryReader live = LiveDirectoryReader.find(searcher.getIndexReader());
+                    searchedHandle[0] = acquired.handle();
                     boolean plain = blob == hitsBlob && aggs == null && tree == null && sortBlob == null && collapseBlob == null
                         && rescores == null && sort == null && terminateAfter == 0;
                     if (live == null) {
@@ -452,6 +466,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                             logger.debug("lucene-rust: the buffers cannot be read as segments ({}): {}", rc, NativeBridge.lastError());
                             reason = "realtime_view";
                         } else {
+                            searchedHandle[0] = whole[0];
                             reason = searchNative(ctx, whole[0], blob, hitsBlob, sortBlob, collapseBlob, rescores, sort, scoreDocs, aggs, tree, true);
                             if (reason == null) {
                                 stats.liveQuery();
@@ -470,6 +485,9 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
                     timedOut(ctx);
                 }
                 stats.nativeTime(System.nanoTime() - start);
+                if (NativeProfile.requested(ctx)) {
+                    profile(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, searchedHandle[0], blob, similarities(searcher), System.nanoTime() - start);
+                }
                 return false;
             }
         }
@@ -491,6 +509,93 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         boolean rescore = fallback.searchWith(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout);
         stats.luceneTime(System.nanoTime() - luceneStart);
         return rescore;
+    }
+
+    private static SimilarityEncoder similarities(ContextIndexSearcher searcher) {
+        return new SimilarityEncoder(searcher.getSimilarity());
+    }
+
+    /**
+     * The profile of a search the native engine answered: the query's scorer tree timed clause by
+     * clause ({@link NativeProfile}), the collector tree OpenSearch builds for the request with the
+     * time the native calls took, laid into the request's profilers.
+     */
+    private void profile(
+        SearchContext ctx,
+        ContextIndexSearcher searcher,
+        Query query,
+        LinkedList<QueryCollectorContext> collectors,
+        boolean hasFilterCollector,
+        boolean hasTimeout,
+        long handle,
+        byte[] blob,
+        SimilarityEncoder similarities,
+        long totalNanos
+    ) throws IOException {
+        NativeProfile.Phases phases = NativeProfile.phases();
+        phases.totalNanos = totalNanos;
+        NativeProfile.aggregated(ctx, System.nanoTime() - totalNanos, phases.aggNanos);
+        phases.slices = ctx.shouldUseConcurrentSearch() && searcher.getSlices() != null ? Math.max(1, searcher.getSlices().length) : 1;
+        long[] javaClock = new long[1];
+        NativeProfile.Report report = NativeProfile.run(handle, blob, phases.topScores, phases.topN, phases.countLimit, javaClock);
+        ToLongFunction<Query> weights = q -> {
+            long t0 = System.nanoTime();
+            ExtendedEncoder.withFieldTypes(ctx.mapperService()::fieldType, () -> QueryEncoder.encode(q, similarities, searcher.getTopReaderContext()));
+            return System.nanoTime() - t0;
+        };
+        // QueryPhase makes the post_filter's weight before the search makes the query's.
+        Query filter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
+        int roots = -1;
+        if (filter != null) {
+            try {
+                QueryEncoder.Encoded encoded = ExtendedEncoder.withFieldTypes(
+                    ctx.mapperService()::fieldType,
+                    () -> QueryEncoder.encode(filter, similarities, searcher.getTopReaderContext())
+                );
+                long[] filterClock = new long[1];
+                NativeProfile.Report filtered = encoded.blob() == null
+                    ? null
+                    : NativeProfile.run(handle, encoded.blob(), false, 0, Long.MAX_VALUE, filterClock);
+                if (filtered != null) {
+                    NativeProfile.recordQuery(ctx, searcher, filter, filtered, weights, filterClock[0], true, true);
+                }
+            } catch (RuntimeException e) {
+                logger.warn("lucene-rust: laying the native post_filter profile into the response failed", e);
+            }
+            roots = NativeProfile.rootCount(ctx);
+        }
+        NativeProfile.recordCollectors(ctx, searcher, query, collectors, hasFilterCollector, hasTimeout, phases);
+        NativeProfile.dropRootsAfter(ctx, roots);
+        if (report != null) {
+            try {
+                NativeProfile.recordQuery(ctx, searcher, query, report, weights, javaClock[0], phases.topScores, false);
+            } catch (RuntimeException e) {
+                logger.warn("lucene-rust: laying the native profile into the response failed", e);
+            }
+        }
+        // RescorePhase makes each rescore query's weight after the search.
+        if (ctx.rescore() != null) {
+            for (org.opensearch.search.rescore.RescoreContext r : ctx.rescore()) {
+                if (r instanceof org.opensearch.search.rescore.QueryRescorer.QueryRescoreContext q) {
+                    try {
+                        Query rescoring = searcher.rewrite(q.parsedQuery().query());
+                        QueryEncoder.Encoded encoded = ExtendedEncoder.withFieldTypes(
+                            ctx.mapperService()::fieldType,
+                            () -> QueryEncoder.encode(rescoring, similarities, searcher.getTopReaderContext())
+                        );
+                        long[] rescoreClock = new long[1];
+                        NativeProfile.Report rescored = encoded.blob() == null
+                            ? null
+                            : NativeProfile.run(handle, encoded.blob(), false, 0, Long.MAX_VALUE, rescoreClock);
+                        if (rescored != null) {
+                            NativeProfile.recordQuery(ctx, searcher, rescoring, rescored, weights, rescoreClock[0], true, true);
+                        }
+                    } catch (RuntimeException e) {
+                        logger.warn("lucene-rust: laying the native rescore profile into the response failed", e);
+                    }
+                }
+            }
+        }
     }
 
     /** How long a search Lucene answers waits for a buffer being flushed to be published. */
@@ -563,7 +668,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         // The post filter is rewritten as QueryPhase rewrites it; an approximate range in it matches
         // only the first documents it visits, which the native engine would not reproduce.
         Query postFilter = ctx.parsedPostFilter() == null ? null : searcher.rewrite(ctx.parsedPostFilter().query());
-        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false) return "approximate";
+        if (postFilter != null && approximated(postFilter) && buffered(searcher) == false && flags(ctx).nativeApproximate() == false) return "approximate";
         NativeHybrid.Encoded enc = ExtendedEncoder.withFieldTypes(
             ctx.mapperService()::fieldType,
             () -> NativeHybrid.encode(hybrid, similarities, searcher, flags(ctx).allShapes())
@@ -969,14 +1074,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.rescore() != null && ctx.rescore().isEmpty() == false && ctx.scrollContext() == null && ctx.size() > 0) {
             if (NativeRescore.supported(ctx) == false) return "rescore";
         }
-        if (ctx.getProfilers() != null) return "profile";
         // A shard with an @timestamp field sorted by it ascending: ContextIndexSearcher visits
-        // each slice's segments last first, which breaks sort ties and orders an aggregation's sums
-        // differently from the native pass (ascending); stay on OpenSearch's.
-        if (ctx.shouldUseTimeSeriesDescSortOptimization()) return "time_series_order";
+        // each slice's segments last first: NativeAggregations.slices hands the native pass that order.
+        // terminate_after cuts the segments in index order, which the reversed visit does not.
+        if (ctx.shouldUseTimeSeriesDescSortOptimization() && terminating) return "time_series_order";
         // dfs_query_then_fetch scores with statistics aggregated across shards
-        // (ContextIndexSearcher.setAggregatedDfs); the native engine only knows this shard's.
-        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH) return "dfs";
+        // (ContextIndexSearcher.setAggregatedDfs), which NativeDfs hands the native statistics pass.
+        if (ctx.searchType() == SearchType.DFS_QUERY_THEN_FETCH && NativeDfs.readable() == false) return "dfs";
         // Another plugin may replace the top-docs collector (QueryPhase's own first question).
         try {
             if (QueryCollectorContextSpecRegistry.getQueryCollectorContextSpec(
@@ -1245,6 +1349,13 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (ctx.isCancelled()) {
             return "cancelled";
         }
+        NativeProfile.Phases phases = NativeProfile.phases();
+        if (phases != null) {
+            phases.topN = numDocs;
+            phases.countLimit = countLimit;
+            phases.topScores = numDocs > 0 && (sort == null || sortByScore(sort));
+        }
+        long aggStart = System.nanoTime();
         // The aggregations first, kept aside until the hits are in too: a failure in either
         // re-runs the whole request on Lucene.
         InternalAggregations aggResult = null;
@@ -1315,10 +1426,17 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
             }
             NativeAggregations.consumeBuckets(ctx, aggResult);
         }
+        if (phases != null) {
+            phases.aggNanos = aggs == null && tree == null ? 0 : System.nanoTime() - aggStart;
+        }
+        long hitsStart = System.nanoTime();
         String reason = collapseBlob != null ? searchCollapsed(ctx, handle, hitsBlob, sortBlob, collapseBlob, Math.max(1, numDocs))
             : sortBlob != null
             ? searchSorted(ctx, handle, hitsBlob, sortBlob, sort, scoreDocs, Math.max(1, numDocs), countLimit, shortcut)
             : searchUnsorted(ctx, handle, hitsBlob, numDocs, countLimit, shortcut, shortcutTerm, counted, segCounts);
+        if (phases != null) {
+            phases.hitsNanos = System.nanoTime() - hitsStart;
+        }
         if (reason == null && rescores != null) {
             // RescoreProcessor, after the query phase: each rescorer over the hits so far.
             reason = rescore(ctx, handle, rescores);
@@ -1736,14 +1854,6 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         int shortcut
     ) {
         SortField[] fields = sort.getSort();
-        // A nested key does not skip natively (its field's points are the children's), nor do a
-        // few others as Lucene's do (SortEncoder.skippingReason); Lucene's comparator skips once
-        // more than the threshold's hits are in, so such a sort runs here only where the shard
-        // cannot hold that many documents.
-        String skipping = SortEncoder.skippingReason(fields);
-        if (skipping != null && ctx.searcher().getIndexReader().maxDoc() > countLimit) {
-            return skipping;
-        }
         int[] docs = new int[numDocs];
         long[] values = new long[numDocs * fields.length];
         long[] counts = new long[5];

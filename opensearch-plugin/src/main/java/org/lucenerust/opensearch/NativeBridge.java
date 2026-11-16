@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 185;
+    public static final int EXPECTED_ABI_VERSION = 187;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -203,6 +203,10 @@ public final class NativeBridge {
         static final MethodHandle SEARCH_HYBRID = bind(
             "ffi_jvm_reader_search_hybrid_alloc",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS)
+        );
+        static final MethodHandle PROFILE = bind(
+            "ffi_jvm_reader_profile_alloc",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS)
         );
         static final MethodHandle SEARCH_COLLAPSED = bind(
             "ffi_jvm_reader_search_collapsed_alloc",
@@ -1556,6 +1560,44 @@ public final class NativeBridge {
                 byte[] encoded = take(result);
                 if (encoded == null) {
                     return tooLarge("the hybrid results");
+                }
+                out[0] = encoded;
+            }
+            return rc;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Runs a request's query blob once more with a timer around every clause of its scorer tree
+     * ({@link NativeProfile}): the timers ({@code profile_blob} in {@code profile.rs} of the
+     * engine crate) in {@code out[0]}. {@code topScores} runs it into the top-hits collector
+     * ({@code topN}, counting under {@code countLimit}), otherwise into a plain count.
+     */
+    public static int profile(long handle, byte[] blob, boolean topScores, long topN, long countLimit, byte[][] out) {
+        if (blob == null) {
+            return nullArgument("blob");
+        }
+        if (out == null || out.length < 1) {
+            return fail(INVALID_ARGUMENT, "out holds no slot");
+        }
+        try (Scratch s = Scratch.open()) {
+            MemorySegment result = ownedSlot(s);
+            int rc = (int) H.PROFILE.invokeExact(
+                handle,
+                s.bytes(blob),
+                (long) blob.length,
+                topScores ? 1 : 0,
+                topN,
+                countLimit,
+                ptrOf(result),
+                lenOf(result)
+            );
+            if (rc == OK) {
+                byte[] encoded = take(result);
+                if (encoded == null) {
+                    return tooLarge("the profile timers");
                 }
                 out[0] = encoded;
             }
