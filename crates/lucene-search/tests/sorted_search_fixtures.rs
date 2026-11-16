@@ -21,7 +21,8 @@ use lucene_search::field_norms::FieldNorms;
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::{MatchAllDocsQuery, PointsRangeQuery};
 use lucene_search::top_field::{
-    search_sorted_sliced, search_sorted_tracking, FieldDoc, Selector, SortField, SortType,
+    search_sorted_min_score, search_sorted_sliced, search_sorted_tracking, FieldDoc, Selector,
+    SortField, SortType,
 };
 use lucene_search::{BooleanQuery, Clause, PhraseQuery, TermQuery};
 use lucene_store::FsDirectory;
@@ -224,6 +225,31 @@ fn a_slice_visits_its_segments_in_the_order_it_is_given() {
     let first_slice_reversed = first_docs(&[vec![1, 0], (2..n).collect()]);
     assert_eq!(first_slice_reversed.len(), 5);
     assert!(first_slice_reversed.iter().all(|&d| d < last_base + 5));
+    // A max-score search over several slices, the first not in natural order, still collects
+    // every segment (it runs as one collector over all of them, not over the first slice alone).
+    let tracked = |slices: &[Vec<usize>]| {
+        let top = search_sorted_min_score(
+            &segments,
+            reader.segment_readers(),
+            &all,
+            &norms,
+            &by_score,
+            5,
+            1_000_000,
+            None,
+            true,
+            slices,
+            None,
+        )
+        .unwrap();
+        (
+            top.total,
+            top.hits.iter().map(|h| h.doc).collect::<Vec<_>>(),
+        )
+    };
+    let whole = tracked(&[(0..n).collect()]);
+    assert_eq!(tracked(&[vec![1, 0], (2..n).collect()]), whole);
+    assert_eq!(tracked(&[vec![n - 1], (0..n - 1).collect()]), whole);
 }
 
 #[test]

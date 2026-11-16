@@ -5073,8 +5073,11 @@ pub fn search_sorted_min_score(
         // One slice is one collector over the segments in the order it is given: a time-series
         // shard sorted by its timestamp ascending visits them last first
         // (`ContextIndexSearcher.search`), which decides which of the equal keys it keeps.
+        // Several slices here (a `size: 0` or max-score search) are searched as one collector
+        // over every segment, so only a lone slice can name the order.
         let visited = slices
             .first()
+            .filter(|_| slices.len() == 1)
             .filter(|s| s.iter().enumerate().any(|(at, &segment)| at != segment));
         return search_sorted_leaves(
             segments,
