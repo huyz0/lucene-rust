@@ -98,7 +98,11 @@ fn main() {
                     let f = &f;
                     s.spawn(move || {
                         let layout = std::alloc::Layout::from_size_align(4096, 4096).unwrap();
-                        let p = unsafe { std::alloc::alloc(layout) };
+                        // SAFETY: the layout has non-zero size.
+                        let p = unsafe { std::alloc::alloc_zeroed(layout) };
+                        assert!(!p.is_null());
+                        // SAFETY: `p` is a live, zeroed 4096-byte allocation that only
+                        // this thread uses until the `dealloc` below.
                         let buf = unsafe { std::slice::from_raw_parts_mut(p, 4096) };
                         let mut x = 0x1234 + i as u64 * 31;
                         let mut n = 0u64;
@@ -107,6 +111,7 @@ fn main() {
                             f.read_at(buf, (pg * 4096) as u64).unwrap();
                             n += 1;
                         }
+                        // SAFETY: `p` came from `alloc_zeroed(layout)`; `buf` is not used again.
                         unsafe { std::alloc::dealloc(p, layout) };
                         n
                     })

@@ -260,6 +260,11 @@ mod avx512 {
 
     /// `R` query tokens from `qi` against every block; `row(block, k)` loads
     /// component `k` of a block's 16 tokens.
+    ///
+    /// # Safety
+    /// AVX-512F is enabled (the caller is a kernel with the feature on);
+    /// `query` holds `qi + R` rows of `dim` floats; `row` is in bounds for every
+    /// block below `tokens.div_ceil(16)` and `k < dim`.
     #[inline(always)]
     unsafe fn pass<const R: usize>(
         query: &[f32],
@@ -269,33 +274,39 @@ mod avx512 {
         best: &mut [f32],
         row: impl Fn(usize, usize) -> __m512,
     ) {
-        let q = query.as_ptr();
-        let mut maxes = [_mm512_set1_ps(f32::NEG_INFINITY); R];
-        for blk in 0..tokens.div_ceil(LANES) {
-            let mut acc = [_mm512_setzero_ps(); R];
-            for k in 0..dim {
-                let r = row(blk, k);
-                for (j, a) in acc.iter_mut().enumerate() {
-                    // SAFETY: (qi + j) * dim + k < query.len().
-                    let qv = _mm512_set1_ps(unsafe { *q.add((qi + j) * dim + k) });
-                    *a = _mm512_fmadd_ps(qv, r, *a);
+        // SAFETY: only called from the `#[target_feature]` kernels above, which
+        // are themselves only reached once AVX-512F is detected, and inlined
+        // into them, so the intrinsics run with the feature on; `row` is one of
+        // those kernels' loads, in bounds per their contracts.
+        unsafe {
+            let q = query.as_ptr();
+            let mut maxes = [_mm512_set1_ps(f32::NEG_INFINITY); R];
+            for blk in 0..tokens.div_ceil(LANES) {
+                let mut acc = [_mm512_setzero_ps(); R];
+                for k in 0..dim {
+                    let r = row(blk, k);
+                    for (j, a) in acc.iter_mut().enumerate() {
+                        // (qi + j) * dim + k < query.len().
+                        let qv = _mm512_set1_ps(*q.add((qi + j) * dim + k));
+                        *a = _mm512_fmadd_ps(qv, r, *a);
+                    }
+                }
+                let valid = (tokens - blk * LANES).min(LANES);
+                let mask: __mmask16 = if valid == LANES {
+                    0xFFFF
+                } else {
+                    ((1u32 << valid) - 1) as u16
+                };
+                for (m, a) in maxes.iter_mut().zip(acc) {
+                    *m = _mm512_mask_max_ps(*m, mask, *m, a);
                 }
             }
-            let valid = (tokens - blk * LANES).min(LANES);
-            let mask: __mmask16 = if valid == LANES {
-                0xFFFF
-            } else {
-                ((1u32 << valid) - 1) as u16
-            };
-            for (m, a) in maxes.iter_mut().zip(acc) {
-                *m = _mm512_mask_max_ps(*m, mask, *m, a);
+            for (dst, m) in best.iter_mut().zip(maxes) {
+                let mut lanes = [0f32; LANES];
+                // 16 floats into a 16-float array.
+                _mm512_storeu_ps(lanes.as_mut_ptr(), m);
+                *dst = super::lane_max(&lanes);
             }
-        }
-        for (dst, m) in best.iter_mut().zip(maxes) {
-            let mut lanes = [0f32; LANES];
-            // SAFETY: 16 floats into a 16-float array.
-            unsafe { _mm512_storeu_ps(lanes.as_mut_ptr(), m) };
-            *dst = super::lane_max(&lanes);
         }
     }
 }
@@ -364,6 +375,8 @@ mod avx2 {
         }
     }
 
+    /// # Safety
+    /// AVX2, FMA and F16C are enabled; the rest as the AVX-512 `pass`.
     #[inline(always)]
     unsafe fn pass<const R: usize>(
         query: &[f32],
@@ -373,35 +386,39 @@ mod avx2 {
         best: &mut [f32],
         row: impl Fn(usize, usize) -> (__m256, __m256),
     ) {
-        let q = query.as_ptr();
-        let mut maxes = [[f32::NEG_INFINITY; LANES]; R];
-        for blk in 0..tokens.div_ceil(LANES) {
-            let mut lo = [_mm256_setzero_ps(); R];
-            let mut hi = [_mm256_setzero_ps(); R];
-            for k in 0..dim {
-                let (r0, r1) = row(blk, k);
-                for j in 0..R {
-                    // SAFETY: (qi + j) * dim + k < query.len().
-                    let qv = _mm256_set1_ps(unsafe { *q.add((qi + j) * dim + k) });
-                    lo[j] = _mm256_fmadd_ps(qv, r0, lo[j]);
-                    hi[j] = _mm256_fmadd_ps(qv, r1, hi[j]);
+        // SAFETY: only called from the `#[target_feature]` kernels above, which
+        // are themselves only reached once AVX2, FMA and F16C are detected, and
+        // inlined into them, so the intrinsics run with the features on; `row`
+        // is one of those kernels' loads, in bounds per their contracts.
+        unsafe {
+            let q = query.as_ptr();
+            let mut maxes = [[f32::NEG_INFINITY; LANES]; R];
+            for blk in 0..tokens.div_ceil(LANES) {
+                let mut lo = [_mm256_setzero_ps(); R];
+                let mut hi = [_mm256_setzero_ps(); R];
+                for k in 0..dim {
+                    let (r0, r1) = row(blk, k);
+                    for j in 0..R {
+                        // (qi + j) * dim + k < query.len().
+                        let qv = _mm256_set1_ps(*q.add((qi + j) * dim + k));
+                        lo[j] = _mm256_fmadd_ps(qv, r0, lo[j]);
+                        hi[j] = _mm256_fmadd_ps(qv, r1, hi[j]);
+                    }
                 }
-            }
-            let valid = (tokens - blk * LANES).min(LANES);
-            for j in 0..R {
-                let mut lanes = [0f32; LANES];
-                // SAFETY: 2 x 8 floats into a 16-float array.
-                unsafe {
+                let valid = (tokens - blk * LANES).min(LANES);
+                for j in 0..R {
+                    let mut lanes = [0f32; LANES];
+                    // 2 x 8 floats into a 16-float array.
                     _mm256_storeu_ps(lanes.as_mut_ptr(), lo[j]);
                     _mm256_storeu_ps(lanes.as_mut_ptr().add(8), hi[j]);
-                }
-                for (m, &v) in maxes[j].iter_mut().zip(&lanes[..valid]) {
-                    *m = if *m > v { *m } else { v };
+                    for (m, &v) in maxes[j].iter_mut().zip(&lanes[..valid]) {
+                        *m = if *m > v { *m } else { v };
+                    }
                 }
             }
-        }
-        for (dst, m) in best.iter_mut().zip(&maxes) {
-            *dst = super::lane_max(m);
+            for (dst, m) in best.iter_mut().zip(&maxes) {
+                *dst = super::lane_max(m);
+            }
         }
     }
 }

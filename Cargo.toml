@@ -153,6 +153,14 @@ criterion = "0.5"
 # rule for writing an `#[allow]` that is allowed to stay.
 [workspace.lints.clippy]
 arithmetic_side_effects = "deny"
+# The `unsafe` contract (`.agents/skills/ffi-safety`): every block states why
+# it is sound, every `unsafe fn` states what its caller must uphold, and an
+# `unsafe fn` body is not itself one big `unsafe` block.
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
 
 # Tests run in the dev profile, and the clustering, graph-build, quantizer,
 # merge and FST-sweep tests spend their time in these crates' inner loops, so

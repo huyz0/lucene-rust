@@ -21,6 +21,10 @@
 //! validated on every call; failures return a status code and leave a
 //! thread-local message.
 
+// Unit tests call `unsafe` entry points with pointers they own; the contract
+// is stated once on each function, not repeated at every call.
+#![cfg_attr(test, allow(clippy::undocumented_unsafe_blocks))]
+
 /// mimalloc returns freed memory to the system; glibc's per-thread arenas
 /// kept what the JVM's indexing threads freed. It also frees a buffer that
 /// another thread allocated without taking that thread's arena lock, which

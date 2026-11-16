@@ -426,10 +426,15 @@ unsafe fn residual_stats_avx2(query: &[f32], centroid: &[f32]) -> ResidualStats 
         i += 8;
     }
     // SAFETY (each): the vectors are plain lanes with no padding.
+    // SAFETY: two `__m256d` are 8 `f64`s of plain lanes, no padding.
     let sum = unsafe { std::mem::transmute::<[__m256d; 2], [f64; 8]>([sum_lo, sum_hi]) };
+    // SAFETY: as above.
     let sq = unsafe { std::mem::transmute::<[__m256d; 2], [f64; 8]>([sq_lo, sq_hi]) };
+    // SAFETY: `__m256` is 8 `f32`s of plain lanes, no padding.
     let lo = unsafe { std::mem::transmute::<__m256, [f32; 8]>(lo) };
+    // SAFETY: as above.
     let hi = unsafe { std::mem::transmute::<__m256, [f32; 8]>(hi) };
+    // SAFETY: as above.
     let rc = unsafe { std::mem::transmute::<__m256, [f32; 8]>(rc) };
     let tail = residual_stats_scalar(&query[whole..], &centroid[whole..]);
     ResidualStats {
@@ -723,6 +728,7 @@ unsafe fn nibble_luts_avx2(query: &[u8], out: &mut [u8]) {
         for k in 1..4 {
             lut = _mm256_add_epi8(lut, _mm256_and_si256(_mm256_shuffle_epi8(q, s[k]), m[k]));
         }
+        // SAFETY: the 32 bytes at `16g` of `out`, as above.
         unsafe { _mm256_storeu_si256(po.add(16 * g) as *mut __m256i, lut) };
         g += 2;
     }
@@ -975,6 +981,7 @@ unsafe fn dot_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
     // and `n` is at most either slice's length.
     while i + 32 <= n {
         for (k, slot) in acc.iter_mut().enumerate() {
+            // SAFETY: the loop guard keeps `i + 8 * k + 8 <= n`, inside both slices.
             let (x, y) = unsafe {
                 (
                     _mm256_loadu_ps(pa.add(i + 8 * k)),
@@ -986,6 +993,7 @@ unsafe fn dot_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
         i += 32;
     }
     while i + 8 <= n {
+        // SAFETY: the guard keeps `i + 8 <= n`, inside both slices.
         let (x, y) = unsafe { (_mm256_loadu_ps(pa.add(i)), _mm256_loadu_ps(pb.add(i))) };
         acc[0] = _mm256_fmadd_ps(x, y, acc[0]);
         i += 8;
@@ -1013,6 +1021,7 @@ unsafe fn square_distance_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
     // SAFETY (every load below): as in `dot_f32_avx2`.
     while i + 32 <= n {
         for (k, slot) in acc.iter_mut().enumerate() {
+            // SAFETY: the loop guard keeps `i + 8 * k + 8 <= n`, inside both slices.
             let d = unsafe {
                 _mm256_sub_ps(
                     _mm256_loadu_ps(pa.add(i + 8 * k)),
@@ -1024,6 +1033,7 @@ unsafe fn square_distance_f32_avx2(a: &[f32], b: &[f32]) -> f32 {
         i += 32;
     }
     while i + 8 <= n {
+        // SAFETY: the guard keeps `i + 8 <= n`, inside both slices.
         let d = unsafe { _mm256_sub_ps(_mm256_loadu_ps(pa.add(i)), _mm256_loadu_ps(pb.add(i))) };
         acc[0] = _mm256_fmadd_ps(d, d, acc[0]);
         i += 8;
@@ -1053,6 +1063,7 @@ unsafe fn dot_and_norm_f32_avx2(a: &[f32], b: &[f32]) -> (f32, f32) {
     // SAFETY (every load below): the guard keeps `i + 16 <= n`.
     while i + 16 <= n {
         for k in 0..2 {
+            // SAFETY: the guard keeps `i + 16 <= n`, inside both slices.
             let (x, y) = unsafe {
                 (
                     _mm256_loadu_ps(pa.add(i + 8 * k)),
@@ -1091,6 +1102,7 @@ unsafe fn cosine_parts_f32_avx2(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
     // SAFETY (every load below): the guard keeps `i + 16 <= n`.
     while i + 16 <= n {
         for k in 0..2 {
+            // SAFETY: the guard keeps `i + 16 <= n`, inside both slices.
             let (x, y) = unsafe {
                 (
                     _mm256_loadu_ps(pa.add(i + 8 * k)),
@@ -1528,6 +1540,7 @@ unsafe fn or_words_avx2(dst: &mut [u64], src: &[u64]) {
     // steps of 32 words, so every aligned load and store is aligned.
     while i + 32 <= n {
         for j in 0..8 {
+            // SAFETY: see the comment above the loop: in bounds and 32-byte aligned.
             unsafe {
                 let dp = d.add(i + 4 * j) as *mut __m256i;
                 let v = _mm256_or_si256(
@@ -1675,6 +1688,7 @@ unsafe fn lut16_accumulate32_avx2(luts: &[u8], codes: &[u8], out: &mut [u32; FAS
     // SAFETY (every load): `g + 2 <= groups` keeps the 32 bytes at `16 * g`
     // inside both slices.
     while g + 2 <= groups {
+        // SAFETY: `g + 2 <= groups` keeps the 32 bytes at `16 * g` inside both slices.
         let (t, c) = unsafe {
             (
                 _mm256_loadu_si256(pl.add(16 * g) as *const __m256i),
@@ -1759,6 +1773,7 @@ unsafe fn lut16_accumulate32_avx512(luts: &[u8], codes: &[u8], out: &mut [u32; F
         // bytes only when four whole groups remain; the masked load reads
         // the `16 * left` bytes that remain and no others.
         let (t, c) = if left >= 4 {
+            // SAFETY: `left >= 4` keeps the 64 bytes at `16 * g` inside both slices.
             unsafe {
                 (
                     _mm512_loadu_si512(pl.add(16 * g).cast()),
@@ -1767,6 +1782,7 @@ unsafe fn lut16_accumulate32_avx512(luts: &[u8], codes: &[u8], out: &mut [u32; F
             }
         } else {
             let mask: __mmask64 = (1u64 << (16 * left)) - 1;
+            // SAFETY: the mask covers only the `16 * left` bytes that remain.
             unsafe {
                 (
                     _mm512_maskz_loadu_epi8(mask, pl.add(16 * g).cast()),
@@ -2133,6 +2149,7 @@ unsafe fn dot_u7_i8_avx2(q: &[u8], c: &[u8]) -> i32 {
     // SAFETY (every load): `i + 32 <= n` (or `i + 64 <= n`) keeps the loads
     // inside both slices.
     while i + 64 <= n {
+        // SAFETY: `i + 64 <= n` keeps the loads inside both slices.
         let (x0, y0, x1, y1) = unsafe {
             (
                 _mm256_loadu_si256(pq.add(i) as *const __m256i),
@@ -2146,6 +2163,7 @@ unsafe fn dot_u7_i8_avx2(q: &[u8], c: &[u8]) -> i32 {
         i += 64;
     }
     if i + 32 <= n {
+        // SAFETY: `i + 32 <= n` keeps the loads inside both slices.
         let (x, y) = unsafe {
             (
                 _mm256_loadu_si256(pq.add(i) as *const __m256i),
@@ -2734,7 +2752,8 @@ mod tests {
             (state >> 56) as u8
         };
         for n in [
-            0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 128, 300, 1000,
+            0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 128, 255, 256, 257, 300, 383, 384, 1000,
+            1537,
         ] {
             let q: Vec<u8> = (0..n).map(|_| byte() & 0x7f).collect();
             let c: Vec<u8> = (0..n).map(|_| byte()).collect();
