@@ -232,6 +232,8 @@ pub(crate) mod tests {
         let random_fn = |kind: u8, field: Option<&str>| {
             let b = Blob::default().u8(FUNCTION_RANDOM).i32(12345).u8(kind);
             match field {
+                // A numeric field names how its longs read: `0`, a long.
+                Some(f) if kind == 2 => b.str(f).u8(0),
                 Some(f) => b.str(f),
                 None => b,
             }

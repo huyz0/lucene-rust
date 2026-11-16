@@ -138,6 +138,8 @@ JAVA_ONLY = {
     ("MlPlanRunner.java", "DEFAULT_MAX_STEPS"): "stock's default max_steps of a plan_execute_and_reflect agent, Java only",
     ("MlStats.java", "RING"): "how many recent prediction timings the stats ring keeps for percentiles, in Java only",
     ("NativeMemory.java", "CANCEL_POLL_MILLIS"): "how often the Java watcher polls tasks for a cancel; Rust only sees the cancel call",
+    ("TermsDocFreqShortcut.java", "MAX_TERMS"): "most terms per segment the terms-aggregation frequency shortcut keeps, in Java only",
+    ("TermsDocFreqShortcut.java", "MAX_ENTRIES"): "how many (segment, field) frequency tables the terms-aggregation shortcut keeps, in Java only",
     ("KnnHitsMemo.java", "PER_CONTEXT"): "how many queries' k-NN hits a reader context keeps in Java between phases",
     ("HexIdCodec.java", "HEX"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",
     ("HexIdCodec.java", "TEXT"): "hex_id's term encoding, made and read in Java; the Rust side sees plain terms",

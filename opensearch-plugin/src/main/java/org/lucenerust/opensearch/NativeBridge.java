@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class NativeBridge {
     /** The contract version this jar was built against; {@code JVM_ABI_VERSION} in {@code abi.rs}. */
-    public static final int EXPECTED_ABI_VERSION = 189;
+    public static final int EXPECTED_ABI_VERSION = 191;
 
     public static final int OK = 0;
     public static final int INVALID_HANDLE = 3;
@@ -110,7 +110,20 @@ public final class NativeBridge {
         );
         static final MethodHandle OPEN_READER_VIEW = bind(
             "ffi_open_jvm_reader_view",
-            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS, ADDRESS)
+            FunctionDescriptor.of(
+                JAVA_INT,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS
+            )
         );
         static final MethodHandle SEARCH = bind(
             "ffi_jvm_reader_search",
@@ -2247,6 +2260,89 @@ public final class NativeBridge {
      * on its own once opened: closing {@code base} leaves it searchable.
      */
     public static int openReaderView(long base, String[][] hidden, int[] maxDocs, long[][] liveDocs, long[] outHandle) {
+        return openReaderView(base, hidden, null, maxDocs, liveDocs, outHandle);
+    }
+
+    /** What a masked field's values are shown as: the security plugin's field masking, as a function of the stored bytes. */
+    public interface FieldMasker {
+        /** The bytes shown in place of {@code raw} for {@code field}. */
+        byte[] apply(String field, byte[] raw);
+    }
+
+    /** The fields a view masks, and how. */
+    public record Masking(String[] fields, FieldMasker masker) {}
+
+    /** The arenas holding the mask upcall of each open view, by handle: closed with the handle. */
+    private static final java.util.concurrent.ConcurrentHashMap<Long, Arena> MASK_ARENAS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final MethodHandle MASK_CALL;
+    static {
+        try {
+            MASK_CALL = java.lang.invoke.MethodHandles.lookup()
+                .findStatic(
+                    NativeBridge.class,
+                    "maskCall",
+                    java.lang.invoke.MethodType.methodType(
+                        long.class,
+                        FieldMasker.class,
+                        MemorySegment.class,
+                        long.class,
+                        MemorySegment.class,
+                        long.class,
+                        MemorySegment.class,
+                        long.class
+                    )
+                );
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    /**
+     * The native side's call for a masked value: writes the masked bytes into {@code out} when
+     * they fit and answers their length, or -1 when the mask threw. Nothing may escape to native
+     * code, so every throwable is an answer.
+     */
+    @SuppressWarnings("restricted") // the native side passes exactly nameLen, inputLen and outCap bytes
+    private static long maskCall(
+        FieldMasker masker,
+        MemorySegment name,
+        long nameLen,
+        MemorySegment input,
+        long inputLen,
+        MemorySegment out,
+        long outCap
+    ) {
+        try {
+            String field = new String(name.reinterpret(nameLen).toArray(JAVA_BYTE), java.nio.charset.StandardCharsets.UTF_8);
+            byte[] masked = masker.apply(field, input.reinterpret(inputLen).toArray(JAVA_BYTE));
+            if (masked == null) {
+                return -1;
+            }
+            if (masked.length <= outCap) {
+                MemorySegment.copy(masked, 0, out.reinterpret(outCap), JAVA_BYTE, 0, masked.length);
+            }
+            return masked.length;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * {@link #openReaderView(long, String[][], int[], long[][], long[])}, also showing the fields
+     * {@code masking} names through its masker: the native side calls the masker, from the
+     * searching thread, whenever it shows one of their values. The masker stays reachable until
+     * the returned handle is closed ({@link #closeReader}).
+     */
+    @SuppressWarnings("restricted") // upcall stub lifetime is the arena closed with the handle
+    public static int openReaderView(
+        long base,
+        String[][] hidden,
+        Masking masking,
+        int[] maxDocs,
+        long[][] liveDocs,
+        long[] outHandle
+    ) {
         if (hidden == null) {
             return nullArgument("hidden");
         }
@@ -2268,6 +2364,19 @@ public final class NativeBridge {
             }
         }
         byte[] hiddenBlob = blob.toByteArray();
+        byte[] maskedBlob = new byte[0];
+        if (masking != null && masking.fields().length > 0) {
+            java.io.ByteArrayOutputStream masked = new java.io.ByteArrayOutputStream();
+            writeInt(masked, word, masking.fields().length);
+            for (String name : masking.fields()) {
+                byte[] utf8 = name.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                writeInt(masked, word, utf8.length);
+                masked.writeBytes(utf8);
+            }
+            maskedBlob = masked.toByteArray();
+        }
+        Arena maskArena = maskedBlob.length == 0 ? null : Arena.ofShared();
+        boolean opened = false;
         try (Scratch s = Scratch.open()) {
             long[] counts = new long[segments];
             long words = 0;
@@ -2289,11 +2398,23 @@ public final class NativeBridge {
                     }
                 }
             }
+            MemorySegment stub = MemorySegment.NULL;
+            if (maskArena != null) {
+                stub = Linker.nativeLinker()
+                    .upcallStub(
+                        java.lang.invoke.MethodHandles.insertArguments(MASK_CALL, 0, masking.masker()),
+                        FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG),
+                        maskArena
+                    );
+            }
             MemorySegment out = s.alloc(Long.BYTES);
             int rc = (int) H.OPEN_READER_VIEW.invokeExact(
                 base,
                 s.bytes(hiddenBlob),
                 (long) hiddenBlob.length,
+                s.bytes(maskedBlob),
+                (long) maskedBlob.length,
+                stub,
                 s.ints(maxDocs),
                 (long) segments,
                 wordsSeg,
@@ -2306,11 +2427,19 @@ public final class NativeBridge {
                     closeReader(handle);
                     return fail(INVALID_ARGUMENT, "outHandle holds no slot");
                 }
+                if (maskArena != null) {
+                    MASK_ARENAS.put(handle, maskArena);
+                }
+                opened = true;
                 outHandle[0] = handle;
             }
             return rc;
         } catch (Throwable t) {
             throw rethrow(t);
+        } finally {
+            if (maskArena != null && opened == false) {
+                maskArena.close();
+            }
         }
     }
 
@@ -2322,7 +2451,13 @@ public final class NativeBridge {
 
     public static int closeReader(long handle) {
         try {
-            return (int) H.CLOSE_READER.invokeExact(handle);
+            int rc = (int) H.CLOSE_READER.invokeExact(handle);
+            // The view's mask upcall goes after its handle: nothing calls it once it is closed.
+            Arena maskArena = MASK_ARENAS.remove(handle);
+            if (maskArena != null) {
+                maskArena.close();
+            }
+            return rc;
         } catch (Throwable t) {
             throw rethrow(t);
         }
