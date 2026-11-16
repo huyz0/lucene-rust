@@ -5081,16 +5081,12 @@ pub fn search_sorted_min_score(
     slices: &[Vec<usize>],
     min_score: Option<f32>,
 ) -> Result<TopFieldDocs> {
-    if slices.len() <= 1 || top_n == 0 || track_max_score {
-        // One slice is one collector over the segments in the order it is given: a time-series
-        // shard sorted by its timestamp ascending visits them last first
-        // (`ContextIndexSearcher.search`), which decides which of the equal keys it keeps.
-        // Several slices here (a `size: 0` or max-score search) are searched as one collector
-        // over every segment, so only a lone slice can name the order.
-        let visited = slices
-            .first()
-            .filter(|_| slices.len() == 1)
-            .filter(|s| s.iter().enumerate().any(|(at, &segment)| at != segment));
+    // A slice visiting its segments last first (a time-series shard sorted by its timestamp):
+    // ties keep the documents collected first, so the visit order is the answer's.
+    let reversed = slices
+        .iter()
+        .any(|s| s.len() > 1 && s.windows(2).all(|w| w[0] > w[1]));
+    if (slices.len() <= 1 && !reversed) || top_n == 0 || track_max_score {
         return search_sorted_leaves(
             segments,
             readers,
@@ -5101,7 +5097,7 @@ pub fn search_sorted_min_score(
             total_hits_threshold,
             after,
             track_max_score,
-            visited.map(Vec::as_slice),
+            None,
             None,
             min_score,
             None,
@@ -5128,16 +5124,23 @@ pub fn search_sorted_min_score(
         similarity: None,
         scorer_only: false,
     };
-    if let Some(top) = newest_n::search(&run)? {
-        return Ok(top);
+    // The newest-N search visits the segments in order, which decides ties.
+    if !reversed {
+        if let Some(top) = newest_n::search(&run)? {
+            return Ok(top);
+        }
     }
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
     let parts = crate::slices::run_slices_if(parallel, slices, |slice| {
-        // `LeafSlice` keeps its partitions by doc base, which is the order the caller hands
-        // them in, or last first for a time-series shard sorted ascending: a collector breaks
-        // ties by the order it visits the documents in.
-        search_segments(&run, slice)
+        // `LeafSlice` keeps its partitions by doc base: a collector breaks ties assuming
+        // ascending documents. A time-series shard's slice arrives last segment first,
+        // the order its collector visits them, which decides which of the ties it keeps.
+        let mut order = slice.to_vec();
+        if !order.windows(2).all(|w| w[0] > w[1]) {
+            order.sort_unstable();
+        }
+        search_segments(&run, &order)
     })
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
@@ -6365,7 +6368,6 @@ mod tests {
             rewritten: None,
             convert: ChildConvert::None,
             uninverted: false,
-            no_pruning: false,
             ..SortField::numeric("l", SortType::Long, false)
         };
         assert_eq!(key, key.clone());

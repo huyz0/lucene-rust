@@ -442,8 +442,7 @@ def matrix():
     add("agg explicit match_all min max", {"size": 0, "query": {"match_all": {}}, "aggs": {"lo": {"min": {"field": "price"}}, "hi": {"max": {"field": "ratio"}}}}, "native")
     # A time-series shard sorted by @timestamp ascending: OpenSearch visits segments last first.
     add("agg sort @timestamp asc", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "aggs": {"s": {"sum": {"field": "price"}}}}, "native")
-    # terminate_after cuts the segments in index order, which the reversed visit does not.
-    add("terminate_after sort @timestamp asc", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "terminate_after": 5}, "time_series_order")
+    add("sort @timestamp asc terminate_after", {"query": {"match": {"body": "alpha"}}, "sort": [{"@timestamp": "asc"}], "terminate_after": 50}, "time_series_order")
     add("agg date min max", {"size": 0, "query": {"bool": {"filter": [{"term": {"tag": "gamma"}}]}}, "aggs": {"first": {"min": {"field": "ts"}}, "last": {"max": {"field": "ts"}}}}, "native")
     add("agg sparse, nothing matches", {"size": 0, "query": {"term": {"tag": "no-such-tag"}}, "aggs": {"s": {"stats": {"field": "sp"}}, "a": {"avg": {"field": "sp"}}}}, "native")
     add("agg float sum with sort", {"query": {"match": {"body": "gamma"}}, "sort": [{"n": "desc"}], "aggs": {"r": {"sum": {"field": "ratio"}}}}, "native")

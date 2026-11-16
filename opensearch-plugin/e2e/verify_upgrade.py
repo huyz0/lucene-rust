@@ -183,25 +183,96 @@ def fell_back(delta, expect):
     return n
 
 
-def exact_reference(body):
-    """`body` as the stock node must answer it for the reference. A nested sort key's comparator
-    skips with the children's points once the queue is full and more than the total-hits threshold
-    matches -- and a single term's total is a count OpenSearch does not run once no deletion is
-    left (`shortcutTotalHitCount`), which leaves the threshold at `size`. Stock then drops hits
-    that belong in the top (docs/accelerated-queries.md, "Sorts where Lucene drops hits"), and
-    which ones depends on the segment layout, so it is no reference. A `function_score` wrapper
-    (no function, a boost of 1) has no shortcut: the matches are counted, the threshold is never
-    passed, and the comparator never skips. The native side never skips for such a key."""
-    sort = body.get("sort") or []
-    if not any(isinstance(k, dict) and any(isinstance(v, dict) and "nested" in v for v in k.values()) for k in sort):
-        return body
-    inner = body.get("query", {"match_all": {}})
-    exact = {**body, "query": {"function_score": {"query": inner, "boost": 1.0}}}
-    if body.get("track_total_hits") is False:
-        # A threshold of `size` skips from the first full queue: count every match instead, and
-        # leave the total out of the comparison (`run_rows`).
-        exact["track_total_hits"] = True
-    return exact
+def _children(source, path, key_field, flt):
+    """The values of `key_field` on the `path` children that pass `flt`, in child order."""
+    short = key_field.split(".", 1)[1]
+    out = []
+    for child in source.get(path, []):
+        if flt is not None:
+            if "term" in flt:
+                (f, want), = flt["term"].items()
+                if child.get(f.split(".", 1)[1]) != want:
+                    continue
+            elif "range" in flt:
+                (f, bounds), = flt["range"].items()
+                vals = child.get(f.split(".", 1)[1])
+                vals = vals if isinstance(vals, list) else [] if vals is None else [vals]
+                if not any(v >= bounds.get("gte", float("-inf")) for v in vals):
+                    continue
+        v = child.get(short)
+        if v is None:
+            continue
+        out.extend(v if isinstance(v, list) else [v])
+    return out
+
+
+def _f32(x):
+    import struct
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def check_nested_oracle(index, name, body, label):
+    """A nested sort whose reference is the answer computed from `_source`, not the stock node.
+
+    On an index of several segments, stock's comparator for a nested sum, average or filtered key
+    skips documents with the children's points once its queue is full, and returns top hits that
+    are not the top: one document asked for by id sorts to the right value, the same query over
+    the whole index drops it, and the same data in one segment is right (checked against the
+    documents' own children). The plugin's answer is the exact one (#392), so stock is not the
+    reference.
+    The answer is recomputed from each document's children:
+        the first key's value per mode, filter and missing, then the keys after it; the plugin's hits
+    and sort values must equal it exactly, ids included where the keys are unique."""
+    first = body["sort"][0]
+    (field, spec), = first.items()
+    order, nested = spec["order"], spec.get("nested", {})
+    mode = spec.get("mode", "min" if order == "asc" else "max")
+    missing = spec.get("missing", "_last")
+    rest = body["sort"][1:]
+    all_hits = vo.req("POST", f"/{index}/_search", {"query": body.get("query", {"match_all": {}}), "size": 10000, "_source": ["props", "n"]})["hits"]["hits"]
+    float32 = field.endswith(".f")
+    rows = []
+    for h in all_hits:
+        vals = _children(h["_source"], "props", field, nested.get("filter"))
+        if float32:
+            vals = [_f32(v) for v in vals]
+        if not vals:
+            key = None
+        elif mode == "min":
+            key = min(vals)
+        elif mode == "max":
+            key = max(vals)
+        else:
+            total = 0.0
+            for v in vals:  # in child order, uncompensated, as the comparator adds them
+                total += v
+            key = total if mode == "sum" else total / len(vals)
+        rows.append((key, int(h["_source"]["n"]), h["_id"]))
+    sign = 1 if order == "asc" else -1
+
+    real = [r for r in rows if r[0] is not None or isinstance(missing, (int, float))]
+    second = None
+    if rest and isinstance(rest[0], dict) and "n" in rest[0]:
+        spec2 = rest[0]["n"]
+        second = -1 if (spec2["order"] if isinstance(spec2, dict) else spec2) == "desc" else 1
+    real.sort(key=lambda r: (sign * (r[0] if r[0] is not None else missing), second * r[1] if second else 0))
+    got = vo.req("POST", f"/{index}/_search", body)["hits"]["hits"]
+    check_n = len(got)
+    for i, h in enumerate(got[:check_n]):
+        if i >= len(real):
+            break
+        want = real[i]
+        value = want[0] if want[0] is not None else missing
+        reported = h["sort"][0]
+        same = _f32(reported) == _f32(value) if float32 else reported == value
+        vo.check(same, f"{label} {index} [{name}]: hit {i} sort value {reported} is not {value} computed from _source")
+        keys_equal = [r for r in real if r[0] == want[0]]
+        if rest and isinstance(rest[0], dict) and "n" in rest[0]:
+            vo.check(h["_source"]["n"] == want[1] if "_source" in h else h["sort"][1] == want[1],
+                     f"{label} {index} [{name}]: hit {i} second key {h['sort'][1]} is not {want[1]}")
+        elif len(keys_equal) == 1:
+            vo.check(h["_id"] == want[2], f"{label} {index} [{name}]: hit {i} is {h['_id']}, _source says {want[2]}")
+
 
 
 def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
@@ -212,9 +283,7 @@ def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
     for name, body, _ in rows:
         url, b = vo.search_url(index, body)
         try:
-            reference[name] = vo.shape(vo.complete(vo.search(index, exact_reference(body))), b)
-            if body.get("track_total_hits") is False:
-                reference[name]["total"] = None
+            reference[name] = vo.shape(vo.complete(vo.search(index, body)), b)
         except RuntimeError as e:
             vo.UNVERIFIABLE.append(f"{label} {index} [{name}]")
             print(f"UNVERIFIABLE: {label} {index} [{name}]: the stock node failed: {str(e)[:300]}")
@@ -269,9 +338,22 @@ def serve_all(label, plugin, stock, prefix="", merged=False):
         native += run_rows(index, vo.matrix() + vector_rows(False), label, plugin, stock, shards)
     # Once a force merge has dropped every deletion, OpenSearch answers a term's total without
     # counting (shortcutTotalHitCount), which leaves a count limit of `size`: past it Lucene's
-    # comparator skips with the children's points and drops hits. The native sort does not skip
-    # for a nested key, so it is compared with the exact answer (`exact_reference`).
-    native += run_rows(prefix + "nest", vo.nested_rows(), label, plugin, stock, 1)
+    # comparator skips, which a nested key does not natively, so such a sort falls back.
+    # Rows that stay in Java anyway (an aggregation it cannot run) keep their own reason.
+    nest = [(n, b, e) for n, b, e in vo.nested_rows()]
+    if merged:
+        # A sort that sums, averages or filters the children: stock is not its reference here.
+        oracle = {"nested double sum", "nested double avg missing", "nested float sum",
+                  "nested keyword filter", "nested then n"}
+        sums = [r for r in nest if r[0] in oracle]
+        nest = [r for r in nest if r not in sums]
+        on(plugin)
+        for name, body, _ in sums:
+            before = vo.stats()
+            check_nested_oracle(prefix + "nest", name, body, label)
+            ran = vo.stats()["accelerated_queries"] - before["accelerated_queries"]
+            vo.check(ran >= 1, f"{label} {prefix}nest [{name}]: did not run native")
+    native += run_rows(prefix + "nest", nest, label, plugin, stock, 1)
     # The k-NN plugin's codec reads natively; with the k-NN plugin installed, its own
     # vector queries stay in Java.
     text = [(n, b, e) for n, b, e in vo.matrix()[:8]]
