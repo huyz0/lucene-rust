@@ -61,8 +61,8 @@ pub const SORT_SHARD_DOC: u8 = 8;
 /// [`SORT_NESTED`], the field, then the missing float as its sortable int
 /// (`i64`).
 pub const SORT_HALF_FLOAT: u8 = 9;
-/// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but no
-/// [`SORT_MODE_MEDIAN`], the missing value the unsigned long's bits.
+/// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but the
+/// missing value is the unsigned long's bits.
 pub const SORT_UNSIGNED_LONG: u8 = 10;
 /// A Painless `_script` key of type `number`
 /// ([`crate::painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
@@ -429,7 +429,7 @@ pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<S
         (0, true) => Selector::Max,
         (SORT_MODE_SUM, false) => Selector::Sum,
         (SORT_MODE_AVG, false) => Selector::Avg,
-        (SORT_MODE_MEDIAN, false) if ty != SORT_UNSIGNED_LONG => Selector::Median,
+        (SORT_MODE_MEDIAN, false) => Selector::Median,
         _ => return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}"))),
     };
     if flags & SORT_NESTED != 0 {

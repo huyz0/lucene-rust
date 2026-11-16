@@ -571,15 +571,10 @@ public final class SortEncoder {
             byte flags = switch (((Enum<?>) SORT_MODE.get(src)).name()) {
                 case "MIN" -> 0;
                 case "MAX" -> MAX;
-                // A SUM's comparator skips with the points of the single values, which a sum can
-                // pass, so which documents it keeps depends on where skipping starts: it runs
-                // natively only where Lucene's does not skip ({@link #unlikeSkipping}). An average
-                // or median lies between a document's least and greatest value, so the same
-                // skipping is exact for them, and the native answer is Lucene's.
                 case "SUM" -> MODE_SUM;
                 case "AVG" -> MODE_AVG;
-                // MultiValueMode.MEDIAN has no nested pick, nor an unsigned one here.
-                case "MEDIAN" -> nested != null || type == UNSIGNED_LONG ? -1 : MODE_MEDIAN;
+                // MultiValueMode.MEDIAN has no nested pick.
+                case "MEDIAN" -> nested != null ? -1 : MODE_MEDIAN;
                 default -> -1;
             };
             if (flags < 0) {

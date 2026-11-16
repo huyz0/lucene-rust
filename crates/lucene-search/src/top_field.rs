@@ -3527,24 +3527,70 @@ fn open_leaf<'a>(
                 };
                 let column = match &f.nested {
                     None => cache_longs(seg, f, column, max_doc)?,
-                    Some(n) => Column::Nested(Box::new(NestedColumn {
-                        values: match column {
-                            Column::Single(r) => ChildValues::Single(r),
-                            Column::Multi(r, ..) => ChildValues::Multi(r),
-                            _ => ChildValues::Absent,
-                        },
-                        parents: nested_docs(seg, &n.parents)?,
-                        children: nested_docs(seg, &n.children)?,
-                        pos: None,
-                        selector: f.selector,
-                        ty: f.ty,
-                        missing: f.missing,
-                        max_children: n.max_children,
-                        convert: n.convert,
-                        last_parent: -1,
-                        last_value: f.missing,
-                        buf: Vec::new(),
-                    })),
+                    Some(n) => {
+                        let make = |values: Column<'a>| -> Result<NestedColumn<'a>> {
+                            Ok(NestedColumn {
+                                values: match values {
+                                    Column::Single(r) => ChildValues::Single(r),
+                                    Column::Multi(r, ..) => ChildValues::Multi(r),
+                                    _ => ChildValues::Absent,
+                                },
+                                parents: nested_docs(seg, &n.parents)?,
+                                children: nested_docs(seg, &n.children)?,
+                                pos: None,
+                                selector: f.selector,
+                                ty: f.ty,
+                                missing: f.missing,
+                                max_children: n.max_children,
+                                convert: n.convert,
+                                last_parent: -1,
+                                last_value: f.missing,
+                                buf: Vec::new(),
+                            })
+                        };
+                        // A root's value is the same for every search of the segment: kept
+                        // as a column once the key has been used twice, which spares the
+                        // two nested queries and the walk over the children.
+                        let cached = match seg.cache {
+                            Some(cache) => {
+                                let key = format!(
+                                    "nested\0{}\0{:?}\0{:?}\0{}\0{:?}\0{}\0{:?}\0{:?}",
+                                    f.field,
+                                    f.selector,
+                                    f.ty,
+                                    f.missing,
+                                    n.convert,
+                                    n.max_children,
+                                    n.parents,
+                                    n.children
+                                );
+                                let source = column.clone();
+                                cache.sort_column(&key, max_doc, &mut || {
+                                    let mut col = make(source.clone())?;
+                                    let len = usize::try_from(max_doc).unwrap_or(0);
+                                    let mut values = Vec::with_capacity(len);
+                                    let mut has = FixedBitSet::new(len);
+                                    values.resize(len, 0);
+                                    // The roots, ascending, as the comparator asks. A document
+                                    // that is no root has no value here (the key's missing
+                                    // one): OpenSearch only ever ranks roots, and a child read
+                                    // as a root would also move the children's iterator past
+                                    // the ones its own root needs.
+                                    let roots = col.parents.clone();
+                                    for d in roots {
+                                        has.set(d as usize);
+                                        values[d as usize] = col.value(d)?;
+                                    }
+                                    Ok(SortColumn::Longs { values, has })
+                                })?
+                            }
+                            None => None,
+                        };
+                        match cached {
+                            Some(c) => Column::Cached(c),
+                            None => Column::Nested(Box::new(make(column)?)),
+                        }
+                    }
                 };
                 // A nested key does not skip: the caller runs one only where
                 // Lucene's would not either (see `NestedSort`).
