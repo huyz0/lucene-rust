@@ -22,7 +22,7 @@ against it, so it is real memory pressure. `NODE_CPUS`, `HEAP`, `PORT`, `NODE_AR
 What the script handles: OpenSearch refuses to run as root (a `osbench` user is created);
 the bundled JDK 25 is used (`JAVA_HOME` and the sandbox's `JAVA_TOOL_OPTIONS` are unset for the
 node); bundled plugins other than `opensearch-custom-codecs` are removed from the plugin node, as
-in `opensearch-plugin/docker/Dockerfile` (neural-search's query phase searcher conflicts); the
+in `opensearch-plugin/e2e/nodectl.py`, variant `plugin` (neural-search's query phase searcher conflicts); the
 library inside the zip must be named `liblucene_ffi.so` (`NATIVE_LIB` copies it under that name);
 `bench_nodes.py run` takes `native` as its CONTAINER argument to read the node's RSS with `ps`.
 
@@ -42,6 +42,15 @@ OUT_DIR=/data/marco PROF_EVENT=cpu AP=/path/asprof PROF_SHAPES="term frequent|re
 ```
 
 The node runs as `osbench`, so the path to the node home and the libraries must be traversable by it (`chmod o+x /root`), and async-profiler writes through `/tmp/prof` (mode 777). The `itimer` event crashed JDK 25 here; `cpu` works.
+
+## Long documents, several shards, concurrent clients
+
+`wiki_bench.py` + `wiki-ab.sh`: English Wikipedia (HF `wikimedia/wikipedia` parquet; needs `pyarrow`), `title` + `text`, `SHARDS` shards (default 4), 25 query shapes built from the corpus (term bands, phrases, 6-word fragments, titles, multi_match, filters, size 100, exact totals). `wiki-ab.sh` alternates stock and plugin builds; per node it runs the serial timing and then closed-loop concurrent load (`SHAPES_CC="a|b"`, `CLIENTS="1 8 32"`) printing qps, p50, p99 and node CPU per request. `NOMERGE=1 SETTINGS='{"refresh_interval":"1s"}'` keeps the merge policy's segments instead of force-merging. `wiki_bench.py dump` writes top-10 ids/scores/totals for comparing engines.
+
+```
+python3 -I benchmarks/native-node/wiki_bench.py prep wiki.parquet /data/wiki
+OUT_DIR=/data/wiki BUILDS="main=/p/main.so" SHAPES_CC="term frequent|fragments 6 words (OR)" benchmarks/native-node/wiki-ab.sh
+```
 
 ## Throughput and cold start
 

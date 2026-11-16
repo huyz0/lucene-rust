@@ -17,6 +17,7 @@ or '{"sort.field": "tenant"}'). Written to OUT_DIR/LABEL-*:
     `refresh=true`; perf-*.txt: the same for native code when PERF is given.
 """
 import json
+import nodectl
 import os
 import statistics
 import subprocess
@@ -30,24 +31,15 @@ JDK = "/usr/share/opensearch/jdk/bin/"
 
 
 def sh(container, cmd):
-    return subprocess.run(["docker", "exec", container, "bash", "-c", cmd],
-                          capture_output=True, text=True).stdout
+    return nodectl.exec_(container, cmd).stdout
 
 
 def jpid(container):
-    return sh(container, JDK + "jcmd -l | grep -m1 org.opensearch.bootstrap | cut -d' ' -f1").strip()
+    return str(nodectl.pid(container))
 
 
 def host_pid(container):
-    out = subprocess.run(["docker", "inspect", "-f", "{{.State.Pid}}", container],
-                         capture_output=True, text=True).stdout.strip()
-    # The java process is the container's init or its child.
-    kids = subprocess.run(["bash", "-c", f"ps -o pid=,comm= --ppid {out}; ps -o pid=,comm= -p {out}"],
-                          capture_output=True, text=True).stdout.split("\n")
-    for line in kids:
-        if "java" in line:
-            return line.split()[0]
-    return out
+    return str(nodectl.pid(container))
 
 
 class Profiled:

@@ -7,16 +7,16 @@
 #
 #   scripts/bench-opensearch.sh [DOCS] [OUT_DIR]     # default 1000000, target/bench-opensearch
 #
-# Needs what scripts/verify-opensearch.sh needs (Docker, a JDK 25, Gradle,
-# cargo). HEAP (default 2g) sets both nodes' heap; ROUNDS (default 50) the
+# Needs what scripts/verify-opensearch.sh needs (a JDK 25, Gradle, cargo); the nodes are plain
+# processes (opensearch-plugin/e2e/nodectl.py), no Docker. NODE_CPUS (e.g. 0-2) pins the node
+# to cores and MEM_LIMIT (e.g. 4G, root, cgroup v1) caps its memory; run the driver elsewhere. HEAP (default 2g) sets both nodes' heap; ROUNDS (default 50) the
 # timed requests per shape; CLIENTS (default 4) the parallel bulk clients.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 DOCS="${1:-1000000}"
 OUT="${2:-target/bench-opensearch}"
-VERSION=3.9.0
-IMAGE="lucene-rust-opensearch:${VERSION}"
+nodectl() { python3 opensearch-plugin/e2e/nodectl.py "$@"; }
 HEAP="${HEAP:-2g}"
 ROUNDS="${ROUNDS:-50}"
 PORT=9250
@@ -30,27 +30,22 @@ fi
 
 scripts/opensearch-dist.sh
 gradle --no-daemon -q -p opensearch-plugin bundlePlugin
-rm -f opensearch-plugin/docker/*.zip
-cp opensearch-plugin/build/distributions/lucene-rust-*.zip opensearch-plugin/docker/
-docker build -q -t "$IMAGE" opensearch-plugin/docker >/dev/null
-printf 'FROM opensearchproject/opensearch:%s\nRUN rm -rf /usr/share/opensearch/plugins/*\n' "$VERSION" \
-    | docker build -q -t "opensearch-stock-min:${VERSION}" - >/dev/null
+nodectl dist plugin >/dev/null
+nodectl dist stock-min >/dev/null
 
-bench() { # name image label [docker-run args...]
-    docker rm -f "$1" >/dev/null 2>&1 || true
-    docker run -d --name "$1" -p "$PORT:9200" "${@:4}" \
-        -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
-        -e cluster.routing.allocation.disk.threshold_enabled=false \
-        -e DISABLE_INSTALL_DEMO_CONFIG=true -e OPENSEARCH_JAVA_OPTS="-Xms$HEAP -Xmx$HEAP" \
-        "$2" >/dev/null
-    for _ in $(seq 1 90); do curl -sf "localhost:$PORT" >/dev/null && break; sleep 2; done
+bench() { # name variant label [setting ...]
+    local n=$1 v=$2 l=$3; shift 3
+    local a=() st
+    for st in "$@"; do a+=(--setting "$st"); done
+    nodectl rm "$n" >/dev/null 2>&1 || true
+    nodectl run "$n" "$v" "$PORT" --heap "$HEAP" ${NODE_CPUS:+--cpus "$NODE_CPUS"} ${MEM_LIMIT:+--mem-limit "$MEM_LIMIT"} "${a[@]}" >/dev/null
     local extra=()
-    [[ "$3" == plugin ]] && extra=(--java-too)
-    python3 opensearch-plugin/e2e/bench_nodes.py run "http://localhost:$PORT" "$1" "$OUT/corpus-$DOCS" "$3" \
-        "$OUT/$3-$DOCS.json" --rounds "$ROUNDS" "${extra[@]}"
-    docker rm -f "$1" >/dev/null
+    [[ "$l" == plugin ]] && extra=(--java-too)
+    python3 opensearch-plugin/e2e/bench_nodes.py run "http://localhost:$PORT" "$n" "$OUT/corpus-$DOCS" "$l" \
+        "$OUT/$l-$DOCS.json" --rounds "$ROUNDS" "${extra[@]}"
+    nodectl rm "$n" >/dev/null
 }
-trap 'docker rm -f bench-stock bench-plugin >/dev/null 2>&1 || true' EXIT
-bench bench-stock "opensearch-stock-min:${VERSION}" stock
-bench bench-plugin "$IMAGE" plugin -e indices.engine.accelerated.default=true
+trap 'nodectl rm bench-stock >/dev/null 2>&1; nodectl rm bench-plugin >/dev/null 2>&1 || true' EXIT
+bench bench-stock stock-min stock
+bench bench-plugin plugin plugin indices.engine.accelerated.default=true
 echo "bench-opensearch: results in $OUT/stock-$DOCS.json and $OUT/plugin-$DOCS.json"

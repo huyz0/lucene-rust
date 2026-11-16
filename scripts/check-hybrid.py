@@ -19,12 +19,14 @@ searches, and the answers are compared:
 
   scripts/check-hybrid.py [--keep]
 
-Needs Docker and the plugin zip in opensearch-plugin/build/distributions
+Needs the plugin zip in opensearch-plugin/build/distributions
 (`gradle -p opensearch-plugin bundlePlugin`).
 """
 import glob, importlib.util, json, os, random, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opensearch-plugin", "e2e"))
+import nodectl  # noqa: E402  (nodes are plain processes, no Docker)
 _spec = importlib.util.spec_from_file_location("check_knn", os.path.join(ROOT, "scripts", "check-knn-plugin.py"))
 ck = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ck)
@@ -429,12 +431,7 @@ def main():
     zips = glob.glob(os.path.join(ROOT, "opensearch-plugin", "build", "distributions", "lucene-rust-*.zip"))
     if not zips:
         sys.exit("no plugin zip: run gradle -p opensearch-plugin bundlePlugin")
-    docker_dir = os.path.join(ROOT, "opensearch-plugin", "docker")
-    for z in glob.glob(os.path.join(docker_dir, "*.zip")):
-        os.remove(z)
-    shutil.copy(zips[0], docker_dir)
-    image = f"lucene-rust-opensearch:{ck.VERSION}"
-    subprocess.run(["docker", "build", "-q", "-t", image, docker_dir], check=True, capture_output=True)
+    image = "plugin"  # the nodectl variant: the pinned OpenSearch with the built plugin zip
     ck.start(OURS[0], OURS[1], image)
     ck.start(STOCK[0], STOCK[1], f"opensearchproject/opensearch:{ck.VERSION}")
     failures = []
@@ -490,7 +487,7 @@ def main():
     finally:
         if not keep:
             for name in (OURS[0], STOCK[0]):
-                subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+                nodectl.rm(name)
     if failures:
         print("\n".join(failures))
         sys.exit(1)
