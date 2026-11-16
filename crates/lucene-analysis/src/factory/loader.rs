@@ -238,37 +238,10 @@ pub fn java_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c <= ' ')
 }
 
-/// First line of an exact word list: the entries follow one per line, taken
-/// as they are (no trimming, no comments, empty entries kept), with `%`,
-/// line feed and carriage return written `%25`, `%0A`, `%0D`. For words a
-/// plain list cannot hold, such as `#tag` or ones with edge whitespace.
-pub const EXACT_LIST_MARKER: &str = "\u{1}exact\n";
-
-/// The entries of an exact word list, `None` for a plain resource.
-fn exact_entries(text: &str) -> Option<Vec<String>> {
-    let body = text.strip_prefix(EXACT_LIST_MARKER)?;
-    let body = body.strip_suffix('\n').unwrap_or(body);
-    if body.is_empty() && !text.ends_with("\n\n") {
-        return Some(Vec::new());
-    }
-    Some(
-        body.split('\n')
-            .map(|e| {
-                e.replace("%0A", "\n")
-                    .replace("%0D", "\r")
-                    .replace("%25", "%")
-            })
-            .collect(),
-    )
-}
-
 /// `getLines(loader, resource)`: `WordlistLoader.getLines` over the UTF-8
 /// resource.
 pub fn get_lines(loader: &dyn ResourceLoader, resource: &str) -> Result<Vec<String>, FactoryError> {
     let text = decode_utf8(loader.open_resource(resource)?)?;
-    if let Some(entries) = exact_entries(&text) {
-        return Ok(entries);
-    }
     Ok(wordlist_loader::get_lines(text.as_bytes())?)
 }
 
@@ -305,12 +278,6 @@ pub fn get_snowball_word_set(
     let mut words = CharArraySet::with_capacity(files.len() * 10, ignore_case);
     for file in &files {
         let text = decode_utf8(loader.open_resource(java_trim(file))?)?;
-        if let Some(entries) = exact_entries(&text) {
-            for e in entries {
-                words.add(&e);
-            }
-            continue;
-        }
         wordlist_loader::get_snowball_word_set_into(text.as_bytes(), &mut words)?;
     }
     Ok(Some(words))
@@ -319,28 +286,6 @@ pub fn get_snowball_word_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn exact_lists_keep_every_entry_as_written() {
-        let entries = ["#tag", " padded ", "", "50%", "a\nb", "\r", "\u{feff}x"];
-        let mut text = String::from(EXACT_LIST_MARKER);
-        for e in entries {
-            text.push_str(
-                &e.replace('%', "%25")
-                    .replace('\n', "%0A")
-                    .replace('\r', "%0D"),
-            );
-            text.push('\n');
-        }
-        let loader = MapResourceLoader::new().with("w", text.as_bytes());
-        assert_eq!(get_lines(&loader, "w").unwrap(), entries);
-        let set = get_snowball_word_set(&loader, "w", false).unwrap().unwrap();
-        assert!(set.contains("#tag") && set.contains(" padded ") && set.contains(""));
-        let none = MapResourceLoader::new().with("n", EXACT_LIST_MARKER.as_bytes());
-        assert!(get_lines(&none, "n").unwrap().is_empty());
-        let blank = MapResourceLoader::new().with("b", format!("{EXACT_LIST_MARKER}\n").as_bytes());
-        assert_eq!(get_lines(&blank, "b").unwrap(), [""]);
-    }
 
     #[test]
     fn io_errors_carry_javas_text_not_paths() {

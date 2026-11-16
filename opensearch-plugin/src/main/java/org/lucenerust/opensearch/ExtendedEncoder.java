@@ -1555,6 +1555,10 @@ final class ExtendedEncoder {
             }
             String dataClass = data.getClass().getName();
             byte[] numeric = null;
+            if (dataClass.equals("org.opensearch.index.mapper.IdFieldMapper$IdFieldType$1$1")) {
+                out.write(3);
+                return null;
+            }
             if (dataClass.equals("org.opensearch.index.fielddata.plain.SortedSetOrdinalsIndexFieldData")) {
                 out.write(1);
             } else if ((numeric = scoreNumeric(data)) != null) {
