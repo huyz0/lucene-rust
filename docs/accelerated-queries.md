@@ -470,4 +470,4 @@ it does not step them apart) and the fetch profile (OpenSearch's own). Differenc
 - the clauses OpenSearch lists under a multi-term query's rewrite (one `TermQuery` per matched term
   and segment) and under a `function_score` have no native counterpart and show their
   `create_weight` time only;
-- a hybrid query with `profile` still runs on Java (`hybrid_profile`).
+- a hybrid query's profile is the hybrid root (built as slowly as its slowest sub-query, stepping through every sub-query's documents) over one replayed tree per sub-query, with the collector tree and the aggregators as for any search; its reference is the plugin's own Java hybrid path (`e2e/verify_profile_stock.py`, since a stock node has no neural-search).
