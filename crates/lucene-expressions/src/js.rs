@@ -1821,6 +1821,24 @@ impl Expression {
         self.evaluate_batch(cols, out, &mut BatchScratch::default())
     }
 
+    /// The value over one document whose variables' values are `cols[i]`: what
+    /// [`Self::evaluate_columns`] gives for a batch of one, without its scratch.
+    ///
+    /// # Errors
+    /// `IllegalArgument` when `cols` has fewer values than there are variables.
+    #[doc(hidden)]
+    pub fn evaluate_row(&self, cols: &[f64]) -> lucene_search::Result<f64> {
+        if cols.len() < self.variables.len() {
+            return Err(lucene_search::Error::IllegalArgument(format!(
+                "{} values for the {} variables of {}",
+                cols.len(),
+                self.variables.len(),
+                self.source_text
+            )));
+        }
+        self.run(Values::Columns { cols, n: 1 }, 0)
+    }
+
     /// `evaluate(functionValues)`: `values[i]` are the values of
     /// `variables[i]`.
     ///
