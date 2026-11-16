@@ -524,6 +524,7 @@ fn check_buckets(pair: &Pair) {
         subs
     };
     let histogram = |kind, zone_ms, offset, hard_bounds, subs| AggNode::DateHistogram {
+        script: None,
         field: "ts".to_string(),
         missing: None,
         rounding: DateRounding {
@@ -536,6 +537,7 @@ fn check_buckets(pair: &Pair) {
     };
     let numeric_histogram =
         |field: &str, kind, interval, offset, hard_bounds, subs| AggNode::Histogram {
+            script: None,
             field: field.to_string(),
             missing: None,
             kind,
@@ -545,6 +547,7 @@ fn check_buckets(pair: &Pair) {
             subs,
         };
     let numeric_terms = |field: &str, kind, subs| AggNode::NumericTerms {
+        script: None,
         field: field.to_string(),
         missing: None,
         kind,
@@ -553,6 +556,7 @@ fn check_buckets(pair: &Pair) {
         subs,
     };
     let range = |field: &str, kind, ranges, subs| AggNode::Range {
+        script: None,
         field: field.to_string(),
         missing: None,
         kind,
