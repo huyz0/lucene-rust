@@ -1176,6 +1176,7 @@ enum MetricCol {
     Count(Vec<metric_aggs::Count>),
     Min(Vec<metric_aggs::MinOf>),
     Max(Vec<metric_aggs::MaxOf>),
+    Extended(Vec<metric_aggs::Extended>),
 }
 
 /// `$body` with `$f` converting a stored long of `$kind` to its double:
@@ -1208,6 +1209,7 @@ macro_rules! with_metric_col {
             MetricCol::Count($v) => $body,
             MetricCol::Min($v) => $body,
             MetricCol::Max($v) => $body,
+            MetricCol::Extended($v) => $body,
         }
     };
 }
@@ -1216,8 +1218,9 @@ impl MetricCol {
     /// The form keeping the parts `needs` names, as `collect_needs` reads
     /// them: a mix it does not single out keeps every part.
     fn for_needs(needs: u8) -> Self {
-        use metric_aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SUM};
+        use metric_aggs::{NEED_COUNT, NEED_MAX, NEED_MIN, NEED_SQ, NEED_SUM};
         match needs {
+            n if n & NEED_SQ != 0 => Self::Extended(Vec::new()),
             NEED_MIN => Self::Min(Vec::new()),
             NEED_MAX => Self::Max(Vec::new()),
             NEED_COUNT => Self::Count(Vec::new()),

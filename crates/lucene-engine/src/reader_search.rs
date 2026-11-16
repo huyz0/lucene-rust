@@ -27,7 +27,7 @@ use crate::query_blob::{
 };
 use crate::reader_handle::JvmReaderHandle;
 use crate::status::{set_last_error, Status};
-use lucene_aggs::metric_aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
+use lucene_aggs::metric_aggs::{MetricSpec, MetricState, Source, ValueKind};
 use lucene_aggs::terms_agg::TermsSpec;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
@@ -1007,7 +1007,7 @@ pub fn decode_metrics(blob: &[u8]) -> Result<DecodedAggs, Status> {
             other => return Err(bad(format!("metrics blob: unknown source {other}"))),
         };
         let needs = c.u8()?;
-        if needs == 0 || needs & !NEED_ALL != 0 {
+        if !lucene_aggs::metric_aggs::valid_needs(needs) {
             return Err(bad(format!("metrics blob: needs {needs:#x}")));
         }
         let field = std::str::from_utf8(c.bytes()?).map_err(|_| Status::InvalidUtf8)?;
