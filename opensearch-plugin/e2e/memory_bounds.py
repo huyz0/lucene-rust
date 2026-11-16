@@ -21,8 +21,9 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import benchhttp as bh  # noqa: E402
 
 DOCS = int(os.environ.get("DOCS", "2000000"))
 SHARDS = int(os.environ.get("SHARDS", "1"))
@@ -32,18 +33,14 @@ INDEX = "membounds"
 
 
 def req(base, method, path, body=None, ndjson=False, timeout=600):
-    data = body if isinstance(body, bytes) or body is None else json.dumps(body).encode()
-    headers = {"content-type": "application/x-ndjson" if ndjson else "application/json"}
-    r = urllib.request.Request(base + path, data=data, method=method, headers=headers)
+    """(status, parsed body); (-1, error) when the connection fails: the node died. Keep-alive (benchhttp)."""
     try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return resp.status, json.load(resp)
-    except urllib.error.HTTPError as e:
+        status, data = bh.for_thread(base).request(method, path, body, ndjson, timeout)
         try:
-            return e.code, json.load(e)
-        except Exception:
-            return e.code, {}
-    except Exception as e:  # connection refused: the node died
+            return status, json.loads(data) if data else {}
+        except ValueError:
+            return status, {}
+    except Exception as e:
         return -1, {"error": {"type": type(e).__name__, "reason": str(e)}}
 
 
@@ -207,7 +204,7 @@ def main():
             print(label, "node died", flush=True)
             break
     # Ordinary requests, for the accounting's cost: p50 over LATENCY_ROUNDS.
-    rounds = int(os.environ.get("LATENCY_ROUNDS", "60"))
+    rounds = int(os.environ.get("LATENCY_ROUNDS", "300"))
     light = {
         "lat_terms_host": {"size": 0, "aggs": {"h": {"terms": {"field": "host", "size": 10}, "aggs": {"m": {"avg": {"field": "n"}}}}}},
         "lat_match": {"size": 10, "query": {"match": {"msg": "w1 w2"}}},
@@ -218,7 +215,7 @@ def main():
         for i in range(rounds):
             t = time.perf_counter()
             st, _ = req(base, "POST", "/%s/_search?request_cache=false" % INDEX, body)
-            if i >= 5:
+            if i >= 30:
                 times.append((time.perf_counter() - t) * 1000)
         times.sort()
         result["cases"][name] = {"status": [st], "errors": [], "p50_ms": round(times[len(times) // 2], 2),

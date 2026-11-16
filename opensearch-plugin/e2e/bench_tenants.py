@@ -28,8 +28,10 @@ import statistics
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
+
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import benchhttp as bh  # noqa: E402
 
 VOCAB = 50_000
 CLIENTS = 4
@@ -77,16 +79,7 @@ def corpus(tenants, docs):
 
 
 def req(method, path, body=None, ndjson=False, timeout=1800):
-    data, headers = None, {}
-    if body is not None:
-        data = body if isinstance(body, bytes) else (body.encode() if isinstance(body, str) else json.dumps(body).encode())
-        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
-    r = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:500]}")
+    return bh.req(BASE, method, path, body, ndjson, timeout)
 
 
 MAPPING = {"properties": {

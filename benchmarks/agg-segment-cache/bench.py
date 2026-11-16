@@ -6,35 +6,17 @@ rounds, then rounds that also update and delete old events). Writes OUT.json.
 SKIP_STATIC, VERIFY (each live and sliding request also run with the cache off and on, request
 cache bypassed, answers compared), DUMP (every answer to OUT.json.aggs).
 """
-import glob, hashlib, http.client, json, os, random, statistics, sys, time, urllib.parse
+import glob, hashlib, json, os, random, statistics, sys, time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
+import benchhttp as bh  # noqa: E402
 
 BASE, CORPUS, LABEL, OUT = sys.argv[1:5]
 LOAD = "--load" in sys.argv
 CACHE = "--cache" in sys.argv
-u = urllib.parse.urlparse(BASE)
-conn = http.client.HTTPConnection(u.hostname, u.port, timeout=900)
 
 def req(method, path, body=None, ndjson=False):
-    global conn
-    data = None
-    headers = {}
-    if body is not None:
-        data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
-    for attempt in range(3):
-        try:
-            conn.request(method, path, body=data, headers=headers)
-            r = conn.getresponse()
-            payload = r.read()
-            break
-        except (http.client.HTTPException, OSError):
-            conn.close()
-            conn = http.client.HTTPConnection(u.hostname, u.port, timeout=900)
-            if attempt == 2:
-                raise
-    if r.status >= 300:
-        raise RuntimeError(f"{method} {path}: {r.status} {payload[:600]}")
-    return json.loads(payload)
+    return bh.req(BASE, method, path, body, ndjson, 900)
 
 if not LOAD:
     req("GET", "/_cluster/health/logs?wait_for_status=yellow&timeout=180s")
@@ -59,12 +41,8 @@ if LOAD:
     files = sorted(glob.glob(os.path.join(CORPUS, "bulk-*.ndjson")))
     t0 = time.perf_counter()
     def send(p):
-        c = http.client.HTTPConnection(u.hostname, u.port, timeout=900)
         with open(p, "rb") as fh:
-            c.request("POST", "/logs/_bulk", body=fh.read(), headers={"content-type": "application/x-ndjson"})
-        r = c.getresponse()
-        b = json.loads(r.read())
-        c.close()
+            b = req("POST", "/logs/_bulk", fh.read(), ndjson=True)
         if b.get("errors"):
             raise RuntimeError(str(b["items"][:1]))
     with concurrent.futures.ThreadPoolExecutor(4) as ex:

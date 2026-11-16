@@ -16,8 +16,9 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../opensearch-plugin/e2e"))
 import bench_nodes as bn  # noqa: E402
 
-ROUNDS = int(os.environ.get("ROUNDS", "30"))
+ROUNDS = int(os.environ.get("ROUNDS", "100"))
 WARMUP = int(os.environ.get("WARMUP", "10"))
+WARMUP_S = float(os.environ.get("WARMUP_S", "2"))
 
 
 def shapes():
@@ -63,16 +64,13 @@ def time_all(label, out):
     for name, body in shapes():
         if only and not any(o in name for o in only.split(",")):
             continue
-        for _ in range(WARMUP):
-            r = bn.req("POST", "/bench/_search?request_cache=false", body)
-        wall = []
-        for _ in range(ROUNDS):
-            t = time.perf_counter()
-            r = bn.req("POST", "/bench/_search?request_cache=false", body)
-            wall.append((time.perf_counter() - t) * 1000)
-        wall.sort()
-        res[name] = {"median_ms": round(statistics.median(wall), 3),
-                     "p90_ms": round(wall[int(len(wall) * 0.9) - 1], 3), "digest": digest(r)}
+        last = []
+
+        def one():
+            last[:] = [bn.req("POST", "/bench/_search?request_cache=false", body)]
+
+        wall = bn.bh.measure(one, ROUNDS, WARMUP, WARMUP_S)
+        res[name] = {**bn.bh.summarize(wall), "digest": digest(last[0])}
         print(f"  {label} {name:38s} {res[name]['median_ms']:8.2f} ms", flush=True)
     with open(out, "w") as fh:
         json.dump(res, fh, indent=1)

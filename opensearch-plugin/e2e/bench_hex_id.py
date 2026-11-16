@@ -12,8 +12,11 @@ import json
 import random
 import subprocess
 import time
-import urllib.error
-import urllib.request
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import benchhttp as bh  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--url", default="http://localhost:9200")
@@ -25,17 +28,7 @@ a = ap.parse_args()
 
 
 def req(method, path, body=None, ndjson=False):
-    data = None
-    headers = {}
-    if body is not None:
-        data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
-        headers["content-type"] = "application/x-ndjson" if ndjson else "application/json"
-    r = urllib.request.Request(a.url + path, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(r, timeout=3600) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{method} {path}: {e.code} {e.read().decode()[:500]}")
+    return bh.req(a.url, method, path, body, ndjson, 3600)
 
 
 INDICES = {"kw": "keyword", "hx": "hex_id"}
