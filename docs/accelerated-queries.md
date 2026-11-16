@@ -328,10 +328,10 @@ that state from one call to the next. A `FuzzyQuery` is sent as itself
 A query the extractor does not know whose rewrite keeps it (a script, geo,
 `intervals`, `distance_feature`, `terms_set`, `combined_fields`,
 `script_score`) is sent as its recorded visit, whose terms the extractor
-reads when it has none yet; one whose rewrite reads the index
-(`more_like_this`) falls back (`highlight_<Class>`): stock rewrites it against
-a one-document index of the hit's text, with Java's `HashMap` order deciding
-which terms past `max_query_terms` are kept.
+reads when it has none yet. `more_like_this` on the plain highlighter is sent
+as its candidate terms, in Java's `HashMap` order, with their `tf * idf`; the
+native side keeps those the hit's text holds in Lucene's bounded priority
+queue, so ties past `max_query_terms` fall as stock's do.
 
 `e2e/highlight_matrix.py` runs every option set above as `type: plain`
 and seven of plain's own (fragmenters, sizes, score order, `html`), all

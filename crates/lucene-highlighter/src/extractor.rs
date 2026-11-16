@@ -586,6 +586,11 @@ impl Run<'_, '_> {
                     let rewritten = q.rewrite_over(&self.leaf.terms);
                     self.extract(&rewritten, boost)
                 }
+                ExtendedQuery::MoreLikeThisHighlight(q) => {
+                    self.ensure_terms()?;
+                    let rewritten = q.rewrite_over(&self.leaf.terms);
+                    self.extract(&rewritten, boost)
+                }
                 ExtendedQuery::MultiTerm(m) => self.extract_multi_term(query, m.field(), boost),
                 ExtendedQuery::LateJoin(_) if self.cfg.opensearch => Ok(()),
                 ExtendedQuery::IndexOrDocValues(q) if self.cfg.opensearch => {

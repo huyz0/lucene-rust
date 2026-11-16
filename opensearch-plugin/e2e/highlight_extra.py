@@ -83,6 +83,7 @@ INDEXES = {
     "hlx_surrogate_ws": ({"analysis": hm.ANALYSIS}, text_mapping(analyzer="ws_lower"), surrogate_docs(300)),
     "hlx_limit": ({"highlight.max_analyzed_offset": 60}, text_mapping(), limit_docs(120)),
     "hlx_thai": ({}, text_mapping(), thai_docs(120)),
+    "hlx_mlt": ({}, text_mapping(), limit_docs(150)),
     # the plugin's second half stays in the writer's buffers, unrefreshed
     "hlx_live": ({}, {"properties": {"body": {"type": "text", "index_options": "offsets"}, "title": {"type": "text"},
                                     "num": {"type": "integer"}, "kw": {"type": "keyword"}}}, limit_docs(120)),
@@ -196,6 +197,41 @@ for qn, q in DERIVED_QUERIES.items():
         "plain_dtitle": {"type": "plain", "fields": {"dtitle": {}, "body": {}, "title": {}}},
         "fvh_dtitle": {"type": "fvh", "fields": {"dtitle": {}}},
         "unified_nomatch": {"type": "unified", "fields": {"dtitle": {"no_match_size": 20}}},
+    })
+
+# more_like_this on the plain highlighter: the terms it keeps past max_query_terms
+_LIKE = "the quick brown fox jumps over lazy dog search engine lucene rust highlight passage sentence fragment query match phrase index shard node cluster vector token analyzer stemming running runs ran foxes"
+MLT_QUERIES = {}
+for _n, _o in {
+    "default": {},
+    "terms1": {"max_query_terms": 1},
+    "terms2": {"max_query_terms": 2},
+    "terms3": {"max_query_terms": 3},
+    "terms5": {"max_query_terms": 5},
+    "terms8_boost": {"max_query_terms": 8, "boost_terms": 2.0},
+    "boost_all": {"boost_terms": 1.5},
+    "stop": {"stop_words": ["the", "fox", "dog", "over"], "max_query_terms": 6},
+    "len": {"min_word_length": 4, "max_word_length": 7, "max_query_terms": 6},
+    "df": {"min_doc_freq": 1, "max_doc_freq": 1000},
+    "df_none": {"min_doc_freq": 3},
+    "tf2": {"min_term_freq": 2},
+    "unlike": {"unlike": "quick brown fox", "max_query_terms": 6},
+    "msm": {"minimum_should_match": "50%", "max_query_terms": 4},
+}.items():
+    MLT_QUERIES["mlt_" + _n] = {"more_like_this": {"fields": ["body"], "like": _LIKE + " fox fox dog dog dog", "min_term_freq": 1,
+                                                     "min_doc_freq": 1, **_o}}
+MLT_QUERIES["mlt_fields"] = {"more_like_this": {"fields": ["title", "body"], "like": _LIKE, "min_term_freq": 1, "min_doc_freq": 1, "max_query_terms": 5}}
+MLT_QUERIES["mlt_two_likes"] = {"more_like_this": {"fields": ["body"], "like": ["quick brown fox", "lazy dog lucene rust"], "min_term_freq": 1, "min_doc_freq": 1, "max_query_terms": 3}}
+MLT_QUERIES["mlt_doc"] = {"more_like_this": {"fields": ["body", "title"], "like": [{"_index": "hlx_mlt", "_id": "3"}], "min_term_freq": 1, "min_doc_freq": 1, "max_query_terms": 6}}
+MLT_QUERIES["mlt_doc_text"] = {"more_like_this": {"fields": ["body"], "like": [{"_index": "hlx_mlt", "_id": "5"}, "quick brown fox"], "unlike": [{"_index": "hlx_mlt", "_id": "7"}], "min_term_freq": 1, "min_doc_freq": 1, "max_query_terms": 7}}
+MLT_QUERIES["mlt_in_bool"] = {"bool": {"must": [{"match": {"body": "fox"}}], "should": [{"more_like_this": {"fields": ["body"], "like": _LIKE, "min_term_freq": 1, "min_doc_freq": 1, "max_query_terms": 4}}]}}
+MLT_QUERIES["mlt_in_function_score"] = {"function_score": {"query": {"more_like_this": {"fields": ["body"], "like": _LIKE, "min_term_freq": 1, "min_doc_freq": 1, "max_query_terms": 4}}}}
+for qn, q in MLT_QUERIES.items():
+    add("hlx_mlt", qn, q, {
+        "plain": {"type": "plain", "fields": {"body": {}}},
+        "plain_all": {"type": "plain", "fields": {"body": {"number_of_fragments": 0}}, "require_field_match": False},
+        "plain_title": {"type": "plain", "fields": {"title": {}}, "require_field_match": False},
+        "unified": {"type": "unified", "fields": {"body": {}}},
     })
 
 # the Thai break iterator

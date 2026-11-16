@@ -244,6 +244,8 @@ public final class QueryEncoder {
     private static final byte NODE_MULTI_PHRASE = 51;
     /** {@code NODE_MULTI_PHRASE_PREFIX} in {@code queries.rs}: {@code match_phrase_prefix}, for the highlighter. */
     private static final byte NODE_MULTI_PHRASE_PREFIX = 52;
+    /** {@code NODE_MORE_LIKE_THIS} in {@code queries.rs}: {@code more_like_this}, for the plain highlighter. */
+    static final byte NODE_MORE_LIKE_THIS_KIND = 56;
 
     /** Whether {@code q} holds a phrase or span query: their positions are what the highlighter's phrase helper reads. */
     private static boolean hasPositional(Query q) {
@@ -593,6 +595,9 @@ public final class QueryEncoder {
             // recognize (which keeps a field from the no-op strategy and moves postings
             // offsets to analysis): what that visit does is sent, not the query it wraps.
             return visited(q, out, fieldOk, depth, nodes);
+        }
+        if (PLAIN.get() && q instanceof org.opensearch.common.lucene.search.MoreLikeThisQuery mlt) {
+            return MoreLikeThisEncoder.write(mlt, out);
         }
         if (HIGHLIGHT_CLASSES.contains(q.getClass()) == false && q instanceof PointRangeQuery == false && q instanceof PointInSetQuery == false) {
             if (PLAIN.get() == false && extractorKnows(q) == false) {
