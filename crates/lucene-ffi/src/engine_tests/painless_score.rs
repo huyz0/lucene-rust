@@ -733,7 +733,7 @@ pub(crate) mod tests {
             }
             let mut spec = case.spec.clone();
             spec[0] = 5;
-            let Ok(values) = PainlessAggValues::decode(&mut Cursor::new(&spec), false) else {
+            let Ok(values) = PainlessAggValues::decode(&mut Cursor::new(&spec), false, None) else {
                 let e = lucene_engine::status::last_error();
                 // A filter script's `params` has no `doc` or `_source`; an
                 // aggregation script's has them, as Java serves them.
@@ -833,6 +833,20 @@ pub(crate) mod tests {
             b.extend_from_slice(&spec);
             b
         };
+        let over = |kind: u8| {
+            let mut b = vec![AGG_SCRIPT_VALUES, 2, kind];
+            b.extend_from_slice(&spec);
+            b
+        };
+        let t = decode_tree(&tree(&[over(1)], terms())).unwrap();
+        let AggNode::NumericTerms { script: got, .. } = &t.nodes[0] else {
+            panic!("a numeric terms")
+        };
+        assert_eq!(
+            got.as_ref().unwrap().input_kind(),
+            Some(lucene_aggs::metric_aggs::ValueKind::Double)
+        );
+        assert!(decode_tree(&tree(&[over(9)], terms())).is_err());
         let missing = || {
             let mut b = vec![AGG_MISSING];
             b.extend_from_slice(&7i64.to_le_bytes());

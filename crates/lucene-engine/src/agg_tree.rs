@@ -320,15 +320,16 @@ pub fn node(c: &mut Cursor<'_>, depth: usize, count: &mut usize) -> Result<AggNo
         match c.u8()? {
             AGG_MISSING if value.is_none() => value = Some(c.i64()?),
             AGG_SCRIPT_VALUES if script.is_none() => {
-                let long = match c.u8()? {
-                    0 => false,
-                    1 => true,
+                let (long, input) = match c.u8()? {
+                    0 => (false, None),
+                    1 => (true, None),
+                    2 => (false, Some(wide_value_kind(c)?)),
                     other => {
                         return Err(bad(format!("aggregation tree: script values mode {other}")))
                     }
                 };
                 script = Some(Arc::new(crate::painless_score::PainlessAggValues::decode(
-                    c, long,
+                    c, long, input,
                 )?));
             }
             AGG_MISSING | AGG_SCRIPT_VALUES => {
@@ -420,7 +421,7 @@ pub fn node_of(
             if !lucene_aggs::metric_aggs::valid_needs(needs) {
                 return Err(bad(format!("aggregation tree: metric needs {needs:#x}")));
             }
-            let values = crate::painless_score::PainlessAggValues::decode(c, false)?;
+            let values = crate::painless_score::PainlessAggValues::decode(c, false, None)?;
             AggNode::Metric {
                 missing: None,
                 field: String::new(),
