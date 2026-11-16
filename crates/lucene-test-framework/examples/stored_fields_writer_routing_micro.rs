@@ -134,6 +134,7 @@ impl Digest {
         self.mix(match value {
             FieldValue::Binary(_) => 1,
             FieldValue::String(_) => 2,
+            FieldValue::Shared(_) => 2,
             FieldValue::Int(_) => 3,
             FieldValue::Long(_) => 4,
             FieldValue::Float(_) => 5,
@@ -143,6 +144,7 @@ impl Digest {
         match value {
             FieldValue::Binary(value) => self.bytes(value),
             FieldValue::String(value) => self.bytes(value.as_bytes()),
+            FieldValue::Shared(value) => self.bytes(value.as_bytes()),
             FieldValue::Int(value) => self.mix(i64::from(*value) as u64),
             FieldValue::Long(value) => self.mix(*value as u64),
             FieldValue::Float(value) => self.mix(u64::from(value.to_bits())),
@@ -305,6 +307,7 @@ fn source_payload() -> usize {
         .map(|value| match value {
             FieldValue::Binary(value) => value.len(),
             FieldValue::String(value) => value.len(),
+            FieldValue::Shared(value) => value.len(),
             FieldValue::Int(_) | FieldValue::Float(_) => 4,
             FieldValue::Long(_) | FieldValue::Double(_) => 8,
         })

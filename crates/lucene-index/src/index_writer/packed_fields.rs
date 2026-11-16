@@ -432,6 +432,7 @@ fn stored_bytes(doc: &Document) -> usize {
         .map(|f| match &f.value {
             FieldValue::Binary(b) => b.len(),
             FieldValue::String(s) => s.len(),
+            FieldValue::Shared(s) => s.len(),
             _ => 8,
         })
         .fold(0usize, usize::saturating_add)
@@ -460,7 +461,7 @@ fn encode_shape(fields: &ExplicitFields, out: &mut Vec<u8>) {
                 FieldValue::Float(_) => FLOAT,
                 FieldValue::Double(_) => DOUBLE,
                 FieldValue::Binary(_) => BINARY,
-                FieldValue::String(_) => STRING,
+                FieldValue::String(_) | FieldValue::Shared(_) => STRING,
             });
         }
     }
@@ -486,6 +487,10 @@ fn encode_values(fields: &ExplicitFields, out: &mut Vec<u8>) {
                 out.extend_from_slice(b);
             }
             FieldValue::String(s) => {
+                write_len(out, s.len());
+                out.extend_from_slice(s.as_bytes());
+            }
+            FieldValue::Shared(s) => {
                 write_len(out, s.len());
                 out.extend_from_slice(s.as_bytes());
             }

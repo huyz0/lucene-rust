@@ -63,6 +63,7 @@ impl StoredFieldsWriter for RecordingWriter {
             FieldValue::Double(value) => format!("double:{field}:{}", value.to_bits()),
             FieldValue::Binary(value) => format!("binary:{field}:{}", hex(value)),
             FieldValue::String(value) => format!("string:{field}:{value}"),
+            FieldValue::Shared(value) => format!("string:{field}:{value}"),
         };
         self.event(text)
     }

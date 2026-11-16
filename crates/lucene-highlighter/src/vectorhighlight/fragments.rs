@@ -5,7 +5,7 @@
 //! Text is UTF-16, as Java's `StringBuilder` indexes it, so the offsets of
 //! the term vector address it directly.
 
-use lucene_codecs::stored_fields::{DocumentVisitor, FieldValue};
+use lucene_codecs::stored_fields::DocumentVisitor;
 
 use super::super::unified::break_iterators::BreakIterator;
 use super::super::{DefaultEncoder, Encoder, Error, Result};
@@ -457,7 +457,7 @@ impl FragmentsBuilder {
             return Ok(values);
         }
         for f in &visitor.into_document().fields {
-            if let FieldValue::String(text) = &f.value {
+            if let Some(text) = f.value.as_text() {
                 values.push(text.encode_utf16().collect());
             }
         }

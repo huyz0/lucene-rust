@@ -150,6 +150,7 @@ fn plain_field(name: &str, number: i32) -> FieldInfo {
 fn render_field(number: i32, value: &FieldValue) -> String {
     match value {
         FieldValue::String(s) => format!("{number}:string:{s}"),
+        FieldValue::Shared(s) => format!("{number}:string:{s}"),
         FieldValue::Binary(b) => format!("{number}:binary:{}", hex(b)),
         FieldValue::Int(v) => format!("{number}:int:{v}"),
         FieldValue::Long(v) => format!("{number}:long:{v}"),

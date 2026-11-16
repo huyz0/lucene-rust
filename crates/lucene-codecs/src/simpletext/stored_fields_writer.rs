@@ -93,6 +93,7 @@ impl SimpleTextStoredFieldsWriter {
             FieldValue::Double(v) => (TYPE_DOUBLE, java_double_string(*v).into_bytes().into()),
             FieldValue::Binary(v) => (TYPE_BINARY, v.as_slice().into()),
             FieldValue::String(v) => (TYPE_STRING, v.as_bytes().into()),
+            FieldValue::Shared(v) => (TYPE_STRING, v.as_bytes().into()),
         };
         util::write_line(&mut self.out, TYPE, ty);
         util::write_line(&mut self.out, VALUE, &text);

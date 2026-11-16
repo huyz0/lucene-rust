@@ -554,6 +554,7 @@ impl<'r> Search<'r> {
             let entry = values.entry(name.clone()).or_default();
             match f.value {
                 FieldValue::String(s) => entry.push(s),
+                FieldValue::Shared(s) => entry.push(s.to_string()),
                 FieldValue::Binary(_) => {}
                 FieldValue::Int(i) => entry.push(i.to_string()),
                 FieldValue::Long(l) => entry.push(l.to_string()),

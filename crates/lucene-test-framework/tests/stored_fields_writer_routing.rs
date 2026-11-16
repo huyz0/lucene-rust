@@ -502,6 +502,7 @@ fn render_value(value: &FieldValue) -> String {
     match value {
         FieldValue::Binary(v) => format!("b:{}", hex(v)),
         FieldValue::String(v) => format!("s:{}", hex(v.as_bytes())),
+        FieldValue::Shared(v) => format!("s:{}", hex(v.as_bytes())),
         FieldValue::Int(v) => format!("i:{v}"),
         FieldValue::Long(v) => format!("l:{v}"),
         FieldValue::Float(v) => format!("f:{}", v.to_bits()),

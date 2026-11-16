@@ -837,6 +837,7 @@ impl Field {
         ft.stored = true;
         let data = match value {
             StoredValue::String(s) => FieldData::String(s),
+            StoredValue::Shared(s) => FieldData::SharedString(s),
             StoredValue::Binary(b) => FieldData::Bytes(b),
             StoredValue::Int(v) => FieldData::Int(v),
             StoredValue::Long(v) => FieldData::Long(v),
@@ -1004,7 +1005,7 @@ impl IndexableField for Field {
             FieldData::Double(v) => Some(StoredValue::Double(*v)),
             FieldData::Bytes(b) => Some(StoredValue::Binary(b.clone())),
             FieldData::String(s) => Some(StoredValue::String(s.clone())),
-            FieldData::SharedString(s) => Some(StoredValue::String(s.to_string())),
+            FieldData::SharedString(s) => Some(StoredValue::Shared(Arc::clone(s))),
             FieldData::Reader(_) | FieldData::TokenStream(_) => None,
         }
     }

@@ -197,7 +197,7 @@ impl LazyField<'_, '_> {
             FieldValue::Long(v) => Some(Number::Long(v)),
             FieldValue::Float(v) => Some(Number::Float(v)),
             FieldValue::Double(v) => Some(Number::Double(v)),
-            FieldValue::String(_) | FieldValue::Binary(_) => None,
+            FieldValue::String(_) | FieldValue::Shared(_) | FieldValue::Binary(_) => None,
         })
     }
 }

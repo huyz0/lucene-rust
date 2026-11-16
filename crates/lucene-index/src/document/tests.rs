@@ -1670,7 +1670,15 @@ fn a_shared_text_field_answers_every_accessor_as_an_owned_one_does() {
     let shared = TextField::new_shared("t", Arc::clone(&text), Store::Yes);
     let owned = TextField::new("t", "Quick Fox 世界", Store::Yes);
     assert_eq!(shared.string_value(), owned.string_value());
-    assert_eq!(shared.stored_value(), owned.stored_value());
+    // The stored value shares the text rather than copying it, and reads as
+    // the same string.
+    let stored = shared.stored_value().unwrap();
+    match &stored {
+        StoredValue::Shared(s) => assert!(Arc::ptr_eq(s, &text), "no copy of the text"),
+        other => panic!("expected a shared stored value, got {other:?}"),
+    }
+    assert_eq!(stored.as_text(), owned.stored_value().unwrap().as_text());
+    drop(stored);
     assert_eq!(
         shared
             .token_stream(&analyzer)

@@ -85,6 +85,7 @@ fn dump(dir: &dyn Directory) -> String {
                     .name;
                 let (t, v) = match &f.value {
                     FieldValue::String(s) => ("s", hex(s.as_bytes())),
+                    FieldValue::Shared(s) => ("s", hex(s.as_bytes())),
                     FieldValue::Binary(b) => ("b", hex(b)),
                     FieldValue::Int(i) => ("i", i.to_string()),
                     FieldValue::Long(l) => ("l", l.to_string()),
