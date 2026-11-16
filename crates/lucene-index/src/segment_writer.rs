@@ -1159,7 +1159,7 @@ mod tests {
         docs.push(Document {
             fields: vec![StoredField {
                 field_number: 0,
-                value: FieldValue::Shared(std::sync::Arc::from("shared text ".repeat(200_000))),
+                value: FieldValue::Shared("shared text ".repeat(200_000).into()),
             }],
         });
         let root = TempDir::new("flush-stored-spill");

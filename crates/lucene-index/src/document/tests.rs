@@ -9,6 +9,7 @@ use crate::similarity::{FieldInvertState, NormSimilarity};
 use lucene_store::directory::{Directory, FsDirectory};
 use lucene_store::ByteBuffersDirectory;
 use lucene_util::test_support::TempDir;
+use std::sync::Arc;
 
 const VERSION: LuceneVersion = LuceneVersion {
     major: 10,
@@ -1668,13 +1669,14 @@ fn a_shared_text_field_answers_every_accessor_as_an_owned_one_does() {
     let analyzer = Analyzer::standard(None);
     let text: Arc<str> = Arc::from("Quick Fox 世界");
     let shared = TextField::new_shared("t", Arc::clone(&text), Store::Yes);
+    let text = SharedText::from(text);
     let owned = TextField::new("t", "Quick Fox 世界", Store::Yes);
     assert_eq!(shared.string_value(), owned.string_value());
     // The stored value shares the text rather than copying it, and reads as
     // the same string.
     let stored = shared.stored_value().unwrap();
     match &stored {
-        StoredValue::Shared(s) => assert!(Arc::ptr_eq(s, &text), "no copy of the text"),
+        StoredValue::Shared(s) => assert!(s.ptr_eq(&text), "no copy of the text"),
         other => panic!("expected a shared stored value, got {other:?}"),
     }
     assert_eq!(stored.as_text(), owned.stored_value().unwrap().as_text());
@@ -1688,15 +1690,40 @@ fn a_shared_text_field_answers_every_accessor_as_an_owned_one_does() {
             .len(),
         owned.token_stream(&analyzer).unwrap().unwrap().tokens.len()
     );
-    assert!(std::ptr::eq(
-        shared.analyzed_shared().unwrap().as_ref(),
-        text.as_ref()
-    ));
+    assert!(shared.analyzed_shared().unwrap().ptr_eq(&text));
     assert!(owned.analyzed_shared().is_none());
     // text set afterwards replaces the share with an owned string
     let mut shared = shared;
     shared.set_string_value("zz").unwrap();
     assert_eq!(shared.string_value().as_deref(), Some("zz"));
     assert!(shared.analyzed_shared().is_none());
+    drop(shared);
+    let SharedText::Str(text) = text else {
+        panic!("built from an Arc<str>")
+    };
     assert_eq!(Arc::strong_count(&text), 1);
+}
+
+#[test]
+fn a_shared_string_field_indexes_and_stores_the_string_it_was_given_without_copying_it() {
+    let analyzer = Analyzer::standard(None);
+    let text = String::from("Quick Fox 世界");
+    let bytes = text.as_ptr();
+    let shared = TextField::new_shared("t", text, Store::Yes);
+    let owned = TextField::new("t", "Quick Fox 世界", Store::Yes);
+    assert_eq!(shared.string_value(), owned.string_value());
+    assert_eq!(shared.analyzed_shared().unwrap().as_ptr(), bytes);
+    match shared.stored_value().unwrap() {
+        StoredValue::Shared(s) => assert_eq!(s.as_ptr(), bytes, "the stored value is the text"),
+        other => panic!("expected a shared stored value, got {other:?}"),
+    }
+    assert_eq!(
+        shared
+            .token_stream(&analyzer)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .len(),
+        owned.token_stream(&analyzer).unwrap().unwrap().tokens.len()
+    );
 }
