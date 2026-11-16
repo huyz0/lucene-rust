@@ -208,7 +208,7 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `min_score` | `min_score` behind a scroll or `terminate_after` |
 | `terminate_after` | a `terminate_after` Lucene collects in ranges (an unscored sort over anything but a plain `TermQuery`, which alone the query cache never holds; a constant-score or filter-only query), or with aggregations, `search_after`, a scroll, more than `track_total_hits` counts, or a `size: 0` count over a query whose `Weight.count` is not ported |
 | `sort_*`, `search_after`, `profile` | the request needs something the native top-hits path does not produce |
-| `sort_nested`, `sort_skipping` | a nested key, a `mode: sum` key, a `half_float` or `unsigned_long` key, or the `wildcard` field's key, on a shard with more documents than the total-hits threshold: their native comparators do not skip as Lucene's do past it |
+| `sort_*_nested`, `sort_*_mode_MEDIAN` | a nested `unsigned_long` key; a `median` `unsigned_long` key |
 | `collapse_field`, `collapse_search_after`, `collapse_refused` | `collapse` on a field neither keyword nor numeric; `search_after` with a sort other than the collapse field alone (Lucene refuses it); a multi-valued collapse field (Lucene raises the error) |
 | `rescore`, `rescore_<reason>` | a rescorer other than OpenSearch's `query` one; a rescore query that falls back for `<reason>` |
 | `scroll_after` | a sorted scroll page whose last emitted hit carries no sort values |
@@ -436,3 +436,13 @@ nodes.
   many large segments can hold more than that setting would allow.
 - **Linux only**, x86_64 and aarch64; the library needs glibc ≥ 2.34 (the
   OpenSearch 3.9.0 image has 2.34, and `verify-opensearch.sh` checks it).
+
+## Sorts where Lucene drops hits
+
+Lucene's numeric comparators skip documents with the field's points once the queue is full and more than
+`track_total_hits_threshold` (10,000) documents match. That is exact where the points hold the values the
+comparator sorts by. It is not for a `scaled_float` (its points are the scaled longs, read as doubles), a
+`mode: sum` key (a sum passes the values the points bound), and a nested key (the points are the children's):
+stock then returns top hits with documents missing, and which ones depends on the segment layout. The native
+path never skips for those keys, so its hits are the exact sort; `e2e/verify_sort_shapes.py` checks them
+against a brute-force oracle past the threshold, and against stock below it.
