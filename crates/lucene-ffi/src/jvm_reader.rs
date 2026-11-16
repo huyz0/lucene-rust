@@ -1376,7 +1376,7 @@ pub(crate) mod tests {
             "a unit of 0 m"
         );
         assert_eq!(
-            status(&geo_sort_blob(0, 2, &o, 1.0, None)),
+            status(&geo_sort_blob(0, 3, &o, 1.0, None)),
             invalid,
             "unknown comparator"
         );
