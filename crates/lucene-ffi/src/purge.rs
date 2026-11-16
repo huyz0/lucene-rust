@@ -101,7 +101,14 @@ pub(crate) fn writing() -> imp::Busy {
     imp::writing()
 }
 
+/// What [`writing`] returns without the `mimalloc` feature: nothing to hold, but a value, so a
+/// caller's `let _busy = writing();` is the same line with and without the feature.
+#[cfg(not(feature = "mimalloc"))]
+pub(crate) struct Busy;
+
 /// Marks a write call (no allocator to tune without the `mimalloc` feature).
 #[cfg(not(feature = "mimalloc"))]
 #[inline]
-pub(crate) fn writing() {}
+pub(crate) fn writing() -> Busy {
+    Busy
+}
