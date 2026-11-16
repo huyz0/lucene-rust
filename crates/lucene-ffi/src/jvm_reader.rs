@@ -1376,7 +1376,7 @@ pub(crate) mod tests {
             "a unit of 0 m"
         );
         assert_eq!(
-            status(&geo_sort_blob(0, 2, &o, 1.0, None)),
+            status(&geo_sort_blob(0, 3, &o, 1.0, None)),
             invalid,
             "unknown comparator"
         );
@@ -4908,12 +4908,24 @@ pub(crate) mod tests {
             assert_eq!(got, b.values[0] as f64 * 0.5);
         }
         assert_eq!(ffi_close_jvm_reader(h), 0);
+        assert!(
+            decode_sort(&opensearch_key(
+                SORT_UNSIGNED_LONG,
+                SORT_MODE_MEDIAN,
+                "l",
+                0
+            ))
+            .is_ok(),
+            "an unsigned_long median key decodes"
+        );
+        assert!(
+            decode_sort(&opensearch_key(SORT_HALF_FLOAT, 0, "l", i64::MAX)).is_ok(),
+            "a half_float key with a missing value decodes"
+        );
         for blob in [
             opensearch_key(SORT_SHARD_DOC, SORT_MAX, "", 0),
-            opensearch_key(SORT_UNSIGNED_LONG, SORT_MODE_MEDIAN, "l", 0),
             opensearch_key(SORT_HALF_FLOAT, SORT_MAX | SORT_MODE_SUM, "l", 0),
             opensearch_key(SORT_HALF_FLOAT, SORT_NESTED, "l", 0),
-            opensearch_key(SORT_HALF_FLOAT, 0, "l", i64::MAX),
         ] {
             assert_eq!(decode_sort(&blob).err(), invalid, "{blob:?}");
         }
