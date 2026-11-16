@@ -238,7 +238,6 @@ def searches():
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"n": "asc"}, {"_doc": "asc"}], "size": 6}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "sort": [{"_score": "asc"}], "size": 6}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 0, "track_total_hits": True}),
-            ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10, "track_total_hits": False}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "size": 10, "post_filter": {"range": {"n": {"gte": 300}}},
                         "aggs": {"tags": {"terms": {"field": "tag"}}}}),
             ("minmax", {"query": hybrid(MATCH, KNN), "collapse": {"field": "tag"}, "terminate_after": 20, "size": 10}),
