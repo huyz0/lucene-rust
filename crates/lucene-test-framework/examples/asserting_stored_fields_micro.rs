@@ -84,6 +84,7 @@ impl StoredFieldsWriter for Digest {
             FieldValue::Double(v) => self.double_field(n, *v),
             FieldValue::Binary(v) => self.binary_field(n, v),
             FieldValue::String(v) => self.string_field(n, v),
+            FieldValue::Shared(v) => self.string_field(n, v),
         }
     }
     fn write_field_data_input(

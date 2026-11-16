@@ -2877,6 +2877,11 @@ pub fn live_document_blob(view_id: u64, buffer: i32, doc: i32) -> Result<Vec<u8>
                 out.extend_from_slice(&len_i32(s.len())?.to_le_bytes());
                 out.extend_from_slice(s.as_bytes());
             }
+            FieldValue::Shared(s) => {
+                out.push(STRING);
+                out.extend_from_slice(&len_i32(s.len())?.to_le_bytes());
+                out.extend_from_slice(s.as_bytes());
+            }
             FieldValue::Binary(b) => {
                 out.push(BINARY);
                 out.extend_from_slice(&len_i32(b.len())?.to_le_bytes());

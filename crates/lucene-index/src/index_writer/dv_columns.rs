@@ -133,6 +133,7 @@ pub(super) fn collect_columns<D: DocValueFields>(
                 } => {
                     let v = match &f.value {
                         FieldValue::String(s) => s.as_bytes(),
+                        FieldValue::Shared(s) => s.as_bytes(),
                         FieldValue::Binary(b) => b.as_slice(),
                         _ => return None,
                     };
