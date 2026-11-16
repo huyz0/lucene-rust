@@ -183,6 +183,94 @@ def fell_back(delta, expect):
     return n
 
 
+def _children(source, path, key_field, flt):
+    """The values of `key_field` on the `path` children that pass `flt`, in child order."""
+    short = key_field.split(".", 1)[1]
+    out = []
+    for child in source.get(path, []):
+        if flt is not None:
+            if "term" in flt:
+                (f, want), = flt["term"].items()
+                if child.get(f.split(".", 1)[1]) != want:
+                    continue
+            elif "range" in flt:
+                (f, bounds), = flt["range"].items()
+                vals = child.get(f.split(".", 1)[1])
+                vals = vals if isinstance(vals, list) else [] if vals is None else [vals]
+                if not any(v >= bounds.get("gte", float("-inf")) for v in vals):
+                    continue
+        v = child.get(short)
+        if v is None:
+            continue
+        out.extend(v if isinstance(v, list) else [v])
+    return out
+
+
+def _f32(x):
+    import struct
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def check_nested_oracle(index, name, body, label):
+    """A nested sort whose reference is the answer computed from `_source`, not the stock node.
+
+    On an index created by 2.x and then rewritten (`_upgrade`, force merge), stock's comparator
+    skips with the children's points and returns top hits that are not the top (the plugin keeps
+    its answer exact, deliberately). The answer is recomputed from each document's children:
+    the first key's value per mode, filter and missing, then the keys after it; the plugin's hits
+    and sort values must equal it exactly, ids included where the keys are unique."""
+    first = body["sort"][0]
+    (field, spec), = first.items()
+    order, nested = spec["order"], spec.get("nested", {})
+    mode = spec.get("mode", "min" if order == "asc" else "max")
+    missing = spec.get("missing", "_last")
+    rest = body["sort"][1:]
+    all_hits = vo.req("POST", f"/{index}/_search", {"query": body.get("query", {"match_all": {}}), "size": 10000, "_source": ["props", "n"]})["hits"]["hits"]
+    float32 = field.endswith(".f")
+    rows = []
+    for h in all_hits:
+        vals = _children(h["_source"], "props", field, nested.get("filter"))
+        if float32:
+            vals = [_f32(v) for v in vals]
+        if not vals:
+            key = None
+        elif mode == "min":
+            key = min(vals)
+        elif mode == "max":
+            key = max(vals)
+        else:
+            total = 0.0
+            for v in vals:  # in child order, uncompensated, as the comparator adds them
+                total += v
+            key = total if mode == "sum" else total / len(vals)
+        rows.append((key, int(h["_source"]["n"]), h["_id"]))
+    sign = 1 if order == "asc" else -1
+
+    real = [r for r in rows if r[0] is not None or isinstance(missing, (int, float))]
+    second = None
+    if rest and isinstance(rest[0], dict) and "n" in rest[0]:
+        spec2 = rest[0]["n"]
+        second = -1 if (spec2["order"] if isinstance(spec2, dict) else spec2) == "desc" else 1
+    real.sort(key=lambda r: (sign * (r[0] if r[0] is not None else missing), second * r[1] if second else 0))
+    got = vo.req("POST", f"/{index}/_search", body)["hits"]["hits"]
+    check_n = len(got)
+    for i, h in enumerate(got[:check_n]):
+        if i >= len(real):
+            break
+        want = real[i]
+        value = want[0] if want[0] is not None else missing
+        reported = h["sort"][0]
+        same = _f32(reported) == _f32(value) if float32 else reported == value
+        vo.check(same, f"{label} {index} [{name}]: hit {i} sort value {reported} is not {value} computed from _source")
+        keys_equal = [r for r in real if r[0] == want[0]]
+        if rest and isinstance(rest[0], dict) and "n" in rest[0]:
+            vo.check(h["_source"]["n"] == want[1] if "_source" in h else h["sort"][1] == want[1],
+                     f"{label} {index} [{name}]: hit {i} second key {h['sort'][1]} is not {want[1]}")
+        elif len(keys_equal) == 1:
+            vo.check(h["_id"] == want[2], f"{label} {index} [{name}]: hit {i} is {h['_id']}, _source says {want[2]}")
+
+
+
 def run_rows(index, rows, label, plugin, stock, shards, expect_override=None):
     """Each row on the stock node (the reference) and on the plugin node: same
     answer, and the plugin's counters show where it ran."""
@@ -248,7 +336,19 @@ def serve_all(label, plugin, stock, prefix="", merged=False):
     # counting (shortcutTotalHitCount), which leaves a count limit of `size`: past it Lucene's
     # comparator skips, which a nested key does not natively, so such a sort falls back.
     # Rows that stay in Java anyway (an aggregation it cannot run) keep their own reason.
-    nest = [(n, b, "native|sort_nested" if merged and e == "native" else e) for n, b, e in vo.nested_rows()]
+    nest = [(n, b, e) for n, b, e in vo.nested_rows()]
+    if merged:
+        # A sort that sums, averages or filters the children: stock is not its reference here.
+        oracle = {"nested double sum", "nested double avg missing", "nested float sum",
+                  "nested keyword filter", "nested then n"}
+        sums = [r for r in nest if r[0] in oracle]
+        nest = [r for r in nest if r not in sums]
+        on(plugin)
+        for name, body, _ in sums:
+            before = vo.stats()
+            check_nested_oracle(prefix + "nest", name, body, label)
+            ran = vo.stats()["accelerated_queries"] - before["accelerated_queries"]
+            vo.check(ran >= 1, f"{label} {prefix}nest [{name}]: did not run native")
     native += run_rows(prefix + "nest", nest, label, plugin, stock, 1)
     # The k-NN plugin's codec reads natively; with the k-NN plugin installed, its own
     # vector queries stay in Java.
