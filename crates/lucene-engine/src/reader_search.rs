@@ -34,8 +34,8 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
 use lucene_search::similarities::{PerFieldSimilarity, Similarity};
 use lucene_search::top_field::{
-    CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector, SortField,
-    SortType,
+    ChildConvert, CollapseKind, CollapseTopDocs, CollapseValue, FieldDoc, NestedSort, Selector,
+    SortField, SortType,
 };
 use lucene_search::weight_count::count_term_query;
 use lucene_search::{
@@ -69,9 +69,13 @@ pub const SORT_UNSIGNED_LONG: u8 = 10;
 /// only, then the script ([`crate::painless_score`]'s layout, context
 /// `3` or `4`).
 pub const SORT_SCRIPT: u8 = 11;
+/// OpenSearch's `scaled_float` key: as [`SORT_HALF_FLOAT`] but the missing
+/// value is the double's sortable long, followed by `1 / scaling_factor` as
+/// the double's raw bits (`i64`).
+pub const SORT_SCALED_FLOAT: u8 = 12;
 /// At most this many origins in a geo-distance key: each costs a distance
 /// per value per document.
-pub const MAX_GEO_ORIGINS: usize = 1024;
+pub const MAX_GEO_ORIGINS: usize = 1 << 20;
 /// Sort-key flags.
 pub const SORT_REVERSE: u8 = 1;
 pub const SORT_MAX: u8 = 2;
@@ -178,8 +182,6 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
         )));
     }
     let mut keys = Vec::new();
-    // Per key: a geo-distance key in Lucene's own comparator.
-    let mut lucene_geo = Vec::new();
     for _ in 0..n {
         let ty = c.u8()?;
         let flags = c.u8()?;
@@ -197,26 +199,33 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
                 Arc::new(source),
                 flags & SORT_REVERSE != 0,
             ));
-            lucene_geo.push(false);
             continue;
         }
-        if matches!(ty, SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG) {
+        // A nested `half_float` or `scaled_float` key is a `Float` or `Double` key whose
+        // child values are converted as they are read.
+        let nested_converted =
+            flags & SORT_NESTED != 0 && matches!(ty, SORT_HALF_FLOAT | SORT_SCALED_FLOAT);
+        if !nested_converted
+            && matches!(
+                ty,
+                SORT_SHARD_DOC | SORT_HALF_FLOAT | SORT_UNSIGNED_LONG | SORT_SCALED_FLOAT
+            )
+        {
             keys.push(decode_opensearch_sort(&mut c, ty, flags)?);
-            lucene_geo.push(false);
             continue;
         }
+        let wire_ty = ty;
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
             SORT_LONG => SortType::Long,
             SORT_INT => SortType::Int,
             SORT_DOUBLE => SortType::Double,
-            SORT_FLOAT => SortType::Float,
+            SORT_FLOAT | SORT_HALF_FLOAT => SortType::Float,
+            SORT_SCALED_FLOAT => SortType::Double,
             SORT_STRING => SortType::String,
             SORT_GEO_DISTANCE => {
-                let (key, lucene) = decode_geo_sort(&mut c, flags)?;
-                keys.push(key);
-                lucene_geo.push(lucene);
+                keys.push(decode_geo_sort(&mut c, flags)?.0);
                 continue;
             }
             other => return Err(bad(format!("sort blob: unknown key type {other}"))),
@@ -233,6 +242,19 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
                 }
                 (field.to_string(), missing)
             }
+        };
+        let convert = match wire_ty {
+            SORT_SCALED_FLOAT => {
+                let inverse = f64::from_bits(c.i64()? as u64);
+                if !inverse.is_finite() || inverse <= 0.0 {
+                    return Err(bad(format!(
+                        "sort blob: scaled_float inverse scaling factor {inverse}"
+                    )));
+                }
+                ChildConvert::ScaledFloat { inverse }
+            }
+            SORT_HALF_FLOAT => ChildConvert::HalfFloat,
+            _ => ChildConvert::None,
         };
         let numeric = matches!(
             ty,
@@ -262,6 +284,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             let children = boolean_of(&decode_query(c.bytes()?)?);
             let max_children = c.i32()?;
             Some(Arc::new(NestedSort {
+                convert,
                 parents,
                 children,
                 max_children,
@@ -278,7 +301,6 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             nested,
             rewritten: None,
         });
-        lucene_geo.push(false);
     }
     let after = match c.u8()? {
         0 => None,
@@ -286,15 +308,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             let doc = c.i32()?;
             let mut values = Vec::new();
             let mut terms = Vec::new();
-            for (k, &lucene) in keys.iter().zip(&lucene_geo) {
-                if lucene {
-                    // `LatLonPointDistanceComparator.compareTop` compares
-                    // metres, not the sort keys this side holds: the JVM
-                    // runs such a page itself.
-                    return Err(bad(
-                        "sort blob: search_after on Lucene's geo-distance key".to_string()
-                    ));
-                }
+            for k in &keys {
                 if k.ty != SortType::String {
                     values.push(c.i64()?);
                     terms.push(None);
@@ -385,6 +399,7 @@ pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// |---|---|---|
 /// | `0` | `LatLonPointSortField` (`LatLonDocValuesField.newDistanceSort`): one origin, metres, ascending, no mode | the haversine sort key (`haversin2` of it is the distance) |
 /// | `1` | OpenSearch's `GeoDistanceSortBuilder` comparator ([`OpenSearchGeoDistanceSort`](lucene_search::document::geo::OpenSearchGeoDistanceSort)): `ARC`, any origins, unit, mode (flags as a numeric key's) and order | the distance in the unit |
+/// | `2` | the same with `GeoDistance.PLANE` (`GeoUtils.planeDistance`, `StrictMath.cos`) | the distance in the unit |
 ///
 /// Each value crosses as `double_to_sortable_long` of the double. Returns
 /// the key, and whether it is Lucene's comparator (which takes no
@@ -392,7 +407,9 @@ pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
 /// A key of one of OpenSearch's own comparator sources: [`SORT_SHARD_DOC`],
 /// [`SORT_HALF_FLOAT`] or [`SORT_UNSIGNED_LONG`], after its type and flags.
 pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<SortField, Status> {
-    use lucene_search::top_field::{HalfFloatSort, Selector, ShardDocSort, UnsignedLongSort};
+    use lucene_search::top_field::{
+        HalfFloatSort, ScaledFloatSort, Selector, ShardDocSort, UnsignedLongSort,
+    };
     let reverse = flags & SORT_REVERSE != 0;
     if ty == SORT_SHARD_DOC {
         if flags & !SORT_REVERSE != 0 {
@@ -412,7 +429,7 @@ pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<S
         (0, true) => Selector::Max,
         (SORT_MODE_SUM, false) => Selector::Sum,
         (SORT_MODE_AVG, false) => Selector::Avg,
-        (SORT_MODE_MEDIAN, false) if ty == SORT_HALF_FLOAT => Selector::Median,
+        (SORT_MODE_MEDIAN, false) if ty != SORT_UNSIGNED_LONG => Selector::Median,
         _ => return Err(invalid(format!("sort blob: key {ty} flags {flags:#x}"))),
     };
     if flags & SORT_NESTED != 0 {
@@ -420,6 +437,23 @@ pub fn decode_opensearch_sort(c: &mut Cursor<'_>, ty: u8, flags: u8) -> Result<S
     }
     let field = std::str::from_utf8(c.bytes()?).map_err(|_| Status::InvalidUtf8)?;
     let missing = c.i64()?;
+    if ty == SORT_SCALED_FLOAT {
+        let inverse = f64::from_bits(c.i64()? as u64);
+        if !inverse.is_finite() || inverse <= 0.0 {
+            return Err(invalid(format!(
+                "sort blob: scaled_float inverse scaling factor {inverse}"
+            )));
+        }
+        return Ok(SortField::with_source(
+            field,
+            Arc::new(ScaledFloatSort {
+                selector,
+                missing: lucene_util::numeric_utils::sortable_long_to_double(missing),
+                inverse,
+            }),
+            reverse,
+        ));
+    }
     Ok(if ty == SORT_HALF_FLOAT {
         let bits = i32::try_from(missing)
             .map_err(|_| invalid(format!("sort blob: half_float missing value {missing}")))?;
@@ -489,7 +523,7 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     .map_err(|e| invalid(format!("sort blob: {e}")))?
                     .comparator_source()
             }
-            1 => {
+            1 | 2 => {
                 let mode = match flags & SORT_MODE_MASK {
                     0 if flags & SORT_MAX != 0 => DistanceMode::Max,
                     0 => DistanceMode::Min,
@@ -504,11 +538,12 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
                     origins,
                     unit_meters,
                     mode,
+                    plane: comparator == 2,
                 })
             }
             other => {
                 return Err(invalid(format!(
-                    "sort blob: geo-distance comparator {other} (want 0 or 1)"
+                    "sort blob: geo-distance comparator {other} (want 0, 1 or 2)"
                 )))
             }
         };
@@ -704,13 +739,18 @@ pub fn search_collapsed_blobs(
         JvmQuery::Boolean(b) => b,
     };
     let needs_scores = track || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
-    let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if needs_scores {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if needs_scores {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -872,10 +912,7 @@ pub fn rescore_hits(
         },
         JvmQuery::Boolean(b) => b,
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let owned = h
         .reader
         .field_norms_by_field(&fields)
@@ -1169,14 +1206,27 @@ pub fn aggregate_counting_blobs_seen(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
-    // min_score scores the query: its fields' norms.
-    let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if min_score.is_some() {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    // min_score scores the query: its fields' norms.
+    let q = if min_score.is_some() {
+        q
+    } else {
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if min_score.is_some() {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1307,12 +1357,9 @@ pub fn count_terminates_blobs(
         slices
     };
     let fields: Vec<String> = if min_score.is_some() {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+        crate::clauses::norm_field_names(&q)
     } else {
-        Vec::new()
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1420,13 +1467,18 @@ pub fn search_sorted(
     }
     let needs_scores =
         track_max_score || min_score.is_some() || keys.iter().any(|k| k.ty == SortType::Score);
-    let fields: Vec<String> = if needs_scores {
-        crate::clauses::clause_field_names(&q)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+    let q = if needs_scores {
+        q
     } else {
-        Vec::new()
+        match lucene_search::without_scores_rewrite(&q) {
+            std::borrow::Cow::Owned(rewritten) => rewritten,
+            std::borrow::Cow::Borrowed(_) => q,
+        }
+    };
+    let fields: Vec<String> = if needs_scores {
+        crate::clauses::norm_field_names(&q)
+    } else {
+        crate::clauses::min_score_field_names(&q)
     };
     let owned = h
         .reader
@@ -1579,10 +1631,7 @@ pub fn search(
                     .map_err(map_search_error)?
             }
             JvmQuery::Boolean(q) => {
-                let fields: Vec<String> = crate::clauses::clause_field_names(q)
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect();
+                let fields: Vec<String> = crate::clauses::norm_field_names(q);
                 let owned = h
                     .reader
                     .field_norms_by_field(&fields)
@@ -1631,11 +1680,22 @@ pub const MAX_HYBRID_QUERIES: usize = 16;
 /// what falls below it). [`HybridCollector`] replays exactly that.
 ///
 /// The blob: `count: u8` sub-queries, each a request blob ([`decode_request`],
-/// `len: i32` first) with no `min_score`; `top_n: i32`; the slices
-/// ([`decode_slices`], none meaning one slice over every segment).
+/// `len: i32` first) with no `min_score`; `top_n: i32` (0 keeps no hits, and
+/// still counts); the slices ([`decode_slices`], none meaning one slice over
+/// every segment); `flags: u8` ([`HYBRID_RETURN_DOCS`], [`HYBRID_POST_FILTER`]);
+/// with [`HYBRID_POST_FILTER`], the filter's request blob (`len: i32` first).
 ///
-/// The answer, little-endian: `slices: i32`, then per slice `total: i64` and
-/// per sub-query `hits: i32` and per hit `doc: i32` and `score` (`f32` bits).
+/// A post filter (`FilteredCollector` around the hybrid collector) lets only
+/// the documents it matches reach the top-docs collector: the count and the
+/// hits are the filtered ones, the thresholds rise on those alone, and the
+/// documents listed by [`HYBRID_RETURN_DOCS`] (an aggregation's) are all the
+/// bulk scorer's.
+///
+/// The answer, little-endian: `slices: i32`, then per slice `total: i64`, the
+/// best score collected (`f32` bits, 0 when none) and per sub-query `hits: i32` and per hit `doc: i32` and `score` (`f32` bits);
+/// with [`HYBRID_RETURN_DOCS`], then the slice's counted documents: `n: i32`,
+/// each `doc: i32` and the sum of its sub-queries' scores (`f32` bits), what
+/// `HybridSubQueryScorer.score()` gives an aggregator.
 pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, Status> {
     let bad = |m: String| {
         set_last_error(format!("hybrid blob: {m}"));
@@ -1662,24 +1722,74 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         subs.push(boolean_of(&query));
     }
     let top_n = usize::try_from(c.i32()?).map_err(|_| bad("negative top_n".into()))?;
-    if top_n == 0 {
-        return Err(bad("top_n must be at least 1".into()));
-    }
     let slices = decode_slices(&mut c, &bad)?;
+    let flags = c.u8()?;
+    if flags
+        & !(HYBRID_RETURN_DOCS
+            | HYBRID_POST_FILTER
+            | HYBRID_SORT
+            | HYBRID_TERMINATE
+            | HYBRID_COLLAPSE)
+        != 0
+    {
+        return Err(bad(format!("unknown flags {flags:#x}")));
+    }
+    let return_docs = flags & HYBRID_RETURN_DOCS != 0;
+    let post_filter = if flags & HYBRID_POST_FILTER != 0 {
+        let (query, min_score, _) = decode_request(c.bytes()?)?;
+        if min_score.is_some() {
+            return Err(bad("a post filter with min_score".into()));
+        }
+        Some(boolean_of(&query))
+    } else {
+        None
+    };
+    let sort = if flags & HYBRID_SORT != 0 {
+        let threshold = c.i64()?;
+        let (keys, after, _, _, terminate_after, index_sorted) = decode_sort(c.bytes()?)?;
+        if terminate_after.is_some() {
+            return Err(bad("a sorted hybrid search with terminate_after".into()));
+        }
+        // `searchSortPartOfIndexSort`: the first segment decides.
+        let doc_first = keys[0].ty == SortType::Doc && !keys[0].reverse;
+        Some((keys, after, (doc_first, index_sorted), threshold))
+    } else {
+        None
+    };
+    let collapse = if flags & HYBRID_COLLAPSE != 0 {
+        if sort.is_none() {
+            return Err(bad("a collapse without its sort".into()));
+        }
+        let field = std::str::from_utf8(c.bytes()?)
+            .map_err(|_| bad("a collapse field that is not UTF-8".into()))?
+            .to_string();
+        let kind = match c.u8()? {
+            0 => lucene_search::top_field::CollapseKind::Numeric,
+            1 => lucene_search::top_field::CollapseKind::Keyword,
+            k => return Err(bad(format!("collapse kind {k}"))),
+        };
+        Some((field, kind))
+    } else {
+        None
+    };
+    let terminate = if flags & HYBRID_TERMINATE != 0 {
+        let limit = u64::try_from(c.i64()?).map_err(|_| bad("negative terminate_after".into()))?;
+        Some(HybridTerminate::new(limit))
+    } else {
+        None
+    };
     if c.remaining() != 0 {
         return Err(bad(format!("{} trailing bytes", c.remaining())));
     }
     let union = BooleanQuery {
         should: subs
             .iter()
+            .chain(post_filter.iter())
             .map(|q| Clause::Boolean(Box::new(q.clone())))
             .collect(),
         ..Default::default()
     };
-    let fields: Vec<String> = crate::clauses::clause_field_names(&union)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&union);
     let union_query = JvmQuery::Boolean(union);
     let mut opened = h.reader.open_segments().map_err(|e| {
         set_last_error(format!("opening segment postings: {e}"));
@@ -1726,14 +1836,46 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
         .map(|q| lucene_search::multi_segment::PreparedBoolean::new(&segments, q))
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_search_error)?;
+    let filter = post_filter
+        .as_ref()
+        .map(|q| lucene_search::multi_segment::PreparedBoolean::new(&segments, q))
+        .transpose()
+        .map_err(map_search_error)?;
     let mut out = Vec::new();
     out.extend_from_slice(
         &i32::try_from(slices.len())
             .unwrap_or(i32::MAX)
             .to_le_bytes(),
     );
+    let hits_seen = std::cell::Cell::new(0i64);
     for slice in &slices {
-        let mut collector = HybridCollector::new(prepared.len(), top_n);
+        let mut plain = HybridCollector::new(prepared.len(), top_n);
+        let mut sorted = match &sort {
+            None => None,
+            Some((keys, after, (doc_first, index_sorted), threshold)) => Some(
+                HybridSortCollector::new(
+                    prepared.len(),
+                    top_n,
+                    keys,
+                    after.as_ref(),
+                    // `searchSortPartOfIndexSort`: the slice's first segment decides.
+                    *doc_first
+                        || slice
+                            .first()
+                            .is_some_and(|&s| index_sorted.get(s) == Some(&Some(0))),
+                    *threshold,
+                    &hits_seen,
+                    collapse.clone(),
+                )
+                .map_err(map_search_error)?,
+            ),
+        };
+        if return_docs {
+            plain.docs = Some(Vec::new());
+            if let Some(sc) = sorted.as_mut() {
+                sc.docs = Some(Vec::new());
+            }
+        }
         for &s in slice {
             let seg = &segments[s];
             let scored = prepared
@@ -1741,20 +1883,140 @@ pub fn search_hybrid_blobs(h: &JvmReaderHandle, blob: &[u8]) -> Result<Vec<u8>, 
                 .map(|p| p.score_all(seg, norms[s]))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_search_error)?;
-            collector.segment(&scored, seg.doc_base);
+            let accepted = match &filter {
+                None => None,
+                Some(f) => {
+                    let hits = f.score_all(seg, norms[s]).map_err(map_search_error)?;
+                    // The hits ascend: the last one bounds the bitset.
+                    let words = hits.last().map_or(0, |h| {
+                        (usize::try_from(h.doc_id).unwrap_or(0) / 64).saturating_add(1)
+                    });
+                    let mut bits = vec![0u64; words]; // alloc-ok: one bit per document up to the filter's last match
+                    for hit in hits {
+                        let d = usize::try_from(hit.doc_id).unwrap_or(0);
+                        bits[d / 64] |= 1 << (d % 64);
+                    }
+                    Some(bits)
+                }
+            };
+            match sorted.as_mut() {
+                None => plain.segment(
+                    &scored,
+                    seg.doc_base,
+                    accepted.as_deref(),
+                    terminate.as_ref(),
+                ),
+                Some(sc) => sc
+                    .segment(
+                        &scored,
+                        &h.reader.segment_readers()[s],
+                        seg,
+                        accepted.as_deref(),
+                        terminate.as_ref(),
+                    )
+                    .map_err(map_search_error)?,
+            }
         }
-        out.extend_from_slice(&collector.total.to_le_bytes());
-        for queue in collector.queues {
-            let hits = queue.into_sorted();
-            out.extend_from_slice(&i32::try_from(hits.len()).unwrap_or(i32::MAX).to_le_bytes());
-            for hit in hits {
-                out.extend_from_slice(&hit.doc.to_le_bytes());
-                out.extend_from_slice(&hit.score.to_bits().to_le_bytes());
+        let counted;
+        match sorted {
+            None => {
+                out.extend_from_slice(&plain.total.to_le_bytes());
+                out.extend_from_slice(&plain.max_score.to_bits().to_le_bytes());
+                counted = plain.docs.take();
+                for queue in plain.queues {
+                    let hits = queue.into_sorted();
+                    out.extend_from_slice(
+                        &i32::try_from(hits.len()).unwrap_or(i32::MAX).to_le_bytes(),
+                    );
+                    for hit in hits {
+                        out.extend_from_slice(&hit.doc.to_le_bytes());
+                        out.extend_from_slice(&hit.score.to_bits().to_le_bytes());
+                    }
+                }
+            }
+            Some(mut sc) => {
+                out.extend_from_slice(&sc.total.to_le_bytes());
+                out.extend_from_slice(&sc.max_score.to_bits().to_le_bytes());
+                if collapse.is_some() {
+                    out.push(u8::from(sc.threshold_reached()));
+                }
+                counted = sc.docs.take();
+                let keys = sc.keys;
+                let collected = sc.collected();
+                for (q, hits) in sc.into_hits().into_iter().enumerate() {
+                    out.extend_from_slice(
+                        &i32::try_from(hits.len()).unwrap_or(i32::MAX).to_le_bytes(),
+                    );
+                    let docs: Vec<FieldDoc> = hits.iter().map(|(_, d, _)| d.clone()).collect();
+                    for (score, hit, group) in &hits {
+                        out.extend_from_slice(&hit.doc.to_le_bytes());
+                        out.extend_from_slice(&score.to_bits().to_le_bytes());
+                        for v in &hit.values {
+                            out.extend_from_slice(&v.to_le_bytes());
+                        }
+                        if collapse.is_some() {
+                            use lucene_search::top_field::CollapseValue;
+                            match group {
+                                CollapseValue::Missing => out.push(0),
+                                CollapseValue::Long(v) => {
+                                    out.push(1);
+                                    out.extend_from_slice(&v.to_le_bytes());
+                                }
+                                CollapseValue::Bytes(b) => {
+                                    out.push(2);
+                                    out.extend_from_slice(
+                                        &i32::try_from(b.len()).unwrap_or(i32::MAX).to_le_bytes(),
+                                    );
+                                    out.extend_from_slice(b);
+                                }
+                            }
+                        }
+                    }
+                    let terms = encode_terms(keys, &docs)?;
+                    out.extend_from_slice(
+                        &i32::try_from(terms.len()).unwrap_or(i32::MAX).to_le_bytes(),
+                    );
+                    out.extend_from_slice(&terms);
+                    if collapse.is_some() {
+                        out.extend_from_slice(&collected[q].to_le_bytes());
+                    }
+                }
+            }
+        }
+        if let Some(docs) = counted {
+            out.extend_from_slice(&i32::try_from(docs.len()).unwrap_or(i32::MAX).to_le_bytes());
+            for (doc, score) in docs {
+                out.extend_from_slice(&doc.to_le_bytes());
+                out.extend_from_slice(&score.to_bits().to_le_bytes());
             }
         }
     }
+    if let Some(t) = &terminate {
+        out.push(u8::from(t.terminated.get()));
+    }
     similarity_checked(sim.as_ref(), Ok(out))
 }
+
+/// A hybrid blob's flag: the answer also lists each slice's counted documents
+/// (the ones an aggregation over the hybrid query sees).
+pub const HYBRID_RETURN_DOCS: u8 = 1;
+/// A hybrid blob's flag: a post filter's request blob follows the flags.
+pub const HYBRID_POST_FILTER: u8 = 2;
+/// A hybrid blob's flag: the hits are sorted; `threshold: i64` (the hit count a
+/// sorted collector counts exactly up to) and a sort blob ([`decode_sort`], `len: i32`
+/// first) follow. The answer's hits then carry the sort's values: per sub-query `n: i32`, per hit
+/// `doc: i32`, `score` (`f32` bits) and one `i64` per key; then `terms_len: i32` and
+/// the keyword keys' terms ([`encode_terms`]).
+pub const HYBRID_SORT: u8 = 4;
+/// A hybrid blob's flag: `terminate_after: i64` follows (after the sort's); the answer
+/// ends with `terminated: u8`.
+pub const HYBRID_TERMINATE: u8 = 8;
+/// A hybrid blob's flag, with [`HYBRID_SORT`]: the hits are neural-search's collapsing
+/// collector's, `field: len-prefixed UTF-8` and `kind: u8` (0 numeric, 1 keyword) after
+/// the sort's. The answer adds per slice `threshold_reached: u8` after the max score and, per
+/// hit, its group value (`0` missing; `1` and an `i64`; `2`, `len: i32` and the term) after
+/// its sort values, and per sub-query the documents it collected (`i32`) after its terms.
+pub const HYBRID_COLLAPSE: u8 = 16;
 
 /// `HybridBulkScorer`'s window: `1 << SHIFT` documents.
 pub const HYBRID_WINDOW: i32 = 1 << 12;
@@ -1800,6 +2062,10 @@ impl HitQueue {
     /// `insertWithOverflow`: the hit pushed out (the new one when it does not
     /// beat the worst), or `None` while the queue fills.
     pub fn insert_with_overflow(&mut self, hit: HybridHit) -> Option<HybridHit> {
+        if self.size == 0 {
+            // Lucene's queue of no room turns every new entry away.
+            return Some(hit);
+        }
         if self.heap.len() < self.size {
             self.heap.push(std::cmp::Reverse(hit));
             return None;
@@ -1819,6 +2085,111 @@ impl HitQueue {
     }
 }
 
+/// `HybridBulkScorer` over one segment: each window's documents with their sub-queries'
+/// scores, handed to `visit` in document order.
+///
+/// `scored` is each sub-query's matches with their scores, ascending by segment-local
+/// document ID; `window` holds one window's scores per sub-query (all 0 between
+/// documents) and `min_scores` each sub-query's threshold (0 at the segment's start): a
+/// score reaches a window only above it. `visit(local doc, offset in window, window,
+/// min_scores)` reads and may change both; it answers `false` to end the segment (a
+/// `CollectionTerminatedException`). The window's scores are zeroed behind it.
+/// What [`walk_hybrid_windows`] hands each document to.
+type HybridVisit<'v, E> =
+    dyn FnMut(i32, usize, &mut [Vec<f32>], &mut [f32]) -> Result<bool, E> + 'v;
+
+fn walk_hybrid_windows<E>(
+    scored: &[Vec<lucene_search::collector::ScoreDoc>],
+    window: &mut [Vec<f32>],
+    min_scores: &mut [f32],
+    visit: &mut HybridVisit<'_, E>,
+) -> Result<(), E> {
+    let mut next = vec![0usize; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
+    let mut matching = vec![0u64; HYBRID_WINDOW as usize / 64]; // alloc-ok: fixed window size
+    loop {
+        let Some(top) = scored
+            .iter()
+            .zip(&next)
+            .filter_map(|(hits, &i)| hits.get(i).map(|h| h.doc_id))
+            .min()
+        else {
+            return Ok(());
+        };
+        let base = top & !(HYBRID_WINDOW - 1);
+        let end = base.saturating_add(HYBRID_WINDOW);
+        for (q, hits) in scored.iter().enumerate() {
+            let min = min_scores[q];
+            while let Some(h) = hits.get(next[q]).filter(|h| h.doc_id < end) {
+                // Only a score above the threshold is collected.
+                if h.score > min {
+                    let d = h.doc_id.wrapping_sub(base) as usize;
+                    matching[d / 64] |= 1 << (d % 64);
+                    window[q][d] = h.score;
+                }
+                next[q] = next[q].saturating_add(1);
+            }
+        }
+        for (word, bits) in matching.iter_mut().enumerate() {
+            while *bits != 0 {
+                let d = word
+                    .saturating_mul(64)
+                    .saturating_add(bits.trailing_zeros() as usize);
+                *bits &= bits.wrapping_sub(1);
+                let more = visit(base.wrapping_add(d as i32), d, window, min_scores)?;
+                for w in window.iter_mut() {
+                    w[d] = 0.0;
+                }
+                if !more {
+                    // The rest of the window's documents never reach the collector.
+                    for w in window.iter_mut() {
+                        w.fill(0.0);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+/// OpenSearch's `EarlyTerminatingCollector` around the top-docs collector, inside the post
+/// filter's: the `n + 1`th document the filter lets through, or a segment after `n` were let through, ends the search. Shared by every
+/// slice (a `terminate_after` search is never concurrent).
+pub struct HybridTerminate {
+    limit: u64,
+    seen: std::cell::Cell<u64>,
+    /// Whether the search ended early.
+    pub terminated: std::cell::Cell<bool>,
+}
+
+impl HybridTerminate {
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            seen: std::cell::Cell::new(0),
+            terminated: std::cell::Cell::new(false),
+        }
+    }
+
+    /// A segment's start: `false` when the search has ended.
+    fn segment(&self) -> bool {
+        if self.seen.get() >= self.limit {
+            self.terminated.set(true);
+            return false;
+        }
+        true
+    }
+
+    /// One document: `false` when it is past the limit.
+    fn collect(&self) -> bool {
+        if self.seen.get() >= self.limit {
+            self.terminated.set(true);
+            return false;
+        }
+        self.seen.set(self.seen.get().saturating_add(1));
+        true
+    }
+}
+
 /// One slice's `HybridTopScoreDocCollector`, fed as `HybridBulkScorer` feeds
 /// it.
 pub struct HybridCollector {
@@ -1826,6 +2197,10 @@ pub struct HybridCollector {
     pub total: i64,
     /// One window's scores per sub-query, 0 where it did not compete.
     pub window: Vec<Vec<f32>>,
+    /// Each counted document with the sum of its sub-queries' scores, when asked for.
+    pub docs: Option<Vec<(i32, f32)>>,
+    /// The best score any sub-query gave a collected document (the collector's `maxScore`).
+    pub max_score: f32,
 }
 
 impl HybridCollector {
@@ -1834,59 +2209,351 @@ impl HybridCollector {
             queues: (0..subs).map(|_| HitQueue::new(top_n)).collect(),
             total: 0,
             window: vec![vec![0.0; HYBRID_WINDOW as usize]; subs], // alloc-ok: at most MAX_HYBRID_QUERIES windows of a fixed size
+            docs: None,
+            max_score: 0.0,
         }
     }
 
     /// One segment: each sub-query's matches with their scores, ascending by
     /// segment-local doc ID.
-    pub fn segment(&mut self, scored: &[Vec<lucene_search::collector::ScoreDoc>], doc_base: i32) {
+    ///
+    /// `accepted` is the post filter's bitset over the segment's documents:
+    /// only those it holds reach the queues and the count.
+    pub fn segment(
+        &mut self,
+        scored: &[Vec<lucene_search::collector::ScoreDoc>],
+        doc_base: i32,
+        accepted: Option<&[u64]>,
+        terminate: Option<&HybridTerminate>,
+    ) {
+        if terminate.is_some_and(|t| !t.segment()) {
+            return;
+        }
         // The segment's own HybridSubQueryScorer: thresholds start at 0.
         let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
-        let mut next = vec![0usize; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
-        let mut matching = vec![0u64; HYBRID_WINDOW as usize / 64]; // alloc-ok: fixed window size
-        loop {
-            let Some(top) = scored
-                .iter()
-                .zip(&next)
-                .filter_map(|(hits, &i)| hits.get(i).map(|h| h.doc_id))
-                .min()
-            else {
-                return;
-            };
-            let base = top & !(HYBRID_WINDOW - 1);
-            let end = base.saturating_add(HYBRID_WINDOW);
-            for (q, hits) in scored.iter().enumerate() {
-                let min = min_scores[q];
-                while let Some(h) = hits.get(next[q]).filter(|h| h.doc_id < end) {
-                    // Only a score above the threshold is collected.
-                    if h.score > min {
-                        let d = h.doc_id.wrapping_sub(base) as usize;
-                        matching[d / 64] |= 1 << (d % 64);
-                        self.window[q][d] = h.score;
-                    }
-                    next[q] = next[q].saturating_add(1);
+        let mut window = std::mem::take(&mut self.window);
+        let walked = walk_hybrid_windows::<std::convert::Infallible>(
+            scored,
+            &mut window,
+            &mut min_scores,
+            &mut |local, d, window, min_scores| {
+                let doc = doc_base.wrapping_add(local);
+                // The post filter's collector wraps the early terminator, which wraps the
+                // top docs: the terminator counts the documents the filter lets through,
+                // and ends the search at the one past the limit, before the aggregations
+                // see it.
+                let passes = accepted.is_none_or(|filter| {
+                    let at = usize::try_from(local).unwrap_or(0);
+                    filter.get(at / 64).is_some_and(|w| w >> (at % 64) & 1 == 1)
+                });
+                if passes && terminate.is_some_and(|t| !t.collect()) {
+                    return Ok(false);
                 }
-            }
-            for (word, bits) in matching.iter_mut().enumerate() {
-                while *bits != 0 {
-                    let d = word
-                        .saturating_mul(64)
-                        .saturating_add(bits.trailing_zeros() as usize);
-                    *bits &= bits.wrapping_sub(1);
-                    self.total = self.total.saturating_add(1);
-                    let doc = doc_base.wrapping_add(base).wrapping_add(d as i32);
-                    for (q, queue) in self.queues.iter_mut().enumerate() {
-                        let score = std::mem::take(&mut self.window[q][d]);
-                        if score <= 0.0 {
-                            continue;
-                        }
-                        if let Some(out) = queue.insert_with_overflow(HybridHit { score, doc }) {
-                            min_scores[q] = min_scores[q].max(out.score);
-                        }
+                if let Some(docs) = self.docs.as_mut() {
+                    // `HybridSubQueryScorer.score()`: the sub-queries' scores summed in order.
+                    let mut sum = 0.0f32;
+                    for w in window.iter() {
+                        sum += w[d];
+                    }
+                    docs.push((doc, sum));
+                }
+                if !passes {
+                    return Ok(true);
+                }
+                self.total = self.total.saturating_add(1);
+                for (q, queue) in self.queues.iter_mut().enumerate() {
+                    let score = window[q][d];
+                    if score <= 0.0 {
+                        continue;
+                    }
+                    self.max_score = self.max_score.max(score);
+                    if let Some(out) = queue.insert_with_overflow(HybridHit { score, doc }) {
+                        min_scores[q] = min_scores[q].max(out.score);
                     }
                 }
-            }
+                Ok(true)
+            },
+        );
+        if let Err(never) = walked {
+            match never {}
         }
+        self.window = window;
+    }
+}
+
+/// One slice's `SimpleFieldCollector` (or `PagingFieldCollector`): each sub-query's hits
+/// ordered by the request's sort, fed as `HybridBulkScorer` feeds it.
+///
+/// A window's documents all reach the collector (its thresholds never rise), counted
+/// once however many sub-queries match; each sub-query's queue then takes the document
+/// when that sub-query scored it. When a queue turns a document away (its bottom is
+/// better, or `search_after` ranks it earlier) the collector returns from `collect`: the
+/// later sub-queries never see that document, as in neural-search.
+pub struct HybridSortCollector<'a> {
+    queues: Vec<lucene_search::top_field::HybridSortQueue>,
+    /// Per sub-query, the score its queue stored with each slot it filled: a document
+    /// that later replaces the slot's keeps it.
+    slot_scores: Vec<Vec<f32>>,
+    /// The count of the documents collected.
+    pub total: i64,
+    /// The best score any sub-query gave a document it reached.
+    pub max_score: f32,
+    /// Each counted document with its scores' sum, when asked for.
+    pub docs: Option<Vec<(i32, f32)>>,
+    window: Vec<Vec<f32>>,
+    keys: &'a [lucene_search::top_field::SortField],
+    /// `after` is set: `PagingFieldCollector`.
+    paging: bool,
+    /// The keys read the document's score: the sum of its sub-queries' (the hybrid scorer's).
+    by_score: bool,
+    /// `searchSortPartOfIndexSort`.
+    early: bool,
+    /// `HitsThresholdChecker`'s threshold, and the hits it has counted (over every slice).
+    threshold: i64,
+    pub hits: &'a std::cell::Cell<i64>,
+    /// The room of each queue: 0 keeps no hit.
+    top_n: usize,
+    /// `HybridCollapsingTopDocsCollector` rather than the sorted collectors.
+    collapse: Option<HybridCollapse>,
+}
+
+/// What the collapsing collector keeps beside the sorted queues.
+struct HybridCollapse {
+    field: String,
+    kind: lucene_search::top_field::CollapseKind,
+    /// Per sub-query, each slot's group value.
+    groups: Vec<Vec<lucene_search::top_field::CollapseValue>>,
+    /// Per sub-query, the documents it collected (`collectedHitsPerSubQuery`).
+    collected: Vec<i32>,
+    /// The hit count reached the threshold (`GREATER_THAN_OR_EQUAL_TO`).
+    gte: bool,
+}
+
+impl<'a> HybridSortCollector<'a> {
+    /// A collector of `top_n` hits per sub-query by `keys`.
+    ///
+    /// # Errors
+    /// What building the queues reports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        subs: usize,
+        top_n: usize,
+        keys: &'a [lucene_search::top_field::SortField],
+        after: Option<&FieldDoc>,
+        early: bool,
+        threshold: i64,
+        hits: &'a std::cell::Cell<i64>,
+        collapse: Option<(String, lucene_search::top_field::CollapseKind)>,
+    ) -> Result<Self, lucene_search::Error> {
+        let queues = (0..subs)
+            .map(|_| lucene_search::top_field::HybridSortQueue::new(keys, top_n, after))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            queues,
+            slot_scores: vec![Vec::new(); subs], // alloc-ok: one list per sub-query, at most MAX_HYBRID_QUERIES
+            total: 0,
+            max_score: 0.0,
+            docs: None,
+            window: vec![vec![0.0; HYBRID_WINDOW as usize]; subs], // alloc-ok: at most MAX_HYBRID_QUERIES windows of a fixed size
+            keys,
+            paging: after.is_some(),
+            by_score: keys.iter().any(|k| k.ty == SortType::Score),
+            early,
+            threshold,
+            hits,
+            top_n,
+            collapse: collapse.map(|(field, kind)| HybridCollapse {
+                field,
+                kind,
+                groups: vec![Vec::new(); subs], // alloc-ok: one list per sub-query, at most MAX_HYBRID_QUERIES
+                collected: vec![0; subs],       // alloc-ok: one count per sub-query
+                gte: false,
+            }),
+        })
+    }
+
+    /// One segment (`reader` its readers), `accepted` the post filter's bitset.
+    ///
+    /// # Errors
+    /// What reading the sort's columns reports.
+    pub fn segment(
+        &mut self,
+        scored: &[Vec<lucene_search::collector::ScoreDoc>],
+        reader: &lucene_search::directory_reader::SegmentReader,
+        seg: &OpenSegment<'_>,
+        accepted: Option<&[u64]>,
+        terminate: Option<&HybridTerminate>,
+    ) -> Result<(), lucene_search::Error> {
+        use lucene_search::top_field::HybridCollected;
+        if terminate.is_some_and(|t| !t.segment()) {
+            return Ok(());
+        }
+        let doc_base = seg.doc_base;
+        let mut leaves = self
+            .queues
+            .iter_mut()
+            .map(|q| q.leaf(reader, seg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut group = match &self.collapse {
+            Some(c) => Some(lucene_search::top_field::HybridGroup::open(
+                reader, &c.field, c.kind,
+            )?),
+            None => None,
+        };
+        // Shared by the sub-queries' collection of one segment (`collectedAllCompetitiveHits`).
+        let mut collected_all = false;
+        let mut min_scores = vec![0.0f32; scored.len()]; // alloc-ok: one per sub-query, at most MAX_HYBRID_QUERIES
+        let mut window = std::mem::take(&mut self.window);
+        let walked = walk_hybrid_windows(scored, &mut window, &mut min_scores, &mut |local,
+                                                                                     d,
+                                                                                     window,
+                                                                                     min_scores|
+         -> Result<
+            bool,
+            lucene_search::Error,
+        > {
+            let doc = doc_base.wrapping_add(local);
+            let passes = accepted.is_none_or(|filter| {
+                let at = usize::try_from(local).unwrap_or(0);
+                filter.get(at / 64).is_some_and(|w| w >> (at % 64) & 1 == 1)
+            });
+            if passes && terminate.is_some_and(|t| !t.collect()) {
+                return Ok(false);
+            }
+            let mut sum = 0.0f32;
+            for w in window.iter() {
+                sum += w[d];
+            }
+            if let Some(docs) = self.docs.as_mut() {
+                docs.push((doc, sum));
+            }
+            if !passes {
+                return Ok(true);
+            }
+            if let (Some(group), Some(c)) = (group.as_mut(), self.collapse.as_mut()) {
+                // `HybridCollapsingTopDocsCollector.collect`: the group first, then the
+                // count -- the document that reaches the threshold ends the segment
+                // uncollected -- and every sub-query's queue.
+                group.advance(local)?;
+                self.total = self.total.saturating_add(1);
+                self.hits.set(self.hits.get().saturating_add(1));
+                if self.hits.get() >= self.threshold {
+                    c.gte = true;
+                    return Ok(false);
+                }
+                for q in 0..self.queues.len() {
+                    let score = window[q][d];
+                    if score == 0.0 || (self.by_score && score < 0.0) {
+                        continue;
+                    }
+                    c.collected[q] = c.collected[q].saturating_add(1);
+                    self.max_score = self.max_score.max(score);
+                    if let HybridCollected::Entered { slot, new } =
+                        self.queues[q].collect(&mut leaves[q], local, score)?
+                    {
+                        let value = group.value()?;
+                        if new {
+                            self.slot_scores[q].push(score);
+                            c.groups[q].push(value);
+                        } else {
+                            let evicted = std::mem::replace(&mut self.slot_scores[q][slot], score);
+                            c.groups[q][slot] = value;
+                            if self.by_score {
+                                min_scores[q] = min_scores[q].max(evicted);
+                            }
+                        }
+                    }
+                }
+                return Ok(true);
+            }
+            self.total = self.total.saturating_add(1);
+            self.hits.set(self.hits.get().saturating_add(1));
+            for q in 0..self.queues.len() {
+                let score = window[q][d];
+                // A score of 0: no hit of this sub-query.
+                if score == 0.0 {
+                    continue;
+                }
+                if !self.paging {
+                    self.max_score = self.max_score.max(score);
+                }
+                let full = self.queues[q].is_full();
+                if self.early && collected_all && full {
+                    return Ok(true);
+                }
+                let read = if self.by_score { sum } else { score };
+                match self.queues[q].collect(&mut leaves[q], local, read)? {
+                    HybridCollected::Skipped => {
+                        if self.early && full && !self.paging {
+                            // The documents come in the sort's order: nothing after
+                            // this one is competitive.
+                            if self.hits.get() >= self.threshold {
+                                return Ok(false);
+                            }
+                            collected_all = true;
+                        }
+                        return Ok(true);
+                    }
+                    HybridCollected::Entered { slot: _, new } => {
+                        if self.paging {
+                            self.max_score = self.max_score.max(score);
+                        }
+                        if new {
+                            self.slot_scores[q].push(score);
+                        }
+                    }
+                }
+            }
+            Ok(true)
+        });
+        self.window = window;
+        walked?;
+        for (q, leaf) in leaves.into_iter().enumerate() {
+            self.queues[q].finish(leaf)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a collapsing collector reached its hit threshold.
+    pub fn threshold_reached(&self) -> bool {
+        self.collapse.as_ref().is_some_and(|c| c.gte)
+    }
+
+    /// Each sub-query's documents the collapsing collector counted.
+    pub fn collected(&self) -> Vec<i32> {
+        self.collapse
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.collected.clone())
+    }
+
+    /// Each sub-query's hits, best first, with the score stored in the slot that holds it and,
+    /// for a collapsing collector, the slot's group value.
+    pub fn into_hits(self) -> Vec<Vec<(f32, FieldDoc, lucene_search::top_field::CollapseValue)>> {
+        let _ = self.keys;
+        let keep = self.top_n > 0;
+        let mut groups = self.collapse.map(|c| c.groups);
+        self.queues
+            .into_iter()
+            .zip(self.slot_scores)
+            .enumerate()
+            .map(|(q, (queue, scores))| {
+                if !keep {
+                    return Vec::new();
+                }
+                queue
+                    .into_hits()
+                    .into_iter()
+                    .map(|(slot, hit)| {
+                        let group = groups
+                            .as_mut()
+                            .map_or(lucene_search::top_field::CollapseValue::Missing, |g| {
+                                g[q][slot].clone()
+                            });
+                        (scores[slot], hit, group)
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -1922,10 +2589,7 @@ pub fn search_min_score(
         })
         .collect();
     let q = boolean_of(query);
-    let fields: Vec<String> = crate::clauses::clause_field_names(&q)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let fields: Vec<String> = crate::clauses::norm_field_names(&q);
     let owned = h
         .reader
         .field_norms_by_field(&fields)

@@ -209,6 +209,9 @@ public final class NativeAggregationTree {
         void write(ByteArrayOutputStream out) {
             out.write(METRIC);
             out.write(metric.valueKind());
+            if (metric.valueKind() == NativeAggregations.SCALED) {
+                writeLong(out, Double.doubleToRawLongBits(metric.scale()));
+            }
             out.write(metric.source());
             out.write(metric.needs());
             writeString(out, metric.field());
@@ -486,8 +489,11 @@ public final class NativeAggregationTree {
         final double offset;
         final DoubleBounds hardBounds;
 
-        HistogramNode(AggregatorBase agg, List<Node> subs, String field, byte valueKind, double interval, double offset, DoubleBounds hard) {
+        final double scale;
+
+        HistogramNode(AggregatorBase agg, List<Node> subs, String field, byte valueKind, double scale, double interval, double offset, DoubleBounds hard) {
             super(agg, subs);
+            this.scale = scale;
             this.field = field;
             this.valueKind = valueKind;
             this.interval = interval;
@@ -500,6 +506,9 @@ public final class NativeAggregationTree {
             out.write(HISTOGRAM);
             writeString(out, field);
             out.write(valueKind);
+            if (valueKind == NativeAggregations.SCALED) {
+                writeLong(out, Double.doubleToRawLongBits(scale));
+            }
             writeLong(out, Double.doubleToRawLongBits(interval));
             writeLong(out, Double.doubleToRawLongBits(offset));
             Double min = hardBounds == null ? null : hardBounds.getMin();
@@ -1382,14 +1391,16 @@ public final class NativeAggregationTree {
                 return new CardinalityNode(agg, field, kind, (int) get(agg, "precision"));
             }
             case AGGS + "bucket.histogram.HistogramAggregatorFactory": {
-                if (valueKind < 0 || aggClass.equals(AGGS + "bucket.histogram.NumericHistogramAggregator") == false) {
+                byte histogramKind = NativeAggregations.valueKindWide(type);
+                if (histogramKind < 0 || aggClass.equals(AGGS + "bucket.histogram.NumericHistogramAggregator") == false) {
                     return null;
                 }
                 return new HistogramNode(
                     agg,
                     subs,
                     field,
-                    valueKind,
+                    histogramKind,
+                    NativeAggregations.scale(type),
                     (double) get(agg, "interval"),
                     (double) get(agg, "offset"),
                     (DoubleBounds) get(agg, "hardBounds")
@@ -1414,7 +1425,7 @@ public final class NativeAggregationTree {
                 break;
         }
         // A metric: NativeAggregations' own, with the points shortcut only at the top level.
-        NativeAggregations.Metric m = NativeAggregations.metric(ctx, f, config, top);
+        NativeAggregations.Metric m = NativeAggregations.metric(ctx, f, config, top, true);
         return m == null || subs.isEmpty() == false ? null : new MetricNode(agg, m);
     }
 

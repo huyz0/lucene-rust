@@ -198,11 +198,9 @@ last within the milestone.
   through the validating constructors and run as `DocumentClause` leaves of
   the scorer tree keyed for the query cache by their own bytes; the sorts
   are sort key 7 (ABI 31), Lucene's comparator with its bounding-box
-  `compareBottom`, OpenSearch's as `OpenSearchGeoDistanceSort`. Falls back by
-  name: `search_after` on Lucene's geo sort (`search_after_geo`; its
-  `compareTop` compares metres), `distance_type: plane` in OpenSearch's
-  comparator (`sort_geo_plane`: `Math.cos`'s HotSpot intrinsic), nested geo
-  sorts, and the deprecated prefix-tree `geo_shape` mapping
+  `compareBottom`, OpenSearch's as `OpenSearchGeoDistanceSort`. `search_after` on
+  Lucene's geo sort and `distance_type: plane` (`StrictMath.cos`) are native
+  too. Falls back by name: nested geo sorts, and the deprecated prefix-tree `geo_shape` mapping
   (`clause_IntersectsPrefixTreeQuery`). Proved by `NativeSelfTest.geo` (704
   random geo queries over points and shapes at the poles and the
   antimeridian, degenerate polygons included, and ~900 sorted pages with a

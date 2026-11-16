@@ -1158,6 +1158,30 @@ impl<'d> StoredFieldsReader<'d> {
         Ok(DecompressedChunk { header, bytes })
     }
 
+    /// [`Self::read_chunk`] for a chunk that is not sliced (no document of at least twice the chunk
+    /// size) and holds at most `max_bytes` plain bytes; `None` for any other, which a caller reads
+    /// document by document.
+    ///
+    /// # Errors
+    /// Those of [`Self::read_chunk`].
+    pub fn read_small_chunk(
+        &self,
+        doc_id: i32,
+        max_bytes: usize,
+    ) -> Result<Option<DecompressedChunk>> {
+        let (header, mut input) = self.read_chunk_header(doc_id)?;
+        let total = header.total_length() as usize;
+        if header.sliced || total > max_bytes {
+            return Ok(None);
+        }
+        let bytes = if total == 0 {
+            Vec::new()
+        } else {
+            self.decompress_range(&header, &mut input, 0, total)?
+        };
+        Ok(Some(DecompressedChunk { header, bytes }))
+    }
+
     /// The `.fdt` codec name, which names the format that wrote it -- a
     /// bulk chunk copy is only legal into a writer of the same one
     /// (`Lucene90CompressingStoredFieldsWriter.getMergeStrategy`'s

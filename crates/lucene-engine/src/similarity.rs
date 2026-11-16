@@ -33,9 +33,9 @@ use std::sync::Arc;
 
 use lucene_search::similarities::{
     AfterEffect, BasicModel, Bm25Similarity, BooleanSimilarity, ClassicSimilarity, CollectionModel,
-    DfiSimilarity, DfrSimilarity, Distribution, IbSimilarity, Independence, Lambda,
-    LegacyBm25Similarity, LmDirichletSimilarity, LmJelinekMercerSimilarity, Normalization,
-    PerFieldSimilarity, Similarity,
+    CollectionStatistics, DfiSimilarity, DfrSimilarity, Distribution, IbSimilarity, Independence,
+    Lambda, LegacyBm25Similarity, LmDirichletSimilarity, LmJelinekMercerSimilarity, Normalization,
+    PerFieldSimilarity, Similarity, TermStatistics,
 };
 
 use crate::query_blob::Cursor;
@@ -43,6 +43,88 @@ use crate::status::{set_last_error, Status};
 
 /// Blob tag: a similarity table, then the rest of the request.
 pub const QUERY_SIMILARITY: u8 = 4;
+
+/// Blob tag: an aggregated DFS, then the rest of the request.
+///
+/// ```text
+/// QUERY_DFS (5), terms: i32, then per term:
+///   field: bytes, term: bytes, doc_freq: i64, total_term_freq: i64
+/// fields: i32, then per field:
+///   field: bytes, max_doc: i64, doc_count: i64, sum_total_term_freq: i64, sum_doc_freq: i64
+/// ```
+///
+/// `AggregatedDfs`' statistics of the request's terms and fields across every
+/// shard: scoring uses them, as `ContextIndexSearcher.termStatistics` and
+/// `collectionStatistics` answer with them, in place of this shard's.
+pub const QUERY_DFS: u8 = 5;
+
+/// A DFS's statistics ([`QUERY_DFS`]).
+#[derive(Debug, Default)]
+pub struct DfsStatistics {
+    terms: std::collections::HashMap<(String, Vec<u8>), TermStatistics>,
+    fields: std::collections::HashMap<String, CollectionStatistics>,
+}
+
+impl lucene_search::index_searcher::StatisticsSource for DfsStatistics {
+    fn term_statistics(
+        &self,
+        field: &str,
+        term: &[u8],
+        local: TermStatistics,
+    ) -> lucene_search::Result<TermStatistics> {
+        // A term the DFS does not hold (a clause the DFS cannot extract terms from)
+        // keeps this shard's statistics.
+        Ok(self
+            .terms
+            .get(&(field.to_string(), term.to_vec()))
+            .map_or(local.clone(), |t| TermStatistics {
+                doc_freq: t.doc_freq,
+                total_term_freq: t.total_term_freq,
+                term: local.term.clone(),
+            }))
+    }
+
+    fn collection_statistics(
+        &self,
+        field: &str,
+        local: Option<CollectionStatistics>,
+    ) -> lucene_search::Result<Option<CollectionStatistics>> {
+        Ok(self.fields.get(field).copied().or(local))
+    }
+}
+
+/// Reads a DFS after its tag.
+pub fn decode_dfs(c: &mut Cursor<'_>) -> Result<DfsStatistics, Status> {
+    let mut dfs = DfsStatistics::default();
+    for _ in 0..c.length()? {
+        let field = std::str::from_utf8(c.bytes()?)
+            .map_err(|_| Status::InvalidUtf8)?
+            .to_string();
+        let term = c.bytes()?.to_vec();
+        let (doc_freq, total_term_freq) = (c.i64()?, c.i64()?);
+        dfs.terms.insert(
+            (field, term),
+            TermStatistics {
+                doc_freq,
+                total_term_freq,
+                term: None,
+            },
+        );
+    }
+    for _ in 0..c.length()? {
+        let field = std::str::from_utf8(c.bytes()?)
+            .map_err(|_| Status::InvalidUtf8)?
+            .to_string();
+        let stats = CollectionStatistics {
+            max_doc: c.i64()?,
+            doc_count: c.i64()?,
+            sum_total_term_freq: c.i64()?,
+            sum_doc_freq: c.i64()?,
+        };
+        dfs.fields.insert(field, stats);
+    }
+    Ok(dfs)
+}
 
 /// At most this many fields in a table: a query scores at most its node
 /// limit's worth.
@@ -202,6 +284,44 @@ mod tests {
 
     fn f(v: f32) -> [u8; 4] {
         v.to_bits().to_le_bytes()
+    }
+
+    fn bytes(b: &[u8]) -> Vec<u8> {
+        [&(b.len() as i32).to_le_bytes()[..], b].concat()
+    }
+
+    #[test]
+    fn dfs_decodes_term_and_field_statistics() {
+        let mut blob = 1i32.to_le_bytes().to_vec();
+        blob.extend(bytes(b"body"));
+        blob.extend(bytes(b"fox"));
+        blob.extend(7i64.to_le_bytes());
+        blob.extend(9i64.to_le_bytes());
+        blob.extend(1i32.to_le_bytes());
+        blob.extend(bytes(b"body"));
+        for v in [100i64, 90, 800, 80] {
+            blob.extend(v.to_le_bytes());
+        }
+        let dfs = decode_dfs(&mut Cursor::new(&blob)).unwrap();
+        let t = &dfs.terms[&("body".to_string(), b"fox".to_vec())];
+        assert_eq!((t.doc_freq, t.total_term_freq), (7, 9));
+        let c = &dfs.fields["body"];
+        assert_eq!(
+            (
+                c.max_doc,
+                c.doc_count,
+                c.sum_total_term_freq,
+                c.sum_doc_freq
+            ),
+            (100, 90, 800, 80)
+        );
+    }
+
+    #[test]
+    fn truncated_dfs_is_an_error() {
+        let mut blob = 1i32.to_le_bytes().to_vec();
+        blob.extend(bytes(b"body"));
+        assert!(decode_dfs(&mut Cursor::new(&blob)).is_err());
     }
 
     #[test]

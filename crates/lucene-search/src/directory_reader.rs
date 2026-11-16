@@ -148,6 +148,9 @@ type FieldStats = HashMap<String, (i64, i64, i32)>;
 /// (re-)construct on demand -- see [`DirectoryReader::open_segments`].
 #[derive(Debug, Clone)]
 pub struct SegmentReader {
+    /// Identifies this segment's stored files among all readers in the process, for the per-thread
+    /// chunk cache of a run of nearby documents ([`Self::visit_stored_document`]).
+    stored_serial: u64,
     /// The files the segment's codec adds beside the native ones
     /// ([`lucene_codecs::codecs::CodecFormats::extra_files`]), by extension.
     codec_files: Arc<Vec<(&'static str, Arc<Input>)>>,
@@ -1070,6 +1073,7 @@ impl SegmentReader {
             None => (None, None, None),
         };
         let reader = SegmentReader {
+            stored_serial: next_stored_serial(),
             codec_files: Arc::default(),
             attachments: Arc::default(),
             simpletext: None,
@@ -1720,6 +1724,7 @@ impl SegmentReader {
         }
 
         Ok(SegmentReader {
+            stored_serial: next_stored_serial(),
             codec_files: Arc::new(codec_files),
             attachments: Arc::default(),
             simpletext: None,
@@ -2406,11 +2411,11 @@ impl SegmentReader {
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
+        let reader = f.reader_for(&self.segment_id, doc)?;
         match &self.hidden {
-            None => f
-                .reader_for(&self.segment_id, doc)?
-                .visit_document(doc, visitor)?,
-            Some(hidden) => f.reader_for(&self.segment_id, doc)?.visit_document(
+            None => self.visit_run(&reader, doc, visitor)?,
+            Some(hidden) => self.visit_run(
+                &reader,
                 doc,
                 &mut VisibleFields {
                     inner: visitor,
@@ -2419,6 +2424,43 @@ impl SegmentReader {
             )?,
         }
         Ok(true)
+    }
+
+    /// `reader`'s document `doc`, from the thread's decompressed chunk when it has the document's, and
+    /// loading the chunk when this read follows a nearby earlier one (see [`SeqFetch`]).
+    fn visit_run(
+        &self,
+        reader: &lucene_codecs::stored_fields::StoredFieldsReader<'_>,
+        doc: i32,
+        visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
+    ) -> Result<()> {
+        let mut st = SEQ_FETCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        let result = (|| {
+            if st.serial != self.stored_serial {
+                st = SeqFetch {
+                    serial: self.stored_serial,
+                    last_doc: -1,
+                    chunk: None,
+                };
+            }
+            let near = st.last_doc >= 0 && doc > st.last_doc && doc - st.last_doc <= SEQ_FETCH_GAP;
+            st.last_doc = doc;
+            if st.chunk.as_ref().is_none_or(|c| !c.contains(doc)) {
+                st.chunk = if near {
+                    reader.read_small_chunk(doc, SEQ_FETCH_MAX_CHUNK)?
+                } else {
+                    None
+                };
+            }
+            if let Some((n, bytes)) = st.chunk.as_ref().and_then(|c| c.document(doc)) {
+                return Ok(lucene_codecs::stored_fields::visit_document(
+                    n, bytes, visitor,
+                )?);
+            }
+            Ok(reader.visit_document(doc, visitor)?)
+        })();
+        SEQ_FETCH.with(|s| *s.borrow_mut() = st);
+        result
     }
 
     /// [`Self::visit_stored_document`] with `_source` as OpenSearch reads it: in a segment that
@@ -3672,6 +3714,30 @@ struct StoredFiles {
 /// advised in ([`StoredFiles::will_need_chunk`]).
 const RESIDENT_CHECK_MAX: usize = 256 << 10;
 
+pub(crate) fn next_stored_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A thread's last stored-fields reads of one segment: the chunk decompressed whole once a read
+/// follows another one close behind it, as Java's sequential reader keeps its `BlockState`, so a
+/// fetch phase over hits in one chunk decompresses it once, not once per hit.
+#[derive(Default)]
+struct SeqFetch {
+    serial: u64,
+    last_doc: i32,
+    chunk: Option<lucene_codecs::stored_fields::DecompressedChunk>,
+}
+
+/// A read this close after the last one (documents ahead) is taken as a run through the chunk.
+const SEQ_FETCH_GAP: i32 = 8;
+/// Chunks over this many plain bytes are read by document, whatever the run.
+const SEQ_FETCH_MAX_CHUNK: usize = 1 << 20;
+
+thread_local! {
+    static SEQ_FETCH: std::cell::RefCell<SeqFetch> = std::cell::RefCell::new(SeqFetch::default());
+}
+
 /// How many recently prefetched chunks a thread remembers.
 const RECENT_CHUNK_SLOTS: usize = 16;
 
@@ -4793,7 +4859,9 @@ mod tests {
             .unwrap();
         assert!(none.segment_readers()[0].hidden_fields().is_none());
         // A view is its own reader, whatever it hides.
-        let view = reader.with_hidden_fields(&[names.clone()]).unwrap();
+        let view = reader
+            .with_hidden_fields(std::slice::from_ref(&names))
+            .unwrap();
         let v = &view.segment_readers()[0];
         assert!(v.field_infos.fields.is_empty());
         assert_eq!(v.hidden_fields().unwrap().len(), names.len());
