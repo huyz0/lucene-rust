@@ -50,7 +50,7 @@ final class NativeHybrid {
         if (ctx.searchAfter() != null || ctx.scrollContext() != null) return "hybrid_search_after";
         if (ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER) return "hybrid_terminate_after";
         if (ctx.parsedPostFilter() != null) return "hybrid_post_filter";
-        if (ctx.getProfilers() != null) return "profile";
+        if (ctx.getProfilers() != null) return "hybrid_profile";
         // HybridAggregationProcessor leaves min_score at -Infinity, whose collector keeps everything.
         boolean minScore = ctx.minimumScore() != null;
         if (minScore && ctx.minimumScore() != Float.NEGATIVE_INFINITY) return "min_score";

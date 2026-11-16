@@ -88,6 +88,7 @@ final class DeferredAggregationProcessor implements AggregationProcessor {
             }
         }
         delegate.postProcess(context);
+        NativeProfile.finishAggregations(context);
     }
 
     /**

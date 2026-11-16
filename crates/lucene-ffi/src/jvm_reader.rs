@@ -606,6 +606,21 @@ pub(crate) fn search_hybrid_blobs(handle: u64, blob: &[u8]) -> Result<Vec<u8>, F
     lucene_engine::reader_search::search_hybrid_blobs(&h, blob)
 }
 
+/// [`lucene_engine::profile::profile_blob`] over `handle`'s reader.
+pub(crate) fn profile_blobs(
+    handle: u64,
+    blob: &[u8],
+    collect: u8,
+    top_n: usize,
+    count_limit: i64,
+) -> Result<Vec<u8>, FfiStatus> {
+    let h = lookup(
+        handle,
+        "ffi_jvm_reader_profile: unknown or already-closed handle",
+    )?;
+    lucene_engine::profile::profile_blob(&h, blob, collect, top_n, count_limit)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     // Tests index and count freely: the gate is about values read off disk.

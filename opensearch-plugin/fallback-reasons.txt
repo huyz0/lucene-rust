@@ -102,7 +102,7 @@ pattern_phrase_terms  # ExtendedEncoder.java
 phrase_positions  # QueryEncoder.java
 points_width  # GeoEncoder.java
 postings_format  # NativeReaders.java
-profile  # NativeHybrid.java, RustQueryPhaseSearcher.java
+hybrid_profile  # NativeHybrid.java
 query_too_deep  # QueryEncoder.java
 query_too_large  # QueryEncoder.java
 reader_closed  # NativeReaders.java
