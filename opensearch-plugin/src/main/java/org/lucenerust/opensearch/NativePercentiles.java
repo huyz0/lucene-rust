@@ -66,6 +66,20 @@ final class NativePercentiles {
         && MIN != null
         && MAX != null;
 
+    /** {@code InternalMedianAbsoluteDeviation(name, metadata, format, valuesSketch)}, package-private. */
+    private static final java.lang.reflect.Constructor<?> MAD_CTOR = madCtor();
+
+    private static java.lang.reflect.Constructor<?> madCtor() {
+        try {
+            var c = Class.forName(METRICS + "InternalMedianAbsoluteDeviation")
+                .getDeclaredConstructor(String.class, java.util.Map.class, DocValueFormat.class, TDigestState.class);
+            c.setAccessible(true);
+            return c;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
     private static Field field(Class<?> c, String name) {
         if (c == null) {
             return null;
@@ -87,6 +101,12 @@ final class NativePercentiles {
             return valueKind < 0 ? null : new HdrNode(agg, field, valueKind, hdrRanks);
         }
         boolean ranks = cls.equals(METRICS + "TDigestPercentileRanksAggregator");
+        if (cls.equals(METRICS + "MedianAbsoluteDeviationAggregator")) {
+            double compression = (double) get(agg, "compression");
+            return FIELDS_OK && MAD_CTOR != null && valueKind >= 0 && compression > 0 && compression <= MAX_COMPRESSION
+                ? new Node(agg, field, valueKind, compression, false, true)
+                : null;
+        }
         if (FIELDS_OK == false || valueKind < 0 || (ranks == false && cls.equals(METRICS + "TDigestPercentilesAggregator") == false)) {
             return null;
         }
@@ -94,7 +114,7 @@ final class NativePercentiles {
         if (!(compression > 0 && compression <= MAX_COMPRESSION)) {
             return null;
         }
-        return new Node(agg, field, valueKind, compression, ranks);
+        return new Node(agg, field, valueKind, compression, ranks, false);
     }
 
     /** An HDR percentiles node: each bucket's values back, recorded here. */
@@ -161,9 +181,12 @@ final class NativePercentiles {
         final byte valueKind;
         final double compression;
         final boolean ranks;
+        /** A {@code median_absolute_deviation}: the same digest, built into its own result. */
+        final boolean mad;
 
-        Node(AggregatorBase agg, String field, byte valueKind, double compression, boolean ranks) {
+        Node(AggregatorBase agg, String field, byte valueKind, double compression, boolean ranks, boolean mad) {
             super(agg, List.of());
+            this.mad = mad;
             this.field = field;
             this.valueKind = valueKind;
             this.compression = compression;
@@ -185,9 +208,9 @@ final class NativePercentiles {
                 // MergingDigest.add on a NaN value, as the Java aggregator would have.
                 throw new JavaRefuses("Cannot add NaN to t-digest", null);
             }
-            double[] keys = (double[]) get(agg, "keys");
-            boolean keyed = (boolean) get(agg, "keyed");
-            DocValueFormat format = (DocValueFormat) get(agg, "formatter");
+            double[] keys = mad ? null : (double[]) get(agg, "keys");
+            boolean keyed = mad ? false : (boolean) get(agg, "keyed");
+            DocValueFormat format = (DocValueFormat) get(agg, mad ? "format" : "formatter");
             List<InternalAggregation> out = new ArrayList<>(n);
             for (int i = 0; i < n; i++) {
                 if (in.get() == 0) {
@@ -196,6 +219,10 @@ final class NativePercentiles {
                     continue;
                 }
                 TDigestState state = state(in);
+                if (mad) {
+                    out.add((InternalAggregation) MAD_CTOR.newInstance(agg.name(), agg.metadata(), format, state));
+                    continue;
+                }
                 out.add(
                     ranks
                         ? new InternalTDigestPercentileRanks(agg.name(), keys, state, keyed, format, agg.metadata())
