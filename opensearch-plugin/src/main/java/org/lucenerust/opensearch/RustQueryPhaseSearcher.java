@@ -533,7 +533,7 @@ public final class RustQueryPhaseSearcher implements QueryPhaseSearcher {
         if (aggs.entries().size() != 1 || aggs.terms().size() != 1 || ctx.size() != 0 || ctx.from() != 0 || ctx.sort() != null
             || ctx.searchAfter() != null || ctx.scrollContext() != null || ctx.collapse() != null || ctx.parsedPostFilter() != null
             || ctx.minimumScore() != null || ctx.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER || hasFilterCollector
-            || ctx.isCancelled() || unwrapShortcut(query).getClass() != MatchAllDocsQuery.class
+            || ctx.isCancelled() || NativeProfile.requested(ctx) || unwrapShortcut(query).getClass() != MatchAllDocsQuery.class
             || NativeRescore.applies(ctx) || flags(ctx).enabled() == false
             || LiveDirectoryReader.find(searcher.getIndexReader()) != null
             || ineligible(ctx, collectors, hasFilterCollector, true) != null) {
