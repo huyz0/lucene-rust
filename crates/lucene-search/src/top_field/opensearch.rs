@@ -212,7 +212,7 @@ impl Pick {
 /// `MultiValueMode.pick(SortedNumericUnsignedLongValues)` over a document's
 /// values, ascending as signed longs, at least one -- `MIN`'s quirk
 /// included: a first value of 0 among several gives the second.
-fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
+pub(crate) fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
     let n = values.len();
     match selector {
         Selector::Max => {
@@ -266,7 +266,7 @@ fn unsigned_pick(selector: Selector, values: &[i64]) -> i64 {
 }
 
 /// `MultiValueMode.divideUnsignedAndRoundUp`.
-fn divide_unsigned_and_round_up(dividend: i64, divisor: i64) -> i64 {
+pub(crate) fn divide_unsigned_and_round_up(dividend: i64, divisor: i64) -> i64 {
     let q = (((dividend as u64) >> 1) as i64 / divisor) << 1;
     let r = dividend.wrapping_sub(q.wrapping_mul(divisor));
     let quotient = q + ((r | !(r.wrapping_sub(divisor))) as u64 >> 63) as i64;

@@ -62,7 +62,9 @@ pub const SORT_SHARD_DOC: u8 = 8;
 /// (`i64`).
 pub const SORT_HALF_FLOAT: u8 = 9;
 /// OpenSearch's `unsigned_long` key: as [`SORT_HALF_FLOAT`] but the
-/// missing value is the unsigned long's bits.
+/// missing value is the unsigned long's bits. A nested one (flag
+/// [`SORT_NESTED`]) crosses with its missing value, `search_after` values and
+/// hit values at their bits with the sign bit flipped.
 pub const SORT_UNSIGNED_LONG: u8 = 10;
 /// A Painless `_script` key of type `number`
 /// ([`crate::painless_score::PainlessSort`]): flags [`SORT_REVERSE`]
@@ -201,10 +203,10 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
             ));
             continue;
         }
-        // A nested `half_float` or `scaled_float` key is a `Float` or `Double` key whose
-        // child values are converted as they are read.
-        let nested_converted =
-            flags & SORT_NESTED != 0 && matches!(ty, SORT_HALF_FLOAT | SORT_SCALED_FLOAT);
+        // A nested `half_float`, `scaled_float` or `unsigned_long` key is a `Float`, `Double`
+        // or `Long` key whose child values are converted as they are read.
+        let nested_converted = flags & SORT_NESTED != 0
+            && matches!(ty, SORT_HALF_FLOAT | SORT_SCALED_FLOAT | SORT_UNSIGNED_LONG);
         if !nested_converted
             && matches!(
                 ty,
@@ -218,7 +220,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
         let ty = match ty {
             SORT_SCORE => SortType::Score,
             SORT_DOC => SortType::Doc,
-            SORT_LONG => SortType::Long,
+            SORT_LONG | SORT_UNSIGNED_LONG => SortType::Long,
             SORT_INT => SortType::Int,
             SORT_DOUBLE => SortType::Double,
             SORT_FLOAT | SORT_HALF_FLOAT => SortType::Float,
@@ -254,6 +256,8 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
                 ChildConvert::ScaledFloat { inverse }
             }
             SORT_HALF_FLOAT => ChildConvert::HalfFloat,
+            // The key's values (and its missing value, as sent) have the sign bit flipped.
+            SORT_UNSIGNED_LONG => ChildConvert::Unsigned,
             _ => ChildConvert::None,
         };
         let numeric = matches!(
@@ -388,7 +392,7 @@ pub fn decode_sort(blob: &[u8]) -> Result<DecodedSort, Status> {
 
 /// The flags a geo-distance key may carry: [`SORT_REVERSE`], [`SORT_MAX`]
 /// and a mode.
-pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK;
+pub const GEO_SORT_FLAGS: u8 = SORT_REVERSE | SORT_MAX | SORT_MODE_MASK | SORT_NESTED;
 
 /// A [`SORT_GEO_DISTANCE`] key, after its type and flags: the field
 /// (`len: i32`, UTF-8), the missing value (`i64`, unused: missing documents
@@ -507,6 +511,53 @@ pub fn decode_geo_sort(c: &mut Cursor<'_>, flags: u8) -> Result<(SortField, bool
         )));
     }
     let reverse = flags & SORT_REVERSE != 0;
+    if flags & SORT_NESTED != 0 {
+        // OpenSearch's comparator under a nested sort: the children's distances picked per
+        // root. `MultiValueMode.MEDIAN` has no nested pick.
+        let selector = match (flags & SORT_MODE_MASK, flags & SORT_MAX != 0) {
+            (0, false) => Selector::Min,
+            (0, true) => Selector::Max,
+            (SORT_MODE_SUM, false) => Selector::Sum,
+            (SORT_MODE_AVG, false) => Selector::Avg,
+            _ => {
+                return Err(invalid(format!(
+                    "sort blob: nested geo-distance flags {flags:#x}"
+                )))
+            }
+        };
+        if comparator != 1 && comparator != 2 {
+            return Err(invalid(format!(
+                "sort blob: nested geo-distance comparator {comparator} (want 1 or 2)"
+            )));
+        }
+        let parents = boolean_of(&decode_query(c.bytes()?)?);
+        let children = boolean_of(&decode_query(c.bytes()?)?);
+        let max_children = c.i32()?;
+        let sort = OpenSearchGeoDistanceSort {
+            origins,
+            unit_meters,
+            mode: DistanceMode::Min,
+            plane: comparator == 2,
+        };
+        return Ok((
+            SortField {
+                field: field.to_string(),
+                ty: SortType::Double,
+                reverse,
+                selector,
+                // `replaceMissing(+Infinity)`, whatever the order.
+                missing: lucene_util::numeric_utils::double_to_sortable_long(f64::INFINITY),
+                nested: Some(Arc::new(NestedSort {
+                    convert: ChildConvert::Geo(Arc::new(sort)),
+                    parents,
+                    children,
+                    max_children,
+                })),
+                rewritten: None,
+            },
+            false,
+        ));
+    }
     let source: std::sync::Arc<dyn lucene_search::top_field::FieldComparatorSource> =
         match comparator {
             0 => {

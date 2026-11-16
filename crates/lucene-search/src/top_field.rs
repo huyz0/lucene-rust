@@ -559,7 +559,7 @@ pub struct NestedSort {
 }
 
 /// How a nested key's child values are read ([`NestedSort::convert`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChildConvert {
     /// The values are the key's own (`Long`, `Int`, `Double`, `Float`).
     None,
@@ -568,15 +568,28 @@ pub enum ChildConvert {
     ScaledFloat { inverse: f64 },
     /// A `half_float`: the stored sortable short as a `Float` key's sortable int.
     HalfFloat,
+    /// A `geo_point` under `_geo_distance`: the stored encoded points as the sorted distances
+    /// to the origins (a `Double` key's sortable longs); the sort's mode is not used here.
+    Geo(Arc<crate::document::geo::OpenSearchGeoDistanceSort>),
+    /// An `unsigned_long`: the stored longs are the unsigned values' bits. The key is a `Long`
+    /// one whose picked value (and missing value) has its sign bit flipped, so signed longs
+    /// order as the unsigned values do.
+    Unsigned,
 }
 
 impl ChildConvert {
-    fn apply(self, buf: &mut [i64]) {
+    fn apply(&self, buf: &mut Vec<i64>) {
         match self {
-            ChildConvert::None => {}
+            ChildConvert::None | ChildConvert::Unsigned => {}
+            ChildConvert::Geo(sort) => {
+                let mut distances = Vec::new();
+                sort.distances(buf, &mut distances);
+                buf.clear();
+                buf.extend(distances.into_iter().map(double_to_sortable_long));
+            }
             ChildConvert::ScaledFloat { inverse } => {
                 for v in buf {
-                    *v = double_to_sortable_long(*v as f64 * inverse);
+                    *v = double_to_sortable_long(*v as f64 * *inverse);
                 }
             }
             ChildConvert::HalfFloat => {
@@ -1644,11 +1657,69 @@ impl NestedColumn<'_> {
         Ok(self.last_value)
     }
 
+    /// `pick` for an `unsigned_long` key: `MultiValueMode`'s unsigned picks (a child's least
+    /// or greatest by [`opensearch::unsigned_pick`], compared unsigned; sums wrapping; an
+    /// average through `divideUnsignedAndRoundUp`). The result has its sign bit flipped
+    /// ([`ChildConvert::Unsigned`]); a root without values is the (already flipped) missing
+    /// value.
+    fn pick_unsigned(&mut self, start: i32, end: i32) -> Result<i64> {
+        let mut acc: i64 = match self.selector {
+            // `MAX_UNSIGNED_LONG_VALUE_AS_LONG` for a least, `MIN_UNSIGNED_LONG_VALUE_AS_LONG` for a greatest.
+            Selector::Min => -1,
+            _ => 0,
+        };
+        let (mut total_count, mut count, mut has) = (0i64, 0i32, false);
+        let mut doc = start;
+        while doc < end {
+            if self.read(doc)? {
+                count = count.saturating_add(1);
+                if count > self.max_children {
+                    break;
+                }
+                has = true;
+                match self.selector {
+                    Selector::Min => {
+                        let v = opensearch::unsigned_pick(Selector::Min, &self.buf);
+                        if (v as u64) < (acc as u64) {
+                            acc = v;
+                        }
+                    }
+                    Selector::Max => {
+                        let v = opensearch::unsigned_pick(Selector::Max, &self.buf);
+                        if (v as u64) > (acc as u64) {
+                            acc = v;
+                        }
+                    }
+                    _ => {
+                        for &v in &self.buf {
+                            acc = acc.wrapping_add(v);
+                        }
+                        total_count += self.buf.len() as i64;
+                    }
+                }
+            }
+            doc = self.next_child();
+        }
+        if !has {
+            return Ok(self.missing);
+        }
+        let picked = match self.selector {
+            Selector::Avg if total_count > 1 => {
+                opensearch::divide_unsigned_and_round_up(acc, total_count)
+            }
+            _ => acc,
+        };
+        Ok(picked ^ i64::MIN)
+    }
+
     /// `pick(values, missingValue, docItr, startDoc, endDoc, maxChildren)`
     /// for the key's type: longs for a `Long`/`Int` key, doubles for a
     /// `Double`/`Float` one (a `Float` result cast to `float`), each returned
     /// in the comparator's encoding.
     fn pick(&mut self, start: i32, end: i32) -> Result<i64> {
+        if self.convert == ChildConvert::Unsigned {
+            return self.pick_unsigned(start, end);
+        }
         let float = self.ty == SortType::Float;
         let floating = float || self.ty == SortType::Double;
         let d = |v: i64| {
@@ -3542,7 +3613,7 @@ fn open_leaf<'a>(
                                 ty: f.ty,
                                 missing: f.missing,
                                 max_children: n.max_children,
-                                convert: n.convert,
+                                convert: n.convert.clone(),
                                 last_parent: -1,
                                 last_value: f.missing,
                                 buf: Vec::new(),
@@ -5309,20 +5380,29 @@ fn count_rest(
 mod tests {
     #[test]
     fn child_values_are_converted_before_they_are_picked() {
-        let mut v = [-250i64, 0, 350];
+        let mut v = vec![-250i64, 0, 350];
         ChildConvert::None.apply(&mut v);
         assert_eq!(v, [-250, 0, 350]);
         ChildConvert::ScaledFloat { inverse: 0.01 }.apply(&mut v);
         assert_eq!(
-            v.map(sortable_long_to_double),
+            v.iter()
+                .copied()
+                .map(sortable_long_to_double)
+                .collect::<Vec<_>>(),
             [-250.0 * 0.01, 0.0, 350.0 * 0.01]
         );
-        let mut h = [
+        let mut h = vec![
             i64::from(lucene_util::half_float::half_float_to_sortable_short(-1.5)),
             i64::from(lucene_util::half_float::half_float_to_sortable_short(2.25)),
         ];
         ChildConvert::HalfFloat.apply(&mut h);
-        assert_eq!(h.map(sortable_int_to_float), [-1.5, 2.25]);
+        assert_eq!(
+            h.iter()
+                .copied()
+                .map(sortable_int_to_float)
+                .collect::<Vec<_>>(),
+            [-1.5, 2.25]
+        );
     }
 
     #[test]
