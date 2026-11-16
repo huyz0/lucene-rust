@@ -4908,12 +4908,18 @@ pub(crate) mod tests {
             assert_eq!(got, b.values[0] as f64 * 0.5);
         }
         assert_eq!(ffi_close_jvm_reader(h), 0);
+        // An unsigned_long median is a real selector now, so it decodes.
+        assert!(decode_sort(&opensearch_key(
+            SORT_UNSIGNED_LONG,
+            SORT_MODE_MEDIAN,
+            "l",
+            0
+        ))
+        .is_ok());
         for blob in [
             opensearch_key(SORT_SHARD_DOC, SORT_MAX, "", 0),
-            opensearch_key(SORT_UNSIGNED_LONG, SORT_MODE_MEDIAN, "l", 0),
             opensearch_key(SORT_HALF_FLOAT, SORT_MAX | SORT_MODE_SUM, "l", 0),
             opensearch_key(SORT_HALF_FLOAT, SORT_NESTED, "l", 0),
-            opensearch_key(SORT_HALF_FLOAT, 0, "l", i64::MAX),
         ] {
             assert_eq!(decode_sort(&blob).err(), invalid, "{blob:?}");
         }
