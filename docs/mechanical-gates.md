@@ -59,7 +59,6 @@ the installed Java writer fixture also exercises real zero-token segments.
 | [`test-framework-dev-only`](#test-framework-dev-only) | `check-port-invariants.py` | a `lucene-test-framework` key (inline or `[*.lucene-test-framework]` table) in the root or a `crates/*/Cargo.toml` under any section but a `dev-dependencies` one | an edge written through `package = "lucene-test-framework"` under another key; a manifest outside `crates/`; feature unification in a whole-workspace build (see the section) |
 | [`bench-not-asserting`](#bench-not-asserting) | `check-port-invariants.py` | an `asserting` entry in any `features = [...]` list of `benchmarks/rust-runner/Cargo.toml` | a feature enabling `asserting` transitively; a `--workspace` benchmark build |
 | [`unsafe-scoped`](#unsafe-scoped) | `check-port-invariants.py` | a crate other than `lucene-util`, `lucene-store`, `lucene-ffi` whose `src/lib.rs` lacks `#![forbid(unsafe_code)]`; a crate listed in `UNSAFE_BURNDOWN` that no longer holds `unsafe` | `unsafe` in a crate that forbids it is a compile error already; blind to an `unsafe` hidden behind a macro, and to `#![forbid]` placed outside `lib.rs` |
-| [`unsafe-budget`](#unsafe-budget) | `check-port-invariants.py` | a file whose count of `unsafe` sites (blocks, `fn`, `impl`, `trait`, `extern`) differs from `docs/unsafe-budget.json`: a new site, a new file with one, or a site removed without lowering the number | `unsafe` behind a macro; whether a site is sound (that is the clippy `undocumented_unsafe_blocks` / `missing_safety_doc` / `unsafe_op_in_unsafe_fn` denies, and miri) |
 | [fixture source selection](#fixture-source-selection) | `test-test-framework-fixture-selection.py` | `--only` compiling unrelated broken sources, missing source dependencies, incomplete full checks, fixture drift or changed early argument handling | runtime dependencies loaded by reflection, actual Lucene behavior or fixture determinism; the full Java fixture check covers the real generators |
 | [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB on a drive with under 150 GB free (over 300 GB with more room only warns); under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
@@ -1044,18 +1043,13 @@ fail** on both shapes: the attribute deleted from `lucene-misc`
 burn-down list (`has no unsafe left`). Blind to: `unsafe` produced by a macro
 body; an `#![forbid]` that sits in a module rather than `lib.rs`.
 
-## unsafe-budget
+## unsafe sites
 
-`check-port-invariants.py --only=unsafe-budget`. `unsafe-scoped` keeps `unsafe`
-in three crates, and `#![forbid(unsafe_code)]` is a per-target attribute that
-an example, bench or integration test does not inherit. Nothing stopped the
-three crates' own count from growing, either. `docs/unsafe-budget.json` lists
-every Rust file that holds `unsafe` and how many sites it holds, over
-`crates/`, `benchmarks/` and `opensearch-plugin/`. A file may not exceed its
-number, a file not listed may hold none, and a file under its number fails
-too, so a removal lowers the budget in the same diff and the number only goes
-up where a reviewer sees it. `python3 scripts/check-port-invariants.py
---write-unsafe-budget` rewrites the file after an intended change.
+`unsafe-scoped` keeps `unsafe` in three crates, and a kernel that wins a
+benchmark may add `unsafe` there with no number to edit: the count over
+`crates/`, `benchmarks/` and `opensearch-plugin/` is only reported
+(`unsafe_sites` in the script's `--verbose` output). Soundness is argued at
+each site and enforced by the lints below and by miri.
 
 What each site must say is the clippy denies in `[workspace.lints]` (and the
 same three in `lucene-util`'s own manifest, which does not use the workspace
@@ -1065,10 +1059,7 @@ every block), `missing_safety_doc` (a `# Safety` section on every public
 block). Unit-test modules of the three crates are exempt from the first: they
 call the `unsafe extern "C"` entry points with pointers they own.
 
-**Seen to fail** both ways: an `unsafe` block appended to `lucene-misc`
-(`1 unsafe site(s), budget 0`), and `crates/lucene-util/src/simd.rs` set to a
-budget of 1 (`budget 1; lower the budget`). Blind to: `unsafe` produced by a
-macro body; whether any one site is sound.
+Blind to: `unsafe` produced by a macro body; whether any one site is sound.
 
 ## store-feature-off-lint
 

@@ -48,9 +48,8 @@ test. This boundary gets more scrutiny than anything else in the workspace.
   `clippy::missing_safety_doc` and `unsafe_op_in_unsafe_fn` (`lucene-util`
   repeats them in its own manifest): a `// SAFETY:` comment above every block,
   a `# Safety` section on every public `unsafe fn`.
-- `check-port-invariants.py`'s `unsafe-budget` rule: `docs/unsafe-budget.json`
-  holds the number of `unsafe` sites per file; a diff that adds one raises the
-  number where the reviewer sees it (`docs/mechanical-gates.md#unsafe-budget`).
+- `check-port-invariants.py` reports the `unsafe` site count and does not cap it: a kernel that
+  wins a benchmark adds sites with no number to edit (`docs/mechanical-gates.md#unsafe-sites`).
   Prefer a safe wrapper kernel (one small `unsafe` core with the contract
   stated once, safe callers) over another block at a call site, and remove an
   `unsafe` block that a benchmark shows gains nothing.

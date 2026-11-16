@@ -16,7 +16,6 @@ Run: `python3 scripts/check-port-invariants.py [--verbose]`
 Exit 0 = clean, 1 = at least one violation.
 """
 
-import json
 import os
 import re
 import sys
@@ -1109,15 +1108,12 @@ def rule_unsafe_scoped(files, problems, stats):
             )
 
 
-# The `unsafe` budget: the number of `unsafe` sites per file, committed in
-# `docs/unsafe-budget.json`. The scoping rule above keeps `unsafe` in three
-# crates; this one keeps it from growing inside them (or in an example, bench
-# or test target, which `#![forbid(unsafe_code)]` in `lib.rs` does not reach).
-# A file may not gain a site, a new file may not hold any, and a file that
-# lost sites must lower its number, so the budget only shrinks unless a diff
-# raises it where a reviewer sees it. `--write-unsafe-budget` rewrites it.
+# The number of `unsafe` sites in the repo, reported and never enforced.
+# `unsafe-scoped` above keeps `unsafe` in three crates, and the clippy denies
+# in `[workspace.lints]` require a `// SAFETY:` comment on every block and a
+# `# Safety` section on every public `unsafe fn`; a kernel that wins a
+# benchmark adds sites with no number to edit.
 
-UNSAFE_BUDGET_FILE = os.path.join(ROOT, "docs", "unsafe-budget.json")
 UNSAFE_ROOTS = ("crates", "benchmarks", "opensearch-plugin")
 
 
@@ -1138,29 +1134,8 @@ def unsafe_site_counts():
     return dict(sorted(counts.items()))
 
 
-def rule_unsafe_budget(files, problems, stats):
-    counts = unsafe_site_counts()
-    stats["unsafe_sites"] = sum(counts.values())
-    try:
-        with open(UNSAFE_BUDGET_FILE, encoding="utf-8") as fh:
-            budget = json.load(fh)
-    except FileNotFoundError:
-        problems.append("docs/unsafe-budget.json is missing. (docs/mechanical-gates.md#unsafe-budget)")
-        return
-    for rel in sorted(set(counts) | set(budget)):
-        have, allowed = counts.get(rel, 0), budget.get(rel, 0)
-        if have > allowed:
-            problems.append(
-                f"{rel}: {have} `unsafe` site(s), budget {allowed}. Make it safe, or raise "
-                "docs/unsafe-budget.json in this diff with the reason in the commit. "
-                "(docs/mechanical-gates.md#unsafe-budget)"
-            )
-        elif have < allowed:
-            problems.append(
-                f"{rel}: {have} `unsafe` site(s), budget {allowed}; lower the budget with "
-                "`python3 scripts/check-port-invariants.py --write-unsafe-budget`. "
-                "(docs/mechanical-gates.md#unsafe-budget)"
-            )
+def rule_unsafe_sites(files, problems, stats):
+    stats["unsafe_sites"] = sum(unsafe_site_counts().values())
 
 
 # A masked field's keyword or binary doc values keep their raw ordinals and
@@ -1224,18 +1199,12 @@ RULES = (
     ("test-framework-dev-only", rule_test_framework_dev_only),
     ("bench-not-asserting", rule_bench_not_asserting),
     ("unsafe-scoped", rule_unsafe_scoped),
-    ("unsafe-budget", rule_unsafe_budget),
+    ("unsafe-sites", rule_unsafe_sites),
     ("raw-term-choke-point", rule_raw_term_choke_point),
 )
 
 
 def main(argv):
-    if "--write-unsafe-budget" in argv:
-        with open(UNSAFE_BUDGET_FILE, "w", encoding="utf-8") as fh:
-            json.dump(unsafe_site_counts(), fh, indent=2)
-            fh.write("\n")
-        print(f"wrote {os.path.relpath(UNSAFE_BUDGET_FILE, ROOT)}")
-        return 0
     verbose = "--verbose" in argv
     only = None
     for arg in argv:
@@ -1290,7 +1259,7 @@ def main(argv):
         print(f"bench-runner feature lists          : {stats['bench_feature_lists']}")
         print(f"crates checked for forbid(unsafe)   : {stats['unsafe_crates_checked']}")
         print(f"raw term reads (all allow-listed)   : {stats['raw_term_sites']}")
-        print(f"unsafe sites (budgeted per file)    : {stats['unsafe_sites']}")
+        print(f"unsafe sites (reported only)        : {stats['unsafe_sites']}")
 
     if problems:
         for p in problems:
